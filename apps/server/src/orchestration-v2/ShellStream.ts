@@ -1,12 +1,14 @@
 import type {
-  ApplicationStoredEvent,
+  ApplicationRecordedLifecycleEvent as ApplicationStoredEvent,
+  RecordedStoredLifecycleEvent as OrchestrationV2StoredEvent,
+} from "./RecordedTypes.ts";
+import type {
   OrchestrationProjectShell,
   OrchestrationV2ArchivedShellStreamItem,
   OrchestrationV2ShellSnapshot,
   OrchestrationV2ThreadShell,
   OrchestrationV2ThreadShellSnapshot,
   OrchestrationV2ShellStreamItem,
-  OrchestrationV2StoredEvent,
 } from "@t3tools/contracts";
 import { OrchestrationProjectShell as ProjectShellSchema } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";

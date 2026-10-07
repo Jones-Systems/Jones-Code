@@ -94,6 +94,9 @@ export class GitWorkflowService extends Context.Service<
       { readonly commitSha: string; readonly remoteRefName: string },
       GitCommandError
     >;
+    readonly resolveRemoteTrackingCommitIfExists: (
+      input: GitVcsDriver.GitResolveRemoteTrackingCommitIfExistsInput,
+    ) => Effect.Effect<GitVcsDriver.GitResolveRemoteTrackingCommitResult | null, GitCommandError>;
     readonly removeWorktree: (
       input: VcsRemoveWorktreeInput,
     ) => Effect.Effect<void, GitCommandError>;
@@ -110,6 +113,7 @@ export class GitWorkflowService extends Context.Service<
       input: VcsSwitchRefInput,
     ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
     readonly renameBranch: (input: {
+      readonly legacyPreparation?: GitVcsDriver.LegacyBranchRenameHooks;
       readonly exactName?: boolean;
       readonly cwd: string;
       readonly oldBranch: string;
@@ -368,6 +372,10 @@ export const make = Effect.gen(function* () {
     resolveRemoteTrackingCommit: (input) =>
       ensureGitCommand("GitWorkflowService.resolveRemoteTrackingCommit", input.cwd).pipe(
         Effect.andThen(git.resolveRemoteTrackingCommit(input)),
+      ),
+    resolveRemoteTrackingCommitIfExists: (input) =>
+      ensureGitCommand("GitWorkflowService.resolveRemoteTrackingCommitIfExists", input.cwd).pipe(
+        Effect.andThen(git.resolveRemoteTrackingCommitIfExists(input)),
       ),
     removeWorktree: (input) =>
       ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(

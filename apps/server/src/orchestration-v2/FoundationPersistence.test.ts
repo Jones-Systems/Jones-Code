@@ -1,3 +1,4 @@
+import * as ServerUpdateContinuation from "./ServerUpdateContinuation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -20,6 +21,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
@@ -76,6 +78,66 @@ const TestLayer = Layer.mergeAll(
   IdAllocator.layer,
   projectionMaintenanceProvided,
 );
+
+const boundarySteerFixture = Effect.fnUntraced(function* (prefix: string) {
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* DateTime.now;
+  const threadId = ThreadId.make(`thread:${prefix}`);
+  const request = {
+    type: "provider-turn.steer" as const,
+    providerSessionId: ProviderSessionId.make(`session:${prefix}`),
+    providerThreadId: ProviderThreadId.make(`provider-thread:${prefix}`),
+    providerTurnId: ProviderTurnId.make(`provider-turn:${prefix}`),
+    messageId: MessageId.make(`message:${prefix}`),
+  };
+  const first = {
+    id: `effect:${prefix}:9`,
+    commandId: CommandId.make(`command:queue-tool-boundary:${prefix}:9`),
+    threadId,
+    request,
+  };
+  const second = {
+    id: `effect:${prefix}:10`,
+    commandId: CommandId.make(`command:queue-tool-boundary:${prefix}:10`),
+    threadId,
+    request: { ...request, messageId: MessageId.make(`message:${prefix}:second`) },
+  };
+  yield* Effect.addFinalizer(() =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id IN (${first.commandId}, ${second.commandId}) OR (aggregate_kind = 'thread' AND aggregate_id = ${threadId})`;
+        }),
+      )
+      .pipe(Effect.orDie),
+  );
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      for (const [effect, resultSequence] of [
+        [first, 9],
+        [second, 10],
+      ] as const) {
+        yield* receipts.upsert({
+          commandId: effect.commandId,
+          threadId,
+          commandType: "queued-message.promote-to-steer",
+          acceptedAt: now,
+          resultSequence,
+          status: "accepted",
+          error: null,
+        });
+      }
+      yield* outbox.enqueue([first, second]);
+    }),
+  );
+  const workerId = `worker:${prefix}`;
+  const claim = outbox.claimNext({ workerId, leaseDurationMs: 30_000 });
+  const succeed = (effectId: string) => outbox.succeed({ effectId, workerId });
+  return { outbox, receipts, sql, now, threadId, first, second, workerId, claim, succeed };
+});
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const providerDriver = ProviderDriverKind.make("codex");
@@ -1397,6 +1459,71 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect(
+    "fences exact cleanup effects through durable success and fails closed on missing or failed outcomes",
+    () =>
+      Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = ThreadId.make("thread:legacy-cleanup-fence");
+        const commandId = CommandId.make("command:legacy-cleanup-fence");
+        const terminalId = `effect:${commandId}:terminal.cleanup`;
+        const attachmentId = `effect:${commandId}:attachment.cleanup`;
+        yield* outbox.enqueue([
+          { id: terminalId, commandId, threadId, request: { type: "terminal.cleanup" } },
+          {
+            id: attachmentId,
+            commandId,
+            threadId,
+            request: { type: "attachment.cleanup", attachmentIds: ["owned-copy"] },
+          },
+        ]);
+        const fence = yield* outbox
+          .awaitCompletion([terminalId, attachmentId])
+          .pipe(Effect.forkChild);
+        const first = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(first));
+        if (Option.isSome(first))
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: first.value.id, workerId: "cleanup-test" }),
+          );
+        assert.isUndefined(fence.pollUnsafe());
+        const second = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(second));
+        if (Option.isSome(second))
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: second.value.id, workerId: "cleanup-test" }),
+          );
+        yield* Fiber.join(fence);
+        yield* outbox.awaitCompletion([terminalId, attachmentId]);
+        const missing = yield* outbox.awaitCompletion(["unknown-effect"]).pipe(Effect.flip);
+        assert.equal(missing._tag, "EffectOutboxError");
+        const failedId = `effect:${commandId}:failed-cleanup`;
+        yield* outbox.enqueue([
+          { id: failedId, commandId, threadId, request: { type: "terminal.cleanup" } },
+        ]);
+        const failedFence = yield* outbox.awaitCompletion([failedId]).pipe(Effect.forkChild);
+        const failed = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(failed));
+        assert.isTrue(
+          yield* outbox.fail({
+            effectId: failedId,
+            workerId: "cleanup-test",
+            error: "cleanup failed",
+          }),
+        );
+        const error = yield* Fiber.join(failedFence).pipe(Effect.flip);
+        assert.equal(error.effectId, failedId);
+      }),
+  );
   it.effect("keeps one durable effect across command retries and executes it after recovery", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
@@ -2009,6 +2136,173 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect("prepares, deduplicates, cancels and retries update continuation markers", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:update-marker");
+      const instanceId = ProviderInstanceId.make("codex");
+      const providerThreadId = ProviderThreadId.make("provider-thread:update-marker");
+      const sessionId = ProviderSessionId.make("session:update-marker");
+      const attemptId = RunAttemptId.make("attempt:update-marker");
+      const runId = RunId.make("run:update-marker");
+      const projection = {
+        thread: {
+          id: threadId,
+          projectId: ProjectId.make("project:update-marker"),
+          providerInstanceId: instanceId,
+          archivedAt: null,
+          deletedAt: null,
+        },
+        runs: [
+          {
+            id: runId,
+            ordinal: 1,
+            status: "running",
+            providerInstanceId: instanceId,
+            providerThreadId,
+            activeAttemptId: attemptId,
+          },
+        ],
+        providerThreads: [
+          {
+            id: providerThreadId,
+            appThreadId: threadId,
+            ownerNodeId: null,
+            providerInstanceId: instanceId,
+            providerSessionId: sessionId,
+            driver: "codex",
+            nativeThreadRef: { driver: "codex", nativeId: "native-marker", strength: "strong" },
+            status: "active",
+          },
+        ],
+        providerSessions: [
+          { id: sessionId, driver: "codex", providerInstanceId: instanceId, status: "running" },
+        ],
+        providerTurns: [{ providerThreadId, runAttemptId: attemptId, status: "running" }],
+      } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState;
+      const projections = Layer.mock(ProjectionStore.ProjectionStoreV2)({
+        getRecoveryThreadIds: () => Effect.succeed([threadId]),
+        getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+      });
+      const preferences = ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false });
+      const markers = Layer.merge(projections, preferences);
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [],
+      );
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [threadId],
+      );
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [threadId],
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(rows, 1);
+      assert.include(rows[0]!.payload_json, '"continueWithoutPreference":true');
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([
+        ThreadId.make("thread:other"),
+      ]);
+      assert.lengthOf(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`,
+        1,
+      );
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+      assert.lengthOf(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`,
+        0,
+      );
+      yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+        Effect.provide(markers),
+      );
+      const retry = yield* sql<{
+        effect_id: string;
+      }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(retry, 1);
+      assert.notEqual(retry[0]!.effect_id, rows[0]!.effect_id);
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+      const optedPreferences = ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true });
+      const optedMarkers = Layer.merge(projections, optedPreferences);
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+          Effect.provide(optedMarkers),
+        ),
+        [threadId],
+      );
+      const optedRows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.include(optedRows[0]!.payload_json, '"continueWithoutPreference":false');
+      yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+        Effect.provide(markers),
+      );
+      const forcedRows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(forcedRows, 1);
+      assert.equal(forcedRows[0]!.effect_id, optedRows[0]!.effect_id);
+      assert.include(forcedRows[0]!.payload_json, '"continueWithoutPreference":true');
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+    }),
+  );
+
+  it.effect("keeps prepared restart continuations passive until process loss", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:passive-restart");
+      const commandId = CommandId.make("command:server-update-prepare:passive");
+      const marker = "effect:server-update-continuation:passive";
+      yield* outbox.enqueue([
+        {
+          id: marker,
+          commandId,
+          threadId,
+          request: {
+            type: "provider-runtime.continue",
+            sourceRunId: RunId.make("run:passive"),
+            preparedForRestart: true,
+            continueWithoutPreference: true,
+          },
+        },
+        { id: "effect:passive-live", commandId, threadId, request: { type: "terminal.cleanup" } },
+      ]);
+      const live = yield* outbox.claimNext({ workerId: "passive-worker", leaseDurationMs: 30_000 });
+      assert.equal(Option.getOrThrow(live).id, "effect:passive-live");
+      yield* outbox.succeed({ effectId: "effect:passive-live", workerId: "passive-worker" });
+      assert.isTrue(
+        Option.isNone(
+          yield* outbox.claimNext({ workerId: "passive-worker", leaseDurationMs: 30_000 }),
+        ),
+      );
+      assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt));
+      const reconciled = yield* outbox.reconcileAfterProcessLoss;
+      assert.equal(reconciled.requeued, 1);
+      const active = Option.getOrThrow(
+        yield* outbox.claimNext({ workerId: "restarted-worker", leaseDurationMs: 30_000 }),
+      );
+      assert.equal(active.id, marker);
+      assert.deepEqual(active.request, {
+        type: "provider-runtime.continue",
+        sourceRunId: RunId.make("run:passive"),
+        preparedForRestart: false,
+        continueWithoutPreference: true,
+      });
+      yield* outbox.succeed({ effectId: marker, workerId: "restarted-worker" });
+    }),
+  );
+
   it.effect("allows only one worker to claim an available effect", () =>
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -2043,6 +2337,292 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
         yield* outbox.succeed({ effectId: claimedByB.value.id, workerId: "worker-b" });
       }
     }),
+  );
+
+  it.effect("claims automatic boundary steers in receipt order instead of lexical run IDs", () =>
+    Effect.gen(function* () {
+      const f = yield* boundarySteerFixture("boundary-fifo-lexical");
+      assert.equal(Option.getOrThrow(yield* f.claim).id, f.first.id);
+      assert.isTrue(yield* f.succeed(f.first.id));
+      assert.equal(Option.getOrThrow(yield* f.claim).id, f.second.id);
+      assert.isTrue(yield* f.succeed(f.second.id));
+    }),
+  );
+
+  it.effect("holds automatic boundary steer successors behind a delayed predecessor retry", () =>
+    Effect.gen(function* () {
+      const f = yield* boundarySteerFixture("boundary-fifo-retry");
+      assert.equal(Option.getOrThrow(yield* f.claim).id, f.first.id);
+      assert.isTrue(
+        yield* f.outbox.retry({
+          effectId: f.first.id,
+          workerId: f.workerId,
+          error: "retry",
+          delayMs: 1000,
+        }),
+      );
+      assert.isTrue(Option.isNone(yield* f.claim));
+      assert.equal(
+        DateTime.toEpochMillis(Option.getOrThrow(yield* f.outbox.nextClaimableAt)),
+        DateTime.toEpochMillis(f.now) + 1000,
+      );
+      yield* TestClock.adjust("999 millis");
+      assert.isTrue(Option.isNone(yield* f.claim));
+      yield* TestClock.adjust("1 millis");
+      const retried = Option.getOrThrow(yield* f.claim);
+      assert.equal(retried.id, f.first.id);
+      assert.equal(retried.attemptCount, 2);
+      assert.isTrue(yield* f.succeed(f.first.id));
+      assert.equal(Option.getOrThrow(yield* f.claim).id, f.second.id);
+      assert.isTrue(yield* f.succeed(f.second.id));
+    }),
+  );
+
+  it.effect.each(["failed", "cancelled", "unknown-held"] as const)(
+    "keeps successors of a %s automatic boundary steer pending without a wake deadline",
+    (status) =>
+      Effect.gen(function* () {
+        const f = yield* boundarySteerFixture(`boundary-fifo-${status}`);
+        const first = Option.getOrThrow(yield* f.claim);
+        assert.equal(first.id, f.first.id);
+        if (status === "failed") {
+          assert.isTrue(
+            yield* f.outbox.fail({ effectId: first.id, workerId: f.workerId, error: "failed" }),
+          );
+        } else if (status === "cancelled") {
+          yield* f.sql`UPDATE orchestration_v2_effect_outbox SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL WHERE effect_id = ${first.id}`;
+        } else {
+          // V2 cancels process-bound steering on lost execution evidence; it cannot replay it.
+          assert.isTrue(Option.isNone(yield* f.claim));
+          yield* f.outbox.reconcileAfterProcessLoss;
+          yield* f.sql`UPDATE orchestration_v2_effect_outbox SET status = 'pending' WHERE effect_id = ${f.second.id}`;
+          assert.isFalse(yield* f.succeed(first.id));
+        }
+        assert.isTrue(Option.isNone(yield* f.claim));
+        assert.isTrue(Option.isNone(yield* f.outbox.nextClaimableAt));
+        assert.equal(Option.getOrThrow(yield* f.outbox.get(f.second.id)).status, "pending");
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
+  );
+
+  it.effect("orders automatic steers across distinct boundaries for the same provider turn", () =>
+    Effect.gen(function* () {
+      const f = yield* boundarySteerFixture("boundary-fifo-distinct-boundaries");
+      const nextCommand = CommandId.make(
+        "command:queue-tool-boundary:later-run:same-turn:later-boundary",
+      );
+      yield* f.receipts.upsert({
+        commandId: nextCommand,
+        threadId: f.threadId,
+        commandType: "queued-message.promote-to-steer",
+        acceptedAt: f.now,
+        resultSequence: 20,
+        status: "accepted",
+        error: null,
+      });
+      yield* f.sql`UPDATE orchestration_v2_effect_outbox SET command_id = ${nextCommand} WHERE effect_id = ${f.second.id}`;
+      assert.equal(Option.getOrThrow(yield* f.claim).id, f.first.id);
+      assert.isTrue(
+        yield* f.outbox.retry({
+          effectId: f.first.id,
+          workerId: f.workerId,
+          error: "earlier boundary retry",
+          delayMs: 1000,
+        }),
+      );
+      assert.isTrue(Option.isNone(yield* f.claim));
+      yield* TestClock.adjust("1 second");
+      assert.equal(Option.getOrThrow(yield* f.claim).id, f.first.id);
+      assert.isTrue(yield* f.succeed(f.first.id));
+      assert.equal(Option.getOrThrow(yield* f.claim).id, f.second.id);
+      assert.isTrue(yield* f.succeed(f.second.id));
+    }),
+  );
+
+  it.effect.each([
+    "candidate-missing",
+    "candidate-rejected",
+    "candidate-aggregate",
+    "candidate-kind",
+    "candidate-type",
+    "candidate-sequence",
+    "predecessor-missing",
+    "predecessor-rejected",
+    "predecessor-aggregate",
+    "predecessor-kind",
+    "predecessor-type",
+    "predecessor-sequence",
+    "equal-sequence",
+  ] as const)("fails closed for %s automatic steering receipt evidence", (condition) =>
+    Effect.gen(function* () {
+      const f = yield* boundarySteerFixture(`boundary-fifo-${condition}`);
+      const candidate = condition.startsWith("candidate-");
+      const commandId = candidate ? f.second.commandId : f.first.commandId;
+      if (candidate)
+        yield* f.sql`UPDATE orchestration_v2_effect_outbox SET status = 'succeeded' WHERE effect_id = ${f.first.id}`;
+      else if (condition !== "equal-sequence")
+        yield* f.sql`UPDATE orchestration_v2_effect_outbox SET status = 'failed' WHERE effect_id = ${f.first.id}`;
+      if (condition.endsWith("missing"))
+        yield* f.sql`DELETE FROM orchestration_command_receipts WHERE command_id = ${commandId}`;
+      else if (condition.endsWith("rejected"))
+        yield* f.sql`UPDATE orchestration_command_receipts SET status = 'rejected' WHERE command_id = ${commandId}`;
+      else if (condition.endsWith("aggregate"))
+        yield* f.sql`UPDATE orchestration_command_receipts SET aggregate_id = 'different-thread' WHERE command_id = ${commandId}`;
+      else if (condition.endsWith("kind"))
+        yield* f.sql`UPDATE orchestration_command_receipts SET aggregate_kind = 'project' WHERE command_id = ${commandId}`;
+      else if (condition.endsWith("type"))
+        yield* f.sql`UPDATE orchestration_command_receipts SET command_type = 'message.dispatch' WHERE command_id = ${commandId}`;
+      else if (condition === "equal-sequence")
+        yield* f.sql`UPDATE orchestration_command_receipts SET result_sequence = 9 WHERE command_id = ${f.second.commandId}`;
+      else
+        yield* f.sql`UPDATE orchestration_command_receipts SET result_sequence = 0 WHERE command_id = ${commandId}`;
+      assert.isTrue(Option.isNone(yield* f.claim));
+      assert.isTrue(Option.isNone(yield* f.outbox.nextClaimableAt));
+      assert.equal(Option.getOrThrow(yield* f.outbox.get(f.second.id)).status, "pending");
+    }),
+  );
+
+  it.effect(
+    "lets other threads, provider targets and control lanes progress behind failed automatic steering",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* boundarySteerFixture("boundary-fifo-independent");
+        assert.equal(Option.getOrThrow(yield* f.claim).id, f.first.id);
+        assert.isTrue(
+          yield* f.outbox.fail({ effectId: f.first.id, workerId: f.workerId, error: "failed" }),
+        );
+        const otherThreadId = ThreadId.make(`${f.threadId}:other`);
+        const otherCommand = CommandId.make("command:queue-tool-boundary:independent-thread");
+        yield* Effect.addFinalizer(() =>
+          f.sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* f.sql`DELETE FROM orchestration_v2_effect_outbox WHERE thread_id = ${otherThreadId}`;
+                yield* f.sql`DELETE FROM orchestration_command_receipts WHERE aggregate_kind = 'thread' AND aggregate_id = ${otherThreadId}`;
+              }),
+            )
+            .pipe(Effect.orDie),
+        );
+        yield* f.receipts.upsert({
+          commandId: otherCommand,
+          threadId: otherThreadId,
+          commandType: "queued-message.promote-to-steer",
+          acceptedAt: f.now,
+          resultSequence: 30,
+          status: "accepted",
+          error: null,
+        });
+        const independent = [
+          {
+            id: "effect:boundary-fifo-independent:a-other-thread",
+            commandId: otherCommand,
+            threadId: otherThreadId,
+            request: f.second.request,
+          },
+          {
+            id: "effect:boundary-fifo-independent:b-detach",
+            commandId: f.first.commandId,
+            threadId: f.threadId,
+            request: {
+              type: "provider-session.detach" as const,
+              providerSessionId: f.second.request.providerSessionId,
+            },
+          },
+          {
+            id: "effect:boundary-fifo-independent:c-cleanup",
+            commandId: f.first.commandId,
+            threadId: f.threadId,
+            request: { type: "terminal.cleanup" as const },
+          },
+          {
+            id: "effect:boundary-fifo-independent:d-manual",
+            commandId: CommandId.make("command:manual-steer"),
+            threadId: f.threadId,
+            request: f.second.request,
+          },
+          {
+            id: "effect:boundary-fifo-independent:e-title",
+            commandId: f.first.commandId,
+            threadId: f.threadId,
+            request: {
+              type: "thread-title.generate" as const,
+              kind: { type: "regenerate" as const },
+            },
+          },
+        ];
+        yield* f.outbox.enqueue(independent);
+        for (const expected of independent) {
+          assert.equal(Option.getOrThrow(yield* f.claim).id, expected.id);
+          assert.isTrue(yield* f.succeed(expected.id));
+        }
+        const changedCommand = CommandId.make("command:queue-tool-boundary:new-provider-target");
+        yield* f.receipts.upsert({
+          commandId: changedCommand,
+          threadId: f.threadId,
+          commandType: "queued-message.promote-to-steer",
+          acceptedAt: f.now,
+          resultSequence: 40,
+          status: "accepted",
+          error: null,
+        });
+        const newTarget = {
+          ...f.second,
+          id: "effect:boundary-fifo-independent:new-target",
+          commandId: changedCommand,
+          request: {
+            ...f.second.request,
+            providerTurnId: ProviderTurnId.make("new-provider-turn"),
+          },
+        };
+        yield* f.outbox.enqueue([newTarget]);
+        assert.equal(Option.getOrThrow(yield* f.claim).id, newTarget.id);
+        assert.isTrue(yield* f.succeed(newTarget.id));
+        assert.isTrue(Option.isNone(yield* f.claim));
+      }),
+  );
+
+  it.effect(
+    "uses the existing outbox thread status index for automatic steering predecessors in claims and deadlines",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* boundarySteerFixture("boundary-fifo-query-plan");
+        const queries: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+        const capture: Statement.Transformer = (statement) => {
+          const compiled = statement.compile();
+          if (compiled[0].includes("AS predecessor")) queries.push(compiled);
+          return Effect.succeed(statement);
+        };
+        yield* f.outbox.nextClaimableAt.pipe(
+          Effect.provideService(Statement.CurrentTransformer, capture),
+        );
+        assert.equal(
+          Option.getOrThrow(
+            yield* f.claim.pipe(Effect.provideService(Statement.CurrentTransformer, capture)),
+          ).id,
+          f.first.id,
+        );
+        assert.equal(queries.length, 2);
+        for (const [query, params] of queries) {
+          const plan = yield* f.sql.unsafe<{ detail: string }>(
+            `EXPLAIN QUERY PLAN ${query}`,
+            params,
+          );
+          const details = plan.map((row) => row.detail).join("\n");
+          assert.match(
+            details,
+            /SEARCH predecessor USING INDEX orchestration_v2_effect_outbox_thread_status_idx/,
+          );
+          assert.notMatch(details, /SCAN predecessor/);
+          yield* Effect.logInfo("Automatic steering predecessor query plan", {
+            statements: query.includes("UPDATE orchestration_v2_effect_outbox")
+              ? "claim"
+              : "deadline",
+            predecessor: plan
+              .filter((row) => row.detail.includes("predecessor"))
+              .map((row) => row.detail),
+          });
+        }
+        assert.isTrue(yield* f.succeed(f.first.id));
+      }),
   );
 
   it.effect("runs title generation beside critical work while serializing each lane", () =>
@@ -3380,4 +3960,82 @@ it.effect("publishes live events in commit order across concurrent writers", () 
       );
     }).pipe(Effect.provide(eventSinkLayer));
   }).pipe(Effect.provide(databaseLayer)),
+);
+
+it.effect.each([undefined, false, true] as const)(
+  "replays committed queue birth eligibility %s as a Boolean",
+  (eligibility) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const store = yield* EventStore.EventStoreV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const thread = makeThread(ThreadId.make(`thread:queue-boolean-${eligibility}`), now);
+      const run: OrchestrationV2Run = {
+        id: RunId.make(`run:queue-boolean-${eligibility}`),
+        threadId: thread.id,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("queue-boolean-message"),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "queued",
+        requestedAt: now,
+        startedAt: null,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: `queue-boolean-thread-${eligibility}`, thread, now }),
+          {
+            id: EventId.make(`queue-boolean-birth-${eligibility}`),
+            type: "run.created",
+            threadId: thread.id,
+            runId: run.id,
+            occurredAt: now,
+            payload: {
+              ...run,
+              ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+            },
+          },
+        ],
+      });
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`queue-boolean-stale-${eligibility}`),
+            type: "run.updated",
+            threadId: thread.id,
+            runId: run.id,
+            occurredAt: now,
+            payload: run,
+          },
+        ],
+      });
+      assert.strictEqual(
+        (yield* projections.getThreadProjection(thread.id)).runs[0]!.queuedToolBoundaryEligible,
+        eligibility,
+      );
+      const rows = yield* sql<{
+        kind: string | null;
+      }>`SELECT json_type(payload_json,'$.queuedToolBoundaryEligible') AS kind FROM orchestration_v2_projection_runs WHERE run_id=${run.id}`;
+      assert.strictEqual(
+        rows[0]!.kind,
+        eligibility === undefined ? null : eligibility ? "true" : "false",
+      );
+      const events = yield* store.read({ threadId: thread.id }).pipe(Stream.runCollect);
+      yield* Effect.gen(function* () {
+        const memory = yield* ProjectionStore.ProjectionStoreV2;
+        for (const event of events) yield* memory.apply(event.event);
+        assert.strictEqual(
+          (yield* memory.getThreadProjection(thread.id)).runs[0]!.queuedToolBoundaryEligible,
+          eligibility,
+        );
+      }).pipe(Effect.provide(ProjectionStore.layerMemory));
+    }).pipe(Effect.provide(TestLayer)),
 );

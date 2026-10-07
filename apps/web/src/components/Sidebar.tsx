@@ -102,6 +102,7 @@ import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
+  executeAtomQuery,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { isElectron } from "../env";
@@ -155,6 +156,8 @@ import {
 } from "../state/entities";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { threadEnvironment } from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
 import { useThreadSearch } from "../state/queries";
@@ -170,11 +173,17 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
-import { buildDraftActionMenuItems, buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import {
+  buildDraftActionMenuItems,
+  buildThreadActionMenuItems,
+  canStopThreadSession,
+} from "./threadActionMenu.logic";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
+  filterSidebarOperatingThreads,
+  isSidebarThreadOperating,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -2349,6 +2358,9 @@ export default function Sidebar() {
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -2598,6 +2610,20 @@ export default function Sidebar() {
           ),
     [scopedProjectGroup],
   );
+  const [activeOnly, setActiveOnly] = useState(false);
+  const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
+  const scopedThreads = useMemo(
+    () => filterSidebarV2VisibleThreads(threads, scopedProjectKeys),
+    [threads, scopedProjectKeys],
+  );
+  const activeThreadCount = useMemo(
+    () => scopedThreads.filter(isSidebarThreadOperating).length,
+    [scopedThreads],
+  );
+  const filteredThreads = useMemo(
+    () => filterSidebarOperatingThreads(scopedThreads, activeOnly, isSidebarThreadOperating),
+    [scopedThreads, activeOnly],
+  );
   // A persisted scope whose project is gone falls back to all projects, but
   // only after every catalog environment has a live project snapshot. Cached
   // or disconnected environments cannot establish that the project is gone.
@@ -2615,6 +2641,7 @@ export default function Sidebar() {
   // an open never-left draft, which only softens the empty state.
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
+    if (activeOnly) return 0;
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
       if (session.promotedTo != null) {
@@ -2633,11 +2660,11 @@ export default function Sidebar() {
     }
     return count;
   });
-  // Scope flips drop the selection: rows selected under the old scope may be
-  // hidden now, and bulk actions must never count or touch invisible rows.
+  // Scope or activity filter flips drop the selection: previously selected
+  // rows may be hidden, and bulk actions must never touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [activeOnly, clearSelection, projectScopeKey]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2706,7 +2733,7 @@ export default function Sidebar() {
     const preciseNow = new Date().toISOString();
     // Subagent child threads live in the parent's Agents surface, not the
     // sidebar roster (v2 models them as real threads with lineage).
-    const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
+    const visible = filteredThreads;
     inboxReturns.observe(workingShelfEnabled ? threads : null);
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
@@ -2807,9 +2834,9 @@ export default function Sidebar() {
       snoozeNow: preciseNow,
     };
   }, [
+    filteredThreads,
     nowMinute,
     optimisticDrop,
-    scopedProjectKeys,
     serverConfigs,
     snoozeWakeTick,
     threads,
@@ -4437,7 +4464,7 @@ export default function Sidebar() {
           null;
         // Un-settle pins the thread active until real activity clears the pin.
         // Environments without
-        // the settlement capability get no lifecycle items at all.
+        // the settlement capability get no settlement item.
         const supportsSettlement =
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSettlement ===
           true;
@@ -4451,6 +4478,17 @@ export default function Sidebar() {
         const supportsTitleRegeneration =
           serverConfigs.get(thread.environmentId)?.environment.capabilities
             .threadTitleRegeneration === true;
+        const projection = await executeAtomQuery(
+          appAtomRegistry,
+          orchestrationEnvironment.v2.threadProjection({
+            environmentId: threadRef.environmentId,
+            input: { threadId: threadRef.threadId },
+          }),
+          { refresh: true, reportFailure: false },
+        );
+        const canStopSession = canStopThreadSession(
+          projection._tag === "Success" ? projection.value.providerSessions : null,
+        );
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
@@ -4482,6 +4520,7 @@ export default function Sidebar() {
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
+              canStopSession,
               supports: {
                 settlement: supportsSettlement,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -4535,6 +4574,24 @@ export default function Sidebar() {
                 stackedThreadToast({
                   type: "error",
                   title: "Could not create thread",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          case "stop-thread": {
+            if (!canStopSession) return;
+            const result = await stopThreadSession({
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId },
+            });
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to stop thread",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
@@ -4702,6 +4759,7 @@ export default function Sidebar() {
       setProjectScopeKey,
       setThreadAutoSettle,
       startThreadRename,
+      stopThreadSession,
       updateThreadMetadata,
       timestampFormat,
     ],
@@ -4827,7 +4885,12 @@ export default function Sidebar() {
   return (
     <>
       <ThreadContextDragGhost />
-      <SidebarChromeHeader isElectron={isElectron} />
+      <SidebarChromeHeader
+        isElectron={isElectron}
+        activeThreadCount={activeThreadCount}
+        activeOnly={activeOnly}
+        onToggleActiveOnly={toggleActiveOnly}
+      />
       <SidebarContent
         className="min-h-full"
         fixedHeader={
@@ -5240,15 +5303,17 @@ export default function Sidebar() {
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
                       const items: ReactNode[] = [
-                        <SidebarDraftBlock
-                          key="draft-sessions"
-                          projectByKey={projectByKey}
-                          projectDisplayNameByKey={projectDisplayNameByKey}
-                          scopedProjectKeys={scopedProjectKeys}
-                          routeDraftId={routeDraftIdForRows}
-                          onNavigateToDraft={navigateToDraft}
-                          onDraftContextMenu={handleDraftContextMenu}
-                        />,
+                        !activeOnly ? (
+                          <SidebarDraftBlock
+                            key="draft-sessions"
+                            projectByKey={projectByKey}
+                            projectDisplayNameByKey={projectDisplayNameByKey}
+                            scopedProjectKeys={scopedProjectKeys}
+                            routeDraftId={routeDraftIdForRows}
+                            onNavigateToDraft={navigateToDraft}
+                            onDraftContextMenu={handleDraftContextMenu}
+                          />
+                        ) : null,
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {

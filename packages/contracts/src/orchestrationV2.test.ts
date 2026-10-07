@@ -14,6 +14,7 @@ import {
   NonNegativeInt,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   ProviderReplayTranscript,
   ProviderThreadId,
   RunId,
@@ -22,6 +23,9 @@ import {
   TurnItemId,
 } from "./index.ts";
 import {
+  OrchestrationV2AppThread,
+  OrchestrationV2Run,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointScope,
   OrchestrationV2Command,
@@ -90,6 +94,20 @@ const decodeOrchestrationV2SubscribeThreadInput = Schema.decodeUnknownSync(
 );
 
 describe("orchestration V2 contracts", () => {
+  it("keeps legacy receiving correlation out of public thread and run schemas", () => {
+    expect(Object.keys(OrchestrationV2AppThread.fields)).not.toContain("legacyBootstrapClaim");
+    for (const privateField of [
+      "legacyBootstrap",
+      "legacyPreparationFailureKnown",
+      "legacyPreparation",
+      "legacyReleaseDecision",
+      "workspaceRunSetupScript",
+    ]) {
+      expect(Object.keys(OrchestrationV2Run.fields)).not.toContain(privateField);
+    }
+    expect(OrchestrationV2Run.fields.workspacePreparation).toBeDefined();
+  });
+
   it("carries command failure metadata through runtime and JSON schemas without output text", () => {
     const base = {
       id: "command-item",
@@ -971,6 +989,32 @@ describe("orchestration V2 contracts", () => {
     expect(providerThread.pendingBackgroundTasks).toEqual([]);
     expect(providerThread.contextUsage).toBeNull();
     expect(providerThread.nativeMetadata).toBeNull();
+    expect(providerThread.runtimeIdentity).toBeUndefined();
+    const identity = {
+      runtimeGeneration: "native-query-7",
+      evidenceRevision: 3,
+      requested: {
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        providerDriver: ProviderDriverKind.make("claudeAgent"),
+        model: "requested",
+        serviceTier: null,
+      },
+      observed: {
+        backend: { status: "unavailable" as const, reason: "Not reported." },
+        model: {
+          status: "observed" as const,
+          value: "native-model",
+          sourceEvent: "claude.system:init",
+        },
+        account: { status: "unavailable" as const, reason: "Not bound." },
+        serviceTier: { status: "unavailable" as const, reason: "Not reported." },
+      },
+    };
+    expect(
+      decodeOrchestrationV2ProviderThreadJson(
+        encodeOrchestrationV2ProviderThreadJson({ ...providerThread, runtimeIdentity: identity }),
+      ).runtimeIdentity,
+    ).toEqual(identity);
 
     const runtimeThread = decodeOrchestrationV2ProviderThread({
       id: "provider-thread-2",
@@ -992,6 +1036,7 @@ describe("orchestration V2 contracts", () => {
     expect(runtimeThread.pendingBackgroundTasks).toEqual([]);
     expect(runtimeThread.contextUsage).toBeNull();
     expect(runtimeThread.nativeMetadata).toBeNull();
+    expect(runtimeThread.runtimeIdentity).toBeUndefined();
   });
 
   it("decodes historical thread shell JSON without pendingBackgroundTasks as empty roster", () => {
@@ -1035,6 +1080,11 @@ describe("orchestration V2 contracts", () => {
     });
 
     expect(shell.pendingBackgroundTasks).toEqual([]);
+    expect(shell.threadMessagesBlocked ?? false).toBe(false);
+    expect(
+      decodeOrchestrationV2ThreadShell({ ...shell, threadMessagesBlocked: true })
+        .threadMessagesBlocked,
+    ).toBe(true);
   });
 });
 
@@ -1246,5 +1296,48 @@ describe("limit recovery choice updates", () => {
     { autoResume: true, snooze: false },
   ])("accepts an explicit independent choice %j", (choice) => {
     expect(decode({ ...identity, ...choice })).toEqual({ ...identity, ...choice });
+  });
+});
+
+describe("queued tool delivery command compatibility", () => {
+  it("preserves absent, false and true eligibility without a decode default", () => {
+    const command = {
+      type: "message.dispatch",
+      commandId: "queue-compat",
+      threadId: "thread",
+      messageId: "message",
+      createdBy: "user",
+      creationSource: "web",
+      text: "Queue",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+    };
+    expect(decodeOrchestrationV2Command(command)).not.toHaveProperty("queuedToolBoundaryEligible");
+    for (const value of [false, true])
+      expect(
+        decodeOrchestrationV2Command({ ...command, queuedToolBoundaryEligible: value }),
+      ).toHaveProperty("queuedToolBoundaryEligible", value);
+    expect(() =>
+      decodeOrchestrationV2Command({ ...command, queuedToolBoundaryEligible: 1 }),
+    ).toThrow();
+  });
+});
+
+describe("worktree launch base", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchWorkspaceStrategy);
+
+  it("round-trips an omitted base for automatic server selection", () => {
+    const input = { type: "worktree", branch: "feature", startFromOrigin: true };
+    expect(Schema.encodeSync(OrchestrationV2ThreadLaunchWorkspaceStrategy)(decode(input))).toEqual(
+      input,
+    );
+  });
+
+  it("preserves explicit bases and rejects blank bases", () => {
+    expect(decode({ type: "worktree", baseRef: "release/stable" })).toEqual({
+      type: "worktree",
+      baseRef: "release/stable",
+    });
+    expect(() => decode({ type: "worktree", baseRef: " " })).toThrow();
   });
 });

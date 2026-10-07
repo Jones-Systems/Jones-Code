@@ -1616,6 +1616,106 @@ describe("OpenCodeAdapterV2", () => {
     }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 
+  it.effect.each(["text", "reasoning"] as const)(
+    "finalizes buffered %s before an active OpenCode event stream exits",
+    (kind) =>
+      Effect.gen(function* () {
+        const nativeSessionId = `native-opencode-buffered-exit-${kind}`;
+        const nativeEvents = asyncEventStream();
+        const harness = yield* makeOpenCodeRuntimeHarness(
+          `buffered-exit-${kind}`,
+          nativeSessionId,
+          {
+            event: {
+              subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
+                options.signal?.addEventListener("abort", () => nativeEvents.close(), {
+                  once: true,
+                });
+                return { stream: nativeEvents.stream };
+              },
+            },
+            session: {
+              create: async () => ({
+                data: { id: nativeSessionId, time: { created: 1, updated: 1 } },
+              }),
+              promptAsync: async () => ({ data: true }),
+            },
+          },
+        );
+        const events = yield* harness.runtime.events.pipe(Stream.runCollect, Effect.forkScoped);
+        yield* harness.startTurn();
+        yield* Effect.promise(() =>
+          nativeEvents.push({
+            type: "message.part.updated",
+            properties: {
+              part: {
+                id: "part-buffered-exit",
+                sessionID: nativeSessionId,
+                messageID: "message-buffered-exit",
+                type: kind,
+                text: "Answer preserved",
+                time: { start: DateTime.toEpochMillis(harness.now) },
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          nativeEvents.push({
+            type: "message.part.delta",
+            properties: {
+              sessionID: nativeSessionId,
+              messageID: "message-buffered-exit",
+              partID: "part-buffered-exit",
+              field: "text",
+              delta: " across provider exit.",
+            },
+          }),
+        );
+        nativeEvents.close();
+        const received = Array.from(yield* Fiber.join(events));
+        const itemType = kind === "text" ? "assistant_message" : "reasoning";
+        const items = received.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === itemType
+            ? [event.turnItem]
+            : [],
+        );
+        const first = items[0]!;
+        const last = items.at(-1)!;
+        assert.equal(first.status, "running");
+        assert.equal(last.status, "completed");
+        if (last.type !== "assistant_message" && last.type !== "reasoning") {
+          return assert.fail("Expected buffered text or reasoning item");
+        }
+        assert.equal(last.text, "Answer preserved across provider exit.");
+        assert.isFalse(last.streaming);
+        assert.equal(last.id, first.id);
+        assert.equal(last.providerTurnId, first.providerTurnId);
+        assert.equal(last.runId, harness.runId);
+        assert.lengthOf(
+          items.filter((item) => item.status === "completed"),
+          1,
+        );
+        const completionIndex = received.findIndex(
+          (event) => event.type === "turn_item.updated" && event.turnItem === last,
+        );
+        const terminalIndex = received.findIndex((event) => event.type === "turn.terminal");
+        assert.isTrue(completionIndex < terminalIndex);
+        const terminal = received[terminalIndex];
+        assert.equal(terminal?.type === "turn.terminal" ? terminal.status : undefined, "failed");
+        if (kind === "text") {
+          const message = received.findLast((event) => event.type === "message.updated");
+          assert.equal(
+            message?.type === "message.updated" ? message.message.text : undefined,
+            last.text,
+          );
+          assert.equal(
+            message?.type === "message.updated" ? message.message.streaming : undefined,
+            false,
+          );
+        }
+      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
   it.effect("fails an active turn when the OpenCode event stream ends cleanly", () =>
     Effect.gen(function* () {
       const nativeEvents = asyncEventStream();

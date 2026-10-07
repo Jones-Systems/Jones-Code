@@ -765,6 +765,15 @@ function modelSelectionByProviderToOptions(
   return Object.keys(result).length > 0 ? result : null;
 }
 
+function modelOptionsForSelection(
+  selection: ModelSelection | null | undefined,
+  model: string,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  return selection?.model === model
+    ? selection.options
+    : selection?.options?.filter((option) => option.id !== "reasoningEffort");
+}
+
 function cloneModelSelection(selection: ModelSelection): DeepMutable<ModelSelection> {
   return {
     ...selection,
@@ -1323,11 +1332,31 @@ export function deriveEffectiveComposerModelState(input: {
         activeSelection.model,
       ))
     : baseModel;
-  const modelOptions =
-    modelSelectionByProviderToOptions(input.draft?.modelSelectionByProvider) ??
-    providerSelectionsFromModelSelection(input.threadModelSelection) ??
-    providerSelectionsFromModelSelection(input.projectModelSelection) ??
-    null;
+  const fallbackSelection = input.threadModelSelection ?? input.projectModelSelection;
+  const selectionsForOptions = activeSelection
+    ? {
+        ...input.draft?.modelSelectionByProvider,
+        [activeSelection.instanceId]: createModelSelection(
+          activeSelection.instanceId,
+          selectedModel,
+          modelOptionsForSelection(activeSelection, selectedModel),
+        ),
+      }
+    : input.draft?.modelSelectionByProvider;
+  // An optionless draft is an inherited selection, so do not restore the
+  // previous thread/project effort. Catalog fallback also changes its owner.
+  const modelOptions = activeSelection
+    ? modelSelectionByProviderToOptions(selectionsForOptions)
+    : (modelSelectionByProviderToOptions(selectionsForOptions) ??
+      providerSelectionsFromModelSelection(
+        fallbackSelection
+          ? createModelSelection(
+              fallbackSelection.instanceId,
+              selectedModel,
+              modelOptionsForSelection(fallbackSelection, selectedModel),
+            )
+          : null,
+      ));
 
   return {
     selectedModel,
@@ -3021,13 +3050,17 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             const current = state.stickyModelSelectionByProvider[normalized.instanceId];
-            // Model-only picker updates omit options (same contract as
-            // setModelSelection). Keep the last sticky traits so Fast/Normal
-            // survives Composer 2 → 2.5 and new chats.
+            // Model-only picker updates inherit effort for a new model while
+            // preserving instance-wide speed settings, including Fast/Normal
+            // across Composer 2 → 2.5 and new chats.
             const nextSelection =
               normalized.options !== undefined
                 ? normalized
-                : createModelSelection(normalized.instanceId, normalized.model, current?.options);
+                : createModelSelection(
+                    normalized.instanceId,
+                    normalized.model,
+                    modelOptionsForSelection(current, normalized.model),
+                  );
             const nextMap: Partial<Record<ProviderInstanceId, ModelSelection>> = {
               ...state.stickyModelSelectionByProvider,
               [normalized.instanceId]: nextSelection,
@@ -3152,11 +3185,12 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 // selection as-is.
                 nextMap[normalized.instanceId] = normalized as ModelSelection;
               } else {
-                // No options in selection → preserve existing options, update provider+model
+                // A model change inherits its live effort default; repeating
+                // the same model keeps its explicit effort and other traits.
                 nextMap[normalized.instanceId] = createModelSelection(
                   normalized.instanceId,
                   normalized.model,
-                  current?.options,
+                  modelOptionsForSelection(current, normalized.model),
                 );
               }
             }

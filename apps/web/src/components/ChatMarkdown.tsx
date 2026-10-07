@@ -759,7 +759,7 @@ function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
   const [expanded, setExpanded] = useState(readInitialWordWrapSetting);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const expandLabel = expanded ? "Collapse table cells" : "Expand table cells";
+  const expandLabel = expanded ? "Collapse table" : "Expand table";
   const copyLabel = copied ? "Copied" : "Copy table";
 
   function toggleExpanded() {
@@ -828,7 +828,13 @@ function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
       className="chat-markdown-table-container"
       data-expanded={expanded ? "true" : "false"}
     >
-      <ScrollArea radius="none" chainVerticalScroll scrollFade className="w-full max-w-full">
+      <ScrollArea
+        radius="none"
+        chainVerticalScroll
+        scrollFade
+        className="w-full max-w-full"
+        data-markdown-table-scroll="true"
+      >
         <table ref={tableRef} {...props}>
           {children}
         </table>

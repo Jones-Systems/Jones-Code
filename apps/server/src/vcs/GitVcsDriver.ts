@@ -12,6 +12,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   GitCommandError,
+  VcsPrimaryCheckoutCheckpointError,
   VcsProcessExitError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
@@ -148,7 +149,66 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export interface LegacyWorktreeBeforeObservation {
+  readonly parentPath: string;
+  readonly parentRealPath: string;
+  readonly parentDevice: string;
+  readonly parentInode: string;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
+  readonly targetRefAbsent: true;
+  readonly registrationAbsent: true;
+}
+
+export interface LegacyWorktreeMaterialClaim {
+  readonly path: string;
+  readonly realPath: string;
+  readonly device: string;
+  readonly inode: string;
+  readonly parentRealPath: string;
+  readonly gitDirectory: string;
+  readonly commonDirectory: string;
+  readonly registeredPath: string;
+  readonly headRef: string;
+  readonly headOid: string;
+  readonly parentDevice?: string | undefined;
+  readonly parentInode?: string | undefined;
+  readonly dotGitDevice?: string | undefined;
+  readonly dotGitInode?: string | undefined;
+  readonly gitDirectoryDevice?: string | undefined;
+  readonly gitDirectoryInode?: string | undefined;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
+}
+
+export interface LegacyWorktreePreparationStep {
+  readonly kind: "worktree.add" | "worktree.submodules" | "worktree.base-config";
+  readonly cwd: string;
+  readonly args: ReadonlyArray<string>;
+  readonly worktreePath: string;
+  readonly commonDirectory: string;
+  readonly baseCommitOid: string;
+  readonly targetRef: string;
+  readonly before?: LegacyWorktreeBeforeObservation;
+}
+
+export interface LegacyWorktreePreparationHooks {
+  /** Affirmative owner refusal after exact intent readback and before invocation. */
+  readonly neverInvoked?: (
+    step: LegacyWorktreePreparationStep,
+    reason: "input_validation_failed",
+  ) => Effect.Effect<void, Error>;
+  readonly beforeEffect: (step: LegacyWorktreePreparationStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyWorktreePreparationStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface CreateWorktreeOptions {
+  /** Private legacy journaling; independent of the producer's physical mutation guard. */
+  readonly legacyPreparation?: LegacyWorktreePreparationHooks;
   readonly progress?: CreateWorktreeProgress;
   /**
    * The project-over-environment `worktreeSubmodules` setting. Null (or
@@ -195,7 +255,29 @@ export interface GitRangeContext {
   diffPatch: string;
 }
 
+export interface LegacyBranchRenameStep {
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly oldRef: string;
+  readonly oldOid: string;
+  readonly targetRef: string;
+  readonly exactName: boolean;
+  readonly args: ReadonlyArray<string>;
+}
+
+export interface LegacyBranchRenameHooks {
+  readonly before: LegacyWorktreeBeforeObservation;
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly beforeEffect: (step: LegacyBranchRenameStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyBranchRenameStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface GitRenameBranchInput {
+  /** Exact private preparation journal, independent of current physical admission. */
+  readonly legacyPreparation?: LegacyBranchRenameHooks;
   /** Fail on a name collision instead of appending a numeric suffix. */
   exactName?: boolean;
   cwd: string;
@@ -288,6 +370,12 @@ export interface GitResolveRemoteTrackingCommitResult {
   remoteRefName: string;
 }
 
+export interface GitResolveRemoteTrackingCommitIfExistsInput {
+  readonly cwd: string;
+  readonly remoteName: string;
+  readonly branchName: string;
+}
+
 export interface GitSetBranchUpstreamInput {
   cwd: string;
   branch: string;
@@ -378,6 +466,9 @@ export class GitVcsDriver extends Context.Service<
     readonly resolveRemoteTrackingCommit: (
       input: GitResolveRemoteTrackingCommitInput,
     ) => Effect.Effect<GitResolveRemoteTrackingCommitResult, GitCommandError>;
+    readonly resolveRemoteTrackingCommitIfExists: (
+      input: GitResolveRemoteTrackingCommitIfExistsInput,
+    ) => Effect.Effect<GitResolveRemoteTrackingCommitResult | null, GitCommandError>;
     readonly fetchRemoteBranch: (
       input: GitFetchRemoteBranchInput,
     ) => Effect.Effect<void, GitCommandError>;
@@ -786,6 +877,17 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
     });
 
+  const resolveGitDir = (cwd: string) =>
+    Effect.gen(function* () {
+      const result = yield* execute({
+        operation: "GitVcsDriver.checkpoints.resolveGitDir",
+        cwd,
+        args: ["rev-parse", "--git-dir"],
+      });
+      const gitDir = result.stdout.trim();
+      return path.isAbsolute(gitDir) ? gitDir : path.resolve(cwd, gitDir);
+    });
+
   // Git renames loose objects and refs into place without fsync by default, so
   // an unclean restart can leave 0-byte files under refs/t3/** that break every
   // later fetch and push. Checkpoint writes flush before they are published;
@@ -807,6 +909,13 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "sparse.expectFilesOutsideOfPatterns=false",
       ];
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
+      const gitDir = yield* resolveGitDir(input.cwd);
+      if (path.normalize(gitDir) === path.normalize(gitCommonDir)) {
+        return yield* new VcsPrimaryCheckoutCheckpointError({
+          operation,
+          cwd: input.cwd,
+        });
+      }
       const tempIndexPath = path.join(
         gitCommonDir,
         `t3-checkpoint-index-${NodeCrypto.randomUUID()}`,

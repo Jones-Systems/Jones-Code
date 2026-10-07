@@ -49,6 +49,7 @@ import {
   matchesScheduledTaskScope,
   scheduledTaskDefaultModel,
   taskToDraft,
+  worktreeStrategyFromDraft,
   type DraftState,
   type WorkspaceMode,
 } from "./scheduledTasksSettings.logic";
@@ -590,11 +591,7 @@ function ScheduledTaskEditorDialog({
         ? { type: "root" }
         : draft.workspaceMode === "existing_worktree"
           ? { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() }
-          : {
-              type: "worktree",
-              baseRef: draft.baseRef.trim() || "main",
-              startFromOrigin: draft.startFromOrigin,
-            };
+          : worktreeStrategyFromDraft(draft);
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),

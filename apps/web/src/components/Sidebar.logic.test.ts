@@ -14,6 +14,8 @@ import {
   createThreadJumpHintVisibilityController,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
+  filterSidebarOperatingThreads,
+  isSidebarThreadOperating,
   filterSidebarV2VisibleThreads,
   formatWorkingDurationLabel,
   getFallbackThreadIdAfterDelete,
@@ -73,6 +75,146 @@ import {
 import { makeThreadFixture, type ThreadFixtureOverrides } from "../test-fixtures";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("filterSidebarOperatingThreads", () => {
+  const runtime = {
+    status: "running" as const,
+    activeRunId: RunId.make("run-operating"),
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: "Codex",
+    lastError: null,
+    updatedAt: "2026-10-02T12:00:00Z",
+  };
+  const thread = (id: string, overrides: ThreadFixtureOverrides = {}) =>
+    makeThreadFixture({ id: ThreadId.make(id), ...overrides });
+  const tasks = [{ taskId: "monitor", kind: "monitor" as const }];
+  const threads = [
+    thread("pinned", { runtime, pinnedAt: "2026-10-02T12:00:00Z" }),
+    thread("idle"),
+    thread("settled-background", { settledOverride: "settled", pendingBackgroundTasks: tasks }),
+    thread("snoozed-monitor", {
+      snoozedUntil: "2099-01-01T00:00:00Z",
+      pendingBackgroundTasks: tasks,
+    }),
+    thread("approval", { runtime, hasPendingApprovals: true }),
+    thread("approval-with-fleet", { hasPendingApprovals: true, pendingBackgroundTasks: tasks }),
+    thread("archived-running", { archivedAt: "2026-10-02T12:00:00Z", runtime }),
+  ];
+
+  it("keeps operating rows in original order across shelves and foreground waits", () => {
+    expect(
+      filterSidebarOperatingThreads(threads, true, isSidebarThreadOperating).map((item) => item.id),
+    ).toEqual(["pinned", "settled-background", "snoozed-monitor", "approval-with-fleet"]);
+  });
+
+  it("restores the unchanged collection when the filter is cleared", () => {
+    expect(filterSidebarOperatingThreads(threads, false, isSidebarThreadOperating)).toBe(threads);
+    expect(threads).toHaveLength(7);
+  });
+
+  it("has no rows when none of the threads are operating", () => {
+    expect(
+      filterSidebarOperatingThreads([threads[1]!, threads[4]!], true, isSidebarThreadOperating),
+    ).toEqual([]);
+  });
+
+  it.each(["preparing", "queued", "starting", "running", "waiting"] as const)(
+    "uses V2 foreground activity status %s",
+    (status) =>
+      expect(
+        isSidebarThreadOperating(thread("foreground", { runtime: { ...runtime, status } })),
+      ).toBe(true),
+  );
+
+  it.each(["completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"] as const)(
+    "does not count inactive runtime status %s without background work",
+    (status) =>
+      expect(
+        isSidebarThreadOperating(thread("inactive", { runtime: { ...runtime, status } })),
+      ).toBe(false),
+  );
+
+  it.each(["command", "monitor", "subagent", "background_task"] as const)(
+    "retains independent %s work during foreground waits",
+    (kind) => {
+      for (const wait of [
+        { hasPendingApprovals: true },
+        { hasPendingUserInput: true },
+        {
+          interactionMode: "plan" as const,
+          hasActionableProposedPlan: true,
+          latestRun: makeLatestRun(),
+        },
+      ]) {
+        const blocked = thread("blocked", { runtime: { ...runtime, activeRunId: null }, ...wait });
+        expect(isSidebarThreadOperating(blocked)).toBe(false);
+        expect(
+          isSidebarThreadOperating({
+            ...blocked,
+            pendingBackgroundTasks: [{ taskId: "bg", kind }],
+          }),
+        ).toBe(true);
+      }
+    },
+  );
+
+  it("drops stopped work and restores the idle row when the filter is cleared", () => {
+    const stopped = thread("pinned", {
+      runtime: { ...runtime, status: "interrupted", activeRunId: null },
+    });
+    const stoppedThreads = [stopped, threads[1]!];
+    expect(stoppedThreads.filter(isSidebarThreadOperating)).toHaveLength(0);
+    expect(filterSidebarOperatingThreads(stoppedThreads, true, isSidebarThreadOperating)).toEqual(
+      [],
+    );
+    expect(filterSidebarOperatingThreads(stoppedThreads, false, isSidebarThreadOperating)).toBe(
+      stoppedThreads,
+    );
+  });
+
+  it("removes an archived thread even when background work remains", () => {
+    const background = thread("background", { pendingBackgroundTasks: tasks });
+    expect(isSidebarThreadOperating(background)).toBe(true);
+    expect(isSidebarThreadOperating({ ...background, archivedAt: "2026-10-02T12:00:00Z" })).toBe(
+      false,
+    );
+  });
+
+  it("stops counting background work when its projected roster clears", () => {
+    const background = thread("background", { pendingBackgroundTasks: tasks });
+    expect(isSidebarThreadOperating(background)).toBe(true);
+    const finished = { ...background, pendingBackgroundTasks: [] };
+    expect(isSidebarThreadOperating(finished)).toBe(false);
+    expect(filterSidebarOperatingThreads([finished], true, isSidebarThreadOperating)).toEqual([]);
+    expect(filterSidebarOperatingThreads([finished], false, isSidebarThreadOperating)).toEqual([
+      finished,
+    ]);
+  });
+
+  it("counts only visible scoped parent threads before search narrows the rows", () => {
+    const running = thread("parent", { runtime, title: "Other task" });
+    const match = thread("match", { runtime, title: "Needle" });
+    const child = thread("child", {
+      runtime,
+      lineage: {
+        rootThreadId: running.id,
+        parentThreadId: running.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const archived = thread("archived", { runtime, archivedAt: "2026-10-02T12:00:00Z" });
+    const elsewhere = thread("elsewhere", { runtime, projectId: ProjectId.make("other-project") });
+    const visible = filterSidebarV2VisibleThreads(
+      [running, child, match, archived, elsewhere],
+      new Set([`${running.environmentId}:${running.projectId}`]),
+    );
+    const active = filterSidebarOperatingThreads(visible, true, isSidebarThreadOperating);
+    expect(visible.filter(isSidebarThreadOperating)).toHaveLength(2);
+    expect(active.map((item) => item.id)).toEqual(["parent", "match"]);
+    expect(searchSidebarThreads(active, "Needle").map((item) => item.id)).toEqual(["match"]);
+    expect(visible.filter(isSidebarThreadOperating)).toHaveLength(2);
+  });
+});
 
 describe("resolveSidebarRowAccessibility", () => {
   it.each([
