@@ -22,6 +22,10 @@
     "./relay": {
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
+    },
+    "./jones/organizationMetadata": {
+      "types": "./src/jones/organizationMetadata.ts",
+      "import": "./src/jones/organizationMetadata.ts"
     }
   },
   "scripts": {

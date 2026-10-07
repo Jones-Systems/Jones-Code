@@ -12,6 +12,7 @@ describe("Jones environment HTTP registration", () => {
       "queueDispatch",
       "voiceReview",
       "hostStatus",
+      "workQueueMetadata",
       "metadata",
       "auth",
       "orchestration",
@@ -28,6 +29,7 @@ describe("Jones environment HTTP registration", () => {
     const routes = [
       ...Object.values(groups.voiceReview.endpoints),
       ...Object.values(groups.hostStatus.endpoints),
+      ...Object.values(groups.workQueueMetadata.endpoints),
       ...Object.values(groups.conversationLibrary.endpoints),
       ...Object.values(groups.workstreams.endpoints),
     ];
@@ -49,6 +51,7 @@ describe("Jones environment HTTP registration", () => {
       ["sendNow", "POST", "/api/voice-review/drafts/:id/send-now"],
       ["delete", "POST", "/api/voice-review/drafts/:id/delete"],
       ["snapshot", "GET", "/api/host-status"],
+      ["snapshot", "GET", "/api/work-queue/metadata"],
       ["conversationLibrary", "POST", "/api/conversation-library"],
       ["appearanceRead", "POST", "/api/workstreams/appearance/read"],
       ["appearanceSave", "POST", "/api/workstreams/appearance/write"],

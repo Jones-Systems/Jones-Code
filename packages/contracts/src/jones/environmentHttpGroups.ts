@@ -1,3 +1,4 @@
+import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
 import {
   VoiceReviewRecentList,
   VoiceReviewDiagnostics,
@@ -313,7 +314,16 @@ export const makeJonesHttpGroups = ({
       }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
+  class EnvironmentWorkQueueMetadataHttpApi extends HttpApiGroup.make("workQueueMetadata").add(
+    HttpApiEndpoint.get("snapshot", "/api/work-queue/metadata", {
+      headers: OptionalBearerHeaders,
+      success: WorkQueueMetadataResult,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
   return {
+    EnvironmentWorkQueueMetadataHttpApi,
     EnvironmentVoiceReviewHttpApi,
     EnvironmentHostStatusHttpApi,
     EnvironmentConversationLibraryHttpApi,
