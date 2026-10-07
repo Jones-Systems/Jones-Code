@@ -102,14 +102,20 @@ declare const originalContext: unique symbol;
 
 // These callbacks run against the pinned historical V1 source, never the host V2 services.
 export interface HistoricalFixtureEngine {
-  readonly dispatch: (command: unknown, options?: unknown) => Effect.Effect<{ sequence: number }, unknown>;
+  readonly dispatch: (
+    command: unknown,
+    options?: unknown,
+  ) => Effect.Effect<{ sequence: number }, unknown>;
   readonly latestSequence: Effect.Effect<number>;
 }
 
 export interface HistoricalFixtureSnapshotQuery {
   readonly getSnapshot: () => Effect.Effect<unknown, unknown>;
   readonly getThreadDetailById: (threadId: string) => Effect.Effect<unknown, unknown>;
-  readonly getThreadDetailSnapshot: (threadId: string, options?: unknown) => Effect.Effect<unknown, unknown>;
+  readonly getThreadDetailSnapshot: (
+    threadId: string,
+    options?: unknown,
+  ) => Effect.Effect<unknown, unknown>;
 }
 
 export interface SyntheticFixtureContext {
@@ -231,7 +237,12 @@ export interface SyntheticFixtureCapture {
   readonly foreignKeys: { readonly violations: number; readonly sha256: string };
 }
 
-import type { CurrentFixtureOptions, CurrentFixtureContext, CurrentFixtureCapture, CurrentFixtureReceipt } from "../../../apps/server/scripts/jones/currentFixtures.ts";
+import type {
+  CurrentFixtureOptions,
+  CurrentFixtureContext,
+  CurrentFixtureCapture,
+  CurrentFixtureReceipt,
+} from "../../../apps/server/scripts/jones/currentFixtures.ts";
 export type SyntheticFixtureOptions = HistoricalSyntheticFixtureOptions | CurrentFixtureOptions;
 export type FixtureReceipt = SyntheticFixtureReceipt | CurrentFixtureReceipt;
 export type FixtureCapture = SyntheticFixtureCapture | CurrentFixtureCapture;

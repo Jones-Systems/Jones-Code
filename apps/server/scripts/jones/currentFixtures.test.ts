@@ -8,34 +8,84 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { produceCurrentFixture } from "./currentFixtures.ts";
 import type { CurrentFixtureOptions, CurrentProductionResult } from "./currentFixtures.ts";
-import { disposeOwnedRoot, validateSyntheticFixture, syntheticFixtureReceiptSha256 } from "../../../../scripts/jones/performance/guard.mjs";
-import { fixtureCustodyReceipt, withClosedSyntheticFixture } from "../../../../scripts/jones/performance/fixtures.mjs";
+import {
+  disposeOwnedRoot,
+  validateSyntheticFixture,
+  syntheticFixtureReceiptSha256,
+} from "../../../../scripts/jones/performance/guard.mjs";
+import {
+  fixtureCustodyReceipt,
+  withClosedSyntheticFixture,
+} from "../../../../scripts/jones/performance/fixtures.mjs";
 import { currentDatabaseSource } from "../../../../scripts/jones/performance/sources.mjs";
 
 const worktree = FS.realpathSync(Path.resolve(import.meta.dirname, "../../../.."));
-async function invocation<A>(use: (options: CurrentFixtureOptions, observe: (result: CurrentProductionResult<unknown>) => void) => Promise<A>) {
+async function invocation<A>(
+  use: (
+    options: CurrentFixtureOptions,
+    observe: (result: CurrentProductionResult<unknown>) => void,
+  ) => Promise<A>,
+) {
   const source = currentDatabaseSource(worktree);
   const parent = FS.mkdtempSync(Path.join(Path.dirname(worktree), ".current-fixture-test-"));
   const identity = FS.lstatSync(parent);
   let unknown = false;
   const results: CurrentProductionResult<unknown>[] = [];
   const options: CurrentFixtureOptions = {
-    parentPath: parent, childName: "fixture", producer: "current-v2", databaseSource: source,
-    binding: { repository: source.repository, sourceRevision: source.sourceRevision, taskRef: "jones-salvage-fixtures", runId: Crypto.randomUUID() },
-    policy: { homePath: parent, worktreePaths: [worktree], protectedPaths: [], maxFiles: 32, maxFileBytes: 32 * 1024 * 1024, maxTotalBytes: 64 * 1024 * 1024, maxReceiptBytes: 24 * 1024 },
+    parentPath: parent,
+    childName: "fixture",
+    producer: "current-v2",
+    databaseSource: source,
+    binding: {
+      repository: source.repository,
+      sourceRevision: source.sourceRevision,
+      taskRef: "jones-salvage-fixtures",
+      runId: Crypto.randomUUID(),
+    },
+    policy: {
+      homePath: parent,
+      worktreePaths: [worktree],
+      protectedPaths: [],
+      maxFiles: 32,
+      maxFileBytes: 32 * 1024 * 1024,
+      maxTotalBytes: 64 * 1024 * 1024,
+      maxReceiptBytes: 24 * 1024,
+    },
   };
-  try { return await use(options, (result) => results.push(result)); }
-  catch (error) {
-    const evidence = (error as { evidence?: { cleanup?: { outcome?: string }; childReceipt?: { closed: boolean; reaped: boolean; outcome: string }; receipt?: { closure?: { completed: boolean } } } }).evidence;
-    if (evidence?.cleanup?.outcome === "retained" && (!evidence.childReceipt?.closed || !evidence.childReceipt.reaped || evidence.childReceipt.outcome === "unknown" || !evidence.receipt?.closure?.completed)) unknown = true;
+  try {
+    return await use(options, (result) => results.push(result));
+  } catch (error) {
+    const evidence = (
+      error as {
+        evidence?: {
+          cleanup?: { outcome?: string };
+          childReceipt?: { closed: boolean; reaped: boolean; outcome: string };
+          receipt?: { closure?: { completed: boolean } };
+        };
+      }
+    ).evidence;
+    if (
+      evidence?.cleanup?.outcome === "retained" &&
+      (!evidence.childReceipt?.closed ||
+        !evidence.childReceipt.reaped ||
+        evidence.childReceipt.outcome === "unknown" ||
+        !evidence.receipt?.closure?.completed)
+    )
+      unknown = true;
     throw error;
-  }
-  finally {
+  } finally {
     for (const result of results) {
-      if (!result.closeKnown || disposeOwnedRoot(result.owner).outcome !== "complete") unknown = true;
+      if (!result.closeKnown || disposeOwnedRoot(result.owner).outcome !== "complete")
+        unknown = true;
     }
     const current = FS.lstatSync(parent);
-    if (!unknown && current.dev === identity.dev && current.ino === identity.ino && !current.isSymbolicLink()) FS.rmSync(parent, { recursive: true });
+    if (
+      !unknown &&
+      current.dev === identity.dev &&
+      current.ino === identity.ino &&
+      !current.isSymbolicLink()
+    )
+      FS.rmSync(parent, { recursive: true });
     else console.error(`fixture test scratch retained: ${parent}`);
   }
 }
@@ -66,23 +116,48 @@ describe("receiving V2 synthetic fixtures", () => {
         Assert.equal(result.capture?.runtime.pragmas.journal_size_limit, 32 * 1024 * 1024);
         Assert.ok(result.receipt);
         const custody = fixtureCustodyReceipt(result.receipt);
-        const validated = await validateSyntheticFixture({ receipt: custody, expectedReceiptSha256: syntheticFixtureReceiptSha256(custody), expectedBinding: options.binding, policy: options.policy });
+        const validated = await validateSyntheticFixture({
+          receipt: custody,
+          expectedReceiptSha256: syntheticFixtureReceiptSha256(custody),
+          expectedBinding: options.binding,
+          policy: options.policy,
+        });
         const header = FS.readFileSync(validated.canonicalPath).subarray(0, 100);
         Assert.equal(header[18], profile === "health-offline-delete" ? 1 : 2);
         Assert.equal(header[19], profile === "health-offline-delete" ? 1 : 2);
         if (profile === "health-offline-delete") {
-          Assert.deepEqual(result.capture?.profile.maintenance?.sidecars, { wal: false, shm: false, journal: false });
+          Assert.deepEqual(result.capture?.profile.maintenance?.sidecars, {
+            wal: false,
+            shm: false,
+            journal: false,
+          });
           const db = new Sqlite.DatabaseSync(validated.canonicalPath, { readOnly: true });
-          try { Assert.deepEqual(db.prepare("PRAGMA integrity_check").all().map((row) => Object.values(row)[0]), ["ok"]); }
-          finally { db.close(); }
+          try {
+            Assert.deepEqual(
+              db
+                .prepare("PRAGMA integrity_check")
+                .all()
+                .map((row) => Object.values(row)[0]),
+              ["ok"],
+            );
+          } finally {
+            db.close();
+          }
         }
       });
     });
   }
   it("oversized recipes refuse before allocating a fixture root", async () => {
     await invocation(async (options) => {
-      for (const recipe of [{ historyTurns: 257 }, { threads: 17 }, { threads: 16, historyTurns: 256, payloadBytes: 65536 }]) {
-        await Assert.rejects(produceCurrentFixture({ ...options, recipe }, () => undefined), { code: "invalid_recipe" });
+      for (const recipe of [
+        { historyTurns: 257 },
+        { threads: 17 },
+        { threads: 16, historyTurns: 256, payloadBytes: 65536 },
+      ]) {
+        await Assert.rejects(
+          produceCurrentFixture({ ...options, recipe }, () => undefined),
+          { code: "invalid_recipe" },
+        );
         Assert.equal(FS.existsSync(Path.join(options.parentPath, options.childName)), false);
       }
     });
@@ -90,7 +165,9 @@ describe("receiving V2 synthetic fixtures", () => {
   it("callback failure closes the database and preserves the original error", async () => {
     await invocation(async (options, observe) => {
       const original = new Error("deliberate synthetic callback failure");
-      const result = await produceCurrentFixture(options, () => { throw original; });
+      const result = await produceCurrentFixture(options, () => {
+        throw original;
+      });
       observe(result);
       Assert.equal(result.error, original);
       Assert.equal(result.closeKnown, true);
@@ -100,10 +177,18 @@ describe("receiving V2 synthetic fixtures", () => {
   it("cancellation closes acquired resources before cleanup", async () => {
     await invocation(async (options, observe) => {
       const cancellation = new AbortController();
-      const result = await produceCurrentFixture({ ...options, signal: cancellation.signal }, async (context) => {
-        cancellation.abort();
-        await context.run(Effect.gen(function* () { const sql = yield* SqlClient.SqlClient; return yield* sql`SELECT 1`; }));
-      });
+      const result = await produceCurrentFixture(
+        { ...options, signal: cancellation.signal },
+        async (context) => {
+          cancellation.abort();
+          await context.run(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              return yield* sql`SELECT 1`;
+            }),
+          );
+        },
+      );
       observe(result);
       Assert.ok(result.error);
       Assert.equal(result.closeKnown, true);
@@ -113,9 +198,18 @@ describe("receiving V2 synthetic fixtures", () => {
     await invocation(async (options) => {
       await Assert.rejects(
         // @ts-expect-error A raw diagnostic report cannot acknowledge fixture release.
-        withClosedSyntheticFixture(options, () => ({ schema: "jones.sqlite-health/v1", outcome: "passed" })),
+        withClosedSyntheticFixture(options, () => ({
+          schema: "jones.sqlite-health/v1",
+          outcome: "passed",
+        })),
         (error: unknown) => {
-          const failure = error as { code?: string; evidence?: { cleanup?: { outcome?: string; reason?: string }; childReceipt?: { closed: boolean; reaped: boolean } } };
+          const failure = error as {
+            code?: string;
+            evidence?: {
+              cleanup?: { outcome?: string; reason?: string };
+              childReceipt?: { closed: boolean; reaped: boolean };
+            };
+          };
           Assert.equal(failure.code, "invalid_consumer_outcome");
           Assert.equal(failure.evidence?.cleanup?.outcome, "retained");
           Assert.equal(failure.evidence?.cleanup?.reason, "invalid_consumer_outcome");
@@ -132,7 +226,12 @@ describe("receiving V2 synthetic fixtures", () => {
         Assert.equal(context.childReceipt.closed, true);
         Assert.equal(context.childReceipt.reaped, true);
         Assert.equal(context.receipt.schema, "jones-performance-fixture/v2");
-        return { schema: "jones-performance-fixture-consumer/v1", fixtureReceiptSha256: context.receiptSha256, disposition: "release", value: context.capture.integrity.ok };
+        return {
+          schema: "jones-performance-fixture-consumer/v1",
+          fixtureReceiptSha256: context.receiptSha256,
+          disposition: "release",
+          value: context.capture.integrity.ok,
+        };
       });
       Assert.equal(result.value, true);
       Assert.equal(result.cleanup.outcome, "complete");
