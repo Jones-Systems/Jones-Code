@@ -206,6 +206,16 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
       "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
+    },
+    {
+      "id": "runtime-census",
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeCensus.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts"
+      ],
+      "scope": "Coherent application candidate census and captured manager attachment observation with before/after revision validation. Native and external coverage remain explicitly unknown; observation does not create or stop a runtime."
     }
   ]
 }

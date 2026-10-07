@@ -494,6 +494,19 @@
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck"
       ]
+    },
+    {
+      "id": "jones-runtime-census",
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeCensus.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/runtime/RuntimeCensus.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/orchestration-v2/ProjectionControlReads.test.ts",
+        "vp run --filter t3 typecheck"
+      ]
     }
   ]
 }
