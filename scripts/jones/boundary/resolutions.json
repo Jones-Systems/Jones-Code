@@ -86,20 +86,20 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "397cfe5bf5b7dc23b51eaa6a2124b7ec65ef3bd64f889bfea5e640358f1e55fe",
+      "sourceSha256": "72624ea9a4f34e3dc3aabd92af80c30e93063e32f16b21e87e87f39e386ee93a",
       "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
       "reason": "Upstream subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "42af4a1107c6f293d860a67f6658d266fd264e850f9883cf533a558198e88791"
+          "sha256": "a5ded95b4f8ae90d47c1221906744e227f04a2d5b865f2c49f34dbbd5fc988bc"
         }
       ],
       "targets": []
     },
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "397cfe5bf5b7dc23b51eaa6a2124b7ec65ef3bd64f889bfea5e640358f1e55fe",
+      "sourceSha256": "72624ea9a4f34e3dc3aabd92af80c30e93063e32f16b21e87e87f39e386ee93a",
       "expression": "NodeURL.pathToFileURL(root + \"/apps/server/src/\" + file + \".ts\")",
       "reason": "Upstream subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
       "anchors": [],
@@ -114,25 +114,27 @@
         "apps/server/src/orchestration-v2/ContextHandoffService.ts",
         "apps/server/src/git/GitWorkflowService.ts",
         "apps/server/src/project/ProjectService.ts",
-        "apps/server/src/provider/Services/ProviderAuthService.ts"
+        "apps/server/src/provider/Services/ProviderAuthService.ts",
+        "apps/server/src/serverSettings.ts",
+        "apps/server/src/provider/Services/ProviderInstanceRegistry.ts"
       ]
     },
     {
       "from": "apps/server/src/testkit/RpcInitialMemory.fixture.mjs",
-      "sourceSha256": "80cb17edd7f34eac47072921a9afae052c256feef530b968a9b92e2decdcae29",
+      "sourceSha256": "8c5a3660fbcb89411308cd56f27c12b950878aeee5a745ccc0f0c31d1daff5c7",
       "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
       "reason": "Upstream subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "42af4a1107c6f293d860a67f6658d266fd264e850f9883cf533a558198e88791"
+          "sha256": "a5ded95b4f8ae90d47c1221906744e227f04a2d5b865f2c49f34dbbd5fc988bc"
         }
       ],
       "targets": []
     },
     {
       "from": "apps/server/src/testkit/RpcInitialMemory.fixture.mjs",
-      "sourceSha256": "80cb17edd7f34eac47072921a9afae052c256feef530b968a9b92e2decdcae29",
+      "sourceSha256": "8c5a3660fbcb89411308cd56f27c12b950878aeee5a745ccc0f0c31d1daff5c7",
       "expression": "NodeURL.pathToFileURL(root + \"/apps/server/src/\" + file + \".ts\")",
       "reason": "Upstream subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
       "anchors": [],
