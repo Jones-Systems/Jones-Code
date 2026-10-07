@@ -476,6 +476,24 @@
         "vp test run apps/server/src/jones/importedHistory/ImportedApplicationAttachmentInventory.test.ts apps/server/src/jones/importedHistory/ApplicationBirth.test.ts",
         "vp run --filter t3 typecheck"
       ]
+    },
+    {
+      "id": "jones-provider-background-activity",
+      "tests": [
+        "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts",
+        "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck"
+      ]
     }
   ]
 }

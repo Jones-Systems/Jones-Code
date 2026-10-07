@@ -1,3 +1,4 @@
+import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as ProviderEventOrigin from "../jones/orchestration/ProviderEventOrigin.ts";
 import * as NetAddress from "effect/unstable/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -297,6 +298,7 @@ function makeProviderAdapter(
     >;
     readonly beforeOpen?: (input: ProviderAdapterV2OpenSessionInput) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+    readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
     readonly hangSessionScopeClose?: boolean;
     readonly beforeUnload?: Effect.Effect<void>;
     readonly eventOriginMode?: "captured";
@@ -370,6 +372,9 @@ function makeProviderAdapter(
           ...(options.hasPendingBackgroundWork === undefined
             ? {}
             : { hasPendingBackgroundWork: options.hasPendingBackgroundWork }),
+          ...(options.readThreadActivity === undefined
+            ? {}
+            : { readThreadActivity: options.readThreadActivity }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
             Ref.update(state, (current) => ({
@@ -417,6 +422,7 @@ function makeTestLayer(input: {
   readonly failReleaseEventWrites?: boolean;
   readonly flakyReleaseWrites?: FlakyReleaseWrites;
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+  readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
   readonly hangSessionScopeClose?: boolean;
   readonly beforeUnload?: Effect.Effect<void>;
   readonly eventOriginMode?: "captured";
@@ -440,6 +446,9 @@ function makeTestLayer(input: {
       ...(input.hasPendingBackgroundWork === undefined
         ? {}
         : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
+      ...(input.readThreadActivity === undefined
+        ? {}
+        : { readThreadActivity: input.readThreadActivity }),
       ...(input.hangSessionScopeClose === undefined
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
@@ -4279,4 +4288,122 @@ it.effect("refuses a missing native ID before committing a runtime boundary", ()
       ),
     );
   }),
+);
+
+it.effect.each(["monitoring", "unsupported", "replacement", "selected-account"] as const)(
+  "observes actual resident background activity without refreshing retention: %s",
+  (scenario) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const state = yield* Ref.make(emptyState);
+        const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+        const sampleStarted = yield* Deferred.make<void>();
+        const sampleContinue = yield* Deferred.make<void>();
+        const readThreadActivity = (provider: OrchestrationV2ProviderThread) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(sampleStarted, undefined);
+            if (scenario === "replacement") yield* Deferred.await(sampleContinue);
+            const binding = runtimeBinding(
+              provider,
+              provider.runtimeIdentity?.runtimeGeneration ?? "",
+            );
+            if (binding === undefined)
+              return { status: "unknown", reason: "native_binding_unavailable" } as const;
+            return {
+              status: "monitoring",
+              binding,
+              observedAt: DateTime.formatIso(yield* DateTime.now),
+            } satisfies RuntimeObservation.ProviderRuntimeObservation;
+          });
+        yield* Effect.gen(function* () {
+          const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+          const ids = yield* IdAllocator.IdAllocatorV2;
+          const sink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make("background-observation");
+          const sessionId = yield* ids.allocate.providerSession({
+            providerInstanceId: modelSelection.instanceId,
+            threadId,
+          });
+          yield* sink.write({
+            events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+          });
+          const runtime = yield* manager.open({
+            threadId,
+            providerSessionId: sessionId,
+            modelSelection,
+            runtimePolicy,
+          });
+          const lifecycle = yield* Ref.get(controller);
+          if (lifecycle === undefined || manager.observeThreadActivity === undefined)
+            return yield* Effect.die("Missing activity owner");
+          const generation = yield* lifecycle.reserve(threadId);
+          const provider = yield* lifecycle.bind({
+            providerThread: makeProviderThread({
+              idAllocator: ids,
+              threadId,
+              providerSessionId: sessionId,
+              now,
+            }),
+            runtimeGeneration: generation,
+            requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+            observed: unobservedRuntimeIdentity(),
+          });
+          yield* runtime.resumeThread({ providerThread: provider, threadId });
+          if (scenario === "selected-account") {
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const selected = ProviderInstanceId.make("next-account");
+            yield* projections.apply({
+              id: EventId.make("observation:account-selected"),
+              type: "thread.model-selection-updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                ...(yield* projections.getThread(threadId)),
+                providerInstanceId: selected,
+                modelSelection: { ...modelSelection, instanceId: selected },
+              },
+            });
+          }
+          yield* TestClock.adjust("500 millis");
+          if (scenario === "replacement") {
+            const observing = yield* manager
+              .observeThreadActivity(threadId)
+              .pipe(Effect.forkScoped);
+            yield* Deferred.await(sampleStarted);
+            yield* manager.close(sessionId);
+            yield* manager.open({
+              threadId,
+              providerSessionId: sessionId,
+              modelSelection,
+              runtimePolicy,
+            });
+            yield* Deferred.succeed(sampleContinue, undefined);
+            const result = yield* Fiber.join(observing);
+            assert.equal(result.status, "unknown");
+            if (result.status === "unknown") assert.equal(result.reason, "runtime_binding_changed");
+          } else {
+            const result = yield* manager.observeThreadActivity(threadId);
+            assert.equal(result.status, scenario === "unsupported" ? "unknown" : "monitoring");
+            if (result.status === "unknown")
+              assert.equal(result.reason, "native_activity_unsupported");
+            yield* TestClock.adjust("600 millis");
+            assert.equal(
+              (yield* Ref.get(state)).closeCount,
+              1,
+              "sampling must not postpone idle release",
+            );
+          }
+        }).pipe(
+          Effect.provide(
+            makeTestLayer({
+              state,
+              idleTimeoutMs: 1_000,
+              beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+              ...(scenario === "unsupported" ? {} : { readThreadActivity }),
+            }),
+          ),
+        );
+      }),
+    ),
 );

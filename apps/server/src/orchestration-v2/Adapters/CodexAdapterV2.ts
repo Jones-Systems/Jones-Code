@@ -1,3 +1,5 @@
+import * as BackgroundLiveness from "../../jones/provider/observations/ProviderSessionBackgroundLiveness.ts";
+import type * as RuntimeObservation from "../../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
 import { readCodexGoalState, unknownProviderGoal } from "../../provider/providerGoal.ts";
 import type { ServerProviderModel } from "@t3tools/contracts";
@@ -6369,6 +6371,118 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }
             return false;
           }),
+          readThreadActivity: (providerThread) =>
+            Effect.gen(function* () {
+              const unavailable = (
+                reason: string,
+              ): RuntimeObservation.ProviderRuntimeObservation => ({ status: "unknown", reason });
+              const producer = currentProducer;
+              const nativeId = providerThread.nativeThreadRef?.nativeId;
+              const bound = nativeId == null ? undefined : producer.bindings.get(nativeId);
+              if (
+                !producer.active ||
+                bound === undefined ||
+                bound.id !== providerThread.id ||
+                bound.appThreadId !== providerThread.appThreadId ||
+                bound.providerSessionId !== input.providerSessionId ||
+                bound.providerInstanceId !== adapterOptions.instanceId ||
+                providerThread.providerInstanceId !== bound.providerInstanceId ||
+                providerThread.providerSessionId !== bound.providerSessionId ||
+                providerThread.driver !== CODEX_PROVIDER ||
+                providerThread.nativeThreadRef?.driver !== CODEX_PROVIDER ||
+                providerThread.runtimeIdentity?.runtimeGeneration !== producer.generation
+              )
+                return unavailable("runtime_binding_changed");
+              const binding = runtimeBinding(bound, producer.generation);
+              if (binding === undefined) return unavailable("native_binding_unavailable");
+              const active = yield* Ref.get(activeTurns);
+              const contexts = [...active.values(), ...(yield* Ref.get(settledTurns)).values()];
+              const allAgents = [...(yield* Ref.get(subagentThreads)).values()];
+              const roots = [
+                ...contexts,
+                ...allAgents.map((agent) => approvalOwnerCodexTurn(agent.parentContext).owner),
+              ].filter(
+                (context) =>
+                  context.providerThread.id === providerThread.id &&
+                  context.providerThread.runtimeIdentity?.runtimeGeneration === producer.generation,
+              );
+              const owns = (context: ActiveCodexTurnContext) =>
+                roots.some((root) => context === root || isDescendantCodexTurn(context, root));
+              const commands = yield* Ref.get(runningCommandItemsByTurn);
+              const tools = yield* Ref.get(runningDynamicToolsByTurn);
+              const agents = allAgents.filter((agent) => owns(agent.parentContext));
+              const turnItems: Parameters<
+                typeof BackgroundLiveness.providerSessionBackgroundLiveness
+              >[0]["turnItems"][number][] = [];
+              for (const context of contexts.filter(owns)) {
+                for (const item of commands.get(context.nativeTurnId)?.values() ?? []) {
+                  turnItems.push({
+                    id: idAllocator.derive.turnItemFromProviderItem({
+                      driver: CODEX_PROVIDER,
+                      nativeItemId: item.id,
+                    }),
+                    threadId: binding.threadId,
+                    providerThreadId: binding.providerThreadId,
+                    parentItemId: context.subagent?.turnItemId ?? null,
+                    nodeId: context.subagent?.subagentNodeId ?? null,
+                    type: "command_execution",
+                    status: "running",
+                  });
+                }
+                for (const item of tools.get(context.nativeTurnId)?.values() ?? []) {
+                  turnItems.push({
+                    id: idAllocator.derive.turnItemFromProviderItem({
+                      driver: CODEX_PROVIDER,
+                      nativeItemId: item.id,
+                    }),
+                    threadId: binding.threadId,
+                    providerThreadId: binding.providerThreadId,
+                    parentItemId: context.subagent?.turnItemId ?? null,
+                    nodeId: context.subagent?.subagentNodeId ?? null,
+                    type: "dynamic_tool",
+                    status: "running",
+                    input: item.arguments,
+                  });
+                }
+              }
+              const background = BackgroundLiveness.providerSessionBackgroundLiveness({
+                runtimeLive: producer.active,
+                threadId: binding.threadId,
+                providerThreadId: binding.providerThreadId,
+                providerThreads: [],
+                subagents: agents.map((agent) => ({
+                  id: agent.subagentNodeId,
+                  threadId: binding.threadId,
+                  status: [...agent.nativeTurnIds].some((id) => active.has(id))
+                    ? "running"
+                    : agent.task.status,
+                })),
+                turnItems,
+              });
+              const observedAt = DateTime.formatIso(yield* DateTime.now);
+              if (
+                !producer.active ||
+                currentProducer !== producer ||
+                producer.bindings.get(binding.nativeThreadId) !== bound
+              )
+                return unavailable("runtime_binding_changed");
+              const request = capacityByThread.get(binding.nativeThreadId);
+              const nativeBusy =
+                roots.some((root) => active.has(root.nativeTurnId)) ||
+                (request !== undefined &&
+                  currentCapacityBinding(request) &&
+                  request.recoveryEnabled &&
+                  (request.state.phase === "waiting_retry" ||
+                    request.state.phase === "awaiting_start"));
+              if (background === null && !nativeBusy)
+                return unavailable("native_background_coverage_incomplete");
+              return {
+                binding,
+                observedAt,
+                backgroundCoverage: "partial",
+                status: background ?? "busy",
+              } satisfies RuntimeObservation.ProviderRuntimeObservation;
+            }),
           hasPendingBackgroundWorkForThread: (providerThread) =>
             Effect.gen(function* () {
               const request = capacityByThread.get(providerThread.nativeThreadRef?.nativeId ?? "");

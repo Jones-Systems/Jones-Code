@@ -1,3 +1,4 @@
+import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
@@ -637,6 +638,9 @@ export interface ProviderAdapterV2SessionRuntime {
    * here so the session manager defers idle release while it is pending.
    */
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+  readonly readThreadActivity?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<RuntimeObservation.ProviderRuntimeObservation>;
   /**
    * Per-provider-thread pending work for root-run ingestion stop gates. When
    * present, RunExecutionService uses only this probe (never the session-wide
