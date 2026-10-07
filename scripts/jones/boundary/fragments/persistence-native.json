@@ -7,6 +7,9 @@
   ],
   "hookPaths": [
     "apps/server/src/persistence/Migrations.ts",
+    "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EffectWorker.ts",
+    "apps/server/src/orchestration-v2/EventSink.ts",
     "apps/server/src/orchestration-v2/ThreadLaunchService.ts"
   ],
   "tombstones": [
@@ -31,6 +34,18 @@
     {
       "from": "apps/server/src/persistence/Migrations.ts",
       "to": "apps/server/src/jones/persistence/JonesMigrations.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepository.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",

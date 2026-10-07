@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { makeNativeExecutionMethods } from "./NativeCreationExecutionSqlite.ts";
 import * as Authority from "./NativeCreationAuthority.ts";
 import * as Repository from "./NativeCreationRepository.ts";
 import {
@@ -224,7 +225,9 @@ const make = Effect.gen(function* () {
     if (
       !("threadId" in command) ||
       command.threadId !== intent.threadId ||
-      !["thread.create", "message.dispatch", "thread.delete"].includes(command.type)
+      !["thread.create", "message.dispatch", "thread.delete", "prepared-run.release"].includes(
+        command.type,
+      )
     ) {
       return yield* fail("Creation command does not address the claimed thread");
     }
@@ -233,6 +236,12 @@ const make = Effect.gen(function* () {
     }>`SELECT claim_id FROM native_creation_intents WHERE command_id = ${command.commandId}`;
     if (owners.some((row) => row.claim_id !== claimId))
       return yield* fail("Creation command is claimed by another intent");
+    if (command.type === "prepared-run.release") {
+      const identities =
+        yield* sql`SELECT command_id FROM native_creation_reserved_command_identities WHERE command_id=${command.commandId} AND claim_id=${claimId} AND thread_id=${command.threadId}`;
+      if (identities.length !== 1)
+        return yield* fail("Native prepared release has no reserved execution identity");
+    }
     const canonicalCommand = nativeCreationCanonicalJson(command);
     const existing = yield* getReserved(command.commandId);
     if (Option.isSome(existing)) {
@@ -446,7 +455,20 @@ const make = Effect.gen(function* () {
     }
     yield* sql`INSERT INTO jones_native_workspace_verified (claim_id,receipt_json) VALUES (${verified.claimId},${nativeCreationCanonicalJson(verified)})`;
   })).pipe(Effect.mapError(mapRepositoryError));
+  const executionMethods = makeNativeExecutionMethods(sql, {
+    // Execution references carry claim IDs; the public history reader accepts command IDs.
+    readHistory: (claimId) =>
+      Effect.gen(function* () {
+        const rows =
+          yield* sql`SELECT claim_id FROM native_creation_intents WHERE claim_id = ${claimId}`;
+        if (rows.length === 0) return Option.none<Repository.NativeCreationHistory>();
+        return Option.some(yield* readByClaim(claimId));
+      }).pipe(Effect.mapError(mapRepositoryError)),
+    getReservedCommand: (commandId) =>
+      getReserved(commandId).pipe(Effect.mapError(mapRepositoryError)),
+  });
   return Repository.NativeCreationRepository.of({
+    ...executionMethods,
     readWorkspaceClaim: (claimId) => sql.withTransaction(Effect.gen(function* () {yield* workspaceEligible;return yield* readByClaim(claimId);})).pipe(Effect.mapError(mapRepositoryError)),
     admitWorkspace,
     readWorkspaceAdmission: (claimId) => readWorkspaceAdmission(claimId).pipe(Effect.mapError(mapRepositoryError)),
