@@ -20,6 +20,8 @@
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
+        "jones/performance/*.node-test.mjs",
+        "jones/performance/*.d.mts",
       ],
     },
     "apps/server": {
@@ -27,6 +29,8 @@
       "entry": [
         "src/bin.ts!",
         "src/jones/orchestration/*.bench.ts",
+        "src/jones/cloud/*.ts",
+        "src/jones/updates/*.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/evaluate-thread-titles.ts",
