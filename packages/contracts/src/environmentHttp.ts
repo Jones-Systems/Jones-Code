@@ -691,16 +691,19 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
 ) {}
 
 const {
+  EnvironmentJonesUpdatesHttpApi,
   EnvironmentVoiceReviewHttpApi,
   EnvironmentHostStatusHttpApi,
   EnvironmentWorkQueueMetadataHttpApi: WorkQueueMetadataHttpApi,
   EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
   EnvironmentWorkstreamAppearanceHttpApi,
+  EnvironmentWorkstreamsNativeHttpApi,
 } = makeJonesHttpGroups({
   OptionalBearerHeaders,
   EnvironmentAuthenticatedAuth,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
+  EnvironmentHttpBadRequestError,
 });
 
 class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi.add(
@@ -908,6 +911,8 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentWorkstreamsHttpApi)
+  .add(EnvironmentWorkstreamsNativeHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentConversationLibraryHttpApi) {}
+  .add(EnvironmentConversationLibraryHttpApi)
+  .add(EnvironmentJonesUpdatesHttpApi) {}

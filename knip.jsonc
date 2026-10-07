@@ -22,12 +22,22 @@
         "smoke-cli-archive.ts",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
+        "jones/performance/prepare-sources.mjs",
+        "jones/performance/fixtures-historical-worker.mjs",
+        "jones/performance/migration-restore-worker.mjs",
+        "jones/performance/current-qualification-worker.mjs",
       ],
     },
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
       "entry": [
         "src/bin.ts!",
+        "scripts/jones/v2Benchmark.mjs",
+        "scripts/jones/v2Benchmark.worker.mjs",
+        "src/jones/orchestration/*.bench.ts",
+        "scripts/jones/currentFixtures.ts",
+        "scripts/jones/sqliteHealth.ts",
+        "scripts/jones/sqliteHealth.worker.ts",
         "src/jones/cloud/*.ts",
         "src/jones/updates/*.ts",
         "src/claude-history-worker.ts!",
@@ -88,6 +98,7 @@
       // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
       "entry": [
         "index.ts!",
+        "src/jones/performance/*.bench.ts",
         "fingerprint.config.js",
         "plugins/*.cjs",
         "scripts/generate-device-stream.mts",
@@ -106,6 +117,10 @@
     },
     "infra/relay": {
       "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!"],
+    },
+    "packages/client-runtime": {
+      "includeEntryExports": true,
+      "entry": ["src/jones/*.bench.ts"],
     },
     "packages/*": {
       // These workspace packages are private to this monorepo.

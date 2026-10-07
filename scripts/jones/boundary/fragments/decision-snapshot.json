@@ -1,0 +1,47 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "decision-snapshot",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/decisionSnapshot/collector.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/release.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/tools.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/handlers.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/fixtures/claude-account-usage.py.fixture",
+    "apps/server/src/jones/mcp/decisionSnapshot/fixtures/decision-snapshot.py.fixture",
+    "apps/server/src/jones/mcp/decisionSnapshot/fixtures/decision_snapshot.py.fixture"
+  ],
+  "hookPaths": [
+    "apps/server/src/mcp/McpInvocationContext.ts",
+    "apps/server/src/mcp/McpInvocationContext.test.ts",
+    "apps/server/src/mcp/McpSessionRegistry.test.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/decisionSnapshot/collector.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/decisionSnapshot/handlers.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/decisionSnapshot/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpSessionRegistry.test.ts",
+      "to": "apps/server/src/jones/mcp/decisionSnapshot/collector.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpSessionRegistry.test.ts",
+      "to": "apps/server/src/jones/mcp/decisionSnapshot/handlers.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpSessionRegistry.test.ts",
+      "to": "apps/server/src/jones/mcp/decisionSnapshot/tools.ts"
+    }
+  ]
+}

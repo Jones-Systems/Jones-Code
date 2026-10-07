@@ -7,6 +7,14 @@ import {
   type DesktopUpdateCheckResult,
   type DesktopUpdateState,
 } from "@t3tools/contracts";
+import { HostProcessEnvironment, HostProcessExecutablePath } from "@t3tools/shared/hostProcess";
+import {
+  JonesDesktopUpdateController,
+  type JonesDesktopDownloadSelection,
+  type JonesDesktopDownloadResult,
+} from "../jones/updates/JonesDesktopUpdates.ts";
+import { prepareJonesNativeInstall } from "../jones/updates/jonesNativePreparation.ts";
+import { runNativeCommand } from "../jones/updates/jonesMacStaging.ts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -183,9 +191,14 @@ export class DesktopUpdates extends Context.Service<
     ) => Effect.Effect<DesktopUpdateState, DesktopUpdateSetChannelError>;
     readonly check: (reason: string) => Effect.Effect<DesktopUpdateCheckResult>;
     readonly download: Effect.Effect<DesktopUpdateActionResult>;
+    readonly downloadSelected?: (
+      selection: JonesDesktopDownloadSelection,
+    ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
+    readonly installStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
     readonly installPrepared: (
       expectedVersion: string,
+      stagedHandle?: string,
     ) => Effect.Effect<DesktopPreparedUpdateInstallResult>;
   }
 >()("@t3tools/desktop/updates/DesktopUpdates") {}
@@ -322,6 +335,143 @@ export const make = Effect.gen(function* () {
         return setState(nextState).pipe(Effect.as(nextState));
       }),
     );
+
+  // Unsigned Jones previews use qualified Actions artifacts and a native activation
+  // helper. They never create a synthetic Electron/Squirrel update feed.
+  if (
+    environment.platform === "darwin" &&
+    environment.isPackaged &&
+    !environment.isDevelopment &&
+    !config.mockUpdates &&
+    /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(environment.appVersion)
+  ) {
+    const context = yield* Effect.context<never>();
+    const processEnv = yield* HostProcessEnvironment;
+    const executablePath = yield* HostProcessExecutablePath;
+    const controller = new JonesDesktopUpdateController({
+      home: environment.baseDir,
+      appRoot: environment.appRoot,
+      appPath: environment.path.resolve(environment.resourcesPath, "../.."),
+      executablePath,
+      profile: processEnv.T3CODE_DESKTOP_USER_DATA_DIR,
+      activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
+      architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
+      platform: environment.platform,
+      initialState: yield* Ref.get(updateStateRef),
+      disabledByEnv: config.disableAutoUpdate,
+      onState: (state) => Effect.runPromiseWith(context)(setState(state)),
+      timestamp: () => Effect.runPromiseWith(context)(currentIsoTimestamp),
+      prepareNative: async (handle, active) => {
+        const primary = await Effect.runPromiseWith(context)(pool.primary);
+        const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
+        if (Option.isNone(backend)) throw new Error("Native backend preparation is unavailable.");
+        const token = backend.value.bootstrap.desktopBootstrapToken;
+        if (typeof token !== "string")
+          throw new Error("Native backend preparation is unavailable.");
+        await prepareJonesNativeInstall({
+          listener: backend.value.httpBaseUrl.toString(),
+          bootstrapToken: token,
+          stagedHandle: handle,
+          active,
+        });
+      },
+      processProofs: async () => {
+        const instances = await Effect.runPromiseWith(context)(pool.list);
+        const pids = [process.pid];
+        for (const instance of instances) {
+          const snapshot = await Effect.runPromiseWith(context)(instance.snapshot);
+          if (Option.isSome(snapshot.activePid)) pids.push(snapshot.activePid.value);
+        }
+        return Promise.all(
+          pids.map(async (pid) => ({
+            pid,
+            identity: (
+              await runNativeCommand("/bin/ps", [
+                "-p",
+                String(pid),
+                "-o",
+                "lstart=",
+                "-o",
+                "command=",
+              ])
+            ).trim(),
+          })),
+        );
+      },
+      listener: async () => {
+        const primary = await Effect.runPromiseWith(context)(pool.primary);
+        const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
+        if (Option.isNone(backend)) throw new Error("Native backend listener is unavailable.");
+        return backend.value.httpBaseUrl.origin;
+      },
+    });
+    const check = Effect.promise(() => controller.check());
+    const install = (handle?: string) =>
+      Effect.promise(() => controller.install(handle)).pipe(
+        Effect.map((result) => ({ ...result, state: controller.state })),
+      );
+    return DesktopUpdates.of({
+      getState: Ref.get(updateStateRef),
+      isActionActive: Effect.sync(() => controller.busy !== null),
+      isInstallActive: Effect.sync(() => controller.busy === "install"),
+      subscribe: stateMutex.withPermits(1)(
+        Effect.gen(function* () {
+          const subscription = yield* PubSub.subscribe(stateChanges);
+          return {
+            latest: yield* Ref.get(updateStateRef),
+            changes: Stream.fromSubscription(subscription),
+          };
+        }),
+      ),
+      emitState,
+      disabledReason: Ref.get(updateStateRef).pipe(
+        Effect.map((state) =>
+          state.jones?.capability.check
+            ? Option.none()
+            : Option.some(state.message ?? "Jones native launcher bootstrap is required."),
+        ),
+      ),
+      configure: Effect.gen(function* () {
+        yield* Effect.promise(() => controller.configure());
+        yield* Effect.sleep(AUTO_UPDATE_STARTUP_DELAY).pipe(
+          Effect.andThen(check),
+          Effect.asVoid,
+          Effect.forkScoped,
+        );
+        yield* Effect.sleep(AUTO_UPDATE_POLL_INTERVAL).pipe(
+          Effect.andThen(check),
+          Effect.asVoid,
+          Effect.forever,
+          Effect.forkScoped,
+        );
+      }),
+      setChannel: () => Ref.get(updateStateRef),
+      check: () => check.pipe(Effect.map((checked) => ({ checked, state: controller.state }))),
+      download: Effect.promise(() => controller.download()).pipe(
+        Effect.map((result) => ({ ...result, state: controller.state })),
+      ),
+      downloadSelected: (selection) =>
+        Effect.promise(() => controller.download(selection)).pipe(
+          Effect.map((result) => ({ ...result, state: controller.state })),
+        ),
+      install: install().pipe(
+        Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
+      ),
+      installStaged: (handle) =>
+        install(handle).pipe(
+          Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
+        ),
+      installPrepared: (version, handle) =>
+        controller.state.downloadedVersion === version
+          ? install(handle)
+          : Effect.succeed({
+              accepted: false,
+              completed: false,
+              failed: false,
+              state: controller.state,
+            }),
+    });
+  }
 
   const readAppUpdateYml = fileSystem.readFileString(environment.appUpdateYmlPath, "utf-8").pipe(
     Effect.option,
