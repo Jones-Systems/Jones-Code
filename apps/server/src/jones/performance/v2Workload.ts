@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Timings describe the captured synthetic worker only.
 // @effect-diagnostics globalTimers:off -- The bounded arrival schedule clears every owned timer in its finalizer.
 // @effect-diagnostics globalTimersInEffect:off -- Actual offer timestamps measure host scheduling separately from acceptance.
-import * as Assert from "node:assert/strict";
-import { performance } from "node:perf_hooks";
+import * as NodeAssert from "node:assert/strict";
+import * as NodePerfHooks from "node:perf_hooks";
 import {
   CommandId,
   EventId,
@@ -13,11 +13,24 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+
+const encodeSnapshotJson = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      sequence: Schema.Number,
+      projection: Schema.Unknown,
+      receipts: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+      events: Schema.Array(Schema.Unknown),
+      effects: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+    }),
+  ),
+);
 
 export interface V2Workload {
   readonly commands: number;
@@ -26,13 +39,13 @@ export interface V2Workload {
 }
 
 export function validateV2Workload(input: V2Workload) {
-  Assert.deepEqual(Object.keys(input).sort(), ["commands", "intervalMs", "payloadBytes"]);
+  NodeAssert.deepEqual(Object.keys(input).sort(), ["commands", "intervalMs", "payloadBytes"]);
   for (const [value, minimum, maximum] of [
     [input.commands, 1, 64],
     [input.payloadBytes, 1, 4096],
     [input.intervalMs, 0, 100],
   ] as const) {
-    Assert.ok(
+    NodeAssert.ok(
       Number.isInteger(value) && value >= minimum && value <= maximum,
       "invalid bounded V2 workload",
     );
@@ -121,14 +134,14 @@ export const runV2Workload = (options: V2Workload) =>
           yield* sql`SELECT command_id, status, result_sequence, error FROM orchestration_command_receipts ORDER BY command_id`;
         const events = yield* eventStore.read({ threadId }).pipe(Stream.runCollect);
         const effects = yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
-        return JSON.stringify({ sequence, projection, receipts, events, effects });
+        return encodeSnapshotJson({ sequence, projection, receipts, events, effects });
       });
     const timerLag: number[] = [],
       queueWait: number[] = [],
       dispatch: number[] = [],
       completion: number[] = [];
     const timers: ReturnType<typeof setTimeout>[] = [];
-    const started = performance.now();
+    const started = NodePerfHooks.performance.now();
     const offers = Array.from(
       { length: options.commands },
       (_, index) =>
@@ -136,8 +149,8 @@ export const runV2Workload = (options: V2Workload) =>
           const planned = started + index * options.intervalMs;
           timers.push(
             setTimeout(
-              () => resolve({ planned, offered: performance.now() }),
-              Math.max(0, planned - performance.now()),
+              () => resolve({ planned, offered: NodePerfHooks.performance.now() }),
+              Math.max(0, planned - NodePerfHooks.performance.now()),
             ),
           );
         }),
@@ -148,10 +161,10 @@ export const runV2Workload = (options: V2Workload) =>
     yield* Effect.gen(function* () {
       for (const [index, command] of commands.entries()) {
         const arrival = yield* Effect.promise(() => offers[index]!);
-        const start = performance.now();
+        const start = NodePerfHooks.performance.now();
         const result = yield* sink.commitCommand(command);
-        const end = performance.now();
-        Assert.equal(result.committed, true);
+        const end = NodePerfHooks.performance.now();
+        NodeAssert.equal(result.committed, true);
         timerLag.push(arrival.offered - arrival.planned);
         queueWait.push(start - arrival.offered);
         dispatch.push(end - start);
@@ -162,15 +175,15 @@ export const runV2Workload = (options: V2Workload) =>
     const protocol: number[] = [];
     const timed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.gen(function* () {
-        const start = performance.now();
+        const start = NodePerfHooks.performance.now();
         const value = yield* effect;
-        protocol.push(performance.now() - start);
+        protocol.push(NodePerfHooks.performance.now() - start);
         return value;
       });
     const beforeReplay = yield* capture();
     const replay = yield* timed(sink.commitCommand(commands[0]!));
-    Assert.equal(replay.committed, false);
-    Assert.equal(yield* capture(), beforeReplay);
+    NodeAssert.equal(replay.committed, false);
+    NodeAssert.equal(yield* capture(), beforeReplay);
 
     const rejectedInput = {
       commandId: CommandId.make("benchmark:v2:rejected"),
@@ -180,10 +193,10 @@ export const runV2Workload = (options: V2Workload) =>
       error: "synthetic rejection",
     };
     const rejected = yield* timed(sink.commitRejectedCommand(rejectedInput));
-    Assert.equal(rejected.status, "rejected");
+    NodeAssert.equal(rejected.status, "rejected");
     const beforeRejectedReplay = yield* capture();
-    Assert.deepEqual(yield* timed(sink.commitRejectedCommand(rejectedInput)), rejected);
-    Assert.equal(yield* capture(), beforeRejectedReplay);
+    NodeAssert.deepEqual(yield* timed(sink.commitRejectedCommand(rejectedInput)), rejected);
+    NodeAssert.equal(yield* capture(), beforeRejectedReplay);
 
     const retryInput = input("benchmark:v2:retry", "rollback-target");
     const beforeRollback = yield* capture();
@@ -191,35 +204,35 @@ export const runV2Workload = (options: V2Workload) =>
     const failed = yield* timed(sink.commitCommand(retryInput).pipe(Effect.result)).pipe(
       Effect.ensuring(sql`DROP TRIGGER benchmark_v2_fail_projection`.pipe(Effect.orDie)),
     );
-    Assert.equal(failed._tag, "Failure");
-    Assert.equal(yield* capture(), beforeRollback);
+    NodeAssert.equal(failed._tag, "Failure");
+    NodeAssert.equal(yield* capture(), beforeRollback);
     const rollbackReceipts =
       yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id = ${retryInput.commandId}`;
-    Assert.deepEqual(rollbackReceipts, []);
+    NodeAssert.deepEqual(rollbackReceipts, []);
     const rollbackEvents = yield* eventStore
       .readByCommandId({ commandId: retryInput.commandId })
       .pipe(Stream.runCollect);
-    Assert.deepEqual(rollbackEvents, []);
-    Assert.equal((yield* timed(sink.commitCommand(retryInput))).committed, true);
+    NodeAssert.deepEqual(rollbackEvents, []);
+    NodeAssert.equal((yield* timed(sink.commitCommand(retryInput))).committed, true);
     const finalProjection = yield* projections.getThreadProjection(threadId);
-    Assert.equal(finalProjection.thread.title, "rollback-target");
+    NodeAssert.equal(finalProjection.thread.title, "rollback-target");
     const finalSequence = yield* sink.latestSequence({ threadId });
-    Assert.equal(finalSequence, options.commands + 2);
+    NodeAssert.equal(finalSequence, options.commands + 2);
     const integrity = yield* sql`PRAGMA integrity_check`;
-    Assert.deepEqual(
+    NodeAssert.deepEqual(
       integrity.map((row) => row.integrity_check),
       ["ok"],
     );
     const receiptCounts =
       yield* sql`SELECT status, COUNT(*) AS count FROM orchestration_command_receipts GROUP BY status ORDER BY status`;
-    Assert.deepEqual(
+    NodeAssert.deepEqual(
       receiptCounts.map((row) => [row.status, Number(row.count)]),
       [
         ["accepted", options.commands + 1],
         ["rejected", 1],
       ],
     );
-    Assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
+    NodeAssert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
     const engine = yield* sql`SELECT sqlite_version() AS version, sqlite_source_id() AS sourceId`;
     const journal = yield* sql`PRAGMA journal_mode`;
     return {

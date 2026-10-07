@@ -21,30 +21,28 @@ it("refuses unbounded V2 workloads before any database work", () => {
   assert.throws(() => validateV2Workload({ commands: 1, payloadBytes: 16, intervalMs: -1 }));
 });
 
-for (const intervalMs of [0, 2]) {
-  it.effect(
-    `V2 acceptance preserves replay and rollback while separating timing populations (${intervalMs} ms arrivals)`,
-    () =>
-      Effect.gen(function* () {
-        const result = yield* runV2Workload({ commands: 3, payloadBytes: 32, intervalMs });
-        assert.strictEqual(result.traffic.eventSinkCompletion.samples, 3);
-        assert.strictEqual(result.traffic.harnessQueueWait.samples, 3);
-        assert.strictEqual(result.traffic.timerLag.samples, 3);
-        assert.strictEqual(result.traffic.arrivalToCompletion.samples, 3);
-        assert.strictEqual(result.protocol.eventSinkCompletion.samples, 5);
-        assert.deepEqual(result.protocol, {
-          eventSinkCompletion: result.protocol.eventSinkCompletion,
-          acceptedReplay: true,
-          rejectedReplay: true,
-          rollbackUnchanged: true,
-          retryCommitted: true,
-        });
-        assert.strictEqual(result.consistency.finalSequence, 5);
-        assert.strictEqual(result.consistency.integrity, "ok");
-        assert.strictEqual(result.consistency.foreignKeyViolations, 0);
-        assert.isAtLeast(result.traffic.eventSinkCompletion.minimumMs!, 0);
-        assert.isAtLeast(result.traffic.harnessQueueWait.minimumMs!, 0);
-        assert.include(result.unavailable, "pure lock wait");
-      }).pipe(Effect.provide(Layer.fresh(services))),
-  );
-}
+it.effect.each([0, 2])(
+  "V2 acceptance preserves replay and rollback while separating timing populations (%s ms arrivals)",
+  (intervalMs) =>
+    Effect.gen(function* () {
+      const result = yield* runV2Workload({ commands: 3, payloadBytes: 32, intervalMs });
+      assert.strictEqual(result.traffic.eventSinkCompletion.samples, 3);
+      assert.strictEqual(result.traffic.harnessQueueWait.samples, 3);
+      assert.strictEqual(result.traffic.timerLag.samples, 3);
+      assert.strictEqual(result.traffic.arrivalToCompletion.samples, 3);
+      assert.strictEqual(result.protocol.eventSinkCompletion.samples, 5);
+      assert.deepEqual(result.protocol, {
+        eventSinkCompletion: result.protocol.eventSinkCompletion,
+        acceptedReplay: true,
+        rejectedReplay: true,
+        rollbackUnchanged: true,
+        retryCommitted: true,
+      });
+      assert.strictEqual(result.consistency.finalSequence, 5);
+      assert.strictEqual(result.consistency.integrity, "ok");
+      assert.strictEqual(result.consistency.foreignKeyViolations, 0);
+      assert.isAtLeast(result.traffic.eventSinkCompletion.minimumMs!, 0);
+      assert.isAtLeast(result.traffic.harnessQueueWait.minimumMs!, 0);
+      assert.include(result.unavailable, "pure lock wait");
+    }).pipe(Effect.provide(Layer.fresh(services))),
+);
