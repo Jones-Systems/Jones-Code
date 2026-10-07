@@ -15,58 +15,9 @@ import {
   type WorkstreamActionSnapshot,
   type WorkstreamReferenceController,
 } from "./workstreamActionSnapshot";
-import {
-  attestedNativeThreadKey,
-  nativeWorkstreamThreadKey,
-  type WorkstreamThreadLike,
-} from "../../components/workstreams/nativeThreadGrouping";
+import type { WorkstreamThreadLike } from "../../components/workstreams/nativeThreadGrouping";
 
-export type ThreadReferenceState = "missing" | "verified" | "verify" | "reverify" | "ambiguous";
-
-export function exactThreadReferences(
-  snapshot: WorkstreamActionSnapshot,
-  thread: WorkstreamThreadLike,
-): readonly NativeReference[] {
-  return snapshot.references.items.filter(
-    (reference) =>
-      reference.owner_id === snapshot.data.binding.ownerId &&
-      reference.identity.provider === "t3" &&
-      reference.identity.source_instance_id === thread.environmentId &&
-      reference.identity.native_id === thread.id,
-  );
-}
-
-export function threadReferenceState(
-  snapshot: WorkstreamActionSnapshot,
-  thread: WorkstreamThreadLike,
-  now: number,
-): ThreadReferenceState {
-  const references = exactThreadReferences(snapshot, thread);
-  if (references.length === 0) return "missing";
-  if (references.length !== 1) return "ambiguous";
-  const reference = references[0]!;
-  if (
-    reference.pr_locator !== null ||
-    reference.identity.resource_kind !== "thread" ||
-    reference.identity.id_kind !== "internal" ||
-    reference.identity.account_provenance.kind !== "not_account_scoped"
-  )
-    return "ambiguous";
-  const trust = new Map(
-    snapshot.placements?.trustedEnvironments.map((entry) => [entry.environmentId, entry]) ?? [],
-  );
-  if (
-    attestedNativeThreadKey(reference, now, trust) ===
-    nativeWorkstreamThreadKey(thread.environmentId, thread.id)
-  )
-    return "verified";
-  return reference.registration.state === "quarantined" ||
-    reference.registration.state === "verification-failed"
-    ? "verify"
-    : "reverify";
-}
-
-export function qualifiedRegistrationSource(
+function qualifiedRegistrationSource(
   snapshot: WorkstreamActionSnapshot,
   provider: "t3" | "github",
   thread?: WorkstreamThreadLike,
@@ -92,7 +43,7 @@ export function qualifiedRegistrationSource(
   return source;
 }
 
-export function committedWorkstreamReceipt(
+function committedWorkstreamReceipt(
   receipt: WorkstreamReceipt,
 ): Extract<WorkstreamReceipt, { readonly state: "committed" }> {
   if (receipt.state !== "committed")
