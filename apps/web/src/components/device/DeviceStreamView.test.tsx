@@ -16,10 +16,22 @@ const accessStore = {
     return () => accessStore.listeners.delete(listener);
   },
 };
-vi.mock("~/state/device", () => ({
-  useDeviceHubAccess: () => useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
-  refreshDeviceHubAccess: () => accessStore.refresh(),
+vi.mock("~/jones/device/useDeviceStreamRoute", () => ({
+  useDeviceStreamRoute: () => ({
+    route: {
+      access: useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
+      kind: "proxy",
+      phase: "connected",
+      generation: "test",
+    },
+    proxy: accessStore.value,
+    report: reportRoute,
+    unauthorized: refreshRoute,
+    retryAccess: refreshRoute,
+  }),
 }));
+const reportRoute = () => {};
+const refreshRoute = () => accessStore.refresh();
 import { DeviceStreamView } from "./DeviceStreamView";
 
 class Image extends EventTarget {
@@ -104,7 +116,7 @@ it("removes MJPEG requests while hidden and reconnects when shown", async () => 
   expect(images.at(-1)!.src).toContain("stream.mjpeg");
 });
 
-it("offers Reconnect after the shared timeout and receives a frame after retry with unchanged access", async () => {
+it("offers Reconnect after the shared timeout and receives a frame after refreshing access for retry", async () => {
   const { images } = await setup();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000);
@@ -121,7 +133,9 @@ it("offers Reconnect after the shared timeout and receives a frame after retry w
     images[1]!.naturalHeight = 800;
     images[1]!.dispatchEvent(new Event("load"));
   });
-  expect(renderer!.root.findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(renderer!.root.findByProps({ role: "status" }).children.join("")).toContain(
+    "Server connection",
+  );
   expect(renderer!.root.findAllByType("button")).toHaveLength(0);
   expect(vi.getTimerCount()).toBe(0);
 });

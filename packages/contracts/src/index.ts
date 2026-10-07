@@ -86,3 +86,5 @@ export * from "./jones/workstreamAppearance.ts";
 export * from "./jones/organizationMetadata.ts";
 
 export * from "./jones/workQueueMetadata.ts";
+
+export * from "./jones/deviceMedia.ts";

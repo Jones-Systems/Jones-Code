@@ -168,6 +168,26 @@
         "packages/contracts/src/jones/workQueueMetadata.test.ts"
       ],
       "scope": "Adapted rebuild #113 canonical artifact metadata: validated server configuration and artifact reads, authenticated HTTP registration, capability-gated shared client reads, and metadata panel integration in WorkQueuePage."
+    },
+    {
+      "id": "direct-desktop-media",
+      "tests": [
+        "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
+        "apps/server/src/device/DeviceHubProxy.test.ts",
+        "apps/server/src/device/SshDeviceHost.test.ts",
+        "apps/server/src/device/sshDeviceScript.test.ts",
+        "apps/server/src/jones/device/DeviceDirectAdmission.test.ts",
+        "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
+        "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
+        "apps/server/src/jones/device/directDeviceGateway.test.ts",
+        "apps/web/src/components/device/DeviceStreamView.test.tsx",
+        "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts",
+        "apps/web/src/jones/device/device.test.tsx",
+        "packages/client-runtime/src/device/stream.test.ts",
+        "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
+        "packages/contracts/src/device.test.ts"
+      ],
+      "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
     }
   ]
 }

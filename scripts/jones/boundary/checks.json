@@ -209,6 +209,28 @@
       "commands": [
         "vp test run apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts"
       ]
+    },
+    {
+      "id": "jones-direct-desktop-media",
+      "tests": [
+        "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
+        "apps/server/src/device/DeviceHubProxy.test.ts",
+        "apps/server/src/device/SshDeviceHost.test.ts",
+        "apps/server/src/device/sshDeviceScript.test.ts",
+        "apps/server/src/jones/device/DeviceDirectAdmission.test.ts",
+        "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
+        "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
+        "apps/server/src/jones/device/directDeviceGateway.test.ts",
+        "apps/web/src/components/device/DeviceStreamView.test.tsx",
+        "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts",
+        "apps/web/src/jones/device/device.test.tsx",
+        "packages/client-runtime/src/device/stream.test.ts",
+        "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
+        "packages/contracts/src/device.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/jones/device/DeviceDirectAdmission.test.ts apps/server/src/jones/device/DeviceDirectGrants.test.ts apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts apps/server/src/jones/device/directDeviceGateway.test.ts apps/web/src/components/device/DeviceStreamView.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/web/src/jones/device/device.test.tsx packages/client-runtime/src/device/stream.test.ts packages/client-runtime/src/jones/device/mediaRoute.test.ts packages/contracts/src/device.test.ts"
+      ]
     }
   ]
 }
