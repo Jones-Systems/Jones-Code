@@ -81,23 +81,23 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/ProviderAdapter.ts",
-      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.ts"
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
-      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.ts"
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
-      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.ts"
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
-      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.ts"
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
-      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.ts"
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
