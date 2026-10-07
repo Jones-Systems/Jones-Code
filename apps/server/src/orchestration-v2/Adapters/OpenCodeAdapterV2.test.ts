@@ -1,3 +1,5 @@
+import type * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
+import type * as ProviderAdapter from "../ProviderAdapter.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
@@ -33,7 +35,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../config.ts";
 import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
-import type { OpenCodeRuntimeShape } from "../../provider/opencodeRuntime.ts";
+import { OpenCodeRuntimeError, type OpenCodeRuntimeShape } from "../../provider/opencodeRuntime.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 
 import {
@@ -2550,5 +2552,132 @@ it.effect.each([false, true])(
         assert.equal(result.messages.length, 0);
         assert.deepEqual(calls, ["fork", "permissions"]);
       }
+    }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+);
+
+it.effect(
+  "revoked qualified adoption refuses create and resume before any native SDK request",
+  () =>
+    Effect.gen(function* () {
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const instanceId = ProviderInstanceId.make("opencode-revoked-adoption");
+      const threadId = ThreadId.make("thread-opencode-revoked-adoption");
+      const providerSessionId = ProviderSessionId.make("session-opencode-revoked-adoption");
+      const modelSelection = { instanceId, model: "default" };
+      const policy = runtimePolicy("full-access", { cwd: "/workspace" });
+      let authorized = true;
+      const requests: string[] = [];
+      const nativeEvents = asyncEventStream();
+      const client = {
+        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        session: {
+          create: async () => {
+            requests.push("create");
+            throw new Error("Unexpected create");
+          },
+          get: async () => {
+            requests.push("get");
+            throw new Error("Unexpected resume");
+          },
+        },
+      } as unknown as OpencodeClient;
+      const authority: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority = {
+        creationHooks: {
+          reserveGeneration: Effect.die(
+            "The existing synthetic physical owner must not reserve again",
+          ),
+          authorize: () => Effect.die("The existing synthetic physical owner must not start again"),
+          abandonGeneration: () => Effect.die("The live physical parent must not be abandoned"),
+        },
+        authorizeAdoption: () => Effect.succeed(Effect.sync(() => authorized)),
+        authorizeConsumption: () => Effect.void,
+      };
+      const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+        reserve: () => Effect.succeed("synthetic-session-adoption-generation"),
+        abandon: () => Effect.void,
+        bind: ({ providerThread }) => Effect.succeed(providerThread),
+        invalidate: () => Effect.void,
+      };
+      const unused = () => Effect.die("Unexpected runtime operation");
+      const runtime: OpenCodeRuntimeShape = {
+        startOpenCodeServerProcess: unused,
+        connectToOpenCodeServer: () =>
+          Effect.succeed({
+            url: "http://test.invalid",
+            version: "synthetic",
+            external: false,
+            exitCode: null,
+            ownedProcess: {
+              incarnation: Object.freeze({
+                directory: "/workspace",
+                pid: 123,
+                url: "http://test.invalid",
+                runtimeGeneration: "synthetic-physical-generation",
+              }),
+              isCurrent: Effect.succeed(true),
+            },
+          }),
+        createOpenCodeSdkClient: () => client,
+        runOpenCodeCommand: unused,
+        loadOpenCodeInventory: unused,
+        loadInventoryFromCli: unused,
+        loadOpenCodeSkills: unused,
+        loadSkillsFromCli: unused,
+      };
+      const adapter = makeOpenCodeAdapterV2({
+        instanceId,
+        authority,
+        settings: OPEN_CODE_TEST_SETTINGS,
+        environment: {},
+        runtime,
+        idAllocator,
+        serverConfig: {
+          cwd: "/workspace",
+          attachmentsDir: "/unused",
+        } as ServerConfig.ServerConfig["Service"],
+      });
+      const session = yield* adapter.openSession({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy: policy,
+        runtimeLifecycle: lifecycle,
+      });
+      authorized = false;
+      const create = yield* session
+        .ensureThread({ threadId, modelSelection, runtimePolicy: policy })
+        .pipe(Effect.flip);
+      assert.equal(create._tag, "ProviderAdapterEnsureThreadError");
+      if (!OpenCodeRuntimeError.is(create.cause))
+        return yield* Effect.die("Expected adoption currentness refusal");
+      assert.equal(create.cause.operation, "adoptServer");
+      const now = yield* DateTime.now;
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: ProviderThreadId.make("provider-thread-opencode-revoked-adoption"),
+        driver: OPENCODE_PROVIDER,
+        providerInstanceId: instanceId,
+        providerSessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver: OPENCODE_PROVIDER,
+          nativeId: "synthetic-native",
+          strength: "strong",
+        },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const resume = yield* session.resumeThread({ providerThread }).pipe(Effect.flip);
+      assert.equal(resume._tag, "ProviderAdapterResumeThreadError");
+      if (!OpenCodeRuntimeError.is(resume.cause))
+        return yield* Effect.die("Expected adoption currentness refusal");
+      assert.equal(resume.cause.operation, "adoptServer");
+      assert.deepEqual(requests, []);
     }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
 );

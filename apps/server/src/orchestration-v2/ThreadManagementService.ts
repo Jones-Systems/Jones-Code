@@ -278,6 +278,11 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
+  readonly stopCurrentThreadRuntime?: import("./Orchestrator.ts").OrchestratorV2Shape["stopCurrentThreadRuntime"];
+  readonly reviewImportedHistory?: Orchestrator.OrchestratorV2["Service"]["reviewImportedHistory"];
+  readonly startWithImportedHistory?: Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"];
+  readonly observeImportedHistoryStart?: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
+
   readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
@@ -788,7 +793,27 @@ const make = Effect.gen(function* () {
       return { type: "interrupt_requested", run: interruptibleRun, dispatch } as const;
     });
 
+  const reviewImported = orchestrator.reviewImportedHistory;
+  const reviewImportedHistory =
+    reviewImported === undefined
+      ? undefined
+      : (
+          input: Parameters<NonNullable<ThreadManagementServiceShape["reviewImportedHistory"]>>[0],
+        ) =>
+          ensureLegacyTranscript(input.threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new Orchestrator.OrchestratorProjectionError({ threadId: input.threadId, cause }),
+            ),
+            Effect.andThen(reviewImported(input)),
+          );
   return ThreadManagementService.of({
+    ...(orchestrator.stopCurrentThreadRuntime === undefined
+      ? {}
+      : { stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime }),
+    reviewImportedHistory,
+    startWithImportedHistory: orchestrator.startWithImportedHistory,
+    observeImportedHistoryStart: orchestrator.observeImportedHistoryStart,
     requestSelfSettlement: orchestrator.requestSelfSettlement,
     ensureLegacyTranscript,
     dispatch,

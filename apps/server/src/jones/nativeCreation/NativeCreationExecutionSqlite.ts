@@ -384,6 +384,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
       )
       .pipe(Effect.mapError(mapFailure));
   return {
+    assertExecutionCapability: eligible.pipe(Effect.mapError(mapFailure)),
     reserveExecutionCommandIdentities,
     recordExecutionAcceptance,
     readExecutionReference,

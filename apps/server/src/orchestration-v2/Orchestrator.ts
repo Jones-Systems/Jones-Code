@@ -1,3 +1,16 @@
+import * as CapturedRuntimeStop from "../jones/runtime/RuntimeStop.ts";
+import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
+import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
+import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
+import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
+import { OrchestrationV2Command as NativeWireCommand } from "@t3tools/contracts";
+import {
+  EnvironmentAuthenticatedPrincipal,
+  ImportedHistoryStart,
+  type ImportedHistoryDelivery,
+  type ImportedHistoryReview,
+  type ImportedHistoryOutcome,
+} from "@t3tools/contracts";
 import {
   type RecordedServerCommand,
   type LegacyGuardRejectionDeleteCommand,
@@ -301,6 +314,37 @@ export interface OrchestratorV2DispatchResult {
 }
 
 export interface OrchestratorV2Shape {
+  readonly stopCurrentThreadRuntime?: (
+    input: import("@t3tools/contracts").StopCurrentThreadRuntimeInput,
+  ) => Effect.Effect<
+    import("@t3tools/contracts").StopCurrentThreadRuntimeResult,
+    RuntimeStopStore.RuntimeStopError,
+    import("@t3tools/contracts").EnvironmentAuthenticatedPrincipal
+  >;
+  readonly reviewImportedHistory?: (input: {
+    readonly threadId: ThreadId;
+    readonly delivery: ImportedHistoryDelivery;
+  }) => Effect.Effect<
+    ImportedHistoryReview,
+    OrchestratorV2Error,
+    EnvironmentAuthenticatedPrincipal
+  >;
+  readonly startWithImportedHistory?: (
+    input: ImportedHistoryStart,
+  ) => Effect.Effect<
+    ImportedHistoryOutcome,
+    OrchestratorV2Error,
+    EnvironmentAuthenticatedPrincipal
+  >;
+  readonly observeImportedHistoryStart?: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+  }) => Effect.Effect<
+    ImportedHistoryOutcome | null,
+    OrchestratorV2Error,
+    EnvironmentAuthenticatedPrincipal
+  >;
+
   readonly requestWorkMode: (
     candidate: WorkModeCandidate,
   ) => Effect.Effect<
@@ -328,6 +372,10 @@ export interface OrchestratorV2Shape {
   ) => Effect.Effect<boolean, OrchestratorProjectionError>;
   readonly dispatch: (
     command: RecordedServerCommand,
+  ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
+  readonly dispatchNativeCreationStage?: (
+    command: NativeWireCommand,
+    lineage: NativeStage.NativeCreationStageDispatch,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly dispatchLegacyFailureDelete?: (
     command: LegacyFailureDeleteCommand,
@@ -886,11 +934,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
+  const capturedStop = yield* Effect.serviceOption(CapturedRuntimeStop.CurrentRuntimeStop);
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor;
   const terminalOwner = yield* Effect.serviceOption(TerminalManager);
+  const nativeRepository = yield* Effect.serviceOption(NativeRepository.NativeCreationRepository);
+  const nativeAuthority = yield* Effect.serviceOption(NativeAuthority.NativeCreationAuthority);
+  const validateNative = (
+    lineage: NativeStage.NativeCreationStageDispatch,
+    command: NativeWireCommand,
+  ) =>
+    Option.isSome(nativeRepository) && Option.isSome(nativeAuthority)
+      ? NativeStage.validateNativeCreationStage(lineage, command).pipe(
+          Effect.provideService(NativeRepository.NativeCreationRepository, nativeRepository.value),
+          Effect.provideService(NativeAuthority.NativeCreationAuthority, nativeAuthority.value),
+        )
+      : Effect.fail(
+          new NativeAuthority.NativeCreationAuthorityError({
+            code: "unsupported_authority",
+            message: "Native stage owners are unavailable",
+          }),
+        );
 
   const mapDispatchError =
     (command: OrchestrationV2ServerCommand) =>
@@ -1327,17 +1393,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
     });
 
-  const startNextQueuedRun = (threadId: ThreadId, options?: { readonly failedRunId?: RunId }) =>
+  const startNextQueuedRun = (
+    threadId: ThreadId,
+    options?: {
+      readonly failedRunId?: RunId;
+      readonly reviewed?: {
+        readonly commandId: CommandId;
+        readonly runId: RunId;
+        readonly messageId: MessageId;
+        readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+        readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
+      };
+    },
+  ) =>
     Effect.gen(function* () {
       // Every terminal run checks the queue. Only a deliverable queued run
       // needs the transcript for provider handoff and legacy import context.
-      if (!(yield* projectionStore.canStartQueuedRun(threadId))) return;
+      if (options?.reviewed === undefined && !(yield* projectionStore.canStartQueuedRun(threadId)))
+        return;
       const projection = yield* readCommandProjection(threadId);
       if (
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
         projection.runs.some(isBlockingRun) ||
-        projection.runs.some((run) => run.status === "queued" && run.queueHeld === true)
+        (options?.reviewed === undefined &&
+          projection.runs.some((run) => run.status === "queued" && run.queueHeld === true))
       ) {
         return;
       }
@@ -1357,6 +1437,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queuedRun = nextQueuedRun(projection);
       if (queuedRun === undefined) {
         return;
+      }
+      if (
+        options?.reviewed !== undefined &&
+        (queuedRun.id !== options.reviewed.runId ||
+          queuedRun.userMessageId !== options.reviewed.messageId)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: options.reviewed.commandId,
+          commandType: "thread.imported-history.start",
+          cause: "Reviewed delivery no longer leads the queue",
+        });
       }
       // A provider that just failed will likely fail the next message too.
       // Hold the queue so the user decides when to resume it. Validation
@@ -1431,7 +1522,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
 
-      const commandId = CommandId.make(`command:system:start-queued:${queuedRun.id}`);
+      const commandId =
+        options?.reviewed?.commandId ??
+        CommandId.make(`command:system:start-queued:${queuedRun.id}`);
       const now = yield* DateTime.now;
       const selectionChanged = !modelSelectionsEqual(
         projection.thread.modelSelection,
@@ -1671,6 +1764,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const startingRun: OrchestrationV2Run = {
         ...queuedRun,
         status: "starting",
+        ...(options?.reviewed === undefined ? {} : { queueHeld: false }),
         queuePosition: null,
         startedAt: null,
         contextHandoffId: activeHandoff?.id ?? null,
@@ -1782,7 +1876,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           session.status !== "stopped" &&
           session.status !== "error",
       );
-      yield* writeSystemEvents(
+      const recordPreparation = (
+        plannedEvents: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
+        plannedEffects: ReadonlyArray<PendingOrchestrationEffectV2>,
+      ) =>
+        Effect.gen(function* () {
+          const reviewed = options?.reviewed;
+          if (reviewed === undefined)
+            return yield* writeSystemEvents(plannedEvents, plannedEffects);
+          const withIds = yield* Effect.forEach(plannedEvents, makeSystemEvent);
+          yield* Ref.update(reviewed.events, (existing) => [...existing, ...withIds]);
+          yield* Ref.update(reviewed.effects, (existing) => [...existing, ...plannedEffects]);
+        });
+      yield* recordPreparation(
         [
           ...(selectionChanged
             ? [
@@ -1931,7 +2037,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         ],
       );
-    }).pipe(Effect.catch((cause) => failQueuedRunStart(threadId, cause)));
+    }).pipe(
+      Effect.catch((cause) =>
+        options?.reviewed === undefined ? failQueuedRunStart(threadId, cause) : Effect.fail(cause),
+      ),
+    );
 
   const resumeQueuedRuns = Effect.gen(function* () {
     const threadIds = yield* projectionStore.getRecoveryThreadIds("queued-runs");
@@ -10933,7 +11043,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
+    nativeLineage?: NativeStage.NativeCreationStageDispatch,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
+    const nativeCommand =
+      nativeLineage === undefined
+        ? undefined
+        : yield* Schema.decodeUnknownEffect(NativeWireCommand)(command).pipe(
+            mapDispatchError(command),
+          );
+    const nativeAcceptance =
+      nativeLineage !== undefined && nativeCommand !== undefined
+        ? yield* validateNative(nativeLineage, nativeCommand).pipe(mapDispatchError(command))
+        : undefined;
+    if (nativeLineage === undefined && Option.isSome(nativeRepository))
+      yield* NativeStage.refusePublicNativeReservation(command.commandId).pipe(
+        Effect.provideService(NativeRepository.NativeCreationRepository, nativeRepository.value),
+        mapDispatchError(command),
+      );
     yield* Effect.annotateCurrentSpan({
       "orchestration_v2.command_id": command.commandId,
       "orchestration_v2.command_type": command.type,
@@ -11114,6 +11240,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: "Legacy bootstrap receipt belongs to another command or immutable payload.",
           });
       }
+      if (
+        nativeAcceptance !== undefined &&
+        Option.isSome(nativeRepository) &&
+        nativeRepository.value.readExecutionReference
+      )
+        yield* nativeRepository.value
+          .readExecutionReference({
+            version: 2,
+            claimId: nativeAcceptance.claimId,
+            stageCommandId: nativeAcceptance.command.commandId,
+            effectId: `native-stage:${command.commandId}`,
+            stage: "native_command",
+          })
+          .pipe(mapDispatchError(command));
       if (command.type === "queue.resume") {
         yield* mapDispatchError(command)(startNextQueuedRun(command.threadId));
       }
@@ -11250,6 +11390,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+    if (
+      nativeAcceptance !== undefined &&
+      (plan.events.length === 0 ||
+        plan.effects.some((effect) => effect.request.type !== "provider-turn.start"))
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Native stage requires a recorded event and qualified effect envelope",
+      });
+    if (nativeLineage !== undefined && nativeCommand !== undefined)
+      yield* validateNative(nativeLineage, nativeCommand).pipe(mapDispatchError(command));
     if (plan.events.length === 0) {
       // A settle that ended nothing still records its receipt: a replayed Stop
       // effect then finds it instead of settling work that appeared since.
@@ -11285,7 +11437,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         acceptedAt,
         events: plan.events,
-        effects: plan.effects,
+        effects:
+          nativeAcceptance === undefined
+            ? plan.effects
+            : plan.effects.map((effect) => ({
+                ...effect,
+                nativeCreationExecutionReference: {
+                  version: 2 as const,
+                  claimId: nativeAcceptance.claimId,
+                  stageCommandId: nativeAcceptance.command.commandId,
+                  effectId: effect.id,
+                  stage: "native_command" as const,
+                },
+              })),
+        ...(nativeAcceptance === undefined ? {} : { nativeCreation: nativeAcceptance }),
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
@@ -12018,7 +12183,134 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+  const importedTarget = (threadId: ThreadId, delivery: ImportedHistoryDelivery) =>
+    Effect.gen(function* () {
+      const projection = yield* readCommandProjection(threadId);
+      const model =
+        delivery.type === "message" && delivery.command.type === "message.dispatch"
+          ? (delivery.command.modelSelection ?? projection.thread.modelSelection)
+          : delivery.type === "queued_run"
+            ? (projection.runs.find((run) => run.id === delivery.runId)?.modelSelection ??
+              projection.thread.modelSelection)
+            : projection.thread.modelSelection;
+      const adapter = yield* providerAdapters.get(model.instanceId);
+      return yield* adapter.getCapabilities();
+    });
+  const importedError = (threadId: ThreadId, cause: unknown) =>
+    new OrchestratorProjectionError({ threadId, cause });
+  const reviewImportedHistory = (input: {
+    threadId: ThreadId;
+    delivery: ImportedHistoryDelivery;
+  }) =>
+    Effect.gen(function* () {
+      const principal = yield* EnvironmentAuthenticatedPrincipal;
+      if (eventSink.reviewImportedHistory === undefined)
+        return {
+          status: "unavailable" as const,
+          reviewedBasis: null,
+          reason: "review_owner_unavailable",
+        };
+      const targetCapabilities = yield* importedTarget(input.threadId, input.delivery);
+      return yield* eventSink.reviewImportedHistory({ ...input, principal, targetCapabilities });
+    }).pipe(Effect.mapError((cause) => importedError(input.threadId, cause)));
+  const observeImportedHistoryStart = (input: { threadId: ThreadId; commandId: CommandId }) =>
+    Effect.gen(function* () {
+      const principal = yield* EnvironmentAuthenticatedPrincipal;
+      if (eventSink.readImportedHistoryChoice === undefined) return null;
+      return yield* eventSink.readImportedHistoryChoice({ ...input, principal });
+    }).pipe(Effect.mapError((cause) => importedError(input.threadId, cause)));
+  const startWithImportedHistory = (candidate: ImportedHistoryStart) =>
+    Effect.gen(function* () {
+      const principal = yield* EnvironmentAuthenticatedPrincipal;
+      const command = yield* Schema.decodeUnknownEffect(ImportedHistoryStart)(candidate, {
+        onExcessProperty: "error",
+      });
+      return yield* threadDispatch.withLock(
+        command.threadId,
+        Effect.gen(function* () {
+          if (eventSink.readImportedHistoryChoice === undefined)
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Imported choice owner is unavailable",
+            });
+          const prior = yield* eventSink.readImportedHistoryChoice({
+            threadId: command.threadId,
+            commandId: command.commandId,
+            principal,
+          });
+          const targetCapabilities = yield* importedTarget(command.threadId, command.delivery);
+          const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+          const effects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);
+          if (prior === null) {
+            if (eventSink.reviewImportedHistory === undefined)
+              return yield* new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: "Imported review owner is unavailable",
+              });
+            const review = yield* eventSink.reviewImportedHistory({
+              threadId: command.threadId,
+              delivery: command.delivery,
+              principal,
+              targetCapabilities,
+            });
+            if (review.status === "available" && review.reviewedBasis === command.reviewedBasis) {
+              if (command.delivery.type === "queued_run") {
+                yield* startNextQueuedRun(command.threadId, {
+                  reviewed: {
+                    commandId: command.commandId,
+                    runId: command.delivery.runId,
+                    messageId: command.delivery.messageId,
+                    events,
+                    effects,
+                  },
+                });
+              } else {
+                if (
+                  command.delivery.command.type !== "message.dispatch" ||
+                  command.delivery.command.commandId !== command.commandId ||
+                  command.delivery.command.threadId !== command.threadId
+                )
+                  return yield* new OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "Imported delivery IDs differ",
+                  });
+                yield* dispatchMessage(command.delivery.command, events, effects);
+              }
+            }
+          }
+          yield* eventSink.commitCommand({
+            commandId: command.commandId,
+            threadId: command.threadId,
+            commandType: command.type,
+            acceptedAt: yield* DateTime.now,
+            events: yield* Ref.get(events),
+            effects: yield* Ref.get(effects),
+            importedHistory: { command, principal, targetCapabilities },
+          });
+          const outcome = yield* eventSink.readImportedHistoryChoice({
+            threadId: command.threadId,
+            commandId: command.commandId,
+            principal,
+          });
+          if (outcome === null)
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Imported choice outcome is unknown",
+            });
+          return outcome;
+        }),
+      );
+    }).pipe(Effect.mapError((cause) => importedError(candidate.threadId, cause)));
+
   return OrchestratorV2.of({
+    ...(Option.isSome(capturedStop) ? { stopCurrentThreadRuntime: capturedStop.value.stop } : {}),
+    reviewImportedHistory,
+    startWithImportedHistory,
+    observeImportedHistoryStart,
     requestWorkMode,
     requestSelfSettlement,
     resumeQueuedRuns,
@@ -12026,6 +12318,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     recoverDelegatedTask,
     delegatedTaskResultPending,
     dispatch: dispatchWithReceipt,
+    dispatchNativeCreationStage: (command, lineage) =>
+      threadDispatch.withLock(
+        commandThreadId(command),
+        dispatchWithReceiptEffect(command, lineage),
+      ),
     dispatchLegacyGuardRejectionDelete: dispatchWithReceipt,
     dispatchLegacyFailureDelete: dispatchWithReceipt,
     getTimelinePage: (threadId, options) =>

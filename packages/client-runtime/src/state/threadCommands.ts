@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import { Atom } from "effect/unstable/reactivity";
 import {
   WS_METHODS,
+  ORCHESTRATION_V2_WS_METHODS,
   type EnvironmentId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
@@ -307,6 +308,24 @@ export function createThreadEnvironmentAtoms<R, E>(
     revertCheckpoint: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:revert-checkpoint",
       execute: (input: RevertThreadCheckpointInput) => revertThreadCheckpoint(input),
+      scheduler,
+      concurrency,
+    }),
+    readCurrentRuntimeStopTarget: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:read-current-runtime-stop-target",
+      tag: ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget,
+      scheduler,
+      concurrency,
+    }),
+    stopCurrentThreadRuntime: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:stop-current-runtime",
+      tag: ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
+      scheduler,
+      concurrency,
+    }),
+    observeCurrentThreadRuntimeStop: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:observe-current-runtime-stop",
+      tag: ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
       scheduler,
       concurrency,
     }),

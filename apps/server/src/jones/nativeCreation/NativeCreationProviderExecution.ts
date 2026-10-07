@@ -19,6 +19,9 @@ export class NativeCreationProviderExecutionError extends Schema.TaggedError<Nat
 export class NativeCreationProviderExecutor extends Context.Service<
   NativeCreationProviderExecutor,
   {
+    readonly assertAvailable?: (
+      input: Authority.NativeCreationAuthorityInput,
+    ) => Effect.Effect<void, NativeCreationProviderExecutionError>;
     readonly executeWholeOperation: (input: {
       readonly effect: OrchestrationEffectV2;
       readonly context: Authority.NativeCreationExecutionContextV2;
