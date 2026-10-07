@@ -402,53 +402,109 @@ export const automationStatus = DesktopIpc.makeIpcMethod({
   }),
 });
 
+const automationResultEnvelope = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("previewAutomationResult"),
+    ok: Schema.Literal(true),
+    result: Schema.Unknown,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("previewAutomationResult"),
+    ok: Schema.Literal(false),
+    error: Schema.Struct({
+      _tag: Schema.Literal("PreviewAutomationNotStartedError"),
+      outcome: Schema.Literal("not_started"),
+    }),
+  }),
+]);
+
+const automationResult = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  deadlineMs: number | undefined,
+) =>
+  deadlineMs === undefined
+    ? effect
+    : effect.pipe(
+        Effect.map((result) => ({
+          type: "previewAutomationResult" as const,
+          ok: true as const,
+          result,
+        })),
+        Effect.catchIf(Schema.is(PreviewManager.PreviewAutomationNotStartedError), () =>
+          Effect.succeed({
+            type: "previewAutomationResult" as const,
+            ok: false as const,
+            error: {
+              _tag: "PreviewAutomationNotStartedError" as const,
+              outcome: "not_started" as const,
+            },
+          }),
+        ),
+      );
+
 export const automationSnapshot = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL,
   payload: DesktopPreviewTabInputSchema,
-  result: PreviewAutomationSnapshot,
-  handler: Effect.fn("desktop.ipc.preview.automationSnapshot")(function* ({ tabId }) {
+  result: Schema.Union([PreviewAutomationSnapshot, automationResultEnvelope]),
+  handler: Effect.fn("desktop.ipc.preview.automationSnapshot")(function* ({ tabId, deadlineMs }) {
     const manager = yield* PreviewManager.PreviewManager;
-    return yield* manager.automationSnapshot(tabId);
+    return yield* automationResult(manager.automationSnapshot(tabId, deadlineMs), deadlineMs);
   }),
 });
 
 export const automationClick = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL,
   payload: DesktopPreviewAutomationClickInputSchema,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.automationClick")(function* ({ tabId, input }) {
+  result: Schema.Union([Schema.Void, automationResultEnvelope]),
+  handler: Effect.fn("desktop.ipc.preview.automationClick")(function* ({
+    tabId,
+    input,
+    deadlineMs,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationClick(tabId, input);
+    return yield* automationResult(manager.automationClick(tabId, input, deadlineMs), deadlineMs);
   }),
 });
 
 export const automationType = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL,
   payload: DesktopPreviewAutomationTypeInputSchema,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.automationType")(function* ({ tabId, input }) {
+  result: Schema.Union([Schema.Void, automationResultEnvelope]),
+  handler: Effect.fn("desktop.ipc.preview.automationType")(function* ({
+    tabId,
+    input,
+    deadlineMs,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationType(tabId, input);
+    return yield* automationResult(manager.automationType(tabId, input, deadlineMs), deadlineMs);
   }),
 });
 
 export const automationPress = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL,
   payload: DesktopPreviewAutomationPressInputSchema,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.automationPress")(function* ({ tabId, input }) {
+  result: Schema.Union([Schema.Void, automationResultEnvelope]),
+  handler: Effect.fn("desktop.ipc.preview.automationPress")(function* ({
+    tabId,
+    input,
+    deadlineMs,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationPress(tabId, input);
+    return yield* automationResult(manager.automationPress(tabId, input, deadlineMs), deadlineMs);
   }),
 });
 
 export const automationScroll = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_SCROLL_CHANNEL,
   payload: DesktopPreviewAutomationScrollInputSchema,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.automationScroll")(function* ({ tabId, input }) {
+  result: Schema.Union([Schema.Void, automationResultEnvelope]),
+  handler: Effect.fn("desktop.ipc.preview.automationScroll")(function* ({
+    tabId,
+    input,
+    deadlineMs,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationScroll(tabId, input);
+    return yield* automationResult(manager.automationScroll(tabId, input, deadlineMs), deadlineMs);
   }),
 });
 
@@ -456,19 +512,30 @@ export const automationEvaluate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_EVALUATE_CHANNEL,
   payload: DesktopPreviewAutomationEvaluateInputSchema,
   result: Schema.Unknown,
-  handler: Effect.fn("desktop.ipc.preview.automationEvaluate")(function* ({ tabId, input }) {
+  handler: Effect.fn("desktop.ipc.preview.automationEvaluate")(function* ({
+    tabId,
+    input,
+    deadlineMs,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
-    return yield* manager.automationEvaluate(tabId, input);
+    return yield* automationResult(
+      manager.automationEvaluate(tabId, input, deadlineMs),
+      deadlineMs,
+    );
   }),
 });
 
 export const automationWaitFor = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL,
   payload: DesktopPreviewAutomationWaitForInputSchema,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.automationWaitFor")(function* ({ tabId, input }) {
+  result: Schema.Union([Schema.Void, automationResultEnvelope]),
+  handler: Effect.fn("desktop.ipc.preview.automationWaitFor")(function* ({
+    tabId,
+    input,
+    deadlineMs,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationWaitFor(tabId, input);
+    return yield* automationResult(manager.automationWaitFor(tabId, input, deadlineMs), deadlineMs);
   }),
 });
 

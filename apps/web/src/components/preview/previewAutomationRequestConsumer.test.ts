@@ -10,6 +10,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  PreviewAutomationOperationError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
@@ -53,6 +54,165 @@ const consumerState = (handleRequest: (request: PreviewAutomationRequest) => Pro
 });
 
 describe("previewAutomationRequestConsumer", () => {
+  it("preserves desktop not-started after the host wraps the failure", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial(false),
+    );
+    const failure = PreviewAutomationOperationError.fromCause({
+      requestId: "admission",
+      operation: "click",
+      environmentId,
+      threadId,
+      tabId,
+      cause: { _tag: "PreviewAutomationNotStartedError", outcome: "not_started" },
+    });
+    const handle = vi.fn(async () => {
+      throw failure;
+    });
+    const respond = vi.fn(async (_response: PreviewAutomationResponse) => undefined);
+    const state = consumerState(handle);
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        connectionAtom: state.connectionAtom,
+        environmentId,
+        requestHandlerAtom: state.requestHandlerAtom,
+        respond,
+        label: "test:wrapped-admission",
+      }),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(requestEvent("admission", { operation: "click", tabId })),
+    );
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce());
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: false,
+        error: expect.objectContaining({
+          _tag: "PreviewAutomationTimeoutError",
+          outcome: "not_started",
+        }),
+      }),
+    );
+    expect(handle).toHaveBeenCalledOnce();
+    registry.dispose();
+  });
+  it("answers ping while another handler is stalled", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial(false),
+    );
+    const handle = vi.fn(() => new Promise<unknown>(() => {}));
+    const respond = vi.fn(async (_response: PreviewAutomationResponse) => undefined);
+    const state = consumerState(handle);
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        connectionAtom: state.connectionAtom,
+        environmentId,
+        requestHandlerAtom: state.requestHandlerAtom,
+        respond,
+        label: "test:ping-bypass",
+      }),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(requestEvent("blocked", { operation: "evaluate", tabId })),
+    );
+    registry.set(requestsAtom, AsyncResult.success(requestEvent("ping", { operation: "ping" })));
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce());
+    expect(handle).toHaveBeenCalledOnce();
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "ping", result: { alive: true } }),
+    );
+    registry.dispose();
+  });
+
+  it("retries the same response without repeating browser execution", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial(false),
+    );
+    const handle = vi.fn(async () => "applied");
+    const respond = vi
+      .fn(async (_response: PreviewAutomationResponse) => undefined)
+      .mockRejectedValueOnce(new Error("response transport lost"));
+    const state = consumerState(handle);
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        connectionAtom: state.connectionAtom,
+        environmentId,
+        requestHandlerAtom: state.requestHandlerAtom,
+        respond,
+        label: "test:response-retry",
+      }),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(requestEvent("mutation", { operation: "click", tabId })),
+    );
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+    expect(handle).toHaveBeenCalledOnce();
+    expect(respond.mock.calls[0]![0]).toEqual(respond.mock.calls[1]![0]);
+    registry.dispose();
+  });
+
+  it("orders snapshot after earlier controlled preflight on the exact tab", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial(false),
+    );
+    let resolvePending!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => {
+      resolvePending = resolve;
+    });
+    const handle = vi.fn((request: PreviewAutomationRequest) =>
+      request.operation === "click" ? pending : Promise.resolve("snapshot"),
+    );
+    const respond = vi.fn(async (_response: PreviewAutomationResponse) => undefined);
+    const state = consumerState(handle);
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        connectionAtom: state.connectionAtom,
+        environmentId,
+        requestHandlerAtom: state.requestHandlerAtom,
+        respond,
+        label: "test:snapshot-barrier",
+      }),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(requestEvent("mutation", { operation: "click", tabId })),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(requestEvent("barrier", { operation: "snapshot", tabId })),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(
+        requestEvent("other-tab", { operation: "snapshot", tabId: PreviewTabId.make("tab-2") }),
+      ),
+    );
+    await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(2));
+    expect(handle.mock.calls.map(([request]) => request.requestId)).toEqual([
+      "mutation",
+      "other-tab",
+    ]);
+    resolvePending(undefined);
+    await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(3));
+    expect(handle.mock.calls[2]![0].requestId).toBe("barrier");
+    registry.dispose();
+  });
+
   it("acknowledges a replacement stream before consuming requests from it", async () => {
     const requestsAtom = Atom.make(
       AsyncResult.success<PreviewAutomationStreamEvent, Error>({

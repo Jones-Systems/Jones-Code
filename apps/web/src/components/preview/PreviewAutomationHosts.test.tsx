@@ -48,7 +48,10 @@ const mocks = vi.hoisted(() => ({
   resize: vi.fn(),
   respond:
     vi.fn<
-      (target: { environmentId: EnvironmentId; input: PreviewAutomationResponse }) => Promise<void>
+      (target: {
+        environmentId: EnvironmentId;
+        input: PreviewAutomationResponse;
+      }) => Promise<void | AtomCommandResult<void, Error>>
     >(),
   focus: vi.fn<() => Promise<AtomCommandResult<void, Error>>>(),
 }));
@@ -165,6 +168,20 @@ afterEach(async () => {
 });
 
 describe("PreviewAutomationHosts open", () => {
+  it("retries a settled RPC failure without executing the browser operation again", async () => {
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("Response RPC failed"))))
+      .mockImplementationOnce(async ({ input }) => response.resolve(input));
+    await act(async () => {
+      appAtomRegistry.set(requestsAtom, AsyncResult.success(requestEvent));
+      await response.promise;
+    });
+    expect(mocks.respond).toHaveBeenCalledTimes(2);
+    expect(mocks.respond.mock.calls[0]![0].input).toEqual(mocks.respond.mock.calls[1]![0].input);
+    expect(mocks.open).toHaveBeenCalledOnce();
+    await expect(response.promise).resolves.toMatchObject({ ok: true, requestId: "open-request" });
+  });
   it("waits for saved settings before opening a tab with the configured profile and viewport", async () => {
     const readStarted = deferred<void>();
     const read = deferred<ClientSettings>();

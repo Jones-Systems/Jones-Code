@@ -84,7 +84,7 @@ import {
   waitForNavigationReadiness,
 } from "./previewNavigationReadiness";
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
-import { createPreviewAutomationClientId } from "./previewAutomationClientId";
+import { resolvePreviewAutomationClientId } from "./previewAutomationClientId";
 import {
   needsPreviewAutomationSessionSync,
   resolvePreviewAutomationOpenTab,
@@ -198,7 +198,8 @@ const waitForRenderedViewport = async (
   },
 ): Promise<PreviewRenderedViewportSize> => {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
+  let readyViewport: PreviewRenderedViewportSize | null = null;
+  const ready = await waitForHostReadiness(deadline, async () => {
     assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, context);
     try {
       const webview = findPreviewWebview(runtimeTabId);
@@ -214,14 +215,16 @@ const waitForRenderedViewport = async (
           renderedViewport,
         })
       ) {
-        return renderedViewport;
+        readyViewport = renderedViewport;
+        return true;
       }
     } catch {
       // Registration and navigation can transiently replace the guest while
       // React applies the server snapshot. Retry until the operation deadline.
     }
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
-  }
+    return false;
+  });
+  if (ready && readyViewport) return readyViewport;
   throw new PreviewAutomationViewportTimeoutError({
     ...context,
     tabId,
@@ -345,12 +348,16 @@ function PreviewAutomationHost(props: {
   );
   const lastFocusReportRef = useRef<string | null>(null);
   const registry = useContext(RegistryContext);
-  const [automationClientId] = useState(createPreviewAutomationClientId);
+  const [automationClientId] = useState(() =>
+    resolvePreviewAutomationClientId(environmentId, runtimeIdentity?.runtimeInstanceId),
+  );
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
       environmentId,
       supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
+      supportsPing: true,
+      supportsSnapshotBarrier: true,
       ...(runtimeIdentity === null ? {} : { runtimeIdentity }),
     }),
     [automationClientId, environmentId, runtimeIdentity],
@@ -384,6 +391,8 @@ function PreviewAutomationHost(props: {
     async (request: PreviewAutomationRequest): Promise<unknown> => {
       // Session sync and tab creation consume the same budget as overlay registration.
       const hostDeadlineMs = Date.now() + resolveHostWaitBudgetMs(request.timeoutMs);
+      const remainingBudget = (timeoutMs = request.timeoutMs) =>
+        Math.max(0, Math.min(timeoutMs, hostDeadlineMs - Date.now()));
       const threadRef: ScopedThreadRef = {
         environmentId,
         threadId: request.threadId,
@@ -456,6 +465,8 @@ function PreviewAutomationHost(props: {
           };
         };
         switch (request.operation) {
+          case "ping":
+            return { alive: true };
           case "status":
             return await currentStatus(threadRef, tabId);
           case "open": {
@@ -590,7 +601,7 @@ function PreviewAutomationHost(props: {
                 activeRuntimeTabId,
                 request.operation,
                 "load",
-                request.timeoutMs,
+                remainingBudget(),
               );
             }
             return await currentStatus(threadRef, activeTabId);
@@ -613,7 +624,7 @@ function PreviewAutomationHost(props: {
               ready.runtimeTabId,
               request.operation,
               input.readiness ?? "load",
-              input.timeoutMs ?? request.timeoutMs,
+              remainingBudget(input.timeoutMs ?? request.timeoutMs),
             );
             return await currentStatus(threadRef, ready.tabId);
           }
@@ -654,7 +665,7 @@ function PreviewAutomationHost(props: {
                 ready.tabId,
                 ready.runtimeTabId,
                 setting,
-                input.timeoutMs ?? request.timeoutMs,
+                remainingBudget(input.timeoutMs ?? request.timeoutMs),
                 {
                   requestId: request.requestId,
                   operation: request.operation,
@@ -708,7 +719,7 @@ function PreviewAutomationHost(props: {
           }
           case "snapshot": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.snapshot(ready.runtimeTabId);
+            return await ready.bridge.automation.snapshot(ready.runtimeTabId, hostDeadlineMs);
           }
           case "click": {
             const ready = await requireReadyTab();
@@ -716,6 +727,7 @@ function PreviewAutomationHost(props: {
               ready.bridge.automation.click(
                 ready.runtimeTabId,
                 request.input as Parameters<typeof ready.bridge.automation.click>[1],
+                hostDeadlineMs,
               ),
             );
           }
@@ -724,6 +736,7 @@ function PreviewAutomationHost(props: {
             return await ready.bridge.automation.type(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.type>[1],
+              hostDeadlineMs,
             );
           }
           case "press": {
@@ -731,6 +744,7 @@ function PreviewAutomationHost(props: {
             return await ready.bridge.automation.press(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.press>[1],
+              hostDeadlineMs,
             );
           }
           case "scroll": {
@@ -738,6 +752,7 @@ function PreviewAutomationHost(props: {
             return await ready.bridge.automation.scroll(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.scroll>[1],
+              hostDeadlineMs,
             );
           }
           case "evaluate": {
@@ -745,6 +760,7 @@ function PreviewAutomationHost(props: {
             return await ready.bridge.automation.evaluate(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.evaluate>[1],
+              hostDeadlineMs,
             );
           }
           case "waitFor": {
@@ -752,6 +768,7 @@ function PreviewAutomationHost(props: {
             return await ready.bridge.automation.waitFor(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.waitFor>[1],
+              hostDeadlineMs,
             );
           }
           case "recordingStart": {
@@ -838,11 +855,14 @@ function PreviewAutomationHost(props: {
         connectionAtom: automationConnectionAtom,
         environmentId,
         requestHandlerAtom,
-        respond: (response) =>
-          respondToAutomation({
+        respond: async (response) => {
+          const result = await respondToAutomation({
             environmentId,
             input: response,
-          }),
+          });
+          if (result?._tag === "Failure") raiseAtomCommandFailure(result);
+          return result;
+        },
         label: `preview:automation-host:${environmentId}:${automationClientId}`,
       }),
     [

@@ -172,6 +172,24 @@ const targetNotEditableDiagnostics = (
   };
 };
 
+export class PreviewAutomationNotStartedHostError extends Schema.TaggedError<PreviewAutomationNotStartedHostError>()(
+  "PreviewAutomationNotStartedHostError",
+  {
+    requestId: TrimmedNonEmptyString,
+    operation: PreviewAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: Schema.NullOr(PreviewTabId),
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationTimeoutError" as const;
+  }
+  override get message(): string {
+    return "The browser action did not start within its request budget.";
+  }
+}
+
 export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewAutomationOperationError>()(
   "PreviewAutomationOperationError",
   {
@@ -187,6 +205,14 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
     input: PreviewAutomationOperationContext & { readonly cause: unknown },
   ): PreviewAutomationHostError {
     if (isPreviewAutomationHostError(input.cause)) return input.cause;
+    if (
+      typeof input.cause === "object" &&
+      input.cause !== null &&
+      "_tag" in input.cause &&
+      input.cause._tag === "PreviewAutomationNotStartedError"
+    ) {
+      return new PreviewAutomationNotStartedHostError(input);
+    }
     const diagnostics = targetNotEditableDiagnostics(input.cause);
     return diagnostics
       ? new PreviewAutomationTargetNotEditableHostError({
@@ -220,11 +246,13 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetNotEditableHostError,
+  PreviewAutomationNotStartedHostError,
   PreviewAutomationOperationError,
 ]);
 export type PreviewAutomationHostError = typeof PreviewAutomationHostError.Type;
 
 const isPreviewAutomationHostError = Schema.is(PreviewAutomationHostError);
+const isPreviewAutomationNotStartedHostError = Schema.is(PreviewAutomationNotStartedHostError);
 
 export function serializePreviewAutomationHostError(
   error: PreviewAutomationHostError,
@@ -238,6 +266,7 @@ export function serializePreviewAutomationHostError(
   return {
     _tag: "responseTag" in error ? error.responseTag : error._tag,
     message: error.message,
+    ...(isPreviewAutomationNotStartedHostError(error) ? { outcome: "not_started" as const } : {}),
     ...(Object.keys(detail).length === 0 ? {} : { detail }),
   };
 }
