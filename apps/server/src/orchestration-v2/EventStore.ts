@@ -1,11 +1,8 @@
 import {
-  type ApplicationProjectEvent,
-  type ApplicationStoredEvent,
-  CommandId,
-  OrchestrationV2DomainEvent,
-  OrchestrationV2StoredEvent,
-  ThreadId,
-} from "@t3tools/contracts";
+  type RecordedEvent as OrchestrationV2RecordedEvent,
+  type RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
+} from "./RecordedTypes.ts";
+import { type ApplicationProjectEvent, CommandId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -52,8 +49,8 @@ export type EventStoreV2Error = typeof EventStoreV2Error.Type;
 export interface EventStoreV2Shape {
   readonly append: (input: {
     readonly commandId?: CommandId;
-    readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
-  }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventStoreV2Error>;
+    readonly events: ReadonlyArray<OrchestrationV2RecordedEvent>;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationV2RecordedStoredEvent>, EventStoreV2Error>;
   readonly appendProjectEvent: (
     event: OrchestrationEventStore.UnsequencedProjectEvent,
   ) => Effect.Effect<ApplicationProjectEvent, EventStoreV2Error>;
@@ -61,18 +58,21 @@ export interface EventStoreV2Shape {
     readonly afterSequence?: number;
     readonly throughSequence?: number;
     readonly threadId?: ThreadId;
-    readonly eventType?: OrchestrationV2DomainEvent["type"];
+    readonly commandId?: CommandId;
+    readonly eventType?: OrchestrationV2RecordedEvent["type"];
     readonly limit?: number;
-  }) => Stream.Stream<OrchestrationV2StoredEvent, EventStoreV2Error>;
+  }) => Stream.Stream<OrchestrationV2RecordedStoredEvent, EventStoreV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
-  }) => Stream.Stream<OrchestrationV2StoredEvent, EventStoreV2Error>;
+  }) => Stream.Stream<OrchestrationV2RecordedStoredEvent, EventStoreV2Error>;
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventStoreV2Error>;
   /** Latest sequence across project and V2 thread events. */
   readonly latestApplicationSequence: Effect.Effect<number, EventStoreV2Error>;
-  readonly publishCommitted: (events: ReadonlyArray<ApplicationStoredEvent>) => Effect.Effect<void>;
+  readonly publishCommitted: (
+    events: ReadonlyArray<OrchestrationEventStore.ApplicationRecordedEvent>,
+  ) => Effect.Effect<void>;
 }
 
 export class EventStoreV2 extends Context.Service<EventStoreV2, EventStoreV2Shape>()(
@@ -93,6 +93,7 @@ const baseLayer: Layer.Layer<EventStoreV2, never, OrchestrationEventStore.Orches
               ? {}
               : { throughSequence: input.throughSequence }),
             ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
+            ...(input?.commandId === undefined ? {} : { commandId: input.commandId }),
             ...(input?.eventType === undefined ? {} : { eventType: input.eventType }),
             ...(input?.limit === undefined ? {} : { limit: input.limit }),
           })

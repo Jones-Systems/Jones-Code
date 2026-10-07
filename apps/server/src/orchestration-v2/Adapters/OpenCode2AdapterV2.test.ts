@@ -3666,6 +3666,8 @@ describe("OpenCode2 adapter", () => {
           ],
         }),
         reply("session.update", null),
+        // The target directory's models are read before the session first runs there.
+        ...directoryModels(target),
         // OpenCode makes the fork where its source runs; the target thread runs elsewhere.
         out("session.move", { sessionID: FORK, directory: target }),
         reply("session.move", null),
@@ -3674,6 +3676,32 @@ describe("OpenCode2 adapter", () => {
         sourceProviderThread: thread,
         targetThreadId: ThreadId.make("thread:opencode2-adapter:fork"),
         runtimePolicy: { ...policy(), cwd: target },
+      });
+      assert.equal(forked.nativeThreadRef?.nativeId, FORK);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps a fork in its source's directory without reading models or moving it", () =>
+    Effect.gen(function* () {
+      const FORK = "ses_f1484db83ffeLGtrRCFimo1H0e";
+      // The replay fails on any model read or move: the target runs where the fork was made.
+      const { runtime, thread } = yield* resumed([
+        out("session.fork", { sessionID: SESSION }),
+        replyData("session.fork", sessionInfo({ id: FORK })),
+        out("session.update", {
+          sessionID: FORK,
+          permissions: [
+            { action: "*", resource: "*", effect: "allow" },
+            { action: "t3-code-*", resource: "*", effect: "deny" },
+            { action: "t3-code-thread_opencode2-adapter_fork_*", resource: "*", effect: "allow" },
+          ],
+        }),
+        reply("session.update", null),
+      ]);
+      const forked = yield* runtime.forkThread({
+        sourceProviderThread: thread,
+        targetThreadId: ThreadId.make("thread:opencode2-adapter:fork"),
+        runtimePolicy: policy(),
       });
       assert.equal(forked.nativeThreadRef?.nativeId, FORK);
     }).pipe(Effect.scoped),

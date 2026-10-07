@@ -149,7 +149,69 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export interface LegacyWorktreeBeforeObservation {
+  readonly parentPath: string;
+  readonly parentRealPath: string;
+  readonly parentDevice: string;
+  readonly parentInode: string;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
+  readonly targetRefAbsent: true;
+  readonly registrationAbsent: true;
+}
+
+export interface LegacyWorktreeMaterialClaim {
+  readonly path: string;
+  readonly realPath: string;
+  readonly device: string;
+  readonly inode: string;
+  readonly parentRealPath: string;
+  readonly gitDirectory: string;
+  readonly commonDirectory: string;
+  readonly registeredPath: string;
+  readonly headRef: string;
+  readonly headOid: string;
+  readonly parentDevice?: string | undefined;
+  readonly parentInode?: string | undefined;
+  readonly dotGitDevice?: string | undefined;
+  readonly dotGitInode?: string | undefined;
+  readonly gitDirectoryDevice?: string | undefined;
+  readonly gitDirectoryInode?: string | undefined;
+  readonly commonDirectoryDevice?: string | undefined;
+  readonly commonDirectoryInode?: string | undefined;
+}
+
+export interface LegacyWorktreePreparationStep {
+  readonly kind: "worktree.add" | "worktree.submodules" | "worktree.base-config";
+  readonly cwd: string;
+  readonly args: ReadonlyArray<string>;
+  readonly worktreePath: string;
+  readonly commonDirectory: string;
+  readonly baseCommitOid: string;
+  readonly targetRef: string;
+  readonly before?: LegacyWorktreeBeforeObservation;
+}
+
+export interface LegacyWorktreePreparationHooks {
+  /** Affirmative owner refusal after exact intent readback and before invocation. */
+  readonly neverInvoked?: (
+    step: LegacyWorktreePreparationStep,
+    reason: "input_validation_failed",
+  ) => Effect.Effect<void, Error>;
+  readonly beforeEffect: (step: LegacyWorktreePreparationStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyWorktreePreparationStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface CreateWorktreeOptions {
+  /** Revalidates the original actor before each native mutation; a refusal ends this operation. */
+  readonly revalidateMutation?: Effect.Effect<void, Error>;
+
+  /** Private legacy journaling; independent of the producer's physical mutation guard. */
+  readonly legacyPreparation?: LegacyWorktreePreparationHooks;
   readonly progress?: CreateWorktreeProgress;
   /**
    * The project-over-environment `worktreeSubmodules` setting. Null (or
@@ -196,7 +258,30 @@ export interface GitRangeContext {
   diffPatch: string;
 }
 
+export interface LegacyBranchRenameStep {
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly oldRef: string;
+  readonly oldOid: string;
+  readonly targetRef: string;
+  readonly exactName: boolean;
+  readonly args: ReadonlyArray<string>;
+}
+
+export interface LegacyBranchRenameHooks {
+  readonly before: LegacyWorktreeBeforeObservation;
+  readonly claim: LegacyWorktreeMaterialClaim;
+  readonly beforeEffect: (step: LegacyBranchRenameStep) => Effect.Effect<void, Error>;
+  readonly afterEffect: (
+    step: LegacyBranchRenameStep,
+    outcome: "settled_success" | "failed_or_unknown",
+    claim?: LegacyWorktreeMaterialClaim,
+  ) => Effect.Effect<void, Error>;
+}
+
 export interface GitRenameBranchInput {
+  readonly revalidateMutation?: Effect.Effect<void, Error>;
+  /** Exact private preparation journal, independent of current physical admission. */
+  readonly legacyPreparation?: LegacyBranchRenameHooks;
   /** Fail on a name collision instead of appending a numeric suffix. */
   exactName?: boolean;
   cwd: string;

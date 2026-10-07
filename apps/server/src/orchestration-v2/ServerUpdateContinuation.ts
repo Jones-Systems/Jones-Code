@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as EventSink from "./EventSink.ts";
+import { makeCommitTransaction } from "./CommitTransaction.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -15,11 +16,12 @@ const mark = (optedInOnly: boolean) =>
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sink = yield* EventSink.EventSinkV2;
     const sql = yield* SqlClient.SqlClient;
+    const commit = yield* makeCommitTransaction();
     const settings = yield* ServerSettings.ServerSettingsService;
     const preferences = optedInOnly ? yield* settings.getSettings : null;
     // A passive outbox record survives process loss without issuing a live prompt.
     // The transaction also rolls back every new marker if preparation fails.
-    return yield* sql.withTransaction(
+    return yield* commit.withTransaction(
       Effect.gen(function* () {
         const marked: ThreadId[] = [];
         for (const threadId of yield* projections.getRecoveryThreadIds("runtime")) {

@@ -4217,6 +4217,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           // The fork runs the target thread's mode, not whatever the source ran.
           yield* writeRules(state, forkInput.runtimePolicy ?? state.policy);
           if (cwd != null && forked.location.directory !== cwd) {
+            yield* readModelsOnce(cwd);
             yield* client.session.move({
               sessionID: Session.ID.make(forked.id),
               directory: AbsolutePath.make(cwd),

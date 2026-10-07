@@ -107,11 +107,15 @@ function makeSourceProjection(sourceRun: OrchestrationV2Run): OrchestrationV2Thr
   };
 }
 
-const planFork = (sourceRun: OrchestrationV2Run) =>
+const planFork = (
+  sourceRun: OrchestrationV2Run,
+  placement?: { readonly branch: string; readonly worktreePath: string },
+) =>
   Effect.gen(function* () {
     const service = yield* ThreadForkService.ThreadForkServiceV2;
     return yield* service.plan({
       sourceProjection: makeSourceProjection(sourceRun),
+      ...(placement === undefined ? {} : { placement }),
       sourceRun,
       sourceProviderThread: undefined,
       canonicalSourcePoint: {
@@ -191,5 +195,16 @@ it.effect("rejects in-progress and rolled-back fork sources", () =>
       assert.equal(error.targetThreadId, targetThreadId);
       assert.equal(error.cause, ThreadForkService.forkableSourceRunStatusError(sourceRun));
     }
+  }),
+);
+
+it.effect("places a standalone fork without changing source lineage or conversation point", () =>
+  Effect.gen(function* () {
+    const placement = { branch: "t3code/fork-fixture", worktreePath: "/fixture/fork-target" };
+    const result = yield* planFork(makeSourceRun("completed"), placement);
+    assert.equal(result.targetThread.branch, placement.branch);
+    assert.equal(result.targetThread.worktreePath, placement.worktreePath);
+    assert.deepEqual(result.transfer.sourcePoint, { threadId: sourceThreadId, runId: sourceRunId });
+    assert.equal(result.targetThread.lineage.parentThreadId, sourceThreadId);
   }),
 );

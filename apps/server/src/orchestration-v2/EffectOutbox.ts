@@ -1,5 +1,11 @@
+import { ImportedApplicationAttachmentRetentionEvidenceV1 } from "./ImportedApplicationAttachmentInventory.ts";
+import { hasOwnJonesMigration } from "../persistence/JonesMigrationGuard.ts";
+import { jonesMigrationEntries } from "../persistence/Migrations.ts";
+import { NativeCreationExecutionReferenceV2 } from "../nativeCreation/NativeCreationExecutionTypes.ts";
+import { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
 import {
   CheckpointId,
+  EventId,
   CheckpointScopeId,
   CommandId,
   MessageId,
@@ -19,11 +25,40 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as SchemaParser from "effect/SchemaParser";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { DelegatedCheckoutPlanV1 } from "./DelegatedCheckoutPolicy.ts";
+import { ProviderNativeEffectEvidence } from "./ProviderAdapter.ts";
+
+const standalonePreparationBindingShape = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literals(["fork", "mcp_create"]),
+  birthCommandId: CommandId,
+  messageCommandId: CommandId,
+  messageId: MessageId,
+});
+export const StandalonePreparationBindingV1 = Schema.declareConstructor<
+  typeof standalonePreparationBindingShape.Type,
+  typeof standalonePreparationBindingShape.Encoded
+>()(
+  [standalonePreparationBindingShape],
+  ([codec]) =>
+    (input, _ast, options) =>
+      SchemaParser.decodeUnknownEffect(codec)(input, { ...options, onExcessProperty: "error" }),
+);
+export type StandalonePreparationBindingV1 = typeof StandalonePreparationBindingV1.Type;
+
 export const OrchestrationEffectRequestV2 = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("delegated-workspace.prepare"),
+    runId: RunId,
+    plan: DelegatedCheckoutPlanV1,
+    standalone: Schema.optional(StandalonePreparationBindingV1),
+  }),
   Schema.Struct({
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
@@ -92,6 +127,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("terminal.cleanup"),
+    legacyOwnedControl: Schema.optional(LegacyOwnedTerminalControl),
   }),
   Schema.Struct({
     type: Schema.Literal("attachment.cleanup"),
@@ -118,6 +154,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
+  "delegated-workspace.prepare",
   "provider-turn.start",
   "provider-turn.interrupt",
   "provider-turn.steer",
@@ -135,6 +172,7 @@ export const OrchestrationEffectStatusV2 = Schema.Literals([
 export type OrchestrationEffectStatusV2 = typeof OrchestrationEffectStatusV2.Type;
 
 export interface OrchestrationEffectV2 {
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
   readonly id: string;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -151,12 +189,58 @@ export interface OrchestrationEffectV2 {
 }
 
 export interface PendingOrchestrationEffectV2 {
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
   readonly id: string;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
   readonly request: OrchestrationEffectRequestV2;
   readonly availableAt?: DateTime.Utc;
 }
+
+// This records unresolved cleanup; a missing binding grants no access to a resource target.
+const ResourceCleanupUnknownSubjectV1 = {
+  version: Schema.Literal(1),
+  kind: Schema.Literal("resource_cleanup"),
+  operationId: Schema.NonEmptyString,
+  threadId: ThreadId,
+  taskKind: Schema.Literals(["terminal", "attachment", "worktree"]),
+  outcome: Schema.Literal("unknown"),
+};
+export const ResourceCleanupUnknownEvidenceV1 = Schema.Union([
+  Schema.Struct({
+    ...ResourceCleanupUnknownSubjectV1,
+    bindingSha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+  }),
+  Schema.Struct({
+    ...ResourceCleanupUnknownSubjectV1,
+    bindingSha256: Schema.Null,
+    reason: Schema.Literal("task_binding_unavailable"),
+  }),
+]);
+export type ResourceCleanupUnknownEvidenceV1 = typeof ResourceCleanupUnknownEvidenceV1.Type;
+const UnknownEffectHoldEvidenceV2 = Schema.Union([
+  ProviderNativeEffectEvidence,
+  ResourceCleanupUnknownEvidenceV1,
+]);
+
+export interface UnknownEffectHoldV2 {
+  readonly effectId: string;
+  readonly threadId: ThreadId;
+  readonly workerId: string;
+  readonly operationId: string;
+  readonly evidence: ProviderNativeEffectEvidence | ResourceCleanupUnknownEvidenceV1;
+  readonly expectedAttempt: number;
+  readonly heldAt: string;
+}
+export const UnknownEffectHoldSchemaV2 = Schema.Struct({
+  effectId: Schema.NonEmptyString,
+  threadId: ThreadId,
+  workerId: Schema.NonEmptyString,
+  operationId: Schema.NonEmptyString,
+  evidence: UnknownEffectHoldEvidenceV2,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  heldAt: Schema.NonEmptyString,
+});
 
 export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
   "EffectOutboxError",
@@ -173,18 +257,171 @@ export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
 
 const isEffectOutboxError = Schema.is(EffectOutboxError);
 
+const AttachmentNamespaceOwnerBirthV1 = Schema.Struct({
+  kind: Schema.Literal("application_v2_thread_birth"),
+  threadId: ThreadId,
+  eventId: EventId,
+  sequence: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+export const AttachmentNamespaceCleanupReferenceV1 = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    mode: Schema.Literal("delete_thread"),
+    ownerBirth: AttachmentNamespaceOwnerBirthV1,
+    triggerEventId: EventId,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    mode: Schema.Literal("prune_thread"),
+    ownerBirth: AttachmentNamespaceOwnerBirthV1,
+    triggerEventId: EventId,
+    rollbackEffectId: Schema.NonEmptyString,
+  }),
+]);
+export type AttachmentNamespaceCleanupReferenceV1 =
+  typeof AttachmentNamespaceCleanupReferenceV1.Type;
+const AttachmentNamespaceSha256V1 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+export const AttachmentNamespaceCleanupTaskV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  effectId: Schema.NonEmptyString,
+  commandId: CommandId,
+  threadId: ThreadId,
+  reference: AttachmentNamespaceCleanupReferenceV1,
+  triggerSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+  bindingSha256: AttachmentNamespaceSha256V1,
+});
+export type AttachmentNamespaceCleanupTaskV1 = typeof AttachmentNamespaceCleanupTaskV1.Type;
+const AttachmentNamespaceClaimV1 = Schema.Struct({
+  workerId: Schema.NonEmptyString,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  leaseExpiresAt: Schema.NonEmptyString,
+});
+const AttachmentNamespaceBasisFieldsV1 = {
+  task: AttachmentNamespaceCleanupTaskV1,
+  claim: AttachmentNamespaceClaimV1,
+  basisEventSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+};
+export const QualifiedAttachmentNamespaceCleanupBasisV1 = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    ...AttachmentNamespaceBasisFieldsV1,
+    retainedRelativePaths: Schema.Array(Schema.NonEmptyString),
+    retentionSourceEvidence: Schema.optionalKey(ImportedApplicationAttachmentRetentionEvidenceV1),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("superseded"),
+    ...AttachmentNamespaceBasisFieldsV1,
+    replacementBirth: AttachmentNamespaceOwnerBirthV1,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unsafe_namespace"),
+    ...AttachmentNamespaceBasisFieldsV1,
+  }),
+]);
+export const AttachmentNamespaceCleanupObservationV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  producer: Schema.Literal("attachment_namespace"),
+  effectId: Schema.NonEmptyString,
+  bindingSha256: AttachmentNamespaceSha256V1,
+  workerId: Schema.NonEmptyString,
+  expectedAttempt: Schema.Int.check(Schema.isGreaterThan(0)),
+  basisEventSequence: Schema.Int.check(Schema.isGreaterThan(0)),
+  configuredRoot: Schema.NonEmptyString,
+  namespaceSegment: Schema.NullOr(Schema.NonEmptyString),
+  observedAt: Schema.NonEmptyString,
+  outcome: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("completed"),
+      matchingPaths: Schema.Array(Schema.NonEmptyString),
+      removedPaths: Schema.Array(Schema.NonEmptyString),
+      retainedPaths: Schema.Array(Schema.NonEmptyString),
+      rootAbsent: Schema.Boolean,
+    }),
+    Schema.Struct({
+      status: Schema.Literal("superseded"),
+      replacementBirth: AttachmentNamespaceOwnerBirthV1,
+    }),
+    Schema.Struct({ status: Schema.Literal("unsafe_namespace") }),
+    Schema.Struct({
+      status: Schema.Literal("retryable_failure"),
+      removedPaths: Schema.Array(Schema.NonEmptyString),
+      remainingPaths: Schema.Array(Schema.NonEmptyString),
+      reason: Schema.NonEmptyString,
+    }),
+    Schema.Struct({
+      status: Schema.Literal("unknown"),
+      removedPaths: Schema.Array(Schema.NonEmptyString),
+      reason: Schema.NonEmptyString,
+    }),
+  ]),
+});
+export type AttachmentNamespaceCleanupObservationV1 =
+  typeof AttachmentNamespaceCleanupObservationV1.Type;
+export const AttachmentNamespaceCleanupCorrelationV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  basis: QualifiedAttachmentNamespaceCleanupBasisV1,
+  observationSha256: AttachmentNamespaceSha256V1,
+});
+export const AttachmentNamespaceOrchestrationEffectPayloadV1 = Schema.Struct({
+  request: Schema.Struct({
+    type: Schema.Literal("attachment.cleanup"),
+    attachmentIds: Schema.Array(Schema.String),
+  }),
+  attachmentNamespaceCleanup: AttachmentNamespaceCleanupReferenceV1,
+});
+const decodeAttachmentPayload = Schema.decodeUnknownEffect(
+  AttachmentNamespaceOrchestrationEffectPayloadV1,
+  { onExcessProperty: "error" },
+);
+export const QualifiedDeletionCleanupEvidenceV1 = Schema.Struct({
+  version: Schema.Literal(1),
+  schema: Schema.Literal("t3.deletion-cleanup-observation/v1"),
+  producer: Schema.Literals(["worktree", "managed_terminal", "managed_provider"]),
+  observation: Schema.Record(Schema.String, Schema.Unknown),
+  coveredHolds: Schema.Array(UnknownEffectHoldSchemaV2),
+});
+
+const RecordedCleanupRequestV1 = Schema.Union([
+  OrchestrationEffectRequestV2,
+  Schema.Struct({ type: Schema.Literal("worktree.cleanup") }),
+]);
+type RecordedCleanupEffectV1 = Omit<OrchestrationEffectV2, "request"> & {
+  readonly request: typeof RecordedCleanupRequestV1.Type;
+  readonly attachmentNamespaceCleanup?: AttachmentNamespaceCleanupReferenceV1;
+};
 export interface EffectOutboxV2Shape {
+  readonly readQualifiedCleanupSnapshot?: (
+    effectId: string,
+  ) => Effect.Effect<Option.Option<RecordedCleanupEffectV1>, EffectOutboxError>;
   readonly awaitAvailable: Effect.Effect<void>;
   readonly notifyAvailable: (count?: number) => Effect.Effect<void>;
+  readonly claimOrdinaryFinalCheckpointRow?: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly expectedAttemptCount: number;
+    readonly leaseDurationMs: number;
+  }) => Effect.Effect<OrchestrationEffectV2 | null, EffectOutboxError>;
+  readonly settleOrdinaryCheckoutStartClaim?: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly expectedAttempt: number;
+    readonly expectedLeaseExpiresAt: string;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
   /** Persist rows only. Notify workers after the surrounding transaction commits. */
   readonly enqueue: (
     effects: ReadonlyArray<PendingOrchestrationEffectV2>,
+  ) => Effect.Effect<void, EffectOutboxError>;
+  readonly awaitCompletion: (
+    effectIds: ReadonlyArray<string>,
   ) => Effect.Effect<void, EffectOutboxError>;
   readonly get: (
     effectId: string,
   ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly listByCommandId: (
     commandId: CommandId,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
+  readonly listByThreadId: (
+    threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
   readonly cancelUnsettled: (input: {
     readonly threadId: ThreadId;
@@ -204,6 +441,23 @@ export interface EffectOutboxV2Shape {
     readonly excludeRestartContinuations?: boolean;
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly nextClaimableAt: Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
+  readonly listHeldByThreadId: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<UnknownEffectHoldV2>, EffectOutboxError>;
+  readonly renewClaim: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly expectedAttempt: number;
+    readonly expectedLeaseExpiresAt: string;
+    readonly leaseExpiresAt: string;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
+  readonly holdUnknown: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly operationId: string;
+    readonly evidence: ProviderNativeEffectEvidence;
+    readonly expectedAttempt: number;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly succeed: (input: {
     readonly effectId: string;
     readonly workerId: string;
@@ -247,24 +501,145 @@ const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
 );
 
-const rowToEffect = (row: EffectRow) =>
-  decodeRequest(row.payload_json).pipe(
-    Effect.map((request): OrchestrationEffectV2 => ({
-      id: row.effect_id,
-      commandId: CommandId.make(row.command_id),
-      threadId: ThreadId.make(row.thread_id),
-      request,
-      status: row.status as OrchestrationEffectStatusV2,
-      attemptCount: row.attempt_count,
-      availableAt: row.available_at,
-      leaseOwner: row.lease_owner,
-      leaseExpiresAt: row.lease_expires_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      completedAt: row.completed_at,
-      lastError: row.last_error,
-    })),
+export const NativeOrchestrationEffectPayloadV2 = Schema.Struct({
+  request: OrchestrationEffectRequestV2,
+  nativeCreationExecutionReference: NativeCreationExecutionReferenceV2,
+});
+const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffectPayloadV2, {
+  onExcessProperty: "error",
+});
+const encodeNativePayload = Schema.encodeSync(
+  Schema.fromJsonString(NativeOrchestrationEffectPayloadV2),
+);
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+// A malformed envelope cannot lose its authority lineage by decoding as ordinary work.
+export const decodeOrchestrationEffectPayloadV2 = (payload: string) =>
+  Effect.gen(function* () {
+    const raw = yield* decodeJson(payload);
+    if (
+      typeof raw === "object" &&
+      raw !== null &&
+      (Object.hasOwn(raw, "request") || Object.hasOwn(raw, "nativeCreationExecutionReference"))
+    )
+      return yield* decodeNativePayload(raw);
+    return { request: yield* decodeRequest(payload) };
+  });
+const decodeRecordedCleanupPayload = (payload: string) =>
+  Effect.gen(function* () {
+    const raw = yield* decodeJson(payload);
+    if (typeof raw === "object" && raw !== null && Object.hasOwn(raw, "attachmentNamespaceCleanup"))
+      return yield* decodeAttachmentPayload(raw);
+    if (typeof raw === "object" && raw !== null && "type" in raw && raw.type === "worktree.cleanup")
+      return {
+        request: yield* Schema.decodeUnknownEffect(RecordedCleanupRequestV1)(raw, {
+          onExcessProperty: "error",
+        }),
+      };
+    return yield* decodeOrchestrationEffectPayloadV2(payload);
+  });
+const invalidEffectPayload = (message: string) =>
+  new EffectOutboxError({ operation: "payload", cause: new Error(message) });
+
+const validateNativeAssociation = (input: {
+  readonly id: string;
+  readonly commandId: string;
+  readonly request: typeof RecordedCleanupRequestV1.Type;
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
+}) =>
+  Effect.gen(function* () {
+    const reference = input.nativeCreationExecutionReference;
+    if (reference === undefined) return;
+    if (
+      reference.effectId !== input.id ||
+      reference.stageCommandId !== input.commandId ||
+      reference.stage !== "native_command" ||
+      (input.request.type === "provider-turn.start" &&
+        input.id !== `effect:${input.commandId}:provider-turn.start:${input.request.runId}`) ||
+      (input.request.type !== "provider-turn.start" &&
+        input.request.type !== "thread-title.generate")
+    ) {
+      return yield* Effect.fail(
+        invalidEffectPayload("Native outbox reference differs from its effect association"),
+      );
+    }
+  });
+
+const validateAttachmentAssociation = (input: {
+  readonly id: string;
+  readonly commandId: string;
+  readonly threadId: string;
+  readonly request: typeof RecordedCleanupRequestV1.Type;
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
+  readonly attachmentNamespaceCleanup?: AttachmentNamespaceCleanupReferenceV1;
+}) =>
+  Effect.gen(function* () {
+    const reference = input.attachmentNamespaceCleanup;
+    if (reference === undefined) return;
+    if (
+      input.nativeCreationExecutionReference !== undefined ||
+      input.request.type !== "attachment.cleanup" ||
+      reference.ownerBirth.threadId !== input.threadId ||
+      (reference.mode === "delete_thread"
+        ? input.id !== `effect:${input.commandId}:attachment.cleanup`
+        : input.id !== `${reference.rollbackEffectId}:attachment.cleanup:prune`)
+    )
+      return yield* Effect.fail(
+        invalidEffectPayload("Attachment namespace reference differs from its effect association"),
+      );
+  });
+
+const decodeEffectRow = <
+  Payload extends {
+    readonly request: typeof RecordedCleanupRequestV1.Type;
+    readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
+    readonly attachmentNamespaceCleanup?: AttachmentNamespaceCleanupReferenceV1;
+  },
+>(
+  row: EffectRow,
+  decodePayload: (payload: string) => Effect.Effect<Payload, Schema.SchemaError>,
+) =>
+  decodePayload(row.payload_json).pipe(
+    Effect.tap((payload) =>
+      payload.request.type === row.effect_type
+        ? Effect.void
+        : Effect.fail(
+            invalidEffectPayload("Outbox effect type differs from its persisted payload"),
+          ),
+    ),
+    Effect.tap((payload) =>
+      validateNativeAssociation({ id: row.effect_id, commandId: row.command_id, ...payload }),
+    ),
+    Effect.tap((payload) =>
+      validateAttachmentAssociation({
+        id: row.effect_id,
+        commandId: row.command_id,
+        threadId: row.thread_id,
+        ...payload,
+      }),
+    ),
+    Effect.flatMap((payload) =>
+      Schema.decodeUnknownEffect(OrchestrationEffectStatusV2)(row.status).pipe(
+        Effect.map((status) => ({
+          ...payload,
+
+          id: row.effect_id,
+          commandId: CommandId.make(row.command_id),
+          threadId: ThreadId.make(row.thread_id),
+          status,
+          attemptCount: row.attempt_count,
+          availableAt: row.available_at,
+          leaseOwner: row.lease_owner,
+          leaseExpiresAt: row.lease_expires_at,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          completedAt: row.completed_at,
+          lastError: row.last_error,
+        })),
+      ),
+    ),
   );
+
+const rowToEffect = (row: EffectRow) => decodeEffectRow(row, decodeOrchestrationEffectPayloadV2);
 
 export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = Layer.effect(
   EffectOutboxV2,
@@ -274,6 +649,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     // authoritative. Retaining a small burst lets multiple worker slots wake
     // for distinct threads without allowing notifications to grow unbounded.
     const available = yield* Queue.dropping<void>(64);
+    const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
@@ -286,10 +662,23 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     // that skips restart continuations is not blocked by them either.
     // Title generation is correlated metadata work, so it has its own
     // per-thread lane and cannot delay provider lifecycle effects.
+    const ordinaryFinalCheckpointPredicate =
+      () => sql`candidate.effect_type = 'checkpoint.capture' AND EXISTS (
+      SELECT 1 FROM orchestration_v2_ordinary_checkout_effect_links link
+      JOIN orchestration_v2_ordinary_checkout_execution_associations association ON association.admission_id = link.admission_id
+      WHERE link.effect_id = candidate.effect_id AND association.executor_kind = 'captured_managed_run'
+        AND json_extract(association.association_json, '$.executor.run.runId') = COALESCE(json_extract(candidate.payload_json, '$.runId'), json_extract(candidate.payload_json, '$.request.runId'))
+        AND json_extract(association.association_json, '$.executor.checkpointScopeId') = COALESCE(json_extract(candidate.payload_json, '$.scopeId'), json_extract(candidate.payload_json, '$.request.scopeId'))
+        AND NOT EXISTS (SELECT 1 FROM orchestration_v2_ordinary_checkout_execution_associations activation
+          WHERE activation.operation_id = association.operation_id AND activation.association_id = association.association_id
+            AND activation.event_kind = 'activate'
+            AND json_extract(activation.evidence_json, '$.actualStartObservation.settlementMode') = 'primary_terminal_checkpoint')) `;
+
     // Automatic boundary steers follow receipt order; only successful predecessors release them.
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
+      includeOrdinaryFinalCheckpoint = false,
     ) =>
       sql`
         ${
@@ -298,6 +687,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : sql`candidate.available_at <= ${availableBefore}`
         }
         AND candidate.status = 'pending'
+        AND candidate.effect_type != 'worktree.cleanup'
+        AND json_type(candidate.payload_json, '$.attachmentNamespaceCleanup') IS NULL
+        AND ${includeOrdinaryFinalCheckpoint ? sql`1 = 1` : sql`NOT (${ordinaryFinalCheckpointPredicate()})`}
+        AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold
+          WHERE hold.effect_id = candidate.effect_id)
         AND NOT (candidate.effect_type = 'provider-runtime.continue'
           AND COALESCE(json_extract(candidate.payload_json, '$.preparedForRestart'), 0) = 1)
         AND (
@@ -387,13 +781,149 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       );
 
     const service: EffectOutboxV2Shape = {
-      enqueue: (effects) =>
+      readQualifiedCleanupSnapshot: (effectId) =>
         Effect.gen(function* () {
-          const now = yield* DateTime.now;
-          const nowIso = DateTime.formatIso(now);
-          yield* Effect.forEach(
-            effects,
-            (effect) => sql`
+          if (
+            !(yield* hasOwnJonesMigration(jonesMigrationEntries, [142, "V2NativeAcceptance"]).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) ||
+            !(yield* hasOwnJonesMigration(jonesMigrationEntries, [
+              139,
+              "DeletionWorktreeAdmission",
+            ]).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+          )
+            return Option.none();
+          const rows =
+            yield* sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox WHERE effect_id = ${effectId}`;
+          if (rows.length === 0) return Option.none();
+          if (rows.length !== 1)
+            return yield* invalidEffectPayload("Recorded cleanup effect identity is ambiguous");
+          const row = rows[0]!;
+          const finiteTimestamp = Schema.String.check(
+            Schema.makeFilter((value) => Number.isFinite(Date.parse(value))),
+          );
+          yield* Schema.decodeUnknownEffect(
+            Schema.Struct({
+              effect_id: Schema.NonEmptyString,
+              command_id: CommandId,
+              thread_id: ThreadId,
+              effect_type: Schema.NonEmptyString,
+              payload_json: Schema.NonEmptyString,
+              status: OrchestrationEffectStatusV2,
+              attempt_count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+              available_at: finiteTimestamp,
+              lease_owner: Schema.NullOr(Schema.NonEmptyString),
+              lease_expires_at: Schema.NullOr(finiteTimestamp),
+              created_at: finiteTimestamp,
+              updated_at: finiteTimestamp,
+              completed_at: Schema.NullOr(finiteTimestamp),
+              last_error: Schema.NullOr(Schema.String),
+            }),
+          )(row, { onExcessProperty: "error" });
+          const recorded = yield* decodeEffectRow(row, decodeRecordedCleanupPayload);
+          if (recorded.id !== effectId)
+            return yield* invalidEffectPayload(
+              "Recorded cleanup effect identity differs from the request",
+            );
+          if (
+            "attachmentNamespaceCleanup" in recorded &&
+            recorded.attachmentNamespaceCleanup !== undefined &&
+            !(yield* hasOwnJonesMigration(jonesMigrationEntries, [143, "AttachmentCleanup"]).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ))
+          )
+            return Option.none();
+          return Option.some(recorded);
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EffectOutboxError({ operation: "qualified-cleanup-snapshot", effectId, cause }),
+          ),
+        ),
+
+      claimOrdinaryFinalCheckpointRow: (input) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              if (
+                input.workerId.length === 0 ||
+                !Number.isSafeInteger(input.expectedAttemptCount) ||
+                input.expectedAttemptCount < 0 ||
+                input.leaseDurationMs !== 300_000
+              )
+                return null;
+              const current = yield* DateTime.now;
+              const now = DateTime.formatIso(current);
+              const expiry = DateTime.formatIso(DateTime.add(current, { minutes: 5 }));
+              const rows =
+                yield* sql<EffectRow>`UPDATE orchestration_v2_effect_outbox SET status = 'running', attempt_count = attempt_count + 1,
+          lease_owner = ${input.workerId}, lease_expires_at = ${expiry}, updated_at = ${now}, last_error = NULL
+          WHERE effect_id IN (SELECT candidate.effect_id FROM orchestration_v2_effect_outbox candidate
+            WHERE candidate.effect_id = ${input.effectId} AND candidate.attempt_count = ${input.expectedAttemptCount}
+              AND candidate.lease_owner IS NULL AND candidate.lease_expires_at IS NULL AND ${ordinaryFinalCheckpointPredicate()}
+              AND ${claimableCandidatePredicate(now, false, true)}) RETURNING *`;
+              if (rows.length !== 1) return null;
+              return yield* rowToEffect(rows[0]!);
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new EffectOutboxError({
+                  operation: "claim-ordinary-final-checkpoint",
+                  effectId: input.effectId,
+                  cause,
+                }),
+            ),
+          ),
+      settleOrdinaryCheckoutStartClaim: (input) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const now = DateTime.formatIso(yield* DateTime.now);
+              const rows =
+                yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'succeeded', lease_owner = NULL, lease_expires_at = NULL,
+          completed_at = ${now}, updated_at = ${now}, last_error = NULL WHERE effect_id = ${input.effectId}
+            AND effect_type IN ('provider-turn.start', 'provider-turn.restart') AND status = 'running'
+            AND lease_owner = ${input.workerId} AND attempt_count = ${input.expectedAttempt}
+            AND lease_expires_at = ${input.expectedLeaseExpiresAt} AND lease_expires_at > ${now}
+            AND EXISTS (SELECT 1 FROM orchestration_v2_ordinary_checkout_effect_links link WHERE link.effect_id = ${input.effectId})
+            AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = ${input.effectId}) RETURNING effect_id`;
+              return rows.length === 1;
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new EffectOutboxError({
+                  operation: "settle-ordinary-start",
+                  effectId: input.effectId,
+                  cause,
+                }),
+            ),
+          ),
+      enqueue: (effects) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              const nowIso = DateTime.formatIso(now);
+              yield* Effect.forEach(
+                effects,
+                (effect) =>
+                  Effect.gen(function* () {
+                    yield* validateNativeAssociation(effect);
+                    const payload =
+                      effect.nativeCreationExecutionReference === undefined
+                        ? encodeRequest(effect.request)
+                        : encodeNativePayload(
+                            yield* decodeNativePayload({
+                              request: effect.request,
+                              nativeCreationExecutionReference:
+                                effect.nativeCreationExecutionReference,
+                            }),
+                          );
+                    yield* sql`
               INSERT INTO orchestration_v2_effect_outbox (
                 effect_id,
                 command_id,
@@ -411,7 +941,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${effect.commandId},
                 ${effect.threadId},
                 ${effect.request.type},
-                ${encodeRequest(effect.request)},
+                ${payload},
                 'pending',
                 0,
                 ${DateTime.formatIso(effect.availableAt ?? now)},
@@ -419,13 +949,34 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${nowIso}
               )
               ON CONFLICT(effect_id) DO NOTHING
-            `,
-            { concurrency: 1, discard: true },
-          );
-          // Do not signal here: callers enqueue inside a larger transaction,
-          // and workers must only observe availability after that transaction
-          // commits. EventSink owns the corresponding post-commit notification.
-        }).pipe(Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause }))),
+            `;
+                    const existing =
+                      yield* sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox
+                WHERE effect_id = ${effect.id}
+                AND (${effect.nativeCreationExecutionReference !== undefined ? sql`1 = 1` : sql`0 = 1`} OR
+                  CASE WHEN json_valid(payload_json) THEN
+                    json_type(payload_json, '$.request') IS NOT NULL OR json_type(payload_json, '$.nativeCreationExecutionReference') IS NOT NULL
+                  ELSE 0 END)`;
+                    if (
+                      existing.length !== 0 &&
+                      (existing.length !== 1 ||
+                        existing[0]!.command_id !== effect.commandId ||
+                        existing[0]!.thread_id !== effect.threadId ||
+                        existing[0]!.effect_type !== effect.request.type ||
+                        existing[0]!.payload_json !== payload)
+                    )
+                      return yield* invalidEffectPayload(
+                        "Referenced outbox effect identity is already bound differently",
+                      );
+                  }),
+                { concurrency: 1, discard: true },
+              );
+              // Do not signal here: callers enqueue inside a larger transaction,
+              // and workers must only observe availability after that transaction
+              // commits. EventSink owns the corresponding post-commit notification.
+            }),
+          )
+          .pipe(Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause }))),
       get: (effectId) =>
         sql<EffectRow>`
           SELECT *
@@ -441,6 +992,41 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           }),
           Effect.mapError((cause) => new EffectOutboxError({ operation: "get", effectId, cause })),
         ),
+      awaitCompletion: (effectIds) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            if (effectIds.length === 0) return;
+            const ids = Array.from(new Set(effectIds));
+            const subscription = yield* PubSub.subscribe(completionChanges);
+            while (true) {
+              const rows =
+                yield* sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox WHERE effect_id IN ${sql.in(ids)}`;
+              const effects = yield* decodeRows("await-completion", rows);
+              if (effects.length !== ids.length)
+                return yield* new EffectOutboxError({
+                  operation: "await-completion",
+                  cause: "An exact cleanup effect is missing; its completion is unknown.",
+                });
+              const failed = effects.find(
+                (effect) => effect.status === "failed" || effect.status === "cancelled",
+              );
+              if (failed !== undefined)
+                return yield* new EffectOutboxError({
+                  operation: "await-completion",
+                  effectId: failed.id,
+                  cause: failed.lastError ?? `Cleanup ${failed.status}.`,
+                });
+              if (effects.every((effect) => effect.status === "succeeded")) return;
+              yield* PubSub.take(subscription);
+            }
+          }),
+        ).pipe(
+          Effect.mapError((cause) =>
+            isEffectOutboxError(cause)
+              ? cause
+              : new EffectOutboxError({ operation: "await-completion", cause }),
+          ),
+        ),
       awaitAvailable: Queue.take(available),
       notifyAvailable,
       listByCommandId: (commandId) =>
@@ -455,6 +1041,16 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             isEffectOutboxError(cause)
               ? cause
               : new EffectOutboxError({ operation: "list", cause }),
+          ),
+        ),
+      listByThreadId: (threadId) =>
+        sql<EffectRow>`SELECT * FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId}
+          ORDER BY created_at ASC, effect_id ASC`.pipe(
+          Effect.flatMap((rows) => decodeRows("list-thread", rows)),
+          Effect.mapError((cause) =>
+            isEffectOutboxError(cause)
+              ? cause
+              : new EffectOutboxError({ operation: "list-thread", cause }),
           ),
         ),
       cancelUnsettled: ({ threadId, effectTypes, reason }) =>
@@ -473,8 +1069,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE thread_id = ${threadId}
               AND status IN ('pending', 'running')
               AND effect_type IN ${sql.in(effectTypes)}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
             RETURNING effect_id
           `;
+          if (rows.length > 0) yield* PubSub.publish(completionChanges, undefined);
           return rows.map(({ effect_id }) => effect_id);
         }).pipe(
           Effect.mapError(
@@ -514,6 +1112,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             last_error = 'Cancelled because the server process ended before the effect completed.'
           WHERE status IN ('pending', 'running')
             AND effect_type IN ${sql.in(PROCESS_BOUND_EFFECT_TYPES)}
+            AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
           RETURNING effect_id
         `;
         const requeuedRows = yield* sql<{ readonly effect_id: string }>`
@@ -527,6 +1126,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             last_error = 'Requeued after the previous server process ended.'
           WHERE status = 'running'
             AND effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
+            AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
           RETURNING effect_id
         `;
         const preparedRows = yield* sql<{ readonly effect_id: string }>`
@@ -537,6 +1137,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             AND json_extract(payload_json, '$.preparedForRestart') = 1 RETURNING effect_id`;
         if (requeuedRows.length + preparedRows.length > 0)
           yield* notifyAvailable(requeuedRows.length + preparedRows.length);
+        if (cancelledRows.length > 0) yield* PubSub.publish(completionChanges, undefined);
         return {
           requeued: requeuedRows.length + preparedRows.length,
           cancelled: cancelledRows.length,
@@ -604,6 +1205,125 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : new EffectOutboxError({ operation: "next-claimable", cause }),
         ),
       ),
+      listHeldByThreadId: (threadId) =>
+        sql<{
+          readonly effect_id: string;
+          readonly worker_id: string;
+          readonly operation_id: string;
+          readonly evidence_json: string;
+          readonly expected_attempt: number;
+          readonly held_at: string;
+        }>`
+          SELECT hold.* FROM orchestration_v2_unknown_effect_holds hold
+          JOIN orchestration_v2_effect_outbox effect ON effect.effect_id = hold.effect_id
+          WHERE effect.thread_id = ${threadId} ORDER BY hold.held_at, hold.effect_id
+        `.pipe(
+          Effect.flatMap((rows) =>
+            Effect.forEach(rows, (row) =>
+              Schema.decodeUnknownEffect(Schema.fromJsonString(UnknownEffectHoldEvidenceV2))(
+                row.evidence_json,
+                { onExcessProperty: "error" },
+              ).pipe(
+                Effect.map((evidence): UnknownEffectHoldV2 => ({
+                  effectId: row.effect_id,
+                  threadId,
+                  workerId: row.worker_id,
+                  operationId: row.operation_id,
+                  evidence,
+                  expectedAttempt: row.expected_attempt,
+                  heldAt: row.held_at,
+                })),
+              ),
+            ),
+          ),
+          Effect.mapError((cause) => new EffectOutboxError({ operation: "list-held", cause })),
+        ),
+
+      renewClaim: (input) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const currentTime = yield* DateTime.now;
+              const now = DateTime.formatIso(currentTime);
+              const horizon = DateTime.formatIso(DateTime.add(currentTime, { minutes: 5 }));
+              const previous = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+                input.expectedLeaseExpiresAt,
+              );
+              const next = yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+                input.leaseExpiresAt,
+              );
+              if (
+                DateTime.formatIso(previous) !== input.expectedLeaseExpiresAt ||
+                DateTime.formatIso(next) !== input.leaseExpiresAt ||
+                input.expectedLeaseExpiresAt <= now ||
+                input.leaseExpiresAt < input.expectedLeaseExpiresAt ||
+                input.leaseExpiresAt > horizon ||
+                input.workerId.length === 0 ||
+                !Number.isSafeInteger(input.expectedAttempt) ||
+                input.expectedAttempt < 1
+              )
+                return false;
+              const rows =
+                yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at = ${input.leaseExpiresAt}, updated_at = ${now}
+          WHERE effect_id = ${input.effectId} AND status = 'running' AND lease_owner = ${input.workerId}
+            AND attempt_count = ${input.expectedAttempt} AND lease_expires_at = ${input.expectedLeaseExpiresAt} AND lease_expires_at > ${now}
+            AND EXISTS (SELECT 1 FROM orchestration_v2_ordinary_checkout_effect_links link WHERE link.effect_id = ${input.effectId})
+            AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = ${input.effectId}) RETURNING effect_id`;
+              return rows.length === 1;
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new EffectOutboxError({
+                  operation: "renew-ordinary-claim",
+                  effectId: input.effectId,
+                  cause,
+                }),
+            ),
+          ),
+
+      holdUnknown: ({ effectId, workerId, operationId, evidence, expectedAttempt }) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const decoded = yield* Schema.decodeUnknownEffect(ProviderNativeEffectEvidence)(
+                evidence,
+              );
+              if (
+                decoded.outcome !== "unknown" ||
+                decoded.operationId !== operationId ||
+                !Number.isSafeInteger(expectedAttempt) ||
+                expectedAttempt < 1
+              )
+                return yield* new EffectOutboxError({ operation: "hold-unknown", effectId });
+              const now = DateTime.formatIso(yield* DateTime.now);
+              const rows = yield* sql<{ readonly effect_id: string }>`
+            INSERT INTO orchestration_v2_unknown_effect_holds
+              (effect_id, worker_id, operation_id, evidence_json, expected_attempt, held_at)
+            SELECT effect_id, ${workerId}, ${operationId},
+              ${yield* Schema.encodeEffect(Schema.fromJsonString(ProviderNativeEffectEvidence))(decoded).pipe(Effect.orDie)},
+              ${expectedAttempt}, ${now}
+            FROM orchestration_v2_effect_outbox
+            WHERE effect_id = ${effectId} AND status = 'running'
+              AND lease_owner = ${workerId} AND attempt_count = ${expectedAttempt}
+              AND lease_expires_at > ${now}
+              AND (${decoded.threadId ?? null} IS NULL OR thread_id = ${decoded.threadId ?? null})
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold
+                WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
+            RETURNING effect_id
+          `;
+              return rows.length === 1;
+            }),
+          )
+          .pipe(
+            Effect.mapError((cause) =>
+              isEffectOutboxError(cause)
+                ? cause
+                : new EffectOutboxError({ operation: "hold-unknown", effectId, cause }),
+            ),
+          ),
+
       succeed: ({ effectId, workerId }) =>
         Effect.gen(function* () {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -619,10 +1339,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
             RETURNING effect_id
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
+            yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -650,10 +1372,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
             RETURNING effect_id
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
+            yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -677,10 +1401,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_unknown_effect_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
             RETURNING effect_id
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
+            yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
           }
           return rows.length === 1;

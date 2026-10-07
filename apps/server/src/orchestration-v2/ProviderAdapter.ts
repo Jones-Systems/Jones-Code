@@ -1,3 +1,5 @@
+import type { NativeProviderRuntimeBindingV1 } from "../nativeCreation/NativeCreationExecutionTypes.ts";
+import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
@@ -37,6 +39,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
@@ -48,6 +51,48 @@ import type {
   ProviderSelectionTransitionInput,
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
+
+export const ProviderNativeEffectOperation = Schema.Literals([
+  "open_session",
+  "close_session",
+  "read_thread_snapshot",
+  "ensure_thread",
+  "resume_thread",
+  "inject_history",
+  "start_turn",
+  "compact_thread",
+  "steer_turn",
+  "interrupt_turn",
+  "respond_to_request",
+  "unload_thread",
+  "rollback_thread",
+  "fork_thread",
+]);
+export type ProviderNativeEffectOperation = typeof ProviderNativeEffectOperation.Type;
+
+export const ProviderNativeOperationContext = Schema.Struct({
+  operationId: TrimmedNonEmptyString,
+  operation: ProviderNativeEffectOperation,
+  instanceId: Schema.optional(ProviderInstanceId),
+  threadId: Schema.optional(ThreadId),
+  providerSessionId: Schema.optional(ProviderSessionId),
+  providerThreadId: Schema.optional(ProviderThreadId),
+  runtimeGeneration: Schema.optional(TrimmedNonEmptyString),
+  attemptId: Schema.optional(RunAttemptId),
+});
+export type ProviderNativeOperationContext = typeof ProviderNativeOperationContext.Type;
+
+/**
+ * Evidence covers the complete operation, including eager activation, lazy
+ * initialization, registration and history injection before the final RPC.
+ * Missing or mismatched evidence is unknown; a safe last request cannot prove
+ * that an earlier stage had no effect.
+ */
+export const ProviderNativeEffectEvidence = Schema.Struct({
+  ...ProviderNativeOperationContext.fields,
+  outcome: Schema.Literals(["confirmed_success", "known_no_effect", "unknown"]),
+});
+export type ProviderNativeEffectEvidence = typeof ProviderNativeEffectEvidence.Type;
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
@@ -517,7 +562,44 @@ export interface ProviderAdapterV2EnsureThreadInput {
   readonly existingProviderThread?: OrchestrationV2ProviderThread;
 }
 
+declare const nativeStartProducerCapture: unique symbol;
+declare const nativeStartAcknowledgment: unique symbol;
+
+/** Server-only provenance; decoded descriptions cannot issue either handle. */
+export interface ProviderNativeStartProducerCaptureV1 {
+  readonly [nativeStartProducerCapture]: true;
+  readonly nativeOperation: ProviderNativeOperationContext;
+  readonly driver: ProviderDriverKind;
+  readonly binding: NativeProviderRuntimeBindingV1 & { readonly nativeThreadId: string };
+  readonly runId: RunId;
+  readonly attemptId: RunAttemptId;
+  readonly rootNodeId: NodeId;
+  readonly messageId: MessageId;
+}
+export interface ProviderNativeStartAcknowledgmentV1 {
+  readonly [nativeStartAcknowledgment]: true;
+  readonly capture: ProviderNativeStartProducerCaptureV1;
+  readonly method: "turn/start" | "thread/compact/start";
+  readonly nativeTurnId: string;
+  readonly evidenceRevision: number;
+  readonly observedAt: string;
+}
+export interface ProviderNativeStartDispatchFenceV1 {
+  readonly evidenceRevision: number;
+  readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
+}
+export interface ProviderNativeStartConfirmationV1 {
+  readonly beforeDispatch: (
+    capture: ProviderNativeStartProducerCaptureV1,
+  ) => Effect.Effect<ProviderNativeStartDispatchFenceV1, ProviderAdapterV2Error>;
+  readonly acknowledged: (
+    acknowledgment: ProviderNativeStartAcknowledgmentV1,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+}
+
 export interface ProviderAdapterV2TurnInput {
+  readonly nativeOperation?: ProviderNativeOperationContext;
+  readonly nativeStartConfirmation?: ProviderNativeStartConfirmationV1;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -608,6 +690,8 @@ export interface ProviderAdapterV2HistoricalContext {
 }
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly runtimeGeneration?: string | undefined;
+  readonly nativeStartConfirmationOperations?: ReadonlyArray<"start_turn" | "compact_thread">;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
@@ -685,6 +769,9 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly readGoalState?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<ProviderGoalReadResult>;
   readonly readThreadSnapshot: (
     input: ProviderAdapterV2ReadThreadSnapshotInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;

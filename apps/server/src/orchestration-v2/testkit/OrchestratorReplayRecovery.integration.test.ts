@@ -136,6 +136,20 @@ const runCursorRecovery = Effect.fn("runCursorRecovery")(function* (input: {
   const { phase1Commands, phase1Steps, phase2Commands, phase2Steps } =
     splitAfterFirstIdle(materialized);
   const options = {
+    checkoutFixture: {
+      projects: materialized.commands.flatMap((command) =>
+        command.type === "thread.create"
+          ? [
+              {
+                projectId: command.projectId,
+                workspaceRoot: tempDir,
+                title: "provider_thread_resume",
+              },
+            ]
+          : [],
+      ),
+      resolvePath: () => undefined,
+    },
     databaseLayer: makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer)),
   };
   const harness = {
@@ -240,6 +254,20 @@ describe("orchestrator replay recovery", () => {
               makeCodexProviderAdapterRegistryReplayLayer({ transcript, driver }),
           };
           const options = {
+            checkoutFixture: {
+              projects: materialized.commands.flatMap((command) =>
+                command.type === "thread.create"
+                  ? [
+                      {
+                        projectId: command.projectId,
+                        workspaceRoot: workspace,
+                        title: "provider_thread_resume",
+                      },
+                    ]
+                  : [],
+              ),
+              resolvePath: () => undefined,
+            },
             databaseLayer: makeSqlitePersistenceLive(dbPath).pipe(
               Layer.provide(NodeServices.layer),
             ),
@@ -340,6 +368,20 @@ describe("orchestrator replay recovery", () => {
           splitAfterFirstIdle(materialized);
         const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript);
         const options = {
+          checkoutFixture: {
+            projects: materialized.commands.flatMap((command) =>
+              command.type === "thread.create"
+                ? [
+                    {
+                      projectId: command.projectId,
+                      workspaceRoot: workspace,
+                      title: transcript.scenario,
+                    },
+                  ]
+                : [],
+            ),
+            resolvePath: () => undefined,
+          },
           databaseLayer: makeSqlitePersistenceLive(path.join(tempDir, "state.sqlite")).pipe(
             Layer.provide(NodeServices.layer),
           ),

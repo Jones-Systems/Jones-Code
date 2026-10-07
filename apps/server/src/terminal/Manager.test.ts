@@ -1,6 +1,14 @@
+import {
+  LegacyOwnedTerminalControl,
+  LegacyNoTerminalControl,
+} from "../orchestration-v2/RecordedTypes.ts";
+import { legacyBootstrapCreateCommandId } from "../orchestration-v2/LegacyBootstrap.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  CommandId,
+  ThreadId,
+  EventId,
   DEFAULT_TERMINAL_ID,
   type TerminalAttachStreamEvent,
   type TerminalEvent,
@@ -221,6 +229,7 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
+  ownerObservation?: Parameters<typeof TerminalManager.makeWithOptions>[0]["ownerObservation"];
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
@@ -269,6 +278,9 @@ const createManager = (
 
       const manager = yield* TerminalManager.makeWithOptions({
         logsDir,
+        ...(options.ownerObservation === undefined
+          ? {}
+          : { ownerObservation: options.ownerObservation }),
         historyLineLimit,
         ptyAdapter,
         ...(options.historyByteLimit !== undefined
@@ -416,10 +428,552 @@ it("preserves retained lines as older storage is compacted", () => {
   }
 });
 
+const isTerminalInputValidationError = Schema.is(
+  TerminalManager.LegacyTerminalInputValidationError,
+);
+
+function ownedControl(generation = "terminal-generation:one") {
+  const threadId = ThreadId.make("thread-1");
+  const releaseCommandId = CommandId.make("legacy-terminal:C");
+  const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
+  return Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+    version: 1,
+    threadId,
+    runId: "legacy-terminal:run",
+    terminalId: "legacy-setup",
+    generation,
+    preparationGeneration: "legacy-terminal:birth-generation",
+    claimEventId: "legacy-terminal:claim",
+    claimSequence: 1,
+    claimReceiptSequence: 1,
+    birthEventId: "legacy-terminal:birth",
+    birthSequence: 2,
+    birthReceiptSequence: 2,
+    policy: {
+      version: 1,
+      createCommandId,
+      birthCommandId: `${createCommandId}:initial-message`,
+      releaseCommandId,
+      threadId,
+      projectId: "legacy-terminal:project",
+      messageId: "legacy-terminal:message",
+      runId: "legacy-terminal:run",
+      payloadHash: "legacy-terminal:payload",
+      ownsNewThread: true,
+    },
+  });
+}
+function noControl(workspacePath: string): LegacyNoTerminalControl {
+  const { terminalId: _terminalId, generation: _generation, ...birth } = ownedControl();
+  return { ...birth, type: "no_control", workspacePath, projectWorkspaceRoot: workspacePath };
+}
+function ownedOpenHooks(binding = ownedControl()): TerminalManager.LegacyTerminalPreparationHooks {
+  return { binding, beforeSpawn: () => Effect.void, afterSpawn: () => Effect.void };
+}
+
 it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect.each([
+    "qualified",
+    "intent_lost",
+    "outcome_lost",
+    "missing_hook",
+    "existing_control",
+    "entered_error",
+    "native_default",
+  ] as const)("legacy lexical spawn refusal preserves owner proof for %s", (scenario) =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        shellResolver: () => (scenario === "entered_error" ? "/bin/sh" : "/bin/synthetic\0shell"),
+      });
+      const binding = ownedControl();
+      const order: string[] = [];
+      if (scenario === "existing_control")
+        yield* manager.open(openInput({ terminalId: binding.terminalId }));
+      if (scenario === "entered_error")
+        ptyAdapter.spawnFailures.push(new Error("Synthetic entered failure"));
+      const hooks: TerminalManager.LegacyTerminalPreparationHooks = {
+        ...ownedOpenHooks(binding),
+        beforeSpawn: (plan) =>
+          Effect.gen(function* () {
+            assert.lengthOf(ptyAdapter.spawnInputs, 0);
+            assert.equal(plan.binding, binding);
+            order.push("intent");
+            if (scenario === "intent_lost")
+              return yield* Effect.fail(
+                new TerminalManager.LegacyTerminalControlError({
+                  operation: "open",
+                  detail: "Synthetic lost intent",
+                }),
+              );
+          }),
+        ...(scenario === "missing_hook"
+          ? {}
+          : {
+              neverInvoked: (
+                plan: Parameters<TerminalManager.LegacyTerminalPreparationHooks["beforeSpawn"]>[0],
+              ) =>
+                Effect.gen(function* () {
+                  assert.lengthOf(ptyAdapter.spawnInputs, 0);
+                  assert.equal(plan.shell, "/bin/synthetic\0shell");
+                  assert.deepEqual(plan.shellArgs, []);
+                  assert.deepEqual(order, ["intent"]);
+                  order.push("outcome");
+                  if (scenario === "outcome_lost")
+                    return yield* Effect.fail(
+                      new TerminalManager.LegacyTerminalControlError({
+                        operation: "open",
+                        detail: "Synthetic lost outcome",
+                      }),
+                    );
+                }),
+            }),
+        afterSpawn: () =>
+          Effect.sync(() => {
+            order.push("entered");
+          }),
+      };
+      const result = yield* (
+        scenario === "native_default"
+          ? manager.open(openInput({ terminalId: binding.terminalId }))
+          : manager.open(openInput({ terminalId: binding.terminalId }), hooks)
+      ).pipe(Effect.result);
+      if (scenario === "native_default") {
+        assert.equal(result._tag, "Success");
+        assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        assert.deepEqual(order, []);
+      } else {
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.equal(isTerminalInputValidationError(result.failure), scenario === "qualified");
+        assert.lengthOf(
+          ptyAdapter.spawnInputs,
+          scenario === "existing_control" || scenario === "entered_error" ? 1 : 0,
+        );
+        assert.deepEqual(
+          order,
+          scenario === "existing_control"
+            ? []
+            : scenario === "qualified" || scenario === "outcome_lost"
+              ? ["intent", "outcome"]
+              : ["intent"],
+        );
+        assert.isTrue(
+          ptyAdapter.processes.every((process) => process.writes.length === 0 && !process.killed),
+        );
+      }
+    }),
+  );
+
+  it.effect("legacy terminal spawn waits for its fallible intent and retains a lost outcome", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const binding = ownedControl();
+      const refused = yield* manager
+        .open(openInput({ terminalId: binding.terminalId }), {
+          ...ownedOpenHooks(binding),
+          beforeSpawn: () =>
+            Effect.fail(
+              new TerminalManager.LegacyTerminalControlError({
+                operation: "open",
+                detail: "Synthetic intent refusal",
+              }),
+            ),
+        })
+        .pipe(Effect.result);
+      assert.equal(refused._tag, "Failure");
+      assert.lengthOf(ptyAdapter.spawnInputs, 0);
+      const second = { ...binding, terminalId: "legacy-lost-outcome" };
+      const lost = yield* manager
+        .open(openInput({ terminalId: second.terminalId }), {
+          ...ownedOpenHooks(second),
+          afterSpawn: () =>
+            Effect.fail(
+              new TerminalManager.LegacyTerminalControlError({
+                operation: "open",
+                detail: "Synthetic outcome loss",
+              }),
+            ),
+        })
+        .pipe(Effect.result);
+      assert.equal(lost._tag, "Failure");
+      assert.lengthOf(ptyAdapter.spawnInputs, 1);
+      assert.isFalse(ptyAdapter.processes[0]!.killed);
+      const duplicate = yield* manager
+        .open(openInput({ terminalId: second.terminalId }), ownedOpenHooks(second))
+        .pipe(Effect.result);
+      assert.equal(duplicate._tag, "Failure");
+      assert.lengthOf(ptyAdapter.spawnInputs, 1);
+    }),
+  );
+  it.effect(
+    "legacy terminal cleanup closes only its proved generation after an affirmative exit",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        const binding = ownedControl();
+        yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+        const other = yield* manager.open(openInput({ terminalId: "user-terminal" }));
+        const process = ptyAdapter.processes[0]!;
+        process.kill = (signal) => {
+          process.killSignals.push(signal);
+          process.killed = true;
+          process.emitExit({ exitCode: 0, signal: 15 });
+        };
+        yield* manager.close(
+          { threadId: binding.threadId, deleteHistory: true },
+          { legacyOwnedControl: binding },
+        );
+        assert.deepEqual(process.killSignals, ["SIGTERM"]);
+        assert.isFalse(ptyAdapter.processes[1]!.killed);
+        const retained = yield* manager.open(openInput({ terminalId: "user-terminal" }));
+        assert.equal(retained.pid, other.pid);
+        assert.lengthOf(ptyAdapter.spawnInputs, 2);
+        yield* manager.close(
+          { threadId: binding.threadId, deleteHistory: true },
+          { legacyOwnedControl: binding },
+        );
+        assert.deepEqual(process.killSignals, ["SIGTERM"]);
+        assert.isFalse(ptyAdapter.processes[1]!.killed);
+      }),
+  );
+  it.effect(
+    "legacy terminal cleanup refuses replaced or unknown controls without touching their history",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter, logsDir } = yield* createManager();
+        const fs = yield* FileSystem.FileSystem;
+        const binding = ownedControl();
+        yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+        yield* manager.restart(restartInput({ terminalId: binding.terminalId }));
+        const replacement = ptyAdapter.processes[1]!;
+        const historyPath = yield* multiTerminalHistoryLogPath(
+          logsDir,
+          binding.threadId,
+          binding.terminalId,
+        );
+        yield* fs.writeFileString(historyPath, "retained replacement history");
+        const rejected = yield* manager
+          .close(
+            { threadId: binding.threadId, deleteHistory: true },
+            { legacyOwnedControl: binding },
+          )
+          .pipe(Effect.result);
+        assert.equal(rejected._tag, "Failure");
+        assert.isFalse(replacement.killed);
+        assert.deepEqual(replacement.writes, []);
+        assert.equal(yield* fs.readFileString(historyPath), "retained replacement history");
+        const absent = yield* manager
+          .close(
+            { threadId: binding.threadId, deleteHistory: true },
+            {
+              legacyOwnedControl: { ...binding, terminalId: "unknown-control" },
+            },
+          )
+          .pipe(Effect.result);
+        assert.equal(absent._tag, "Failure");
+        assert.isFalse(replacement.killed);
+        assert.equal(yield* fs.readFileString(historyPath), "retained replacement history");
+      }),
+  );
+  it.effect(
+    "legacy terminal writes require exact live control and successful journal readback",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        const binding = ownedControl();
+        yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+        const input = {
+          threadId: binding.threadId,
+          terminalId: binding.terminalId,
+          data: "captured script\r",
+        };
+        const refused = yield* manager
+          .write(input, {
+            legacyOwnedControl: binding,
+            beforeWrite: () =>
+              Effect.fail(
+                new TerminalManager.LegacyTerminalControlError({
+                  operation: "write",
+                  detail: "Synthetic intent loss",
+                }),
+              ),
+            afterWrite: () => Effect.die("No outcome before write"),
+          })
+          .pipe(Effect.result);
+        assert.equal(refused._tag, "Failure");
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, []);
+        yield* manager.restart(restartInput({ terminalId: binding.terminalId }));
+        const replacement = yield* manager
+          .write(input, {
+            legacyOwnedControl: binding,
+            beforeWrite: () => Effect.die("Replaced control cannot enter"),
+            afterWrite: () => Effect.die("Replaced control cannot write"),
+          })
+          .pipe(Effect.result);
+        assert.equal(replacement._tag, "Failure");
+        assert.deepEqual(ptyAdapter.processes[1]!.writes, []);
+      }),
+  );
+  it.effect("legacy owned control guard runs a pure body with the exact current generation", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents, logsDir } = yield* createManager();
+      const binding = ownedControl();
+      yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+      const guard = manager.withLegacyOwnedControlGuard;
+      if (guard === undefined) return yield* Effect.die("Production owner guard is missing");
+      const fs = yield* FileSystem.FileSystem;
+      const historyPath = yield* multiTerminalHistoryLogPath(
+        logsDir,
+        binding.threadId,
+        binding.terminalId,
+      );
+      yield* fs.writeFileString(historyPath, "owned control history");
+      const beforeHistory = yield* fs.readFileString(historyPath);
+      const beforeEvents = yield* getEvents;
+      assert.equal(yield* guard(binding, Effect.succeed("validated")), "validated");
+      assert.deepEqual(yield* getEvents, beforeEvents);
+      assert.equal(yield* fs.readFileString(historyPath), beforeHistory);
+      assert.lengthOf(ptyAdapter.spawnInputs, 1);
+      assert.deepEqual(ptyAdapter.processes[0]!.writes, []);
+      assert.deepEqual(ptyAdapter.processes[0]!.killSignals, []);
+    }),
+  );
+  it.effect(
+    "legacy owned control guard refuses missing, mismatched and replaced controls before its body",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter, getEvents, logsDir } = yield* createManager();
+        const binding = ownedControl();
+        yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+        const guard = manager.withLegacyOwnedControlGuard;
+        if (guard === undefined) return yield* Effect.die("Production owner guard is missing");
+        let entered = 0;
+        for (const wrong of [
+          { ...binding, terminalId: "missing-control" },
+          { ...binding, generation: "another-generation" },
+          { ...binding, preparationGeneration: "another-birth" },
+          { ...binding, claimEventId: EventId.make("another-claim") },
+        ]) {
+          const result = yield* guard(
+            wrong,
+            Effect.sync(() => {
+              entered += 1;
+            }),
+          ).pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+        }
+        yield* manager.restart(restartInput({ terminalId: binding.terminalId }));
+        const fs = yield* FileSystem.FileSystem;
+        const historyPath = yield* multiTerminalHistoryLogPath(
+          logsDir,
+          binding.threadId,
+          binding.terminalId,
+        );
+        yield* fs.writeFileString(historyPath, "replacement history");
+        const beforeEvents = yield* getEvents;
+        const replaced = yield* guard(
+          binding,
+          Effect.sync(() => {
+            entered += 1;
+          }),
+        ).pipe(Effect.result);
+        assert.equal(replaced._tag, "Failure");
+        assert.equal(entered, 0);
+        assert.deepEqual(yield* getEvents, beforeEvents);
+        assert.equal(yield* fs.readFileString(historyPath), "replacement history");
+        assert.deepEqual(ptyAdapter.processes[1]!.writes, []);
+        assert.deepEqual(ptyAdapter.processes[1]!.killSignals, []);
+        assert.lengthOf(ptyAdapter.spawnInputs, 2);
+      }),
+  );
+  it.effect(
+    "legacy owned control guard releases its lock after body failure and cancellation",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        const binding = ownedControl();
+        yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+        const guard = manager.withLegacyOwnedControlGuard;
+        if (guard === undefined) return yield* Effect.die("Production owner guard is missing");
+        const failed = yield* guard(binding, Effect.fail("synthetic body failure")).pipe(
+          Effect.result,
+        );
+        assert.equal(failed._tag, "Failure");
+        assert.equal(yield* guard(binding, Effect.succeed("after failure")), "after failure");
+        const entered = yield* Deferred.make<void>();
+        const fiber = yield* guard(
+          binding,
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        yield* Fiber.interrupt(fiber);
+        assert.equal(
+          yield* guard(binding, Effect.succeed("after cancellation")),
+          "after cancellation",
+        );
+        yield* manager.write({
+          threadId: binding.threadId,
+          terminalId: binding.terminalId,
+          data: "native still works",
+        });
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, ["native still works"]);
+        assert.deepEqual(ptyAdapter.processes[0]!.killSignals, []);
+      }),
+  );
+  it.effect("legacy owned control guard fences replacement through its entire body", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      const binding = ownedControl();
+      yield* manager.open(openInput({ terminalId: binding.terminalId }), ownedOpenHooks(binding));
+      const guard = manager.withLegacyOwnedControlGuard;
+      if (guard === undefined) return yield* Effect.die("Production owner guard is missing");
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const replacementStarted = yield* Deferred.make<void>();
+      const guarded = yield* guard(
+        binding,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const replacement = yield* Deferred.succeed(replacementStarted, undefined).pipe(
+        Effect.andThen(manager.restart(restartInput({ terminalId: binding.terminalId }))),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(replacementStarted);
+      yield* Effect.yieldNow;
+      assert.lengthOf(ptyAdapter.spawnInputs, 1);
+      assert.deepEqual(ptyAdapter.processes[0]!.killSignals, []);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(guarded);
+      yield* Fiber.join(replacement);
+      assert.lengthOf(ptyAdapter.spawnInputs, 2);
+      const stale = yield* guard(binding, Effect.die("Replaced generation cannot enter")).pipe(
+        Effect.result,
+      );
+      assert.equal(stale._tag, "Failure");
+    }),
+  );
+  it.effect(
+    "legacy no-control guard validates physical absence with no native or history effects",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter, getEvents, baseDir, logsDir } = yield* createManager();
+        const guard = manager.withLegacyNoControlGuard;
+        if (guard === undefined) return yield* Effect.die("Production absence guard is missing");
+        const fs = yield* FileSystem.FileSystem;
+        const binding = noControl(yield* fs.realPath(baseDir));
+        const beforeEvents = yield* getEvents;
+        const beforeHistoryExists = yield* fs.exists(logsDir);
+        assert.equal(yield* guard(binding, Effect.succeed("absent")), "absent");
+        assert.deepEqual(yield* getEvents, beforeEvents);
+        assert.equal(yield* fs.exists(logsDir), beforeHistoryExists);
+        assert.lengthOf(ptyAdapter.spawnInputs, 0);
+        const unknown = yield* guard(
+          { ...binding, workspacePath: `${binding.workspacePath}/missing` },
+          Effect.die("Unknown workspace cannot certify absence"),
+        ).pipe(Effect.result);
+        assert.equal(unknown._tag, "Failure");
+      }),
+  );
+  it.effect(
+    "legacy no-control guard refuses any native, inactive or replaced session without effects",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter, getEvents, baseDir } = yield* createManager();
+        const guard = manager.withLegacyNoControlGuard;
+        if (guard === undefined) return yield* Effect.die("Production absence guard is missing");
+        const fs = yield* FileSystem.FileSystem;
+        const binding = noControl(yield* fs.realPath(baseDir));
+        const native = yield* manager.open(openInput({ cwd: baseDir }));
+        const beforeEvents = yield* getEvents;
+        const denied = yield* guard(
+          binding,
+          Effect.die("Native control cannot certify absence"),
+        ).pipe(Effect.result);
+        assert.equal(denied._tag, "Failure");
+        assert.deepEqual(yield* getEvents, beforeEvents);
+        assert.deepEqual(ptyAdapter.processes[0]!.killSignals, []);
+        assert.deepEqual(ptyAdapter.processes[0]!.writes, []);
+        ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: 0 });
+        const exited = yield* guard(
+          binding,
+          Effect.die("Inactive session cannot certify absence"),
+        ).pipe(Effect.result);
+        assert.equal(exited._tag, "Failure");
+        yield* manager.restart(restartInput({ cwd: baseDir }));
+        const replaced = yield* guard(
+          binding,
+          Effect.die("Replacement cannot certify absence"),
+        ).pipe(Effect.result);
+        assert.equal(replaced._tag, "Failure");
+        assert.notEqual(ptyAdapter.processes[1]!.pid, native.pid);
+        assert.deepEqual(ptyAdapter.processes[1]!.killSignals, []);
+        assert.deepEqual(ptyAdapter.processes[1]!.writes, []);
+      }),
+  );
+  it.effect("legacy no-control guard releases its lock and lease on failure and cancellation", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, baseDir } = yield* createManager();
+      const guard = manager.withLegacyNoControlGuard;
+      if (guard === undefined) return yield* Effect.die("Production absence guard is missing");
+      const fs = yield* FileSystem.FileSystem;
+      const binding = noControl(yield* fs.realPath(baseDir));
+      assert.equal(
+        (yield* guard(binding, Effect.fail("body failure")).pipe(Effect.result))._tag,
+        "Failure",
+      );
+      const entered = yield* Deferred.make<void>();
+      const blocked = yield* guard(
+        binding,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* Fiber.interrupt(blocked);
+      assert.equal(yield* guard(binding, Effect.succeed("released")), "released");
+      yield* manager.open(openInput({ cwd: baseDir }));
+      yield* manager.write({
+        threadId: binding.threadId,
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "native after release",
+      });
+      assert.deepEqual(ptyAdapter.processes[0]!.writes, ["native after release"]);
+    }),
+  );
+  it.effect(
+    "legacy no-control guard fences ordinary terminal opening through its entire body",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter, baseDir } = yield* createManager();
+        const guard = manager.withLegacyNoControlGuard;
+        if (guard === undefined) return yield* Effect.die("Production absence guard is missing");
+        const fs = yield* FileSystem.FileSystem;
+        const binding = noControl(yield* fs.realPath(baseDir));
+        const entered = yield* Deferred.make<void>();
+        const finish = yield* Deferred.make<void>();
+        const guarded = yield* guard(
+          binding,
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        const openRequested = yield* Deferred.make<void>();
+        const opening = yield* Deferred.succeed(openRequested, undefined).pipe(
+          Effect.andThen(manager.open(openInput({ cwd: baseDir }))),
+          Effect.forkChild,
+        );
+        yield* Effect.gen(function* () {
+          yield* Deferred.await(openRequested);
+          yield* Effect.yieldNow;
+          assert.lengthOf(ptyAdapter.spawnInputs, 0);
+          yield* Deferred.succeed(finish, undefined);
+          yield* Fiber.join(guarded);
+          yield* Fiber.join(opening);
+          assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        }).pipe(Effect.ensuring(Deferred.succeed(finish, undefined)));
+      }),
+  );
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
@@ -463,6 +1017,210 @@ it.layer(
     }),
   );
 
+  it.effect(
+    "retains birth-bound physical targets after close until the original process actually exits",
+    () =>
+      Effect.gen(function* () {
+        const birth: TerminalManager.TerminalOwnerBirth = {
+          kind: "application_v2_thread_birth",
+          threadId: "thread-1",
+          eventId: "birth:original",
+          sequence: 1,
+        };
+        const { manager, ptyAdapter } = yield* createManager(5, {
+          ownerObservation: { observeCurrentBirth: () => Effect.succeed(birth) },
+        });
+        yield* manager.open(openInput());
+        const initial = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        assert.equal(initial.status, "captured");
+        assert.equal(initial.targets.length, 1);
+        yield* manager.close({
+          threadId: birth.threadId,
+          terminalId: DEFAULT_TERMINAL_ID,
+          deleteHistory: true,
+        });
+        const pending = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        assert.deepEqual(pending.targets, initial.targets);
+        ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: null });
+        const ended = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        assert.equal(ended.status, "captured");
+        assert.deepEqual(ended.targets, []);
+      }),
+  );
+  it.effect("owned retirement waits for the retained physical process after UI close", () =>
+    Effect.gen(function* () {
+      const birth: TerminalManager.TerminalOwnerBirth = {
+        kind: "application_v2_thread_birth",
+        threadId: "thread-1",
+        eventId: "birth:retirement",
+        sequence: 1,
+      };
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(birth) },
+        processKillGraceMs: 1000,
+      });
+      yield* Effect.gen(function* () {
+        yield* manager.open(openInput());
+        const captured = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        const process = ptyAdapter.processes[0]!;
+        yield* manager.close({ threadId: birth.threadId, terminalId: DEFAULT_TERMINAL_ID });
+        const before = process.killSignals.length;
+        const closing = yield* manager.closeOwnedTargets(captured).pipe(Effect.forkScoped);
+        for (let attempt = 0; attempt < 200 && process.killSignals.length <= before; attempt++)
+          yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+        assert.isAbove(process.killSignals.length, before);
+        assert.equal(closing.pollUnsafe(), undefined);
+        assert.equal(process.killSignals[before], "SIGTERM");
+        process.emitExit({ exitCode: 0, signal: null });
+        const result = yield* Fiber.join(closing);
+        assert.equal(result.status, "closed");
+        assert.isTrue(result.processExitObserved);
+        assert.equal(result.descendantsQuiescence, "unavailable");
+        assert.equal(result.futureWakeClosure, "unavailable");
+        assert.deepEqual(
+          (yield* manager.captureOwnedTargets({ threadId: birth.threadId, ownerBirth: birth }))
+            .targets,
+          [],
+        );
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const process of ptyAdapter.processes)
+              process.emitExit({ exitCode: 0, signal: null });
+          }),
+        ),
+      );
+    }),
+  );
+
+  it.effect("owned retirement retains uncertainty when no original physical exit arrives", () =>
+    Effect.gen(function* () {
+      const birth: TerminalManager.TerminalOwnerBirth = {
+        kind: "application_v2_thread_birth",
+        threadId: "thread-1",
+        eventId: "birth:unknown-retirement",
+        sequence: 1,
+      };
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(birth) },
+        processKillGraceMs: 10,
+      });
+      yield* Effect.gen(function* () {
+        yield* manager.open(openInput());
+        const captured = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        const closing = yield* manager.closeOwnedTargets(captured).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("10 millis");
+        yield* TestClock.adjust("10 millis");
+        const result = yield* Fiber.join(closing);
+        assert.equal(result.status, "unknown");
+        assert.isFalse(result.processExitObserved);
+        assert.deepEqual(ptyAdapter.processes[0]!.killSignals, ["SIGTERM", "SIGKILL"]);
+        assert.deepEqual(
+          (yield* manager.captureOwnedTargets({ threadId: birth.threadId, ownerBirth: birth }))
+            .targets,
+          captured.targets,
+        );
+        ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: null });
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const process of ptyAdapter.processes)
+              process.emitExit({ exitCode: 0, signal: null });
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("owned retirement refuses a replacement terminal instead of signalling it", () =>
+    Effect.gen(function* () {
+      const birth: TerminalManager.TerminalOwnerBirth = {
+        kind: "application_v2_thread_birth",
+        threadId: "thread-1",
+        eventId: "birth:before-replacement",
+        sequence: 1,
+      };
+      const currentBirth = yield* Ref.make(birth);
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Ref.get(currentBirth) },
+      });
+      yield* Effect.gen(function* () {
+        yield* manager.open(openInput());
+        const captured = yield* manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        });
+        yield* manager.close({ threadId: birth.threadId, terminalId: DEFAULT_TERMINAL_ID });
+        yield* Ref.set(currentBirth, { ...birth, eventId: "birth:replacement", sequence: 2 });
+        yield* manager.open(openInput());
+        const result = yield* manager.closeOwnedTargets(captured);
+        assert.equal(result.status, "mismatch");
+        assert.deepEqual(ptyAdapter.processes[1]!.killSignals, []);
+        ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: null });
+        ptyAdapter.processes[1]!.emitExit({ exitCode: 0, signal: null });
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            for (const process of ptyAdapter.processes)
+              process.emitExit({ exitCode: 0, signal: null });
+          }),
+        ),
+      );
+    }),
+  );
+
+  it.effect("keeps unknown and foreign births distinct from an original terminal capture", () =>
+    Effect.gen(function* () {
+      const birth: TerminalManager.TerminalOwnerBirth = {
+        kind: "application_v2_thread_birth",
+        threadId: "thread-1",
+        eventId: "birth:original",
+        sequence: 1,
+      };
+      const unknown = yield* createManager();
+      yield* unknown.manager.open(openInput());
+      assert.equal(
+        (yield* unknown.manager.captureOwnedTargets({
+          threadId: birth.threadId,
+          ownerBirth: birth,
+        })).status,
+        "unknown",
+      );
+      const foreign = { ...birth, eventId: "birth:successor", sequence: 2 };
+      const known = yield* createManager(5, {
+        ownerObservation: { observeCurrentBirth: () => Effect.succeed(foreign) },
+      });
+      yield* known.manager.open(openInput());
+      assert.deepEqual(
+        (yield* known.manager.captureOwnedTargets({ threadId: birth.threadId, ownerBirth: birth }))
+          .targets,
+        [],
+      );
+      const actual = yield* known.manager.captureOwnedTargets({
+        threadId: foreign.threadId,
+        ownerBirth: foreign,
+      });
+      assert.equal(actual.status, "captured");
+      assert.equal(actual.targets.length, 1);
+      assert.deepEqual(actual.targets[0]!.ownerBirth, foreign);
+    }),
+  );
   it.effect("keeps attach streams live when a terminal id is closed and reopened", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

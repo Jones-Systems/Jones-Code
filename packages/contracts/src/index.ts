@@ -56,7 +56,6 @@ export * from "./browserProfile.ts";
 export * from "./device.ts";
 export * from "./preview.ts";
 export * from "./previewAutomation.ts";
-export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
 export * from "./tokenAccounting.ts";
 export * from "./scheduledTask.ts";
@@ -64,4 +63,9 @@ export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+export * from "./worktreeOwnership.ts";
+
+export * from "./providerQueue.ts";
+
+export * from "./queueDispatch.ts";
 export * from "./hostStatus.ts";

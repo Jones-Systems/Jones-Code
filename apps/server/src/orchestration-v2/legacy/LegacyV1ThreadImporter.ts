@@ -1,4 +1,9 @@
 import {
+  type RecordedAppThread as OrchestrationV2AppThread,
+  RecordedAppThreadJson as OrchestrationV2AppThreadJson,
+  type RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+} from "../RecordedTypes.ts";
+import {
   threadPullRequestKeysEqual,
   threadPullRequestsOf,
 } from "@t3tools/shared/threadPullRequests";
@@ -9,10 +14,7 @@ import {
   EventId,
   MessageId,
   ModelSelection,
-  type OrchestrationV2AppThread,
-  OrchestrationV2AppThreadJson,
   type OrchestrationV2ConversationMessage,
-  type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
   ProjectId,
   ProviderInstanceId,
@@ -30,6 +32,11 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as EventSink from "../EventSink.ts";
+import {
+  ImportedApplicationAttachmentBirthV1,
+  type ImportedApplicationAttachmentQualificationV1,
+} from "../ImportedApplicationAttachmentInventory.ts";
+import { makeCommitTransaction } from "../CommitTransaction.ts";
 import { makeKeyedSerialExecutor } from "../KeyedSerialExecutor.ts";
 import { randomUuidV4 } from "../RandomUuid.ts";
 
@@ -106,6 +113,11 @@ export class LegacyV1ThreadImportError extends Schema.TaggedError<LegacyV1Thread
 }
 
 export interface LegacyV1ThreadImporterShape {
+  readonly ensureApplicationAttachmentInventory?: (input: {
+    readonly threadId: ThreadId;
+    readonly expectedBirth: ImportedApplicationAttachmentBirthV1;
+  }) => Effect.Effect<ImportedApplicationAttachmentQualificationV1, LegacyV1ThreadImportError>;
+
   readonly pendingThreadCount: Effect.Effect<number, LegacyV1ThreadImportError>;
   readonly reconcileShells: Effect.Effect<LegacyV1ImportSummary, LegacyV1ThreadImportError>;
   readonly ensureTranscript: (
@@ -118,6 +130,58 @@ export class LegacyV1ThreadImporter extends Context.Service<
   LegacyV1ThreadImporter,
   LegacyV1ThreadImporterShape
 >()("t3/orchestration-v2/legacy/LegacyV1ThreadImporter") {}
+
+export const makeLegacyCurrentSourceReader = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  let live = true;
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      live = false;
+    }),
+  );
+  const read: EventSink.LegacyCurrentSourceReaderShape["read"] = Effect.fnUntraced(
+    function* (input) {
+      if (!live || input.sql !== sql)
+        return {
+          status: "unavailable",
+          reason: "legacy_current_source_connection_unavailable",
+        } as const;
+      const threadRows = yield* sql<EventSink.LegacyCurrentSourceSnapshot["threadRows"][number]>`
+      SELECT * FROM projection_threads WHERE thread_id = ${input.threadId}`;
+      const messageRows = yield* sql<EventSink.LegacyCurrentSourceSnapshot["messageRows"][number]>`
+      SELECT * FROM projection_thread_messages WHERE thread_id = ${input.threadId} ORDER BY message_id`;
+      const observationMessageRows = yield* sql`
+      SELECT * FROM projection_thread_messages WHERE thread_id = ${input.threadId}
+        AND role IN ('user', 'assistant') ORDER BY created_at, message_id`;
+      const answerRows = yield* sql<EventSink.LegacyCurrentSourceSnapshot["answerRows"][number]>`
+      SELECT * FROM projection_thread_activities WHERE thread_id = ${input.threadId}
+        AND kind = 'user-input.answer-submitted' ORDER BY activity_id`;
+      const births = yield* sql<EventSink.LegacyCurrentSourceSnapshot["births"][number]>`
+      SELECT event_id, sequence, payload_json FROM orchestration_events
+      WHERE application_event_version = 1 AND aggregate_kind = 'thread'
+        AND stream_id = ${input.threadId} AND event_type = 'thread.created'
+      ORDER BY sequence DESC LIMIT 1`;
+      const boundary = yield* sql<{ readonly sequence: number }>`
+      SELECT coalesce(max(sequence), 0) AS sequence FROM orchestration_events
+      WHERE application_event_version = 1`;
+      const positions = yield* sql<EventSink.LegacyCurrentSourceSnapshot["positions"][number]>`
+      SELECT projector, last_applied_sequence FROM projection_state
+      WHERE projector IN ('projection.threads', 'projection.thread-messages',
+        'projection.thread-activities', 'projection.thread-turns')`;
+      return {
+        status: "complete",
+        threadRows,
+        messageRows,
+        observationMessageRows,
+        answerRows,
+        births,
+        legacyEventSequence: boundary[0]!.sequence,
+        positions,
+      } satisfies EventSink.LegacyCurrentSourceSnapshot;
+    },
+  );
+  return { read } satisfies EventSink.LegacyCurrentSourceReaderShape;
+});
 
 const decodeModelSelection = Schema.decodeUnknownOption(ModelSelection);
 const decodeAttachments = Schema.decodeUnknownOption(Schema.Array(ChatAttachment));
@@ -346,8 +410,74 @@ function chunks<A>(items: ReadonlyArray<A>, size: number): Array<ReadonlyArray<A
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const commitTransaction = yield* makeCommitTransaction();
   const eventSink = yield* EventSink.EventSinkV2;
   const transcriptImports = yield* makeKeyedSerialExecutor<ThreadId>();
+
+  const ensureApplicationAttachmentInventory = (input: {
+    readonly threadId: ThreadId;
+    readonly expectedBirth: ImportedApplicationAttachmentBirthV1;
+  }): Effect.Effect<ImportedApplicationAttachmentQualificationV1, LegacyV1ThreadImportError> =>
+    commitTransaction
+      .withTransaction(
+        eventSink.prepareImportedApplicationAttachmentInventory === undefined
+          ? Effect.succeed({
+              status: "unavailable" as const,
+              reason: "imported_application_inventory_owner_unavailable",
+            })
+          : eventSink.prepareImportedApplicationAttachmentInventory(input),
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new LegacyV1ThreadImportError({
+              operation: "prepare application attachment inventory for",
+              threadId: input.threadId,
+              cause,
+            }),
+        ),
+      );
+
+  const prepareApplicationAttachmentInventoryForThread = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        readonly event_id: string;
+        readonly sequence: number;
+        readonly payload_json: string;
+      }>`
+      SELECT event_id, sequence, payload_json FROM orchestration_events
+      WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${threadId}
+        AND event_type = 'thread.created'
+      ORDER BY sequence DESC LIMIT 1
+    `;
+      const row = rows[0];
+      if (row === undefined) return;
+      const thread = decodeStoredThread(row.payload_json);
+      if (
+        Option.isNone(thread) ||
+        thread.value.id !== threadId ||
+        thread.value.historyOrigin !== "v1_import"
+      )
+        return;
+      const birth = Schema.decodeUnknownOption(ImportedApplicationAttachmentBirthV1)({
+        kind: "application_v2_thread_birth",
+        threadId,
+        eventId: row.event_id,
+        sequence: row.sequence,
+      });
+      if (Option.isNone(birth)) return;
+      yield* ensureApplicationAttachmentInventory({ threadId, expectedBirth: birth.value });
+    });
+
+  const prepareApplicationAttachmentInventories = Effect.gen(function* () {
+    const rows = yield* sql<{ readonly thread_id: string }>`
+      SELECT projection.thread_id FROM orchestration_v2_projection_threads AS projection
+      WHERE json_extract(projection.payload_json, '$.historyOrigin') = 'v1_import'
+      ORDER BY projection.thread_id
+    `;
+    for (const row of rows)
+      yield* prepareApplicationAttachmentInventoryForThread(ThreadId.make(row.thread_id));
+  });
 
   const listMessages = (threadId: ThreadId) =>
     sql<LegacyMessageRow>`
@@ -607,7 +737,7 @@ const make = Effect.gen(function* () {
           payload: thread,
         },
       ];
-      yield* sql.withTransaction(
+      yield* commitTransaction.withTransaction(
         Effect.gen(function* () {
           yield* Effect.forEach(
             previews,
@@ -647,11 +777,13 @@ const make = Effect.gen(function* () {
             )
             ON CONFLICT(thread_id) DO NOTHING
           `;
+          yield* prepareApplicationAttachmentInventoryForThread(thread.id);
         }),
       );
       importedThreadCount += 1;
       importedMessageCount += previews.length;
     }
+    yield* prepareApplicationAttachmentInventories;
     return { importedThreadCount, importedMessageCount };
   });
 
@@ -685,8 +817,10 @@ const make = Effect.gen(function* () {
   );
 
   // Threads whose transcript import this process has already confirmed.
-  // `transcript_imported_at` is never reset to NULL, so a positive answer
-  // stays valid for the process lifetime; ensureTranscript runs on most
+  // Only a committed `transcript_imported_at` confirms the cache. A caller's
+  // outer import transaction can still roll back after hydration returns.
+  // The marker is never reset to NULL, so confirmed answers stay valid;
+  // ensureTranscript runs on most
   // thread reads and command dispatches, so skipping the lock + lookup here
   // keeps that path off the database entirely after first confirmation.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
@@ -694,22 +828,26 @@ const make = Effect.gen(function* () {
   const ensureTranscriptBase = (threadId: ThreadId) =>
     transcriptImports.withLock(
       threadId,
-      Effect.gen(function* () {
-        const imports = yield* sql<LegacyImportRow>`
+      commitTransaction.withTransaction(
+        Effect.gen(function* () {
+          const imports = yield* sql<LegacyImportRow>`
           SELECT thread_id, transcript_imported_at
           FROM orchestration_v2_legacy_imports
           WHERE thread_id = ${threadId}
           LIMIT 1
         `;
-        const imported = imports[0];
-        if (imported === undefined || imported.transcript_imported_at !== null) {
-          if (imported !== undefined) {
-            confirmedTranscriptThreadIds.add(threadId);
+          const imported = imports[0];
+          if (imported === undefined || imported.transcript_imported_at !== null) {
+            if (imported !== undefined) {
+              yield* prepareApplicationAttachmentInventoryForThread(threadId);
+              yield* commitTransaction.afterCommit(
+                Effect.sync(() => void confirmedTranscriptThreadIds.add(threadId)),
+              );
+            }
+            return { importedThreadCount: 0, importedMessageCount: 0 };
           }
-          return { importedThreadCount: 0, importedMessageCount: 0 };
-        }
-        const messages = yield* listMessages(threadId);
-        const existingRows = yield* sql<{ readonly event_id: string }>`
+          const messages = yield* listMessages(threadId);
+          const existingRows = yield* sql<{ readonly event_id: string }>`
           SELECT event_id
           FROM orchestration_events
           WHERE application_event_version = 2
@@ -717,15 +855,15 @@ const make = Effect.gen(function* () {
             AND stream_id = ${threadId}
             AND event_id LIKE ${`${IMPORT_EVENT_PREFIX}:message:%`}
         `;
-        const existing = new Set(existingRows.map((row) => row.event_id));
-        const missing = messages.filter(
-          (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:message:${message.message_id}`),
-        );
-        for (const batch of chunks(missing, TRANSCRIPT_EVENT_BATCH_SIZE / 2)) {
-          yield* Effect.forEach(
-            batch,
-            (message) =>
-              sql`
+          const existing = new Set(existingRows.map((row) => row.event_id));
+          const missing = messages.filter(
+            (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:message:${message.message_id}`),
+          );
+          for (const batch of chunks(missing, TRANSCRIPT_EVENT_BATCH_SIZE / 2)) {
+            yield* Effect.forEach(
+              batch,
+              (message) =>
+                sql`
                 INSERT INTO orchestration_v2_turn_item_positions (
                   thread_id,
                   turn_item_id,
@@ -738,13 +876,13 @@ const make = Effect.gen(function* () {
                 )
                 ON CONFLICT(thread_id, turn_item_id) DO NOTHING
               `,
-            { discard: true },
-          );
-          yield* eventSink.write({ events: batch.flatMap(messageEvents) });
-          yield* Effect.yieldNow;
-        }
-        const now = DateTime.formatIso(yield* DateTime.now);
-        yield* sql`
+              { discard: true },
+            );
+            yield* eventSink.write({ events: batch.flatMap(messageEvents) });
+            yield* Effect.yieldNow;
+          }
+          const now = DateTime.formatIso(yield* DateTime.now);
+          yield* sql`
           UPDATE orchestration_v2_legacy_imports
           SET
             transcript_imported_at = ${now},
@@ -752,12 +890,16 @@ const make = Effect.gen(function* () {
             last_error = NULL
           WHERE thread_id = ${threadId}
         `;
-        confirmedTranscriptThreadIds.add(threadId);
-        return {
-          importedThreadCount: 1,
-          importedMessageCount: missing.length,
-        };
-      }),
+          yield* prepareApplicationAttachmentInventoryForThread(threadId);
+          yield* commitTransaction.afterCommit(
+            Effect.sync(() => void confirmedTranscriptThreadIds.add(threadId)),
+          );
+          return {
+            importedThreadCount: 1,
+            importedMessageCount: missing.length,
+          };
+        }),
+      ),
     );
 
   const ensureTranscript = (threadId: ThreadId) =>
@@ -775,6 +917,7 @@ const make = Effect.gen(function* () {
         );
 
   const importPendingTranscripts = Effect.gen(function* () {
+    yield* prepareApplicationAttachmentInventories;
     const rows = yield* sql<LegacyImportRow>`
       SELECT thread_id, transcript_imported_at
       FROM orchestration_v2_legacy_imports
@@ -819,6 +962,7 @@ const make = Effect.gen(function* () {
   );
 
   return LegacyV1ThreadImporter.of({
+    ensureApplicationAttachmentInventory,
     pendingThreadCount,
     reconcileShells,
     ensureTranscript,

@@ -1,3 +1,5 @@
+import type { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
+import { ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -7,6 +9,20 @@ import * as Schema from "effect/Schema";
 import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as EventSink from "./EventSink.ts";
+
+export const terminalOwnerObservationLive = Layer.effect(
+  TerminalManager.TerminalOwnerObservation,
+  Effect.gen(function* () {
+    const eventSink = yield* EventSink.EventSinkV2;
+    return {
+      observeCurrentBirth: (threadId: string) =>
+        eventSink.readApplicationBirthRecord === undefined
+          ? Effect.succeed(null)
+          : eventSink.readApplicationBirthRecord(ThreadId.make(threadId)),
+    };
+  }),
+);
 
 export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupError>()(
   "ResourceCleanupError",
@@ -19,13 +35,25 @@ export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupErro
 ) {}
 
 export class ResourceCleanupService extends Context.Reference<{
-  readonly cleanupTerminals: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
+  readonly cleanupTerminals: (
+    threadId: string,
+    legacyOwnedControl?: LegacyOwnedTerminalControl,
+  ) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupAttachments: (
     attachmentIds: ReadonlyArray<string>,
   ) => Effect.Effect<void, ResourceCleanupError>;
 }>("t3/orchestration-v2/ResourceCleanupService", {
   defaultValue: () => ({
-    cleanupTerminals: () => Effect.void,
+    cleanupTerminals: (threadId, legacyOwnedControl) =>
+      legacyOwnedControl === undefined
+        ? Effect.void
+        : Effect.fail(
+            new ResourceCleanupError({
+              operation: "terminal",
+              threadId,
+              cause: new Error("Bound legacy terminal cleanup requires its executing owner."),
+            }),
+          ),
     cleanupAttachments: () => Effect.void,
   }),
 }) {}
@@ -37,9 +65,12 @@ export const live = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const config = yield* ServerConfig.ServerConfig;
     return {
-      cleanupTerminals: (threadId: string) =>
+      cleanupTerminals: (threadId: string, legacyOwnedControl?: LegacyOwnedTerminalControl) =>
         terminals
-          .close({ threadId, deleteHistory: true })
+          .close(
+            { threadId, deleteHistory: true },
+            legacyOwnedControl === undefined ? {} : { legacyOwnedControl },
+          )
           .pipe(
             Effect.mapError(
               (cause) => new ResourceCleanupError({ operation: "terminal", threadId, cause }),

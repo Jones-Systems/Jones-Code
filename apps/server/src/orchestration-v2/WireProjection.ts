@@ -1,5 +1,18 @@
 import type {
+  RecordedAppThread,
+  RecordedRun,
+  RecordedLifecycleEvent,
+  RecordedStoredLifecycleEvent,
+  RecordedEvent as OrchestrationV2RecordedEvent,
+  RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
+  RecordedThreadProjection,
+  ApplicationRecordedLifecycleEvent,
+} from "./RecordedTypes.ts";
+import type {
   OrchestrationV2DomainEvent,
+  OrchestrationV2AppThread,
+  OrchestrationV2Run,
+  ApplicationProjectEvent,
   OrchestrationV2ContextHandoff,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
@@ -183,8 +196,36 @@ export function projectContextHandoffForWire(
   return { ...projected, summaryText: "" };
 }
 
+function projectRecordedThreadForWire(thread: RecordedAppThread): OrchestrationV2AppThread {
+  if (!("legacyBootstrapClaim" in thread) && !("standaloneCheckoutBirth" in thread)) return thread;
+  const { legacyBootstrapClaim: _claim, standaloneCheckoutBirth: _birth, ...publicThread } = thread;
+  return publicThread;
+}
+
+function projectRecordedRunForWire(run: RecordedRun): OrchestrationV2Run {
+  if (
+    !("legacyBootstrap" in run) &&
+    !("legacyPreparationFailureKnown" in run) &&
+    !("workspaceRunSetupScript" in run) &&
+    !("legacyReleaseDecision" in run) &&
+    !("legacyPreparationFailureDecision" in run) &&
+    !("legacyPreparation" in run)
+  )
+    return run;
+  const {
+    legacyBootstrap: _policy,
+    legacyPreparationFailureKnown: _known,
+    workspaceRunSetupScript: _setup,
+    legacyReleaseDecision: _decision,
+    legacyPreparationFailureDecision: _failureDecision,
+    legacyPreparation: _preparation,
+    ...publicRun
+  } = run;
+  return publicRun;
+}
+
 export function projectThreadProjectionForWire(
-  projection: OrchestrationV2ThreadProjection,
+  projection: RecordedThreadProjection,
 ): OrchestrationV2ThreadProjection {
   const projectedById = new Map<string, OrchestrationV2TurnItem>();
   const project = (item: OrchestrationV2TurnItem) => {
@@ -197,6 +238,8 @@ export function projectThreadProjectionForWire(
   };
   return {
     ...projection,
+    thread: projectRecordedThreadForWire(projection.thread),
+    runs: projection.runs.map(projectRecordedRunForWire),
     contextHandoffs: projection.contextHandoffs.map(projectContextHandoffForWire),
     turnItems: projection.turnItems.map(project),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
@@ -207,11 +250,60 @@ export function projectThreadProjectionForWire(
 }
 
 export function projectDomainEventForWire(
-  event: OrchestrationV2DomainEvent,
+  event: RecordedLifecycleEvent,
 ): OrchestrationV2DomainEvent {
-  return event.type === "turn-item.updated"
-    ? { ...event, payload: projectTurnItemForWire(event.payload) }
-    : event.type === "context-handoff.updated"
-      ? { ...event, payload: projectContextHandoffForWire(event.payload) }
-      : event;
+  switch (event.type) {
+    case "thread.created":
+    case "thread.archived":
+    case "thread.unarchived":
+    case "thread.deleted":
+    case "thread.settled":
+    case "thread.unsettled":
+    case "thread.snoozed":
+    case "thread.unsnoozed":
+    case "thread.pinned":
+    case "thread.auto-settle-set":
+    case "thread.unpinned":
+    case "thread.pin-reordered":
+    case "thread.active-reordered":
+    case "thread.visited":
+    case "thread.marked-unread":
+    case "thread.metadata-updated":
+    case "thread.pull-request-synced":
+    case "thread.runtime-mode-updated":
+    case "thread.interaction-mode-updated":
+    case "thread.model-selection-updated":
+    case "thread.provider-switched":
+      return { ...event, payload: projectRecordedThreadForWire(event.payload) };
+    case "run.created":
+    case "run.updated":
+      return { ...event, payload: projectRecordedRunForWire(event.payload) };
+    case "turn-item.updated":
+      return { ...event, payload: projectTurnItemForWire(event.payload) };
+    case "context-handoff.updated":
+      return { ...event, payload: projectContextHandoffForWire(event.payload) };
+    default:
+      return event;
+  }
+}
+
+export function isPublicOrchestrationEvent(
+  event: OrchestrationV2RecordedEvent,
+): event is RecordedLifecycleEvent {
+  return (
+    event.type !== "legacy-bootstrap.preflight-intent" &&
+    event.type !== "legacy-bootstrap.preflight-outcome"
+  );
+}
+
+export function isPublicStoredOrchestrationEvent(
+  stored: OrchestrationV2RecordedStoredEvent,
+): stored is RecordedStoredLifecycleEvent {
+  return isPublicOrchestrationEvent(stored.event);
+}
+
+export function isPublicApplicationEvent(
+  event: ApplicationProjectEvent | OrchestrationV2RecordedStoredEvent,
+): event is ApplicationRecordedLifecycleEvent {
+  return !("event" in event) || isPublicStoredOrchestrationEvent(event);
 }

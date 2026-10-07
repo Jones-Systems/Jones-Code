@@ -22,6 +22,28 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ProjectHandlersLive } from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
 
+import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
+import * as IntakeEventStore from "../../../orchestration-v2/EventStore.ts";
+import * as IntakeProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
+import * as IntakeCommandReceipts from "../../../orchestration-v2/CommandReceiptStore.ts";
+import * as IntakeEffectOutbox from "../../../orchestration-v2/EffectOutbox.ts";
+import * as IntakeProjectStore from "../../../orchestration-v2/ProjectStore.ts";
+import * as IntakeTurnItemPositions from "../../../orchestration-v2/TurnItemPositionStore.ts";
+import * as IntakeEventSink from "../../../orchestration-v2/EventSink.ts";
+
+const intakeReaderStores = Layer.mergeAll(
+  IntakeEventStore.layer,
+  IntakeProjectionStore.layer,
+  IntakeCommandReceipts.layer,
+  IntakeEffectOutbox.layer,
+  IntakeProjectStore.layer,
+  IntakeTurnItemPositions.layer,
+);
+const intakeReaders = Layer.mergeAll(
+  intakeReaderStores,
+  IntakeEventSink.layerFromStores.pipe(Layer.provide(intakeReaderStores)),
+).pipe(Layer.provideMerge(SqlitePersistenceMemory));
+
 it.effect("attributes a launched thread's first message to the calling thread", () =>
   Effect.gen(function* () {
     const sourceThreadId = ThreadId.make("source-thread");
@@ -40,7 +62,9 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       deletedAt: null,
     } as OrchestrationV2ThreadShell;
     let launchedSender: ThreadId | undefined;
+    const intakeReaderContext = yield* Layer.build(intakeReaders);
     const dependencies = Layer.mergeAll(
+      Layer.succeedContext(intakeReaderContext),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
@@ -102,7 +126,9 @@ it.effect("launches a scratch thread into the Scratch project", () =>
       deletedAt: null,
     } as OrchestrationV2ThreadShell;
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const intakeReaderContext = yield* Layer.build(intakeReaders);
     const dependencies = Layer.mergeAll(
+      Layer.succeedContext(intakeReaderContext),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),

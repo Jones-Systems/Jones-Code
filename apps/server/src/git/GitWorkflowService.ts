@@ -67,6 +67,9 @@ export class GitWorkflowService extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+    readonly resolveCommit: (
+      input: GitVcsDriver.GitResolveCommitInput,
+    ) => Effect.Effect<GitVcsDriver.GitResolveCommitResult, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
       options?: GitVcsDriver.CreateWorktreeOptions,
@@ -113,6 +116,8 @@ export class GitWorkflowService extends Context.Service<
       input: VcsSwitchRefInput,
     ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
     readonly renameBranch: (input: {
+      readonly revalidateMutation?: Effect.Effect<void, Error>;
+      readonly legacyPreparation?: GitVcsDriver.LegacyBranchRenameHooks;
       readonly exactName?: boolean;
       readonly cwd: string;
       readonly oldBranch: string;
@@ -347,6 +352,10 @@ export const make = Effect.gen(function* () {
         Effect.flatMap((isGitRepository) =>
           isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
         ),
+      ),
+    resolveCommit: (input) =>
+      ensureGitCommand("GitWorkflowService.resolveCommit", input.cwd).pipe(
+        Effect.andThen(git.resolveCommit(input)),
       ),
     createWorktree: (input, options) =>
       ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(

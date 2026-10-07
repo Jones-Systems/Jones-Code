@@ -1,5 +1,8 @@
 import { assert, it, vi } from "@effect/vitest";
 import {
+  type ChatAttachment,
+  OrchestrationV2ConversationMessageJson,
+  OrchestrationV2TurnItemJson,
   EnvironmentId,
   EventId,
   CommandId,
@@ -34,6 +37,15 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import {
+  ImportedApplicationAttachmentRetentionEvidenceV1,
+  type ImportedApplicationAttachmentBirthV1,
+  type ImportedApplicationAttachmentSnapshotV1,
+  importedApplicationAttachmentSha256V1,
+  makeImportedApplicationAttachmentInventoryIdV1,
+  makeImportedApplicationAttachmentRetentionEvidenceV1,
+} from "./ImportedApplicationAttachmentInventory.ts";
+
+import {
   buildBoundedThreadProjection,
   decodeThreadHistoryCursor,
   selectHistoryPageFromCursor,
@@ -51,6 +63,7 @@ const modelSelection = {
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = modelSelection.instanceId;
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeUnknownJsonStringEffect = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate")(function* (
   suffix: string,
@@ -4668,6 +4681,1087 @@ it.effect.each([
     }).pipe(Effect.provide(backend === "SQL" ? TestLayer : ProjectionStore.layerMemory)),
 );
 
+const retainedAttachmentPathsForAssertions = Effect.fnUntraced(function* (threadId: ThreadId) {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const result = yield* store.getThreadRetainedAttachmentPaths(threadId);
+  if (result.status !== "complete") return result;
+  assert.isTrue(Schema.is(ImportedApplicationAttachmentRetentionEvidenceV1)(result.sourceEvidence));
+  assert.deepEqual(
+    result.sourceEvidence,
+    makeImportedApplicationAttachmentRetentionEvidenceV1({
+      segments: result.sourceEvidence.segments,
+      visibleV2CarrierSetSha256: result.sourceEvidence.visibleV2CarrierSetSha256,
+      relativePaths: result.relativePaths,
+    }),
+  );
+  return { status: result.status, relativePaths: result.relativePaths };
+});
+
+const retainedAttachmentVisibility = Effect.gen(function* () {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const threadId = yield* addRolledBackRecoveryCandidate("retained-attachment-paths");
+  const projection = yield* store.getThreadProjection(threadId);
+  const hiddenRun = projection.runs[0]!;
+  const now = projection.thread.createdAt;
+  assert.deepEqual(yield* retainedAttachmentPathsForAssertions(threadId), {
+    status: "complete",
+    relativePaths: [],
+  });
+  assert.deepEqual(
+    yield* retainedAttachmentPathsForAssertions(ThreadId.make("thread:missing-attachments")),
+    {
+      status: "unavailable",
+      reason: "projection_unavailable",
+    },
+  );
+  const image = {
+    type: "image",
+    id: "retained-image",
+    name: "picture.JPG",
+    mimeType: "image/png",
+    sizeBytes: 10,
+  } as const;
+  const file = {
+    type: "file",
+    id: "retained-file",
+    name: "notes.TXT",
+    mimeType: "text/plain",
+    sizeBytes: 10,
+  } as const;
+  const reserved = { ...file, id: "retained-reserved", name: "archive.part" };
+  const noExtension = { ...file, id: "retained-no-extension", name: "README" };
+  const hidden = { ...file, id: "hidden-rollback" };
+  const cancelled = { ...file, id: "hidden-queued" };
+  const currentRun = {
+    ...hiddenRun,
+    id: RunId.make("run:retained-current"),
+    ordinal: 3,
+    status: "completed" as const,
+  };
+  yield* store.apply({
+    id: EventId.make("event:retained-current"),
+    type: "run.created",
+    threadId,
+    runId: currentRun.id,
+    occurredAt: now,
+    payload: currentRun,
+  });
+  const cancelledRun = {
+    ...hiddenRun,
+    id: RunId.make("run:retained-cancelled"),
+    ordinal: 2,
+    status: "cancelled" as const,
+  };
+  yield* store.apply({
+    id: EventId.make("event:retained-cancelled"),
+    type: "run.created",
+    threadId,
+    runId: cancelledRun.id,
+    occurredAt: now,
+    payload: cancelledRun,
+  });
+  for (const [suffix, runId, attachments] of [
+    ["current", currentRun.id, [image, file]],
+    ["rolled-back", hiddenRun.id, [hidden]],
+    ["cancelled", cancelledRun.id, [cancelled]],
+  ] as const) {
+    const messageId = MessageId.make(`message:retained-${suffix}`);
+    yield* store.apply({
+      id: EventId.make(`event:retained-message-${suffix}`),
+      type: "message.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: messageId,
+        threadId,
+        runId,
+        nodeId: null,
+        role: "user",
+        text: suffix,
+        attachments,
+        streaming: false,
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* store.apply({
+      id: EventId.make(`event:retained-item-${suffix}`),
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make(`item:retained-${suffix}`),
+        threadId,
+        runId,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: suffix === "current" ? 2 : suffix === "rolled-back" ? 3 : 4,
+        status: "completed",
+        title: suffix,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "user_message",
+        messageId,
+        text: suffix,
+        attachments,
+        createdBy: "user",
+        creationSource: "web",
+        inputIntent: suffix === "cancelled" ? "queued_turn" : "turn_start",
+      },
+    });
+  }
+  const answerItem = {
+    id: TurnItemId.make("item:retained-answer"),
+    threadId,
+    runId: currentRun.id,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 5,
+    status: "completed" as const,
+    title: "Answer",
+    startedAt: now,
+    completedAt: now,
+    updatedAt: now,
+    type: "user_input_request" as const,
+    requestId: RuntimeRequestId.make("request:retained-answer"),
+    questions: [],
+    questionAnswer: {
+      requestId: "request:retained-answer",
+      answers: { first: "yes", second: "see files" },
+      attachmentsByQuestionId: { first: [image, reserved], second: [file, noExtension] },
+    },
+  };
+  yield* store.apply({
+    id: EventId.make("event:retained-answer"),
+    type: "turn-item.updated",
+    threadId,
+    occurredAt: now,
+    payload: answerItem,
+  });
+  yield* store.apply({
+    id: EventId.make("event:retained-hidden-answer"),
+    type: "turn-item.updated",
+    threadId,
+    occurredAt: now,
+    payload: {
+      ...answerItem,
+      id: TurnItemId.make("item:retained-hidden-answer"),
+      ordinal: 6,
+      runId: hiddenRun.id,
+      questionAnswer: {
+        requestId: "request:retained-answer",
+        answers: {},
+        attachmentsByQuestionId: { first: [hidden] },
+      },
+    },
+  });
+  yield* store.apply({
+    id: EventId.make("event:retained-pending-question"),
+    type: "turn-item.updated",
+    threadId,
+    occurredAt: now,
+    payload: {
+      ...answerItem,
+      id: TurnItemId.make("item:retained-pending-question"),
+      ordinal: 7,
+      status: "pending",
+      questionAnswer: undefined,
+    },
+  });
+  const assistantMessageId = MessageId.make("message:retained-assistant");
+  const assistantFile = { ...file, id: "retained-assistant-file" };
+  yield* store.apply({
+    id: EventId.make("event:retained-assistant-message"),
+    type: "message.updated",
+    threadId,
+    occurredAt: now,
+    payload: {
+      id: assistantMessageId,
+      threadId,
+      runId: currentRun.id,
+      nodeId: null,
+      role: "assistant",
+      text: "File result",
+      attachments: [assistantFile],
+      streaming: false,
+      createdBy: "agent",
+      creationSource: "provider",
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+  yield* store.apply({
+    id: EventId.make("event:retained-assistant-item"),
+    type: "turn-item.updated",
+    threadId,
+    occurredAt: now,
+    payload: {
+      id: TurnItemId.make("item:retained-assistant"),
+      threadId,
+      runId: currentRun.id,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 8,
+      status: "completed",
+      title: "File result",
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "assistant_message",
+      messageId: assistantMessageId,
+      text: "File result",
+      streaming: false,
+    },
+  });
+  const before = yield* store.getThreadProjection(threadId);
+  assert.deepEqual(yield* retainedAttachmentPathsForAssertions(threadId), {
+    status: "complete",
+    relativePaths: [
+      "retained-assistant-file.txt",
+      "retained-file.txt",
+      "retained-image.png",
+      "retained-no-extension.bin",
+      "retained-reserved.bin",
+    ],
+  });
+  assert.deepEqual(yield* store.getThreadProjection(threadId), before);
+  const childId = ThreadId.make("thread:retained-attachment-fork");
+  yield* store.apply({
+    id: EventId.make("event:retained-attachment-fork"),
+    type: "thread.created",
+    threadId: childId,
+    occurredAt: now,
+    payload: {
+      ...projection.thread,
+      id: childId,
+      forkedFrom: { type: "run", threadId, runId: currentRun.id },
+    },
+  });
+  assert.deepEqual(yield* retainedAttachmentPathsForAssertions(childId), {
+    status: "complete",
+    relativePaths: [
+      "retained-assistant-file.txt",
+      "retained-file.txt",
+      "retained-image.png",
+      "retained-no-extension.bin",
+      "retained-reserved.bin",
+    ],
+  });
+});
+
+const retainedUnknownAttachment = Effect.gen(function* () {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const threadId = yield* addRolledBackRecoveryCandidate("unknown-retained-attachment");
+  const now = (yield* store.getThread(threadId)).createdAt;
+  const attachment = {
+    type: "future-audio",
+    id: "retained-future",
+    name: "audio.wav",
+    mimeType: "audio/wav",
+    sizeBytes: 10,
+  } satisfies ChatAttachment;
+  yield* store.apply({
+    id: EventId.make("event:retained-future-message"),
+    type: "message.updated",
+    threadId,
+    occurredAt: now,
+    payload: {
+      id: MessageId.make("message:retained-future"),
+      threadId,
+      runId: null,
+      nodeId: null,
+      role: "user",
+      text: "Future attachment",
+      attachments: [attachment],
+      streaming: false,
+      createdBy: "user",
+      creationSource: "web",
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+  assert.deepEqual(yield* retainedAttachmentPathsForAssertions(threadId), {
+    status: "unavailable",
+    reason: "attachment_path_unavailable",
+  });
+});
+
+const importedRetainedAttachmentsUnavailable = Effect.gen(function* () {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const threadId = yield* addRolledBackRecoveryCandidate("imported-retained-attachments");
+  const projection = yield* store.getThreadProjection(threadId);
+  yield* store.apply({
+    id: EventId.make("event:imported-retained-thread"),
+    type: "thread.metadata-updated",
+    threadId,
+    occurredAt: projection.thread.updatedAt,
+    payload: { ...projection.thread, historyOrigin: "v1_import" },
+  });
+  assert.deepEqual(yield* retainedAttachmentPathsForAssertions(threadId), {
+    status: "unavailable",
+    reason: "imported_inventory_unavailable",
+  });
+  const childId = ThreadId.make("thread:imported-retained-fork");
+  yield* store.apply({
+    id: EventId.make("event:imported-retained-fork"),
+    type: "thread.created",
+    threadId: childId,
+    occurredAt: projection.thread.createdAt,
+    payload: {
+      ...projection.thread,
+      id: childId,
+      forkedFrom: { type: "run", threadId, runId: projection.runs[0]!.id },
+    },
+  });
+  assert.deepEqual(yield* retainedAttachmentPathsForAssertions(childId), {
+    status: "unavailable",
+    reason: "imported_inventory_unavailable",
+  });
+});
+
+// These fixtures consume already qualified private inputs. EventSink's source
+// adoption tests separately prove the SQL birth, source-cut and fork witnesses.
+const retainedImportedApplicationInventory = (native: boolean, suffix = "") =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = yield* addRolledBackRecoveryCandidate(
+      `qualified-imported-attachments-${native ? "native" : "legacy"}${suffix}`,
+    );
+    const projection = yield* store.getThreadProjection(threadId);
+    const now = projection.thread.createdAt;
+    yield* store.apply({
+      id: EventId.make(`${threadId}:mark-imported`),
+      type: "thread.metadata-updated",
+      threadId,
+      occurredAt: now,
+      payload: { ...projection.thread, historyOrigin: "v1_import" },
+    });
+    const birth: ImportedApplicationAttachmentBirthV1 = {
+      kind: "application_v2_thread_birth",
+      threadId,
+      eventId: EventId.make(`${threadId}:synthetic-qualified-birth`),
+      sequence: 10,
+    };
+    const file = {
+      type: "file",
+      id: "application-message-file",
+      name: "notes.TXT",
+      mimeType: "text/plain",
+      sizeBytes: 10,
+    } as const;
+    const answerFile = { ...file, id: "application-answer-file" };
+    const answer = {
+      requestId: "request:historical",
+      questionTextById: { first: "Preserved question" },
+      answers: { first: "yes" },
+      attachmentsByQuestionId: { first: [answerFile] },
+    };
+    const carriers: ImportedApplicationAttachmentSnapshotV1["carriers"] = native
+      ? []
+      : [
+          {
+            kind: "legacy_message",
+            messageId: MessageId.make("message:historical-system"),
+            sourceThreadId: threadId,
+            turnId: null,
+            role: "system",
+            createdAt: DateTime.formatIso(now),
+            updatedAt: DateTime.formatIso(now),
+            attachmentsJson: yield* encodeUnknownJsonStringEffect([file]).pipe(Effect.orDie),
+            attachments: [file],
+            sourceRowSha256: importedApplicationAttachmentSha256V1("historical system row"),
+          },
+          {
+            kind: "legacy_answer",
+            activityId: "answer:historical",
+            sourceThreadId: threadId,
+            turnId: null,
+            sequence: null,
+            createdAt: DateTime.formatIso(now),
+            payloadJson: yield* encodeUnknownJsonStringEffect(answer).pipe(Effect.orDie),
+            answer,
+            sourceRowSha256: importedApplicationAttachmentSha256V1("historical answer row"),
+          },
+        ];
+    const identity: Omit<
+      ImportedApplicationAttachmentSnapshotV1["header"],
+      "inventoryId" | "recordedAt"
+    > = {
+      version: 1,
+      domain: "jones_materialized_attachment_references/v1",
+      applicationBirth: birth,
+      projectId: projection.thread.projectId,
+      source: native
+        ? {
+            kind: "native_import_batch",
+            parserPolicy: "agent_session_visible_messages_v1",
+            birth,
+            source: {
+              provider: "codex",
+              providerInstanceId,
+              providerSessionId: "synthetic-sealed-native",
+              filePath: "/synthetic/native-subset.jsonl",
+              size: 100,
+              device: 1,
+              mtimeMs: null,
+              inode: null,
+              birthtimeMs: null,
+            },
+            eventsSha256: importedApplicationAttachmentSha256V1("sealed pairs"),
+            messageCount: 2,
+            eventBasis: Array.from({ length: 4 }, (_, index) => ({
+              eventId: EventId.make(`event:sealed-pair:${index}`),
+              sequence: 11 + index,
+            })),
+          }
+        : {
+            kind: "legacy_projection",
+            legacyBirth: { eventId: EventId.make("event:historical-birth"), sequence: 1 },
+            projectId: projection.thread.projectId,
+            sourceCreatedAt: DateTime.formatIso(now),
+            sourceCut: {
+              legacyEventSequence: 2,
+              projectorPositions: { threads: 2, messages: 2, activities: 2, turns: 2 },
+              messageRowsSha256: importedApplicationAttachmentSha256V1("message rows"),
+              answerRowsSha256: importedApplicationAttachmentSha256V1("answer rows"),
+            },
+          },
+      sourceHistoryCoverage: native
+        ? "native_visible_message_subset"
+        : "legacy_materialized_projection",
+      completeness: "complete_application_refs",
+      messageCarrierCount: native ? 2 : 1,
+      answerCarrierCount: native ? 0 : 1,
+      attachmentReferenceCount: native ? 0 : 2,
+      carrierSetSha256: importedApplicationAttachmentSha256V1(
+        [...carriers].toSorted((left, right) =>
+          left.kind < right.kind ? -1 : left.kind > right.kind ? 1 : 0,
+        ),
+      ),
+    };
+    const inventory = {
+      header: {
+        ...identity,
+        inventoryId: makeImportedApplicationAttachmentInventoryIdV1(identity),
+        recordedAt: DateTime.formatIso(now),
+      },
+      carriers,
+    };
+    const input: ProjectionStore.ProjectionImportedApplicationAttachmentRetentionInputV1 = {
+      targetBirth: birth,
+      visibleImportedBirths: [birth],
+      inventories: [{ inventory, forkBasis: [] }],
+      baselineCopies: [],
+    };
+    const read = (supplied = input) =>
+      store
+        .getThreadRetainedAttachmentPaths(threadId)
+        .pipe(
+          Effect.provideService(
+            ProjectionStore.ImportedApplicationAttachmentRetentionInputV1,
+            supplied,
+          ),
+        );
+    const initial = yield* read();
+    assert.equal(initial.status, "complete");
+    if (initial.status !== "complete") return;
+    assert.deepEqual(
+      initial.relativePaths,
+      native ? [] : ["application-answer-file.txt", "application-message-file.txt"],
+    );
+    assert.equal(initial.sourceEvidence.segments[0]?.inventoryId, inventory.header.inventoryId);
+    assert.deepEqual(initial.sourceEvidence.segments[0]?.forkBasis, []);
+    assert.deepEqual(yield* read({ ...input, inventories: [] }), {
+      status: "unavailable",
+      reason: "imported_inventory_unavailable",
+    });
+    assert.deepEqual(yield* read({ ...input, visibleImportedBirths: [] }), {
+      status: "unavailable",
+      reason: "imported_source_binding_unavailable",
+    });
+    assert.deepEqual(
+      yield* read({
+        ...input,
+        targetBirth: {
+          ...birth,
+          eventId: EventId.make("event:replacement-same-time"),
+          sequence: 20,
+        },
+      }),
+      { status: "unavailable", reason: "fork_basis_unavailable" },
+    );
+    assert.deepEqual(
+      yield* read({
+        ...input,
+        inventories: [
+          {
+            ...input.inventories[0]!,
+            inventory: {
+              ...inventory,
+              header: {
+                ...inventory.header,
+                projectId: ProjectId.make("project:copied-inventory"),
+              },
+            },
+          },
+        ],
+      }),
+      { status: "unavailable", reason: "imported_source_binding_unavailable" },
+    );
+    const currentFile = { ...file, id: "application-current-answer" };
+    const item = {
+      id: TurnItemId.make(`${threadId}:current-answer`),
+      threadId,
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 2,
+      status: "completed" as const,
+      title: "Current answer",
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "user_input_request" as const,
+      requestId: RuntimeRequestId.make("request:current"),
+      questions: [],
+      questionAnswer: {
+        requestId: "request:current",
+        answers: { first: "yes" },
+        attachmentsByQuestionId: { first: [currentFile] },
+      },
+    };
+    yield* store.apply({
+      id: EventId.make(`${threadId}:current-answer`),
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: now,
+      payload: item,
+    });
+    yield* store.apply({
+      id: EventId.make(`${threadId}:hidden-answer`),
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        ...item,
+        id: TurnItemId.make(`${threadId}:hidden-answer`),
+        runId: projection.runs[0]!.id,
+        ordinal: 3,
+        questionAnswer: {
+          requestId: "request:hidden",
+          answers: {},
+          attachmentsByQuestionId: { first: [{ ...file, id: "application-hidden-answer" }] },
+        },
+      },
+    });
+    const changed = yield* read();
+    assert.equal(changed.status, "complete");
+    if (changed.status !== "complete") return;
+    assert.deepEqual(
+      changed.relativePaths,
+      native
+        ? ["application-current-answer.txt"]
+        : [
+            "application-answer-file.txt",
+            "application-current-answer.txt",
+            "application-message-file.txt",
+          ],
+    );
+    assert.equal(
+      changed.sourceEvidence.segments[0]?.inventoryId,
+      initial.sourceEvidence.segments[0]?.inventoryId,
+    );
+    assert.notEqual(
+      changed.sourceEvidence.retentionBasisSha256,
+      initial.sourceEvidence.retentionBasisSha256,
+    );
+    assert.deepEqual(yield* read(), changed);
+    return { threadId, birth, inventory, input, expectedPaths: changed.relativePaths };
+  });
+
+const retainedImportedBaselineCopies = Effect.gen(function* () {
+  const fixture = yield* retainedImportedApplicationInventory(false, "-baseline-copies");
+  if (fixture === undefined) throw new Error("qualified fixture unavailable");
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const source = yield* store.getThreadProjection(fixture.threadId);
+  const now = source.thread.createdAt;
+  const oldFile = {
+    type: "file",
+    id: "removed-legacy-copy",
+    name: "removed.txt",
+    mimeType: "text/plain",
+    sizeBytes: 10,
+  } as const;
+  const message = {
+    id: MessageId.make(`${fixture.threadId}:copied-message`),
+    threadId: fixture.threadId,
+    runId: null,
+    nodeId: null,
+    role: "user" as const,
+    text: "Historical copy",
+    attachments: [oldFile],
+    streaming: false,
+    createdBy: "user" as const,
+    creationSource: "web" as const,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const item = {
+    id: TurnItemId.make(`${fixture.threadId}:copied-item`),
+    threadId: fixture.threadId,
+    runId: null,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 4,
+    status: "completed" as const,
+    title: "Historical copy",
+    startedAt: now,
+    completedAt: now,
+    updatedAt: now,
+    type: "user_message" as const,
+    messageId: message.id,
+    text: message.text,
+    attachments: [oldFile],
+    createdBy: "user" as const,
+    creationSource: "web" as const,
+    inputIntent: "turn_start" as const,
+  };
+  const messageEvent = {
+    eventId: EventId.make(`${fixture.threadId}:copied-message`),
+    sequence: 11,
+  };
+  const itemEvent = { eventId: EventId.make(`${fixture.threadId}:copied-item`), sequence: 12 };
+  yield* store.apply({
+    id: messageEvent.eventId,
+    type: "message.updated",
+    threadId: fixture.threadId,
+    occurredAt: now,
+    payload: message,
+  });
+  yield* store.apply({
+    id: itemEvent.eventId,
+    type: "turn-item.updated",
+    threadId: fixture.threadId,
+    occurredAt: now,
+    payload: item,
+  });
+  // Storage-qualified witnesses are supplied here; source enumeration and original
+  // migration-event qualification belong to the SQL producer, not this query.
+  const copy = {
+    applicationBirth: fixture.birth,
+    messageId: message.id,
+    itemId: item.id,
+    messageEvent,
+    itemEvent,
+    messagePayloadSha256: importedApplicationAttachmentSha256V1(
+      yield* Schema.encodeEffect(OrchestrationV2ConversationMessageJson)(message).pipe(
+        Effect.orDie,
+      ),
+    ),
+    itemPayloadSha256: importedApplicationAttachmentSha256V1(
+      yield* Schema.encodeEffect(OrchestrationV2TurnItemJson)(item).pipe(Effect.orDie),
+    ),
+  };
+  const input = { ...fixture.input, baselineCopies: [copy] };
+  const read = (supplied = input) =>
+    store
+      .getThreadRetainedAttachmentPaths(fixture.threadId)
+      .pipe(
+        Effect.provideService(
+          ProjectionStore.ImportedApplicationAttachmentRetentionInputV1,
+          supplied,
+        ),
+      );
+  const qualified = yield* read();
+  assert.equal(qualified.status, "complete");
+  if (qualified.status !== "complete") return;
+  assert.deepEqual(qualified.relativePaths, fixture.expectedPaths);
+  const unproved = yield* read({ ...input, baselineCopies: [] });
+  assert.equal(unproved.status, "complete");
+  if (unproved.status !== "complete") return;
+  assert.deepEqual(
+    unproved.relativePaths,
+    [...fixture.expectedPaths, "removed-legacy-copy.txt"].sort(),
+  );
+  assert.notEqual(
+    unproved.sourceEvidence.retentionBasisSha256,
+    qualified.sourceEvidence.retentionBasisSha256,
+  );
+  assert.deepEqual(
+    yield* read({
+      ...input,
+      baselineCopies: [
+        {
+          ...copy,
+          applicationBirth: {
+            ...fixture.birth,
+            eventId: EventId.make("event:other-baseline-birth"),
+            sequence: 9,
+          },
+        },
+      ],
+    }),
+    { status: "unavailable", reason: "imported_baseline_copy_evidence_unavailable" },
+  );
+  const currentFile = { ...oldFile, id: "later-application-same-id" };
+  yield* store.apply({
+    id: EventId.make(`${fixture.threadId}:later-message`),
+    type: "message.updated",
+    threadId: fixture.threadId,
+    occurredAt: now,
+    payload: { ...message, attachments: [currentFile] },
+  });
+  const updated = yield* read();
+  assert.equal(updated.status, "complete");
+  if (updated.status !== "complete") return;
+  assert.deepEqual(
+    updated.relativePaths,
+    [...fixture.expectedPaths, "later-application-same-id.txt"].sort(),
+  );
+  assert.notEqual(
+    updated.sourceEvidence.retentionBasisSha256,
+    qualified.sourceEvidence.retentionBasisSha256,
+  );
+  const sourceRun = {
+    ...source.runs[0]!,
+    id: RunId.make(`${fixture.threadId}:fork-run`),
+    ordinal: 2,
+    status: "completed" as const,
+  };
+  const sourceRunEvent = { eventId: EventId.make(`${fixture.threadId}:fork-run`), sequence: 15 };
+  yield* store.apply({
+    id: sourceRunEvent.eventId,
+    type: "run.created",
+    threadId: fixture.threadId,
+    runId: sourceRun.id,
+    occurredAt: now,
+    payload: sourceRun,
+  });
+  const childId = ThreadId.make(`${fixture.threadId}:fork-child`);
+  const childBirth: ImportedApplicationAttachmentBirthV1 = {
+    kind: "application_v2_thread_birth",
+    threadId: childId,
+    eventId: EventId.make(`${childId}:birth`),
+    sequence: 20,
+  };
+  yield* store.apply({
+    id: childBirth.eventId,
+    type: "thread.created",
+    threadId: childId,
+    occurredAt: now,
+    payload: {
+      ...source.thread,
+      id: childId,
+      historyOrigin: "native",
+      forkedFrom: { type: "run", threadId: fixture.threadId, runId: sourceRun.id },
+    },
+  });
+  const inherited = yield* store.getThreadRetainedAttachmentPaths(childId).pipe(
+    Effect.provideService(ProjectionStore.ImportedApplicationAttachmentRetentionInputV1, {
+      ...input,
+      targetBirth: childBirth,
+      inventories: [
+        {
+          inventory: fixture.inventory,
+          forkBasis: [
+            {
+              targetBirth: childBirth,
+              sourceBirth: fixture.birth,
+              sourceRunId: sourceRun.id,
+              sourceRunOrdinal: sourceRun.ordinal,
+              sourceRunEvent,
+              forkEvent: { eventId: childBirth.eventId, sequence: childBirth.sequence },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.equal(inherited.status, "complete");
+  if (inherited.status === "complete")
+    assert.deepEqual(inherited.relativePaths, updated.relativePaths);
+});
+
+const retainedImportedApplicationForks = Effect.gen(function* () {
+  const fixture = yield* retainedImportedApplicationInventory(false, "-forks");
+  if (fixture === undefined) throw new Error("qualified fixture unavailable");
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const source = yield* store.getThreadProjection(fixture.threadId);
+  const now = source.thread.createdAt;
+  const sourceRun = {
+    ...source.runs[0]!,
+    id: RunId.make("run:imported-fork-source"),
+    ordinal: 2,
+    status: "completed" as const,
+  };
+  yield* store.apply({
+    id: EventId.make("event:imported-fork-source-run"),
+    type: "run.created",
+    threadId: source.thread.id,
+    runId: sourceRun.id,
+    occurredAt: now,
+    payload: sourceRun,
+  });
+  const childId = ThreadId.make("thread:qualified-imported-child");
+  const childBirth: ImportedApplicationAttachmentBirthV1 = {
+    kind: "application_v2_thread_birth",
+    threadId: childId,
+    eventId: EventId.make("event:qualified-child-birth"),
+    sequence: 20,
+  };
+  const edge = {
+    targetBirth: childBirth,
+    sourceBirth: fixture.birth,
+    sourceRunId: sourceRun.id,
+    sourceRunOrdinal: 2,
+    sourceRunEvent: { eventId: EventId.make("event:imported-fork-source-run"), sequence: 15 },
+    forkEvent: { eventId: childBirth.eventId, sequence: childBirth.sequence },
+  };
+  yield* store.apply({
+    id: childBirth.eventId,
+    type: "thread.created",
+    threadId: childId,
+    occurredAt: now,
+    payload: {
+      ...source.thread,
+      id: childId,
+      historyOrigin: "native",
+      forkedFrom: { type: "run", threadId: source.thread.id, runId: sourceRun.id },
+    },
+  });
+  const input: ProjectionStore.ProjectionImportedApplicationAttachmentRetentionInputV1 = {
+    targetBirth: childBirth,
+    visibleImportedBirths: [fixture.birth],
+    inventories: [{ inventory: fixture.inventory, forkBasis: [edge] }],
+    baselineCopies: [],
+  };
+  const read = (
+    threadId: ThreadId,
+    supplied: ProjectionStore.ProjectionImportedApplicationAttachmentRetentionInputV1,
+  ) =>
+    store
+      .getThreadRetainedAttachmentPaths(threadId)
+      .pipe(
+        Effect.provideService(
+          ProjectionStore.ImportedApplicationAttachmentRetentionInputV1,
+          supplied,
+        ),
+      );
+  const child = yield* read(childId, input);
+  assert.equal(child.status, "complete");
+  if (child.status !== "complete") return;
+  assert.deepEqual(child.relativePaths, fixture.expectedPaths);
+  assert.deepEqual(child.sourceEvidence.segments[0]?.forkBasis, [edge]);
+  const missingRun = { ...edge, sourceRunId: RunId.make("run:missing-fork-source") };
+  assert.deepEqual(
+    yield* read(childId, {
+      ...input,
+      inventories: [{ inventory: fixture.inventory, forkBasis: [missingRun] }],
+    }),
+    { status: "unavailable", reason: "fork_basis_unavailable" },
+  );
+  const childRun = {
+    ...sourceRun,
+    id: RunId.make("run:qualified-child"),
+    threadId: childId,
+    ordinal: 1,
+  };
+  yield* store.apply({
+    id: EventId.make("event:qualified-child-run"),
+    type: "run.created",
+    threadId: childId,
+    runId: childRun.id,
+    occurredAt: now,
+    payload: childRun,
+  });
+  const grandchildId = ThreadId.make("thread:qualified-imported-grandchild");
+  const grandchildBirth: ImportedApplicationAttachmentBirthV1 = {
+    kind: "application_v2_thread_birth",
+    threadId: grandchildId,
+    eventId: EventId.make("event:qualified-grandchild-birth"),
+    sequence: 30,
+  };
+  yield* store.apply({
+    id: grandchildBirth.eventId,
+    type: "thread.created",
+    threadId: grandchildId,
+    occurredAt: now,
+    payload: {
+      ...source.thread,
+      id: grandchildId,
+      historyOrigin: "native",
+      forkedFrom: { type: "run", threadId: childId, runId: childRun.id },
+    },
+  });
+  const nestedEdge = {
+    targetBirth: grandchildBirth,
+    sourceBirth: childBirth,
+    sourceRunId: childRun.id,
+    sourceRunOrdinal: 1,
+    sourceRunEvent: { eventId: EventId.make("event:qualified-child-run"), sequence: 25 },
+    forkEvent: { eventId: grandchildBirth.eventId, sequence: grandchildBirth.sequence },
+  };
+  const nested = yield* read(grandchildId, {
+    ...input,
+    targetBirth: grandchildBirth,
+    inventories: [{ inventory: fixture.inventory, forkBasis: [nestedEdge, edge] }],
+  });
+  assert.equal(nested.status, "complete");
+  if (nested.status !== "complete") return;
+  assert.deepEqual(nested.relativePaths, fixture.expectedPaths);
+  assert.deepEqual(nested.sourceEvidence.segments[0]?.forkBasis, [nestedEdge, edge]);
+  yield* store.apply({
+    id: EventId.make("event:current-source-origin-replaced"),
+    type: "thread.metadata-updated",
+    threadId: source.thread.id,
+    occurredAt: now,
+    payload: { ...source.thread, historyOrigin: "native" },
+  });
+  assert.deepEqual(yield* read(childId, input), {
+    status: "unavailable",
+    reason: "imported_source_binding_unavailable",
+  });
+  const sourceRootNodeId = sourceRun.rootNodeId;
+  assert.isNotNull(sourceRootNodeId, "the imported source run has a root node to fork from");
+  const nodeChildId = ThreadId.make("thread:qualified-node-child");
+  yield* store.apply({
+    id: EventId.make("event:qualified-node-child"),
+    type: "thread.created",
+    threadId: nodeChildId,
+    occurredAt: now,
+    payload: {
+      ...source.thread,
+      id: nodeChildId,
+      historyOrigin: "native",
+      forkedFrom: { type: "node", nodeId: sourceRootNodeId },
+      lineage: {
+        parentThreadId: fixture.threadId,
+        relationshipToParent: "subagent",
+        rootThreadId: fixture.threadId,
+      },
+    },
+  });
+  assert.deepEqual(yield* retainedAttachmentPathsForAssertions(nodeChildId), {
+    status: "complete",
+    relativePaths: [],
+  });
+});
+
+it.effect(
+  "memory excludes only qualified baseline copies and retains later same-ID application messages",
+  () => retainedImportedBaselineCopies.pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+
+it.effect(
+  "memory retains imported application inventory only through exact run and nested fork edges",
+  () => retainedImportedApplicationForks.pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+
+it.effect(
+  "memory unions qualified legacy application carriers with runless visible V2 answers",
+  () =>
+    retainedImportedApplicationInventory(false).pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+it.effect(
+  "memory preserves the sealed native application zero while retaining later V2 answers",
+  () =>
+    retainedImportedApplicationInventory(true).pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+
+it.effect(
+  "memory retains visible message and answer attachment paths under rollback visibility",
+  () => retainedAttachmentVisibility.pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+it.effect("memory holds prune when a visible attachment type is unknown", () =>
+  retainedUnknownAttachment.pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+it.effect(
+  "memory holds imported answer history and its forks without claiming an empty keep-set",
+  () => importedRetainedAttachmentsUnavailable.pipe(Effect.provide(ProjectionStore.layerMemory)),
+);
+
+it.layer(TestLayer)("ProjectionStore private retained attachments", (it) => {
+  it.effect(
+    "excludes only qualified baseline copies and retains later same-ID application messages",
+    () => retainedImportedBaselineCopies,
+  );
+
+  it.effect(
+    "retains imported application inventory only through exact run and nested fork edges",
+    () => retainedImportedApplicationForks,
+  );
+
+  it.effect("unions qualified legacy application carriers with runless visible V2 answers", () =>
+    retainedImportedApplicationInventory(false),
+  );
+  it.effect("preserves the sealed native application zero while retaining later V2 answers", () =>
+    retainedImportedApplicationInventory(true),
+  );
+
+  it.effect(
+    "retains visible message and answer attachment paths under rollback visibility",
+    () => retainedAttachmentVisibility,
+  );
+  it.effect("holds prune when persisted answer attachments cannot be decoded", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = yield* addRolledBackRecoveryCandidate("malformed-retained-answer");
+      const projection = yield* store.getThreadProjection(threadId);
+      const item = projection.turnItems[0]!;
+      const malformed = {
+        ...item,
+        runId: null,
+        type: "user_input_request",
+        requestId: "request:malformed-answer",
+        questions: [],
+        questionAnswer: {
+          requestId: "request:malformed-answer",
+          answers: {},
+          attachmentsByQuestionId: { first: null },
+        },
+      };
+      yield* sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = ${encodeUnknownJsonString(
+        {
+          ...malformed,
+          startedAt: DateTime.formatIso(projection.thread.createdAt),
+          completedAt: DateTime.formatIso(projection.thread.createdAt),
+          updatedAt: DateTime.formatIso(projection.thread.createdAt),
+        },
+      )} WHERE thread_id = ${threadId} AND turn_item_id = ${item.id}`;
+      assert.deepEqual(yield* retainedAttachmentPathsForAssertions(threadId), {
+        status: "unavailable",
+        reason: "projection_unavailable",
+      });
+    }),
+  );
+  it.effect(
+    "holds prune when a visible attachment type is unknown",
+    () => retainedUnknownAttachment,
+  );
+  it.effect(
+    "holds imported answer history and its forks without claiming an empty keep-set",
+    () => importedRetainedAttachmentsUnavailable,
+  );
+});
 it.effect.each([
   { backend: "memory", eligibility: true },
   { backend: "memory", eligibility: false },

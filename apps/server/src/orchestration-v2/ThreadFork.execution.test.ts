@@ -1,6 +1,8 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  ContextTransferId,
   EventId,
   MessageId,
   NodeId,
@@ -16,6 +18,8 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
@@ -39,11 +43,31 @@ const forkCases = (["codex", "claudeAgent"] as const).flatMap((driverName) => {
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: () => Effect.die("Execution is paused after dispatch for handoff inspection"),
   };
-  const layer = makeOrchestratorV2ReplayLayerWithRegistry(
-    { name: `fork-boundary-${driver}` },
-    ProviderAdapterRegistry.makeLayer([adapter]),
-    { runEffectWorker: false },
-  );
+  const layer = Layer.unwrap(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-fork-boundary-workspace-",
+      });
+      return makeOrchestratorV2ReplayLayerWithRegistry(
+        { name: `fork-boundary-${driver}` },
+        ProviderAdapterRegistry.makeLayer([adapter]),
+        {
+          runEffectWorker: false,
+          checkoutFixture: {
+            projects: [
+              {
+                projectId: ProjectId.make("fork-boundary-project"),
+                title: "Fork boundary",
+                workspaceRoot,
+              },
+            ],
+            resolvePath: () => undefined,
+          },
+        },
+      );
+    }),
+  ).pipe(Layer.provide(NodeServices.layer));
 
   return (["failed", "interrupted", "cancelled"] as const).map((status) => ({
     driver,
@@ -248,4 +272,163 @@ it.effect.each(forkCases)(
       assert.notInclude(`${handoff.summaryText}\n${history}`, "EXCLUDED_LATER_MARKER");
       assert.isNull(target.providerThreads[0]?.forkedFrom);
     }).pipe(Effect.provide(layer)),
+);
+
+// The provider-switch row registers its target so planning succeeds and the defer guard decides.
+const switchTargetInstanceId = ProviderInstanceId.make("different-provider");
+const providerSwitchGuardLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const workspaceRoot = yield* fs.makeTempDirectoryScoped({
+      prefix: "t3-fork-defer-guard-workspace-",
+    });
+    const adapter = (
+      instanceId: ProviderInstanceId,
+      driver: ProviderDriverKind,
+    ): ProviderAdapterV2Shape => ({
+      instanceId,
+      driver,
+      getCapabilities: () =>
+        Effect.succeed(
+          driver === "codex" ? CodexProviderCapabilitiesV2 : ClaudeProviderCapabilitiesV2,
+        ),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+      openSession: () => Effect.die("Execution is paused after dispatch for guard inspection"),
+    });
+    return makeOrchestratorV2ReplayLayerWithRegistry(
+      { name: "fork-defer-guard-provider-switch" },
+      ProviderAdapterRegistry.makeLayer([
+        adapter(ProviderInstanceId.make("codex"), ProviderDriverKind.make("codex")),
+        adapter(switchTargetInstanceId, ProviderDriverKind.make("claudeAgent")),
+      ]),
+      {
+        runEffectWorker: false,
+        checkoutFixture: {
+          projects: [
+            {
+              projectId: ProjectId.make("fork-boundary-project"),
+              title: "Fork boundary",
+              workspaceRoot,
+            },
+          ],
+          resolvePath: () => undefined,
+        },
+      },
+    );
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+it.effect.each(["mergeback", "provider switch"] as const)(
+  "refuses forced complex defer for a $0 before checkpoint/provider effects",
+  (reason) =>
+    Effect.gen(function* () {
+      const { instanceId, modelSelection, driver } = forkCases[0]!;
+      const layer = reason === "provider switch" ? providerSwitchGuardLayer : forkCases[0]!.layer;
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("defer-guard-root");
+        const providerThreadId = ProviderThreadId.make("defer-guard-native");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("defer-guard-create"),
+          threadId,
+          projectId: ProjectId.make("fork-boundary-project"),
+          title: "Defer guard",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("defer-guard-native-event"),
+              type: "provider-thread.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                id: providerThreadId,
+                driver,
+                providerInstanceId: instanceId,
+                providerSessionId: null,
+                appThreadId: threadId,
+                ownerNodeId: null,
+                nativeThreadRef: { driver, nativeId: "defer-guard-source", strength: "strong" },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: 1,
+                lastRunOrdinal: 1,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+          ],
+        });
+        if (reason === "mergeback")
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("defer-guard-transfer-event"),
+                type: "context-transfer.created",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  id: ContextTransferId.make("defer-guard-transfer"),
+                  type: "merge_back",
+                  sourceThreadId: ThreadId.make("defer-guard-fork"),
+                  targetThreadId: threadId,
+                  sourcePoint: {
+                    threadId: ThreadId.make("defer-guard-fork"),
+                    runId: RunId.make("defer-guard-source-run"),
+                  },
+                  basePoint: null,
+                  sourceProviderInstanceId: instanceId,
+                  targetProviderInstanceId: null,
+                  targetRunId: null,
+                  status: "pending",
+                  resolution: null,
+                  createdBy: "user",
+                  error: null,
+                  createdAt: now,
+                  updatedAt: now,
+                  consumedAt: null,
+                },
+              },
+            ],
+          });
+        const error = yield* orchestrator
+          .dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("defer-guard-send"),
+            threadId,
+            messageId: MessageId.make("defer-guard-message"),
+            text: "Forced deferred command",
+            attachments: [],
+            modelSelection:
+              reason === "provider switch"
+                ? { ...modelSelection, instanceId: switchTargetInstanceId }
+                : modelSelection,
+            dispatchMode: { type: "defer_start" },
+            createdBy: "user",
+            creationSource: "web",
+          })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "OrchestratorDispatchError");
+        if (error._tag === "OrchestratorDispatchError")
+          assert.equal(
+            error.cause,
+            "Deferred standalone preparation supports only a pending fork.",
+          );
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(projection.runs, 0);
+        assert.lengthOf(projection.checkpointScopes, 0);
+      }).pipe(Effect.provide(layer));
+    }),
 );

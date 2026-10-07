@@ -7,14 +7,26 @@ import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { runJonesMigrations } from "./JonesMigrationGuard.ts";
-import { migrationManifest, runMigrations } from "./Migrations.ts";
+import {
+  runJonesMigrations,
+  runJonesMigrationsDetailed,
+  readJonesMigrationProfile,
+  type JonesMigrationEntry,
+} from "./JonesMigrationGuard.ts";
+import { migrationManifest, runMigrations, jonesMigrationEntries } from "./Migrations.ts";
 import Jones001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
 import Jones002 from "./Migrations/002_JonesProjectionThreadRuntimeIdentity.ts";
 import Jones003 from "./Migrations/003_JonesNativeCreationIntents.ts";
 import Jones004 from "./Migrations/004_JonesNativeCreationCommandIdentities.ts";
 import Jones005 from "./Migrations/005_JonesWorkstreamsNativeAttempts.ts";
 import Jones006 from "./Migrations/006_JonesWorkstreamsProviderEnrollments.ts";
+
+import Jones139 from "./Migrations/139_JonesDeletionWorktreeAdmission.ts";
+import Jones140 from "./Migrations/140_JonesOrdinaryCheckoutOwnership.ts";
+import Jones141 from "./Migrations/141_JonesOrdinaryCheckoutExecutionLifetime.ts";
+import Jones142 from "./Migrations/142_JonesV2NativeAcceptance.ts";
+import Jones143 from "./Migrations/143_JonesAttachmentCleanup.ts";
+import Jones144 from "./Migrations/144_JonesImportedApplicationAttachments.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const originals = [
@@ -25,7 +37,8 @@ const originals = [
   [5, "WorkstreamsNativeAttempts", Jones005],
   [6, "WorkstreamsProviderEnrollments", Jones006],
 ] as const;
-const names = originals.map(([migration_id, name]) => ({ migration_id, name }));
+const currentJones = jonesMigrationEntries;
+const names = currentJones.map(([migration_id, name]) => ({ migration_id, name }));
 const foreignV2Names = [
   "V2NativeAcceptance",
   "DeletionWorktreeAdmission",
@@ -64,7 +77,18 @@ const futureMigration = Effect.gen(function* () {
   yield* sql`CREATE TABLE jones_future_probe (value TEXT NOT NULL)`;
   yield* sql`INSERT INTO jones_future_probe VALUES ('applied')`;
 });
-const futureEntries = [...originals, [100, "FutureProbe", futureMigration] as const];
+const futureEntries = [
+  ...currentJones,
+  [
+    150,
+    "FutureProbe",
+    futureMigration,
+    {
+      foreignV2: "independent",
+      sourceBasis: "Creates only the isolated jones_future_probe table.",
+    },
+  ] as const,
+];
 
 it.effect("runs upstream 1–56 and all six exact Jones effects once on a fresh V2 database", () =>
   Effect.gen(function* () {
@@ -196,8 +220,8 @@ it.effect("preserves applied lookup 007 and still applies a registered future mi
     const index =
       yield* sql`SELECT sql FROM sqlite_master WHERE name = 'idx_orch_events_thread_creation_lookup'`;
     yield* runMigrations();
-    assert.deepStrictEqual(yield* readLedger, before);
-    assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), [[100, "FutureProbe"]]);
+    assert.deepStrictEqual((yield* readLedger).slice(0, before.length), before);
+    assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), [[150, "FutureProbe"]]);
     assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), []);
     assert.deepStrictEqual((yield* readLedger).slice(0, 7), before);
     assert.deepStrictEqual(
@@ -248,8 +272,23 @@ it.effect.each([5, 7])(
         logs,
         "Preserving known foreign Jones migration history without adopting its features",
       );
-      assert.deepStrictEqual(yield* readLedger, before);
-      assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), [[100, "FutureProbe"]]);
+      assert.deepStrictEqual((yield* readLedger).slice(0, before.length), before);
+      const profile = yield* readJonesMigrationProfile(currentJones);
+      assert.strictEqual(profile.historyMode, "foreign-v2-inert");
+      assert.deepStrictEqual(
+        profile.excluded.map(({ id }) => id),
+        [139, 140, 141, 142, 143, 144],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 144`,
+        [],
+      );
+      assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), [[150, "FutureProbe"]]);
+      assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), []);
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 144`,
+        [],
+      );
       assert.deepStrictEqual((yield* readLedger).slice(0, before.length), before);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`,
@@ -313,10 +352,21 @@ it.effect("rejects a future ledger gap instead of skipping a pending lower regis
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations();
-    yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (101, 'LaterProbe')`;
+    yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (151, 'LaterProbe')`;
     const before = yield* readLedger;
     const result = yield* Effect.exit(
-      runJonesMigrations([...futureEntries, [101, "LaterProbe", Effect.void]]),
+      runJonesMigrations([
+        ...futureEntries,
+        [
+          151,
+          "LaterProbe",
+          Effect.void,
+          {
+            foreignV2: "independent",
+            sourceBasis: "No feature effects; test the missing applicable150 gap.",
+          },
+        ],
+      ]),
     );
     assert.ok(Exit.isFailure(result));
     assert.deepStrictEqual(yield* readLedger, before);
@@ -381,5 +431,177 @@ it.effect("preserves preexisting identity JSON when the column predates the fork
     assert.deepEqual(yield* sql`SELECT runtime_identity_json FROM projection_thread_sessions`, [
       { runtime_identity_json: identity },
     ]);
+  }).pipe(Effect.provide(memory)),
+);
+
+const seedForeign = (prefix: number, complete = false) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seedLegacy();
+    yield* runMigrations({ toMigrationInclusive: 56 });
+    if (complete) {
+      // Receiving139/140/141/143/144 are byte-identical to frozen008/009/011/010/012;
+      // all142 SQL templates equal foreign91's007. Execute them only as foreign fixture DDL.
+      for (const migration of [Jones142, Jones139, Jones140, Jones143, Jones141, Jones144])
+        yield* migration;
+      yield* sql`INSERT INTO orchestration_v2_provider_runtime_evidence VALUES (
+      'foreign-thread', 'foreign-provider-thread', 'foreign-session', 'foreign-instance', 'codex',
+      'foreign-native', 'foreign-generation', 1, '{}', 'foreign-registration')`;
+    }
+    for (const [offset, name] of foreignV2Names.slice(0, prefix).entries()) {
+      yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (${offset + 7}, ${name})`;
+    }
+  });
+
+it.effect.each([1, 5, 7])(
+  "excludes the whole owned family for foreign prefix%i, including complete colliders",
+  (prefix) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedForeign(prefix, true);
+      const before = yield* readLedger;
+      const schema = yield* readSchema;
+      const rows = yield* sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`;
+      const result = yield* runJonesMigrationsDetailed(currentJones);
+      assert.deepStrictEqual(result.applied, [[138, "ThreadCreationLookupIndex"]]);
+      assert.deepStrictEqual(
+        result.excluded.map(({ id }) => id),
+        [139, 140, 141, 142, 143, 144],
+      );
+      assert.deepStrictEqual(result.pendingApplicable, []);
+      assert.isFalse(result.ownSchemaPrerequisites.some(([id]) => id === 142));
+      assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), [[150, "FutureProbe"]]);
+      const settled = yield* readLedger;
+      assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), []);
+      assert.deepStrictEqual(yield* readLedger, settled);
+      assert.deepStrictEqual(settled.slice(0, before.length), before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id BETWEEN 139 AND 144`,
+        [],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`,
+        rows,
+      );
+      for (const object of schema)
+        assert.deepStrictEqual(
+          (yield* readSchema).find(
+            (current) => current.name === object.name && current.type === object.type,
+          ),
+          object,
+        );
+      const unknown = yield* Effect.exit(runMigrations());
+      assert.ok(Exit.isFailure(unknown));
+      if (Exit.isFailure(unknown))
+        assert.include(Cause.pretty(unknown.cause), "unrecognized 150_FutureProbe");
+      assert.deepStrictEqual(yield* readLedger, settled);
+    }).pipe(Effect.provide(memory)),
+);
+
+const independent = {
+  foreignV2: "independent",
+  sourceBasis: "Explicit isolated test effect.",
+} as const;
+const probe149 = [149, "EarlierProbe", futureMigration, independent] as const;
+it.effect.each(["missing138", "missing149", "missing150", "policy-transition"] as const)(
+  "rejects applicable lower gaps for foreign history: %s",
+  (kind) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedForeign(1);
+      if (kind !== "missing138") yield* runJonesMigrations(currentJones);
+      if (kind === "missing150")
+        yield* sql`INSERT INTO jones_sql_migrations (migration_id,name) VALUES (151,'LaterProbe')`;
+      else
+        yield* sql`INSERT INTO jones_sql_migrations (migration_id,name) VALUES (150,'FutureProbe')`;
+      const entries =
+        kind === "missing150"
+          ? [...futureEntries, [151, "LaterProbe", Effect.void, independent] as const]
+          : kind === "missing149"
+            ? [...futureEntries, probe149]
+            : kind === "policy-transition"
+              ? futureEntries.map((entry) =>
+                  entry[0] === 142 ? ([entry[0], entry[1], entry[2], independent] as const) : entry,
+                )
+              : futureEntries;
+      const before = yield* readLedger;
+      const schema = yield* readSchema;
+      const result = yield* Effect.exit(runJonesMigrations(entries));
+      assert.ok(Exit.isFailure(result));
+      if (Exit.isFailure(result))
+        assert.include(
+          Cause.pretty(result.cause),
+          `missing rebuild migration ${kind === "missing138" ? 138 : kind === "missing149" ? 149 : kind === "missing150" ? 150 : 142} before ${kind === "missing150" ? 151 : 150}`,
+        );
+      assert.deepStrictEqual(yield* readLedger, before);
+      assert.deepStrictEqual(yield* readSchema, schema);
+    }).pipe(Effect.provide(memory)),
+);
+
+it.effect.each([
+  "missing-policy",
+  "invalid-policy",
+  "wrong-prerequisite",
+  "missing-prerequisite",
+  "excluded-prerequisite",
+  "recorded-excluded",
+] as const)("rejects invalid applicability before writes: %s", (kind) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seedForeign(1);
+    if (kind === "recorded-excluded")
+      yield* sql`INSERT INTO jones_sql_migrations (migration_id,name) VALUES (142,'V2NativeAcceptance')`;
+    const policy =
+      kind === "missing-policy"
+        ? undefined
+        : kind === "invalid-policy"
+          ? { ...independent, foreignV2: "unknown" }
+          : {
+              ...independent,
+              requiresOwn: [
+                [
+                  kind === "missing-prerequisite" ? 147 : 142,
+                  kind === "wrong-prerequisite" ? "Wrong" : "V2NativeAcceptance",
+                ],
+              ],
+            };
+    const entries: ReadonlyArray<JonesMigrationEntry> =
+      kind === "recorded-excluded"
+        ? currentJones
+        : [
+            ...currentJones,
+            [150, "FutureProbe", futureMigration, policy] as unknown as JonesMigrationEntry,
+          ];
+    const before = yield* readLedger;
+    const schema = yield* readSchema;
+    const result = yield* Effect.exit(runJonesMigrations(entries));
+    assert.ok(Exit.isFailure(result));
+    if (Exit.isFailure(result))
+      assert.include(Cause.pretty(result.cause), "Jones migration history");
+    assert.deepStrictEqual(yield* readLedger, before);
+    assert.deepStrictEqual(yield* readSchema, schema);
+  }).pipe(Effect.provide(memory)),
+);
+
+it.effect("rolls back actual independent futureDDL and138 application atomically", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seedForeign(5, true);
+    const before = yield* readLedger;
+    const schema = yield* readSchema;
+    const rows = yield* sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`;
+    const failed = futureMigration.pipe(
+      Effect.andThen(sql`INSERT INTO missing_atomic_probe VALUES (1)`),
+    );
+    const result = yield* Effect.exit(
+      runJonesMigrations([...currentJones, [150, "FutureProbe", failed, independent]]),
+    );
+    assert.ok(Exit.isFailure(result));
+    assert.deepStrictEqual(yield* readLedger, before);
+    assert.deepStrictEqual(yield* readSchema, schema);
+    assert.deepStrictEqual(
+      yield* sql`SELECT * FROM orchestration_v2_provider_runtime_evidence`,
+      rows,
+    );
   }).pipe(Effect.provide(memory)),
 );

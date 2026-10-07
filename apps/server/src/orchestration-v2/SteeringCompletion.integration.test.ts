@@ -393,11 +393,24 @@ it.effect.each(
         yield* worker.drain();
         assert.equal(started.length, 2);
       }).pipe(
+        Effect.ensuring(Deferred.succeed(rejectSteer, undefined)),
         Effect.provide(
           makeOrchestratorV2ReplayLayerWithRegistry(
             { name: `steering-completion-${timing}` },
             ProviderAdapterRegistry.makeSingleLayer(adapter),
-            { runEffectWorker: false },
+            {
+              runEffectWorker: false,
+              checkoutFixture: {
+                projects: [
+                  {
+                    projectId: ProjectId.make("project:steering-completion"),
+                    workspaceRoot: cwd,
+                    title: "Steering race",
+                  },
+                ],
+                resolvePath: () => undefined,
+              },
+            },
           ),
         ),
       );
@@ -512,7 +525,19 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const layer = makeOrchestratorV2ReplayLayerWithRegistry(
     { name },
     ProviderAdapterRegistry.makeSingleLayer(adapter),
-    { runEffectWorker: false },
+    {
+      runEffectWorker: false,
+      checkoutFixture: {
+        projects: [
+          {
+            projectId: ProjectId.make(`project:${name}`),
+            workspaceRoot: cwd,
+            title: "Steer with changed options",
+          },
+        ],
+        resolvePath: () => undefined,
+      },
+    },
   );
   // Creates the thread and starts its first turn on `runSelection`.
   const startFirstTurn = Effect.gen(function* () {

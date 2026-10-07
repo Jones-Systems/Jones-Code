@@ -1,22 +1,24 @@
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/contracts";
+import type { ProjectId, ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
-import type * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { MigrationError } from "effect/unstable/sql/Migrator";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../../provider/Services/ProviderInstanceRegistry.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
+import * as ThreadLaunchService from "../ThreadLaunchService.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -53,6 +55,10 @@ import * as TurnItemPositionStore from "../TurnItemPositionStore.ts";
 import * as RuntimeRequestService from "../RuntimeRequestService.ts";
 import * as ThreadCommandExecutor from "../ThreadCommandExecutor.ts";
 import * as ThreadForkService from "../ThreadForkService.ts";
+import {
+  makeCheckoutPlannerLayer,
+  makeCheckoutPreparationServices,
+} from "./CheckoutPreparationFixture.ts";
 import {
   runOrchestratorV2Scenario,
   type OrchestratorV2ScenarioStepError,
@@ -154,6 +160,12 @@ export interface OrchestratorV2ProviderReplayScenario<
 > extends OrchestratorV2Scenario {
   readonly transcript: Transcript;
   readonly runtimePolicyOverride?: RuntimePolicy.RuntimePolicyV2Override;
+  /**
+   * Run as production does for standalone conversations: the real checkout
+   * planner and preparation, and each thread's provider cwd from its own
+   * checkout or project root. A cwd override would defeat this and is refused.
+   */
+  readonly standaloneCheckout?: true;
 }
 
 export interface OrchestratorV2ProviderReplayHarness<
@@ -170,6 +182,104 @@ export interface OrchestratorV2ProviderReplayHarness<
   ) => Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>;
 }
 
+type ReplayDatabaseError = MigrationError | PlatformError.PlatformError | SqlError;
+type ReplayStores =
+  | EventStore.EventStoreV2
+  | ProjectionStore.ProjectionStoreV2
+  | ProjectStore.ProjectStoreV2
+  | CommandReceiptStore.CommandReceiptStoreV2
+  | EffectOutbox.EffectOutboxV2
+  | TurnItemPositionStore.TurnItemPositionStoreV2;
+
+export interface ReplayDelegatedPreparationOwners {
+  readonly sql: SqlClient.SqlClient;
+  readonly eventSink: EventSink.EventSinkV2["Service"];
+  readonly management: ThreadManagementService.ThreadManagementService["Service"];
+  readonly databaseLayer: Layer.Layer<SqlClient.SqlClient, ReplayDatabaseError>;
+  readonly storesLayer: Layer.Layer<ReplayStores, ReplayDatabaseError>;
+  readonly eventSinkLayer: Layer.Layer<EventSink.EventSinkV2, ReplayDatabaseError>;
+  readonly persistenceLayer: Layer.Layer<
+    | SqlClient.SqlClient
+    | ReplayStores
+    | EventSink.EventSinkV2
+    | IdAllocator.IdAllocatorV2
+    | ProviderEventIngestor.ProviderEventIngestorV2,
+    ReplayDatabaseError
+  >;
+  readonly legacyImporterLayer: Layer.Layer<
+    Layer.Success<typeof ThreadManagementService.privateLegacyImporterLayer>,
+    ReplayDatabaseError
+  >;
+  readonly managementLayer: Layer.Layer<ThreadManagementService.ThreadManagementService>;
+  readonly configLayer: Layer.Layer<ServerConfig.ServerConfig>;
+  readonly settingsLayer: Layer.Layer<ServerSettings.ServerSettingsService>;
+  readonly platformLayer: Layer.Layer<Layer.Success<typeof NodeServices.layer>>;
+}
+
+type ReplayDelegatedPreparationOwnedServices =
+  | Layer.Success<ReplayDelegatedPreparationOwners["persistenceLayer"]>
+  | ThreadManagementService.ThreadManagementService
+  | Layer.Success<typeof ThreadManagementService.privateLegacyImporterLayer>
+  | ServerConfig.ServerConfig
+  | ServerSettings.ServerSettingsService
+  | Layer.Success<typeof NodeServices.layer>;
+
+type ReplayDelegatedPreparationFactory = (
+  owners: ReplayDelegatedPreparationOwners,
+) => Layer.Layer<
+  Exclude<
+    Layer.Services<typeof ThreadLaunchService.layer>,
+    ReplayDelegatedPreparationOwnedServices
+  >,
+  ReplayDatabaseError
+>;
+
+type ReplayRuntimeServices =
+  | Orchestrator.OrchestratorV2
+  | EffectWorker.OrchestrationEffectWorkerV2
+  | EventSink.EventSinkV2;
+type ReplayDelegatedRuntimeServices =
+  | ReplayRuntimeServices
+  | ThreadManagementService.ThreadManagementService
+  | ThreadLaunchService.ThreadLaunchService;
+
+export function runOrchestratorV2ProviderReplayScenario<
+  Transcript extends ProviderReplayTranscript,
+  Error,
+>(
+  scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
+  harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
+  options?: {
+    readonly delegatedPreparation?: never;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
+    >;
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+  },
+): Effect.Effect<
+  OrchestratorV2ScenarioResult,
+  | Orchestrator.OrchestratorV2Error
+  | OrchestratorV2ScenarioStepError
+  | Error
+  | MigrationError
+  | PlatformError.PlatformError
+  | SqlError,
+  never
+>;
+
 export function runOrchestratorV2ProviderReplayScenario<
   Transcript extends ProviderReplayTranscript,
   Error,
@@ -177,9 +287,89 @@ export function runOrchestratorV2ProviderReplayScenario<
   scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
   harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
   options: {
+    readonly delegatedPreparation: ReplayDelegatedPreparationFactory;
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
+    >;
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+  },
+): Effect.Effect<
+  OrchestratorV2ScenarioResult,
+  | Orchestrator.OrchestratorV2Error
+  | OrchestratorV2ScenarioStepError
+  | Error
+  | MigrationError
+  | PlatformError.PlatformError
+  | SqlError,
+  never
+>;
+
+export function runOrchestratorV2ProviderReplayScenario<
+  Transcript extends ProviderReplayTranscript,
+  Error,
+>(
+  scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
+  harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
+  options?: {
+    readonly delegatedPreparation?: ReplayDelegatedPreparationFactory;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
+    >;
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+  },
+): Effect.Effect<
+  OrchestratorV2ScenarioResult,
+  | Orchestrator.OrchestratorV2Error
+  | OrchestratorV2ScenarioStepError
+  | Error
+  | MigrationError
+  | PlatformError.PlatformError
+  | SqlError,
+  never
+>;
+
+export function runOrchestratorV2ProviderReplayScenario<
+  Transcript extends ProviderReplayTranscript,
+  Error,
+>(
+  scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
+  harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
+  options: {
+    readonly delegatedPreparation?: ReplayDelegatedPreparationFactory;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
     >;
     readonly runEffectWorker?: boolean;
     // Start continuation runs for provider wake turns, as the live runtime does.
@@ -221,10 +411,112 @@ export function makeOrchestratorV2ProviderReplayLayer<
 >(
   scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
   harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
-  options: {
+  options?: {
+    readonly delegatedPreparation?: never;
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
+    >;
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly replayGate?: ProviderReplayGate;
+  },
+): Layer.Layer<
+  Orchestrator.OrchestratorV2 | EffectWorker.OrchestrationEffectWorkerV2 | EventSink.EventSinkV2,
+  Error | MigrationError | PlatformError.PlatformError | SqlError
+>;
+
+export function makeOrchestratorV2ProviderReplayLayer<
+  Transcript extends ProviderReplayTranscript,
+  Error,
+>(
+  scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
+  harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
+  options: {
+    readonly delegatedPreparation: ReplayDelegatedPreparationFactory;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
+    >;
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly replayGate?: ProviderReplayGate;
+  },
+): Layer.Layer<
+  ReplayDelegatedRuntimeServices,
+  Error | MigrationError | PlatformError.PlatformError | SqlError
+>;
+
+export function makeOrchestratorV2ProviderReplayLayer<
+  Transcript extends ProviderReplayTranscript,
+  Error,
+>(
+  scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
+  harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
+  options?: {
+    readonly delegatedPreparation?: ReplayDelegatedPreparationFactory;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
+    >;
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly replayGate?: ProviderReplayGate;
+  },
+): Layer.Layer<
+  ReplayDelegatedRuntimeServices,
+  Error | MigrationError | PlatformError.PlatformError | SqlError
+>;
+
+export function makeOrchestratorV2ProviderReplayLayer<
+  Transcript extends ProviderReplayTranscript,
+  Error,
+>(
+  scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
+  harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
+  options: {
+    readonly delegatedPreparation?: ReplayDelegatedPreparationFactory;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: NonNullable<
+      NonNullable<
+        Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]
+      >["checkoutFixture"]
     >;
     readonly runEffectWorker?: boolean;
     // Start continuation runs for provider wake turns, as the live runtime does.
@@ -237,7 +529,7 @@ export function makeOrchestratorV2ProviderReplayLayer<
     readonly replayGate?: ProviderReplayGate;
   } = {},
 ): Layer.Layer<
-  Orchestrator.OrchestratorV2 | EffectWorker.OrchestrationEffectWorkerV2 | EventSink.EventSinkV2,
+  ReplayDelegatedRuntimeServices,
   Error | MigrationError | PlatformError.PlatformError | SqlError
 > {
   const registryLayer = harness.makeProviderAdapterRegistryLayer(
@@ -248,13 +540,135 @@ export function makeOrchestratorV2ProviderReplayLayer<
 }
 
 export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
-  scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
+  scenario: Pick<
+    OrchestratorV2ProviderReplayScenario,
+    "name" | "runtimePolicyOverride" | "standaloneCheckout"
+  >,
   registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
-  options: {
+  options?: {
+    readonly delegatedPreparation?: never;
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
+    readonly checkoutFixture?: {
+      readonly projects: ReadonlyArray<{
+        readonly projectId: ProjectId;
+        readonly workspaceRoot: string;
+        readonly title: string;
+      }>;
+      readonly resolvePath: (path: string) => string | undefined;
+      readonly existsPath?: (path: string) => boolean | undefined;
+      readonly worktreesDir?: string;
+    };
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+  },
+): Layer.Layer<
+  Orchestrator.OrchestratorV2 | EffectWorker.OrchestrationEffectWorkerV2 | EventSink.EventSinkV2,
+  Error | MigrationError | PlatformError.PlatformError | SqlError
+>;
+
+export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
+  scenario: Pick<
+    OrchestratorV2ProviderReplayScenario,
+    "name" | "runtimePolicyOverride" | "standaloneCheckout"
+  >,
+  registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
+  options: {
+    readonly delegatedPreparation: ReplayDelegatedPreparationFactory;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: {
+      readonly projects: ReadonlyArray<{
+        readonly projectId: ProjectId;
+        readonly workspaceRoot: string;
+        readonly title: string;
+      }>;
+      readonly resolvePath: (path: string) => string | undefined;
+      readonly existsPath?: (path: string) => boolean | undefined;
+      readonly worktreesDir?: string;
+    };
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+  },
+): Layer.Layer<
+  ReplayDelegatedRuntimeServices,
+  Error | MigrationError | PlatformError.PlatformError | SqlError
+>;
+
+export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
+  scenario: Pick<
+    OrchestratorV2ProviderReplayScenario,
+    "name" | "runtimePolicyOverride" | "standaloneCheckout"
+  >,
+  registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
+  options?: {
+    readonly delegatedPreparation?: ReplayDelegatedPreparationFactory;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: {
+      readonly projects: ReadonlyArray<{
+        readonly projectId: ProjectId;
+        readonly workspaceRoot: string;
+        readonly title: string;
+      }>;
+      readonly resolvePath: (path: string) => string | undefined;
+      readonly existsPath?: (path: string) => boolean | undefined;
+      readonly worktreesDir?: string;
+    };
+    readonly runEffectWorker?: boolean;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
+    readonly runContinuationWorker?: boolean;
+    // Reconcile a previous runtime's state before the effect worker starts,
+    // as server startup does after a crash or restart.
+    readonly recoverOnStartup?: boolean;
+    readonly continueThreadsAfterServerUpdate?: boolean;
+  },
+): Layer.Layer<
+  ReplayDelegatedRuntimeServices,
+  Error | MigrationError | PlatformError.PlatformError | SqlError
+>;
+
+export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
+  scenario: Pick<
+    OrchestratorV2ProviderReplayScenario,
+    "name" | "runtimePolicyOverride" | "standaloneCheckout"
+  >,
+  registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
+  options: {
+    readonly delegatedPreparation?: ReplayDelegatedPreparationFactory;
+    readonly databaseLayer?: Layer.Layer<
+      SqlClient.SqlClient,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
+    readonly checkoutFixture?: {
+      readonly projects: ReadonlyArray<{
+        readonly projectId: ProjectId;
+        readonly workspaceRoot: string;
+        readonly title: string;
+      }>;
+      readonly resolvePath: (path: string) => string | undefined;
+      readonly existsPath?: (path: string) => boolean | undefined;
+      readonly worktreesDir?: string;
+    };
     readonly runEffectWorker?: boolean;
     // Start continuation runs for provider wake turns, as the live runtime does.
     // Off by default: most fixtures record no wake turn.
@@ -265,19 +679,26 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     readonly continueThreadsAfterServerUpdate?: boolean;
   } = {},
 ): Layer.Layer<
-  Orchestrator.OrchestratorV2 | EffectWorker.OrchestrationEffectWorkerV2 | EventSink.EventSinkV2,
+  ReplayDelegatedRuntimeServices,
   Error | MigrationError | PlatformError.PlatformError | SqlError
 > {
   const serverConfigLayer = Layer.effect(
     ServerConfig.ServerConfig,
-    makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const config = yield* Effect.acquireRelease(makeReplayServerConfig(scenario.name), (value) =>
+        fs.remove(value.baseDir, { recursive: true }).pipe(Effect.orDie),
+      );
+      return options.checkoutFixture?.worktreesDir === undefined
+        ? config
+        : { ...config, worktreesDir: options.checkoutFixture.worktreesDir };
+    }).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
-  const runtimeLayer =
-    scenario.runtimePolicyOverride === undefined
-      ? RuntimePolicy.layer
-      : RuntimePolicy.layerWithOverride(scenario.runtimePolicyOverride).pipe(
-          Layer.provide(RuntimePolicy.layer),
-        );
+  const standalone = scenario.standaloneCheckout === true;
+  if (standalone && scenario.runtimePolicyOverride?.cwd !== undefined)
+    throw new Error(
+      `Standalone replay scenario ${scenario.name} cannot override the provider cwd.`,
+    );
   const databaseLayer = options.databaseLayer ?? SqlitePersistenceMemory;
   // One queue shared by the adapters, the orchestrator, and the worker, like
   // runtimeLayer.ts; layer memoization keeps it a single instance.
@@ -290,6 +711,39 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
       ? {}
       : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
   }).pipe(Layer.orDie);
+  const fixtureProjects =
+    options.checkoutFixture === undefined
+      ? Layer.empty
+      : Layer.effectDiscard(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            for (const project of options.checkoutFixture!.projects) {
+              yield* sql`INSERT OR IGNORE INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+          VALUES (${project.projectId}, ${project.title}, ${project.workspaceRoot}, '[]', '2026-06-20T00:00:00.000Z', '2026-06-20T00:00:00.000Z')`;
+            }
+          }),
+        ).pipe(Layer.provide(databaseLayer));
+  const checkoutFileSystem =
+    options.checkoutFixture === undefined
+      ? Layer.empty
+      : Layer.effect(
+          FileSystem.FileSystem,
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            return FileSystem.FileSystem.of({
+              ...fs,
+              exists: (path) => {
+                const observed = options.checkoutFixture!.existsPath?.(path);
+                return observed === undefined ? fs.exists(path) : Effect.succeed(observed);
+              },
+              realPath: (path) => {
+                const observed = options.checkoutFixture!.resolvePath(path);
+                return observed === undefined ? fs.realPath(path) : Effect.succeed(observed);
+              },
+            });
+          }),
+        ).pipe(Layer.provide(NodeServices.layer));
   const storesLayer = Layer.mergeAll(
     EventStore.layer,
     ProjectionStore.layer,
@@ -298,6 +752,30 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     EffectOutbox.layer,
     TurnItemPositionStore.layer,
   ).pipe(Layer.provide(databaseLayer));
+  const basePolicyLayer = standalone
+    ? RuntimePolicy.layerFromProjectStore.pipe(
+        Layer.provide(
+          Layer.merge(
+            storesLayer,
+            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+              getInstance: () => Effect.succeed(undefined),
+            }),
+          ),
+        ),
+      )
+    : RuntimePolicy.layer;
+  const runtimeLayer =
+    scenario.runtimePolicyOverride === undefined
+      ? basePolicyLayer
+      : RuntimePolicy.layerWithOverride(scenario.runtimePolicyOverride).pipe(
+          Layer.provide(basePolicyLayer),
+        );
+  const checkoutPlannerLayer = standalone
+    ? makeCheckoutPlannerLayer(
+        serverConfigLayer,
+        Layer.merge(NodeServices.layer, checkoutFileSystem),
+      )
+    : Layer.empty;
   const eventSinkProvided = EventSink.layerFromStores.pipe(
     Layer.provide(Layer.mergeAll(storesLayer, databaseLayer)),
   );
@@ -328,6 +806,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     Layer.provide(IdAllocator.layer),
   );
   const persistenceLayer = Layer.mergeAll(
+    databaseLayer,
     storesLayer,
     eventSinkProvided,
     commandReceiptStoreProvided,
@@ -421,6 +900,8 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
         CommandPolicy.layer,
         contextHandoffServiceProvided,
         persistenceLayer,
+        checkoutFileSystem,
+        serverConfigLayer,
         providedRegistryLayer,
         continuationRequestsLayer,
         runtimeLayer,
@@ -428,21 +909,81 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
         providerSwitchServiceProvided,
         runExecutionServiceProvided,
         ThreadForkService.layer,
+        checkoutPlannerLayer,
       ),
     ),
   );
-  const threadManagementProvided = Layer.unwrap(
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      return Layer.mock(ThreadManagementService.ThreadManagementService)({
-        dispatch: orchestrator.dispatch,
-        getThreadRecords: orchestrator.getThreadRecords,
-        getThreadProjection: orchestrator.getThreadProjection,
-        recoverDelegatedTask: orchestrator.recoverDelegatedTask,
-        delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
-      });
-    }),
-  ).pipe(Layer.provide(orchestratorProvided));
+  const legacyImporterProvided = ThreadManagementService.privateLegacyImporterLayer.pipe(
+    Layer.provide(persistenceLayer),
+  );
+  const delegatedPreparation: ReplayDelegatedPreparationFactory | undefined =
+    options.delegatedPreparation ??
+    (standalone
+      ? (owners) => makeCheckoutPreparationServices(owners, makeProviderRegistryLayer([]))
+      : undefined);
+  const threadManagementProvided =
+    delegatedPreparation === undefined
+      ? Layer.unwrap(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            return Layer.mock(ThreadManagementService.ThreadManagementService)({
+              dispatch: orchestrator.dispatch,
+              getThreadRecords: orchestrator.getThreadRecords,
+              getThreadProjection: orchestrator.getThreadProjection,
+              recoverDelegatedTask: orchestrator.recoverDelegatedTask,
+              delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
+            });
+          }),
+        ).pipe(Layer.provide(orchestratorProvided))
+      : ThreadManagementService.layerWithLegacyImporter.pipe(
+          Layer.provide(Layer.merge(orchestratorProvided, legacyImporterProvided)),
+          Layer.provide(NodeServices.layer),
+        );
+  const delegatedLaunchProvided =
+    delegatedPreparation === undefined
+      ? Layer.empty
+      : Layer.unwrap(
+          Effect.gen(function* () {
+            const management = yield* ThreadManagementService.ThreadManagementService;
+            const sql = yield* SqlClient.SqlClient;
+            const eventSink = yield* EventSink.EventSinkV2;
+            return ThreadLaunchService.layer.pipe(
+              Layer.provide(
+                delegatedPreparation({
+                  sql,
+                  eventSink,
+                  management,
+                  databaseLayer,
+                  storesLayer,
+                  eventSinkLayer: eventSinkProvided,
+                  persistenceLayer,
+                  legacyImporterLayer: legacyImporterProvided,
+                  managementLayer: Layer.succeed(
+                    ThreadManagementService.ThreadManagementService,
+                    management,
+                  ),
+                  configLayer: serverConfigLayer,
+                  settingsLayer: serverSettingsLayer,
+                  platformLayer: Layer.merge(NodeServices.layer, checkoutFileSystem),
+                }),
+              ),
+              Layer.provide(
+                Layer.mergeAll(
+                  persistenceLayer,
+                  threadManagementProvided,
+                  legacyImporterProvided,
+                  serverConfigLayer,
+                  serverSettingsLayer,
+                  checkoutFileSystem,
+                ),
+              ),
+              Layer.provide(NodeServices.layer),
+            );
+          }),
+        ).pipe(
+          Layer.provide(Layer.merge(threadManagementProvided, persistenceLayer)),
+          Layer.provide(NodeServices.layer),
+        );
   const continuationWorkerProvided =
     options.runContinuationWorker === true
       ? ProviderContinuationService.workerLive.pipe(
@@ -463,6 +1004,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
         threadTitleRegenerationTestLayer,
         serverSettingsLayer,
         threadManagementProvided,
+        delegatedLaunchProvided,
       ),
     ),
   );
@@ -473,14 +1015,18 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     orchestratorProvided,
     effectWorkerProvided,
     eventSinkProvided,
+    fixtureProjects,
     continuationWorkerProvided,
+    delegatedPreparation === undefined ? Layer.empty : threadManagementProvided,
+    delegatedLaunchProvided,
+    checkoutPlannerLayer,
   ).pipe(Layer.provide(worktreeRepairDependenciesTestLayer), Layer.provide(NodeServices.layer));
 
   // Build the daemon from the exact worker instance exposed alongside the
   // orchestrator. Keeping this acquisition in the replay layer makes the
   // outbox lifecycle explicit and prevents test-only command-side draining.
   if (options.runEffectWorker === false) {
-    return replayRuntime;
+    return replayRuntime.pipe(Layer.provide(fixtureProjects));
   }
   // Built before the runtime it shares stores with, so recovery commits before
   // the effect worker claims anything, as in serverRuntimeStartup.

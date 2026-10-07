@@ -101,3 +101,12 @@ describe("orchestrator MCP tool guidance", () => {
     assert.include(ThreadUpdateTool.description ?? "", "Workspace and branch changes");
   });
 });
+
+it("describes standalone first-message preparation without exposing private birth authority", () => {
+  assert.include(CreateThreadsTool.description ?? "", "committed HEAD");
+  assert.include(CreateThreadsTool.description ?? "", "first message");
+  assert.include(CreateThreadsTool.description ?? "", "uncommitted edits");
+  const schema = JSON.stringify(Tool.getJsonSchema(CreateThreadsTool));
+  assert.notInclude(schema, "standaloneBirthRequest");
+  assert.notInclude(schema, "standaloneCheckoutBirth");
+});

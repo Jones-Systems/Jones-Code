@@ -1,3 +1,6 @@
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
+import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -157,6 +160,7 @@ import * as TokenAccountingService from "./tokenAccounting/TokenAccountingServic
 import { makeRuntimeReader } from "./tokenAccounting/RuntimeReader.ts";
 import {
   OrchestrationEventInfrastructureLayerLive,
+  OrchestrationV2EventSinkLayerLive,
   OrchestrationV2ProductionLayerLive,
   ProjectServiceLayerLive,
   ProjectSetupScriptRunnerLayerLive,
@@ -403,6 +407,11 @@ const TerminalLayerLive = TerminalManager.layer.pipe(
   Layer.provide(PtyAdapterLive),
   Layer.provide(PortScannerLayerLive),
   Layer.provide(NativeTelemetryLayerLive),
+  Layer.provide(
+    ResourceCleanupService.terminalOwnerObservationLive.pipe(
+      Layer.provide(OrchestrationV2EventSinkLayerLive),
+    ),
+  ),
 );
 
 const PreviewLayerLive = Layer.empty.pipe(
@@ -651,6 +660,8 @@ const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
+      Layer.provide(providerQueueHttpApiLayer),
+      Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
       Layer.provide(conversationLibraryHttpApiLayer),
       Layer.provide(
         voiceReviewHttpApiLayer.pipe(

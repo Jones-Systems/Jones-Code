@@ -224,6 +224,11 @@ it.effect(
           getPlan: () => Effect.die("unused"),
           hasUnpairedRunInterruptRequest: () => Effect.die("unused interrupt read"),
           getThreadAttachmentIds: () => Effect.die("Unused attachment lookup"),
+          getThreadRetainedAttachmentPaths: () =>
+            Effect.succeed({
+              status: "unavailable",
+              reason: "control_fixture_retention_unavailable",
+            }),
           getTimelinePage: () => Effect.die("Unused timeline read"),
           getMessageCount: () => Effect.die("unused message count"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),

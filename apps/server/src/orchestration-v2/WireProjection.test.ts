@@ -1,5 +1,7 @@
 import {
   MessageId,
+  RunId,
+  CommandId,
   ContextHandoffId,
   ProviderThreadId,
   NodeId,
@@ -22,6 +24,12 @@ import {
   projectTurnItemForDetail,
   projectDomainEventForWire,
 } from "./WireProjection.ts";
+import {
+  RecordedAppThread,
+  RecordedAppThreadJson,
+  StandaloneCheckoutBirthV1,
+} from "./RecordedTypes.ts";
+import { OrchestrationV2Command } from "@t3tools/contracts";
 import { threadShellFromProjection } from "./ProjectionStore.ts";
 
 const decodeTurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
@@ -49,6 +57,138 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it("omits server-only bootstrap run correlation from wire events while retaining the stored source", () => {
+    const now = base.updatedAt;
+    const policy = {
+      version: 1 as const,
+      createCommandId: CommandId.make("bootstrap:B"),
+      birthCommandId: CommandId.make("bootstrap:B:initial-message"),
+      releaseCommandId: CommandId.make("bootstrap:C"),
+      projectId: ProjectId.make("bootstrap:project"),
+      threadId: base.threadId,
+      messageId: MessageId.make("bootstrap:M"),
+      payloadHash: "fixture-hash",
+      ownsNewThread: true,
+    };
+    const runId = RunId.make("bootstrap:run");
+    const correlation = {
+      policy,
+      threadId: base.threadId,
+      runId,
+      claimEventId: EventId.make("bootstrap:claim"),
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: EventId.make("bootstrap:birth"),
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      preparationGeneration: "private-generation",
+      workspacePath: "/private-wire-workspace",
+      projectWorkspaceRoot: "/private-wire-workspace",
+    };
+    const deletion = {
+      ...correlation,
+      version: 1 as const,
+      type: "no_control" as const,
+      commandId: CommandId.make("bootstrap:D"),
+      evidenceEventId: EventId.make("bootstrap:D:event"),
+      control: { ...correlation, version: 1 as const, type: "no_control" as const },
+    };
+    const decision = {
+      version: 1 as const,
+      status: "rejected" as const,
+      policy,
+      claimEventId: correlation.claimEventId,
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: correlation.birthEventId,
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      evidenceEventId: EventId.make("bootstrap:C:event"),
+      guard: {
+        observedSnapshotSequence: 0,
+        expectedModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
+        expectedSessionStatus: null,
+        expectedActiveTurnId: null,
+        expectedLatestTurnId: null,
+        requireIdle: true as const,
+      },
+      reason: "Private original rejection",
+      observed: { snapshotSequence: 2, lastEventSequence: 2, target: null },
+      deletion,
+    };
+    const failureDecision = {
+      version: 1 as const,
+      status: "known_workspace_failure" as const,
+      policy,
+      claimEventId: correlation.claimEventId,
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: correlation.birthEventId,
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      preparationGeneration: correlation.preparationGeneration,
+      projectWorkspaceRoot: correlation.projectWorkspaceRoot,
+      workspacePath: correlation.workspacePath,
+      failedEffectId: "private-failed-effect",
+      failedInputHash: "private-effect-input-hash",
+      outcomeCommandId: CommandId.make("bootstrap:outcome"),
+      outcomeEventId: EventId.make("bootstrap:outcome:event"),
+      outcomeEventSequence: 3,
+      outcomeReceiptSequence: 3,
+      failureCommandId: CommandId.make("bootstrap:B:fail"),
+      evidenceEventId: EventId.make("bootstrap:failure:event"),
+    };
+    const run = {
+      id: runId,
+      threadId: base.threadId,
+      ordinal: 1,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
+      providerThreadId: null,
+      userMessageId: policy.messageId,
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "preparing" as const,
+      requestedAt: now,
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+      legacyBootstrap: policy,
+      legacyPreparationFailureKnown: true,
+      workspaceRunSetupScript: false,
+      legacyReleaseDecision: decision,
+      legacyPreparationFailureDecision: failureDecision,
+    };
+    const event = {
+      id: EventId.make("bootstrap:run-created"),
+      threadId: base.threadId,
+      occurredAt: now,
+      type: "run.created" as const,
+      payload: run,
+    };
+    const projected = projectDomainEventForWire(event);
+    expect(projected.payload).not.toHaveProperty("legacyBootstrap");
+    expect(projected.payload).not.toHaveProperty("legacyPreparationFailureKnown");
+    expect(projected.payload).not.toHaveProperty("workspaceRunSetupScript");
+    expect(projected.payload).not.toHaveProperty("legacyReleaseDecision");
+    expect(projected.payload).not.toHaveProperty("legacyPreparationFailureDecision");
+    expect(event.payload.legacyPreparationFailureDecision).toEqual(failureDecision);
+    expect(JSON.stringify(projected)).not.toContain(deletion.workspacePath);
+    expect(event.payload.legacyReleaseDecision).toEqual(decision);
+    expect(event.payload.legacyBootstrap).toEqual(policy);
+    expect(event.payload.legacyPreparationFailureKnown).toBe(true);
+    expect(event.payload.workspaceRunSetupScript).toBe(false);
+    const {
+      legacyBootstrap: _policy,
+      legacyPreparationFailureKnown: _known,
+      workspaceRunSetupScript: _setup,
+      legacyReleaseDecision: _decision,
+      legacyPreparationFailureDecision: _failureDecision,
+      ...publicRun
+    } = run;
+    expect(projected).toEqual({ ...event, payload: publicRun });
+  });
   it("keeps copied handoff transcripts out of activity items and live events", () => {
     const item = {
       ...base,
@@ -348,4 +488,89 @@ describe("orchestration V2 wire projection", () => {
     };
     expect(projectTurnItemForWire({ ...base, output })).not.toHaveProperty("output");
   });
+});
+
+it("retains standalone birth in recorded codecs, strips it on wire and rejects excess private fields", () => {
+  const birth = {
+    version: 1 as const,
+    kind: "fork" as const,
+    birthCommandId: CommandId.make("birth"),
+    birthCommandType: "thread.fork" as const,
+    sourceThreadId: ThreadId.make("source"),
+    sourceCreatedAt: DateTime.formatIso(base.updatedAt),
+    projectId: ProjectId.make("project"),
+    branch: "fork/target",
+    worktreePath: "/target",
+  };
+  const thread = Schema.decodeUnknownSync(RecordedAppThread)({
+    createdBy: "user",
+    creationSource: "web",
+    id: base.threadId,
+    projectId: birth.projectId,
+    title: "Target",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "fixture" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: birth.branch,
+    worktreePath: birth.worktreePath,
+    activeProviderThreadId: null,
+    lineage: {
+      parentThreadId: birth.sourceThreadId,
+      relationshipToParent: "fork",
+      rootThreadId: birth.sourceThreadId,
+    },
+    forkedFrom: null,
+    createdAt: base.updatedAt,
+    updatedAt: base.updatedAt,
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    snoozedUntil: null,
+    snoozedAt: null,
+    lastVisitedAt: null,
+    deletedAt: null,
+    standaloneCheckoutBirth: birth,
+  });
+  const json = Schema.encodeSync(RecordedAppThreadJson)(thread);
+  expect(Schema.decodeUnknownSync(RecordedAppThreadJson)(json).standaloneCheckoutBirth).toEqual(
+    birth,
+  );
+  const wire = projectDomainEventForWire({
+    id: EventId.make("birth-event"),
+    type: "thread.created",
+    threadId: thread.id,
+    occurredAt: thread.createdAt,
+    payload: thread,
+  });
+  expect(wire.payload).not.toHaveProperty("standaloneCheckoutBirth");
+  expect(wire.payload).toHaveProperty("worktreePath", birth.worktreePath);
+  expect(thread.standaloneCheckoutBirth).toEqual(birth);
+  expect(() =>
+    Schema.decodeUnknownSync(StandaloneCheckoutBirthV1)({ ...birth, extra: true }),
+  ).toThrow();
+  expect(() =>
+    Schema.decodeUnknownSync(StandaloneCheckoutBirthV1)({
+      ...birth,
+      birthCommandType: "thread.create",
+    }),
+  ).toThrow();
+  const publicCreate = Schema.decodeUnknownSync(OrchestrationV2Command)({
+    type: "thread.create",
+    commandId: "public-create",
+    threadId: "public-target",
+    projectId: birth.projectId,
+    title: "Public",
+    modelSelection: thread.modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdBy: "user",
+    creationSource: "web",
+    standaloneBirthRequest: { kind: "mcp_create", sourceThreadId: birth.sourceThreadId },
+    standaloneCheckoutBirth: birth,
+  });
+  expect(publicCreate).not.toHaveProperty("standaloneBirthRequest");
+  expect(publicCreate).not.toHaveProperty("standaloneCheckoutBirth");
 });

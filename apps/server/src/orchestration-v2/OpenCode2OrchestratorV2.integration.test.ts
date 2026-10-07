@@ -30,7 +30,14 @@ import {
 import { OPENCODE_PROVIDER } from "./Adapters/OpenCodeAdapterV2.ts";
 import { provideDeterministicTestRuntime } from "./testkit/DeterministicRuntime.ts";
 import type { OrchestratorV2ScenarioStep } from "./testkit/OrchestratorScenario.ts";
-import { runOrchestratorV2ProviderReplayScenario } from "./testkit/ProviderReplayHarness.ts";
+import {
+  type makeOrchestratorV2ReplayLayerWithRegistry,
+  runOrchestratorV2ProviderReplayScenario,
+} from "./testkit/ProviderReplayHarness.ts";
+import {
+  observeStandaloneForkCheckouts,
+  prepareStandaloneForkCheckouts,
+} from "./testkit/CheckoutPreparationFixture.ts";
 import { checkpointWorkspace } from "./testkit/ReplayFixtureWorkspace.ts";
 import {
   decodeProviderReplayNdjson,
@@ -300,8 +307,19 @@ const threadCommands = (input: {
   };
 };
 
+const checkoutFixtureOptions = (
+  name: string,
+  cwd: string,
+): NonNullable<Parameters<typeof makeOrchestratorV2ReplayLayerWithRegistry>[2]> => ({
+  checkoutFixture: {
+    projects: [{ projectId: ProjectId.make(`project:${name}`), workspaceRoot: cwd, title: name }],
+    resolvePath: () => undefined,
+  },
+});
+
 /** Runs `commands` in order, letting the thread go idle after each message. */
 const runScenario = (input: {
+  readonly cwd: string;
   readonly name: string;
   readonly threadId: ThreadId;
   readonly entries: ReadonlyArray<ProviderReplayEntry>;
@@ -325,6 +343,7 @@ const runScenario = (input: {
     const result = yield* runOrchestratorV2ProviderReplayScenario(
       { name: input.name, transcript, commands: input.commands, steps },
       OpenCode2OrchestratorReplayHarness,
+      checkoutFixtureOptions(input.name, input.cwd),
     ).pipe(provideDeterministicTestRuntime);
     const projection = result.projections.get(input.threadId);
     assert.isDefined(projection);
@@ -341,6 +360,7 @@ describe("OpenCode 2 through the orchestrator", () => {
         const thread = threadCommands({ name, worktreePath: cwd });
         const projection = yield* runScenario({
           name,
+          cwd,
           threadId: thread.threadId,
           entries: [
             ...createdSession(cwd, name),
@@ -394,6 +414,7 @@ describe("OpenCode 2 through the orchestrator", () => {
       const thread = threadCommands({ name, worktreePath: before });
       const projection = yield* runScenario({
         name,
+        cwd: before,
         threadId: thread.threadId,
         entries: [
           ...createdSession(before, name),
@@ -438,6 +459,7 @@ describe("OpenCode 2 through the orchestrator", () => {
       const thread = threadCommands({ name, worktreePath: before });
       const projection = yield* runScenario({
         name,
+        cwd: before,
         threadId: thread.threadId,
         entries: [
           ...createdSession(before, name),
@@ -495,6 +517,7 @@ describe("OpenCode 2 through the orchestrator", () => {
         });
         const projection = yield* runScenario({
           name,
+          cwd,
           threadId: thread.threadId,
           entries: [
             ...createdSession(cwd, name, supervisedRules(name), true),
@@ -524,6 +547,7 @@ describe("OpenCode 2 through the orchestrator", () => {
         }) satisfies OrchestrationV2Command;
       const projection = yield* runScenario({
         name,
+        cwd,
         threadId: thread.threadId,
         entries: [
           ...createdSession(cwd, name),
@@ -568,6 +592,7 @@ describe("OpenCode 2 through the orchestrator", () => {
       const thread = threadCommands({ name, worktreePath: cwd, interactionMode: "plan" });
       const projection = yield* runScenario({
         name,
+        cwd,
         threadId: thread.threadId,
         entries: [
           ...createdSession(cwd, name, planRules(name), true),
@@ -610,13 +635,50 @@ describe("OpenCode 2 through the orchestrator", () => {
       const recorded = yield* readProviderReplayTranscript(
         new URL("./testkit/fixtures/opencode2_fork/opencode_transcript.ndjson", import.meta.url),
       );
+      const source = threadCommands({ name, worktreePath: cwd });
+      const target = ThreadId.make(`thread:${name}:target`);
+      const checkouts = yield* prepareStandaloneForkCheckouts({
+        projectWorkspaceRoot: cwd,
+        forks: [{ birthCommandId: source.command("fork"), targetThreadId: target }],
+      });
+      const plannedTarget = checkouts.planned[0]!;
+      // Authored, not recorded: the recording forked within one directory, so it
+      // has no move. These four entries check only that T3 reads the target's
+      // models and moves the fork there after its rules and before its first
+      // prompt, accepting the move's empty reply. They do not show that OpenCode
+      // relocates the session; the recorded events after them keep their source.
+      const labelOf = (entry: ProviderReplayEntry | undefined) =>
+        entry === undefined || entry.type === "runtime_exit" ? undefined : entry.label;
+      const forkedAt = recorded.entries.findIndex((entry) => labelOf(entry) === "session.forked");
+      assert.equal(labelOf(recorded.entries[forkedAt + 1]), "session.instructions.entry.put.2");
+      const isolation = [
+        ...directoryModels(plannedTarget.worktreePath),
+        out("session.move", {
+          sessionID: recorded.metadata?.["forkedNativeSessionId"],
+          directory: plannedTarget.worktreePath,
+        }),
+        reply("session.move", null),
+      ].map((entry, index) =>
+        labelled(
+          entry,
+          `isolation.synthetic.${["model.list", "model.list.response", "session.move", "session.move.response"][index]}`,
+        ),
+      );
       // The recording scrubbed its directory to `<work>`; the fork it answers
       // runs where its source does, which is this test's workspace.
       const transcript = yield* OpenCode2OrchestratorReplayHarness.decodeTranscript(
-        withDirectory(recorded, cwd),
+        withDirectory(
+          {
+            ...recorded,
+            entries: [
+              ...recorded.entries.slice(0, forkedAt + 1),
+              ...isolation,
+              ...recorded.entries.slice(forkedAt + 1),
+            ],
+          },
+          cwd,
+        ),
       );
-      const source = threadCommands({ name, worktreePath: cwd });
-      const target = ThreadId.make(`thread:${name}:target`);
       const [one, two] = [source.message("one"), source.message("two")];
       const commands: ReadonlyArray<OrchestrationV2Command> = [
         source.create,
@@ -650,9 +712,18 @@ describe("OpenCode 2 through the orchestrator", () => {
           ? [{ type: "await_thread_idle" as const, threadId: command.threadId }]
           : []),
       ]);
+      const fixture = checkoutFixtureOptions(name, cwd).checkoutFixture!;
       const result = yield* runOrchestratorV2ProviderReplayScenario(
-        { name, transcript, commands, steps, projectionThreadIds: [source.threadId, target] },
+        {
+          name,
+          transcript,
+          commands,
+          steps,
+          projectionThreadIds: [source.threadId, target],
+          standaloneCheckout: true,
+        },
         OpenCode2OrchestratorReplayHarness,
+        { checkoutFixture: { ...fixture, worktreesDir: checkouts.worktreesDir } },
       ).pipe(provideDeterministicTestRuntime);
       const forked = result.projections.get(target);
       assert.isDefined(forked);
@@ -671,6 +742,15 @@ describe("OpenCode 2 through the orchestrator", () => {
         row.item.type === "assistant_message" ? [row.item.text] : [],
       );
       assert.deepEqual(visible, ["ONE", "ONE"]);
+      // The fork runs in its own checkout of the source's committed HEAD.
+      assert.equal(forked.thread.worktreePath, plannedTarget.worktreePath);
+      assert.equal(forked.thread.branch, plannedTarget.branch);
+      const checkoutState = yield* observeStandaloneForkCheckouts(checkouts);
+      assert.deepEqual(checkoutState.targets, [
+        { head: checkouts.sourceHead, branch: plannedTarget.branch },
+      ]);
+      assert.equal(checkoutState.sourceHead, checkouts.sourceHead);
+      assert.equal(checkoutState.sourceStatus, checkouts.sourceStatus);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
   );
 
@@ -748,6 +828,7 @@ describe("OpenCode 2 through the orchestrator", () => {
           steps,
         },
         OpenCode2OrchestratorReplayHarness,
+        checkoutFixtureOptions(name, cwd),
       ).pipe(provideDeterministicTestRuntime);
       const projection = result.projections.get(thread.threadId);
       assert.isDefined(projection);
@@ -817,7 +898,7 @@ describe("OpenCode 2 through the orchestrator", () => {
       },
       OpenCode2OrchestratorReplayHarness,
       // Opens the continuation run a follow-up asks for, as the server does.
-      { runContinuationWorker: true },
+      { ...checkoutFixtureOptions(input.name, cwd), runContinuationWorker: true },
     ).pipe(provideDeterministicTestRuntime);
     const projection = result.projections.get(thread.threadId);
     assert.isDefined(projection);
@@ -1095,7 +1176,10 @@ describe("OpenCode 2 through the orchestrator", () => {
             ],
           },
           OpenCode2OrchestratorReplayHarness,
-          { runContinuationWorker: true },
+          {
+            ...checkoutFixtureOptions("opencode2-background-in-turn", cwd),
+            runContinuationWorker: true,
+          },
         ).pipe(provideDeterministicTestRuntime);
         const projection = result.projections.get(thread.threadId);
         assert.isDefined(projection);
@@ -1148,6 +1232,7 @@ describe("OpenCode 2 through the orchestrator", () => {
         }).pipe(Effect.provide(NodeServices.layer));
         const projection = yield* runScenario({
           name,
+          cwd,
           threadId: thread.threadId,
           entries: recorded.entries,
           commands: [

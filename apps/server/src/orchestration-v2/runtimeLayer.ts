@@ -1,3 +1,4 @@
+import { layer as delegatedCheckoutPlannerLayer } from "./DelegatedCheckoutPlanner.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -23,6 +24,7 @@ import {
   layer as effectWorkerLayer,
 } from "./EffectWorker.ts";
 import { layerFromStores as eventSinkLayer } from "./EventSink.ts";
+import * as EventSink from "./EventSink.ts";
 import { layerFromOrchestrationEventStore as eventStoreLayer } from "./EventStore.ts";
 import { layer as idAllocatorLayer } from "./IdAllocator.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
@@ -79,7 +81,13 @@ const storesLayer = Layer.mergeAll(
   turnItemPositionStoreLayer,
 );
 
-export const OrchestrationV2EventSinkLayerLive = eventSinkLayer.pipe(Layer.provide(storesLayer));
+const legacyCurrentSourceReaderLayer = Layer.effect(
+  EventSink.LegacyCurrentSourceReader,
+  LegacyV1ThreadImporter.makeLegacyCurrentSourceReader,
+);
+export const OrchestrationV2EventSinkLayerLive = eventSinkLayer.pipe(
+  Layer.provide(Layer.merge(storesLayer, legacyCurrentSourceReaderLayer)),
+);
 const eventSinkProvided = OrchestrationV2EventSinkLayerLive;
 const projectionMaintenanceProvided = projectionMaintenanceLayer.pipe(Layer.provide(storesLayer));
 const legacyV1ThreadImporterProvided = LegacyV1ThreadImporter.layer.pipe(
@@ -197,6 +205,7 @@ const runFinalizationServiceProvided = runFinalizationServiceLayer.pipe(
 const orchestratorProvided = orchestratorLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      delegatedCheckoutPlannerLayer,
       checkpointServiceProvided,
       commandPolicyLayer,
       storesLayer,
@@ -244,10 +253,15 @@ const managedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
 const threadLaunchProvided = threadLaunchServiceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      eventSinkProvided,
+      effectOutboxLayer,
       ProjectServiceLayerLive,
       ProjectSetupScriptRunnerLayerLive,
       managedProjectFoldersProvided,
       threadManagementProvided,
+      effectOutboxLayer.pipe(Layer.provide(OrchestrationEventInfrastructureLayerLive)),
+      eventSinkProvided,
+      eventStoreProvided,
       commandReceiptStoreProvided,
       idAllocatorLayer,
     ),
@@ -321,7 +335,11 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   providerContinuationWorkerProvided,
   agentSessionImporterProvided,
 ).pipe(
-  Layer.provideMerge(OrchestrationV2LayerLive.pipe(Layer.provide(ProjectServiceLayerLive))),
+  Layer.provideMerge(
+    OrchestrationV2LayerLive.pipe(
+      Layer.provide(Layer.merge(ProjectServiceLayerLive, threadLaunchProvided)),
+    ),
+  ),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(OrchestrationEventInfrastructureLayerLive),
 );

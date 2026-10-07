@@ -1,3 +1,10 @@
+import {
+  type LegacyGuardRejectionDeleteCommand,
+  type LegacyFailureDeleteCommand,
+  type RecordedServerCommand as OrchestrationV2ServerCommand,
+  type RecordedRun as OrchestrationV2Run,
+  type RecordedThreadProjection as OrchestrationV2ThreadProjection,
+} from "./RecordedTypes.ts";
 import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
@@ -11,12 +18,9 @@ import {
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
-  type OrchestrationV2ServerCommand,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
-  type OrchestrationV2Run,
   type OrchestrationV2ThreadShellSnapshot,
-  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   ProjectId,
@@ -275,8 +279,16 @@ export interface ThreadManagementServiceShape {
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
+  readonly dispatchOrdinaryPreparedBranchRename?: Orchestrator.OrchestratorV2Shape["dispatchOrdinaryPreparedBranchRename"];
+  readonly dispatchOrdinaryPreparedRunRelease?: Orchestrator.OrchestratorV2Shape["dispatchOrdinaryPreparedRunRelease"];
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyFailureDelete?: (
+    command: LegacyFailureDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyGuardRejectionDelete?: (
+    command: LegacyGuardRejectionDeleteCommand,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
@@ -725,7 +737,19 @@ const make = Effect.gen(function* () {
   return ThreadManagementService.of({
     requestSelfSettlement: orchestrator.requestSelfSettlement,
     ensureLegacyTranscript,
+    dispatchOrdinaryPreparedBranchRename: orchestrator.dispatchOrdinaryPreparedBranchRename,
+    dispatchOrdinaryPreparedRunRelease: orchestrator.dispatchOrdinaryPreparedRunRelease,
     dispatch,
+    ...(orchestrator.dispatchLegacyFailureDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete,
+        }),
+    ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete,
+        }),
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getTimelinePage(threadId, options)),
@@ -773,6 +797,8 @@ const legacyV1ThreadImporterNoopLayer = Layer.succeed(
     importPendingTranscripts: Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
   }),
 );
+
+export const privateLegacyImporterLayer = LegacyV1ThreadImporter.layer;
 
 export const layer: Layer.Layer<ThreadManagementService, never, Orchestrator.OrchestratorV2> =
   Layer.effect(ThreadManagementService, make).pipe(Layer.provide(legacyV1ThreadImporterNoopLayer));

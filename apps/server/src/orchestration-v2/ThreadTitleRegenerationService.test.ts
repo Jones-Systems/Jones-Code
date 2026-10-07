@@ -3,18 +3,22 @@ import {
   type ChatAttachment,
   CommandId,
   MessageId,
+  ModelSelection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TextGenerationError,
 } from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -47,53 +51,57 @@ function makeHarness(
     readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
   } = {},
 ) {
-  const database = SqlitePersistenceMemory;
-  const registry = ProviderAdapterRegistry.makeLayer([adapter]);
-  const orchestrator = makeOrchestratorV2ReplayLayerWithRegistry(
-    { name: "thread-title-regeneration" },
-    registry,
-    { databaseLayer: database, runEffectWorker: false },
-  );
-  const threadManagement = ThreadManagement.layer.pipe(Layer.provide(orchestrator));
-  const outbox = EffectOutbox.layer.pipe(Layer.provide(database));
-  const generateThreadTitle = vi.fn(
-    options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
-  );
-  const projectedProjects = Layer.mock(ProjectStore.ProjectStoreV2)({
-    get: (requestedProjectId) =>
-      Effect.succeed(
-        requestedProjectId === projectId
-          ? Option.some({
-              projectId,
-              title: "Project",
-              workspaceRoot: "/repo",
-              defaultModelSelection: modelSelection,
-              defaultThreadEnvMode: null,
-              autoPull: false,
-              faviconPath: null,
-              projectIcon: null,
-              scripts: [],
-              createdAt: "2026-06-20T00:00:00.000Z",
-              updatedAt: "2026-06-20T00:00:00.000Z",
-              deletedAt: null,
-            })
-          : Option.none(),
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "title-regeneration-" });
+    const workspaceRoot = yield* fs.realPath(directory);
+    const database = SqlitePersistenceMemory;
+    const fixtureProject = Layer.effectDiscard(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const encodedModelSelection = yield* Schema.encodeEffect(
+          Schema.fromJsonString(ModelSelection),
+        )(modelSelection);
+        yield* sql`INSERT INTO projection_projects
+        (project_id, title, workspace_root, default_model_selection_json, scripts_json, created_at, updated_at)
+        VALUES (${projectId}, 'Project', ${workspaceRoot}, ${encodedModelSelection}, '[]', '2026-06-20T00:00:00.000Z', '2026-06-20T00:00:00.000Z')`;
+      }),
+    ).pipe(Layer.provide(database));
+    const registry = ProviderAdapterRegistry.makeLayer([adapter]);
+    const orchestrator = makeOrchestratorV2ReplayLayerWithRegistry(
+      { name: "thread-title-regeneration" },
+      registry,
+      {
+        databaseLayer: database,
+        runEffectWorker: false,
+        checkoutFixture: {
+          projects: [{ projectId, workspaceRoot, title: "Project" }],
+          resolvePath: () => undefined,
+        },
+      },
+    ).pipe(Layer.provide(fixtureProject));
+    const threadManagement = ThreadManagement.layer.pipe(Layer.provide(orchestrator));
+    const outbox = EffectOutbox.layer.pipe(Layer.provide(database));
+    const generateThreadTitle = vi.fn(
+      options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
+    );
+    const projectedProjects = ProjectStore.layer.pipe(Layer.provide(database));
+    const titleRegeneration = ThreadTitleRegeneration.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          threadManagement,
+          projectedProjects,
+          Layer.mock(TextGeneration.TextGeneration)({ generateThreadTitle }),
+          ServerSettings.layerTest({}),
+        ),
       ),
-  });
-  const titleRegeneration = ThreadTitleRegeneration.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        threadManagement,
-        projectedProjects,
-        Layer.mock(TextGeneration.TextGeneration)({ generateThreadTitle }),
-        ServerSettings.layerTest({}),
-      ),
-    ),
-  );
-  return {
-    layer: Layer.mergeAll(threadManagement, titleRegeneration, outbox, database),
-    generateThreadTitle,
-  };
+    );
+    return {
+      layer: Layer.mergeAll(threadManagement, titleRegeneration, outbox, database),
+      generateThreadTitle,
+      workspaceRoot,
+    };
+  }).pipe(Effect.provide(NodeServices.layer));
 }
 
 function createThread(input: { readonly command: string; readonly thread: string }) {
@@ -221,7 +229,7 @@ describe("formatThreadTitleContext", () => {
 describe("ThreadTitleRegenerationService", () => {
   it.effect("arms and clears the regeneration marker through metadata commands", () =>
     Effect.gen(function* () {
-      const harness = makeHarness();
+      const harness = yield* makeHarness();
       yield* Effect.gen(function* () {
         const threads = yield* ThreadManagement.ThreadManagementService;
         const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -258,12 +266,12 @@ describe("ThreadTitleRegenerationService", () => {
         assert.equal(renamed.thread.title, "Manual title");
         assert.isNotOk(renamed.thread.titleRegeneration);
       }).pipe(Effect.provide(harness.layer));
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("skips execution when the marker was superseded by a newer request", () =>
     Effect.gen(function* () {
-      const harness = makeHarness();
+      const harness = yield* makeHarness();
       yield* Effect.gen(function* () {
         const threads = yield* ThreadManagement.ThreadManagementService;
         const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
@@ -288,12 +296,12 @@ describe("ThreadTitleRegenerationService", () => {
         assert.equal(projection.thread.title, "Seed title");
         assert.equal(projection.thread.titleRegeneration?.requestId, currentRequest);
       }).pipe(Effect.provide(harness.layer));
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("lands the regenerated title from the conversation digest", () =>
     Effect.gen(function* () {
-      const harness = makeHarness({
+      const harness = yield* makeHarness({
         generateTitle: () => Effect.succeed({ title: "Fresh title" }),
       });
       yield* Effect.gen(function* () {
@@ -314,18 +322,18 @@ describe("ThreadTitleRegenerationService", () => {
 
         const call = harness.generateThreadTitle.mock.calls[0]?.[0];
         assert.equal(call?.previousTitle, "Seed title");
-        assert.equal(call?.cwd, "/repo");
+        assert.equal(call?.cwd, harness.workspaceRoot);
         assert.include(call?.message, "USER:\nInvestigate the flaky login test");
         const projection = yield* threads.getThreadProjection(threadId);
         assert.equal(projection.thread.title, "Fresh title");
         assert.isNotOk(projection.thread.titleRegeneration);
       }).pipe(Effect.provide(harness.layer));
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("keeps the current title when generation returns the fallback", () =>
     Effect.gen(function* () {
-      const harness = makeHarness({
+      const harness = yield* makeHarness({
         generateTitle: () => Effect.succeed({ title: "New thread" }),
       });
       yield* Effect.gen(function* () {
@@ -348,12 +356,12 @@ describe("ThreadTitleRegenerationService", () => {
         assert.equal(projection.thread.title, "Seed title");
         assert.isNotOk(projection.thread.titleRegeneration);
       }).pipe(Effect.provide(harness.layer));
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("keeps the current title when regeneration reproduces it", () =>
     Effect.gen(function* () {
-      const harness = makeHarness({
+      const harness = yield* makeHarness({
         generateTitle: () => Effect.succeed({ title: "Seed title" }),
       });
       yield* Effect.gen(function* () {
@@ -379,12 +387,12 @@ describe("ThreadTitleRegenerationService", () => {
         assert.equal(projection.thread.title, "Seed title");
         assert.isNotOk(projection.thread.titleRegeneration);
       }).pipe(Effect.provide(harness.layer));
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("clears the marker and keeps the title when generation fails", () =>
     Effect.gen(function* () {
-      const harness = makeHarness({
+      const harness = yield* makeHarness({
         generateTitle: () => Effect.die(new Error("model unavailable")),
       });
       yield* Effect.gen(function* () {
@@ -408,12 +416,12 @@ describe("ThreadTitleRegenerationService", () => {
         assert.equal(projection.thread.title, "Seed title");
         assert.isNotOk(projection.thread.titleRegeneration);
       }).pipe(Effect.provide(harness.layer));
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.effect("completes without generating when the initial message is unavailable", () =>
     Effect.gen(function* () {
-      const harness = makeHarness();
+      const harness = yield* makeHarness();
       yield* Effect.gen(function* () {
         const threads = yield* ThreadManagement.ThreadManagementService;
         const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
@@ -434,7 +442,7 @@ describe("ThreadTitleRegenerationService", () => {
         assert.equal(projection.thread.title, "Seed title");
         assert.isNotOk(projection.thread.titleRegeneration);
       }).pipe(Effect.provide(harness.layer));
-    }),
+    }).pipe(Effect.scoped),
   );
 });
 
@@ -444,7 +452,7 @@ it.effect.each(["success", "exhausted", "stale", "interrupted"] as const)(
     Effect.gen(function* () {
       const attempted = yield* Deferred.make<void>();
       let attempts = 0;
-      const harness = makeHarness({
+      const harness = yield* makeHarness({
         generateTitle: () =>
           Effect.gen(function* () {
             attempts += 1;
@@ -472,7 +480,7 @@ it.effect.each(["success", "exhausted", "stale", "interrupted"] as const)(
             requestId,
             kind: { type: "initial", messageId: MessageId.make(`${messageCommand}:message`) },
           })
-          .pipe(Effect.forkChild);
+          .pipe(Effect.forkScoped);
         yield* Deferred.await(attempted);
         if (outcome === "interrupted") {
           yield* Fiber.interrupt(fiber);
@@ -501,6 +509,6 @@ it.effect.each(["success", "exhausted", "stale", "interrupted"] as const)(
         if (outcome === "interrupted")
           assert.equal(projection.thread.titleRegeneration?.requestId, requestId);
         else assert.isNotOk(projection.thread.titleRegeneration);
-      }).pipe(Effect.provide(harness.layer));
-    }),
+      }).pipe(Effect.scoped, Effect.provide(harness.layer));
+    }).pipe(Effect.scoped),
 );

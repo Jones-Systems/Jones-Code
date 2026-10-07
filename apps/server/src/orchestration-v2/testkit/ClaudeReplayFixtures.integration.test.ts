@@ -18,6 +18,7 @@ import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import { ORCHESTRATOR_REPLAY_FIXTURES } from "./fixtures/index.ts";
 import { subagentInput } from "./fixtures/subagent/input.ts";
 import { runOrchestratorV2Scenario } from "./OrchestratorScenario.ts";
+import { checkpointWorkspace } from "./ReplayFixtureWorkspace.ts";
 import { makeOrchestratorV2ProviderReplayLayer } from "./ProviderReplayHarness.ts";
 import { materializeReplayTranscriptRuntimeInstructions } from "./ReplayTranscriptNdjson.ts";
 import { CLAUDE_MODEL_SELECTION, materializeFixtureInput } from "./fixtures/shared.ts";
@@ -147,12 +148,22 @@ describe("Claude Agent SDK replay fixtures", () => {
         driver: ProviderDriverKind.make("claudeAgent"),
         modelSelection: CLAUDE_MODEL_SELECTION,
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
+      const workspaceRoot = yield* checkpointWorkspace("claude-replay-subagent");
+      const checkoutFixture = {
+        projects: materialized.commands.flatMap((command) =>
+          command.type === "thread.create"
+            ? [{ projectId: command.projectId, workspaceRoot, title: "subagent" }]
+            : [],
+        ),
+        resolvePath: () => undefined,
+      };
       const scenario = {
         name: "subagent/claudeAgent:read-only-child",
         transcript,
         commands: materialized.commands,
         steps: materialized.steps,
         projectionThreadIds: materialized.projectionThreadIds,
+        runtimePolicyOverride: { cwd: workspaceRoot },
       };
       yield* Effect.gen(function* () {
         const result = yield* runOrchestratorV2Scenario(scenario);
@@ -188,12 +199,14 @@ describe("Claude Agent SDK replay fixtures", () => {
         assert.deepEqual(after.messages, child.messages);
       }).pipe(
         Effect.provide(
-          makeOrchestratorV2ProviderReplayLayer(scenario, ClaudeOrchestratorReplayHarness),
+          makeOrchestratorV2ProviderReplayLayer(scenario, ClaudeOrchestratorReplayHarness, {
+            checkoutFixture,
+          }),
         ),
         provideDeterministicTestRuntime,
         Effect.scoped,
       );
-    }),
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
   it.effect("classifies every Claude fixture tool use through the native tool table", () =>
