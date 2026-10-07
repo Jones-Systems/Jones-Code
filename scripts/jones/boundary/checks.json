@@ -345,6 +345,25 @@
         "vp test run apps/server/src/jones/performance/v2Workload.test.ts apps/server/scripts/jones/v2Benchmark.test.mjs",
         "node --test --test-concurrency=1 scripts/jones/performance/current-qualification.node-test.mjs"
       ]
+    },
+    {
+      "id": "jones-native-execution-authority",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeCreationAuthority.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepository.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts",
+        "apps/server/src/jones/persistence/Migrations/100_JonesNativeCreationExecution.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/nativeCreation/NativeCreationAuthority.test.ts apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepository.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts apps/server/src/jones/persistence/Migrations/100_JonesNativeCreationExecution.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }

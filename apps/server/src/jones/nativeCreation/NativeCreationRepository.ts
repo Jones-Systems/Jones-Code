@@ -78,9 +78,58 @@ type WithoutOrdinal<Fact> = Fact extends NativeCreationEffect ? Omit<Fact, "ordi
 export type NativeCreationStartedFact = Extract<NativeCreationEffect, { phase: "started" }>;
 export type NativeCreationCompletedFact = Extract<NativeCreationEffect, { phase: "completed" }>;
 
+import type {
+  NativeCreationExecutionReferenceV2,
+  NativeCreationEffectV2,
+} from "./NativeCreationExecutionTypes.ts";
+
 export class NativeCreationRepository extends Context.Service<
   NativeCreationRepository,
   {
+    // Optional until the same durable owner installs V2 execution storage; absence denies issuance.
+    readonly readExecutionReference?: (
+      reference: NativeCreationExecutionReferenceV2,
+    ) => Effect.Effect<
+      {
+        readonly history: NativeCreationHistory;
+        readonly preparation: ValidatedNativeCreationPreparation;
+        readonly command: OrchestrationV2Command;
+        readonly nativeIdentity: { readonly normalizedCommandDigest: string };
+      },
+      NativeCreationRepositoryError
+    >;
+    readonly startEffectV2?: (
+      reference: NativeCreationExecutionReferenceV2,
+      timestamp: string,
+      authorize: Effect.Effect<NativeCreationHistoricalBinding, NativeCreationAuthorityError>,
+    ) => Effect.Effect<
+      {
+        readonly status: "started";
+        readonly fact: Extract<NativeCreationEffectV2, { phase: "started" }>;
+      },
+      NativeCreationRepositoryError | NativeCreationAuthorityError
+    >;
+    readonly reserveExecutionCommandIdentities?: (
+      claimId: string,
+      commandIds: ReadonlyArray<string>,
+    ) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly recordExecutionAcceptance?: (input: {
+      readonly claimId: string;
+      readonly command: OrchestrationV2Command;
+      readonly eventId: import("@t3tools/contracts").EventId;
+      readonly sequence: number;
+    }) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly confirmExecution?: (input: {
+      readonly reference: NativeCreationExecutionReferenceV2;
+      readonly workerId: string;
+      readonly expectedAttempt: number;
+      readonly leaseExpiresAt: string;
+      readonly evidence: import("./NativeCreationExecutionTypes.ts").NativeCreationWholeOperationEvidence;
+    }) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly holdExecution?: (
+      reference: NativeCreationExecutionReferenceV2,
+      reason: string,
+    ) => Effect.Effect<void, NativeCreationRepositoryError>;
     readonly hasAutomationEnrollment: (
       actorSessionId: AuthSessionId,
     ) => Effect.Effect<boolean, NativeCreationRepositoryError>;
