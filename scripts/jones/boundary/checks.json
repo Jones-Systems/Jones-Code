@@ -298,6 +298,23 @@
         "vp test run apps/server/scripts/jones/currentFixtures.test.ts",
         "node --test --test-concurrency=1 scripts/jones/performance/fixtures.node-test.mjs scripts/jones/performance/fixtures-historical-worker.node-test.mjs scripts/jones/performance/sources.node-test.mjs"
       ]
+    },
+    {
+      "id": "jones-v2-characterization",
+      "tests": [
+        "apps/server/src/jones/orchestration/historyExperiment.test.ts",
+        "apps/server/src/jones/orchestration/shellFanout.test.ts",
+        "apps/server/src/jones/orchestration/shellFanout.diagnostic.test.ts",
+        "apps/server/src/orchestration-v2/LiveStreamBudget.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/historyExperiment.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/jones/orchestration/shellFanout.diagnostic.test.ts apps/server/src/orchestration-v2/LiveStreamBudget.test.ts"
+      ]
+    },
+    {
+      "id": "jones-performance-health",
+      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
+      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
     }
   ]
 }
