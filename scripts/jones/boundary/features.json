@@ -105,6 +105,16 @@
         "apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx",
         "apps/web/src/components/chat/composerShortcutRails.test.ts"
       ]
+    },
+    {
+      "id": "workstream-appearance",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx",
+        "packages/client-runtime/src/state/workstreams/appearance.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "scope": "Jones appearance contracts exported through the contracts barrel and registered by makeJonesHttpGroups; shared client binding validation and native web color editing are covered by the focused tests."
     }
   ]
 }

@@ -130,6 +130,18 @@
       "id": "jones-process-placement-build",
       "tests": ["native/process-placement/build.test.mjs"],
       "commands": ["node --test native/process-placement/build.test.mjs"]
+    },
+    {
+      "id": "jones-workstream-appearance",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx",
+        "packages/client-runtime/src/state/workstreams/appearance.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx packages/client-runtime/src/state/workstreams/appearance.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ]
     }
   ]
 }
