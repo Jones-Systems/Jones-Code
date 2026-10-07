@@ -27,7 +27,7 @@ export class ProcessAttribution extends Context.Service<
     }) => Effect.Effect<void, never, Scope.Scope>;
     readonly snapshot: Effect.Effect<ReadonlyMap<number, ProcessAttributionRecord>>;
   }
->()("t3/resourceTelemetry/ProcessAttribution") {}
+>()("t3/jones/resourceTelemetry/ProcessAttribution") {}
 
 export const make = Effect.fn("resourceTelemetry.processAttribution.make")(function* () {
   const registrations = yield* Ref.make(new Map<number, RegisteredProcessAttribution>());
