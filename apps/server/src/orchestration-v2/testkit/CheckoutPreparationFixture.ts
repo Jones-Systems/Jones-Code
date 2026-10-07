@@ -220,7 +220,7 @@ export function makeCheckoutPlannerLayer(
  * Where a standalone birth places its checkout, computed with the same pure
  * placement the planner uses so a test can bind the target before it exists.
  */
-export const plannedStandaloneCheckout = Effect.fn("plannedStandaloneCheckout")(function* (input: {
+const plannedStandaloneCheckout = Effect.fn("plannedStandaloneCheckout")(function* (input: {
   readonly kind: "fork" | "mcp_create";
   readonly birthCommandId: CommandId;
   readonly targetThreadId: ThreadId;
@@ -238,7 +238,7 @@ export const plannedStandaloneCheckout = Effect.fn("plannedStandaloneCheckout")(
 });
 
 /** Reads one Git value from a fixture checkout. */
-export const readCheckoutGit = (cwd: string, args: ReadonlyArray<string>) =>
+const readCheckoutGit = (cwd: string, args: ReadonlyArray<string>) =>
   VcsProcess.VcsProcess.use((process) =>
     process.run({ operation: "ReplayCheckoutFixture.read", command: "git", args, cwd }),
   ).pipe(
