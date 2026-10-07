@@ -130,6 +130,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 5, name: "WorkstreamsNativeAttempts" },
           { id: 6, name: "WorkstreamsProviderEnrollments" },
           { id: 100, name: "NativeCreationExecution" },
+          { id: 101, name: "NativeWorkspacePreparation" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);
