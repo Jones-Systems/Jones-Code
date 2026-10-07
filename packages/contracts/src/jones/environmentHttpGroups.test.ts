@@ -23,6 +23,7 @@ describe("Jones environment HTTP registration", () => {
       "connect",
       "conversationLibrary",
       "jonesUpdates",
+      "jonesImportedHistory",
     ]);
   });
 
