@@ -44,10 +44,28 @@
         "packages/contracts/src/queueProtocol.test.ts",
         "packages/contracts/src/threadCorpusProtocol.test.ts",
         "packages/contracts/src/workstreams.conformance.test.ts",
-        "packages/contracts/src/workstreams.test.ts"
+        "packages/contracts/src/workstreams.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/request.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/service.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/http.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/service.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "packages/contracts/src/jones/workstreamsNativeProvider.test.ts",
+        "packages/contracts/src/jones/workstreamsRegistrationContext.test.ts",
+        "apps/server/src/auth/SessionStore.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/serverActivation.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts"
       ],
       "commands": [
-        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts"
+        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts apps/server/src/jones/workstreams/enrollment/request.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts apps/server/src/jones/workstreams/nativeProvider/http.test.ts apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts apps/server/src/jones/workstreams/nativeProvider/service.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/workstreamsRegistrationContext.test.ts apps/server/src/auth/SessionStore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/serverActivation.test.ts apps/server/src/serverRuntimeStartup.test.ts"
       ]
     },
     {
@@ -243,6 +261,78 @@
       "commands": [
         "vp test run apps/server/src/diagnostics/ProcessDiagnostics.test.ts apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts apps/server/src/provider/Drivers/CodexDriver.test.ts apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts apps/server/src/provider/Layers/ProviderRegistry.test.ts apps/server/src/resourceTelemetry/Model.test.ts apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
       ]
+    },
+    {
+      "id": "jones-decision-snapshot",
+      "tests": [
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/mcp/McpInvocationContext.test.ts",
+        "apps/server/src/mcp/McpSessionRegistry.test.ts",
+        "apps/server/src/mcp/McpHttpServer.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/mcp/McpHttpServer.test.ts"
+      ]
+    },
+    {
+      "id": "jones-qualified-updates",
+      "tests": [
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "apps/server/src/jones/cloud/qualifiedArchive.test.ts",
+        "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
+        "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
+        "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "apps/server/src/jones/updates/qualification.test.ts",
+        "apps/server/src/jones/updates/stagedSelection.test.ts",
+        "apps/server/src/jones/updates/trialGate.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts"
+      ]
+    },
+    {
+      "id": "jones-performance-custody",
+      "tests": [
+        "scripts/jones/performance/guard.node-test.mjs",
+        "scripts/jones/performance/lifecycle.node-test.mjs",
+        "scripts/jones/performance/runtime-binding.node-test.mjs",
+        "scripts/jones/performance/sources.node-test.mjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/performance/guard.node-test.mjs scripts/jones/performance/lifecycle.node-test.mjs scripts/jones/performance/runtime-binding.node-test.mjs scripts/jones/performance/sources.node-test.mjs"
+      ]
+    },
+    {
+      "id": "jones-performance-fixtures",
+      "tests": [
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "scripts/jones/performance/fixtures.node-test.mjs",
+        "scripts/jones/performance/fixtures-historical-worker.node-test.mjs",
+        "scripts/jones/performance/sources.node-test.mjs"
+      ],
+      "commands": [
+        "vp test run apps/server/scripts/jones/currentFixtures.test.ts",
+        "node --test --test-concurrency=1 scripts/jones/performance/fixtures.node-test.mjs scripts/jones/performance/fixtures-historical-worker.node-test.mjs scripts/jones/performance/sources.node-test.mjs"
+      ]
+    },
+    {
+      "id": "jones-v2-characterization",
+      "tests": [
+        "apps/server/src/jones/orchestration/historyExperiment.test.ts",
+        "apps/server/src/jones/orchestration/shellFanout.test.ts",
+        "apps/server/src/jones/orchestration/shellFanout.diagnostic.test.ts",
+        "apps/server/src/orchestration-v2/LiveStreamBudget.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/historyExperiment.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/jones/orchestration/shellFanout.diagnostic.test.ts apps/server/src/orchestration-v2/LiveStreamBudget.test.ts"
+      ]
+    },
+    {
+      "id": "jones-performance-health",
+      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
+      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
     }
   ]
 }

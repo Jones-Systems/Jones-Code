@@ -1,0 +1,11 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "performance-fixtures",
+  "jonesOwnedPaths": [
+    "apps/server/scripts/jones/currentFixtures.ts",
+    "apps/server/scripts/jones/currentFixtures.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

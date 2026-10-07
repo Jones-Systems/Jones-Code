@@ -18,6 +18,7 @@ describe("Jones environment HTTP registration", () => {
       "orchestration",
       "pullRequests",
       "workstreams",
+      "workstreamsNative",
       "projects",
       "connect",
       "conversationLibrary",
@@ -32,6 +33,7 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.workQueueMetadata.endpoints),
       ...Object.values(groups.conversationLibrary.endpoints),
       ...Object.values(groups.workstreams.endpoints),
+      ...Object.values(groups.workstreamsNative.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
       ["recent", "GET", "/api/voice-review/recent"],
@@ -55,6 +57,7 @@ describe("Jones environment HTTP registration", () => {
       ["conversationLibrary", "POST", "/api/conversation-library"],
       ["appearanceRead", "POST", "/api/workstreams/appearance/read"],
       ["appearanceSave", "POST", "/api/workstreams/appearance/write"],
+      ["registrationContext", "GET", "/api/workstreams/registration-context"],
       ["threadPlacements", "POST", "/api/workstreams/thread-placements"],
       ["list", "GET", "/api/workstreams"],
       ["references", "GET", "/api/workstreams/references"],
@@ -66,6 +69,10 @@ describe("Jones environment HTTP registration", () => {
       ["history", "GET", "/api/workstreams/:workstreamId/history"],
       ["command", "GET", "/api/workstreams/commands/:commandId"],
       ["submit", "POST", "/api/workstreams/commands"],
+      ["context", "GET", "/api/workstreams/native/v1/context"],
+      ["attestations", "POST", "/api/workstreams/native/v1/attestations"],
+      ["settlements", "POST", "/api/workstreams/native/v1/settlements"],
+      ["settlementLookup", "POST", "/api/workstreams/native/v1/settlements/lookup"],
     ]);
     const bearerHeaders = Schema.Struct({
       authorization: Schema.optionalKey(Schema.String),
