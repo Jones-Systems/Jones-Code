@@ -1,5 +1,5 @@
 // Minimal codex app-server stand-in, spawned as the Codex binary by the
-// provider readiness probe tests. Answers the handshake and, for session
+// provider and adapter tests. Answers the handshake and, for session
 // requests, returns REAL captured responses (codexMultiAgentWire.json), then
 // replays a scripted multi-agent notification sequence read from the
 // T3_CODEX_COLLAB_SCRIPT env var (a JSON file path) when the first turn
@@ -18,6 +18,25 @@ const script = JSON.parse(NodeFS.readFileSync(process.env.T3_CODEX_COLLAB_SCRIPT
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 let turnStartCount = 0;
 let activeTurn;
+const readGoalStatus = () => {
+  if (script.goalStatePath && NodeFS.existsSync(script.goalStatePath)) {
+    return JSON.parse(NodeFS.readFileSync(script.goalStatePath, "utf8")).status;
+  }
+  return script.goalStatus;
+};
+const recordControlRequest = (method, params) => {
+  if (!script.recordControlRequests) return;
+  NodeFS.appendFileSync(
+    `${process.env.T3_CODEX_COLLAB_SCRIPT}.control`,
+    `${JSON.stringify({ method, params })}\n`,
+  );
+};
+const writeGoalStatus = (status) => {
+  script.goalStatus = status;
+  if (script.goalStatePath) {
+    NodeFS.writeFileSync(script.goalStatePath, JSON.stringify({ status }), "utf8");
+  }
+};
 // Server->client requests the runtime must answer (approval prompts), keyed
 // by the numeric JSON-RPC id this peer allocated for them.
 const openServerRequests = new Map();
@@ -159,7 +178,20 @@ rl.on("line", (line) => {
       }
       return;
     }
-    write({ id, result: fixture.responses.threadStart });
+    write({
+      id,
+      result:
+        message.params?.excludeTurns === true
+          ? {
+              ...fixture.responses.threadStart,
+              thread: {
+                ...fixture.responses.threadStart.thread,
+                id: threadId,
+                sessionId: threadId,
+              },
+            }
+          : fixture.responses.threadStart,
+    });
     return;
   }
   if (method === "turn/start") {
@@ -212,15 +244,80 @@ rl.on("line", (line) => {
     }
     return;
   }
+  if (method === "thread/goal/get") {
+    recordControlRequest(method, message.params);
+    if (script.hangGoalGet === true) return;
+    if (script.failGoalGet === true) {
+      write({ id, error: { code: -32000, message: "goal unavailable" } });
+      return;
+    }
+    const status = readGoalStatus();
+    write({
+      id,
+      result: {
+        goal: status
+          ? {
+              createdAt: 1,
+              objective: "Keep working",
+              status,
+              threadId: script.rootThreadId,
+              timeUsedSeconds: 0,
+              tokenBudget: null,
+              tokensUsed: 0,
+              updatedAt: 1,
+            }
+          : null,
+      },
+    });
+    return;
+  }
+  if (method === "thread/goal/set") {
+    recordControlRequest(method, message.params);
+    if (script.hangGoalSet === true) return;
+    if (script.failGoalSet === true) {
+      write({ id, error: { code: -32000, message: "goal update unavailable" } });
+      return;
+    }
+    const status = message.params?.status ?? readGoalStatus() ?? "active";
+    writeGoalStatus(status);
+    write({
+      id,
+      result: {
+        goal: {
+          createdAt: 1,
+          objective: "Keep working",
+          status,
+          threadId: script.rootThreadId,
+          timeUsedSeconds: 0,
+          tokenBudget: null,
+          tokensUsed: 0,
+          updatedAt: 2,
+        },
+      },
+    });
+    return;
+  }
   if (method === "turn/interrupt") {
     // Record which thread/turn was interrupted (append-only sidecar file the
     // test reads) so Stop coverage can assert every live child was reached.
     // failInterruptFor simulates a dead child whose interrupt errors.
+    recordControlRequest(method, message.params);
     const target = message.params?.threadId;
     NodeFS.appendFileSync(
       `${process.env.T3_CODEX_COLLAB_SCRIPT}.interrupts`,
       `${JSON.stringify({ threadId: target, turnId: message.params?.turnId })}\n`,
     );
+    if (script.turnStartedOnInterrupt?.threadId === target) {
+      const turn = {
+        ...(activeTurn ?? fixture.responses.turnStart.turn),
+        id: script.turnStartedOnInterrupt.turnId,
+      };
+      write({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { threadId: script.rootThreadId, turn },
+      });
+    }
     if (
       script.expectedActiveTurnId &&
       message.params?.threadId === script.rootThreadId &&
@@ -239,12 +336,23 @@ rl.on("line", (line) => {
       write({ id, error: { code: -32000, message: "thread already closed" } });
       return;
     }
-    if (script.hangInterruptFor && script.hangInterruptFor === target) {
-      // Never respond: simulates a wedged child whose RPC neither resolves
+    if (
+      script.hangInterruptsFor?.includes(target) ||
+      (script.hangInterruptFor && script.hangInterruptFor === target)
+    ) {
+      // Never respond: simulates a wedged native RPC that neither resolves
       // nor rejects. The runtime's bounded deadline must move on.
       return;
     }
     write({ id, result: {} });
+    if (script.completeTurnOnInterrupt === true) {
+      const turn = {
+        ...fixture.responses.turnStart.turn,
+        id: message.params?.turnId,
+        status: "interrupted",
+      };
+      write({ method: "turn/completed", params: { threadId: target, turn } });
+    }
     return;
   }
   if (id !== undefined) {

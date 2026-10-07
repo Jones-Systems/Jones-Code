@@ -7,6 +7,7 @@ export * from "./acpRegistry.ts";
 export * from "./auth.ts";
 export * from "./environment.ts";
 export * from "./environmentHttp.ts";
+export * from "./voiceReview.ts";
 export * from "./relayClient.ts";
 export * from "./desktopBootstrap.ts";
 export * from "./desktopAppActivation.ts";
@@ -33,6 +34,7 @@ export * from "./sourceControl.ts";
 export * from "./projectClone.ts";
 export * from "./pullRequest.ts";
 export * from "./orchestrationDispatch.ts";
+export * from "./nativeCreation.ts";
 export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
 export * from "./applicationEvent.ts";
@@ -55,8 +57,22 @@ export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
+export * from "./tokenAccounting.ts";
 export * from "./scheduledTask.ts";
 export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+export * from "./workstreams.ts";
+export * from "./workstreamPlacements.ts";
+export * from "./threadRegistry.ts";
+export * from "./queueProtocol.ts";
+export * from "./threadCorpusProtocol.ts";
+export {
+  ThreadTurnDispatchGuard,
+  OrchestrationCommandObservation,
+  OrchestrationShellSnapshot,
+  OrchestrationThreadDetailWindow,
+  OrchestrationThreadDetailSnapshot,
+} from "./legacyOrchestrationCompatibility.ts";
+export * from "./hostStatus.ts";

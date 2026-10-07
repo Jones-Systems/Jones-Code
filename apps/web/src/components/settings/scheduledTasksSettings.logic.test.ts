@@ -20,6 +20,7 @@ import {
   scheduledTaskDefaultModel,
   matchesScheduledTaskScope,
   taskToDraft,
+  worktreeStrategyFromDraft,
 } from "./scheduledTasksSettings.logic";
 
 const laptopId = EnvironmentId.make("laptop");
@@ -153,6 +154,30 @@ const legacyTask: ScheduledTask = {
 };
 
 describe("editing scheduled task branch settings", () => {
+  it.each([true, false])(
+    "preserves an automatic base with origin preference %s when saving",
+    (startFromOrigin) => {
+      const draft = taskToDraft({
+        ...legacyTask,
+        workspaceStrategy: { type: "worktree", startFromOrigin },
+      });
+      expect(draft.baseRef).toBe("");
+      expect(worktreeStrategyFromDraft(draft)).toEqual({ type: "worktree", startFromOrigin });
+    },
+  );
+
+  it("preserves and trims an explicitly selected base when saving", () => {
+    const draft = taskToDraft({
+      ...legacyTask,
+      workspaceStrategy: { type: "worktree", baseRef: "upstream/release", startFromOrigin: true },
+    });
+    expect(worktreeStrategyFromDraft({ ...draft, baseRef: ` ${draft.baseRef} ` })).toEqual({
+      type: "worktree",
+      baseRef: "upstream/release",
+      startFromOrigin: true,
+    });
+  });
+
   it("keeps an omitted origin flag on the local base branch", () => {
     const draft = taskToDraft(legacyTask);
     expect(draft.baseRef).toBe("release");

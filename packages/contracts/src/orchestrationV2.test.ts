@@ -22,6 +22,8 @@ import {
   TurnItemId,
 } from "./index.ts";
 import {
+  OrchestrationV2RunAttemptJson,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointScope,
   OrchestrationV2Command,
@@ -1035,6 +1037,11 @@ describe("orchestration V2 contracts", () => {
     });
 
     expect(shell.pendingBackgroundTasks).toEqual([]);
+    expect(shell.threadMessagesBlocked ?? false).toBe(false);
+    expect(
+      decodeOrchestrationV2ThreadShell({ ...shell, threadMessagesBlocked: true })
+        .threadMessagesBlocked,
+    ).toBe(true);
   });
 });
 
@@ -1246,5 +1253,102 @@ describe("limit recovery choice updates", () => {
     { autoResume: true, snooze: false },
   ])("accepts an explicit independent choice %j", (choice) => {
     expect(decode({ ...identity, ...choice })).toEqual({ ...identity, ...choice });
+  });
+});
+
+describe("provider settlement compatibility", () => {
+  const settlement = {
+    runAttemptId: "attempt-1",
+    providerTurnId: "provider-turn-1",
+    status: "completed",
+    completedAt: "2026-09-01T12:00:05.000Z",
+  };
+  const attempt = {
+    id: "attempt-1",
+    runId: "run-1",
+    attemptOrdinal: 1,
+    rootNodeId: "node-1",
+    providerInstanceId: "codex",
+    providerThreadId: "provider-thread-1",
+    providerTurnId: null,
+    reason: "initial",
+    status: "running",
+    startedAt: null,
+    completedAt: null,
+  };
+  it.each([undefined, null, settlement])(
+    "retains absent, explicit null and attributed settlement in persisted attempts: %s",
+    (value) => {
+      const input = { ...attempt, ...(value === undefined ? {} : { providerSettlement: value }) };
+      const decoded = Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)(input);
+      const encoded = Schema.encodeSync(OrchestrationV2RunAttemptJson)(decoded);
+      expect(encoded).toEqual(input);
+      expect(Object.hasOwn(encoded, "providerSettlement")).toBe(value !== undefined);
+    },
+  );
+  it.each(["running", "waiting", "superseded"])(
+    "rejects nonterminal provider settlement %s",
+    (status) => {
+      expect(() =>
+        Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)({
+          ...attempt,
+          providerSettlement: { ...settlement, status },
+        }),
+      ).toThrow();
+    },
+  );
+  it("requires attributed identities and a fixed completion time", () => {
+    for (const field of ["runAttemptId", "providerTurnId", "completedAt"]) {
+      const incomplete = { ...settlement, [field]: null };
+      expect(() =>
+        Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)({
+          ...attempt,
+          providerSettlement: incomplete,
+        }),
+      ).toThrow();
+    }
+  });
+});
+
+describe("queued tool delivery command compatibility", () => {
+  it("preserves absent, false and true eligibility without a decode default", () => {
+    const command = {
+      type: "message.dispatch",
+      commandId: "queue-compat",
+      threadId: "thread",
+      messageId: "message",
+      createdBy: "user",
+      creationSource: "web",
+      text: "Queue",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+    };
+    expect(decodeOrchestrationV2Command(command)).not.toHaveProperty("queuedToolBoundaryEligible");
+    for (const value of [false, true])
+      expect(
+        decodeOrchestrationV2Command({ ...command, queuedToolBoundaryEligible: value }),
+      ).toHaveProperty("queuedToolBoundaryEligible", value);
+    expect(() =>
+      decodeOrchestrationV2Command({ ...command, queuedToolBoundaryEligible: 1 }),
+    ).toThrow();
+  });
+});
+
+describe("worktree launch base", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchWorkspaceStrategy);
+
+  it("round-trips an omitted base for automatic server selection", () => {
+    const input = { type: "worktree", branch: "feature", startFromOrigin: true };
+    expect(Schema.encodeSync(OrchestrationV2ThreadLaunchWorkspaceStrategy)(decode(input))).toEqual(
+      input,
+    );
+  });
+
+  it("preserves explicit bases and rejects blank bases", () => {
+    expect(decode({ type: "worktree", baseRef: "release/stable" })).toEqual({
+      type: "worktree",
+      baseRef: "release/stable",
+    });
+    expect(() => decode({ type: "worktree", baseRef: " " })).toThrow();
   });
 });

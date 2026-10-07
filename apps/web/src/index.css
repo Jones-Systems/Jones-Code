@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source "../../../packages/client-runtime/src/state/workstreams/colors.ts";
 
 @custom-variant dark (&:is(.dark, .dark *));
 @custom-variant light (&:not(.dark, .dark *));
@@ -227,6 +228,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-diff-deletion-foreground: var(--diff-deletion-foreground);
   --color-info-foreground: var(--info-foreground);
   --color-info: var(--info);
+  --color-waiting: var(--waiting);
+  --color-thread-failed: var(--thread-failed);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-ring: var(--ring);
   --color-input: var(--contrast-input);
@@ -1094,6 +1097,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --destructive-foreground: var(--error-foreground);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
+  --waiting: var(--color-violet-500);
+  --thread-failed: var(--color-red-700);
   --success: var(--color-emerald-500);
   --success-foreground: var(--color-emerald-700);
   --warning: var(--color-amber-500);
@@ -1145,6 +1150,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     --border: --alpha(var(--color-white) / 6%);
     --input: --alpha(var(--color-white) / 8%);
     --info-foreground: var(--color-blue-400);
+    --waiting: var(--color-violet-300);
+    --thread-failed: var(--color-red-300);
     --success-foreground: var(--color-emerald-400);
     --warning-foreground: var(--color-amber-400);
     --warning-surface: color-mix(in srgb, var(--warning) 16%, transparent);
@@ -1997,8 +2004,28 @@ code {
   border-bottom: 1px solid color-mix(in srgb, var(--contrast-border) 60%, transparent);
 }
 
+/* Size top-level expanded tables to their content, capped by the conversation
+   pane. The row follows ChatCanvas's lane insets; surrounding text retains the
+   reading width, and nested tables stay inside their markdown parent. */
+[data-timeline-root] .chat-markdown > .chat-markdown-table-container[data-expanded="true"] {
+  position: relative;
+  left: 50%;
+  width: max-content;
+  max-width: calc(100cqw - 0.5rem);
+  margin-inline: 0;
+  transform: translateX(-50%);
+}
+
+.chat-markdown [data-markdown-table-scroll] {
+  max-height: min(24rem, 60dvh);
+}
+
+.chat-markdown .chat-markdown-table-container[data-expanded="true"] [data-markdown-table-scroll] {
+  max-height: min(30rem, 75dvh);
+}
+
 /* Collapsed (default): single-line cells truncate so arbitrary chat content
-   cannot blow the column out; the footer toggle expands cells to wrap. */
+   cannot blow the column out; the footer toggle expands the table and wraps cells. */
 .chat-markdown .chat-markdown-table-container[data-expanded="false"] th,
 .chat-markdown .chat-markdown-table-container[data-expanded="false"] td {
   overflow: hidden;

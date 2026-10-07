@@ -9,6 +9,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAssetUrlRefresh } from "~/assets/assetUrls";
 import ChatMarkdown from "~/components/ChatMarkdown";
+import { ZoomableImage } from "~/components/chat/ZoomableImage";
 import { MorphIcon } from "~/components/MorphIcon";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { toastManager } from "~/components/ui/toast";
@@ -242,7 +243,13 @@ export function AttachmentFilePreview(props: {
       <ReadOnlySourcePreview name={props.name} text={content.text} />
     )
   ) : kind === "pdf" || kind === "html" ? (
-    <BrowserDocumentFrame src={url} title={props.name} pdf={kind === "pdf"} />
+    <BrowserDocumentFrame
+      key={props.file ? revision : undefined}
+      src={url}
+      title={props.name}
+      pdf={kind === "pdf"}
+      onRetry={() => setRevision((value) => value + 1)}
+    />
   ) : kind === "audio" ? (
     <AudioPreview src={url} name={props.name} onError={() => setError("Unable to load audio.")} />
   ) : kind === "video" ? (
@@ -257,11 +264,12 @@ export function AttachmentFilePreview(props: {
       />
     </div>
   ) : kind === "image" ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
-      <img
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden p-4">
+      <ZoomableImage
+        key={url}
+        layout="panel"
         src={url}
-        alt={props.name}
-        className="max-h-full max-w-full object-contain"
+        name={props.name}
         onError={() => setError("Unable to load image.")}
       />
     </div>

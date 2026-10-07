@@ -5,7 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
-export const PROCESS_PLACEMENT_ENV = "T3_PROCESS_PLACEMENT";
+const PROCESS_PLACEMENT_ENV = "T3_PROCESS_PLACEMENT";
 export const PROCESS_PLACEMENT_BOOTSTRAP_ENV = "T3_PROCESS_PLACEMENT_BOOTSTRAP";
 export type ProcessRole = "control" | "workload";
 export interface CgroupBinding {

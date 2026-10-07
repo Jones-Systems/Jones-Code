@@ -34,6 +34,12 @@ is insufficient; broad repo-wide checks are not required.
 
 For UI changes, include clear before/after screenshots. Include a short recording
 when motion, timing, transitions, or interaction details are needed to demonstrate
-the change. Upload evidence to GitHub and embed or link it here. Never commit PR-only assets. -->
+the change. Upload evidence to GitHub and embed or link it here. Never commit PR-only assets.
+For each evidence set, identify the full comparison and candidate revisions (plus
+base and patch identity for dirty source), build correspondence, route/platform,
+actual viewport/scale/theme, fixture/scenario, observable action/readback, and
+coverage limits. State whether before/after describes one interaction in one
+build or two exact source builds. Name the integration revision and constituent
+heads for combined previews; refresh exact-head claims after each PR-head change. -->
 
 <!-- If you used an agent, end with the model and harness that did the work. -->

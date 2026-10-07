@@ -465,7 +465,7 @@ export interface TimelineDurationMessage {
 
 export type TimelineLatestRun = Pick<
   ThreadRunSummary,
-  "runId" | "status" | "startedAt" | "completedAt"
+  "runId" | "status" | "startedAt" | "completedAt" | "providerSettlement"
 >;
 
 const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
@@ -750,10 +750,12 @@ function deriveUnsettledRunId(
     return null;
   }
   const isSettled =
-    latestRun.completedAt !== null &&
-    latestRun.status !== "running" &&
-    latestRun.status !== "starting" &&
-    latestRun.status !== "waiting";
+    latestRun.providerSettlement !== undefined
+      ? latestRun.providerSettlement !== null
+      : latestRun.completedAt !== null &&
+        latestRun.status !== "running" &&
+        latestRun.status !== "starting" &&
+        latestRun.status !== "waiting";
   return isSettled ? null : latestRun.runId;
 }
 
@@ -1005,14 +1007,19 @@ function deriveTurnFolds(input: {
     }
 
     const isLatestInterruptedTurn =
-      input.latestRun?.runId === runId && input.latestRun.status === "interrupted";
+      input.latestRun?.runId === runId &&
+      (input.latestRun.providerSettlement?.status ?? input.latestRun.status) === "interrupted";
     // A turn cut short by a steer leaves trailing work entries behind its
     // terminal message — take whichever ended last.
     const lastEntryEnd =
       lastEntry.kind === "message" ? lastEntry.message.updatedAt : lastEntry.createdAt;
+    const responseCompletedAt =
+      input.latestRun?.providerSettlement === undefined
+        ? input.latestRun?.completedAt
+        : input.latestRun.providerSettlement?.completedAt;
     const elapsedMs =
-      input.latestRun?.runId === runId && input.latestRun.startedAt && input.latestRun.completedAt
-        ? computeElapsedMs(input.latestRun.startedAt, input.latestRun.completedAt)
+      input.latestRun?.runId === runId && input.latestRun.startedAt && responseCompletedAt
+        ? computeElapsedMs(input.latestRun.startedAt, responseCompletedAt)
         : computeElapsedMs(
             group.startBoundary ?? firstEntry.createdAt,
             maxIsoTimestamp(group.terminalEntry?.message.updatedAt ?? null, lastEntryEnd) ??
@@ -1862,6 +1869,17 @@ function sameCheckpointSummaries(
   return true;
 }
 
+function sameTimelineLatestRun(
+  previous: TimelineLatestRun | null | undefined,
+  next: TimelineLatestRun | null | undefined,
+): boolean {
+  if (previous === next) return true;
+  if (previous == null || next == null) return false;
+  const { providerSettlement: previousSettlement, ...previousRun } = previous;
+  const { providerSettlement: nextSettlement, ...nextRun } = next;
+  return shallow(previousRun, nextRun) && shallow(previousSettlement, nextSettlement);
+}
+
 function replaceStreamingMessageRows(
   input: MessagesTimelineRowsInput,
   previous: MessagesTimelineRowsProjection,
@@ -1889,7 +1907,7 @@ function replaceStreamingMessageRows(
   if (
     timelineEntries.length !== previousEntries.length ||
     !shallow(previousContext, context) ||
-    !shallow(previousRun, latestRun) ||
+    !sameTimelineLatestRun(previousRun, latestRun) ||
     !shallow(previousExpandedRuns, expandedRunIds) ||
     !shallow(previousExpandedAttempts, expandedAttemptIds) ||
     !shallow(previousExpandedGroups, expandedWorkGroupIds) ||

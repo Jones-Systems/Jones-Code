@@ -40,6 +40,7 @@ import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import {
   isRpcClientError,
+  EnvironmentRpcUnavailableError,
   request,
   runStream,
   subscribe,
@@ -1106,6 +1107,27 @@ export function createServerEnvironmentAtoms<R, E>(
       // abandoned query immediately also interrupts stale in-flight requests.
       staleTimeMs: 0,
       idleTtlMs: 0,
+    }),
+    readTokenAccounting: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:read-token-accounting",
+      tag: WS_METHODS.serverReadTokenAccounting,
+      execute: (input) =>
+        request(WS_METHODS.serverReadTokenAccounting, input, {
+          validateSession: (session) =>
+            Effect.gen(function* () {
+              const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+              const config = yield* session.initialConfig;
+              if (config.environment.capabilities.savedTokenAccounting !== true) {
+                return yield* Effect.fail(
+                  new EnvironmentRpcUnavailableError({
+                    environmentId: supervisor.target.environmentId,
+                    message: "This environment does not advertise a saved accounting reader.",
+                  }),
+                );
+              }
+            }),
+        }),
+      concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
     }),
     configProjection,
     welcome,

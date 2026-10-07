@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -26,6 +27,8 @@ import {
   resolvePullRequestAuthorFilter,
   type OrchestrationProjectShell,
   type ProjectId,
+  type PullRequestCiStatusInput,
+  type PullRequestCiStatusResult,
   type PullRequestAction,
   type PullRequestActionInput,
   type PullRequestActivity,
@@ -74,6 +77,8 @@ import {
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import { AllowGitHubReserve } from "../sourceControl/GitHubCli.ts";
+import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import { readGitHubCiStatus } from "./GitHubPullRequestCli.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -173,6 +178,9 @@ type CredentialRef = PullRequestRef & { readonly [credentialNamespace]?: string 
 export class PullRequestService extends Context.Service<
   PullRequestService,
   {
+    readonly ciStatus: (
+      input: PullRequestCiStatusInput,
+    ) => Effect.Effect<PullRequestCiStatusResult, PullRequestError>;
     readonly list: (
       input: PullRequestListInput,
     ) => Effect.Effect<PullRequestListResult, PullRequestError>;
@@ -640,6 +648,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
+  const githubCi = yield* Effect.serviceOption(GitHubCli.GitHubCli);
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,
@@ -1514,6 +1523,80 @@ export const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError(toPullRequestError("routeIdentity")));
     return { ...identity, host, provider: "github" as const };
+  });
+
+  const ciCache = new Map<string, { at: number; value: PullRequestCiStatusResult }>();
+  const ciGate = yield* Semaphore.make(1);
+  const ciStatus: PullRequestService["Service"]["ciStatus"] = Effect.fn(
+    "PullRequestService.ciStatus",
+  )(function* (input) {
+    const host = input.host.toLowerCase();
+    const organization = input.organization.toLowerCase();
+    const { supported } = yield* listWorkspaceProjects({ host });
+    const matching = supported
+      .filter(
+        (candidate) =>
+          candidate.api.kind === "github" &&
+          candidate.repository.split("/").length === 2 &&
+          candidate.repository.split("/")[0]!.toLowerCase() === organization,
+      )
+      .sort((a, b) => a.repository.localeCompare(b.repository));
+    const selected = matching.slice(0, 10);
+    const repositories = selected.map((candidate) => candidate.repository);
+    const unavailable = (reason: string): Effect.Effect<PullRequestCiStatusResult> =>
+      Effect.map(Clock.currentTimeMillis, (now) => ({
+        host,
+        organization: input.organization,
+        accountId: null,
+        observedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+        repositories,
+        scopeTruncated: matching.length > selected.length,
+        jobs: { state: "unavailable", reasons: [reason], items: [] },
+        workflows: { state: "unavailable", reasons: [reason], items: [] },
+        runners: { state: "unavailable", reasons: [reason], items: [] },
+      }));
+    const project = selected[0];
+    const api = registry.get("github");
+    if (project === undefined)
+      return yield* unavailable(
+        "No configured GitHub repositories match this organization and host.",
+      );
+    if (api?.withVerifiedCredential === undefined || Option.isNone(githubCi))
+      return yield* unavailable("This environment cannot read GitHub CI status.");
+    return yield* api
+      .withVerifiedCredential({ cwd: project.project.workspaceRoot, host }, (identity) => {
+        if (input.expectedAccountId !== undefined && identity.accountId !== input.expectedAccountId)
+          return unavailable("The GitHub account changed. Refresh the selected environment.");
+        const key = JSON.stringify([
+          host,
+          organization,
+          identity.credentialFingerprint,
+          selected.map((candidate) => [candidate.repository, candidate.project.workspaceRoot]),
+          matching.length,
+        ]);
+        // Keep only normalized responses; the verified credential stays in the request context.
+        return ciGate.withPermit(
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            const cached = ciCache.get(key);
+            if (cached !== undefined && now - cached.at < 120_000) return cached.value;
+            const value = yield* readGitHubCiStatus(githubCi.value, {
+              cwd: project.project.workspaceRoot,
+              host,
+              organization: input.organization,
+              accountId: identity.accountId,
+              repositories,
+              scopeTruncated: matching.length > selected.length,
+            }).pipe(
+              Effect.provideService(SourceControlRateLimit.SourceControlRateLimit, rateLimits),
+            );
+            if (ciCache.size >= 32) ciCache.delete(ciCache.keys().next().value!);
+            ciCache.set(key, { at: yield* Clock.currentTimeMillis, value });
+            return value;
+          }),
+        );
+      })
+      .pipe(Effect.catch(() => unavailable("The GitHub account could not be verified.")));
   });
 
   const withRoutingCredential: PullRequestService["Service"]["withRoutingCredential"] = (
@@ -3263,6 +3346,7 @@ export const make = Effect.gen(function* () {
       });
 
   return PullRequestService.of({
+    ciStatus,
     routing,
     routingIdentity,
     withRoutingCredential,
@@ -3306,4 +3390,4 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(PullRequestService, make);
+export const layer = Layer.effect(PullRequestService, make).pipe(Layer.provide(GitHubCli.layer));

@@ -96,6 +96,7 @@ import {
 import { assignProjectsToEnvironments } from "../components/pullRequest/pullRequestProjectAssignment.logic";
 import { pullRequestFilterProjects } from "../components/pullRequest/pullRequestProjectFilter.logic";
 import { environmentMachineIcon } from "../components/EnvironmentMachineIcon";
+import { PullRequestCiStatusPopover } from "../components/pullRequest/PullRequestCiStatusPopover";
 import { PullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanel";
 import {
   PullRequestFiltersMenu,
@@ -1752,6 +1753,10 @@ function PullRequestsRouteView() {
       className="absolute top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
       data-workspace-titlebar-controls
     >
+      <PullRequestCiStatusPopover
+        environments={capableEnvironments}
+        scopedEnvironmentId={scopedEnvironmentId}
+      />
       {panelToggleControls}
     </div>
   );

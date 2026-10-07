@@ -155,6 +155,7 @@ export function makeReplayServerConfig(
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       stateDir,
+      authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
@@ -177,15 +178,21 @@ export function makeReplayServerConfig(
   });
 }
 
-export function makeCodexProviderAdapterRegistryReplayLayer(input: {
+export function makeCodexReplayClientFactory(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
-}) {
+}): CodexAdapterV2.CodexAppServerClientFactoryShape {
   const replayLayer =
     input.driver === undefined
       ? CodexReplay.layerReplay(input.transcript)
       : CodexReplay.layerReplayWithDriver(input.driver);
-  const replayClientFactoryLayer = Layer.succeed(CodexAdapterV2.CodexAppServerClientFactory, {
+  const recordedGoalControl = input.transcript.entries.some(
+    (entry) =>
+      entry.type === "expect_outbound" &&
+      Predicate.isObject(entry.frame) &&
+      (entry.frame.method === "thread/goal/get" || entry.frame.method === "thread/goal/set"),
+  );
+  return {
     open: (openInput) =>
       Effect.gen(function* () {
         const context = yield* Layer.build(replayLayer).pipe(
@@ -199,11 +206,35 @@ export function makeCodexProviderAdapterRegistryReplayLayer(input: {
           ),
         );
         return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
-          Effect.map((client) => withCodexReplayChildMetadata(client, input.transcript)),
+          Effect.map((replayClient): CodexClient.CodexAppServerClient["Service"] => {
+            const client = withCodexReplayChildMetadata(replayClient, input.transcript);
+            return {
+              ...client,
+              raw: {
+                ...client.raw,
+                request: (method, params) =>
+                  // Older fixtures model no active goal. Recorded goal control and all writes
+                  // stay on strict replay so compatibility cannot hide an unexpected mutation.
+                  !recordedGoalControl && method === "thread/goal/get"
+                    ? Effect.succeed({ goal: null })
+                    : client.raw.request(method, params),
+              },
+            };
+          }),
           Effect.provide(context),
         );
       }),
-  });
+  };
+}
+
+export function makeCodexProviderAdapterRegistryReplayLayer(input: {
+  readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
+  readonly driver?: CodexReplay.CodexAppServerReplayDriver;
+}) {
+  const replayClientFactoryLayer = Layer.succeed(
+    CodexAdapterV2.CodexAppServerClientFactory,
+    makeCodexReplayClientFactory(input),
+  );
   const serverConfigLayer = Layer.effect(
     ServerConfig.ServerConfig,
     makeReplayServerConfig(input.transcript.scenario).pipe(Effect.orDie),

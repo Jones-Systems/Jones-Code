@@ -30,6 +30,11 @@ import {
   SERVICE_STOP_MARKER_FILE,
 } from "./cloud/serviceProtocol.ts";
 
+import {
+  advanceNativeStoreAuthorityForBaseDir,
+  fenceNativeStoreAuthorityForBaseDir,
+} from "./environment/nativeStoreAuthorityPersistence.ts";
+
 const HANDOFF_DELAY_MS = 2_000;
 const PREPARED_TIMEOUT_MS = 120_000;
 const TERMINATE_GRACE_MS = 5_000;
@@ -72,6 +77,17 @@ const databaseBackupDir = (baseDir: string, updateId: string) =>
 const databaseBackupFile = (backupDir: string, suffix: (typeof DB_FILE_SUFFIXES)[number]) =>
   NodePath.join(backupDir, suffix === "" ? "database" : `database${suffix}`);
 
+export const configuredDatabasePathForBaseDir = (baseDir: string): string =>
+  NodePath.resolve(baseDir, "userdata", "statev2.sqlite");
+
+export const validateDatabasePathForBaseDir = (baseDir: string, databasePath: string): string => {
+  const configuredPath = configuredDatabasePathForBaseDir(baseDir);
+  if (NodePath.resolve(databasePath) !== configuredPath) {
+    throw new Error("Service update database path must be the configured userdata/statev2.sqlite.");
+  }
+  return configuredPath;
+};
+
 async function pathExists(target: string): Promise<boolean> {
   try {
     await NodeFSP.access(target);
@@ -112,8 +128,14 @@ async function syncDirectory(directory: string): Promise<void> {
  * database writes from an earlier attempt by the same trial.
  */
 async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate): Promise<void> {
+  validateDatabasePathForBaseDir(baseDir, pending.dbPath);
   const backupDir = databaseBackupDir(baseDir, pending.id);
-  if (await pathExists(backupDir)) return;
+  if (await pathExists(backupDir)) {
+    if (!(await databaseBackupAvailable(baseDir, pending.id))) {
+      throw new Error("Cannot use an incomplete database backup.");
+    }
+    return;
+  }
 
   const stagingDir = `${backupDir}.staging`;
   await NodeFSP.rm(stagingDir, { recursive: true, force: true });
@@ -133,6 +155,16 @@ async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate
     throw cause;
   }
 }
+
+const databaseBackupAvailable = async (baseDir: string, updateId: string): Promise<boolean> => {
+  try {
+    const stat = await NodeFSP.lstat(databaseBackupFile(databaseBackupDir(baseDir, updateId), ""));
+    return stat.isFile();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw cause;
+  }
+};
 
 const restoreMarkerPath = (baseDir: string, updateId: string) =>
   NodePath.join(databaseBackupDir(baseDir, updateId), RESTORE_MARKER);
@@ -154,15 +186,21 @@ async function markDatabaseRestorePending(backupDir: string): Promise<void> {
   }
 }
 
-/** Restore is retryable after any process crash while the backup directory remains. */
+/** Resume durable restore intent; missing backups or unproved writer ownership stop recovery. */
 async function restoreDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
 ): Promise<void> {
+  validateDatabasePathForBaseDir(baseDir, pending.dbPath);
   const backupDir = databaseBackupDir(baseDir, pending.id);
-  if (!(await pathExists(backupDir))) return;
-
+  if (!(await databaseBackupAvailable(baseDir, pending.id))) {
+    fenceNativeStoreAuthorityForBaseDir(baseDir);
+    throw new Error("Cannot rollback while the native database backup is missing.");
+  }
+  // Persist restore intent before fencing so recovery cannot restart or commit
+  // a trial while the native authority remains fenced.
   await markDatabaseRestorePending(backupDir);
+  fenceNativeStoreAuthorityForBaseDir(baseDir);
   for (const suffix of DB_FILE_SUFFIXES) {
     const target = `${pending.dbPath}${suffix}`;
     const source = databaseBackupFile(backupDir, suffix);
@@ -174,6 +212,7 @@ async function restoreDatabaseBackup(
     }
   }
   await syncDirectory(NodePath.dirname(pending.dbPath));
+  advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
 
 async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
@@ -387,9 +426,21 @@ export class Launcher {
       await this.#startChild(this.#state.activeVersion, "active", update);
       return;
     }
+    if (update.phase === "accepted") {
+      if (!(await runtimeExists(this.#baseDir, update.targetVersion))) {
+        await this.#finishWithoutTrial(update, "target-runtime-missing");
+        return;
+      }
+      await this.#startTrial(update);
+      return;
+    }
     if (await databaseRestorePending(this.#baseDir, update)) {
       await this.#returnToPrevious(update, "failed", "rollback-interrupted");
       return;
+    }
+    if (!(await databaseBackupAvailable(this.#baseDir, update.id))) {
+      fenceNativeStoreAuthorityForBaseDir(this.#baseDir);
+      throw new Error("Cannot recover a trial-ready update without its database backup.");
     }
     if (!(await runtimeExists(this.#baseDir, update.targetVersion))) {
       await this.#returnToPrevious(update, "failed", "target-runtime-missing");
@@ -399,18 +450,43 @@ export class Launcher {
   }
 
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
-    // The previous child is dead here, so all three SQLite files are quiescent.
-    try {
-      await backupDatabaseOnce(this.#baseDir, pending);
-    } catch {
-      await this.#returnToPrevious(pending, "failed", "db-backup-failed");
-      return;
+    if (pending.phase === "accepted") {
+      // The previous child is dead here, so all three SQLite files are quiescent.
+      try {
+        await backupDatabaseOnce(this.#baseDir, pending);
+      } catch {
+        await this.#finishWithoutTrial(pending, "db-backup-failed");
+        return;
+      }
+    } else if (!(await databaseBackupAvailable(this.#baseDir, pending.id))) {
+      fenceNativeStoreAuthorityForBaseDir(this.#baseDir);
+      throw new Error("Cannot start a trial-ready update without its database backup.");
+    }
+    let trialReady = pending;
+    if (pending.phase === "accepted") {
+      trialReady = { ...pending, phase: "trial-ready" };
+      const next: ServiceState = { ...this.#state, update: trialReady };
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
     }
     try {
-      await this.#startChild(pending.targetVersion, "trial", pending);
+      await this.#startChild(trialReady.targetVersion, "trial", trialReady);
     } catch {
-      await this.#returnToPrevious(pending, "failed", "candidate-start-failed");
+      await this.#returnToPrevious(trialReady, "failed", "candidate-start-failed");
     }
+  }
+
+  async #finishWithoutTrial(pending: PendingServiceUpdate, reason: string): Promise<void> {
+    const outcome = terminalUpdate({ pending, status: "failed", reason });
+    const next: ServiceState = {
+      ...this.#state,
+      activeVersion: pending.fromVersion,
+      update: outcome,
+    };
+    await writeServiceState(this.#statePath, next);
+    this.#state = next;
+    await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+    await this.#startChild(next.activeVersion, "active", outcome);
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
@@ -505,6 +581,12 @@ export class Launcher {
       await reject("The requested database path is not absolute.");
       return;
     }
+    try {
+      validateDatabasePathForBaseDir(this.#baseDir, message.dbPath);
+    } catch {
+      await reject("The requested database path is not the configured userdata/statev2.sqlite.");
+      return;
+    }
     if (!(await runtimeExists(this.#baseDir, message.targetVersion))) {
       await reject("The requested target runtime is missing or incomplete.");
       return;
@@ -516,6 +598,7 @@ export class Launcher {
       targetVersion: message.targetVersion,
       dbPath: message.dbPath,
       status: "pending",
+      phase: "accepted",
     };
     const next: ServiceState = { ...this.#state, update: pending };
     await writeServiceState(this.#statePath, next);

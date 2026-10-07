@@ -34,6 +34,11 @@
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
+        // Staged native creation substrate is consumed by the deferred L39 execution slice.
+        // Analyzer entries preserve these APIs without registering runtime authority or launch.
+        "src/nativeCreation/NativeCreationPreparation.ts",
+        "src/nativeCreation/NativeCreationAuthority.ts",
+        "src/nativeCreation/NativeCreationRepositorySqlite.ts",
       ],
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
@@ -55,6 +60,11 @@
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
         "src/preview/Annotation.css!",
+        // The namespace launcher stages and loads these modules by filename.
+        "scripts/ui-evidence/probe.mjs",
+        "scripts/ui-evidence/runner.mjs",
+        "scripts/ui-evidence/scenarios/example.mjs",
+        "scripts/ui-evidence/scenarios/sidebar-rename.mjs",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs
       // electron-builder from this workspace, outside its package scripts.
