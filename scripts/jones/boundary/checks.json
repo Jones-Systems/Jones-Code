@@ -130,6 +130,28 @@
       "id": "jones-process-placement-build",
       "tests": ["native/process-placement/build.test.mjs"],
       "commands": ["node --test native/process-placement/build.test.mjs"]
+    },
+    {
+      "id": "jones-direct-desktop-media",
+      "tests": [
+        "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
+        "apps/server/src/device/DeviceHubProxy.test.ts",
+        "apps/server/src/device/SshDeviceHost.test.ts",
+        "apps/server/src/device/sshDeviceScript.test.ts",
+        "apps/server/src/jones/device/DeviceDirectAdmission.test.ts",
+        "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
+        "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
+        "apps/server/src/jones/device/directDeviceGateway.test.ts",
+        "apps/web/src/components/device/DeviceStreamView.test.tsx",
+        "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts",
+        "apps/web/src/jones/device/device.test.tsx",
+        "packages/client-runtime/src/device/stream.test.ts",
+        "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
+        "packages/contracts/src/device.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/jones/device/DeviceDirectAdmission.test.ts apps/server/src/jones/device/DeviceDirectGrants.test.ts apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts apps/server/src/jones/device/directDeviceGateway.test.ts apps/web/src/components/device/DeviceStreamView.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/web/src/jones/device/device.test.tsx packages/client-runtime/src/device/stream.test.ts packages/client-runtime/src/jones/device/mediaRoute.test.ts packages/contracts/src/device.test.ts"
+      ]
     }
   ]
 }

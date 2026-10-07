@@ -24,9 +24,10 @@ export type DeviceHostCheck =
 const decodeDeviceHostDraft = Schema.decodeUnknownOption(SshDeviceHostConfig);
 
 export function parseDeviceHostDraft(host: SshDeviceHostConfig) {
-  const { identityFile, ...rest } = host;
+  const { identityFile, directSshTarget, ...rest } = host;
   return decodeDeviceHostDraft({
     ...rest,
+    ...(directSshTarget?.trim() ? { directSshTarget: directSshTarget.trim() } : {}),
     ...(identityFile?.trim() ? { identityFile: identityFile.trim() } : {}),
   });
 }

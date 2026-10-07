@@ -25,7 +25,7 @@ export type DeviceHostId = typeof DeviceHostId.Type;
 /** The server machine. Always present; other host kinds are future work. */
 export const LOCAL_DEVICE_HOST_ID = "local" as DeviceHostId;
 
-/** SSH aliases and key paths are resolved on the environment server. */
+/** SSH aliases and key paths are resolved on the environment server; directSshTarget on the desktop. */
 export const SshDeviceHostConfig = Schema.Struct({
   id: DeviceHostId.check(
     Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
@@ -33,6 +33,9 @@ export const SshDeviceHostConfig = Schema.Struct({
   ),
   label: TrimmedNonEmptyString,
   target: TrimmedNonEmptyString.check(Schema.isPattern(/^[^\s-][^\s]*$/)),
+  directSshTarget: Schema.optionalKey(
+    TrimmedNonEmptyString.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$/u)),
+  ),
   identityFile: Schema.optional(TrimmedNonEmptyString),
   port: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
 });

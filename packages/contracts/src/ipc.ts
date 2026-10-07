@@ -1,4 +1,8 @@
 import * as Schema from "effect/Schema";
+import type {
+  DesktopDeviceMediaTunnelInput,
+  DesktopDeviceMediaTunnel,
+} from "./jones/deviceMedia.ts";
 
 import {
   PreviewAutomationClickInput,
@@ -1177,6 +1181,11 @@ export interface DesktopBridge {
     options?: { issuePairingToken?: boolean },
   ) => Promise<DesktopSshEnvironmentBootstrap>;
   disconnectSshEnvironment: (target: DesktopSshEnvironmentTarget) => Promise<void>;
+  openDeviceMediaTunnel?: (
+    input: DesktopDeviceMediaTunnelInput,
+  ) => Promise<DesktopDeviceMediaTunnel>;
+  closeDeviceMediaTunnel?: (id: string) => Promise<void>;
+
   fetchSshEnvironmentDescriptor: (httpBaseUrl: string) => Promise<ExecutionEnvironmentDescriptor>;
   bootstrapSshBearerSession: (
     httpBaseUrl: string,

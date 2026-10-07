@@ -1,3 +1,4 @@
+import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
 import * as JonesHttp from "./jones/http/registration.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
@@ -559,6 +560,7 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive, DeviceLayerLive)),
+  Layer.provideMerge(DeviceDirectGrants.layer),
   Layer.provideMerge(PersistenceLayerLive),
   // Both read a user-owned file out of the state directory and stream changes
   // to clients; neither depends on the other.
