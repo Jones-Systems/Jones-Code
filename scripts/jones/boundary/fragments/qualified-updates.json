@@ -2,35 +2,56 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
+    "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+    "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts",
+    "apps/desktop/src/jones/updates/jonesActivation.ts",
+    "apps/desktop/src/jones/updates/jonesMacStaging.test.ts",
+    "apps/desktop/src/jones/updates/jonesMacStaging.ts",
+    "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+    "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
+    "apps/desktop/src/jones/updates/jonesNativePreparation.ts",
+    "packages/shared/src/jones/jonesActions.ts",
+    "packages/shared/src/jones/jonesActions.test.ts",
     "apps/server/src/jones/cloud/qualifiedArchive.test.ts",
     "apps/server/src/jones/cloud/qualifiedArchive.ts",
     "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
     "apps/server/src/jones/cloud/qualifiedDarwinRuntime.ts",
-    "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
     "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
     "apps/server/src/jones/cloud/qualifiedQuiescence.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.ts",
-    "apps/server/src/jones/cloud/qualifiedStartup.test.ts",
-    "apps/server/src/jones/cloud/qualifiedStartup.ts",
     "apps/server/src/jones/updates/JonesUpdater.test.ts",
     "apps/server/src/jones/updates/JonesUpdater.ts",
-    "apps/server/src/jones/updates/http.test.ts",
-    "apps/server/src/jones/updates/http.ts",
     "apps/server/src/jones/updates/nativePreparation.ts",
     "apps/server/src/jones/updates/qualification.test.ts",
     "apps/server/src/jones/updates/qualification.ts",
-    "apps/server/src/jones/updates/service.ts",
     "apps/server/src/jones/updates/stagedSelection.test.ts",
     "apps/server/src/jones/updates/stagedSelection.ts",
     "apps/server/src/jones/updates/trialGate.test.ts",
     "apps/server/src/jones/updates/trialGate.ts",
+    "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+    "apps/server/src/jones/cloud/qualifiedStartup.test.ts",
+    "apps/server/src/jones/cloud/qualifiedStartup.ts",
+    "apps/server/src/jones/updates/http.test.ts",
+    "apps/server/src/jones/updates/http.ts",
+    "apps/server/src/jones/updates/service.ts",
     "apps/server/src/jones/updates/trialStartup.test.ts",
-    "apps/server/src/jones/updates/trialStartup.ts",
-    "packages/shared/src/jones/jonesActions.test.ts",
-    "packages/shared/src/jones/jonesActions.ts"
+    "apps/server/src/jones/updates/trialStartup.ts"
   ],
   "hookPaths": [
+    "apps/desktop/src/ipc/methods/updates.ts",
+    "apps/desktop/src/preload.ts",
+    "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
+    "apps/desktop/src/updates/DesktopRemoteUpdates.ts",
+    "apps/desktop/src/updates/DesktopUpdates.ts",
+    "apps/desktop/src/updates/updateChannels.test.ts",
+    "apps/desktop/src/updates/updateChannels.ts",
+    "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.ts",
+    "packages/contracts/package.json",
+    "packages/contracts/src/ipc.test.ts",
+    "packages/contracts/src/resourceTelemetry.ts",
+    "packages/shared/package.json",
+    "scripts/build-desktop-artifact.ts",
     "apps/server/src/cli/service.ts",
     "apps/server/src/cli/servicePreflight.ts",
     "apps/server/src/cli/update.test.ts",
@@ -43,12 +64,34 @@
     "apps/server/src/cloud/servicePreflight.test.ts",
     "apps/server/src/cloud/servicePreflight.ts",
     "apps/server/src/serverRuntimeStartup.test.ts",
-    "apps/server/src/serverRuntimeStartup.ts",
-    "packages/contracts/package.json",
-    "packages/shared/package.json"
+    "apps/server/src/serverRuntimeStartup.ts"
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/updates/jonesMacStaging.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativePreparation.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/updates/build-provenance.ts"
+    },
     {
       "from": "apps/server/src/cli/servicePreflight.ts",
       "to": "apps/server/src/jones/updates/trialStartup.ts"
@@ -116,10 +159,6 @@
     {
       "from": "apps/server/src/serviceLauncher.ts",
       "to": "apps/server/src/jones/cloud/qualifiedStartup.ts"
-    },
-    {
-      "from": "packages/contracts/src/index.ts",
-      "to": "packages/contracts/src/jones/jonesUpdates.ts"
     }
   ]
 }

@@ -4,6 +4,7 @@ import type {
   DesktopTelemetryCommitDesktopUpdate,
   DesktopTelemetryCancelDesktopUpdate,
   DesktopUpdateStatusReport,
+  DesktopUpdateState,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -21,6 +22,7 @@ import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublish
 import * as DesktopRemoteUpdates from "./DesktopRemoteUpdates.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { makeHarness } from "./updatesTestHarness.ts";
+import { createInitialDesktopUpdateState } from "./updateMachine.ts";
 
 // The remote flow hops between the test runtime's fibers and the updater's
 // runPromise-driven event handlers, so settling needs real microtask turns,
@@ -46,8 +48,9 @@ function runRemoteUpdatesTest(
     readonly commits: Queue.Queue<DesktopTelemetryCommitDesktopUpdate>;
     readonly cancellations: Queue.Queue<DesktopTelemetryCancelDesktopUpdate>;
   }) => Effect.Effect<void, never, DesktopUpdates.DesktopUpdates | DesktopState.DesktopState>,
+  updatesOverride?: ReturnType<typeof DesktopUpdates.DesktopUpdates.of>,
 ) {
-  return Effect.scoped(
+  const program = Effect.scoped(
     Effect.gen(function* () {
       const requests = yield* Queue.unbounded<DesktopTelemetryRequestDesktopUpdate>();
       const commits = yield* Queue.unbounded<DesktopTelemetryCommitDesktopUpdate>();
@@ -76,12 +79,285 @@ function runRemoteUpdatesTest(
       yield* settle;
       yield* body({ reports, requests, commits, cancellations });
     }),
-  ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  );
+  const provided =
+    updatesOverride === undefined
+      ? program
+      : program.pipe(Effect.provideService(DesktopUpdates.DesktopUpdates, updatesOverride));
+  return provided.pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
 }
 
 function terminalReports(reports: DesktopUpdateStatusReport[]): DesktopUpdateStatusReport[] {
   return reports.filter((report) => report.outcome !== undefined);
 }
+
+function makeJonesUpdates(refuseSelection = false) {
+  const version = "1.2.4-preview.20261007.1.2";
+  const stagedHandle = "e".repeat(64);
+  const selection = { artifactId: 13, sourceSha: "b".repeat(40) };
+  const initial: DesktopUpdateState = {
+    ...createInitialDesktopUpdateState(
+      "1.2.3-preview.20261006.1",
+      { hostArch: "arm64", appArch: "arm64", runningUnderArm64Translation: false },
+      "latest",
+    ),
+    enabled: true,
+    status: "available",
+    availableVersion: version,
+    jones: {
+      source: "jones-actions",
+      channel: "jones-main",
+      phase: "available",
+      capability: { check: true, download: true, install: false },
+      provenance: {
+        repository: "Jones-Systems/Jones-Code",
+        ...selection,
+        sourceTree: "c".repeat(40),
+        workflow: "build-jones.yml",
+        runId: 12,
+        runAttempt: 2,
+        artifactDigest: "sha256:" + "d".repeat(64),
+        platform: "darwin",
+        architecture: "arm64",
+        version,
+      },
+    },
+  };
+  const state = Ref.makeUnsafe(initial);
+  const selectedDownloads: Array<typeof selection> = [];
+  const preparedInstalls: Array<{ version: string; stagedHandle: string | undefined }> = [];
+  let checks = 0;
+  let releaseDownloads = 0;
+  let releaseInstalls = 0;
+  const refused = Ref.get(state).pipe(
+    Effect.map((current) => ({ accepted: false, completed: false, state: current })),
+  );
+  const updates = DesktopUpdates.DesktopUpdates.of({
+    getState: Ref.get(state),
+    isActionActive: Effect.succeed(false),
+    isInstallActive: Effect.succeed(false),
+    subscribe: Ref.get(state).pipe(Effect.map((latest) => ({ latest, changes: Stream.empty }))),
+    configure: Effect.void,
+    emitState: Effect.void,
+    disabledReason: Effect.succeedNone,
+    setChannel: () => Ref.get(state),
+    check: () =>
+      Effect.gen(function* () {
+        checks += 1;
+        return { checked: true, state: yield* Ref.get(state) };
+      }),
+    download: Effect.sync(() => {
+      releaseDownloads += 1;
+    }).pipe(Effect.andThen(refused)),
+    downloadSelected: (fixed) =>
+      Effect.gen(function* () {
+        selectedDownloads.push(fixed);
+        const current = yield* Ref.get(state);
+        if (refuseSelection) {
+          return {
+            accepted: false,
+            completed: false,
+            refusal: "selection-mismatch" as const,
+            state: current,
+          };
+        }
+        const staged: DesktopUpdateState = {
+          ...current,
+          status: "downloaded",
+          downloadedVersion: version,
+          jones: { ...initial.jones!, phase: "staged", stagedHandle },
+        };
+        yield* Ref.set(state, staged);
+        return { accepted: true, completed: true, state: staged };
+      }),
+    install: Effect.sync(() => {
+      releaseInstalls += 1;
+    }).pipe(Effect.andThen(refused)),
+    installPrepared: (fixedVersion, fixedHandle) =>
+      Effect.gen(function* () {
+        preparedInstalls.push({ version: fixedVersion, stagedHandle: fixedHandle });
+        return { accepted: true, completed: false, failed: false, state: yield* Ref.get(state) };
+      }),
+  });
+  return {
+    updates,
+    state,
+    version,
+    stagedHandle,
+    selection,
+    selectedDownloads,
+    preparedInstalls,
+    checkCount: () => checks,
+    releaseDownloadCount: () => releaseDownloads,
+    releaseInstallCount: () => releaseInstalls,
+  };
+}
+
+describe("DesktopRemoteUpdates Jones selection", () => {
+  it.effect("keeps Check separate and commits the exact staged handle only once", () => {
+    const jones = makeJonesUpdates();
+    return runRemoteUpdatesTest(makeHarness(), ({ reports, requests, commits }) =>
+      Effect.gen(function* () {
+        yield* Queue.offer(requests, { ...request("jones-check"), action: "check" });
+        yield* settle;
+        assert.equal(jones.checkCount(), 1);
+        assert.deepEqual(jones.selectedDownloads, []);
+        assert.equal(terminalReports(reports).at(-1)?.outcome, "up-to-date");
+
+        yield* Queue.offer(requests, {
+          ...request("jones-download"),
+          action: "download",
+          ...jones.selection,
+        });
+        yield* settle;
+        assert.deepEqual(jones.selectedDownloads, [jones.selection]);
+        assert.equal(terminalReports(reports).at(-1)?.outcome, "ready-to-install");
+        assert.deepEqual(jones.preparedInstalls, []);
+        const commit = {
+          version: 1,
+          type: "commitDesktopUpdate",
+          requestId: "jones-download",
+        } as const;
+        yield* Queue.offer(commits, commit);
+        yield* settle;
+        yield* Queue.offer(commits, commit);
+        yield* settle;
+        assert.deepEqual(jones.preparedInstalls, [
+          { version: jones.version, stagedHandle: jones.stagedHandle },
+        ]);
+        assert.equal(jones.releaseDownloadCount(), 0);
+        assert.equal(jones.releaseInstallCount(), 0);
+      }),
+      jones.updates,
+    );
+  });
+
+  for (const mismatch of [{ artifactId: 14 }, { sourceSha: "f".repeat(40) }]) {
+    it.effect("refuses a stale " + Object.keys(mismatch)[0] + " before download", () => {
+      const jones = makeJonesUpdates();
+      return runRemoteUpdatesTest(makeHarness(), ({ reports, requests }) =>
+        Effect.gen(function* () {
+          yield* Queue.offer(requests, {
+            ...request("jones-stale"),
+            action: "download",
+            ...jones.selection,
+            ...mismatch,
+          });
+          yield* settle;
+          assert.equal(terminalReports(reports).at(-1)?.outcome, "failed");
+          assert.include(terminalReports(reports).at(-1)?.reason ?? "", "artifact changed");
+          assert.deepEqual(jones.selectedDownloads, []);
+          assert.equal(jones.releaseDownloadCount(), 0);
+        }),
+        jones.updates,
+      );
+    });
+  }
+
+  it.effect("reports an atomic reservation mismatch without release fallback", () => {
+    const jones = makeJonesUpdates(true);
+    return runRemoteUpdatesTest(makeHarness(), ({ reports, requests }) =>
+      Effect.gen(function* () {
+        yield* Queue.offer(requests, {
+          ...request("jones-race"),
+          action: "download",
+          ...jones.selection,
+        });
+        yield* settle;
+        assert.deepEqual(jones.selectedDownloads, [jones.selection]);
+        assert.equal(terminalReports(reports).at(-1)?.outcome, "failed");
+        assert.include(terminalReports(reports).at(-1)?.reason ?? "", "artifact changed");
+        assert.equal(jones.releaseDownloadCount(), 0);
+        assert.deepEqual(jones.preparedInstalls, []);
+      }),
+      jones.updates,
+    );
+  });
+
+  it.effect("refuses a missing qualified-selection adapter without release fallback", () => {
+    const jones = makeJonesUpdates();
+    const unsupported = { ...jones.updates };
+    delete unsupported.downloadSelected;
+    return runRemoteUpdatesTest(makeHarness(), ({ reports, requests }) =>
+      Effect.gen(function* () {
+        yield* Queue.offer(requests, {
+          ...request("jones-missing-adapter"),
+          action: "download",
+          ...jones.selection,
+        });
+        yield* settle;
+        assert.equal(terminalReports(reports).at(-1)?.outcome, "failed");
+        assert.deepEqual(jones.selectedDownloads, []);
+        assert.equal(jones.releaseDownloadCount(), 0);
+      }),
+      unsupported,
+    );
+  });
+
+  for (const invalidation of ["handle", "expiry", "cancel"] as const) {
+    it.effect("refuses a Jones commit after " + invalidation + " invalidation", () => {
+      const jones = makeJonesUpdates();
+      return runRemoteUpdatesTest(makeHarness(), ({ reports, requests, commits, cancellations }) =>
+        Effect.gen(function* () {
+          yield* Queue.offer(requests, {
+            ...request("jones-invalid"),
+            action: "download",
+            ...jones.selection,
+          });
+          yield* settle;
+          assert.equal(terminalReports(reports).at(-1)?.outcome, "ready-to-install");
+          if (invalidation === "handle") {
+            yield* Ref.update(jones.state, (state) => ({
+              ...state,
+              jones: { ...state.jones!, stagedHandle: "f".repeat(64) },
+            }));
+          } else if (invalidation === "expiry") {
+            yield* TestClock.setTime(Duration.toMillis(Duration.minutes(6)));
+          } else {
+            yield* Queue.offer(cancellations, {
+              version: 1,
+              type: "cancelDesktopUpdate",
+              requestId: "jones-invalid",
+            });
+            yield* settle;
+          }
+          yield* Queue.offer(commits, {
+            version: 1,
+            type: "commitDesktopUpdate",
+            requestId: "jones-invalid",
+          });
+          yield* settle;
+          assert.equal(terminalReports(reports).at(-1)?.outcome, "failed");
+          assert.deepEqual(jones.preparedInstalls, []);
+          assert.equal(jones.releaseInstallCount(), 0);
+        }),
+        jones.updates,
+      );
+    });
+  }
+
+  it.effect("refuses Jones controls on a release desktop and keeps legacy requests working", () => {
+    const harness = makeHarness();
+    return runRemoteUpdatesTest(harness, ({ reports, requests }) =>
+      Effect.gen(function* () {
+        yield* Queue.offer(requests, {
+          ...request("jones-unavailable"),
+          action: "download",
+          artifactId: 13,
+          sourceSha: "b".repeat(40),
+        });
+        yield* settle;
+        assert.equal(terminalReports(reports).at(-1)?.outcome, "failed");
+        assert.equal(harness.checkCount(), 0);
+        assert.equal(harness.downloadCount(), 0);
+        assert.equal(harness.quitAndInstalls(), 0);
+        yield* Queue.offer(requests, request("release-still-works"));
+        yield* settle;
+        assert.equal(harness.checkCount(), 1);
+      }),
+    );
+  });
+});
 
 describe("DesktopRemoteUpdates", () => {
   it.effect("drives check, download, and install with no local confirmation", () => {

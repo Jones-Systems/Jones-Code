@@ -3,7 +3,9 @@
   "groups": [
     {
       "id": "jones-boundary",
-      "tests": ["scripts/jones/check-boundary.test.ts"],
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ],
       "commands": [
         "vp test run scripts/jones/check-boundary.test.ts",
         "node scripts/jones/check-boundary.ts --strict --json",
@@ -12,7 +14,9 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
@@ -146,8 +150,12 @@
     },
     {
       "id": "jones-process-placement-build",
-      "tests": ["native/process-placement/build.test.mjs"],
-      "commands": ["node --test native/process-placement/build.test.mjs"]
+      "tests": [
+        "native/process-placement/build.test.mjs"
+      ],
+      "commands": [
+        "node --test native/process-placement/build.test.mjs"
+      ]
     },
     {
       "id": "jones-workstream-appearance",
@@ -263,19 +271,6 @@
       ]
     },
     {
-      "id": "jones-decision-snapshot",
-      "tests": [
-        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
-        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
-        "apps/server/src/mcp/McpInvocationContext.test.ts",
-        "apps/server/src/mcp/McpSessionRegistry.test.ts",
-        "apps/server/src/mcp/McpHttpServer.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/mcp/McpHttpServer.test.ts"
-      ]
-    },
-    {
       "id": "jones-qualified-updates",
       "tests": [
         "packages/shared/src/jones/jonesActions.test.ts",
@@ -287,6 +282,17 @@
         "apps/server/src/jones/updates/qualification.test.ts",
         "apps/server/src/jones/updates/stagedSelection.test.ts",
         "apps/server/src/jones/updates/trialGate.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "apps/desktop/src/jones/updates/jonesMacStaging.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "scripts/jones/updates/build-provenance.test.ts",
+        "apps/desktop/src/updates/DesktopUpdates.test.ts",
+        "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
+        "apps/desktop/src/updates/updateChannels.test.ts",
+        "packages/contracts/src/ipc.test.ts",
+        "packages/contracts/src/resourceTelemetry.test.ts",
+        "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
         "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
         "apps/server/src/jones/cloud/qualifiedStartup.test.ts",
         "apps/server/src/jones/updates/http.test.ts",
@@ -303,7 +309,20 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts"
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ]
+    },
+    {
+      "id": "jones-decision-snapshot",
+      "tests": [
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/mcp/McpInvocationContext.test.ts",
+        "apps/server/src/mcp/McpSessionRegistry.test.ts",
+        "apps/server/src/mcp/McpHttpServer.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/mcp/McpHttpServer.test.ts"
       ]
     },
     {
@@ -345,8 +364,12 @@
     },
     {
       "id": "jones-performance-health",
-      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
-      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
+      "tests": [
+        "apps/server/scripts/jones/sqliteHealth.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/scripts/jones/sqliteHealth.test.ts"
+      ]
     }
   ]
 }
