@@ -11013,7 +11013,13 @@ export default function ChatView(props: ChatViewProps) {
                 }
                 runs={paintOnlyDisplayedTimeline ? [] : (serverProjection?.runs ?? [])}
                 latestRun={paintOnlyDisplayedTimeline ? null : activeActivityRun}
-                runningRunId={paintOnlyDisplayedTimeline ? null : activeRunningTurnId}
+                runningRunId={
+                  paintOnlyDisplayedTimeline ||
+                  (serverActivityRun?.status === "waiting" &&
+                    serverActivityRun.providerSettlement != null)
+                    ? null
+                    : activeRunningTurnId
+                }
                 turnDiffSummaries={
                   paintOnlyDisplayedTimeline ? EMPTY_HELD_TURN_DIFF_SUMMARIES : turnDiffSummaries
                 }

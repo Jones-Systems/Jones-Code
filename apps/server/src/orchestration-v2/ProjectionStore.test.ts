@@ -4514,6 +4514,148 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
   );
 });
 
+it.effect(
+  "preserves attributed provider outcomes through SQL checkpoint projections and shell snapshots",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const startedAt = DateTime.makeUnsafe("2026-09-01T12:00:00Z");
+      const completedAt = DateTime.makeUnsafe("2026-09-01T12:00:05Z");
+      const capturedAt = DateTime.makeUnsafe("2026-09-01T12:05:00Z");
+      const threadId = ThreadId.make("thread:checkpoint-settlement");
+      const runId = RunId.make("run:checkpoint-settlement");
+      const attemptId = RunAttemptId.make("attempt:checkpoint-settlement");
+      const rootNodeId = NodeId.make("node:checkpoint-settlement");
+      const providerThreadId = ProviderThreadId.make("provider-thread:checkpoint-settlement");
+      const providerTurnId = ProviderTurnId.make("provider-turn:checkpoint-settlement");
+      yield* store.apply({
+        id: EventId.make("event:checkpoint-settlement:thread"),
+        type: "thread.created",
+        threadId,
+        occurredAt: startedAt,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project:checkpoint-settlement"),
+          title: "Synthetic checkpoint settlement",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: startedAt,
+          updatedAt: startedAt,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      const run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make("message:checkpoint-settlement"),
+        rootNodeId,
+        activeAttemptId: attemptId,
+        status: "running" as const,
+        requestedAt: startedAt,
+        startedAt,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* store.apply({
+        id: EventId.make("event:checkpoint-settlement:run"),
+        type: "run.created",
+        threadId,
+        runId,
+        occurredAt: startedAt,
+        payload: run,
+      });
+      for (const status of ["completed", "interrupted", "failed", "cancelled"] as const) {
+        const settlement = { runAttemptId: attemptId, providerTurnId, status, completedAt };
+        const attempt = {
+          id: attemptId,
+          runId,
+          attemptOrdinal: 1,
+          rootNodeId,
+          providerInstanceId,
+          providerThreadId,
+          providerTurnId,
+          reason: "initial" as const,
+          status,
+          startedAt,
+          completedAt,
+          providerSettlement: settlement,
+        };
+        yield* store.apply({
+          id: EventId.make(`event:checkpoint-settlement:attempt:${status}`),
+          type: "run-attempt.updated",
+          threadId,
+          runId,
+          occurredAt: completedAt,
+          payload: attempt,
+        });
+        yield* store.apply({
+          id: EventId.make(`event:checkpoint-settlement:run:${status}`),
+          type: "run.updated",
+          threadId,
+          runId,
+          occurredAt: completedAt,
+          payload: {
+            ...run,
+            status: status === "completed" ? "waiting" : status,
+            completedAt: status === "completed" ? null : completedAt,
+          },
+        });
+        for (const checkpointStatus of ["ready", "error", "missing"] as const) {
+          yield* store.apply({
+            id: EventId.make(`event:checkpoint-settlement:${status}:${checkpointStatus}`),
+            type: "checkpoint.captured",
+            threadId,
+            runId,
+            occurredAt: capturedAt,
+            payload: {
+              id: CheckpointId.make("checkpoint:settlement"),
+              threadId,
+              runId,
+              nodeId: rootNodeId,
+              scopeId: CheckpointScopeId.make("scope:settlement"),
+              parentCheckpointId: null,
+              ordinalWithinScope: 1,
+              appRunOrdinal: 1,
+              ref: CheckpointRef.make("refs/t3/checkpoint-context/settlement"),
+              status: checkpointStatus,
+              files: [],
+              capturedAt,
+            },
+          });
+          const records = yield* store.getThreadRecords(threadId, ["runs", "attempts"]);
+          assert.deepEqual(records.attempts[0]?.providerSettlement, settlement);
+          assert.equal(records.runs[0]?.status, status === "completed" ? "waiting" : status);
+          assert.deepEqual(
+            (yield* store.getThreadShell(threadId))?.latestRunProviderSettlement,
+            settlement,
+          );
+          assert.deepEqual(
+            (yield* store.getShellSnapshot()).threads[0]?.latestRunProviderSettlement,
+            settlement,
+          );
+        }
+      }
+    }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect.each([
   { backend: "SQL", recorded: false },
   { backend: "SQL", recorded: true },

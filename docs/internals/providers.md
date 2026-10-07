@@ -151,3 +151,24 @@ The logger filters those notifications before traversal when an older provider s
 
 Model classification has its own [manifest constraints](./model-manifest.md). Assistant-reference
 handling is documented under [citations](./assistant-citations.md).
+
+## Provider response settlement and checkpoint completion
+
+A run attempt's optional `providerSettlement` distinguishes old history (field absent),
+new work without attributed terminal evidence (`null`), and an accepted provider outcome
+with its attempt ID, provider turn ID, status and fixed completion time. Adapters forward
+existing normalized terminal facts and distinguish provider results, attributed aborts,
+and local execution failures. An unknown native reference remains unknown.
+
+Session readiness, finalized assistant text, interrupt intent and checkpoint capture do
+not supply provider settlement. A terminal received before its start can recover only
+when its normalized snapshot matches the current attempt, provider thread, driver and
+run ordinal. An unbound interruption also requires an attributed abort; a local start or
+stream failure can fail operational work without claiming a provider result.
+
+Successful provider work can leave the run `waiting` while checkpoint capture finishes.
+Response copy, folding and duration use provider settlement; queue, Stop and background
+work retain their existing run lifecycle. Checkpoint completion does not extend the
+provider response's duration. Rolling back from newer visible work clears only the
+restored older response's presentation settlement; its native turn and run history stay
+intact. A current-target rollback keeps the marker. Imported V1 messages remain runless.

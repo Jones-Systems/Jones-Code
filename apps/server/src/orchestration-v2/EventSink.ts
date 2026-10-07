@@ -176,6 +176,7 @@ export interface EventSinkV2Shape {
     readonly runId: RunId;
     readonly activeAttemptId: RunAttemptId;
     readonly expectedStatus: OrchestrationV2Run["status"];
+    readonly effects?: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<
     {
@@ -676,9 +677,18 @@ const baseLayer: Layer.Layer<
               })
               .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
             yield* applyStoredEvents(storedEvents);
+            yield* effectOutbox.enqueue(input.effects ?? []);
             return { committed: true as const, storedEvents };
           }),
-          (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+          (result) =>
+            result.committed
+              ? Effect.gen(function* () {
+                  if (input.effects !== undefined && input.effects.length > 0) {
+                    yield* effectOutbox.notifyAvailable(input.effects.length);
+                  }
+                  yield* publishStoredEvents(result.storedEvents);
+                })
+              : Effect.void,
         );
       },
     );

@@ -1405,7 +1405,11 @@ export function makePiAdapterV2(
         };
       });
 
-      const finalizeTurn = Effect.fnUntraced(function* (state: PiThreadState, readUsage = true) {
+      const finalizeTurn = Effect.fnUntraced(function* (
+        state: PiThreadState,
+        readUsage = true,
+        evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "provider_result",
+      ) {
         const turn = state.activeTurn;
         if (turn === null) return;
         state.activeTurn = null;
@@ -1436,19 +1440,20 @@ export function makePiAdapterV2(
           ? yield* readTokenUsage(turn.latestCompactionAfterTokens, completedAt)
           : undefined;
         const failure = turn.interrupted ? null : turn.failure;
+        const settledProviderTurn: OrchestrationV2ProviderTurn = {
+          ...turn.providerTurn,
+          ...(treeRefs?.turnStartEntryId == null
+            ? {}
+            : { nativeTurnRef: providerRef(treeRefs.turnStartEntryId) }),
+          status: turn.interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
+          completedAt,
+          ...(tokenUsage === undefined ? {} : { tokenUsage }),
+        };
         yield* emit({
           type: "provider_turn.updated",
           driver: PI_PROVIDER,
           threadId: turn.turnInput.threadId,
-          providerTurn: {
-            ...turn.providerTurn,
-            ...(treeRefs?.turnStartEntryId == null
-              ? {}
-              : { nativeTurnRef: providerRef(treeRefs.turnStartEntryId) }),
-            status: turn.interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
-            completedAt,
-            ...(tokenUsage === undefined ? {} : { tokenUsage }),
-          },
+          providerTurn: settledProviderTurn,
         });
         yield* updateProviderThread(state, {
           status: "idle",
@@ -1485,6 +1490,11 @@ export function makePiAdapterV2(
           }
           yield* emit({
             type: "turn.terminal",
+            providerTurn: settledProviderTurn,
+            evidenceKind:
+              turn.interrupted && evidenceKind === "provider_result"
+                ? "attributed_abort"
+                : evidenceKind,
             driver: PI_PROVIDER,
             providerThreadId: state.providerThread.id,
             providerTurnId: turn.providerTurn.id,
@@ -1503,6 +1513,11 @@ export function makePiAdapterV2(
         } else {
           yield* emit({
             type: "turn.terminal",
+            providerTurn: settledProviderTurn,
+            evidenceKind:
+              turn.interrupted && evidenceKind === "provider_result"
+                ? "attributed_abort"
+                : evidenceKind,
             driver: PI_PROVIDER,
             providerThreadId: state.providerThread.id,
             providerTurnId: turn.providerTurn.id,
@@ -1902,7 +1917,7 @@ export function makePiAdapterV2(
             }
             if (probeFailed) {
               if (!settleAfterAgentActivity) {
-                if (state !== null) yield* finalizeTurn(state);
+                if (state !== null) yield* finalizeTurn(state, true, "local_failure");
                 return;
               }
               if (attempt < SETTLE_PROBE_MAX_ATTEMPTS) {
@@ -1953,7 +1968,11 @@ export function makePiAdapterV2(
                       message: "Pi process exited unexpectedly.",
                       class: "transport_error",
                     });
-                yield* finalizeTurn(state, false);
+                yield* finalizeTurn(
+                  state,
+                  false,
+                  interrupted ? "attributed_abort" : "local_failure",
+                );
               }
               if (unsolicitedActivityDetected) {
                 yield* updateProviderSession("error", PI_UNSOLICITED_ACTIVITY_ERROR);

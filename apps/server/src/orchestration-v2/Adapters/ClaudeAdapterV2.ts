@@ -4931,6 +4931,7 @@ export function makeClaudeAdapterV2(
           readonly failure?: OrchestrationV2ProviderFailure;
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
+          readonly evidenceKind?: "provider_result" | "attributed_abort" | "local_failure";
         }) {
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
           for (const toolCall of input.context.toolCalls.values()) {
@@ -5029,10 +5030,23 @@ export function makeClaudeAdapterV2(
           }
 
           const threadDisposition = input.threadDisposition ?? "reusable";
+          const terminalEvidenceKind =
+            input.evidenceKind ??
+            (input.result === undefined
+              ? "local_failure"
+              : input.status === "interrupted"
+                ? "attributed_abort"
+                : "provider_result");
           const terminalEvent: ProviderAdapter.ProviderAdapterV2Event =
             input.status === "failed"
               ? {
                   type: "turn.terminal",
+                  providerTurn: providerTurnPayload({
+                    context: input.context,
+                    status: input.status,
+                    completedAt: input.completedAt,
+                  }),
+                  evidenceKind: terminalEvidenceKind,
                   driver: CLAUDE_PROVIDER,
                   providerThreadId: input.context.input.providerThread.id,
                   providerTurnId: input.context.providerTurnId,
@@ -5053,6 +5067,12 @@ export function makeClaudeAdapterV2(
                 }
               : {
                   type: "turn.terminal",
+                  providerTurn: providerTurnPayload({
+                    context: input.context,
+                    status: input.status,
+                    completedAt: input.completedAt,
+                  }),
+                  evidenceKind: terminalEvidenceKind,
                   driver: CLAUDE_PROVIDER,
                   providerThreadId: input.context.input.providerThread.id,
                   providerTurnId: input.context.providerTurnId,
@@ -5198,6 +5218,7 @@ export function makeClaudeAdapterV2(
           yield* finalizeActiveTurn({
             context,
             status: interrupted ? "interrupted" : "failed",
+            evidenceKind: interrupted ? "attributed_abort" : "local_failure",
             completedAt,
             ...(interrupted
               ? {}

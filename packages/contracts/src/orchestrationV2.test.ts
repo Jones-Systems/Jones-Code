@@ -25,6 +25,7 @@ import {
 import {
   OrchestrationV2AppThread,
   OrchestrationV2Run,
+  OrchestrationV2RunAttemptJson,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2Checkpoint,
   OrchestrationV2CheckpointScope,
@@ -1296,6 +1297,60 @@ describe("limit recovery choice updates", () => {
     { autoResume: true, snooze: false },
   ])("accepts an explicit independent choice %j", (choice) => {
     expect(decode({ ...identity, ...choice })).toEqual({ ...identity, ...choice });
+  });
+});
+
+describe("provider settlement compatibility", () => {
+  const settlement = {
+    runAttemptId: "attempt-1",
+    providerTurnId: "provider-turn-1",
+    status: "completed",
+    completedAt: "2026-09-01T12:00:05.000Z",
+  };
+  const attempt = {
+    id: "attempt-1",
+    runId: "run-1",
+    attemptOrdinal: 1,
+    rootNodeId: "node-1",
+    providerInstanceId: "codex",
+    providerThreadId: "provider-thread-1",
+    providerTurnId: null,
+    reason: "initial",
+    status: "running",
+    startedAt: null,
+    completedAt: null,
+  };
+  it.each([undefined, null, settlement])(
+    "retains absent, explicit null and attributed settlement in persisted attempts: %s",
+    (value) => {
+      const input = { ...attempt, ...(value === undefined ? {} : { providerSettlement: value }) };
+      const decoded = Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)(input);
+      const encoded = Schema.encodeSync(OrchestrationV2RunAttemptJson)(decoded);
+      expect(encoded).toEqual(input);
+      expect(Object.hasOwn(encoded, "providerSettlement")).toBe(value !== undefined);
+    },
+  );
+  it.each(["running", "waiting", "superseded"])(
+    "rejects nonterminal provider settlement %s",
+    (status) => {
+      expect(() =>
+        Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)({
+          ...attempt,
+          providerSettlement: { ...settlement, status },
+        }),
+      ).toThrow();
+    },
+  );
+  it("requires attributed identities and a fixed completion time", () => {
+    for (const field of ["runAttemptId", "providerTurnId", "completedAt"]) {
+      const incomplete = { ...settlement, [field]: null };
+      expect(() =>
+        Schema.decodeUnknownSync(OrchestrationV2RunAttemptJson)({
+          ...attempt,
+          providerSettlement: incomplete,
+        }),
+      ).toThrow();
+    }
   });
 });
 

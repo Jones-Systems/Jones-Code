@@ -68,4 +68,16 @@ export * from "./worktreeSetup.ts";
 export * from "./providerQueue.ts";
 
 export * from "./queueDispatch.ts";
+export * from "./workstreams.ts";
+export * from "./workstreamPlacements.ts";
+export * from "./threadRegistry.ts";
+export * from "./queueProtocol.ts";
+export * from "./threadCorpusProtocol.ts";
+export {
+  ThreadTurnDispatchGuard,
+  OrchestrationCommandObservation,
+  OrchestrationShellSnapshot,
+  OrchestrationThreadDetailWindow,
+  OrchestrationThreadDetailSnapshot,
+} from "./legacyOrchestrationCompatibility.ts";
 export * from "./hostStatus.ts";
