@@ -702,15 +702,14 @@ const {
   EnvironmentInternalError,
 });
 
-class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi
-  .add(
-    HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
-      headers: OptionalBearerHeaders,
-      payload: T3PlacementLoadRequest,
-      success: T3PlacementResult,
-      error: EnvironmentWorkstreamSnapshotErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
+class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi.add(
+  HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
+    headers: OptionalBearerHeaders,
+    payload: T3PlacementLoadRequest,
+    success: T3PlacementResult,
+    error: EnvironmentWorkstreamSnapshotErrors,
+  }).middleware(EnvironmentAuthenticatedAuth),
+)
   .add(
     HttpApiEndpoint.get("list", "/api/workstreams", {
       headers: OptionalBearerHeaders,
