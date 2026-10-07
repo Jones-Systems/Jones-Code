@@ -10,14 +10,20 @@ import {
 } from "./guard.mjs";
 import { runOwnedChild } from "./lifecycle.mjs";
 import { captureFixture, produceFixture } from "./fixtures-historical-worker.mjs";
-import { sourceParentEnvironment, syntheticSourceParent, assertCurrentDatabaseSource } from "./sources.mjs";
+import {
+  sourceParentEnvironment,
+  syntheticSourceParent,
+  assertCurrentDatabaseSource,
+} from "./sources.mjs";
 
 const requestLimit = 49 * 1024;
 const envelopeLimit = 49 * 1024;
 const receiptLimit = 24 * 1024;
 const stderrReserve = 8 * 1024;
 const profileNames = ["health-offline-delete", "benchmark-wal"];
-const workerPath = NodeURL.fileURLToPath(new URL("./fixtures-historical-worker.mjs", import.meta.url));
+const workerPath = NodeURL.fileURLToPath(
+  new URL("./fixtures-historical-worker.mjs", import.meta.url),
+);
 
 function fail(code, message, evidence) {
   const error = new Error(message);
@@ -75,12 +81,17 @@ export function captureSyntheticFixture(context) {
 }
 
 export async function withOpenSyntheticFixture(options, use) {
-  if (!options || typeof use !== "function") fail("invalid_options", "fixture options and callback required");
+  if (!options || typeof use !== "function")
+    fail("invalid_options", "fixture options and callback required");
   const producer = options.producer ?? "current-v2";
-  if (!["current-v2", "historical-v1"].includes(producer)) fail("invalid_producer", "explicit supported producer required");
-  const produced = producer === "current-v2"
-    ? await (await import("../../../apps/server/scripts/jones/currentFixtures.ts")).produceCurrentFixture(options, use)
-    : await produceFixture(options, use);
+  if (!["current-v2", "historical-v1"].includes(producer))
+    fail("invalid_producer", "explicit supported producer required");
+  const produced =
+    producer === "current-v2"
+      ? await (
+          await import("../../../apps/server/scripts/jones/currentFixtures.ts")
+        ).produceCurrentFixture(options, use)
+      : await produceFixture(options, use);
   const cleanup =
     produced.closeKnown && !produced.retainReason
       ? disposeOwnedRoot(produced.owner)
@@ -112,13 +123,18 @@ export async function withClosedSyntheticFixture(options, use) {
   if (options.profile !== undefined && !profileNames.includes(options.profile))
     fail("unsupported_profile", "profile must be health-offline-delete or benchmark-wal");
   const producer = options.producer ?? "current-v2";
-  if (!["current-v2", "historical-v1"].includes(producer)) fail("invalid_producer", "explicit supported producer required");
+  if (!["current-v2", "historical-v1"].includes(producer))
+    fail("invalid_producer", "explicit supported producer required");
   if (producer === "current-v2") {
     assertCurrentDatabaseSource(options.databaseSource);
-    if (options.binding?.sourceRevision !== options.databaseSource.sourceRevision || options.binding?.repository !== options.databaseSource.repository)
+    if (
+      options.binding?.sourceRevision !== options.databaseSource.sourceRevision ||
+      options.binding?.repository !== options.databaseSource.repository
+    )
       fail("invalid_source", "producer binding differs from current candidate");
   }
-  const profile = producer === "current-v2" ? (options.profile ?? "health-offline-delete") : options.profile;
+  const profile =
+    producer === "current-v2" ? (options.profile ?? "health-offline-delete") : options.profile;
   const policy = boundedPolicy(options.policy);
   const owner = createOwnedRoot({ ...options, policy });
   let child;
@@ -157,7 +173,9 @@ export async function withClosedSyntheticFixture(options, use) {
         LANG: "C.UTF-8",
         TZ: "UTC",
         NODE_NO_WARNINGS: "1",
-        ...(producer === "historical-v1" ? { [sourceParentEnvironment]: syntheticSourceParent() } : {}),
+        ...(producer === "historical-v1"
+          ? { [sourceParentEnvironment]: syntheticSourceParent() }
+          : {}),
         TMPDIR: owner.creationReceipt.canonicalRootPath,
       },
       timeoutMs: options.lifecycle?.timeoutMs ?? 30000,
@@ -209,7 +227,13 @@ export async function withClosedSyntheticFixture(options, use) {
     )
       fail("invalid_transport", "fixture output source or schema differs from the request");
     const receipt = envelope.receipt;
-    if (producer === "current-v2" && (receipt?.schema !== "jones-performance-fixture/v2" || receipt.producer !== producer || JSON.stringify(receipt.databaseSource) !== JSON.stringify(options.databaseSource) || JSON.stringify(receipt.runtime) !== JSON.stringify(envelope.capture.runtime)))
+    if (
+      producer === "current-v2" &&
+      (receipt?.schema !== "jones-performance-fixture/v2" ||
+        receipt.producer !== producer ||
+        JSON.stringify(receipt.databaseSource) !== JSON.stringify(options.databaseSource) ||
+        JSON.stringify(receipt.runtime) !== JSON.stringify(envelope.capture.runtime))
+    )
       fail("invalid_transport", "current fixture receipt source, producer or runtime differs");
     if (producer === "historical-v1" && receipt?.schema !== "jones-performance-fixture/v1")
       fail("invalid_transport", "historical fixture receipt schema differs");
@@ -271,8 +295,7 @@ export async function withClosedSyntheticFixture(options, use) {
     retainReason = outcome.disposition === "release" ? undefined : "consumer_retained";
   } catch (failure) {
     error = failure;
-    if (profile)
-      retainReason ??= options.signal?.aborted ? "profile_cancelled" : "profile_failed";
+    if (profile) retainReason ??= options.signal?.aborted ? "profile_cancelled" : "profile_failed";
   }
   const childReceipts = child ? [child] : [];
   const cleanup = retainReason

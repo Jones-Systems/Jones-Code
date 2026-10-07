@@ -88,3 +88,5 @@ export * from "./jones/organizationMetadata.ts";
 export * from "./jones/workQueueMetadata.ts";
 
 export * from "./jones/deviceMedia.ts";
+
+export * from "./jones/jonesUpdates.ts";

@@ -33,6 +33,8 @@
         "scripts/jones/currentFixtures.ts",
         "scripts/jones/sqliteHealth.ts",
         "scripts/jones/sqliteHealth.worker.ts",
+        "src/jones/cloud/*.ts",
+        "src/jones/updates/*.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/evaluate-thread-titles.ts",
