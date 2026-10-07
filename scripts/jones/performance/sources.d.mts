@@ -46,3 +46,13 @@ export function assertQualificationDatabaseSource(
   source: QualificationDatabaseSource,
   environment?: Readonly<Record<string, string | undefined>>,
 ): QualificationDatabaseSource;
+
+export interface CurrentDatabaseSource {
+  readonly repository: "Jones-Systems/Jones-Code";
+  readonly sourceRevision: string;
+  readonly tree: string;
+  readonly lockSha256: string;
+  readonly worktreePath: string;
+}
+export function currentDatabaseSource(worktreePath: string): CurrentDatabaseSource;
+export function assertCurrentDatabaseSource(source: CurrentDatabaseSource): CurrentDatabaseSource;
