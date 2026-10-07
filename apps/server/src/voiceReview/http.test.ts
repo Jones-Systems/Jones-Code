@@ -137,6 +137,13 @@ it("delegates authenticated draft reads to the injected domain service", async (
   const list = vi.fn(() => Effect.succeed({ server_now: "2026-10-02T00:00:00Z", drafts: [] }));
   const app = makeApp(
     Layer.succeed(VoiceReview.VoiceReview, {
+      recent: () => Effect.die("unexpected recent"),
+      registrySnapshot: () => Effect.die("unexpected registrySnapshot"),
+      registryWorkstreams: () => Effect.die("unexpected registryWorkstreams"),
+      registryEvents: () => Effect.die("unexpected registryEvents"),
+      correctAssociation: () => Effect.die("unexpected correctAssociation"),
+      correctLabel: () => Effect.die("unexpected correctLabel"),
+      diagnostics: () => Effect.die("unexpected diagnostics"),
       list,
       get: () => Effect.die("unexpected get"),
       mutate: () => Effect.die("unexpected mutation"),

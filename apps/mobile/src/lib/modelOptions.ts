@@ -6,6 +6,7 @@ import type {
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
 import {
+  applyConfiguredReasoningEffortDefault,
   buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
@@ -25,6 +26,33 @@ export type ModelOption = {
   readonly capabilities: ModelCapabilities | null;
   readonly selection: ModelSelection;
 };
+
+export function resolveModelDisplayCapabilities(input: {
+  readonly config: T3ServerConfig | null | undefined;
+  readonly capabilities: ModelCapabilities | null | undefined;
+  readonly modelSelection: ModelSelection;
+  readonly defaultModelSelection: ModelSelection | null | undefined;
+}): ModelCapabilities | undefined {
+  const { config, modelSelection, defaultModelSelection } = input;
+  const driverKind =
+    config?.providers.find((provider) => provider.instanceId === modelSelection.instanceId)
+      ?.driver ?? config?.settings?.providerInstances[modelSelection.instanceId]?.driver;
+  if (!driverKind) {
+    return input.capabilities ?? undefined;
+  }
+  const defaultDriverKind = defaultModelSelection
+    ? (config?.providers.find(
+        (provider) => provider.instanceId === defaultModelSelection.instanceId,
+      )?.driver ?? config?.settings?.providerInstances[defaultModelSelection.instanceId]?.driver)
+    : undefined;
+  return applyConfiguredReasoningEffortDefault({
+    modelSelection,
+    driverKind,
+    capabilities: input.capabilities ?? undefined,
+    defaultModelSelection: defaultModelSelection ?? undefined,
+    defaultDriverKind,
+  });
+}
 
 export type ProviderGroup = {
   readonly providerKey: string;
@@ -159,6 +187,7 @@ export function buildModelOptions(
   config: T3ServerConfig | null | undefined,
   fallbackModelSelection: ModelSelection | null,
   providerInstanceId?: ModelSelection["instanceId"],
+  defaultModelSelection?: ModelSelection | null | undefined,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
 
@@ -248,7 +277,20 @@ export function buildModelOptions(
     }
   }
 
-  return [...options.values()];
+  const modelOptions = [...options.values()];
+  if (!defaultModelSelection) {
+    return modelOptions;
+  }
+  return modelOptions.map((option) => ({
+    ...option,
+    capabilities:
+      resolveModelDisplayCapabilities({
+        config,
+        capabilities: option.capabilities,
+        modelSelection: option.selection,
+        defaultModelSelection,
+      }) ?? null,
+  }));
 }
 
 export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyArray<ProviderGroup> {

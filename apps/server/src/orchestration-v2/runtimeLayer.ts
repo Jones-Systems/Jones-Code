@@ -248,6 +248,9 @@ const threadLaunchProvided = threadLaunchServiceLayer.pipe(
       ProjectSetupScriptRunnerLayerLive,
       managedProjectFoldersProvided,
       threadManagementProvided,
+      effectOutboxLayer.pipe(Layer.provide(OrchestrationEventInfrastructureLayerLive)),
+      eventSinkProvided,
+      eventStoreProvided,
       commandReceiptStoreProvided,
       idAllocatorLayer,
     ),
@@ -297,6 +300,8 @@ const providerRuntimeRecoveryProvided = providerRuntimeRecoveryLayer.pipe(
 );
 
 export const OrchestrationV2LayerLive = Layer.mergeAll(
+  storesLayer,
+  eventSinkProvided,
   orchestratorProvided,
   threadManagementProvided,
   effectWorkerProvided,
@@ -308,7 +313,6 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
 );
 
 export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
-  OrchestrationV2LayerLive.pipe(Layer.provide(ProjectServiceLayerLive)),
   ProjectServiceLayerLive,
   managedProjectFoldersProvided,
   threadLaunchProvided,
@@ -320,6 +324,7 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   providerContinuationWorkerProvided,
   agentSessionImporterProvided,
 ).pipe(
+  Layer.provideMerge(OrchestrationV2LayerLive.pipe(Layer.provide(ProjectServiceLayerLive))),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(OrchestrationEventInfrastructureLayerLive),
 );

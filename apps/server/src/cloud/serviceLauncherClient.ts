@@ -10,6 +10,7 @@ import {
   decodeServiceLauncherContext,
   decodeServiceLauncherParentMessage,
   SERVICE_LAUNCHER_CONTEXT_ENV,
+  SERVICE_LAUNCHER_PROTOCOL,
   type ServiceLauncherChildMessage,
   type ServiceLauncherParentMessage,
 } from "./serviceProtocol.ts";
@@ -81,7 +82,9 @@ export const ServiceLauncherHostProcess = Context.Reference<ServiceLauncherProce
   "t3/cloud/serviceLauncherHostProcess",
   {
     defaultValue: () => ({
-      connected: process.connected && process.send !== undefined,
+      get connected() {
+        return process.connected && process.send !== undefined;
+      },
       send: (message, callback) => {
         if (process.send === undefined) return false;
         return callback === undefined ? process.send(message) : process.send(message, callback);
@@ -200,23 +203,30 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     );
 
   const requestUpdate = (input: { readonly targetVersion: string; readonly dbPath: string }) =>
-    exchange(
-      { type: "request-update", ...input },
-      (reply) => reply.type === "update-accepted" || reply.type === "update-rejected",
-    ).pipe(
-      Effect.flatMap((reply) =>
-        reply.type === "update-accepted"
-          ? Effect.succeed(reply.updateId)
-          : reply.type === "update-rejected"
-            ? Effect.fail(
-                new ServiceLauncherRejectedError({
-                  targetVersion: input.targetVersion,
-                  reason: reply.reason,
-                }),
-              )
-            : Effect.die("service launcher returned an impossible update response"),
-      ),
-    );
+    context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+      ? Effect.fail(
+          new ServiceLauncherRejectedError({
+            targetVersion: input.targetVersion,
+            reason: "The installed service launcher must be upgraded before another remote update.",
+          }),
+        )
+      : exchange(
+          { type: "request-update", ...input },
+          (reply) => reply.type === "update-accepted" || reply.type === "update-rejected",
+        ).pipe(
+          Effect.flatMap((reply) =>
+            reply.type === "update-accepted"
+              ? Effect.succeed(reply.updateId)
+              : reply.type === "update-rejected"
+                ? Effect.fail(
+                    new ServiceLauncherRejectedError({
+                      targetVersion: input.targetVersion,
+                      reason: reply.reason,
+                    }),
+                  )
+                : Effect.die("service launcher returned an impossible update response"),
+          ),
+        );
 
   const pending = context?.update?.status === "pending" ? context.update : undefined;
   const outcome =
