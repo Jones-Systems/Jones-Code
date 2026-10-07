@@ -1,6 +1,8 @@
 import * as Crypto from "node:crypto";
-import * as FS from "node:fs";
-import * as Path from "node:path";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Custody checks require native statfs observations and bounded SQLite header reads.
+import * as NodeFS from "node:fs";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Bind canonical fixture paths synchronously before runtime acquisition.
+import * as NodePath from "node:path";
 import * as Util from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -143,7 +145,7 @@ function freezeEvidence<A>(value: A): A {
   }
   return value;
 }
-const producerPath = FS.realpathSync(Path.resolve(import.meta.dirname, "../../../.."));
+const producerPath = NodeFS.realpathSync(NodePath.resolve(import.meta.dirname, "../../../.."));
 const pragmaNames = [
   "journal_mode",
   "synchronous",
@@ -211,7 +213,7 @@ export async function produceCurrentFixture<A>(
   if (options.signal !== undefined && !(options.signal instanceof AbortSignal))
     throw new Error("signal must be an AbortSignal");
   options.signal?.throwIfAborted();
-  const filesystem = FS.statfsSync(options.parentPath);
+  const filesystem = NodeFS.statfsSync(options.parentPath);
   if ([0x01021994, 0x858458f6].includes(filesystem.type))
     throw new Error("current fixture requires disk-backed scratch");
   const owner = createOwnedRoot(options);
@@ -563,17 +565,17 @@ export async function produceCurrentFixture<A>(
         let maintenance: CurrentFixtureCapture["profile"]["maintenance"];
         if (profile === "health-offline-delete") {
           const header = Buffer.alloc(100);
-          const fd = FS.openSync(paths.dbPath, "r");
+          const fd = NodeFS.openSync(paths.dbPath, "r");
           let bytesRead: number;
           try {
-            bytesRead = FS.readSync(fd, header, 0, 100, 0);
+            bytesRead = NodeFS.readSync(fd, header, 0, 100, 0);
           } finally {
-            FS.closeSync(fd);
+            NodeFS.closeSync(fd);
           }
           const sidecars = {
-            wal: FS.existsSync(`${paths.dbPath}-wal`),
-            shm: FS.existsSync(`${paths.dbPath}-shm`),
-            journal: FS.existsSync(`${paths.dbPath}-journal`),
+            wal: NodeFS.existsSync(`${paths.dbPath}-wal`),
+            shm: NodeFS.existsSync(`${paths.dbPath}-shm`),
+            journal: NodeFS.existsSync(`${paths.dbPath}-journal`),
           };
           if (
             bytesRead !== 100 ||

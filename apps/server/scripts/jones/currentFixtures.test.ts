@@ -1,9 +1,11 @@
 import * as Assert from "node:assert/strict";
 import * as Crypto from "node:crypto";
-import * as FS from "node:fs";
-import * as Path from "node:path";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Custody checks require native device/inode observations and raw SQLite header reads.
+import * as NodeFS from "node:fs";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Bind canonical fixture paths synchronously before runtime acquisition.
+import * as NodePath from "node:path";
 import * as Sqlite from "node:sqlite";
-import { describe, it } from "vitest";
+import { describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { produceCurrentFixture } from "./currentFixtures.ts";
@@ -19,7 +21,7 @@ import {
 } from "../../../../scripts/jones/performance/fixtures.mjs";
 import { currentDatabaseSource } from "../../../../scripts/jones/performance/sources.mjs";
 
-const worktree = FS.realpathSync(Path.resolve(import.meta.dirname, "../../../.."));
+const worktree = NodeFS.realpathSync(NodePath.resolve(import.meta.dirname, "../../../.."));
 async function invocation<A>(
   use: (
     options: CurrentFixtureOptions,
@@ -27,8 +29,10 @@ async function invocation<A>(
   ) => Promise<A>,
 ) {
   const source = currentDatabaseSource(worktree);
-  const parent = FS.mkdtempSync(Path.join(Path.dirname(worktree), ".current-fixture-test-"));
-  const identity = FS.lstatSync(parent);
+  const parent = NodeFS.mkdtempSync(
+    NodePath.join(NodePath.dirname(worktree), ".current-fixture-test-"),
+  );
+  const identity = NodeFS.lstatSync(parent);
   let unknown = false;
   const results: CurrentProductionResult<unknown>[] = [];
   const options: CurrentFixtureOptions = {
@@ -78,15 +82,15 @@ async function invocation<A>(
       if (!result.closeKnown || disposeOwnedRoot(result.owner).outcome !== "complete")
         unknown = true;
     }
-    const current = FS.lstatSync(parent);
+    const current = NodeFS.lstatSync(parent);
     if (
       !unknown &&
       current.dev === identity.dev &&
       current.ino === identity.ino &&
       !current.isSymbolicLink()
     )
-      FS.rmSync(parent, { recursive: true });
-    else console.error(`fixture test scratch retained: ${parent}`);
+      NodeFS.rmSync(parent, { recursive: true });
+    else Effect.runSync(Effect.logError(`fixture test scratch retained: ${parent}`));
   }
 }
 
@@ -131,7 +135,7 @@ describe("receiving V2 synthetic fixtures", () => {
           expectedBinding: options.binding,
           policy: options.policy,
         });
-        const header = FS.readFileSync(validated.canonicalPath).subarray(0, 100);
+        const header = NodeFS.readFileSync(validated.canonicalPath).subarray(0, 100);
         Assert.equal(header[18], profile === "health-offline-delete" ? 1 : 2);
         Assert.equal(header[19], profile === "health-offline-delete" ? 1 : 2);
         if (profile === "health-offline-delete") {
@@ -167,7 +171,10 @@ describe("receiving V2 synthetic fixtures", () => {
           produceCurrentFixture({ ...options, recipe }, () => undefined),
           { code: "invalid_recipe" },
         );
-        Assert.equal(FS.existsSync(Path.join(options.parentPath, options.childName)), false);
+        Assert.equal(
+          NodeFS.existsSync(NodePath.join(options.parentPath, options.childName)),
+          false,
+        );
       }
     });
   });
@@ -255,12 +262,10 @@ describe("receiving V2 synthetic fixtures", () => {
   });
   it("raw consumer report retains its known closed fixture", async () => {
     await invocation(async (options) => {
+      const rawReport = { schema: "jones.sqlite-health/v1", outcome: "passed" } as const;
       await Assert.rejects(
         // @ts-expect-error A raw diagnostic report cannot acknowledge fixture release.
-        withClosedSyntheticFixture(options, () => ({
-          schema: "jones.sqlite-health/v1",
-          outcome: "passed",
-        })),
+        withClosedSyntheticFixture(options, () => rawReport),
         (error: unknown) => {
           const failure = error as {
             code?: string;
