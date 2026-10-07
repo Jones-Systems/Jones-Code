@@ -6434,6 +6434,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
           );
           assert.lengthOf(harness.continuationRequests, 0);
+          if (harness.runtime.readThreadActivity === undefined) return yield* Effect.die("Missing Codex activity port");
+          assert.equal((yield* harness.runtime.readThreadActivity(harness.providerThread)).status, "monitoring");
           const terminalIndex = harness.events.findIndex((event) => event.type === "turn.terminal");
 
           yield* TestClock.adjust("30 seconds");
@@ -8947,6 +8949,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             "persistent dynamic tools must keep the session residency pin until they complete",
           );
 
+          if (harness.runtime.readThreadActivity === undefined) return yield* Effect.die("Missing Codex activity port");
+          assert.equal((yield* harness.runtime.readThreadActivity(harness.providerThread)).status, "monitoring");
+          assert.equal((yield* harness.runtime.readThreadActivity({ ...harness.providerThread,
+            runtimeIdentity: undefined })).status, "unknown");
           yield* TestClock.adjust("30 seconds");
           yield* Deferred.await(monitorCompleted);
           const lateMonitorUpdateIndex = harness.events.findIndex(
@@ -8964,6 +8970,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           assert.lengthOf(harness.terminalEvents(), 1);
           assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          assert.equal((yield* harness.runtime.readThreadActivity(harness.providerThread)).status, "unknown");
         }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
       ),
   );
@@ -9128,6 +9135,42 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       childTurnCompleted(RESUME_CHILD_TURN_2),
     ],
   });
+
+  it.effect("gives current resumed native agents precedence over a standalone persistent monitor", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const monitor = {
+        type: "emit_inbound" as const,
+        label: "item/started/activity-monitor",
+        frame: { method: "item/started", params: {
+          threadId: RESUME_NATIVE_THREAD, turnId: RESUME_NATIVE_TURN, startedAtMs: 1782622443500,
+          item: { type: "dynamicToolCall", id: "activity-monitor", namespace: "test", tool: "monitor",
+            status: "inProgress", arguments: { persistent: true } },
+        } },
+      };
+      const harness = yield* makeCodexReplayHarness({ ...resumeSubagentTranscript,
+        entries: resumeSubagentTranscript.entries.flatMap((entry) =>
+          entry.type === "emit_inbound" && entry.label === "turn/completed/root" ? [monitor, entry] : [entry]),
+      });
+      yield* harness.runtime.startTurn(makeCodexTestTurnInput({ threadId: harness.threadId,
+        providerThread: harness.providerThread, now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("activity-precedence"), text: RESUME_PROMPT,
+      }));
+      yield* TestClock.adjust("100 millis");
+      yield* harness.firstTerminal;
+      const observe = harness.runtime.readThreadActivity;
+      if (observe === undefined) return yield* Effect.die("Missing Codex activity port");
+      assert.equal((yield* observe(harness.providerThread)).status, "monitoring");
+      const previous = harness.subagentUpdates().length;
+      yield* TestClock.adjust("30 seconds");
+      yield* awaitUntil(() => harness.subagentUpdates().length > previous, "activity subagent resume");
+      const activity = yield* observe(harness.providerThread);
+      assert.equal(activity.status, "working");
+      if (activity.status !== "unknown") assert.equal(activity.backgroundCoverage, "partial");
+      yield* TestClock.adjust("30 seconds");
+      yield* awaitUntil(() => harness.subagentUpdates().at(-1)?.subagent.status === "completed", "activity subagent completed");
+      assert.equal((yield* observe(harness.providerThread)).status, "monitoring");
+    }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)))),
+  );
 
   it.effect.each([
     { name: "Sol", model: "gpt-5.6-sol" },
@@ -9297,6 +9340,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(DateTime.toEpochMillis(reopened!.subagent.startedAt!), 1782622470000);
         assert.isNull(reopened!.subagent.completedAt);
         assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        if (harness.runtime.readThreadActivity === undefined) return yield* Effect.die("Missing Codex activity port");
+        assert.equal((yield* harness.runtime.readThreadActivity(harness.providerThread)).status, "working");
 
         yield* TestClock.adjust("30 seconds");
         yield* awaitUntil(() => {

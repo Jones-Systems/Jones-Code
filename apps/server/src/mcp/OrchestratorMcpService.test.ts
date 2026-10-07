@@ -1188,6 +1188,9 @@ it.effect(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             listProjectThreads: () => Effect.succeed([shell]),
+            ...(blocked === undefined ? {} : { observeThreadActivity: () => Effect.succeed({
+              foreground: null, background: "monitoring" as const, backgroundStatus: "known" as const,
+            }) }),
             getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
@@ -1199,6 +1202,8 @@ it.effect(
           const listed = yield* service.listThreads(scope, {});
           const detail = yield* service.readThread(scope, { threadId });
           assert.equal(listed.threads[0]?.threadMessagesBlocked, blocked ?? false);
+          assert.equal(listed.threads[0]?.status, shell.activityRunStatus ?? shell.status);
+          assert.equal(listed.threads[0]?.activityObservation?.background, blocked === undefined ? undefined : "monitoring");
           assert.equal(detail.thread.threadMessagesBlocked, blocked ?? false);
           assert.equal(listed.threads[0]?.threadId, threadId);
           assert.equal(detail.thread.threadId, threadId);

@@ -1,3 +1,5 @@
+import * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   type LegacyGuardRejectionDeleteCommand,
   type LegacyFailureDeleteCommand,
@@ -30,6 +32,7 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -321,6 +324,9 @@ export interface ThreadManagementServiceShape {
     readonly location?: "active" | "archive";
   }) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, Orchestrator.OrchestratorV2Error>;
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
+  readonly observeThreadActivity?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RuntimeObservation.ProviderThreadActivityObservation>;
   readonly listProjectThreads: (input: {
     readonly projectId: ProjectId;
     readonly includeSubagents: boolean;
@@ -400,6 +406,22 @@ function latestSteerableRun(
 const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+  const sessions = yield* Effect.serviceOption(ProviderSessionManager.ProviderSessionManagerV2);
+  const observeThreadActivity = (threadId: ThreadId) => Effect.gen(function* () {
+    const shell = yield* orchestrator.getThreadShell(threadId);
+    if (shell === null) return { foreground: null, background: null, backgroundStatus: "unknown" as const, reason: "thread_unavailable" };
+    if (shell.archivedAt !== null || shell.deletedAt !== null)
+      return { foreground: null, background: null, backgroundStatus: "known" as const };
+    const sampledAt = yield* Clock.currentTimeMillis;
+    const native = Option.isSome(sessions) && Object.hasOwn(sessions.value, "observeThreadActivity") && sessions.value.observeThreadActivity !== undefined
+      ? yield* sessions.value.observeThreadActivity(threadId)
+      : null;
+    const current = yield* orchestrator.getThreadShell(threadId);
+    if (current === null) return { foreground: null, background: null, backgroundStatus: "unknown" as const, reason: "thread_unavailable" };
+    const activity = RuntimeObservation.providerThreadActivityObservation(current, native, sampledAt);
+    return { ...activity, foreground: native === null || native.status === "unknown"
+      ? RuntimeObservation.providerThreadForegroundActivity(current) : activity.foreground };
+  }).pipe(Effect.catchCause(() => Effect.succeed({ foreground: null, background: null, backgroundStatus: "unknown" as const, reason: "native_activity_unavailable" })));
 
   const ensureLegacyTranscript = Effect.fn(
     "orchestrationV2.threadManagement.ensureLegacyTranscript",
@@ -771,6 +793,7 @@ const make = Effect.gen(function* () {
     getProjectThread,
     getShellSnapshot: orchestrator.getShellSnapshot,
     getThreadShell: orchestrator.getThreadShell,
+    observeThreadActivity,
     listProjectThreads,
     sendToThread,
     waitForThread,

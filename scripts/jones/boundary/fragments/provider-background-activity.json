@@ -1,0 +1,47 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "provider-background-activity",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.ts",
+    "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts",
+    "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts",
+    "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/orchestration-v2/ProviderAdapter.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
+    "packages/contracts/src/orchestratorMcp.test.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderAdapter.ts",
+      "to": "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.ts"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import * as OrchestratorMcp from "./orchestratorMcp.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
@@ -192,4 +193,16 @@ describe("self settlement contracts", () => {
     expect(decode(receipt)).toEqual(receipt);
     expect(() => decode({ ...receipt, status: "settled" })).toThrow();
   });
+});
+
+
+it("keeps native activity optional and validates explicit incomplete background evidence", () => {
+  const decode = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpThreadActivityObservation);
+  expect(decode({ foreground: "working", background: null, backgroundStatus: "unknown",
+    reason: "native_background_coverage_incomplete" })).toEqual({
+      foreground: "working", background: null, backgroundStatus: "unknown", reason: "native_background_coverage_incomplete",
+    });
+  expect(Schema.is(OrchestratorMcp.OrchestratorMcpThreadActivityObservation)({
+    foreground: null, background: "busy", backgroundStatus: "known",
+  })).toBe(false);
 });

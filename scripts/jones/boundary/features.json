@@ -184,6 +184,20 @@
         "packages/contracts/src/device.test.ts"
       ],
       "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
+    },
+    {
+      "id": "provider-background-activity",
+      "tests": [
+        "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts",
+        "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
     }
   ]
 }
