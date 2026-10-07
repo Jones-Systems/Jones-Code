@@ -4,6 +4,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Logger from "effect/Logger";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runJonesMigrations } from "./JonesMigrationGuard.ts";
@@ -339,5 +340,46 @@ it.effect("an explicit upstream limit leaves absent and invalid Jones history un
     const before = yield* sql`SELECT * FROM jones_sql_migrations`;
     assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 56 }), []);
     assert.deepStrictEqual(yield* sql`SELECT * FROM jones_sql_migrations`, before);
+  }).pipe(Effect.provide(memory)),
+);
+
+const encodePreexistingRuntimeIdentity = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ runtimeGeneration: Schema.String })),
+);
+
+it.effect("leaves bounded upstream replay untouched and migrates existing sessions as null", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 54 });
+    const before = yield* sql<{ name: string }>`PRAGMA table_info(projection_thread_sessions)`;
+    assert.isFalse(before.some((column) => column.name === "runtime_identity_json"));
+    assert.deepEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE name = 'jones_sql_migrations'`,
+      [],
+    );
+    yield* sql`INSERT INTO projection_thread_sessions
+      (thread_id, status, provider_name, runtime_mode, updated_at)
+      VALUES ('old-session', 'ready', 'codex', 'full-access', '2026-09-01T00:00:00.000Z')`;
+    yield* runMigrations();
+    assert.deepEqual(yield* sql`SELECT runtime_identity_json FROM projection_thread_sessions`, [
+      { runtime_identity_json: null },
+    ]);
+  }).pipe(Effect.provide(memory)),
+);
+
+it.effect("preserves preexisting identity JSON when the column predates the fork ledger", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 54 });
+    yield* Jones002;
+    const identity = encodePreexistingRuntimeIdentity({ runtimeGeneration: "preexisting-runtime" });
+    yield* sql`INSERT INTO projection_thread_sessions
+      (thread_id, status, provider_name, runtime_mode, updated_at, runtime_identity_json)
+      VALUES ('existing-identity', 'ready', 'codex', 'full-access', '2026-09-01T00:00:00.000Z', ${identity})`;
+    yield* runMigrations();
+    yield* Jones002;
+    assert.deepEqual(yield* sql`SELECT runtime_identity_json FROM projection_thread_sessions`, [
+      { runtime_identity_json: identity },
+    ]);
   }).pipe(Effect.provide(memory)),
 );

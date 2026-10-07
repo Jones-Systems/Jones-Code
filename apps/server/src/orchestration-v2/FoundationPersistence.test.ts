@@ -1,3 +1,4 @@
+import * as ServerUpdateContinuation from "./ServerUpdateContinuation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -1458,6 +1459,71 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect(
+    "fences exact cleanup effects through durable success and fails closed on missing or failed outcomes",
+    () =>
+      Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = ThreadId.make("thread:legacy-cleanup-fence");
+        const commandId = CommandId.make("command:legacy-cleanup-fence");
+        const terminalId = `effect:${commandId}:terminal.cleanup`;
+        const attachmentId = `effect:${commandId}:attachment.cleanup`;
+        yield* outbox.enqueue([
+          { id: terminalId, commandId, threadId, request: { type: "terminal.cleanup" } },
+          {
+            id: attachmentId,
+            commandId,
+            threadId,
+            request: { type: "attachment.cleanup", attachmentIds: ["owned-copy"] },
+          },
+        ]);
+        const fence = yield* outbox
+          .awaitCompletion([terminalId, attachmentId])
+          .pipe(Effect.forkChild);
+        const first = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(first));
+        if (Option.isSome(first))
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: first.value.id, workerId: "cleanup-test" }),
+          );
+        assert.isUndefined(fence.pollUnsafe());
+        const second = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(second));
+        if (Option.isSome(second))
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: second.value.id, workerId: "cleanup-test" }),
+          );
+        yield* Fiber.join(fence);
+        yield* outbox.awaitCompletion([terminalId, attachmentId]);
+        const missing = yield* outbox.awaitCompletion(["unknown-effect"]).pipe(Effect.flip);
+        assert.equal(missing._tag, "EffectOutboxError");
+        const failedId = `effect:${commandId}:failed-cleanup`;
+        yield* outbox.enqueue([
+          { id: failedId, commandId, threadId, request: { type: "terminal.cleanup" } },
+        ]);
+        const failedFence = yield* outbox.awaitCompletion([failedId]).pipe(Effect.forkChild);
+        const failed = yield* outbox.claimNext({
+          workerId: "cleanup-test",
+          leaseDurationMs: 60_000,
+        });
+        assert.isTrue(Option.isSome(failed));
+        assert.isTrue(
+          yield* outbox.fail({
+            effectId: failedId,
+            workerId: "cleanup-test",
+            error: "cleanup failed",
+          }),
+        );
+        const error = yield* Fiber.join(failedFence).pipe(Effect.flip);
+        assert.equal(error.effectId, failedId);
+      }),
+  );
   it.effect("keeps one durable effect across command retries and executes it after recovery", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
@@ -2067,6 +2133,173 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
         ),
       );
       assert.equal(yield* Ref.get(executionCount), 0);
+    }),
+  );
+
+  it.effect("prepares, deduplicates, cancels and retries update continuation markers", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:update-marker");
+      const instanceId = ProviderInstanceId.make("codex");
+      const providerThreadId = ProviderThreadId.make("provider-thread:update-marker");
+      const sessionId = ProviderSessionId.make("session:update-marker");
+      const attemptId = RunAttemptId.make("attempt:update-marker");
+      const runId = RunId.make("run:update-marker");
+      const projection = {
+        thread: {
+          id: threadId,
+          projectId: ProjectId.make("project:update-marker"),
+          providerInstanceId: instanceId,
+          archivedAt: null,
+          deletedAt: null,
+        },
+        runs: [
+          {
+            id: runId,
+            ordinal: 1,
+            status: "running",
+            providerInstanceId: instanceId,
+            providerThreadId,
+            activeAttemptId: attemptId,
+          },
+        ],
+        providerThreads: [
+          {
+            id: providerThreadId,
+            appThreadId: threadId,
+            ownerNodeId: null,
+            providerInstanceId: instanceId,
+            providerSessionId: sessionId,
+            driver: "codex",
+            nativeThreadRef: { driver: "codex", nativeId: "native-marker", strength: "strong" },
+            status: "active",
+          },
+        ],
+        providerSessions: [
+          { id: sessionId, driver: "codex", providerInstanceId: instanceId, status: "running" },
+        ],
+        providerTurns: [{ providerThreadId, runAttemptId: attemptId, status: "running" }],
+      } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState;
+      const projections = Layer.mock(ProjectionStore.ProjectionStoreV2)({
+        getRecoveryThreadIds: () => Effect.succeed([threadId]),
+        getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+      });
+      const preferences = ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false });
+      const markers = Layer.merge(projections, preferences);
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [],
+      );
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [threadId],
+      );
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+          Effect.provide(markers),
+        ),
+        [threadId],
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(rows, 1);
+      assert.include(rows[0]!.payload_json, '"continueWithoutPreference":true');
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([
+        ThreadId.make("thread:other"),
+      ]);
+      assert.lengthOf(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`,
+        1,
+      );
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+      assert.lengthOf(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`,
+        0,
+      );
+      yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+        Effect.provide(markers),
+      );
+      const retry = yield* sql<{
+        effect_id: string;
+      }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(retry, 1);
+      assert.notEqual(retry[0]!.effect_id, rows[0]!.effect_id);
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+      const optedPreferences = ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true });
+      const optedMarkers = Layer.merge(projections, optedPreferences);
+      assert.deepEqual(
+        yield* ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+          Effect.provide(optedMarkers),
+        ),
+        [threadId],
+      );
+      const optedRows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.include(optedRows[0]!.payload_json, '"continueWithoutPreference":false');
+      yield* ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+        Effect.provide(markers),
+      );
+      const forcedRows = yield* sql<{
+        effect_id: string;
+        payload_json: string;
+      }>`SELECT effect_id,payload_json FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} AND status = 'pending'`;
+      assert.lengthOf(forcedRows, 1);
+      assert.equal(forcedRows[0]!.effect_id, optedRows[0]!.effect_id);
+      assert.include(forcedRows[0]!.payload_json, '"continueWithoutPreference":true');
+      yield* ServerUpdateContinuation.clearProviderSessionContinuationMarkers([threadId]);
+    }),
+  );
+
+  it.effect("keeps prepared restart continuations passive until process loss", () =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:passive-restart");
+      const commandId = CommandId.make("command:server-update-prepare:passive");
+      const marker = "effect:server-update-continuation:passive";
+      yield* outbox.enqueue([
+        {
+          id: marker,
+          commandId,
+          threadId,
+          request: {
+            type: "provider-runtime.continue",
+            sourceRunId: RunId.make("run:passive"),
+            preparedForRestart: true,
+            continueWithoutPreference: true,
+          },
+        },
+        { id: "effect:passive-live", commandId, threadId, request: { type: "terminal.cleanup" } },
+      ]);
+      const live = yield* outbox.claimNext({ workerId: "passive-worker", leaseDurationMs: 30_000 });
+      assert.equal(Option.getOrThrow(live).id, "effect:passive-live");
+      yield* outbox.succeed({ effectId: "effect:passive-live", workerId: "passive-worker" });
+      assert.isTrue(
+        Option.isNone(
+          yield* outbox.claimNext({ workerId: "passive-worker", leaseDurationMs: 30_000 }),
+        ),
+      );
+      assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt));
+      const reconciled = yield* outbox.reconcileAfterProcessLoss;
+      assert.equal(reconciled.requeued, 1);
+      const active = Option.getOrThrow(
+        yield* outbox.claimNext({ workerId: "restarted-worker", leaseDurationMs: 30_000 }),
+      );
+      assert.equal(active.id, marker);
+      assert.deepEqual(active.request, {
+        type: "provider-runtime.continue",
+        sourceRunId: RunId.make("run:passive"),
+        preparedForRestart: false,
+        continueWithoutPreference: true,
+      });
+      yield* outbox.succeed({ effectId: marker, workerId: "restarted-worker" });
     }),
   );
 
