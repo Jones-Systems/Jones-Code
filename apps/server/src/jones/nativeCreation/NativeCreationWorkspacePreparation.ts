@@ -37,6 +37,9 @@ const denied = (code: NativeWorkspaceError["code"], message: string) =>
 export class NativeWorkspacePorts extends Context.Service<
   NativeWorkspacePorts,
   {
+    readonly assertAvailable?: (
+      input: Authority.NativeCreationAuthorityInput,
+    ) => Effect.Effect<void, NativeWorkspaceError>;
     readonly inspect: (
       claim: Repository.NativeCreationStoredIntent,
       expected?: NativeWorkspaceProof,

@@ -752,7 +752,10 @@
     "apps/web/src/jones/composer/composerShortcutRails.ts": "jones-owned",
     "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/providerRuntimeIdentity.test.ts": "jones-tests-in-upstream",
-    "packages/contracts/src/jones/providerRuntimeIdentity.ts": "jones-owned"
+    "packages/contracts/src/jones/providerRuntimeIdentity.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.ts": "jones-owned",
+    "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

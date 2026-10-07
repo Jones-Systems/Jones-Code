@@ -1,3 +1,4 @@
+import { NativeBootstrapDispatchError } from "./nativeCreation.ts";
 import { QueueDispatchCommand } from "./queueDispatch.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
@@ -1577,6 +1578,15 @@ const WsOrchestrationV2GetTurnItemRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.get
   error: Schema.Union([OrchestrationV2GetThreadProjectionError, EnvironmentAuthorizationError]),
 });
 
+const WsOrchestrationV2NativeBootstrapRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
+  {
+    payload: OrchestrationV2RpcSchemas.dispatchNativeBootstrap.input,
+    success: OrchestrationV2RpcSchemas.dispatchNativeBootstrap.output,
+    error: Schema.Union([NativeBootstrapDispatchError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationV2LaunchThreadRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.launchThread, {
   payload: OrchestrationV2RpcSchemas.launchThread.input,
   success: OrchestrationV2RpcSchemas.launchThread.output,
@@ -1887,6 +1897,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationV2DispatchCommandRpc,
+  WsOrchestrationV2NativeBootstrapRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2GetTurnItemRpc,
   WsOrchestrationV2GetTurnDiffRpc,

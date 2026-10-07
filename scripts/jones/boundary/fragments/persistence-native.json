@@ -54,6 +54,30 @@
     {
       "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
       "to": "apps/server/src/jones/nativeCreation/NativeCreationWorkspaceTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepository.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/nativeCreation.ts"
     }
   ]
 }

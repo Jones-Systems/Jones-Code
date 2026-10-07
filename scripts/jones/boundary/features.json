@@ -206,6 +206,21 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
       "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
+    },
+    {
+      "id": "native-bootstrap-acceptance",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "apps/server/src/ws.test.ts",
+        "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "packages/contracts/src/nativeCreation.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts",
+        "packages/contracts/src/rpc.test.ts"
+      ],
+      "scope": "Verified-principal accepting route on existing native100/workspace101 owners; private ordered stages and public reserved-ID refusal; production grants and executors unavailable until exact owner bindings exist."
     }
   ]
 }

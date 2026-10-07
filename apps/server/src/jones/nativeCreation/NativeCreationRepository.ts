@@ -107,6 +107,7 @@ export class NativeCreationRepository extends Context.Service<
       verified: Workspace.NativeWorkspaceVerified,
     ) => Effect.Effect<void, NativeCreationRepositoryError>;
     // Optional until the same durable owner installs V2 execution storage; absence denies issuance.
+    readonly assertExecutionCapability?: Effect.Effect<void, NativeCreationRepositoryError>;
     readonly readExecutionReference?: (
       reference: NativeCreationExecutionReferenceV2,
     ) => Effect.Effect<
@@ -174,6 +175,9 @@ export class NativeCreationRepository extends Context.Service<
       claimId: string,
       command: OrchestrationV2Command,
     ) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly isReservedCommandIdentity?: (
+      commandId: string,
+    ) => Effect.Effect<boolean, NativeCreationRepositoryError>;
     readonly getReservedCommand: (
       commandId: string,
     ) => Effect.Effect<Option.Option<NativeCreationReservedCommand>, NativeCreationRepositoryError>;
