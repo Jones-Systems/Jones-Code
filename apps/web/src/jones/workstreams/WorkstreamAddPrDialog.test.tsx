@@ -142,7 +142,9 @@ describe("Add PR reference dialog", () => {
   });
   it("aborts a closed session and ignores its completion after reopening", async () => {
     let resolve!: (value: typeof reference) => void;
-    const pending = new Promise<typeof reference>((finish) => { resolve = finish; });
+    const pending = new Promise<typeof reference>((finish) => {
+      resolve = finish;
+    });
     vi.mocked(prepareWorkstreamPr).mockReturnValueOnce(pending);
     await render();
     await enterUrl("https://github.com/a/b/pull/42");
@@ -151,8 +153,13 @@ describe("Add PR reference dialog", () => {
     await render({ open: false });
     await render();
     expect(signal.aborted).toBe(true);
-    await act(async () => { resolve(reference); await pending; });
-    expect(document.querySelector<HTMLInputElement>('[aria-label="GitHub pull request URL"]')?.value).toBe("");
+    await act(async () => {
+      resolve(reference);
+      await pending;
+    });
+    expect(
+      document.querySelector<HTMLInputElement>('[aria-label="GitHub pull request URL"]')?.value,
+    ).toBe("");
     expect(button("Add reference").disabled).toBe(true);
     expect(button("Verify PR")).toBeUndefined();
     expect(onLinked).not.toHaveBeenCalled();
@@ -160,19 +167,26 @@ describe("Add PR reference dialog", () => {
   });
   it("resets and aborts on Workstream and authorization changes", async () => {
     let resolve!: (value: typeof reference) => void;
-    const pending = new Promise<typeof reference>((finish) => { resolve = finish; });
+    const pending = new Promise<typeof reference>((finish) => {
+      resolve = finish;
+    });
     vi.mocked(prepareWorkstreamPr).mockReturnValueOnce(pending);
     await render();
     await enterUrl("https://github.com/a/b/pull/42");
     await act(async () => button("Add reference").click());
     const signal = vi.mocked(prepareWorkstreamPr).mock.calls[0]![0].signal!;
-    controller = { ...controller, data: { ...data, binding: { ...data.binding, authorizationRevision: 2 } } };
+    controller = {
+      ...controller,
+      data: { ...data, binding: { ...data.binding, authorizationRevision: 2 } },
+    };
     await render({ workstreamId: "alpha" });
     expect(signal.aborted).toBe(true);
-    await act(async () => { resolve(reference); await pending; });
+    await act(async () => {
+      resolve(reference);
+      await pending;
+    });
     expect(button("Verify PR")).toBeUndefined();
     expect(document.querySelector<HTMLInputElement>("input")?.value).toBe("");
     expect(onLinked).not.toHaveBeenCalled();
   });
-
 });

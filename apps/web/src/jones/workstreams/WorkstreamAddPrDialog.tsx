@@ -66,7 +66,8 @@ export function WorkstreamAddPrDialog(props: {
     props.controller.registrationContext.sources.filter((source) => source.provider === "github")
       .length === 1;
   const run = (phase: "register" | "verify" | "retry") => {
-    if (busy.current || (phase !== "retry" && (needsReconciliation || !available || !valid))) return;
+    if (busy.current || (phase !== "retry" && (needsReconciliation || !available || !valid)))
+      return;
     busy.current = true;
     setPending(phase);
     setError(null);

@@ -16,8 +16,14 @@ import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } 
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
 
 import { WorkstreamAddPrDialog } from "../../jones/workstreams/WorkstreamAddPrDialog";
-import { refreshWorkstreamPr, workstreamPrObservationLabel } from "../../jones/workstreams/workstreamReferenceActions";
-import { workstreamFailureMessage, type WorkstreamReferenceController } from "../../jones/workstreams/workstreamActionSnapshot";
+import {
+  refreshWorkstreamPr,
+  workstreamPrObservationLabel,
+} from "../../jones/workstreams/workstreamReferenceActions";
+import {
+  workstreamFailureMessage,
+  type WorkstreamReferenceController,
+} from "../../jones/workstreams/workstreamActionSnapshot";
 
 import { useWorkstreamAppearance } from "../../jones/workstreamAppearance/useWorkstreamAppearance";
 import { WorkstreamColorDialog } from "../../jones/workstreamAppearance/WorkstreamColorDialog";
@@ -226,10 +232,16 @@ export function WorkstreamSidebarSection(props: {
   const bindingKeyRef = useRef(bindingKey);
   const referenceController: WorkstreamReferenceController | null =
     props.controller.loadActionSnapshot && props.controller.retry
-      ? { ...props.controller, registrationContext: props.controller.registrationContext ?? null,
-          loadActionSnapshot: props.controller.loadActionSnapshot, retry: props.controller.retry }
+      ? {
+          ...props.controller,
+          registrationContext: props.controller.registrationContext ?? null,
+          loadActionSnapshot: props.controller.loadActionSnapshot,
+          retry: props.controller.retry,
+        }
       : null;
-  const prAuthorityKey = data ? workstreamBindingKey({ ...data.binding, registryVersion: 0 }) : null;
+  const prAuthorityKey = data
+    ? workstreamBindingKey({ ...data.binding, registryVersion: 0 })
+    : null;
   const prAuthorityKeyRef = useRef(prAuthorityKey);
   prAuthorityKeyRef.current = prAuthorityKey;
 
@@ -281,11 +293,11 @@ export function WorkstreamSidebarSection(props: {
               if (controller.signal.aborted || bindingKeyRef.current !== startedBindingKey) return;
               setPullRequestStatus((current) => ({
                 ...current,
-                [reference.native_reference_id]:
-                  referenceController
-                    ? workstreamPrObservationLabel(result.latest_observation)
-                    : result.latest_observation?.last_success?.state ??
-                      result.latest_observation?.outcome ?? "not refreshed",
+                [reference.native_reference_id]: referenceController
+                  ? workstreamPrObservationLabel(result.latest_observation)
+                  : (result.latest_observation?.last_success?.state ??
+                    result.latest_observation?.outcome ??
+                    "not refreshed"),
               }));
             },
             () => undefined,
@@ -556,7 +568,14 @@ export function WorkstreamSidebarSection(props: {
                     <MoreHorizontalIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
-                    <MenuItem disabled={!referenceController?.registrationContext?.sources.some((source) => source.provider === "github")} onClick={() => setAddingPr(item.workstreamId)}>
+                    <MenuItem
+                      disabled={
+                        !referenceController?.registrationContext?.sources.some(
+                          (source) => source.provider === "github",
+                        )
+                      }
+                      onClick={() => setAddingPr(item.workstreamId)}
+                    >
                       Add PR reference…
                     </MenuItem>
                     {appearance.writable ? (
@@ -863,8 +882,16 @@ export function WorkstreamSidebarSection(props: {
                                   commandId: workstreamCommandId,
                                   signal: controller.signal,
                                 });
-                                if (controller.signal.aborted || prAuthorityKeyRef.current !== startedAuthority) return;
-                                setPullRequestStatus((current) => ({ ...current, [reference.native_reference_id]: workstreamPrObservationLabel(observation) }));
+                                if (
+                                  controller.signal.aborted ||
+                                  prAuthorityKeyRef.current !== startedAuthority
+                                )
+                                  return;
+                                setPullRequestStatus((current) => ({
+                                  ...current,
+                                  [reference.native_reference_id]:
+                                    workstreamPrObservationLabel(observation),
+                                }));
                                 return;
                               }
                               const value = await loadReference(reference.native_reference_id, {
@@ -914,7 +941,9 @@ export function WorkstreamSidebarSection(props: {
                                 setCommandError(
                                   referenceController?.registrationContext
                                     ? workstreamFailureMessage(cause)
-                                    : cause instanceof Error ? cause.message : "PR refresh failed.",
+                                    : cause instanceof Error
+                                      ? cause.message
+                                      : "PR refresh failed.",
                                 );
                               })
                               .finally(() => {
@@ -1049,8 +1078,13 @@ export function WorkstreamSidebarSection(props: {
           workstreamId={addingPr}
           open
           commandId={workstreamCommandId}
-          onOpenChange={(open) => { if (!open) setAddingPr(null); }}
-          onLinked={() => { props.controller.refresh(); if (selected) showDetail(selected); }}
+          onOpenChange={(open) => {
+            if (!open) setAddingPr(null);
+          }}
+          onLinked={() => {
+            props.controller.refresh();
+            if (selected) showDetail(selected);
+          }}
         />
       ) : null}
     </section>

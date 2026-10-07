@@ -237,7 +237,9 @@ export async function loadCompleteWorkstreamDetail(
 
 export interface WorkstreamListView {
   readonly registrationContext?: WorkstreamsRegistrationContextResponse | null;
-  readonly loadActionSnapshot?: (options?: { readonly signal?: AbortSignal }) => Promise<WorkstreamActionSnapshot>;
+  readonly loadActionSnapshot?: (options?: {
+    readonly signal?: AbortSignal;
+  }) => Promise<WorkstreamActionSnapshot>;
   readonly retry?: () => Promise<void>;
   readonly placementInventory: NativePlacementInventory;
   readonly placements: LiveT3Placements | null;
@@ -413,7 +415,8 @@ export function useWorkstreams(
     () => JSON.parse(inventory.json) as readonly T3PlacementIdentity[],
     [inventory.json],
   );
-  const [registrationContext, setRegistrationContext] = useState<WorkstreamsRegistrationContextResponse | null>(null);
+  const [registrationContext, setRegistrationContext] =
+    useState<WorkstreamsRegistrationContextResponse | null>(null);
   const unresolvedCommands = useRef(new Map<string, string>());
   const dataRef = useRef<T3WorkstreamListResult | null>(null);
   const [placements, setPlacements] = useState<LiveT3Placements | null>(null);
@@ -483,18 +486,22 @@ export function useWorkstreams(
         void request(
           (client) => client.workstreams.registrationContext({ headers: {} }),
           controller.signal,
-        ).then((context) => {
-          if (generation.current !== current || controller.signal.aborted) return;
-          if (
-            context.owner_id === normalized.binding.ownerId &&
-            context.principal_id === normalized.binding.principalId &&
-            context.authorization_revision === normalized.binding.authorizationRevision &&
-            context.server_generation === normalized.binding.serverGeneration &&
-            context.registry_version === normalized.binding.registryVersion
-          ) setRegistrationContext(context);
-        }, () => {
-          if (generation.current === current) setRegistrationContext(null);
-        });
+        ).then(
+          (context) => {
+            if (generation.current !== current || controller.signal.aborted) return;
+            if (
+              context.owner_id === normalized.binding.ownerId &&
+              context.principal_id === normalized.binding.principalId &&
+              context.authorization_revision === normalized.binding.authorizationRevision &&
+              context.server_generation === normalized.binding.serverGeneration &&
+              context.registry_version === normalized.binding.registryVersion
+            )
+              setRegistrationContext(context);
+          },
+          () => {
+            if (generation.current === current) setRegistrationContext(null);
+          },
+        );
         if (placementsEnabled) {
           try {
             const projection = await loadLiveT3Placements(normalized, identities, () =>
@@ -724,20 +731,47 @@ export function useWorkstreams(
       const started = dataRef.current?.binding;
       if (!started) throw new WorkstreamActionError("stale");
       const live = await loadCompleteWorkstreamList(
-        (cursor) => request((client) => client.workstreams.list({ headers: {}, payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) } }), options.signal),
+        (cursor) =>
+          request(
+            (client) =>
+              client.workstreams.list({
+                headers: {},
+                payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+              }),
+            options.signal,
+          ),
         options,
       );
       options.signal?.throwIfAborted();
       const current = dataRef.current?.binding;
-      if (!started || !current || actionAuthorityKey(started) !== actionAuthorityKey(current) || actionAuthorityKey(started) !== actionAuthorityKey(live.binding))
+      if (
+        !started ||
+        !current ||
+        actionAuthorityKey(started) !== actionAuthorityKey(current) ||
+        actionAuthorityKey(started) !== actionAuthorityKey(live.binding)
+      )
         throw new WorkstreamActionError("stale");
       const references = await loadCompleteWorkstreamReferences(
-        (cursor) => request((client) => client.workstreams.references({ headers: {}, payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) } }), options.signal),
+        (cursor) =>
+          request(
+            (client) =>
+              client.workstreams.references({
+                headers: {},
+                payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+              }),
+            options.signal,
+          ),
         options,
       );
-      const context = await request((client) => client.workstreams.registrationContext({ headers: {} }), options.signal);
+      const context = await request(
+        (client) => client.workstreams.registrationContext({ headers: {} }),
+        options.signal,
+      );
       options.signal?.throwIfAborted();
-      if (!dataRef.current || actionAuthorityKey(started) !== actionAuthorityKey(dataRef.current.binding))
+      if (
+        !dataRef.current ||
+        actionAuthorityKey(started) !== actionAuthorityKey(dataRef.current.binding)
+      )
         throw new WorkstreamActionError("stale");
       const snapshot: WorkstreamActionSnapshot = {
         data: live,
@@ -756,11 +790,15 @@ export function useWorkstreams(
     const authority = actionAuthorityKey(started);
     await loadActionSnapshot();
     await reconcileWorkstreamCommands({
-      commandIds: [...unresolvedCommands.current].filter(([, key]) => key === authority).map(([id]) => id),
+      commandIds: [...unresolvedCommands.current]
+        .filter(([, key]) => key === authority)
+        .map(([id]) => id),
       observe: async (id) => {
         if (!dataRef.current || actionAuthorityKey(dataRef.current.binding) !== authority)
           throw new WorkstreamActionError("stale");
-        const receipt = await request((client) => client.workstreams.command({ headers: {}, params: { commandId: id } }));
+        const receipt = await request((client) =>
+          client.workstreams.command({ headers: {}, params: { commandId: id } }),
+        );
         if (!dataRef.current || actionAuthorityKey(dataRef.current.binding) !== authority)
           throw new WorkstreamActionError("stale");
         return receipt;

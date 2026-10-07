@@ -13,7 +13,12 @@ import {
   WorkstreamActionError,
 } from "./workstreamActionSnapshot";
 import type { WorkstreamDetailView } from "../../state/workstreams";
-import { data, now, placements, reference } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
+import {
+  data,
+  now,
+  placements,
+  reference,
+} from "../../components/workstreams/nativeWorkstreamActions.fixtures";
 import {
   canonicalWorkstreamPrId,
   parseWorkstreamPrUrl,
@@ -180,12 +185,14 @@ describe("GitHub references", () => {
     const started = new Promise<void>((resolve) => {
       referenceStarted = resolve;
     });
-    let finishReference!: (value: Awaited<ReturnType<WorkstreamReferenceController["loadReference"]>>) => void;
-    const pendingReference = new Promise<Awaited<ReturnType<WorkstreamReferenceController["loadReference"]>>>(
-      (resolve) => {
-        finishReference = resolve;
-      },
-    );
+    let finishReference!: (
+      value: Awaited<ReturnType<WorkstreamReferenceController["loadReference"]>>,
+    ) => void;
+    const pendingReference = new Promise<
+      Awaited<ReturnType<WorkstreamReferenceController["loadReference"]>>
+    >((resolve) => {
+      finishReference = resolve;
+    });
     const commandId = vi.fn(f.commandId);
     const controller = {
       ...f.controller,
@@ -309,70 +316,195 @@ describe("GitHub references", () => {
         ...f.snapshot(),
         registrationContext: { ...registrationContext, ...patch },
       }));
-      await expect(prepareWorkstreamPr({ ...f, workstreamId: "beta", url: "https://github.com/a/b/pull/42", verify: false })).rejects.toBeInstanceOf(WorkstreamActionError);
+      await expect(
+        prepareWorkstreamPr({
+          ...f,
+          workstreamId: "beta",
+          url: "https://github.com/a/b/pull/42",
+          verify: false,
+        }),
+      ).rejects.toBeInstanceOf(WorkstreamActionError);
       expect(f.submit).not.toHaveBeenCalled();
     }
   });
   it("rejects a reference registered under another GitHub source without adding a duplicate", async () => {
     const locator = parseWorkstreamPrUrl("https://github.com/a/b/pull/42");
-    const f = fixture([{ ...reference, identity: { ...reference.identity, provider: "github", source_instance_id: "other-github", native_id: canonicalWorkstreamPrId(locator), resource_kind: "pull_request", id_kind: "external" }, pr_locator: locator }]);
-    await expect(prepareWorkstreamPr({ ...f, workstreamId: "beta", url: "https://github.com/a/b/pull/42", verify: false })).rejects.toMatchObject({ reason: "ambiguous" });
+    const f = fixture([
+      {
+        ...reference,
+        identity: {
+          ...reference.identity,
+          provider: "github",
+          source_instance_id: "other-github",
+          native_id: canonicalWorkstreamPrId(locator),
+          resource_kind: "pull_request",
+          id_kind: "external",
+        },
+        pr_locator: locator,
+      },
+    ]);
+    await expect(
+      prepareWorkstreamPr({
+        ...f,
+        workstreamId: "beta",
+        url: "https://github.com/a/b/pull/42",
+        verify: false,
+      }),
+    ).rejects.toMatchObject({ reason: "ambiguous" });
     expect(f.submit).not.toHaveBeenCalled();
   });
   it("rejects rejected and unresolved receipts instead of granting a new registry version", async () => {
     const f = fixture();
     const sequence = createSnapshotSequence(f.controller);
     await sequence.load();
+    const receiptBase = {
+      command_id: "noncommitted-command-0001",
+      owner_id: "owner",
+      actor: { principal_id: "principal" },
+      operation: "register_reference" as const,
+      request_sha256: "a".repeat(64),
+      server_generation: 7,
+      accepted_at: "2026-09-30T12:00:00Z",
+    };
     for (const state of ["rejected", "unresolved", "pending"] as const) {
-      expect(() => sequence.accept({ state, registry_version: 99 } as WorkstreamReceipt)).toThrow(WorkstreamActionError);
+      const receipt: WorkstreamReceipt =
+        state === "rejected"
+          ? {
+              ...receiptBase,
+              state,
+              completed_at: "2026-09-30T12:00:01Z",
+              error: {
+                code: "forbidden",
+                status: 403,
+                request_id: "rejected-request-0001",
+                recovery: "stop",
+              },
+            }
+          : { ...receiptBase, state, retry_after_seconds: 1 };
+      expect(() => sequence.accept(receipt)).toThrow(WorkstreamActionError);
     }
   });
   it("accepts version changes only from committed receipts", async () => {
     const f = fixture();
     vi.mocked(f.controller.loadActionSnapshot).mockImplementation(async () => {
       const snapshot = f.snapshot();
-      return { ...snapshot, data: { ...snapshot.data, binding: { ...snapshot.data.binding, registryVersion: 99 } }, references: { ...snapshot.references, context: { ...snapshot.references.context, registry_version: 99 } }, placements: null, registrationContext: { ...registrationContext, registry_version: 99 } };
+      return {
+        ...snapshot,
+        data: { ...snapshot.data, binding: { ...snapshot.data.binding, registryVersion: 99 } },
+        references: {
+          ...snapshot.references,
+          context: { ...snapshot.references.context, registry_version: 99 },
+        },
+        placements: null,
+        registrationContext: { ...registrationContext, registry_version: 99 },
+      };
     });
-    await expect(prepareWorkstreamPr({ ...f, workstreamId: "beta", url: "https://github.com/a/b/pull/42", verify: false })).rejects.toMatchObject({ reason: "stale" });
+    await expect(
+      prepareWorkstreamPr({
+        ...f,
+        workstreamId: "beta",
+        url: "https://github.com/a/b/pull/42",
+        verify: false,
+      }),
+    ).rejects.toMatchObject({ reason: "stale" });
     expect(f.submit).not.toHaveBeenCalled();
   });
   it("stops after an unknown registration receipt without verification or linking", async () => {
     const f = fixture();
     f.submit.mockResolvedValue({ state: "unresolved" } as WorkstreamReceipt);
-    await expect(prepareWorkstreamPr({ ...f, workstreamId: "beta", url: "https://github.com/a/b/pull/42", verify: true })).rejects.toMatchObject({ reason: "unknown" });
+    await expect(
+      prepareWorkstreamPr({
+        ...f,
+        workstreamId: "beta",
+        url: "https://github.com/a/b/pull/42",
+        verify: true,
+      }),
+    ).rejects.toMatchObject({ reason: "unknown" });
     expect(f.submit).toHaveBeenCalledOnce();
     expect(f.submit.mock.calls[0]?.[0].action.operation).toBe("register_reference");
     expect(f.controller.loadDetail).not.toHaveBeenCalled();
   });
   it("does not register or link again when the reference is already a secondary member", async () => {
     const locator = parseWorkstreamPrUrl("https://github.com/a/b/pull/42");
-    const pr: NativeReference = { ...reference, identity: { ...reference.identity, provider: "github", source_instance_id: "github", native_id: canonicalWorkstreamPrId(locator), resource_kind: "pull_request", id_kind: "external" }, pr_locator: locator };
+    const pr: NativeReference = {
+      ...reference,
+      identity: {
+        ...reference.identity,
+        provider: "github",
+        source_instance_id: "github",
+        native_id: canonicalWorkstreamPrId(locator),
+        resource_kind: "pull_request",
+        id_kind: "external",
+      },
+      pr_locator: locator,
+    };
     const f = fixture([pr]);
-    vi.mocked(f.controller.loadDetail).mockImplementation(async () => ({
-      detail: { context: f.snapshot().references.context, workstream: { workstream_id: "beta", version: f.snapshot().data.binding.registryVersion } },
-      memberships: { items: [{ native_reference_id: pr.native_reference_id, closed: null, kind: "secondary" }] },
-    }) as unknown as WorkstreamDetailView);
-    await prepareWorkstreamPr({ ...f, workstreamId: "beta", url: "https://github.com/a/b/pull/42", verify: true });
+    vi.mocked(f.controller.loadDetail).mockImplementation(
+      async () =>
+        ({
+          detail: {
+            context: f.snapshot().references.context,
+            workstream: {
+              workstream_id: "beta",
+              version: f.snapshot().data.binding.registryVersion,
+            },
+          },
+          memberships: {
+            items: [
+              { native_reference_id: pr.native_reference_id, closed: null, kind: "secondary" },
+            ],
+          },
+        }) as unknown as WorkstreamDetailView,
+    );
+    await prepareWorkstreamPr({
+      ...f,
+      workstreamId: "beta",
+      url: "https://github.com/a/b/pull/42",
+      verify: true,
+    });
     expect(f.operations.map((command) => command.action.operation)).toEqual(["verify_reference"]);
   });
   it("refreshes against current membership and observation versions and reads back the new receipt version", async () => {
     const f = fixture([reference]);
     const observed = Schema.decodeSync(WorkstreamPrObservation)({
-      native_reference_id: "reference", observation_version: 2,
-      attempted_at: "2026-09-30T12:00:00Z", outcome: "observed", retry_after_seconds: null,
-      last_success: { state: "open", draft: false, observed_at: "2026-09-30T12:00:00Z", provider_updated_at: null },
+      native_reference_id: "reference",
+      observation_version: 2,
+      attempted_at: "2026-09-30T12:00:00Z",
+      outcome: "observed",
+      retry_after_seconds: null,
+      last_success: {
+        state: "open",
+        draft: false,
+        observed_at: "2026-09-30T12:00:00Z",
+        provider_updated_at: null,
+      },
       command_id: "refresh-command-001",
     });
     const fresh = { ...observed, observation_version: 3 };
     vi.mocked(f.controller.loadReference).mockImplementation(async () => ({
-      context: f.snapshot().references.context, reference,
+      context: f.snapshot().references.context,
+      reference,
       latest_observation: f.operations.length ? fresh : observed,
     }));
-    expect(await refreshWorkstreamPr({ ...f, workstreamId: "beta", membershipId: "membership", referenceId: "reference" })).toEqual(fresh);
+    expect(
+      await refreshWorkstreamPr({
+        ...f,
+        workstreamId: "beta",
+        membershipId: "membership",
+        referenceId: "reference",
+      }),
+    ).toEqual(fresh);
     expect(f.operations).toHaveLength(1);
     expect(f.operations[0]).toMatchObject({
-      expected_server_generation: 7, expected_registry_version: 11,
-      action: { operation: "refresh_linked_pr", workstream_id: "beta", expected_version: 11, membership_id: "membership", expected_observation_version: 2 },
+      expected_server_generation: 7,
+      expected_registry_version: 11,
+      action: {
+        operation: "refresh_linked_pr",
+        workstream_id: "beta",
+        expected_version: 11,
+        membership_id: "membership",
+        expected_observation_version: 2,
+      },
     });
     expect(f.controller.loadReference).toHaveBeenCalledTimes(2);
   });
