@@ -1,3 +1,4 @@
+import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
@@ -509,6 +510,7 @@ export function identityForRequest(
 }
 
 export interface ProviderAdapterV2OpenSessionInput {
+  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly runtimeLifecycle?: ProviderRuntimeLifecycle;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
@@ -522,6 +524,7 @@ export interface ProviderAdapterV2OpenSessionInput {
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {
+  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly threadId: ThreadId;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
@@ -530,6 +533,7 @@ export interface ProviderAdapterV2EnsureThreadInput {
 }
 
 export interface ProviderAdapterV2TurnInput {
+  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -724,6 +728,7 @@ export interface ProviderAdapterV2SessionRuntime {
 }
 
 export interface ProviderAdapterV2Shape {
+  readonly nativeCreationExecution?: boolean;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly getCapabilities: () => Effect.Effect<
