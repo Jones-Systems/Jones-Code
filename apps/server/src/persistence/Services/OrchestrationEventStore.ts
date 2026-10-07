@@ -1,3 +1,10 @@
+import type { ApplicationRecordedLifecycleEvent as ApplicationStoredEvent } from "../../orchestration-v2/RecordedTypes.ts";
+import {
+  type RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+  type RecordedEvent as OrchestrationV2RecordedEvent,
+  type RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
+  type RecordedStoredLifecycleEvent as OrchestrationV2StoredEvent,
+} from "../../orchestration-v2/RecordedTypes.ts";
 /**
  * Historical name for the shared application event store.
  *
@@ -10,14 +17,7 @@
  *
  * @module OrchestrationEventStore
  */
-import type {
-  ApplicationProjectEvent,
-  ApplicationStoredEvent,
-  CommandId,
-  OrchestrationV2DomainEvent,
-  OrchestrationV2StoredEvent,
-  ThreadId,
-} from "@t3tools/contracts";
+import type { ApplicationProjectEvent, CommandId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -34,6 +34,8 @@ export type UnsequencedProjectEvent = ApplicationProjectEvent extends infer Even
 /**
  * OrchestrationEventStoreShape - Service API for orchestration event persistence.
  */
+export type ApplicationRecordedEvent = ApplicationProjectEvent | OrchestrationV2RecordedStoredEvent;
+
 export interface OrchestrationEventStoreShape {
   /** Append one project event to the shared application log. */
   readonly appendProjectEvent: (
@@ -43,8 +45,11 @@ export interface OrchestrationEventStoreShape {
   /** Append V2 agent events to the same globally ordered application log. */
   readonly appendAgentEvents: (input: {
     readonly commandId?: CommandId;
-    readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
-  }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, OrchestrationEventStoreError>;
+    readonly events: ReadonlyArray<OrchestrationV2RecordedEvent>;
+  }) => Effect.Effect<
+    ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+    OrchestrationEventStoreError
+  >;
 
   /**
    * Read only V2 thread events from the application log.
@@ -57,9 +62,10 @@ export interface OrchestrationEventStoreShape {
     readonly throughSequence?: number;
     readonly threadId?: ThreadId;
     readonly commandId?: CommandId;
-    readonly eventType?: OrchestrationV2DomainEvent["type"];
+    readonly publicOnly?: boolean;
+    readonly eventType?: OrchestrationV2RecordedEvent["type"];
     readonly limit?: number;
-  }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestrationEventStoreError>;
+  }) => Stream.Stream<OrchestrationV2RecordedStoredEvent, OrchestrationEventStoreError>;
 
   /** Measure one thread's bounded replay without loading or decoding its payloads. */
   readonly getAgentReplayStats: (input: {
@@ -106,7 +112,9 @@ export interface OrchestrationEventStoreShape {
   }) => Stream.Stream<ApplicationStoredEvent, OrchestrationEventStoreError>;
 
   /** Publish only after the surrounding event/projection transaction commits. */
-  readonly publishCommitted: (events: ReadonlyArray<ApplicationStoredEvent>) => Effect.Effect<void>;
+  readonly publishCommitted: (
+    events: ReadonlyArray<ApplicationRecordedEvent>,
+  ) => Effect.Effect<void>;
 
   /** Race-free replay-to-live stream for project and V2 thread events. */
   readonly streamApplicationEvents: (input?: {
