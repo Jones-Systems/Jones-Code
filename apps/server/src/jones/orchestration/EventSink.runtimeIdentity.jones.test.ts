@@ -13,11 +13,11 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import * as EventSink from "./EventSink.ts";
-import { unobservedRuntimeIdentity } from "./ProviderAdapter.ts";
-import * as EventStore from "./EventStore.ts";
-import * as ProjectionStore from "./ProjectionStore.ts";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import { unobservedRuntimeIdentity } from "../../orchestration-v2/ProviderAdapter.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 
 const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
   Layer.provide(SqlitePersistenceMemory),

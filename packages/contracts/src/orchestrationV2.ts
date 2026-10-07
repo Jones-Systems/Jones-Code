@@ -1,5 +1,5 @@
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
-import { RuntimeIdentityAttestation } from "./providerRuntimeIdentity.ts";
+import { RuntimeIdentityAttestation } from "./jones/providerRuntimeIdentity.ts";
 import { NativeCreationObservation, NativeCreationRejectionCode } from "./nativeCreation.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";

@@ -5,8 +5,8 @@ import {
   ProviderThreadId,
   ThreadId,
   TrimmedNonEmptyString,
-} from "./baseSchemas.ts";
-import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+} from "../baseSchemas.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "../providerInstance.ts";
 
 /** Missing native evidence must never be filled from routing or authentication metadata. */
 export const RuntimeIdentityObservation = Schema.Union([

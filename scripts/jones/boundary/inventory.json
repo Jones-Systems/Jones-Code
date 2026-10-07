@@ -164,6 +164,7 @@
     "apps/server/src/hostStatus/gateway.ts": "jones-owned",
     "apps/server/src/hostStatus/http.test.ts": "jones-owned",
     "apps/server/src/hostStatus/http.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/provider/workModePrompt.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/provider/workModePrompt.ts": "jones-owned",
     "apps/server/src/jones/workMode/Admission.ts": "jones-owned",
@@ -598,6 +599,8 @@
     "packages/contracts/src/hostStatus.ts": "jones-owned",
     "packages/contracts/src/index.ts": "hook",
     "packages/contracts/src/ipc.ts": "accepted-shared",
+    "packages/contracts/src/jones/providerRuntimeIdentity.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/jones/providerRuntimeIdentity.ts": "jones-owned",
     "packages/contracts/src/jones/workMode.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/workMode.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamAppearance.ts": "jones-owned",
@@ -1220,10 +1223,6 @@
     },
     {
       "from": "packages/contracts/src/index.ts",
-      "to": "packages/contracts/src/providerRuntimeIdentity.ts"
-    },
-    {
-      "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/queueDispatch.ts"
     },
     {
@@ -1265,10 +1264,6 @@
     {
       "from": "packages/contracts/src/orchestrationV2.ts",
       "to": "packages/contracts/src/providerQueue.ts"
-    },
-    {
-      "from": "packages/contracts/src/orchestrationV2.ts",
-      "to": "packages/contracts/src/providerRuntimeIdentity.ts"
     },
     {
       "from": "packages/contracts/src/rpc.ts",

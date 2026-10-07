@@ -1,0 +1,21 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "runtime-identity-extraction",
+  "jonesOwnedPaths": [],
+  "hookPaths": ["packages/contracts/src/index.ts", "packages/contracts/src/orchestrationV2.ts"],
+  "tombstones": [
+    "apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts",
+    "packages/contracts/src/providerRuntimeIdentity.test.ts",
+    "packages/contracts/src/providerRuntimeIdentity.ts"
+  ],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/providerRuntimeIdentity.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/jones/providerRuntimeIdentity.ts"
+    }
+  ]
+}
