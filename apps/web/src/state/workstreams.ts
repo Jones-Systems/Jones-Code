@@ -11,6 +11,7 @@ import type {
   WorkstreamReferencePage,
   WorkstreamCommand,
   WorkstreamReceipt,
+  WorkstreamsRegistrationContextResponse,
 } from "@t3tools/contracts";
 import {
   EnvironmentHttpConflictError,
@@ -30,6 +31,12 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  assertWorkstreamActionSnapshot,
+  WorkstreamActionError,
+  type WorkstreamActionSnapshot,
+} from "../jones/workstreams/workstreamActionSnapshot";
 
 import { PrimaryEnvironmentHttpClient } from "../environments/primary/httpClient";
 import { runPrimaryHttp } from "../lib/runtime";
@@ -229,6 +236,9 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
+  readonly registrationContext?: WorkstreamsRegistrationContextResponse | null;
+  readonly loadActionSnapshot?: (options?: { readonly signal?: AbortSignal }) => Promise<WorkstreamActionSnapshot>;
+  readonly retry?: () => Promise<void>;
   readonly placementInventory: NativePlacementInventory;
   readonly placements: LiveT3Placements | null;
   readonly data: T3WorkstreamListResult | null;
@@ -248,6 +258,29 @@ export interface WorkstreamListView {
     options?: { readonly signal?: AbortSignal },
   ) => Promise<WorkstreamReferenceDetail>;
 }
+
+export async function loadCompleteWorkstreamReferences(
+  load: (cursor?: string) => Promise<WorkstreamReferencePage>,
+  options: CursorRestartOptions = {},
+): Promise<WorkstreamReferencePage> {
+  return withCursorRestart(() => loadAllPages(load, options.signal), options);
+}
+
+export async function reconcileWorkstreamCommands(input: {
+  readonly commandIds: readonly string[];
+  readonly observe: (id: string) => Promise<WorkstreamReceipt>;
+  readonly resolved: (id: string) => void;
+}): Promise<void> {
+  for (const id of input.commandIds) {
+    const receipt = await input.observe(id);
+    if (receipt.state !== "committed" && receipt.state !== "rejected")
+      throw new WorkstreamActionError("unknown");
+    input.resolved(id);
+  }
+}
+
+const actionAuthorityKey = (binding: T3WorkstreamListResult["binding"]) =>
+  workstreamBindingKey({ ...binding, registryVersion: 0 });
 
 export interface NativePlacementInventory {
   readonly coverage: "complete" | "partial";
@@ -380,6 +413,9 @@ export function useWorkstreams(
     () => JSON.parse(inventory.json) as readonly T3PlacementIdentity[],
     [inventory.json],
   );
+  const [registrationContext, setRegistrationContext] = useState<WorkstreamsRegistrationContextResponse | null>(null);
+  const unresolvedCommands = useRef(new Map<string, string>());
+  const dataRef = useRef<T3WorkstreamListResult | null>(null);
   const [placements, setPlacements] = useState<LiveT3Placements | null>(null);
   const [data, setData] = useState<T3WorkstreamListResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -391,10 +427,12 @@ export function useWorkstreams(
   const currentBindingKey = data ? workstreamBindingKey(data.binding) : null;
   const currentBindingKeyRef = useRef(currentBindingKey);
   currentBindingKeyRef.current = currentBindingKey;
+  dataRef.current = data;
   const refresh = useCallback(() => {
     listRequest.current?.abort();
     generation.current += 1;
     setPlacements(null);
+    setRegistrationContext(null);
     setRevision((value) => value + 1);
   }, []);
 
@@ -422,6 +460,7 @@ export function useWorkstreams(
     listRequest.current = controller;
     const current = ++generation.current;
     setPlacements(null);
+    setRegistrationContext(null);
     setLoading(true);
     void loadCompleteWorkstreamList(
       (cursor) =>
@@ -441,6 +480,21 @@ export function useWorkstreams(
         metadataCache.write(normalized);
         setData(metadataCache.read(normalized.binding));
         setError(null);
+        void request(
+          (client) => client.workstreams.registrationContext({ headers: {}, payload: {} }),
+          controller.signal,
+        ).then((context) => {
+          if (generation.current !== current || controller.signal.aborted) return;
+          if (
+            context.owner_id === normalized.binding.ownerId &&
+            context.principal_id === normalized.binding.principalId &&
+            context.authorization_revision === normalized.binding.authorizationRevision &&
+            context.server_generation === normalized.binding.serverGeneration &&
+            context.registry_version === normalized.binding.registryVersion
+          ) setRegistrationContext(context);
+        }, () => {
+          if (generation.current === current) setRegistrationContext(null);
+        });
         if (placementsEnabled) {
           try {
             const projection = await loadLiveT3Placements(normalized, identities, () =>
@@ -493,6 +547,9 @@ export function useWorkstreams(
     ) => {
       const startedBinding = data?.binding;
       if (startedBinding === undefined) throw new Error("Workstream binding is unavailable.");
+      const authority = actionAuthorityKey(startedBinding);
+      if ([...unresolvedCommands.current.values()].includes(authority))
+        throw new WorkstreamActionError("unknown");
       const controller = new AbortController();
       const operationRequest: BindingOperationRequest = {
         controller,
@@ -518,6 +575,7 @@ export function useWorkstreams(
       const submitCommand = async (command: WorkstreamCommand) => {
         assertCurrentBinding();
         commandAttempted = true;
+        unresolvedCommands.current.set(command.command_id, authority);
         let receipt = await request(
           (client) => client.workstreams.submit({ headers: {}, payload: { command } }),
           controller.signal,
@@ -543,6 +601,8 @@ export function useWorkstreams(
           acceptReceiptBinding(receipt);
           assertCurrentBinding();
         }
+        if (receipt.state === "committed" || receipt.state === "rejected")
+          unresolvedCommands.current.delete(command.command_id);
         return receipt;
       };
       try {
@@ -556,6 +616,7 @@ export function useWorkstreams(
           setPlacements(null);
           metadataCache.purgeAuthorization();
           setData(null);
+          setRegistrationContext(null);
           refreshAfterOperation = commandAttempted;
         }
         throw cause;
@@ -658,7 +719,65 @@ export function useWorkstreams(
     [],
   );
 
+  const loadActionSnapshot = useCallback(
+    async (options: { readonly signal?: AbortSignal } = {}): Promise<WorkstreamActionSnapshot> => {
+      const started = dataRef.current?.binding;
+      if (!started) throw new WorkstreamActionError("stale");
+      const live = await loadCompleteWorkstreamList(
+        (cursor) => request((client) => client.workstreams.list({ headers: {}, payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) } }), options.signal),
+        options,
+      );
+      options.signal?.throwIfAborted();
+      const current = dataRef.current?.binding;
+      if (!started || !current || actionAuthorityKey(started) !== actionAuthorityKey(current) || actionAuthorityKey(started) !== actionAuthorityKey(live.binding))
+        throw new WorkstreamActionError("stale");
+      const references = await loadCompleteWorkstreamReferences(
+        (cursor) => request((client) => client.workstreams.references({ headers: {}, payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) } }), options.signal),
+        options,
+      );
+      const context = await request((client) => client.workstreams.registrationContext({ headers: {}, payload: {} }), options.signal);
+      options.signal?.throwIfAborted();
+      if (!dataRef.current || actionAuthorityKey(started) !== actionAuthorityKey(dataRef.current.binding))
+        throw new WorkstreamActionError("stale");
+      const snapshot: WorkstreamActionSnapshot = {
+        data: live,
+        references,
+        placements: null,
+        registrationContext: context,
+      };
+      assertWorkstreamActionSnapshot(snapshot);
+      return snapshot;
+    },
+    [],
+  );
+  const retry = useCallback(async () => {
+    const started = dataRef.current?.binding;
+    if (!started) throw new WorkstreamActionError("stale");
+    const authority = actionAuthorityKey(started);
+    await loadActionSnapshot();
+    await reconcileWorkstreamCommands({
+      commandIds: [...unresolvedCommands.current].filter(([, key]) => key === authority).map(([id]) => id),
+      observe: async (id) => {
+        if (!dataRef.current || actionAuthorityKey(dataRef.current.binding) !== authority)
+          throw new WorkstreamActionError("stale");
+        const receipt = await request((client) => client.workstreams.command({ headers: {}, params: { commandId: id } }));
+        if (!dataRef.current || actionAuthorityKey(dataRef.current.binding) !== authority)
+          throw new WorkstreamActionError("stale");
+        return receipt;
+      },
+      resolved: (id) => unresolvedCommands.current.delete(id),
+    });
+    const snapshot = await loadActionSnapshot();
+    metadataCache.write(snapshot.data);
+    setData(metadataCache.read(snapshot.data.binding));
+    setRegistrationContext(snapshot.registrationContext);
+    setError(null);
+  }, [loadActionSnapshot]);
+
   return {
+    registrationContext,
+    loadActionSnapshot,
+    retry,
     placementInventory: inventory,
     placements,
     data,

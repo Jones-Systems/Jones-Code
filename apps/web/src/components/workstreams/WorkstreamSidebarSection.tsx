@@ -15,6 +15,10 @@ import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
 
+import { WorkstreamAddPrDialog } from "../../jones/workstreams/WorkstreamAddPrDialog";
+import { refreshWorkstreamPr, workstreamPrObservationLabel } from "../../jones/workstreams/workstreamReferenceActions";
+import { workstreamFailureMessage, type WorkstreamReferenceController } from "../../jones/workstreams/workstreamActionSnapshot";
+
 import { useWorkstreamAppearance } from "../../jones/workstreamAppearance/useWorkstreamAppearance";
 import { WorkstreamColorDialog } from "../../jones/workstreamAppearance/WorkstreamColorDialog";
 import { workstreamAppearanceBorder } from "@t3tools/client-runtime/state/workstreams";
@@ -200,6 +204,7 @@ export function WorkstreamSidebarSection(props: {
     Schema.Array(Schema.String),
   );
   const appearance = useWorkstreamAppearance(data);
+  const [addingPr, setAddingPr] = useState<string | null>(null);
   const [colorEditing, setColorEditing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -219,6 +224,14 @@ export function WorkstreamSidebarSection(props: {
   const items = useMemo(() => orderWorkstreamMetadata(data?.items ?? []), [data]);
   const bindingKey = data ? workstreamBindingKey(data.binding) : null;
   const bindingKeyRef = useRef(bindingKey);
+  const referenceController: WorkstreamReferenceController | null =
+    props.controller.loadActionSnapshot && props.controller.retry
+      ? { ...props.controller, registrationContext: props.controller.registrationContext ?? null,
+          loadActionSnapshot: props.controller.loadActionSnapshot, retry: props.controller.retry }
+      : null;
+  const prAuthorityKey = data ? workstreamBindingKey({ ...data.binding, registryVersion: 0 }) : null;
+  const prAuthorityKeyRef = useRef(prAuthorityKey);
+  prAuthorityKeyRef.current = prAuthorityKey;
 
   useLayoutEffect(() => {
     bindingKeyRef.current = bindingKey;
@@ -235,6 +248,7 @@ export function WorkstreamSidebarSection(props: {
     setGroupDropTarget(null);
     setCommandError(null);
     if (bindingKey === null) {
+      setAddingPr(null);
       setSelected(null);
     }
     return () => {
@@ -268,9 +282,10 @@ export function WorkstreamSidebarSection(props: {
               setPullRequestStatus((current) => ({
                 ...current,
                 [reference.native_reference_id]:
-                  result.latest_observation?.last_success?.state ??
-                  result.latest_observation?.outcome ??
-                  "not refreshed",
+                  referenceController
+                    ? workstreamPrObservationLabel(result.latest_observation)
+                    : result.latest_observation?.last_success?.state ??
+                      result.latest_observation?.outcome ?? "not refreshed",
               }));
             },
             () => undefined,
@@ -541,6 +556,9 @@ export function WorkstreamSidebarSection(props: {
                     <MoreHorizontalIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
+                    <MenuItem disabled={!referenceController?.registrationContext?.sources.some((source) => source.provider === "github")} onClick={() => setAddingPr(item.workstreamId)}>
+                      Add PR reference…
+                    </MenuItem>
                     {appearance.writable ? (
                       <MenuItem onClick={() => setColorEditing(item.workstreamId)}>Color…</MenuItem>
                     ) : null}
@@ -835,6 +853,20 @@ export function WorkstreamSidebarSection(props: {
                             manualRefreshRequest.current = controller;
                             const startedBindingKey = bindingKey;
                             void (async () => {
+                              if (referenceController?.registrationContext) {
+                                const startedAuthority = prAuthorityKey;
+                                const observation = await refreshWorkstreamPr({
+                                  controller: referenceController,
+                                  workstreamId: workstream.workstream_id,
+                                  membershipId: membership.membership_id,
+                                  referenceId: reference.native_reference_id,
+                                  commandId: workstreamCommandId,
+                                  signal: controller.signal,
+                                });
+                                if (controller.signal.aborted || prAuthorityKeyRef.current !== startedAuthority) return;
+                                setPullRequestStatus((current) => ({ ...current, [reference.native_reference_id]: workstreamPrObservationLabel(observation) }));
+                                return;
+                              }
                               const value = await loadReference(reference.native_reference_id, {
                                 signal: controller.signal,
                               });
@@ -880,7 +912,9 @@ export function WorkstreamSidebarSection(props: {
                                 )
                                   return;
                                 setCommandError(
-                                  cause instanceof Error ? cause.message : "PR refresh failed.",
+                                  referenceController?.registrationContext
+                                    ? workstreamFailureMessage(cause)
+                                    : cause instanceof Error ? cause.message : "PR refresh failed.",
                                 );
                               })
                               .finally(() => {
@@ -1008,6 +1042,16 @@ export function WorkstreamSidebarSection(props: {
             </div>
           ) : null}
         </div>
+      ) : null}
+      {addingPr && referenceController ? (
+        <WorkstreamAddPrDialog
+          controller={referenceController}
+          workstreamId={addingPr}
+          open
+          commandId={workstreamCommandId}
+          onOpenChange={(open) => { if (!open) setAddingPr(null); }}
+          onLinked={() => { props.controller.refresh(); if (selected) showDetail(selected); }}
+        />
       ) : null}
     </section>
   );
