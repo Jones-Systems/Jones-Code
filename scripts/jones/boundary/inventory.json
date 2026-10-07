@@ -498,6 +498,12 @@
     "apps/web/src/hostStatus.test.ts": "jones-owned",
     "apps/web/src/hostStatus.ts": "jones-owned",
     "apps/web/src/index.css": "accepted-shared",
+    "apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx": "jones-owned",
+    "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/jones/composer/ReasoningEffortShortcuts.tsx": "jones-owned",
+    "apps/web/src/jones/composer/composerShortcutRails.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/jones/composer/composerShortcutRails.ts": "jones-owned",
     "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/jones/workMode/SidebarWorkModePill.tsx": "jones-owned",
     "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx": "jones-tests-in-upstream",
@@ -1076,10 +1082,6 @@
     },
     {
       "from": "apps/web/src/components/ChatView.tsx",
-      "to": "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx"
-    },
-    {
-      "from": "apps/web/src/components/ChatView.tsx",
       "to": "apps/web/src/components/chat/composerSendRecovery.ts"
     },
     {
@@ -1103,24 +1105,8 @@
       "to": "apps/web/src/state/workstreams.ts"
     },
     {
-      "from": "apps/web/src/components/chat/ChatComposer.tsx",
-      "to": "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx"
-    },
-    {
-      "from": "apps/web/src/components/chat/ChatComposer.tsx",
-      "to": "apps/web/src/components/chat/ReasoningEffortShortcuts.tsx"
-    },
-    {
-      "from": "apps/web/src/components/chat/ChatComposer.tsx",
-      "to": "apps/web/src/components/chat/composerShortcutRails.ts"
-    },
-    {
       "from": "apps/web/src/components/chat/ChatHeader.tsx",
       "to": "apps/web/src/components/chat/HostStatusIndicators.tsx"
-    },
-    {
-      "from": "apps/web/src/components/chat/ModelPickerContent.tsx",
-      "to": "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx"
     },
     {
       "from": "apps/web/src/components/files/BrowserDocumentFrame.tsx",

@@ -433,7 +433,7 @@ import {
   resolveComposerTimelineInset,
   resolveScrollToEndClearance,
 } from "./composerFooterLayout";
-import { matchesProviderModelLock } from "./chat/ProviderInstanceShortcuts";
+import { matchesProviderModelLock } from "../jones/composer/ProviderInstanceShortcuts";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
