@@ -1,0 +1,70 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "runtime-stop",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/runtime/",
+    "apps/web/src/hooks/useCurrentRuntimeStop.ts",
+    "apps/web/src/hooks/useCurrentRuntimeStop.test.ts",
+    "packages/client-runtime/src/operations/currentRuntimeStop.ts",
+    "packages/client-runtime/src/operations/currentRuntimeStop.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/auth/RpcAuthorization.ts",
+    "apps/server/src/environment/ServerEnvironment.ts",
+    "apps/server/src/relay/AgentAwarenessRelay.ts",
+    "apps/server/src/ws.ts",
+    "apps/web/src/components/CommandPalette.tsx",
+    "packages/client-runtime/src/operations/index.ts",
+    "packages/client-runtime/src/state/orchestrationV2Projection.ts",
+    "packages/client-runtime/src/state/threadCommands.ts",
+    "packages/contracts/src/environment.ts",
+    "packages/contracts/src/rpc.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStop.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStop.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStopSqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStop.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStop.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/runtimeStop.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/jones/runtimeStop.ts"
+    },
+    {
+      "from": "apps/web/src/components/CommandPalette.tsx",
+      "to": "apps/web/src/hooks/useCurrentRuntimeStop.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/operations/index.ts",
+      "to": "packages/client-runtime/src/operations/currentRuntimeStop.ts"
+    }
+  ]
+}

@@ -206,6 +206,17 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
       "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
+    },
+    {
+      "id": "runtime-stop",
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts",
+        "packages/contracts/src/jones/runtimeStop.test.ts",
+        "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
+        "apps/web/src/hooks/useCurrentRuntimeStop.test.ts"
+      ],
+      "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Unsupported captures remain unavailable; background coverage remains partial."
     }
   ]
 }

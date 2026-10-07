@@ -1,3 +1,4 @@
+import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
 import { readApplicationBirthRecord } from "../jones/importedHistory/ApplicationBirth.ts";
 import type { ImportedApplicationAttachmentBirthV1 } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import * as NativeCreationRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
@@ -138,6 +139,29 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly readRuntimeStop?: (commandId: CommandId) => Effect.Effect<
+    {
+      readonly identity: RuntimeStop.RuntimeStopIdentity;
+      readonly status: "accepted" | "stopped" | "unknown";
+    } | null,
+    EventSinkV2Error
+  >;
+  readonly startRuntimeStop?: (
+    commandId: CommandId,
+    target: import("@t3tools/contracts").CurrentRuntimeStopTarget,
+    revalidate: Effect.Effect<void, RuntimeStop.RuntimeStopError>,
+  ) => Effect.Effect<boolean, EventSinkV2Error>;
+  readonly completeRuntimeStop?: (
+    commandId: CommandId,
+    result: "stopped" | "unknown",
+  ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly assertRuntimeStopStartAllowed?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: import("@t3tools/contracts").RunId;
+    readonly providerThreadId?: string;
+    readonly runtimeGeneration?: string;
+  }) => Effect.Effect<void, EventSinkV2Error>;
+
   readonly readApplicationBirthRecord?: (
     threadId: ThreadId,
   ) => Effect.Effect<ImportedApplicationAttachmentBirthV1 | null, EventSinkV2Error>;
@@ -219,6 +243,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
     readonly nativeCreation?: {
       readonly claimId: string;
       readonly command: import("@t3tools/contracts").OrchestrationV2Command;
@@ -372,6 +397,7 @@ const baseLayer: Layer.Layer<
     // of its transaction and holds it until it has published. Publishing never
     // waits, so a writer that holds the transaction while it waits for the
     // lane is not blocked for long.
+    const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql);
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
@@ -792,6 +818,26 @@ const baseLayer: Layer.Layer<
     ) {
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
+          yield* runtimeStops.assertIdentity(input.commandId, input.runtimeStop);
+          if (input.runtimeStop) {
+            if (
+              input.commandType !== "provider-session.detach" ||
+              input.threadId !== input.runtimeStop.identity.request.threadId ||
+              input.effects.length !== 1 ||
+              input.effects[0]?.request.type !== "provider-session.detach" ||
+              input.effects[0].request.runtimeStopCommandId !== input.commandId
+            )
+              return yield* new RuntimeStop.RuntimeStopError({
+                reason: "stop_acceptance_envelope_conflict",
+              });
+            yield* input.runtimeStop.revalidate;
+          }
+          for (const effect of input.effects)
+            if (effect.request.type === "provider-turn.start")
+              yield* runtimeStops.assertStartAllowed({
+                threadId: effect.threadId,
+                runId: effect.request.runId,
+              });
           if (
             input.effects.some(
               (effect) =>
@@ -885,6 +931,7 @@ const baseLayer: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
+          if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
           if (input.nativeCreation !== undefined) {
             if (
               Option.isNone(nativeCreation) ||
@@ -1500,7 +1547,16 @@ const baseLayer: Layer.Layer<
       );
     }
 
+    const stopError = (cause: unknown) => new EventSinkWriteError({ eventCount: 0, cause });
     return EventSinkV2.of({
+      readRuntimeStop: (commandId) =>
+        runtimeStops.readState(commandId).pipe(Effect.mapError(stopError)),
+      startRuntimeStop: (commandId, target, revalidate) =>
+        runtimeStops.start(commandId, target, revalidate).pipe(Effect.mapError(stopError)),
+      completeRuntimeStop: (commandId, result) =>
+        runtimeStops.complete(commandId, result).pipe(Effect.mapError(stopError)),
+      assertRuntimeStopStartAllowed: (input) =>
+        runtimeStops.assertStartAllowed(input).pipe(Effect.mapError(stopError)),
       readApplicationBirthRecord: (threadId) =>
         sql
           .withTransaction(

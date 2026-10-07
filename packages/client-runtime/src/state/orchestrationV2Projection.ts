@@ -217,6 +217,8 @@ export function applyOrchestrationV2ProjectionEvent(
         ...base,
         providerSessions: upsertEntity(base.providerSessions, event.payload),
       };
+    case "provider-session.detach-requested":
+      return projection;
     case "provider-session.detached":
       return {
         ...base,

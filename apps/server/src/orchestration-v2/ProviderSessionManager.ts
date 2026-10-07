@@ -1,3 +1,4 @@
+import type { CapturedRuntimeStop } from "./ProviderAdapter.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -140,7 +141,12 @@ export class ProviderSessionActivityError extends Schema.TaggedError<ProviderSes
   }
 }
 
+export class ProviderRuntimeStopCaptureError extends Schema.TaggedError<ProviderRuntimeStopCaptureError>()(
+  "ProviderRuntimeStopCaptureError",
+  { threadId: ThreadId, cause: Schema.Defect() },
+) {}
 export const ProviderSessionManagerV2Error = Schema.Union([
+  ProviderRuntimeStopCaptureError,
   ProviderSessionOpenError,
   ProviderWorkspaceMissingError,
   ProviderSessionLookupError,
@@ -151,6 +157,9 @@ export const ProviderSessionManagerV2Error = Schema.Union([
 export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error.Type;
 
 export interface ProviderSessionManagerV2Shape {
+  readonly captureCurrentThreadRuntimeStop?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<CapturedRuntimeStop | null, ProviderSessionManagerV2Error>;
   readonly isMcpCallerAttached: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
@@ -2059,7 +2068,60 @@ export const layerWithOptions = (
         },
       );
 
+      const captureCurrentThreadRuntimeStop = Effect.fn(
+        "ProviderSessionManager.captureCurrentThreadRuntimeStop",
+      )(
+        function* (threadId: ThreadId) {
+          const before = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+          const provider = before.providerThreads.find(
+            (thread) => thread.id === before.thread.activeProviderThreadId,
+          );
+          if (
+            provider?.providerSessionId == null ||
+            before.thread.deletedAt !== null ||
+            before.thread.archivedAt !== null
+          )
+            return null;
+          const key = sessionKey(provider.providerSessionId);
+          const entry = (yield* Ref.get(sessions)).get(key);
+          if (!entry || !entry.attachedThreadIds.has(threadId) || !entry.runtime.captureRuntimeStop)
+            return null;
+          const captured = yield* entry.runtime.captureRuntimeStop(provider);
+          if (captured === null || captured.binding.threadId !== threadId) return null;
+          const loadedKey = entry.loadedProviderThreadKeyByThread.get(threadId);
+          const isCurrent = Effect.gen(function* () {
+            if (!(yield* captured.isCurrent)) return false;
+            const after = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+            const current = after.providerThreads.find(
+              (thread) => thread.id === after.thread.activeProviderThreadId,
+            );
+            const generation = current?.runtimeIdentity?.runtimeGeneration;
+            const binding =
+              current === undefined || generation === undefined
+                ? undefined
+                : runtimeBinding(current, generation);
+            const currentEntry = (yield* Ref.get(sessions)).get(key);
+            return (
+              binding !== undefined &&
+              equivalentBinding(binding, captured.binding) &&
+              current?.runtimeIdentity?.evidenceRevision === captured.evidenceRevision &&
+              currentEntry?.runtime === entry.runtime &&
+              currentEntry.attachedThreadIds.has(threadId) &&
+              currentEntry.loadedProviderThreadKeyByThread.get(threadId) === loadedKey &&
+              after.thread.deletedAt === null &&
+              after.thread.archivedAt === null
+            );
+          }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+          if (!(yield* isCurrent)) return null;
+          return { ...captured, isCurrent };
+        },
+        (effect, threadId) =>
+          effect.pipe(
+            Effect.mapError((cause) => new ProviderRuntimeStopCaptureError({ threadId, cause })),
+          ),
+      );
       return ProviderSessionManagerV2.of({
+        captureCurrentThreadRuntimeStop,
         observeThreadActivity,
         isMcpCallerAttached: (input) =>
           Ref.get(sessions).pipe(

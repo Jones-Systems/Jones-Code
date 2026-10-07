@@ -278,6 +278,7 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
+  readonly stopCurrentThreadRuntime?: import("./Orchestrator.ts").OrchestratorV2Shape["stopCurrentThreadRuntime"];
   readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
@@ -789,6 +790,9 @@ const make = Effect.gen(function* () {
     });
 
   return ThreadManagementService.of({
+    ...(orchestrator.stopCurrentThreadRuntime === undefined
+      ? {}
+      : { stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime }),
     requestSelfSettlement: orchestrator.requestSelfSettlement,
     ensureLegacyTranscript,
     dispatch,
