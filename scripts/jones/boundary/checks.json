@@ -667,6 +667,21 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
+    },
+    {
+      "id": "jones-imported-history-mobile",
+      "tests": [
+        "apps/mobile/src/jones/importedHistory/controller.test.ts",
+        "apps/mobile/src/jones/importedHistory/identity.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "apps/mobile/src/features/threads/threadQueueControlPresentation.test.ts",
+        "apps/mobile/src/state/queued-run-edit.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/mobile/src/jones/importedHistory/controller.test.ts apps/mobile/src/jones/importedHistory/identity.test.ts apps/mobile/src/state/use-composer-drafts.test.ts apps/mobile/src/features/threads/threadQueueControlPresentation.test.ts apps/mobile/src/state/queued-run-edit.test.ts",
+        "vp run --filter @t3tools/mobile typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }

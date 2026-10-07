@@ -1,3 +1,4 @@
+import { ContinuationChoiceNotice } from "../../jones/importedHistory/ContinuationChoiceNotice";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -791,6 +792,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         className="relative w-full self-center"
         style={{ maxWidth: props.contentMaxWidth }}
       >
+        <ContinuationChoiceNotice
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+        />
         {!voiceInput.isBusy &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (
