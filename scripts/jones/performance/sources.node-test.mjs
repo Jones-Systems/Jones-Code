@@ -5,6 +5,8 @@ import * as NodeTest from "node:test";
 import * as NodeURL from "node:url";
 
 import {
+  assertCurrentDatabaseSource,
+  currentDatabaseSource,
   assertQualificationDatabaseSource,
   assertSyntheticDatabaseSource,
   qualificationDatabaseSource,
@@ -105,3 +107,14 @@ NodeTest.test(
     }
   },
 );
+
+NodeTest.test("current candidate binds clean HEAD, tree and frozen lock; mismatches refuse", () => {
+  const worktree = NodePath.resolve(testDirectory, "../../..");
+  const candidate = currentDatabaseSource(worktree);
+  NodeAssert.deepEqual(assertCurrentDatabaseSource(candidate), candidate);
+  for (const forged of [
+    { ...candidate, sourceRevision: "a".repeat(40) }, { ...candidate, tree: "b".repeat(40) },
+    { ...candidate, lockSha256: "c".repeat(64) }, { ...candidate, repository: "other/repository" },
+    { ...candidate, extra: true }, { ...candidate, worktreePath: NodePath.dirname(worktree) },
+  ]) NodeAssert.throws(() => assertCurrentDatabaseSource(forged), { code: "invalid_source" });
+});
