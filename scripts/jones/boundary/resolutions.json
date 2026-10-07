@@ -7,7 +7,9 @@
       "expression": "`${pathToFileURL(licenseGeneratorSource).href}?version=${String(generatorVersion)}`",
       "reason": "Metro imports the pinned license generator through a cache-busted file URL; expression evaluation is unsupported.",
       "anchors": [],
-      "targets": ["scripts/lib/third-party-licenses.ts"]
+      "targets": [
+        "scripts/lib/third-party-licenses.ts"
+      ]
     },
     {
       "from": "apps/mobile/metro.config.js",
@@ -15,7 +17,9 @@
       "expression": "pathToFileURL(path.join(__dirname, \"scripts\", \"generate-device-stream.mts\")).href",
       "reason": "Metro imports its pinned local device-stream generator through a file URL; expression evaluation is unsupported.",
       "anchors": [],
-      "targets": ["apps/mobile/scripts/generate-device-stream.mts"]
+      "targets": [
+        "apps/mobile/scripts/generate-device-stream.mts"
+      ]
     },
     {
       "from": "apps/mobile/src/features/settings/mobileThirdPartyLicenses.ts",
@@ -32,7 +36,9 @@
           "sha256": "7eb0365cb15d87e21f483926873f127bc0cb737ea417c81d5a6480d856d8e843"
         }
       ],
-      "targets": ["scripts/lib/third-party-licenses.ts"]
+      "targets": [
+        "scripts/lib/third-party-licenses.ts"
+      ]
     },
     {
       "from": "apps/mobile/src/features/devices/DeviceStreamWebView.tsx",
@@ -192,7 +198,7 @@
       "anchors": [
         {
           "path": "packages/shared/package.json",
-          "sha256": "cd31faf31035499407fc37ad9f78f61855a14c48102e0fec3c33f1f428ddd712"
+          "sha256": "f0506280a0b5d41dd4195facd47aaa2def910fbe7dbb5115893c8a61f5d48d25"
         }
       ],
       "targets": []
@@ -203,7 +209,9 @@
       "expression": "NodeURL.pathToFileURL(root + \"/packages/shared/src/observability.ts\")",
       "reason": "Upstream subprocess fixture imports the fixed local tracing implementation from a caller-supplied root; this exact target still receives boundary checking.",
       "anchors": [],
-      "targets": ["packages/shared/src/observability.ts"]
+      "targets": [
+        "packages/shared/src/observability.ts"
+      ]
     }
   ]
 }

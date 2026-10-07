@@ -22,10 +22,7 @@
     "apps/server/src/jones/updates/trialGate.test.ts",
     "apps/server/src/jones/updates/trialGate.ts"
   ],
-  "hookPaths": [
-    "packages/contracts/package.json",
-    "packages/shared/package.json"
-  ],
+  "hookPaths": ["packages/contracts/package.json", "packages/shared/package.json"],
   "tombstones": [],
   "allowedImports": [
     {

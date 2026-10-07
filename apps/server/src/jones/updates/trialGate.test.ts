@@ -104,7 +104,9 @@ it("cancels a waiting trial without reserving resume and removes its captured ro
         input.commitGrantPath,
         JSON.stringify({ ...input, generation: input.transactionId }),
       );
-      await expect(NodeFSP.lstat(NodePath.join(root, "resume-dispatched.json"))).rejects.toMatchObject({
+      await expect(
+        NodeFSP.lstat(NodePath.join(root, "resume-dispatched.json")),
+      ).rejects.toMatchObject({
         code: "ENOENT",
       });
       return root;
@@ -135,7 +137,9 @@ it("rejects a mismatched grant without reserving resume", async () =>
       );
       await NodeFSP.rename(pending, input.commitGrantPath);
       await rejected;
-      await expect(NodeFSP.lstat(NodePath.join(root, "resume-dispatched.json"))).rejects.toMatchObject({
+      await expect(
+        NodeFSP.lstat(NodePath.join(root, "resume-dispatched.json")),
+      ).rejects.toMatchObject({
         code: "ENOENT",
       });
     } finally {
@@ -181,9 +185,9 @@ it("holds helper completion until the matching commit grant and reserves resume 
     try {
       await Promise.race([watchFile(descriptor.trialReceiptPath, controller.signal), gate]);
       expect(ready).toBe(false);
-      expect(JSON.parse(await NodeFSP.readFile(descriptor.trialReceiptPath, "utf8")).resumeHeld).toBe(
-        true,
-      );
+      expect(
+        JSON.parse(await NodeFSP.readFile(descriptor.trialReceiptPath, "utf8")).resumeHeld,
+      ).toBe(true);
       await NodeFSP.writeFile(
         NodePath.join(root, "grant.pending"),
         JSON.stringify({ ...descriptor, generation: descriptor.transactionId }),
@@ -191,9 +195,9 @@ it("holds helper completion until the matching commit grant and reserves resume 
       await NodeFSP.rename(NodePath.join(root, "grant.pending"), descriptor.commitGrantPath);
       await gate;
       expect(ready).toBe(true);
-      expect(await NodeFSP.readFile(NodePath.join(root, "resume-dispatched.json"), "utf8")).toContain(
-        "transaction",
-      );
+      expect(
+        await NodeFSP.readFile(NodePath.join(root, "resume-dispatched.json"), "utf8"),
+      ).toContain("transaction");
     } finally {
       controller.abort();
       await Promise.allSettled([gate]);
