@@ -76,10 +76,10 @@ export const qualificationCases = Object.freeze(
     { id: "restore-pre", seed: "live-baseline", kind: "restore" },
     { id: "restore-post", seed: "live-baseline", kind: "restore" },
     {
-      id: "successor-138",
+      id: "receiving-creation-lookup",
       seed: "lease",
       kind: "successor",
-      prerequisite: "138_JonesThreadCreationLookupIndex",
+      prerequisite: "055_OrchestrationV2/RecoveryIndexes",
     },
   ].map(Object.freeze),
 );

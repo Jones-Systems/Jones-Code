@@ -667,6 +667,21 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
+    },
+    {
+      "id": "jones-receiving-native-qualification",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts",
+        "apps/server/src/jones/importedHistory/ApplicationBirth.test.ts",
+        "scripts/jones/performance/current-qualification.node-test.mjs",
+        "scripts/jones/performance/migration-restore.node-test.mjs"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts apps/server/src/jones/importedHistory/ApplicationBirth.test.ts",
+        "node --test --test-concurrency=1 scripts/jones/performance/current-qualification.node-test.mjs scripts/jones/performance/migration-restore.node-test.mjs",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }

@@ -5,6 +5,7 @@ import {
   AuthSessionId,
   EnvironmentAuthenticatedPrincipal,
   NativeCreationHistoricalBinding,
+  NativeBootstrapSubmission,
   OrchestrationV2Command,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -252,7 +253,10 @@ it.effect(
       const value = yield* fixture;
       const configured = yield* configure(value);
       const result = yield* withPrincipal(
-        dispatchNativeBootstrap(value.submission, value.server),
+        dispatchNativeBootstrap(
+          yield* Schema.decodeUnknownEffect(NativeBootstrapSubmission)(value.submission),
+          value.server,
+        ),
       ).pipe(Effect.provide(configured.runtime));
       assert.strictEqual(result.commandAcceptance, "accepted");
       assert.deepStrictEqual(configured.events, ["workspace"]);
@@ -426,5 +430,26 @@ it.effect("missing permanent reservation reader denies private bootstrap before 
       [],
     );
     assert.deepStrictEqual(configured.events, []);
+  }).pipe(Effect.provide(base)),
+);
+
+it.effect("receiving bootstrap codec rejects historical command wire before effects", () =>
+  Effect.gen(function* () {
+    const value = yield* fixture;
+    const configured = yield* configure(value);
+    yield* Schema.decodeUnknownEffect(NativeBootstrapSubmission)(value.preparation.command).pipe(
+      Effect.flatMap((submission) =>
+        withPrincipal(dispatchNativeBootstrap(submission, value.server)),
+      ),
+      Effect.provide(configured.runtime),
+      Effect.flip,
+    );
+    assert.deepStrictEqual(configured.events, []);
+    assert.deepStrictEqual(yield* configured.sql`SELECT * FROM native_creation_intents`, []);
+    assert.deepStrictEqual(
+      yield* configured.sql`SELECT * FROM jones_native_creation_execution_acceptances`,
+      [],
+    );
+    assert.deepStrictEqual(yield* configured.sql`SELECT * FROM orchestration_v2_effect_outbox`, []);
   }).pipe(Effect.provide(base)),
 );

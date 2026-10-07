@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import {
   currentQualificationModules,
+  currentQualificationRequiredOracles,
   currentQualificationUnavailable,
   currentQualificationMetadata,
   currentQualificationClosureKnown,
@@ -14,12 +15,15 @@ import {
 NodeTest.test(
   "current V2 qualification keeps initialization and storage coverage distinct from historical fork007",
   () => {
-    NodeAssert.equal(currentQualificationModules.length, 3);
+    NodeAssert.equal(currentQualificationModules.length, 13);
     NodeAssert.ok(
       currentQualificationModules.includes(
         "apps/server/src/persistence/initializeV2Database.test.ts",
       ),
     );
+    NodeAssert.equal(new Set(currentQualificationModules).size, currentQualificationModules.length);
+    for (const oracle of currentQualificationRequiredOracles)
+      NodeAssert.ok(currentQualificationModules.includes(oracle.module));
     NodeAssert.ok(currentQualificationModules.every((file) => !file.includes("007_Jones")));
   },
 );
@@ -43,17 +47,20 @@ NodeTest.test(
   },
 );
 
-NodeTest.test("qualification metadata records the unavailable native acceptance module", () => {
-  const metadata = currentQualificationMetadata();
-  NodeAssert.equal(metadata.outcome, "unavailable");
-  NodeAssert.equal(metadata.reason, "explicit candidate/runtime binding required");
-  NodeAssert.deepEqual(metadata.modules, currentQualificationModules);
-  NodeAssert.ok(
-    currentQualificationUnavailable.includes(
-      "StoreNativeAcceptance.integration.test.ts: unavailable until #148 source is bound",
-    ),
-  );
-});
+NodeTest.test(
+  "qualification metadata records receiving native acceptance without claiming runtime qualification",
+  () => {
+    const metadata = currentQualificationMetadata();
+    NodeAssert.equal(metadata.outcome, "unavailable");
+    NodeAssert.equal(metadata.reason, "explicit candidate/runtime binding required");
+    NodeAssert.deepEqual(metadata.modules, currentQualificationModules);
+    NodeAssert.deepEqual(metadata.requiredOracles, currentQualificationRequiredOracles);
+    NodeAssert.deepEqual(currentQualificationUnavailable, [
+      "installed runtime qualification",
+      "historical source qualification",
+    ]);
+  },
+);
 
 NodeTest.test(
   "qualification refuses another checkout and unbounded request fields before source reads",

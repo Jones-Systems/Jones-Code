@@ -2,9 +2,15 @@ import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { readApplicationBirthRecord } from "./ApplicationBirth.ts";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { receivingCreationLookupProgram } from "../../../../../scripts/jones/performance/migration-restore-worker.mjs";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const threadId = ThreadId.make("thread:birth-custody");
@@ -91,4 +97,49 @@ it.effect("legacy births and invalid application event sequences are not evidenc
     yield* addBirth("event:invalid-sequence", 0);
     assert.isNull(yield* readApplicationBirthRecord(threadId));
   }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "qualification lookup probe executes the receiving owner and rolls back synthetic rows and index changes",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const queryEffect = (text: string, values: ReadonlyArray<string | number | null> = []) =>
+        sql.unsafe<Readonly<Record<string, unknown>>>(text, values);
+      yield* queryEffect(
+        "INSERT INTO jones_sql_migrations(migration_id,name) VALUES(7,'ThreadCreationLookupIndex')",
+      );
+      const snapshot = Effect.gen(function* () {
+        return {
+          ledger: yield* queryEffect("SELECT * FROM jones_sql_migrations ORDER BY migration_id"),
+          events: yield* queryEffect("SELECT * FROM orchestration_events ORDER BY sequence"),
+          threads: yield* queryEffect(
+            "SELECT * FROM orchestration_v2_projection_threads ORDER BY thread_id",
+          ),
+          index: yield* queryEffect(
+            "SELECT sql FROM sqlite_schema WHERE name='orchestration_events_v2_created_threads_idx'",
+          ),
+        };
+      });
+      const program = receivingCreationLookupProgram({
+        modules: { Effect, Contracts: { ThreadId }, Birth: { readApplicationBirthRecord } },
+        queryEffect,
+      });
+      const before = yield* snapshot;
+      const evidence = yield* program;
+      assert.strictEqual(evidence.owner, "055_OrchestrationV2/RecoveryIndexes");
+      assert.strictEqual(evidence.index, "orchestration_events_v2_created_threads_idx");
+      assert.isTrue(evidence.actualLookupExecuted);
+      assert.isTrue(evidence.foreignBirthExcluded);
+      assert.isTrue(evidence.changedProjectionRejected);
+      assert.isTrue(evidence.missingIndexRejected);
+      assert.deepStrictEqual(yield* snapshot, before);
+      yield* queryEffect("DROP INDEX orchestration_events_v2_created_threads_idx");
+      const withoutIndex = yield* snapshot;
+      const rejected = yield* Effect.exit(program);
+      assert.isTrue(Exit.isFailure(rejected));
+      if (Exit.isFailure(rejected))
+        assert.match(Cause.pretty(rejected.cause), /receiving migration055 lookup index missing/);
+      assert.deepStrictEqual(yield* snapshot, withoutIndex);
+    }).pipe(Effect.provide(SqlitePersistenceMemory.pipe(Layer.provide(NodeServices.layer)))),
 );
