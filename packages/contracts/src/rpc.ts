@@ -1,3 +1,4 @@
+import { QueueDispatchCommand } from "./queueDispatch.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
   ChatGptReconnectProfileInput,
@@ -1513,9 +1514,13 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
 });
 
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
-  payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
+  payload: Schema.Union([OrchestrationV2RpcSchemas.dispatchCommand.input, QueueDispatchCommand]),
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
-  error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    OrchestrationV2DispatchCommandError,
+    OrchestrationDispatchCommandError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 const WsOrchestrationV2GetTurnDiffRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnDiff, {

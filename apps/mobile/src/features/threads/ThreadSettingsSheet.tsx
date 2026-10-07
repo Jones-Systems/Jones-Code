@@ -429,7 +429,11 @@ function ThreadSettingsSessionProvider(
 
   const applyOptionChange = useCallback(
     (id: string, value: string | boolean) => {
-      const next = applyProviderOptionSelection(displayedDescriptors, { id, value });
+      const next = applyProviderOptionSelection(
+        displayedDescriptors,
+        { id, value },
+        pendingModel ? pendingModel.selection.options : props.selectedModel?.options,
+      );
       if (!next) {
         return;
       }
@@ -443,7 +447,12 @@ function ThreadSettingsSessionProvider(
         props.onUpdateOptionSelections(next);
       }
     },
-    [displayedDescriptors, pendingModel, props.onUpdateOptionSelections],
+    [
+      displayedDescriptors,
+      pendingModel,
+      props.onUpdateOptionSelections,
+      props.selectedModel?.options,
+    ],
   );
 
   const toggleProvider = useCallback((providerKey: string) => {

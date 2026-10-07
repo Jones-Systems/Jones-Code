@@ -1,12 +1,16 @@
 import type {
-  OrchestrationV2Command,
-  OrchestrationV2DomainEvent,
-  OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+  RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+  RecordedThreadProjection as OrchestrationV2ThreadProjection,
+} from "./RecordedTypes.ts";
+import type { ThreadId, OrchestrationV2Command } from "@t3tools/contracts";
 import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
-import type { PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
+import type {
+  EffectOutboxV2,
+  OrchestrationEffectV2,
+  PendingOrchestrationEffectV2,
+} from "./EffectOutbox.ts";
 import type { IdAllocatorV2, IdAllocatorV2Error } from "./IdAllocator.ts";
 
 export interface ThreadDeletionPlan {
@@ -226,3 +230,20 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
   }
   return { events, effects };
 });
+
+export function threadCreationCleanupEffects(effects: ReadonlyArray<OrchestrationEffectV2>) {
+  return effects.filter(
+    ({ request }) =>
+      request.type === "terminal.cleanup" ||
+      request.type === "attachment.cleanup" ||
+      request.type === "provider-session.detach",
+  );
+}
+export const awaitThreadCreationCleanup = (outbox: EffectOutboxV2["Service"], threadId: ThreadId) =>
+  outbox
+    .listByThreadId(threadId)
+    .pipe(
+      Effect.flatMap((effects) =>
+        outbox.awaitCompletion(threadCreationCleanupEffects(effects).map((effect) => effect.id)),
+      ),
+    );

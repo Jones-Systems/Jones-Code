@@ -1,3 +1,5 @@
+import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
+import { RuntimeIdentityAttestation } from "./providerRuntimeIdentity.ts";
 import { NativeCreationObservation, NativeCreationRejectionCode } from "./nativeCreation.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
@@ -354,6 +356,22 @@ export const OrchestrationV2LimitRecoveryUpdate = Schema.Struct({
   ),
 );
 export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitRecoveryUpdate.Type;
+
+/** Receiving-only correlation persisted with legacy queue preparation. */
+export const OrchestrationV2LegacyBootstrapPolicy = Schema.Struct({
+  version: Schema.Literal(1),
+  createCommandId: CommandId,
+  birthCommandId: CommandId,
+  releaseCommandId: CommandId,
+  projectId: ProjectId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  payloadHash: TrimmedNonEmptyString,
+  ownsNewThread: Schema.Boolean,
+  runId: Schema.optional(RunId),
+  dispatchGuard: Schema.optional(ThreadTurnDispatchGuard),
+});
+export type OrchestrationV2LegacyBootstrapPolicy = typeof OrchestrationV2LegacyBootstrapPolicy.Type;
 
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
@@ -867,6 +885,7 @@ export type OrchestrationV2ProviderThreadNativeMetadata =
   typeof OrchestrationV2ProviderThreadNativeMetadata.Type;
 
 export const OrchestrationV2ProviderThread = Schema.Struct({
+  runtimeIdentity: Schema.optional(RuntimeIdentityAttestation),
   id: ProviderThreadId,
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,
@@ -1700,6 +1719,40 @@ export const OrchestrationV2DomainEvent = Schema.Union([
 ]);
 export type OrchestrationV2DomainEvent = typeof OrchestrationV2DomainEvent.Type;
 
+export const OrchestrationV2LegacyPreflightBinding = Schema.Struct({
+  policy: OrchestrationV2LegacyBootstrapPolicy,
+  canonicalPayload: TrimmedNonEmptyString,
+  fetch: Schema.Struct({
+    cwd: TrimmedNonEmptyString,
+    baseRef: TrimmedNonEmptyString,
+    startFromOrigin: Schema.Boolean,
+    requireWorktree: Schema.Boolean,
+    remote: Schema.NullOr(TrimmedNonEmptyString),
+  }),
+});
+export type OrchestrationV2LegacyPreflightBinding =
+  typeof OrchestrationV2LegacyPreflightBinding.Type;
+
+export const OrchestrationV2PrivateEvent = Schema.Union([
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("legacy-bootstrap.preflight-intent"),
+    payload: OrchestrationV2LegacyPreflightBinding,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("legacy-bootstrap.preflight-outcome"),
+    payload: Schema.Struct({
+      binding: OrchestrationV2LegacyPreflightBinding,
+      intentCommandId: CommandId,
+      intentSequence: NonNegativeInt,
+      status: Schema.Literals(["ready", "known_failed", "unknown"]),
+      detail: Schema.optional(Schema.String),
+      workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+    }),
+  }),
+]);
+export type OrchestrationV2PrivateEvent = typeof OrchestrationV2PrivateEvent.Type;
 export const OrchestrationV2ThreadProjection = Schema.Struct({
   thread: OrchestrationV2AppThread,
   runs: Schema.Array(OrchestrationV2Run),
@@ -1746,6 +1799,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  runtimeIdentity: Schema.optional(RuntimeIdentityAttestation),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -1899,7 +1953,6 @@ export const OrchestrationV2StoredEvent = Schema.Struct({
   event: OrchestrationV2DomainEvent,
 });
 export type OrchestrationV2StoredEvent = typeof OrchestrationV2StoredEvent.Type;
-
 export const OrchestrationV2AppThreadJson = OrchestrationV2AppThread.mapFields((fields) => ({
   ...fields,
   createdAt: Schema.DateTimeUtcFromString,
@@ -2506,7 +2559,6 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
   }),
 ]);
 export type OrchestrationV2DomainEventJson = typeof OrchestrationV2DomainEventJson.Type;
-
 export const OrchestrationV2StoredEventJson = Schema.Struct({
   sequence: NonNegativeInt,
   commandId: Schema.NullOr(CommandId),
@@ -2743,6 +2795,9 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("message.dispatch"),
+    dispatchGuard: Schema.optional(ThreadTurnDispatchGuard),
+    runtimeMode: Schema.optional(RuntimeMode),
+    interactionMode: Schema.optional(ProviderInteractionMode),
     notification: Schema.optional(OrchestrationV2Notification),
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
@@ -2776,6 +2831,7 @@ export const OrchestrationV2Command = Schema.Union([
       Schema.Struct({
         type: Schema.Literal("defer_start"),
         workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+        runSetupScript: Schema.optional(Schema.Boolean),
       }),
       Schema.Struct({ type: Schema.Literal("steer_active"), targetRunId: RunId }),
       Schema.Struct({ type: Schema.Literal("restart_active"), targetRunId: RunId }),
@@ -2966,6 +3022,13 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  * send them.
  */
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("legacy-bootstrap.failure-delete"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    legacyBootstrap: OrchestrationV2LegacyBootstrapPolicy,
+  }),
   /**
    * Records what a pull request watch saw, and wakes the agent in the same transaction when
    * `wake` is set. Rejected once the watch started at `startedAt` has ended, and a wake is
@@ -3012,7 +3075,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
 /** Everything the server's orchestrator accepts: client commands plus internal ones. */
-export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
+export type OrchestrationV2ServerCommand =
+  | (OrchestrationV2Command & {
+      /** Private receiving input; absent from both public dispatch and launch schemas. */
+      readonly legacyBootstrap?: OrchestrationV2LegacyBootstrapPolicy;
+      readonly legacyPreparationFailureKnown?: boolean;
+    })
+  | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",

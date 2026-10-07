@@ -344,6 +344,68 @@ export function normalizeModelSlug(
   return typeof aliased === "string" ? aliased : trimmed;
 }
 
+interface ConfiguredReasoningEffortInput {
+  modelSelection: ModelSelection;
+  driverKind: ProviderDriverKind;
+  capabilities: ModelCapabilities | undefined;
+  defaultModelSelection: ModelSelection | undefined;
+  defaultDriverKind: ProviderDriverKind | undefined;
+}
+
+export function getConfiguredReasoningEffort(
+  input: ConfiguredReasoningEffortInput,
+): string | undefined {
+  const { modelSelection, driverKind, capabilities, defaultModelSelection, defaultDriverKind } =
+    input;
+  if (
+    driverKind !== "codex" ||
+    defaultDriverKind !== "codex" ||
+    !defaultModelSelection ||
+    modelSelection.options?.some((selection) => selection.id === "reasoningEffort")
+  ) {
+    return undefined;
+  }
+  const model = normalizeModelSlug(codexModelFamily(modelSelection.model.trim()), driverKind);
+  const defaultModel = normalizeModelSlug(
+    codexModelFamily(defaultModelSelection.model.trim()),
+    defaultDriverKind,
+  );
+  if (!model || model !== defaultModel) {
+    return undefined;
+  }
+  const effort = getModelSelectionStringOptionValue(defaultModelSelection, "reasoningEffort");
+  const descriptor = capabilities?.optionDescriptors?.find(
+    (candidate) => candidate.id === "reasoningEffort" && candidate.type === "select",
+  );
+  return descriptor?.type === "select" && descriptor.options.some((option) => option.id === effort)
+    ? effort
+    : undefined;
+}
+
+export function applyConfiguredReasoningEffortDefault(
+  input: ConfiguredReasoningEffortInput,
+): ModelCapabilities | undefined {
+  const effort = getConfiguredReasoningEffort(input);
+  if (effort === undefined || !input.capabilities) {
+    return input.capabilities;
+  }
+  return {
+    ...input.capabilities,
+    optionDescriptors: input.capabilities.optionDescriptors?.map((descriptor) =>
+      descriptor.id === "reasoningEffort" && descriptor.type === "select"
+        ? {
+            ...descriptor,
+            currentValue: effort,
+            options: descriptor.options.map((option) => ({
+              ...option,
+              isDefault: option.id === effort,
+            })),
+          }
+        : descriptor,
+    ),
+  };
+}
+
 /** Custom model identifiers are provider-owned, so only trim them; never expand aliases. */
 export function normalizeCustomModelSlug(model: string | null | undefined): string | null {
   if (typeof model !== "string") {
