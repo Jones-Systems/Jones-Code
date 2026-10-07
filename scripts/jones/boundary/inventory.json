@@ -1,0 +1,1294 @@
+{
+  "schema": "jones.boundary-inventory/v1",
+  "upstream": {
+    "repository": "pingdotgg/t3code",
+    "tag": "v0.0.46-nightly.20261004.2648",
+    "commit": "5a96895a85b43c838da6c89cf21068b99c003d5a"
+  },
+  "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
+  "paths": {
+    ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
+    ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
+    ".agents/skills/test-t3-app/SKILL.md": "policy",
+    ".agents/skills/test-t3-mobile/SKILL.md": "policy",
+    ".github/actions/setup-apt-mirrors/action.yml": "upstream-deleted",
+    ".github/pull_request_template.md": "policy",
+    ".github/workflows/artifact-cli-linux.yml": "policy",
+    ".github/workflows/artifact-desktop-mac.yml": "policy",
+    ".github/workflows/ci.yml": "policy",
+    ".github/workflows/cursor-hygiene-webhook.yml": "upstream-deleted",
+    ".github/workflows/deploy-relay.yml": "upstream-deleted",
+    ".github/workflows/desktop-macos-preview-publish.yml": "upstream-deleted",
+    ".github/workflows/desktop-macos-preview.yml": "upstream-deleted",
+    ".github/workflows/issue-labels.yml": "upstream-deleted",
+    ".github/workflows/mobile-eas-preview.yml": "upstream-deleted",
+    ".github/workflows/mobile-eas-production.yml": "upstream-deleted",
+    ".github/workflows/mobile-fingerprint-check.yml": "upstream-deleted",
+    ".github/workflows/mobile-showcase-screenshots.yml": "upstream-deleted",
+    ".github/workflows/pr-size.yml": "upstream-deleted",
+    ".github/workflows/pr-vouch.yml": "upstream-deleted",
+    ".github/workflows/publish-aur.yml": "upstream-deleted",
+    ".github/workflows/release-desktop.yml": "upstream-deleted",
+    ".github/workflows/release.yml": "upstream-deleted",
+    ".github/workflows/thread-transfer-report.yml": "upstream-deleted",
+    ".github/workflows/web-preview.yml": "upstream-deleted",
+    ".github/workflows/windows-tests.yml": "upstream-deleted",
+    "AGENTS.md": "policy",
+    "README.md": "policy",
+    "apps/desktop/package.json": "accepted-shared",
+    "apps/desktop/scripts/main-process-bundle.test.mjs": "jones-tests-in-upstream",
+    "apps/desktop/scripts/ui-evidence.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/doctor.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/lifecycle.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/lifecycle.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/manifest.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/manifest.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/probe.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/provenance.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/provenance.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/runner.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/runtime.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/runtime.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/sandbox.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/sandbox.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/scenario-api.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/scenarios/example.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/scenarios/sidebar-rename.mjs": "jones-owned",
+    "apps/desktop/src/app/DesktopAppIdentity.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/app/DesktopAppIdentity.ts": "accepted-shared",
+    "apps/desktop/src/app/DesktopClerk.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/app/DesktopConfig.ts": "accepted-shared",
+    "apps/desktop/src/app/DesktopEnvironment.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/app/DesktopEnvironment.ts": "accepted-shared",
+    "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/app/DesktopUserData.ts": "accepted-shared",
+    "apps/desktop/src/app/DesktopUserDataOverride.test.ts": "jones-owned",
+    "apps/desktop/src/app/DesktopUserDataOverride.ts": "jones-owned",
+    "apps/desktop/src/boot.ts": "accepted-shared",
+    "apps/desktop/src/ipc/DesktopIpcHandlers.ts": "accepted-shared",
+    "apps/desktop/src/ipc/channels.ts": "accepted-shared",
+    "apps/desktop/src/ipc/methods/window.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/ipc/methods/window.ts": "accepted-shared",
+    "apps/desktop/src/preload.ts": "accepted-shared",
+    "apps/mobile/src/features/home/HomeScreen.tsx": "accepted-shared",
+    "apps/mobile/src/features/review/shikiReviewHighlighter.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx": "hook",
+    "apps/mobile/src/features/settings/SettingsFollowUpRouteScreen.tsx": "accepted-shared",
+    "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx": "accepted-shared",
+    "apps/mobile/src/features/settings/scheduledTaskDraft.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/features/settings/scheduledTaskDraft.ts": "accepted-shared",
+    "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx": "accepted-shared",
+    "apps/mobile/src/features/threads/ThreadComposer.tsx": "accepted-shared",
+    "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx": "accepted-shared",
+    "apps/mobile/src/features/threads/ThreadSettingsSheet.tsx": "accepted-shared",
+    "apps/mobile/src/features/threads/pending-thread-feed.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/features/threads/pending-thread-feed.ts": "hook",
+    "apps/mobile/src/features/threads/projectThreadCreationValidation.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/features/threads/projectThreadCreationValidation.ts": "accepted-shared",
+    "apps/mobile/src/features/threads/projectThreadStartLatch.test.ts": "jones-owned",
+    "apps/mobile/src/features/threads/projectThreadStartLatch.ts": "jones-owned",
+    "apps/mobile/src/features/threads/thread-list-v2-items.tsx": "accepted-shared",
+    "apps/mobile/src/features/threads/threadListV2.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/features/threads/threadListV2.ts": "accepted-shared",
+    "apps/mobile/src/features/threads/userMessageIntentBadge.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/features/threads/userMessageIntentBadge.ts": "accepted-shared",
+    "apps/mobile/src/features/workstreams/Controls.tsx": "jones-owned",
+    "apps/mobile/src/features/workstreams/actions.fixtures.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/actions.test.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/actions.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/commands.test.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/commands.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/gateway.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/listProjection.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/loaders.test.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/loaders.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/projection.test.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/projection.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/types.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/useWorkstreams.ts": "jones-owned",
+    "apps/mobile/src/jones/workMode/WorkModeSettings.tsx": "jones-owned",
+    "apps/mobile/src/jones/workstreamAppearance/WorkstreamColorPicker.tsx": "jones-owned",
+    "apps/mobile/src/lib/modelOptions.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/lib/modelOptions.ts": "accepted-shared",
+    "apps/mobile/src/lib/projectThreadStartTurn.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/lib/projectThreadStartTurn.ts": "accepted-shared",
+    "apps/mobile/src/lib/providerOptions.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/lib/providerOptions.ts": "accepted-shared",
+    "apps/mobile/src/lib/threadActivity.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/lib/threadActivity.ts": "hook",
+    "apps/mobile/src/state/thread-outbox-model.ts": "accepted-shared",
+    "apps/mobile/src/state/thread-outbox.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/state/use-thread-outbox-drain.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/state/use-thread-outbox-drain.ts": "accepted-shared",
+    "apps/server/package.json": "accepted-shared",
+    "apps/server/scripts/acp-replay-agent.ts": "accepted-shared",
+    "apps/server/scripts/acpReplayStatusPublication.ts": "jones-owned",
+    "apps/server/src/auth/RpcAuthorization.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/auth/RpcAuthorization.ts": "accepted-shared",
+    "apps/server/src/binCli.ts": "accepted-shared",
+    "apps/server/src/checkpointing/CheckpointStore.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cli/config.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cli/config.ts": "accepted-shared",
+    "apps/server/src/cli/update.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cli/update.ts": "accepted-shared",
+    "apps/server/src/cli/workstream.ts": "jones-owned",
+    "apps/server/src/cloud/http.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cloud/serviceLauncherClient.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cloud/serviceLauncherClient.ts": "accepted-shared",
+    "apps/server/src/cloud/serviceProtocol.ts": "accepted-shared",
+    "apps/server/src/config.ts": "accepted-shared",
+    "apps/server/src/conversations/Service.test.ts": "jones-owned",
+    "apps/server/src/conversations/Service.ts": "jones-owned",
+    "apps/server/src/conversations/Store.cases.ts": "jones-owned",
+    "apps/server/src/conversations/Store.test.ts": "jones-owned",
+    "apps/server/src/conversations/Store.ts": "jones-owned",
+    "apps/server/src/conversations/http.test.ts": "jones-owned",
+    "apps/server/src/conversations/http.ts": "jones-owned",
+    "apps/server/src/conversations/open.cases.ts": "jones-owned",
+    "apps/server/src/conversations/open.test.ts": "jones-owned",
+    "apps/server/src/conversations/open.ts": "jones-owned",
+    "apps/server/src/diagnostics/ProcessDiagnostics.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/environment/NativePlacementTrust.ts": "jones-owned",
+    "apps/server/src/environment/NativeStoreAuthority.test.ts": "jones-owned",
+    "apps/server/src/environment/NativeStoreAuthority.ts": "jones-owned",
+    "apps/server/src/environment/ServerEnvironment.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/environment/ServerEnvironment.ts": "accepted-shared",
+    "apps/server/src/environment/nativeStoreAuthorityPath.ts": "jones-owned",
+    "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts": "jones-owned",
+    "apps/server/src/environment/nativeStoreAuthorityPersistence.ts": "jones-owned",
+    "apps/server/src/git/GitWorkflowService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/git/GitWorkflowService.ts": "accepted-shared",
+    "apps/server/src/hostStatus/HostStatus.ts": "jones-owned",
+    "apps/server/src/hostStatus/gateway.test.ts": "jones-owned",
+    "apps/server/src/hostStatus/gateway.ts": "jones-owned",
+    "apps/server/src/hostStatus/http.test.ts": "jones-owned",
+    "apps/server/src/hostStatus/http.ts": "jones-owned",
+    "apps/server/src/jones/provider/workModePrompt.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/provider/workModePrompt.ts": "jones-owned",
+    "apps/server/src/jones/workMode/Admission.ts": "jones-owned",
+    "apps/server/src/jones/workMode/Fixtures.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workMode/Policy.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/workMode/Policy.ts": "jones-owned",
+    "apps/server/src/jones/workMode/Retention.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/workMode/Retention.ts": "jones-owned",
+    "apps/server/src/jones/workMode/WorkMode.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/workMode/WorkMode.ts": "jones-owned",
+    "apps/server/src/mcp/OrchestratorMcpService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/mcp/OrchestratorMcpService.ts": "accepted-shared",
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/mcp/PreviewAutomationBroker.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/mcp/PreviewAutomationBroker.ts": "accepted-shared",
+    "apps/server/src/mcp/ThreadMetadataMcpService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/mcp/ThreadMetadataMcpService.ts": "accepted-shared",
+    "apps/server/src/mcp/threadAccess.ts": "accepted-shared",
+    "apps/server/src/mcp/toolkits/orchestrator/handlers.ts": "accepted-shared",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts": "accepted-shared",
+    "apps/server/src/mcp/toolkits/thread/handlers.test.ts": "jones-owned",
+    "apps/server/src/mcp/toolkits/thread/handlers.ts": "accepted-shared",
+    "apps/server/src/mcp/toolkits/thread/tools.ts": "accepted-shared",
+    "apps/server/src/nativeCreation/NativeCreationAuthority.test.ts": "jones-owned",
+    "apps/server/src/nativeCreation/NativeCreationAuthority.ts": "jones-owned",
+    "apps/server/src/nativeCreation/NativeCreationPreparation.test.ts": "jones-owned",
+    "apps/server/src/nativeCreation/NativeCreationPreparation.ts": "jones-owned",
+    "apps/server/src/nativeCreation/NativeCreationRepository.test.ts": "jones-owned",
+    "apps/server/src/nativeCreation/NativeCreationRepository.ts": "jones-owned",
+    "apps/server/src/nativeCreation/NativeCreationRepositoryMigration.test.ts": "jones-owned",
+    "apps/server/src/nativeCreation/NativeCreationRepositorySqlite.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/AcpRegistryAdapterV2.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/AcpReplayStatusPublication.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.testkit.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.ts": "hook",
+    "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.testkit.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/PiAdapterV2.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Adapters/PiAdapterV2.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/CheckpointCaptureService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/CheckpointRollbackService.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/CommandObservation.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/DispatchGuard.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/EffectOutbox.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/EffectWorker.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/EffectWorker.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/EventSink.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/EventStore.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/FoundationPersistence.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/LegacyBootstrap.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/LegacyBootstrapPreflight.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/Orchestrator.ts": "hook",
+    "apps/server/src/orchestration-v2/ProjectionStore.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ProviderAdapter.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ProviderEventIngestor.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ProviderGoalState.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/ProviderGoalState.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.ts": "hook",
+    "apps/server/src/orchestration-v2/ProviderSwitchService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ProviderSwitchService.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.ts": "hook",
+    "apps/server/src/orchestration-v2/QueueCompatibility.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/QueueCompatibility.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/QueuedToolBoundary.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/RecordedTypes.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/ResourceCleanupService.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/RestartContinuation.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/RunExecutionService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/RunExecutionService.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/SelfSettlement.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/SelfSettlement.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuation.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/ShellStream.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/SubagentProjection.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/SubagentProjection.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ThreadDeletion.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ThreadForkService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ThreadForkService.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ThreadMessageIntake.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ThreadStream.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/WireProjection.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/WireProjection.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/http.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/providerGoalHttp.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/queueCompatibilityHttp.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/runtimeLayer.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs": "accepted-shared",
+    "apps/server/src/orchestration-v2/testkit/ReplayFixtureWorkspace.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/persistence/JonesMigrationGuard.ts": "jones-owned",
+    "apps/server/src/persistence/Layers/OrchestrationEventStore.ts": "accepted-shared",
+    "apps/server/src/persistence/Migrations.test.ts": "jones-owned",
+    "apps/server/src/persistence/Migrations.ts": "accepted-shared",
+    "apps/server/src/persistence/Migrations/001_JonesWorktreeOwnershipLeases.ts": "jones-owned",
+    "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.ts": "jones-owned",
+    "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.ts": "jones-owned",
+    "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.ts": "jones-owned",
+    "apps/server/src/persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts": "jones-owned",
+    "apps/server/src/persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts": "jones-owned",
+    "apps/server/src/persistence/Services/OrchestrationEventStore.ts": "accepted-shared",
+    "apps/server/src/process/processPlacement.test.ts": "jones-owned",
+    "apps/server/src/process/processPlacement.ts": "jones-owned",
+    "apps/server/src/process/processPlacementBootstrap.test.ts": "jones-owned",
+    "apps/server/src/process/processPlacementBootstrap.ts": "jones-owned",
+    "apps/server/src/process/processPlacementSpawner.test.ts": "jones-owned",
+    "apps/server/src/process/processPlacementSpawner.ts": "jones-owned",
+    "apps/server/src/project/ProjectSetupScriptRunner.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/project/ProjectSetupScriptRunner.ts": "accepted-shared",
+    "apps/server/src/provider/Drivers/CodexDriver.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/Drivers/CodexDriver.ts": "accepted-shared",
+    "apps/server/src/provider/Drivers/CodexHomeLayout.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/Drivers/CodexHomeLayout.ts": "accepted-shared",
+    "apps/server/src/provider/Drivers/instanceIdentity.ts": "accepted-shared",
+    "apps/server/src/provider/Layers/CodexProvider.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/Layers/CodexProvider.ts": "accepted-shared",
+    "apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.ts": "accepted-shared",
+    "apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/Layers/ProviderRegistry.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/providerGoal.test.ts": "jones-owned",
+    "apps/server/src/provider/providerGoal.ts": "jones-owned",
+    "apps/server/src/provider/providerQueue.test.ts": "jones-owned",
+    "apps/server/src/provider/providerQueue.ts": "jones-owned",
+    "apps/server/src/provider/providerQueueHttp.test.ts": "jones-owned",
+    "apps/server/src/provider/providerQueueHttp.ts": "jones-owned",
+    "apps/server/src/provider/providerSnapshot.ts": "accepted-shared",
+    "apps/server/src/provider/qualifiedQuota.ts": "jones-owned",
+    "apps/server/src/provider/testFixtures/codexCollabMockPeer.mjs": "accepted-shared",
+    "apps/server/src/pullRequest/GitHubCiStatus.test.ts": "jones-owned",
+    "apps/server/src/pullRequest/GitHubPullRequestCli.ts": "accepted-shared",
+    "apps/server/src/pullRequest/PullRequestCiStatus.test.ts": "jones-owned",
+    "apps/server/src/pullRequest/PullRequestService.ts": "accepted-shared",
+    "apps/server/src/relay/AgentAwarenessRelay.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/resourceTelemetry/Model.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/resourceTelemetry/Model.ts": "accepted-shared",
+    "apps/server/src/resourceTelemetry/ProcessAttribution.test.ts": "jones-owned",
+    "apps/server/src/resourceTelemetry/ProcessAttribution.ts": "jones-owned",
+    "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/resourceTelemetry/ResourceTelemetry.ts": "accepted-shared",
+    "apps/server/src/server.ts": "hook",
+    "apps/server/src/serverRuntimeStartup.ts": "accepted-shared",
+    "apps/server/src/serviceLauncher.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/serviceLauncher.ts": "accepted-shared",
+    "apps/server/src/sourceControl/GitLabCli.ts": "accepted-shared",
+    "apps/server/src/terminal/Manager.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/terminal/Manager.ts": "accepted-shared",
+    "apps/server/src/testUtils/shardWeights.json": "policy",
+    "apps/server/src/testkit/RpcInitialMemory.fixture.mjs": "accepted-shared",
+    "apps/server/src/tokenAccounting/ProcessReader.test.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/ProcessReader.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/ProcessReaderConfig.test.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/ProcessReaderConfig.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/Reader.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/RuntimeReader.test.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/RuntimeReader.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/TokenAccountingRpc.test.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/TokenAccountingService.test.ts": "jones-owned",
+    "apps/server/src/tokenAccounting/TokenAccountingService.ts": "jones-owned",
+    "apps/server/src/usage/UsageService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/usage/UsageService.ts": "accepted-shared",
+    "apps/server/src/usage/usageAggregation.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/usage/usageAggregation.ts": "accepted-shared",
+    "apps/server/src/vcs/GitVcsDriver.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/vcs/GitVcsDriver.ts": "accepted-shared",
+    "apps/server/src/vcs/GitVcsDriverCore.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/vcs/GitVcsDriverCore.ts": "accepted-shared",
+    "apps/server/src/voiceReview/bridge.test.ts": "jones-owned",
+    "apps/server/src/voiceReview/bridge.ts": "jones-owned",
+    "apps/server/src/voiceReview/config.ts": "jones-owned",
+    "apps/server/src/voiceReview/http.test.ts": "jones-owned",
+    "apps/server/src/voiceReview/http.ts": "jones-owned",
+    "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts": "jones-owned",
+    "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.ts": "jones-owned",
+    "apps/server/src/workstreams/SyntheticWorkstreamTransport.ts": "jones-owned",
+    "apps/server/src/workstreams/WorkstreamGateway.test.ts": "jones-owned",
+    "apps/server/src/workstreams/WorkstreamGateway.ts": "jones-owned",
+    "apps/server/src/workstreams/WorkstreamPlacements.test.ts": "jones-owned",
+    "apps/server/src/workstreams/http.test.ts": "jones-owned",
+    "apps/server/src/workstreams/http.ts": "jones-owned",
+    "apps/server/src/ws.ts": "hook",
+    "apps/web/package.json": "accepted-shared",
+    "apps/web/src/bootstrap.ts": "accepted-shared",
+    "apps/web/src/bootstrap.workQueue.test.ts": "jones-owned",
+    "apps/web/src/bundledDev.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/BranchToolbar.logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/BranchToolbar.logic.ts": "accepted-shared",
+    "apps/web/src/components/BranchToolbarBranchSelector.tsx": "accepted-shared",
+    "apps/web/src/components/ChatMarkdown.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/ChatMarkdown.tsx": "accepted-shared",
+    "apps/web/src/components/ChatView.logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/ChatView.logic.ts": "accepted-shared",
+    "apps/web/src/components/ChatView.tsx": "accepted-shared",
+    "apps/web/src/components/LegacySidebar.tsx": "accepted-shared",
+    "apps/web/src/components/Sidebar.logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/Sidebar.logic.ts": "accepted-shared",
+    "apps/web/src/components/Sidebar.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ChatComposer.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ChatHeader.tsx": "accepted-shared",
+    "apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx": "jones-owned",
+    "apps/web/src/components/chat/FavoriteModelShortcuts.tsx": "jones-owned",
+    "apps/web/src/components/chat/HostStatusIndicators.test.tsx": "jones-owned",
+    "apps/web/src/components/chat/HostStatusIndicators.tsx": "jones-owned",
+    "apps/web/src/components/chat/MessagesTimeline.logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/MessagesTimeline.logic.ts": "hook",
+    "apps/web/src/components/chat/MessagesTimeline.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ModelPickerContent.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ProviderInstanceShortcuts.test.ts": "jones-owned",
+    "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx": "jones-owned",
+    "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx": "jones-owned",
+    "apps/web/src/components/chat/ProviderModelPicker.tsx": "accepted-shared",
+    "apps/web/src/components/chat/QueuedRunsControl.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx": "jones-owned",
+    "apps/web/src/components/chat/ReasoningEffortShortcuts.tsx": "jones-owned",
+    "apps/web/src/components/chat/TraitsPicker.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ZoomableImage.test.tsx": "jones-owned",
+    "apps/web/src/components/chat/ZoomableImage.tsx": "accepted-shared",
+    "apps/web/src/components/chat/composerProviderState.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/composerProviderState.tsx": "accepted-shared",
+    "apps/web/src/components/chat/composerSendRecovery.test.ts": "jones-owned",
+    "apps/web/src/components/chat/composerSendRecovery.ts": "jones-owned",
+    "apps/web/src/components/chat/composerShortcutRails.test.ts": "jones-owned",
+    "apps/web/src/components/chat/composerShortcutRails.ts": "jones-owned",
+    "apps/web/src/components/chat/composerSubmission.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/composerSubmission.ts": "accepted-shared",
+    "apps/web/src/components/conversations/ConversationLibraryPage.logic.test.ts": "jones-owned",
+    "apps/web/src/components/conversations/ConversationLibraryPage.logic.ts": "jones-owned",
+    "apps/web/src/components/conversations/ConversationLibraryPage.test.tsx": "jones-owned",
+    "apps/web/src/components/conversations/ConversationLibraryPage.tsx": "jones-owned",
+    "apps/web/src/components/files/AttachmentFilePreview.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/files/AttachmentFilePreview.tsx": "accepted-shared",
+    "apps/web/src/components/files/BrowserDocumentFrame.tsx": "accepted-shared",
+    "apps/web/src/components/files/FilePreviewPanel.tsx": "accepted-shared",
+    "apps/web/src/components/files/PdfPreview.test.tsx": "jones-owned",
+    "apps/web/src/components/files/PdfPreview.tsx": "jones-owned",
+    "apps/web/src/components/files/fileEditorHighlight.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/preview/PreviewAutomationHosts.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/preview/PreviewAutomationHosts.tsx": "accepted-shared",
+    "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx": "jones-owned",
+    "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.tsx": "jones-owned",
+    "apps/web/src/components/settings/ScheduledTasksSettings.tsx": "accepted-shared",
+    "apps/web/src/components/settings/SettingsPanels.tsx": "accepted-shared",
+    "apps/web/src/components/settings/scheduledTasksSettings.logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/settings/scheduledTasksSettings.logic.ts": "accepted-shared",
+    "apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx": "jones-owned",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx": "hook",
+    "apps/web/src/components/sidebar/SidebarThreadHeader.tsx": "accepted-shared",
+    "apps/web/src/components/sidebar/mainAppLocation.test.ts": "jones-owned",
+    "apps/web/src/components/sidebar/mainAppLocation.ts": "accepted-shared",
+    "apps/web/src/components/threadActionMenu.logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/threadActionMenu.logic.ts": "accepted-shared",
+    "apps/web/src/components/usage/SavedTokenAccounting.test.tsx": "jones-owned",
+    "apps/web/src/components/usage/SavedTokenAccounting.tsx": "jones-owned",
+    "apps/web/src/components/usage/UsagePage.refresh.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/usage/UsagePage.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/usage/UsagePage.tsx": "accepted-shared",
+    "apps/web/src/components/usage/UsageProviderChart.interaction.test.tsx": "jones-owned",
+    "apps/web/src/components/usage/UsageProviderChart.tsx": "accepted-shared",
+    "apps/web/src/components/usage/UsageProviderDetails.tsx": "jones-owned",
+    "apps/web/src/components/usage/usageBreakdown.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/usage/usageBreakdown.ts": "accepted-shared",
+    "apps/web/src/components/usage/usageDateRange.test.ts": "jones-owned",
+    "apps/web/src/components/usage/usageDateRange.ts": "jones-owned",
+    "apps/web/src/components/voiceReview/VoiceReviewPage.tsx": "jones-owned",
+    "apps/web/src/components/voiceReview/useVoiceReview.ts": "jones-owned",
+    "apps/web/src/components/voiceReview/voiceReviewActions.test.ts": "jones-owned",
+    "apps/web/src/components/voiceReview/voiceReviewActions.ts": "jones-owned",
+    "apps/web/src/components/workQueue/WorkQueuePage.test.tsx": "jones-owned",
+    "apps/web/src/components/workQueue/WorkQueuePage.tsx": "jones-owned",
+    "apps/web/src/components/workQueue/WorkQueuePanel.tsx": "jones-owned",
+    "apps/web/src/components/workQueue/WorkQueuePreview.tsx": "jones-owned",
+    "apps/web/src/components/workQueue/mockWorkQueue.ts": "jones-owned",
+    "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx": "jones-owned",
+    "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx": "jones-owned",
+    "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx": "jones-owned",
+    "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx": "jones-owned",
+    "apps/web/src/components/workstreams/WorkstreamSidebarSection.tsx": "jones-owned",
+    "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts": "jones-owned",
+    "apps/web/src/components/workstreams/nativeThreadGrouping.ts": "jones-owned",
+    "apps/web/src/components/workstreams/nativeWorkstreamActions.fixtures.ts": "jones-owned",
+    "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts": "jones-owned",
+    "apps/web/src/components/workstreams/nativeWorkstreamActions.ts": "jones-owned",
+    "apps/web/src/components/workstreams/types.ts": "jones-owned",
+    "apps/web/src/components/workstreams/workstreamPresentation.test.ts": "jones-owned",
+    "apps/web/src/components/workstreams/workstreamPresentation.ts": "jones-owned",
+    "apps/web/src/components/workstreams/workstreamThreadStatus.ts": "jones-owned",
+    "apps/web/src/composerDraftStore.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/composerDraftStore.ts": "accepted-shared",
+    "apps/web/src/contextMenuFallback.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/contextMenuFallback.ts": "accepted-shared",
+    "apps/web/src/draftId.ts": "jones-owned",
+    "apps/web/src/hooks/useThreadActionMenu.ts": "accepted-shared",
+    "apps/web/src/hostStatus.test.ts": "jones-owned",
+    "apps/web/src/hostStatus.ts": "jones-owned",
+    "apps/web/src/index.css": "accepted-shared",
+    "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/jones/workMode/SidebarWorkModePill.tsx": "jones-owned",
+    "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.tsx": "jones-owned",
+    "apps/web/src/jones/workstreamAppearance/useWorkstreamAppearance.ts": "jones-owned",
+    "apps/web/src/lib/runtime.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/lib/runtime.ts": "accepted-shared",
+    "apps/web/src/lib/utils.ts": "accepted-shared",
+    "apps/web/src/routeTree.gen.ts": "generated",
+    "apps/web/src/routes/_chat.conversations.tsx": "hook",
+    "apps/web/src/routes/_chat.pull-requests.tsx": "hook",
+    "apps/web/src/routes/voice-review.tsx": "hook",
+    "apps/web/src/routes/work-queue.tsx": "hook",
+    "apps/web/src/state/conversations.ts": "jones-owned",
+    "apps/web/src/state/tokenAccounting.test.ts": "jones-owned",
+    "apps/web/src/state/tokenAccounting.ts": "jones-owned",
+    "apps/web/src/state/workstreams.test.ts": "jones-owned",
+    "apps/web/src/state/workstreams.ts": "jones-owned",
+    "apps/web/src/test/reactHookHarness.ts": "accepted-shared",
+    "apps/web/src/workQueuePreview.tsx": "jones-owned",
+    "assets/jones-code/jc-macos-1024.png": "jones-owned",
+    "assets/jones-code/jc-mark.svg": "jones-owned",
+    "docs/internals/checkpoint-safety.md": "policy",
+    "docs/internals/process-placement.md": "policy",
+    "docs/internals/provider-runtime-identity.md": "policy",
+    "docs/internals/providers.md": "policy",
+    "docs/internals/remote.md": "accepted-shared",
+    "docs/internals/resource-telemetry.md": "policy",
+    "docs/operations/build-artifacts.md": "policy",
+    "docs/operations/contributor-guidance.md": "policy",
+    "docs/operations/development.md": "policy",
+    "docs/operations/observability.md": "policy",
+    "docs/operations/upstream-sync.md": "policy",
+    "docs/user/composer.md": "policy",
+    "docs/user/providers-codex.md": "policy",
+    "docs/user/remote-access.md": "accepted-shared",
+    "docs/user/thread-sidebar.md": "policy",
+    "docs/user/work-mode.md": "jones-owned",
+    "docs/user/workstreams.md": "policy",
+    "knip.jsonc": "policy",
+    "native/process-placement/build.mjs": "jones-owned",
+    "native/process-placement/build.test.mjs": "jones-owned",
+    "native/process-placement/placement.c": "jones-owned",
+    "package.json": "accepted-shared",
+    "packages/client-runtime/package.json": "accepted-shared",
+    "packages/client-runtime/src/authorization/index.ts": "accepted-shared",
+    "packages/client-runtime/src/connection/registry.ts": "accepted-shared",
+    "packages/client-runtime/src/conversations/http.test.ts": "jones-owned",
+    "packages/client-runtime/src/conversations/http.ts": "jones-owned",
+    "packages/client-runtime/src/conversations/import.test.ts": "jones-owned",
+    "packages/client-runtime/src/conversations/import.ts": "jones-owned",
+    "packages/client-runtime/src/conversations/index.ts": "jones-owned",
+    "packages/client-runtime/src/conversations/model.cases.ts": "jones-owned",
+    "packages/client-runtime/src/conversations/model.test.ts": "jones-owned",
+    "packages/client-runtime/src/conversations/model.ts": "jones-owned",
+    "packages/client-runtime/src/operations/commands.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/operations/commands.ts": "accepted-shared",
+    "packages/client-runtime/src/rpc/client.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/rpc/client.ts": "accepted-shared",
+    "packages/client-runtime/src/state/models.ts": "accepted-shared",
+    "packages/client-runtime/src/state/orchestrationV2Projection.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/pullRequests.ts": "accepted-shared",
+    "packages/client-runtime/src/state/runtime.ts": "accepted-shared",
+    "packages/client-runtime/src/state/server.ts": "accepted-shared",
+    "packages/client-runtime/src/state/serverTokenAccounting.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/threadExecution.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/threadExecution.ts": "accepted-shared",
+    "packages/client-runtime/src/state/threadShell.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/workstreams/appearance.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/workstreams/appearance.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/cache.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/colors.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/colors.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/index.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/lifecycle.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/lifecycle.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/live.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/live.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/model.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/nativeThreadGrouping.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/placements.test.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/placements.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/projection.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/reducer.ts": "jones-owned",
+    "packages/client-runtime/src/state/workstreams/workstreams.test.ts": "jones-owned",
+    "packages/client-runtime/src/t3ToolSummary.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/t3ToolSummary.ts": "accepted-shared",
+    "packages/client-runtime/src/voice-review.test.ts": "jones-owned",
+    "packages/client-runtime/src/voice-review.ts": "jones-owned",
+    "packages/client-runtime/src/voiceReview/fixtures.ts": "jones-owned",
+    "packages/contracts/package.json": "accepted-shared",
+    "packages/contracts/src/conversationLibrary.test.ts": "jones-owned",
+    "packages/contracts/src/conversationLibrary.ts": "jones-owned",
+    "packages/contracts/src/environment.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/environment.ts": "accepted-shared",
+    "packages/contracts/src/environmentHttp.ts": "hook",
+    "packages/contracts/src/hostStatus.ts": "jones-owned",
+    "packages/contracts/src/index.ts": "hook",
+    "packages/contracts/src/ipc.ts": "accepted-shared",
+    "packages/contracts/src/jones/workMode.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/jones/workMode.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamAppearance.ts": "jones-owned",
+    "packages/contracts/src/legacyOrchestrationCompatibility.ts": "jones-owned",
+    "packages/contracts/src/nativeCreation.test.ts": "jones-owned",
+    "packages/contracts/src/nativeCreation.ts": "jones-owned",
+    "packages/contracts/src/orchestrationDispatch.ts": "accepted-shared",
+    "packages/contracts/src/orchestrationV2.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/orchestrationV2.ts": "accepted-shared",
+    "packages/contracts/src/orchestratorMcp.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/orchestratorMcp.ts": "accepted-shared",
+    "packages/contracts/src/preview.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/previewAutomation.ts": "accepted-shared",
+    "packages/contracts/src/providerQueue.ts": "jones-owned",
+    "packages/contracts/src/providerRuntimeIdentity.test.ts": "jones-owned",
+    "packages/contracts/src/providerRuntimeIdentity.ts": "jones-owned",
+    "packages/contracts/src/pullRequest.ts": "accepted-shared",
+    "packages/contracts/src/queueDispatch.ts": "jones-owned",
+    "packages/contracts/src/queueProtocol.test.ts": "jones-owned",
+    "packages/contracts/src/queueProtocol.ts": "jones-owned",
+    "packages/contracts/src/resourceTelemetry.test.ts": "jones-owned",
+    "packages/contracts/src/resourceTelemetry.ts": "accepted-shared",
+    "packages/contracts/src/rpc.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/rpc.ts": "accepted-shared",
+    "packages/contracts/src/server.ts": "accepted-shared",
+    "packages/contracts/src/settings.ts": "hook",
+    "packages/contracts/src/threadCorpusProtocol.test.ts": "jones-owned",
+    "packages/contracts/src/threadCorpusProtocol.ts": "jones-owned",
+    "packages/contracts/src/threadMetadataMcp.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/threadMetadataMcp.ts": "accepted-shared",
+    "packages/contracts/src/threadRegistry.ts": "jones-owned",
+    "packages/contracts/src/tokenAccounting.test.ts": "jones-owned",
+    "packages/contracts/src/tokenAccounting.ts": "jones-owned",
+    "packages/contracts/src/usage.ts": "accepted-shared",
+    "packages/contracts/src/vcs.ts": "accepted-shared",
+    "packages/contracts/src/voiceReview.test.ts": "jones-owned",
+    "packages/contracts/src/voiceReview.ts": "jones-owned",
+    "packages/contracts/src/workstreamPlacements.ts": "jones-owned",
+    "packages/contracts/src/workstreams-fixtures/README.md": "jones-owned",
+    "packages/contracts/src/workstreams-fixtures/conformance.json.fixture": "jones-owned",
+    "packages/contracts/src/workstreams-fixtures/negative-cases.json.fixture": "jones-owned",
+    "packages/contracts/src/workstreams-fixtures/raw-fixtures.d.ts": "jones-owned",
+    "packages/contracts/src/workstreams-fixtures/semantic-cases.json.fixture": "jones-owned",
+    "packages/contracts/src/workstreams.conformance.test.ts": "jones-owned",
+    "packages/contracts/src/workstreams.test.ts": "jones-owned",
+    "packages/contracts/src/workstreams.ts": "jones-owned",
+    "packages/contracts/test-fixtures/queue-dispatch-capability.json": "jones-owned",
+    "packages/contracts/test-fixtures/thread-corpus-capability.json": "jones-owned",
+    "packages/shared/package.json": "accepted-shared",
+    "packages/shared/src/cliRelease.test.ts": "jones-tests-in-upstream",
+    "packages/shared/src/cliRelease.ts": "accepted-shared",
+    "packages/shared/src/conversationLibrary.cases.ts": "jones-owned",
+    "packages/shared/src/conversationLibrary.test.ts": "jones-owned",
+    "packages/shared/src/conversationLibrary.ts": "jones-owned",
+    "packages/shared/src/git.test.ts": "jones-tests-in-upstream",
+    "packages/shared/src/git.ts": "accepted-shared",
+    "packages/shared/src/jones/workMode.test.ts": "jones-tests-in-upstream",
+    "packages/shared/src/jones/workMode.ts": "jones-owned",
+    "packages/shared/src/model.test.ts": "jones-tests-in-upstream",
+    "packages/shared/src/model.ts": "accepted-shared",
+    "packages/shared/src/serverSettings.test.ts": "jones-tests-in-upstream",
+    "packages/shared/src/t3McpToolPresentation.test.ts": "jones-tests-in-upstream",
+    "packages/shared/src/t3McpToolPresentation.ts": "accepted-shared",
+    "packages/shared/src/usageMerge.test.ts": "jones-tests-in-upstream",
+    "packages/shared/src/usageMerge.ts": "accepted-shared",
+    "packages/ssh/src/runnerProcess.test.ts": "jones-tests-in-upstream",
+    "packages/ssh/src/tunnel.test.ts": "jones-tests-in-upstream",
+    "pnpm-lock.yaml": "lock",
+    "scripts/build-desktop-artifact.test.ts": "jones-tests-in-upstream",
+    "scripts/build-desktop-artifact.ts": "accepted-shared",
+    "scripts/export-jones-code-icon.swift": "jones-owned",
+    "scripts/jones/boundary/fragments/work-mode.json": "jones-owned",
+    "scripts/lib/brand-assets.ts": "accepted-shared",
+    "scripts/release-smoke.ts": "accepted-shared",
+    "scripts/stamp-jones-build.test.ts": "jones-owned",
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/mcp/organizationMetadata/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/organizationMetadata/tools.ts": "jones-owned",
+    "apps/server/src/mcp/McpHttpServer.ts": "hook",
+    "packages/contracts/src/jones/organizationMetadata.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/jones/organizationMetadata.ts": "jones-owned"
+  },
+  "jonesOwnedPaths": [
+    "apps/desktop/scripts/ui-evidence/",
+    "apps/server/src/conversations/",
+    "apps/server/src/hostStatus/",
+    "apps/server/src/nativeCreation/",
+    "apps/server/src/tokenAccounting/",
+    "apps/server/src/voiceReview/",
+    "apps/web/src/components/conversations/",
+    "apps/web/src/components/voiceReview/",
+    "apps/web/src/components/workQueue/",
+    "packages/client-runtime/src/conversations/",
+    "scripts/jones/"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/desktop/src/app/DesktopUserData.ts",
+      "to": "apps/desktop/src/app/DesktopUserDataOverride.ts"
+    },
+    {
+      "from": "apps/desktop/src/boot.ts",
+      "to": "apps/desktop/src/app/DesktopUserDataOverride.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/home/HomeScreen.tsx",
+      "to": "apps/mobile/src/features/workstreams/listProjection.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/home/HomeScreen.tsx",
+      "to": "apps/mobile/src/features/workstreams/useWorkstreams.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
+      "to": "apps/mobile/src/features/threads/projectThreadStartLatch.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
+      "to": "apps/mobile/src/features/workstreams/listProjection.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
+      "to": "apps/mobile/src/features/workstreams/useWorkstreams.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/threadListV2.test.ts",
+      "to": "apps/mobile/src/features/workstreams/listProjection.ts"
+    },
+    {
+      "from": "apps/server/scripts/acp-replay-agent.ts",
+      "to": "apps/server/scripts/acpReplayStatusPublication.ts"
+    },
+    {
+      "from": "apps/server/src/binCli.ts",
+      "to": "apps/server/src/cli/workstream.ts"
+    },
+    {
+      "from": "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/provider/providerGoal.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/orchestration-v2/DispatchGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventStore.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+      "to": "apps/server/src/orchestration-v2/ServerUpdateContinuation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/orchestration-v2/DispatchGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/orchestration-v2/QueuedToolBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/orchestration-v2/SelfSettlement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderAdapter.ts",
+      "to": "apps/server/src/provider/providerGoal.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ResourceCleanupService.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ShellStream.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadDeletion.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrapPreflight.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrapPreflight.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadStream.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/WireProjection.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/http.ts",
+      "to": "apps/server/src/orchestration-v2/CommandObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/http.ts",
+      "to": "apps/server/src/orchestration-v2/ProviderGoalState.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/orchestration-v2/CommandObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/orchestration-v2/QueuedToolBoundary.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Layers/OrchestrationEventStore.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/persistence/JonesMigrationGuard.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/persistence/Migrations/001_JonesWorktreeOwnershipLeases.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Services/OrchestrationEventStore.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/CodexDriver.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/CodexDriver.ts",
+      "to": "apps/server/src/provider/qualifiedQuota.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Layers/CodexProvider.ts",
+      "to": "apps/server/src/provider/qualifiedQuota.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/Model.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/Model.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/ResourceTelemetry.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/conversations/http.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/hostStatus/HostStatus.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/hostStatus/http.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/orchestration-v2/QueueCompatibility.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/orchestration-v2/queueCompatibilityHttp.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/provider/providerQueueHttp.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/tokenAccounting/RuntimeReader.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/tokenAccounting/TokenAccountingService.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/voiceReview/bridge.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/voiceReview/http.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/workstreams/http.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/orchestration-v2/ServerUpdateContinuation.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.test.ts",
+      "to": "apps/server/src/environment/nativeStoreAuthorityPersistence.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/environment/nativeStoreAuthorityPersistence.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/orchestration-v2/LegacyBootstrap.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/orchestration-v2/QueueCompatibility.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/tokenAccounting/TokenAccountingService.ts"
+    },
+    {
+      "from": "apps/web/src/bootstrap.ts",
+      "to": "apps/web/src/workQueuePreview.tsx"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/components/chat/composerSendRecovery.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/components/workstreams/WorkstreamSidebarSection.tsx"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/components/workstreams/nativeThreadGrouping.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/components/workstreams/nativeWorkstreamActions.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/state/workstreams.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/components/chat/ReasoningEffortShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/components/chat/composerShortcutRails.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatHeader.tsx",
+      "to": "apps/web/src/components/chat/HostStatusIndicators.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ModelPickerContent.tsx",
+      "to": "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/files/BrowserDocumentFrame.tsx",
+      "to": "apps/web/src/components/files/PdfPreview.tsx"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/components/usage/SavedTokenAccounting.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/components/usage/UsageProviderDetails.tsx"
+    },
+    {
+      "from": "apps/web/src/components/usage/UsagePage.tsx",
+      "to": "apps/web/src/components/usage/usageDateRange.ts"
+    },
+    {
+      "from": "apps/web/src/composerDraftStore.ts",
+      "to": "apps/web/src/draftId.ts"
+    },
+    {
+      "from": "apps/web/src/lib/utils.ts",
+      "to": "apps/web/src/draftId.ts"
+    },
+    {
+      "from": "apps/web/src/routes/_chat.conversations.tsx",
+      "to": "apps/web/src/components/conversations/ConversationLibraryPage.tsx"
+    },
+    {
+      "from": "apps/web/src/routes/_chat.pull-requests.tsx",
+      "to": "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.tsx"
+    },
+    {
+      "from": "apps/web/src/routes/voice-review.tsx",
+      "to": "apps/web/src/components/voiceReview/VoiceReviewPage.tsx"
+    },
+    {
+      "from": "apps/web/src/routes/work-queue.tsx",
+      "to": "apps/web/src/components/workQueue/WorkQueuePage.tsx"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/queueProtocol.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/threadCorpusProtocol.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/conversationLibrary.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/hostStatus.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/providerQueue.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/threadRegistry.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/voiceReview.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/workstreamPlacements.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/workstreams.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/hostStatus.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/legacyOrchestrationCompatibility.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/nativeCreation.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/providerQueue.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/providerRuntimeIdentity.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/queueDispatch.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/queueProtocol.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/threadCorpusProtocol.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/threadRegistry.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/tokenAccounting.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/voiceReview.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/workstreamPlacements.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/workstreams.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationDispatch.ts",
+      "to": "packages/contracts/src/nativeCreation.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/nativeCreation.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/providerQueue.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/providerRuntimeIdentity.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/queueDispatch.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/tokenAccounting.ts"
+    },
+    {
+      "from": "packages/contracts/src/server.ts",
+      "to": "packages/contracts/src/providerQueue.ts"
+    }
+  ]
+}

@@ -32,8 +32,6 @@ import {
 import {
   type DesktopWslState,
   type EnvironmentId,
-  type ScopedThreadRef,
-  type OrchestrationV2CurrentThreadRuntimeTarget,
   type EnvironmentMachineKind,
   type FilesystemBrowseResult,
   type ProjectId,
@@ -79,6 +77,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import type { LegendListRef } from "@legendapp/list/react";
 import { useAtomValue } from "@effect/atom-react";
 
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
@@ -103,11 +102,7 @@ import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
-import {
-  useCurrentRuntimeStop,
-  type CurrentRuntimeStopOperation,
-  type CurrentRuntimeStopOutcome,
-} from "../hooks/useCurrentRuntimeStop";
+import { threadEnvironment } from "../state/threads";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
@@ -163,7 +158,9 @@ import {
   buildRootGroups,
   buildThreadActionItems,
   buildLinkedThreadActionItems,
+  buildCommandPaletteRows,
   enumerateCommandPaletteItems,
+  findHighlightedCommandPaletteItem,
   type CommandPaletteActionItem,
   type CommandPaletteOpenIntent,
   type CommandPaletteSubmenuItem,
@@ -180,7 +177,10 @@ import {
 import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
-import { CommandPaletteResults } from "./CommandPaletteResults";
+import {
+  CommandPaletteVirtualizedResults,
+  scrollCommandPaletteRowIntoView,
+} from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon, ForgejoIcon } from "./Icons";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { Checkbox } from "./ui/checkbox";
@@ -464,80 +464,6 @@ function projectFavicon(project: Project) {
   return <ProjectFavicon project={project} className="size-4" />;
 }
 
-export type CommandPaletteRestartNotice = {
-  readonly status: CurrentRuntimeStopOutcome["status"] | "known-stopped" | "unavailable";
-  readonly reason: string | null;
-  readonly checkStatus?: () => Promise<void>;
-};
-
-export async function restartCommandPaletteRuntime(options: {
-  readonly threadRef: ScopedThreadRef;
-  readonly runtimeStop: ReturnType<typeof useCurrentRuntimeStop>;
-  readonly refresh: (target: OrchestrationV2CurrentThreadRuntimeTarget) => Promise<void>;
-  readonly notify: (notice: CommandPaletteRestartNotice) => void;
-}): Promise<void> {
-  const { threadRef, runtimeStop, refresh, notify } = options;
-  const finish = async (
-    outcome: CurrentRuntimeStopOutcome,
-    expectedOperation?: CurrentRuntimeStopOperation,
-  ): Promise<void> => {
-    const correlatedOperation =
-      outcome.commandId !== null && outcome.target !== null
-        ? { commandId: outcome.commandId, target: outcome.target }
-        : undefined;
-    const hasCorrelation = correlatedOperation !== undefined;
-    const operation = correlatedOperation ?? expectedOperation;
-    const status =
-      !hasCorrelation && (outcome.status === "stopped" || outcome.status === "pending")
-        ? "unknown"
-        : outcome.status;
-    if (status === "stopped" && outcome.target !== null) {
-      await refresh(outcome.target);
-      notify({ status: "stopped", reason: outcome.reason });
-      return;
-    }
-    notify({
-      status,
-      reason:
-        !hasCorrelation && outcome.status !== "unknown" && outcome.status !== "rejected"
-          ? "The original stop correlation is unavailable. No provider refresh was performed."
-          : outcome.reason,
-      ...(operation && (status === "pending" || status === "unknown")
-        ? {
-            checkStatus: async () => {
-              const observed = await runtimeStop.observe(threadRef, operation);
-              await finish(
-                observed ?? {
-                  status: "unknown",
-                  commandAccepted: false,
-                  queueFenceInstalled: false,
-                  reason: "The original stop observation is unavailable. No new stop was sent.",
-                  commandId: null,
-                  target: null,
-                },
-                operation,
-              );
-            },
-          }
-        : {}),
-    });
-  };
-  const savedOutcome = await runtimeStop.observe(threadRef);
-  if (savedOutcome !== null) {
-    await finish(savedOutcome);
-    return;
-  }
-  const captured = await runtimeStop.capture(threadRef);
-  if (captured.status !== "current") {
-    notify({
-      status: captured.status,
-      reason: captured.status === "unavailable" ? captured.reason : null,
-    });
-    return;
-  }
-  await finish(await runtimeStop.request(threadRef, captured.target));
-}
-
 export function CommandPalette({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(reduceCommandPaletteUiState, {
@@ -774,6 +700,15 @@ function OpenCommandPaletteDialog(props: {
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
+  const resultListRef = useRef<LegendListRef | null>(null);
+  // Typing or entering a submenu clears the highlight. Base UI keeps its own on the
+  // first row, but the palette shows none until the user navigates, and the first
+  // ArrowDown lands on it.
+  const highlightClearedRef = useRef(false);
+  function clearTypedHighlight(): void {
+    highlightClearedRef.current = true;
+    setHighlightedItemValue(null);
+  }
   const clientSettings = useClientSettings();
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
@@ -792,7 +727,9 @@ function OpenCommandPaletteDialog(props: {
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
-  const runtimeStop = useCurrentRuntimeStop();
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1503,7 +1440,7 @@ function OpenCommandPaletteDialog(props: {
             ? {
                 source: match.source,
                 snippet: match.snippet,
-                query: threadSearchQuery,
+                query: threadSearch.query,
               }
             : undefined;
         },
@@ -1524,7 +1461,7 @@ function OpenCommandPaletteDialog(props: {
       projectTitleById,
       providerEntryByEnvironmentAndInstanceId,
       threadContentMatchByKey,
-      threadSearchQuery,
+      threadSearch.query,
       threads,
     ],
   );
@@ -1541,6 +1478,7 @@ function OpenCommandPaletteDialog(props: {
           ...(view.initialQuery ? { initialQuery: view.initialQuery } : {}),
         },
       ]);
+      highlightClearedRef.current = true;
       setHighlightedItemValue(null);
       setQuery(view.initialQuery ?? "");
     },
@@ -1572,7 +1510,7 @@ function OpenCommandPaletteDialog(props: {
 
   function handleQueryChange(nextQuery: string): void {
     browseNavigation.invalidate();
-    setHighlightedItemValue(null);
+    clearTypedHighlight();
     setQuery(nextQuery);
     if (nextQuery === "" && currentView?.initialQuery) {
       popView();
@@ -2045,83 +1983,37 @@ function OpenCommandPaletteDialog(props: {
       searchTerms: ["restart", "reset", "reload", "agent", "session", "skills", "plugins", "mcp"],
       title: "Restart agent session",
       icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
-      // The conversation survives a restart; its next message starts the
-      // replacement session and reloads skills, plugins, and MCP servers.
-      // Provider refresh updates the composer's workspace slash-command scan.
+      // Stopping the provider process keeps the conversation: the next message
+      // spawns a fresh one that resumes it and reloads skills, plugins, and MCP
+      // servers. The fresh workspace scan updates the composer's slash menu.
+      // Failures throw into executeItem's error toast.
       run: async () => {
         const { environmentId } = thread;
-        const threadRef = scopeThreadRef(environmentId, thread.id);
-        await restartCommandPaletteRuntime({
-          threadRef,
-          runtimeStop,
-          refresh: async (target) => {
-            const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
-            if (!project) {
-              throw new Error(
-                "The current runtime stopped, but its project is unavailable for provider refresh.",
-              );
-            }
-            const refreshed = await refreshProviders({
-              environmentId,
-              input: {
-                instanceId: target.binding.instanceId,
-                cwd: thread.worktreePath ?? project.workspaceRoot,
-                fresh: true,
-              },
-            });
-            if (refreshed._tag === "Failure") {
-              throw new Error(
-                `The current runtime stopped, but provider refresh failed: ${errorMessage(squashAtomCommandFailure(refreshed))}`,
-              );
-            }
-          },
-          notify: (notice) => {
-            toastManager.add({
-              type:
-                notice.status === "stopped"
-                  ? "success"
-                  : notice.status === "rejected"
-                    ? "error"
-                    : "info",
-              title:
-                notice.status === "stopped"
-                  ? "Agent session will restart"
-                  : notice.status === "known-stopped"
-                    ? "No current agent session"
-                    : notice.status === "unavailable"
-                      ? "Restart unavailable"
-                      : notice.status === "rejected"
-                        ? "Restart stop rejected"
-                        : notice.status === "unknown"
-                          ? "Restart outcome unknown"
-                          : "Restart waiting for runtime stop",
-              description:
-                notice.reason ??
-                (notice.status === "stopped"
-                  ? "Your next message starts a fresh session."
-                  : notice.status === "known-stopped"
-                    ? "No current runtime was stopped by this action."
-                    : "The current runtime has not been confirmed stopped."),
-              ...(notice.checkStatus
-                ? {
-                    timeout: 0,
-                    actionProps: {
-                      children: "Check status",
-                      onClick: () => {
-                        void notice.checkStatus?.().catch((error) => {
-                          toastManager.add({
-                            type: "error",
-                            title: "Couldn't check restart status",
-                            description: errorMessage(error),
-                          });
-                        });
-                      },
-                    },
-                  }
-                : {}),
-            });
+        if (thread.runtime !== null) {
+          const stopped = await stopThreadSession({
+            environmentId,
+            input: { threadId: thread.id },
+          });
+          if (stopped._tag === "Failure") throw squashAtomCommandFailure(stopped);
+        }
+        // The server stops the process after accepting the command. A failed
+        // stop shows in the thread.
+        toastManager.add({
+          type: "success",
+          title: "Agent session will restart",
+          description: "Your next message starts a fresh session.",
+        });
+        const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
+        if (!project) return;
+        const refreshed = await refreshProviders({
+          environmentId,
+          input: {
+            instanceId: thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
+            cwd: thread.worktreePath ?? project.workspaceRoot,
+            fresh: true,
           },
         });
+        if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
       },
     });
   }
@@ -3062,6 +2954,9 @@ function OpenCommandPaletteDialog(props: {
   } else if (isBrowsing) {
     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
   }
+  const resultRows = buildCommandPaletteRows(displayedGroups);
+  const autoHighlightsFirstRow =
+    !isBrowsing && !isRemoteProjectCloneFlow && newProjectFlow === null;
 
   const inputPlaceholder =
     newProjectFlow !== null
@@ -3207,6 +3102,43 @@ function OpenCommandPaletteDialog(props: {
     if (event.key === "Backspace" && query === "" && isSubmenu) {
       event.preventDefault();
       popView();
+      return;
+    }
+
+    // Base UI ignores navigation keys with modifiers, so these fallbacks do too.
+    if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
+    // Base UI only keeps a hidden highlight on the first row when it auto-highlights.
+    const firstItemValue = autoHighlightsFirstRow ? resultRows.itemValues[0] : undefined;
+    if (
+      event.key === "ArrowDown" &&
+      highlightClearedRef.current &&
+      firstItemValue &&
+      !event.nativeEvent.isComposing
+    ) {
+      (event as typeof event & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
+      event.preventDefault();
+      highlightClearedRef.current = false;
+      setHighlightedItemValue(firstItemValue);
+      scrollCommandPaletteRowIntoView(
+        resultListRef.current,
+        resultRows.rowIndexByItemIndex[0] ?? 0,
+      );
+      return;
+    }
+
+    // Base UI clicks the highlighted row on Enter, which does nothing once the
+    // virtualized list has unmounted it, so run the tracked highlight directly.
+    if (event.key === "Enter" && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+      const highlightedItem = findHighlightedCommandPaletteItem(
+        displayedGroups,
+        highlightedItemValue ?? firstItemValue ?? null,
+      );
+      if (highlightedItem) {
+        (event as typeof event & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
+        event.preventDefault();
+        event.stopPropagation();
+        executeItem(highlightedItem);
+      }
     }
   }
 
@@ -3473,9 +3405,7 @@ function OpenCommandPaletteDialog(props: {
     <CommandPaletteContent
       key={`${viewStack.length}-${browseGeneration}-${isBrowsing}-${newProjectFlow ? "new-project" : (addProjectCloneFlow?.step ?? "none")}`}
       aria-label="Command palette"
-      autoHighlight={
-        isBrowsing || isRemoteProjectCloneFlow || newProjectFlow !== null ? false : "always"
-      }
+      autoHighlight={autoHighlightsFirstRow ? "always" : false}
       footerActionLabel={footerActionLabel}
       footerTrailing={footerTrailing}
       inputAccessory={inputAccessory}
@@ -3511,8 +3441,16 @@ function OpenCommandPaletteDialog(props: {
         onKeyDown: handleKeyDown,
       }}
       mode="none"
-      onItemHighlighted={(value) => {
+      items={resultRows.itemValues}
+      virtualized
+      onItemHighlighted={(value, eventDetails) => {
+        if (eventDetails.reason === "none" && highlightClearedRef.current) return;
+        highlightClearedRef.current = false;
         setHighlightedItemValue(typeof value === "string" ? value : null);
+        const rowIndex = resultRows.rowIndexByItemIndex[eventDetails.index];
+        if (eventDetails.reason === "keyboard" && rowIndex !== undefined) {
+          scrollCommandPaletteRowIntoView(resultListRef.current, rowIndex);
+        }
       }}
       onValueChange={handleQueryChange}
       showBackHint={isSubmenu}
@@ -3550,8 +3488,9 @@ function OpenCommandPaletteDialog(props: {
           </div>
         </div>
       ) : null}
-      <CommandPaletteResults
-        groups={displayedGroups}
+      <CommandPaletteVirtualizedResults
+        rows={resultRows.rows}
+        listRef={resultListRef}
         highlightedItemValue={highlightedItemValue}
         isActionsOnly={isActionsOnly}
         keybindings={keybindings}

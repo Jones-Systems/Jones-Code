@@ -1,7 +1,7 @@
 import type {
+  QualifiedQuota,
   CustomModelSetting,
   ProviderDriverKind,
-  QualifiedQuota,
   ModelCapabilities,
   RuntimeMode,
   ServerProvider,

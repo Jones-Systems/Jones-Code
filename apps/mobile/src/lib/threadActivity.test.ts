@@ -1,4 +1,5 @@
 import {
+  ChatAttachmentId,
   ContextHandoffId,
   MessageId,
   CheckpointId,
@@ -269,6 +270,35 @@ describe("buildThreadFeed", () => {
     expect(activities[1]?.getFullDetail()).toContain("keep input");
     expect(activities[2]?.detail).toBe("src/example.ts");
     expect(items[0]).toMatchObject({ output: rawOutput });
+  });
+
+  it("expands tool rows only when they have detail or withheld output", () => {
+    const items: OrchestrationV2TurnItem[] = [
+      { ...command(), input: "", outputOmitted: true },
+      {
+        ...base("dynamic-empty", "2026-06-20T00:00:03.000Z", 2),
+        type: "dynamic_tool",
+        toolName: "example",
+        input: {},
+      },
+      {
+        ...base("read-omitted", "2026-06-20T00:00:04.000Z", 3),
+        type: "dynamic_tool",
+        toolName: "Read",
+        input: { path: "src/env.ts" },
+        outputOmitted: true,
+      },
+    ];
+    const activities = buildThreadFeed(items.map((item, index) => projected(item, index))).flatMap(
+      (entry) => (entry.type === "activity-group" ? entry.activities : []),
+    );
+    expect(
+      activities.map(({ canExpand, fetchesDetail }) => ({ canExpand, fetchesDetail })),
+    ).toEqual([
+      { canExpand: true, fetchesDetail: true },
+      { canExpand: false, fetchesDetail: false },
+      { canExpand: true, fetchesDetail: true },
+    ]);
   });
 
   it("recognizes automation attribution after projecting a user message", () => {
@@ -1085,6 +1115,62 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("keeps imported V1 turns folded once the thread's first V2 run starts", () => {
+    const imported = <T extends OrchestrationV2TurnItem>(item: T, id: string) => ({
+      ...item,
+      id: TurnItemId.make(id),
+      runId: null,
+    });
+    const presented = (start: OrchestrationV2TurnItem) =>
+      deriveThreadFeedPresentation(
+        buildThreadFeed(
+          [
+            imported(userMessage("2026-06-20T00:00:00.000Z"), "imported-prompt"),
+            imported(
+              {
+                ...assistantMessage("2026-06-20T00:00:02.000Z"),
+                messageId: MessageId.make("update"),
+              },
+              "imported-update",
+            ),
+            imported(command("2026-06-20T00:00:04.000Z"), "imported-ls"),
+            imported(
+              {
+                ...assistantMessage("2026-06-20T00:00:08.000Z"),
+                messageId: MessageId.make("answer"),
+              },
+              "imported-answer",
+            ),
+            start,
+          ].map((item, position) => projected(item, position)),
+        ),
+        { runId, status: "running", startedAt: "2026-06-20T00:01:00.000Z", completedAt: null },
+        new Set(),
+        new Set(),
+        "2026-06-20T00:01:00.000Z",
+      )
+        .slice(0, 4)
+        .map((entry) => (entry.type === "message" ? entry.message.role : entry.type));
+
+    // A sent prompt and an automatic wake both start V2 work below the import.
+    expect(
+      presented({
+        ...userMessage("2026-06-20T00:01:00.000Z"),
+        id: TurnItemId.make("new-prompt"),
+        messageId: MessageId.make("new-prompt"),
+      }),
+    ).toEqual(["user", "assistant", "run-fold", "assistant"]);
+    expect(
+      presented({
+        ...base("wake", "2026-06-20T00:01:00.000Z", 4),
+        type: "notification",
+        source: { kind: "background_task" },
+        outcome: "completed",
+        summary: "Background task finished",
+      }),
+    ).toEqual(["user", "assistant", "run-fold", "assistant"]);
+  });
+
   it("keeps a provider-native subagent's runless tool call live while it works", () => {
     const startedAt = "2026-06-20T00:00:01.000Z";
     const { exitCode: _exitCode, ...completedCommand } = command();
@@ -1116,9 +1202,10 @@ describe("buildThreadFeed", () => {
     expect(presented.some((entry) => entry.type === "thinking")).toBe(false);
   });
 
-  it("keeps a runless tail settled while a normal thread waits for its sent run", () => {
+  it("keeps a runless tail folded while a normal thread waits for its sent run", () => {
     // Right after a send the local clock runs before the server creates the
-    // run, and the latest run may still be queued: neither is runless work.
+    // run, and the latest run may still be queued: neither is runless work,
+    // so the settled tail must not reopen and shift the feed.
     const startedAt = "2026-06-20T00:00:05.000Z";
     const feed = buildThreadFeed([
       projected({ ...userMessage(), runId: null }, 0),
@@ -1135,9 +1222,7 @@ describe("buildThreadFeed", () => {
         new Set(),
         startedAt,
       );
-      const toggle = presented.find((entry) => entry.type === "work-toggle");
-      expect(toggle).toMatchObject({ live: false, shimmer: false });
-      expect(presented.at(-1)?.type).toBe("thinking");
+      expect(presented.map((entry) => entry.type)).toEqual(["message", "run-fold", "thinking"]);
     }
   });
 
@@ -1181,6 +1266,7 @@ describe("buildThreadFeed", () => {
       summary: `Tool ${id}`,
       detail: null,
       canExpand: false,
+      fetchesDetail: false,
       getFullDetail: () => null,
       getCopyText: () => id,
       icon: "command",
@@ -2290,3 +2376,86 @@ it.each(["provider_error", "usage_limit"] as const)(
     });
   },
 );
+
+describe("work mode history", () => {
+  function present(items: OrchestrationV2TurnItem[], active = false) {
+    const feed = buildThreadFeed(items.map((item, index) => projected(item, index)));
+    return deriveThreadFeedPresentation(
+      feed,
+      null,
+      new Set(),
+      new Set(),
+      active ? "2026-06-20T00:00:01.000Z" : null,
+    );
+  }
+  it("hides persisted sentinel rows and orphan live noise", () => {
+    const items = [
+      { ...userMessage(), text: "@@@@@" },
+      { ...assistantMessage(), text: "@@@@@" },
+    ];
+    expect(present(items, true)).toEqual([]);
+    expect(items[0]?.text).toBe("@@@@@");
+  });
+  it("keeps unexpected and failed replies and other content in the same turn", () => {
+    for (const text of ["@@@@", "@@@@@ extra", " @@@@@", "@@@@@\n", "Failed to respond"]) {
+      const rows = present([
+        { ...userMessage(), text: "@@@@@" },
+        { ...assistantMessage(), text },
+      ]);
+      expect(rows.filter((row) => row.type === "message").map((row) => row.message.text)).toEqual([
+        text,
+      ]);
+    }
+    expect(
+      present([{ ...assistantMessage(), text: "@@@@@", status: "failed" }]).some(
+        (row) => row.type === "message",
+      ),
+    ).toBe(true);
+    expect(
+      present([
+        { ...userMessage(), text: "@@@@@" },
+        command(),
+        { ...assistantMessage(), text: "@@@@@" },
+      ]).some(
+        (row) =>
+          row.type === "activity-group" || row.type === "work-toggle" || row.type === "run-fold",
+      ),
+    ).toBe(true);
+    const mixed = [
+      { ...userMessage(), text: "@@@@@" },
+      { ...assistantMessage(), text: "Real content" },
+      {
+        ...assistantMessage(),
+        id: TurnItemId.make("sentinel"),
+        messageId: MessageId.make("sentinel"),
+        text: "@@@@@",
+      },
+    ];
+    expect(
+      present(mixed)
+        .filter((row) => row.type === "message")
+        .map((row) => row.message.text),
+    ).toEqual(["Real content"]);
+  });
+});
+
+it("retains mobile sentinel text with an attachment", () => {
+  const item = {
+    ...userMessage(),
+    text: "@@@@@",
+    attachments: [
+      {
+        type: "image" as const,
+        id: ChatAttachmentId.make("photo"),
+        name: "photo.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+      },
+    ],
+  };
+  expect(
+    deriveThreadFeedPresentation(buildThreadFeed([projected(item, 0)]), null, new Set()).some(
+      (row) => row.type === "message",
+    ),
+  ).toBe(true);
+});

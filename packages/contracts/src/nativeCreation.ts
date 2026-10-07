@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+
 import {
   CommandId,
   EventId,
@@ -8,7 +9,7 @@ import {
   ThreadId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import { RuntimeMode, ProviderInteractionMode } from "./providerPolicy.ts";
 
 const nativeCreationStruct = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
   const schema = Schema.Struct(fields);
@@ -120,7 +121,6 @@ const NativeCreationCommandDetails = {
     "thread.meta.update",
     "thread.message.user.append",
     "thread.session.set",
-    "thread.activity.append",
     "thread.turn.start",
     "thread.delete",
   ]),
@@ -255,6 +255,7 @@ export const NativeCreationEffect = Schema.Union([
   }),
 ]);
 export type NativeCreationEffect = typeof NativeCreationEffect.Type;
+
 /** Historical creation attestation does not attest a terminal turn or release capacity. */
 export const NativeCreationObservation = nativeCreationStruct({
   schema: Schema.Literal("t3.native-creation-observation/v1"),

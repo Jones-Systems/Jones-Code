@@ -31,7 +31,6 @@ const PREPARED_UPDATE_TTL = Duration.minutes(5);
 interface PreparedUpdate {
   readonly requestId: string;
   readonly downloadedVersion: string;
-  readonly stagedHandle?: string;
   readonly status: "prepared" | "committing" | "failed";
   readonly failureReason?: string;
   readonly expiresAt: number;
@@ -180,89 +179,6 @@ export const listen: Effect.Effect<
         yield* Ref.set(activeRequestIdRef, Option.some(request.requestId));
         yield* logInfo("remote update requested", { requestId: request.requestId });
         const { latest, changes } = yield* updates.subscribe;
-        if (latest.jones !== undefined) {
-          if (request.action === "check") {
-            const result = yield* updates.check("remote-jones-check");
-            const failed =
-              !result.checked ||
-              result.state.jones?.phase === "blocked" ||
-              result.state.jones?.phase === "error";
-            yield* publishReport(
-              result.state,
-              failed
-                ? {
-                    outcome: "failed",
-                    reason: result.state.message ?? "The Jones check could not complete.",
-                  }
-                : { outcome: "up-to-date" },
-              request.requestId,
-            );
-            return;
-          }
-          if (request.action !== "download") {
-            yield* publishReport(
-              latest,
-              {
-                outcome: "failed",
-                reason: "Jones updates require separate Check, Download, and Install actions.",
-              },
-              request.requestId,
-            );
-            return;
-          }
-          const fixed = latest.jones.provenance;
-          if (
-            fixed === undefined ||
-            fixed.artifactId !== request.artifactId ||
-            fixed.sourceSha !== request.sourceSha
-          ) {
-            yield* publishReport(
-              latest,
-              {
-                outcome: "failed",
-                reason: "The selected Jones artifact changed; check again before Download.",
-              },
-              request.requestId,
-            );
-            return;
-          }
-          const downloaded =
-            latest.jones.phase === "staged"
-              ? { accepted: true, completed: true, state: latest }
-              : yield* updates.download;
-          const stagedHandle = downloaded.state.jones?.stagedHandle;
-          if (
-            !downloaded.completed ||
-            stagedHandle === undefined ||
-            downloaded.state.downloadedVersion === null
-          ) {
-            yield* publishReport(
-              downloaded.state,
-              {
-                outcome: "failed",
-                reason: downloaded.state.message ?? "The Jones app could not be staged.",
-              },
-              request.requestId,
-            );
-            return;
-          }
-          yield* Ref.set(
-            preparedUpdateRef,
-            Option.some({
-              requestId: request.requestId,
-              downloadedVersion: downloaded.state.downloadedVersion,
-              stagedHandle,
-              status: "prepared",
-              expiresAt: (yield* Clock.currentTimeMillis) + Duration.toMillis(PREPARED_UPDATE_TTL),
-            }),
-          );
-          yield* publishReport(
-            downloaded.state,
-            { outcome: "ready-to-install" },
-            request.requestId,
-          );
-          return;
-        }
         const disabledReason = Option.getOrNull(yield* updates.disabledReason);
         let attempts: RemoteDesktopUpdateAttempts = { checks: 0, downloads: 0 };
         // The updater admits one action at a time. A state event can land
@@ -499,21 +415,14 @@ export const listen: Effect.Effect<
         return;
       }
       yield* Ref.set(activeRequestIdRef, Option.some(commit.requestId));
-      if (
-        current.downloadedVersion !== claim.prepared.downloadedVersion ||
-        (claim.prepared.stagedHandle !== undefined &&
-          current.jones?.stagedHandle !== claim.prepared.stagedHandle)
-      ) {
+      if (current.downloadedVersion !== claim.prepared.downloadedVersion) {
         const reason = "This desktop update is no longer prepared.";
         if (yield* recordPreparedFailure(commit.requestId, reason)) {
           yield* publishReport(current, { outcome: "failed", reason }, commit.requestId);
         }
         return;
       }
-      const result = yield* updates.installPrepared(
-        claim.prepared.downloadedVersion,
-        claim.prepared.stagedHandle,
-      );
+      const result = yield* updates.installPrepared(claim.prepared.downloadedVersion);
       if (
         !result.accepted &&
         result.state.downloadedVersion === claim.prepared.downloadedVersion &&

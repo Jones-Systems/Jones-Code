@@ -36,7 +36,6 @@ import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr } from "../../state/use-thread-pr";
-import { useThreadOperatingState } from "../../state/threads";
 import { useSwipeRowDormant } from "../home/swipe-row-activation";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
@@ -68,10 +67,7 @@ const STATUS_LABEL_BY_STATUS: Partial<
 > = {
   approval: { label: "Approval", className: "text-warning-foreground" },
   input: { label: "Input", className: "text-adaptive-indigo-600-300" },
-  plan: { label: "Plan", className: "text-adaptive-indigo-600-300" },
   working: { label: "Working", className: "text-adaptive-sky-600-400" },
-  waiting: { label: "Monitoring", className: "text-foreground-secondary" },
-  unknown: { label: "Status unknown", className: "text-foreground-secondary" },
   failed: { label: "Failed", className: "text-danger-foreground" },
   limited: { label: "Limited", className: "text-warning-foreground" },
 };
@@ -195,10 +191,12 @@ type ThreadListV2ShelfHeaderProps = {
   readonly pane?: "screen" | "sidebar";
 };
 
+const SHELF_LABEL = { working: "Working", snoozed: "Snoozed", settled: "Settled" } as const;
+
 function ThreadListV2ShelfHeader(
-  props: ThreadListV2ShelfHeaderProps & { readonly kind: "snoozed" | "settled" },
+  props: ThreadListV2ShelfHeaderProps & { readonly kind: keyof typeof SHELF_LABEL },
 ) {
-  const label = props.kind === "snoozed" ? "Snoozed" : "Settled";
+  const label = SHELF_LABEL[props.kind];
   return (
     <ThreadListV2Section
       label={props.expanded ? label : `${label} (${props.count})`}
@@ -215,6 +213,12 @@ function ThreadListV2ShelfHeader(
   );
 }
 
+export const ThreadListV2WorkingShelfHeader = memo(function ThreadListV2WorkingShelfHeader(
+  props: ThreadListV2ShelfHeaderProps,
+) {
+  return <ThreadListV2ShelfHeader {...props} kind="working" />;
+});
+
 export const ThreadListV2SnoozedShelfHeader = memo(function ThreadListV2SnoozedShelfHeader(
   props: ThreadListV2ShelfHeaderProps,
 ) {
@@ -230,13 +234,17 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
 export const ThreadListV2WorkstreamHeader = memo(function ThreadListV2WorkstreamHeader(props: {
   readonly name: string;
   readonly color: string;
+  readonly borderColor?: string;
   readonly count: number;
   readonly expanded: boolean;
   readonly onToggle: () => void;
   readonly onOpen: () => void;
 }) {
   return (
-    <View className="flex-row items-center px-3 py-1">
+    <View
+      className="flex-row items-center px-3 py-1"
+      style={{ borderLeftWidth: 2, borderLeftColor: props.borderColor ?? props.color }}
+    >
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${props.name}, ${props.count} threads`}
@@ -617,10 +625,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const rowAppearance = getThreadListV2RowAppearance(theme, sidebarPane, selected);
 
-  const operatingState = useThreadOperatingState(thread);
-  const status = resolveThreadListV2Status(thread, operatingState.observation, {
-    foregroundCurrent: operatingState.foregroundCurrent,
-  });
+  const status = resolveThreadListV2Status(thread);
   // "Done" marks a completion the user has not opened yet — same emerald
   // label as the web sidebar, sourced from the server-side visited watermark
   // so checking a thread on any device clears it everywhere.

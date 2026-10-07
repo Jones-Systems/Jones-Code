@@ -3,19 +3,16 @@ import { it } from "@effect/vitest";
 import {
   AuthSessionId,
   EnvironmentId,
+  ThreadId,
   VoiceReviewForbiddenError,
   type EnvironmentSessionPrincipalShape,
-  EventId,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  type OrchestrationV2AppThread,
+  type OrchestrationV2ThreadShellSnapshot,
   type ThreadRegistryThread,
   type T3PlacementResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as Data from "effect/Data";
-import * as DateTime from "effect/DateTime";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
@@ -66,64 +63,19 @@ const result: T3PlacementResult = {
   trustedEnvironments: [],
   readiness: "ready",
 };
-const unavailableGatewayMethod = () => Effect.die("Unexpected gateway method");
-const gatewayWithRead = (
-  read: WorkstreamGateway["Service"]["readThreadPlacements"],
-): WorkstreamGateway["Service"] => ({
-  readThreadPlacements: read,
-  readRegistryCounts: unavailableGatewayMethod,
-  readSession: unavailableGatewayMethod,
-  readMetadata: unavailableGatewayMethod,
-  readDetail: unavailableGatewayMethod,
-  readReferences: unavailableGatewayMethod,
-  readReference: unavailableGatewayMethod,
-  readMemberships: unavailableGatewayMethod,
-  readDeclarations: unavailableGatewayMethod,
-  readEdges: unavailableGatewayMethod,
-  readHistory: unavailableGatewayMethod,
-  pollCommand: unavailableGatewayMethod,
-  submit: unavailableGatewayMethod,
-  purgeAuthorization: () => {},
-});
-
-const seam = Effect.fn("voiceReview.test.seam")(function* () {
-  const projection = yield* ProjectionStore.ProjectionStoreV2;
-  const now = DateTime.makeUnsafe("2026-10-02T12:00:00Z");
-  const threadId = ThreadId.make("thread");
-  const thread: OrchestrationV2AppThread = {
-    id: threadId,
-    projectId: ProjectId.make("project"),
-    title: "Native voice thread",
-    providerInstanceId: ProviderInstanceId.make("codex"),
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-    createdBy: "user",
-    creationSource: "web",
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    branch: null,
-    worktreePath: null,
-    activeProviderThreadId: null,
-    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-    forkedFrom: null,
-    createdAt: now,
-    updatedAt: now,
-    archivedAt: null,
-    settledOverride: null,
-    settledAt: null,
-    unsettledAt: now,
-    lastVisitedAt: null,
-    deletedAt: null,
-  };
-  yield* projection.apply({
-    id: EventId.make("voice-thread-created"),
-    type: "thread.created",
-    threadId,
-    occurredAt: now,
-    payload: thread,
-  });
+const seam = (location: "active" | "archive" = "active") => {
+  let threadIds = ["thread"];
   let environmentId = "native-environment";
   const read = vi.fn(() => Effect.succeed(result));
-  const projectionRead = vi.fn(projection.getShellSnapshot);
+  const projectionRead = vi.fn(() =>
+    Effect.succeed({
+      snapshotSequence: 1,
+      schemaVersion: 1,
+      threads: location === "active" ? threadIds.map((id) => ({ id, deletedAt: null })) : [],
+      archivedThreads:
+        location === "archive" ? threadIds.map((id) => ({ id, deletedAt: null })) : [],
+    } as unknown as OrchestrationV2ThreadShellSnapshot),
+  );
   const run = (
     input: {
       binding: typeof binding | null;
@@ -136,36 +88,33 @@ const seam = Effect.fn("voiceReview.test.seam")(function* () {
         getEnvironmentId: Effect.suspend(() => Effect.succeed(EnvironmentId.make(environmentId))),
       }),
       Effect.provideService(ProjectionStore.ProjectionStoreV2, {
-        ...projection,
         getShellSnapshot: projectionRead,
-      }),
-      Effect.provideService(WorkstreamGateway, gatewayWithRead(read)),
+        getThreadShell: (id: ThreadId) =>
+          projectionRead().pipe(
+            Effect.map(
+              (snapshot) =>
+                [...snapshot.threads, ...snapshot.archivedThreads].find(
+                  (thread) => thread.id === id,
+                ) ?? null,
+            ),
+          ),
+      } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
+      Effect.provideService(WorkstreamGateway, {
+        readThreadPlacements: read,
+      } as unknown as WorkstreamGateway["Service"]),
     );
   return {
     run,
     read,
     projectionRead,
-    removeThread: () =>
-      projection.apply({
-        id: EventId.make("voice-thread-deleted"),
-        type: "thread.deleted",
-        threadId,
-        occurredAt: now,
-        payload: { ...thread, deletedAt: now },
-      }),
-    archiveThread: () =>
-      projection.apply({
-        id: EventId.make("voice-thread-archived"),
-        type: "thread.archived",
-        threadId,
-        occurredAt: now,
-        payload: { ...thread, archivedAt: now },
-      }),
+    removeThread: () => {
+      threadIds = [];
+    },
     changeEnvironment: () => {
       environmentId = "replaced";
     },
   };
-}, Effect.provide(ProjectionStore.layerMemory));
+};
 describe("voice native service composition", () => {
   it.effect(
     "captures production services in a factory without leaking their Effect requirements",
@@ -176,8 +125,19 @@ describe("voice native service composition", () => {
           Effect.provideService(ServerEnvironmentIdentity, {
             getEnvironmentId: Effect.succeed(EnvironmentId.make("native-environment")),
           }),
-          Effect.provide(ProjectionStore.layerMemory),
-          Effect.provideService(WorkstreamGateway, gatewayWithRead(read)),
+          Effect.provideService(ProjectionStore.ProjectionStoreV2, {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                schemaVersion: 1,
+                threads: [],
+                archivedThreads: [],
+              }),
+            getThreadShell: () => Effect.succeed(null),
+          } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
+          Effect.provideService(WorkstreamGateway, {
+            readThreadPlacements: read,
+          } as unknown as WorkstreamGateway["Service"]),
         );
         expect(yield* factory({ binding: null, reviewConfig, principal })).toBeUndefined();
         const port = yield* factory({ binding, reviewConfig, principal });
@@ -188,7 +148,7 @@ describe("voice native service composition", () => {
   );
   it.effect("keeps absent binding unavailable without native reads", () =>
     Effect.gen(function* () {
-      const fixture = yield* seam();
+      const fixture = seam();
       expect(yield* fixture.run({ binding: null, reviewConfig, principal })).toBeUndefined();
       expect(fixture.projectionRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
@@ -198,14 +158,14 @@ describe("voice native service composition", () => {
     "joins explicit deployment binding to fresh native ids and rechecks deletion before membership lookup",
     () =>
       Effect.gen(function* () {
-        const fixture = yield* seam();
+        const fixture = seam();
         const port = yield* fixture.run();
         expect(port).toBeDefined();
         const identities = Array.from(port!.identities([registryThread]).values());
         expect(identities).toEqual([
           { source_instance_id: "native-environment", native_thread_id: "thread" },
         ]);
-        yield* fixture.removeThread();
+        fixture.removeThread();
         const error = yield* Effect.tryPromise({
           try: () => port!.read(principal, identities),
           catch: (cause) => new NativeReadFailure({ cause }),
@@ -218,7 +178,7 @@ describe("voice native service composition", () => {
   );
   it.effect("holds an environment identity mismatch rather than choosing a similar thread", () =>
     Effect.gen(function* () {
-      const fixture = yield* seam();
+      const fixture = seam();
       fixture.changeEnvironment();
       expect(yield* fixture.run()).toBeUndefined();
       expect(fixture.projectionRead).not.toHaveBeenCalled();
@@ -227,7 +187,7 @@ describe("voice native service composition", () => {
   );
   it.effect("denies non-enrolled sessions before native projection access", () =>
     Effect.gen(function* () {
-      const fixture = yield* seam();
+      const fixture = seam();
       const error = yield* fixture
         .run({
           binding,
@@ -242,7 +202,7 @@ describe("voice native service composition", () => {
   );
   it.effect("uses the qualified read gateway after a current projection check", () =>
     Effect.gen(function* () {
-      const fixture = yield* seam();
+      const fixture = seam();
       const port = yield* fixture.run();
       const identities = Array.from(port!.identities([registryThread]).values());
       expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual(result);
@@ -251,46 +211,65 @@ describe("voice native service composition", () => {
   );
 });
 
-it.effect("excludes archived V2 threads from the native identity inventory", () =>
+it.effect("includes archived V2 threads and rechecks their exact native identity", () =>
   Effect.gen(function* () {
-    const fixture = yield* seam();
-    yield* fixture.archiveThread();
+    const fixture = seam("archive");
     const port = yield* fixture.run();
     expect(port).toBeDefined();
-    expect(Array.from(port!.identities([registryThread]).values())).toEqual([]);
-    expect(fixture.projectionRead).toHaveBeenCalledExactlyOnceWith({ location: "active" });
-    expect(fixture.read).not.toHaveBeenCalled();
+    const identities = Array.from(port!.identities([registryThread]).values());
+    expect(identities).toEqual([
+      { source_instance_id: "native-environment", native_thread_id: "thread" },
+    ]);
+    expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual(result);
+    expect(fixture.read).toHaveBeenCalledExactlyOnceWith({ identities });
+    expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
   }),
 );
 
-it.effect("rechecks the environment binding before the placement read", () =>
+it.effect("uses the injected clock for native placement expiry on every read", () =>
   Effect.gen(function* () {
-    const fixture = yield* seam();
+    yield* TestClock.setTime(1_000);
+    const fixture = seam();
+    const current: T3PlacementResult = {
+      ...result,
+      page: {
+        ...result.page,
+        items: [
+          {
+            membership_id: "membership",
+            workstream_id: "workstream",
+            native_reference_id: "reference",
+            kind: "primary",
+            source_instance_id: "native-environment",
+            native_thread_id: "thread",
+            attestation_version: 1,
+            attested_at: "1970-01-01T00:00:00Z",
+            expires_at: "1970-01-01T00:00:02Z",
+            evidence_sha256: "a".repeat(64),
+            source_binding_version: 1,
+            authority_namespace: "native-authority",
+            store_generation: 3,
+          },
+        ],
+      },
+      trustedEnvironments: [
+        {
+          environmentId: "native-environment",
+          authorityNamespace: "native-authority",
+          storeGeneration: 3,
+        },
+      ],
+    };
+    fixture.read.mockReturnValue(Effect.succeed(current));
     const port = yield* fixture.run();
     const identities = Array.from(port!.identities([registryThread]).values());
-    fixture.changeEnvironment();
+    expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual(current);
+    yield* TestClock.setTime(2_000);
     const error = yield* Effect.tryPromise({
       try: () => port!.read(principal, identities),
       catch: (cause) => new NativeReadFailure({ cause }),
     }).pipe(Effect.flip);
-    expect(error.cause).toMatchObject({ reason: "offline" });
-    expect(fixture.projectionRead).toHaveBeenCalledTimes(1);
-    expect(fixture.read).not.toHaveBeenCalled();
-  }),
-);
-
-it.effect("denies a session without orchestration read scope before native access", () =>
-  Effect.gen(function* () {
-    const fixture = yield* seam();
-    const error = yield* fixture
-      .run({
-        binding,
-        reviewConfig,
-        principal: { ...principal, scopes: new Set() },
-      })
-      .pipe(Effect.flip);
-    expect(error).toBeInstanceOf(VoiceReviewForbiddenError);
-    expect(fixture.projectionRead).not.toHaveBeenCalled();
-    expect(fixture.read).not.toHaveBeenCalled();
+    expect(error._tag).toBe("NativeReadFailure");
+    expect(fixture.read).toHaveBeenCalledTimes(2);
   }),
 );

@@ -12,6 +12,9 @@ becomes an attachment when inserting it would exceed the message limit. On a
 hardware keyboard, use `Cmd+Shift+V` on Apple devices or `Ctrl+Shift+V` elsewhere
 to keep a large paste editable in the composer instead.
 
+You can send the first message with **New worktree** selected while branches are still loading.
+T3 Code uses the repository's default base unless you choose a branch.
+
 ## Attach files
 
 Attach up to 100 files per message. Each image can be up to 10 MiB, with at most
@@ -35,8 +38,8 @@ See [images and videos](#images-and-videos-in-messages) for previewing and savin
 ## Send while the agent is working
 
 On web and desktop, choose **Settings → General → Follow-up behavior** to queue
-new messages for a later turn or steer the running turn immediately. The setting
-applies to this client; already queued messages keep their place. Queued messages
+new messages for the next safe tool boundary or steer the running turn immediately.
+The setting applies to this client; already queued messages keep their place. Queued messages
 are saved on the server and can be edited, reordered, or removed above the composer.
 `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux uses the opposite action:
 it steers when your default is Queue and queues when your default is Steer.
@@ -61,23 +64,6 @@ Mobile keeps local copies of draft attachments, so you can preview them and queu
 messages while disconnected. Uploads resume when you reconnect. Drafts and queued
 messages survive app restarts. Signing out of T3 Connect keeps that work on your
 device until you sign back into the same account.
-
-## Continue an imported conversation
-
-When an imported conversation can resume its original agent conversation, send
-normally. If the server offers **Start with imported history**, sending pauses
-with your draft intact. Choose that action explicitly to start a new agent
-conversation using the imported history and your prepared message.
-
-The same action can appear on an existing queued row. It uses that queued
-message, including its attachments, and keeps its place in the queue. A request
-may remain pending; pending does not mean the new agent conversation has started.
-
-A rejected request preserves the draft or queued message. If a response is lost,
-use **Check status**. After reloading, the saved operation is checked again; use
-**Check saved operation** if its status remains unavailable. An unknown outcome
-keeps further sending on hold until the original operation is resolved. Checking
-its status never resends it or clears a newer draft.
 
 ## Custom models
 
@@ -167,27 +153,23 @@ awake; it can sleep normally once recording stops.
 Transcription runs on your device. T3 Code deletes the temporary audio after
 transcription or cancellation; only the message text is sent when you submit.
 
-## Review external voice prompts
-
-On web and desktop, open **Voice review** from the sidebar and choose the
-environment connected to your voice source. Voice review requires that environment
-to be configured; it does not record audio. Held prompts release after their
-countdown. Pause a prompt when you need more time to review it. Double-click its
-text, or choose **Edit**, to edit it before release.
-
-Editing holds release until you save or cancel, and both leave the prompt paused.
-Resume the countdown when you are ready, or use **Save and send** to release the
-saved text immediately. Closing the page does not resume an edit hold. If a result
-is uncertain, check the current state before acting again. Released means handed
-off for processing; it does not mean an agent has started.
-
 ## Queued messages
 
 On web and desktop, the composer shows **Interrupt** while the agent is working and the draft is
 empty. Adding text or attachments replaces it with a steer arrow. Click it to send a message into
 the active turn, or press `Enter` on desktop. Hold `Cmd` on macOS or `Ctrl` on Windows and Linux to
 switch the button to a queue icon. Click while holding that key, or press `Cmd+Enter` or
-`Ctrl+Enter` on desktop, to queue the message for after the active turn.
+`Ctrl+Enter` on desktop, to queue the message for the next safe tool boundary on supporting servers.
+Older servers keep queued messages for the next turn.
+
+On supporting servers, Queue sends compatible messages after the current foreground tool calls finish,
+even when you switch threads or disconnect the client. It waits while the agent needs an
+approval or answer. Providers that cannot accept input without restarting, commands such as
+`/compact`, and messages that change the provider, model, or modes wait for a later turn instead.
+At a tool boundary, messages follow their selected queue order. Later messages wait for earlier
+delivery to succeed, including any retries.
+Failed or interrupted tools do not release the queue on their own; it waits for the next
+qualifying tool completion or the end of the turn. Stopping the thread keeps its queue held.
 
 Queued messages appear above the composer. Rows show a thumbnail of any attached image alongside
 the text. Drag a row by its handle to reorder it, use the handle's arrow keys, promote the message
@@ -204,6 +186,20 @@ The checkmark saves the queued message in place; **Cancel** on its row leaves it
 you had typed in the composer before starting the edit is restored afterwards. If the queued
 message starts or is removed while you are editing, the edit ends: changed content moves into the
 composer when it is empty, and is discarded otherwise.
+
+## Review external voice prompts
+
+On web and desktop, open **Voice review** from the sidebar and choose the
+environment connected to your voice source. Voice review requires that environment
+to be configured; it does not record audio. Held prompts release after their
+countdown. Pause a prompt when you need more time to review it. Double-click its
+text, or choose **Edit**, to edit it before release.
+
+Editing holds release until you save or cancel, and both leave the prompt paused.
+Resume the countdown when you are ready, or use **Save and send** to release the
+saved text immediately. Closing the page does not resume an edit hold. If a result
+is uncertain, check the current state before acting again. Released means handed
+off for processing; it does not mean an agent has started.
 
 ## Commands and skills
 
@@ -304,6 +300,9 @@ styles, or images from neighboring files.
 On web and desktop, HTML and PDF files open as rendered pages. Switch an HTML
 file to source view to read its markup; a link to a specific line opens source
 automatically. HTML previews cannot access your T3 Code session.
+
+The file viewer recognizes images, HTML, and PDF files by their filename extension,
+including filenames or folders containing `#` or `?`.
 
 On mobile, select a PDF attachment or link to open it. iOS uses the native viewer;
 Android opens a compatible installed file viewer.

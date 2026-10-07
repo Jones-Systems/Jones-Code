@@ -1,16 +1,14 @@
-import {
+import type {
+  ModelSelection,
+  OrchestrationV2ProviderCapabilities,
   ProviderDriverKind,
-  type ModelSelection,
-  type OrchestrationV2ProviderCapabilities,
-  type ProviderInteractionMode,
-  type RuntimeMode,
+  ProviderInteractionMode,
+  RuntimeMode,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 
 import type { ProviderContinuationIdentity } from "../provider/ProviderDriver.ts";
 import type { ProviderSelectionTransitionPlan } from "./ProviderSelectionTransition.ts";
-
-const CODEX_DRIVER = ProviderDriverKind.make("codex");
 
 export type ProviderSessionTransition =
   | { readonly type: "reuse" }
@@ -27,7 +25,6 @@ export interface ProviderSessionTransitionState {
   readonly interactionMode: ProviderInteractionMode;
   readonly workspace: string;
   readonly capabilities: OrchestrationV2ProviderCapabilities;
-  readonly stoppedWithoutNativeThread?: boolean;
 }
 
 export interface ProviderSessionTransitionTarget extends ProviderSessionTransitionState {
@@ -56,17 +53,6 @@ export function decideProviderSessionTransition(input: {
   }
 
   const instanceChanged = current.modelSelection.instanceId !== target.modelSelection.instanceId;
-  if (
-    instanceChanged &&
-    current.driver === CODEX_DRIVER &&
-    current.stoppedWithoutNativeThread === true
-  ) {
-    return {
-      type: "reject",
-      reason:
-        "Switching this stopped Codex conversation to a compatible account requires its saved native thread.",
-    };
-  }
   const runtimeChanged = current.runtimeMode !== target.runtimeMode;
   const workspaceChanged = current.workspace !== target.workspace;
   const selectionChanged = !modelSelectionsEqual(current.modelSelection, target.modelSelection);

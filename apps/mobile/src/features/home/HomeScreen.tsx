@@ -1,9 +1,3 @@
-import {
-  mobileThreadOrderScope,
-  mobileThreadOrderSection,
-  mobileThreadOrderScopes,
-  type MobileThreadMoveContext,
-} from "../../lib/threadOrderScope";
 import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
 import {
   projectMobileWorkstreamList,
@@ -56,6 +50,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2WorkingShelfHeader,
 } from "../threads/thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "../threads/thread-provider-instance";
 import {
@@ -63,6 +58,7 @@ import {
   getThreadListV2OrderedSection,
   buildThreadListV2ListItems,
   threadListV2ListItemsAreEqual,
+  threadListInboxReturns,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2ListItem,
@@ -120,7 +116,6 @@ interface HomeScreenProps {
   readonly onMoveThread: (
     thread: EnvironmentThreadShell,
     direction: ThreadMoveDestination,
-    context?: MobileThreadMoveContext,
   ) => Promise<boolean>;
   readonly onRenameThread: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -432,12 +427,8 @@ export function HomeScreen(props: HomeScreenProps) {
     [props.onPinThread],
   );
   const handleMoveThread = useCallback(
-    (
-      thread: EnvironmentThreadShell,
-      direction: ThreadMoveDestination,
-      context?: MobileThreadMoveContext,
-    ) => {
-      void props.onMoveThread(thread, direction, context);
+    (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
+      void props.onMoveThread(thread, direction);
     },
     [props.onMoveThread],
   );
@@ -484,8 +475,11 @@ export function HomeScreen(props: HomeScreenProps) {
     loaded: shelfPreferencesLoaded,
     settledShelfExpanded,
     snoozedShelfExpanded,
+    workingShelfEnabled,
+    workingShelfExpanded,
     toggleSettledShelf,
     toggleSnoozedShelf,
+    toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
   // The queued-start and snooze helpers need a clock while the list stays open.
   const [nowMinute, setNowMinute] = useState(() => new Date().toISOString().slice(0, 16));
@@ -521,9 +515,8 @@ export function HomeScreen(props: HomeScreenProps) {
   // rebuild (see computeThreadMoveAvailability): per-thread planner calls made
   // list construction quadratic, and this list rebuilds on every minute tick.
   const threadMoveAvailability = useMemo(() => {
-    const scopeAvailability = (scope: MobileThreadMoveContext["scope"]) => {
-      const section = mobileThreadOrderSection(scope);
-      return computeThreadMoveAvailability({
+    const sectionAvailability = (section: "pinned" | "active") =>
+      computeThreadMoveAvailability({
         allThreads: props.threads,
         section,
         pendingOrder,
@@ -532,8 +525,6 @@ export function HomeScreen(props: HomeScreenProps) {
         ordered: getThreadListV2OrderedSection({
           threads: props.threads,
           section,
-          scope,
-          snapshot: workstreams.orderSnapshot,
           pendingOrder,
           now: new Date().toISOString(),
           settlementEnvironmentIds,
@@ -541,14 +532,13 @@ export function HomeScreen(props: HomeScreenProps) {
           queuedThreadKeys,
         }),
       });
-    };
-    return new Map(
-      mobileThreadOrderScopes(workstreams.orderSnapshot).flatMap((scope) => [
-        ...scopeAvailability(scope),
-      ]),
-    );
+    // The Working beta orders the inbox by time, so only pins can move.
+    return new Map([
+      ...sectionAvailability("pinned"),
+      ...(workingShelfEnabled ? [] : sectionAvailability("active")),
+    ]);
   }, [
-    workstreams.orderSnapshot,
+    workingShelfEnabled,
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     props.threads,
@@ -560,10 +550,10 @@ export function HomeScreen(props: HomeScreenProps) {
     snoozeWakeTick,
   ]);
   const threadListV2Layout = useMemo(() => {
+    threadListInboxReturns.observe(workingShelfEnabled ? props.threads : null);
     // Settled threads are live shells; archived threads keep their original
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
-      snapshot: workstreams.orderSnapshot,
       pendingOrder,
       threads: props.threads.filter((thread) => thread.archivedAt === null),
       environmentId: props.selectedEnvironmentId,
@@ -575,12 +565,16 @@ export function HomeScreen(props: HomeScreenProps) {
       queuedThreadKeys,
       settledLimit: settledVisibleCount,
       now: new Date().toISOString(),
+      workingShelfEnabled,
+      workingShelfExpanded,
+      inboxReturnAt: threadListInboxReturns.returnedAt,
       snoozedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey: null,
     });
   }, [
-    workstreams.orderSnapshot,
+    workingShelfEnabled,
+    workingShelfExpanded,
     pendingOrder,
     queuedThreadKeys,
     nowMinute,
@@ -635,6 +629,9 @@ export function HomeScreen(props: HomeScreenProps) {
       buildThreadListV2ListItems({
         items: threadListV2Layout.items,
         pendingTasks: v2PendingTasks,
+        workingCount: threadListV2Layout.workingCount,
+        workingShelfExpanded,
+        workingShelfHeaderIndex: threadListV2Layout.workingShelfHeaderIndex,
         snoozedCount: threadListV2Layout.snoozedCount,
         snoozedShelfExpanded,
         snoozedShelfHeaderIndex: threadListV2Layout.snoozedShelfHeaderIndex,
@@ -657,6 +654,7 @@ export function HomeScreen(props: HomeScreenProps) {
       snoozeEnvironmentIds,
       threadListV2Layout,
       v2PendingTasks,
+      workingShelfExpanded,
     ],
   );
 
@@ -667,12 +665,10 @@ export function HomeScreen(props: HomeScreenProps) {
         groups: workstreams.groups,
         collapsedKeys: workstreams.collapsedKeys,
         secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
-        pendingOrder,
         searching: props.searchQuery.trim().length > 0,
       }),
     [
       nativeThreadListV2Items,
-      pendingOrder,
       workstreams.enabled,
       workstreams.groups,
       workstreams.collapsedKeys,
@@ -685,21 +681,9 @@ export function HomeScreen(props: HomeScreenProps) {
       const target = workstreams.enabled
         ? mobileWorkstreamMoveDestination(threadListV2Items, thread, direction)
         : direction;
-      if (target !== null)
-        handleMoveThread(thread, target, {
-          scope: mobileThreadOrderScope(thread, workstreams.orderSnapshot),
-          source: workstreams.orderSource,
-          removePrimary: workstreams.removePrimary,
-        });
+      if (target !== null) handleMoveThread(thread, target);
     },
-    [
-      workstreams.enabled,
-      workstreams.orderSnapshot,
-      workstreams.orderSource,
-      workstreams.removePrimary,
-      threadListV2Items,
-      handleMoveThread,
-    ],
+    [workstreams.enabled, threadListV2Items, handleMoveThread],
   );
 
   useThreadJumpShortcuts(threadListV2Items, props.onSelectThread);
@@ -739,6 +723,16 @@ export function HomeScreen(props: HomeScreenProps) {
             showTrailingDivider={item.showTrailingDivider}
             onSelectPendingTask={props.onSelectPendingTask}
             onDeletePendingTask={props.onDeletePendingTask}
+          />
+        );
+      }
+      if (item.type === "v2-working-shelf") {
+        return (
+          <ThreadListV2WorkingShelfHeader
+            count={item.count}
+            disabled={item.disabled}
+            expanded={item.expanded}
+            onToggle={toggleWorkingShelf}
           />
         );
       }
@@ -812,7 +806,7 @@ export function HomeScreen(props: HomeScreenProps) {
           reorderSupported={
             item.item.pinned
               ? pinReorderEnvironmentIds.has(thread.environmentId)
-              : activeReorderEnvironmentIds.has(thread.environmentId)
+              : !workingShelfEnabled && activeReorderEnvironmentIds.has(thread.environmentId)
           }
           canMoveUp={item.canMoveUp}
           canMoveDown={item.canMoveDown}
@@ -868,8 +862,10 @@ export function HomeScreen(props: HomeScreenProps) {
       titleRegenerationEnvironmentIds,
       toggleSettledShelf,
       toggleSnoozedShelf,
+      toggleWorkingShelf,
       v2ProjectTitleByProjectKey,
       props.searchQuery,
+      workingShelfEnabled,
     ],
   );
   const v2KeyExtractor = useCallback((item: ThreadListV2ListItem) => item.key, []);
@@ -887,6 +883,8 @@ export function HomeScreen(props: HomeScreenProps) {
       savedConnectionsById: props.savedConnectionsById,
       searchQuery: props.searchQuery,
       threadSearchMatchByKey,
+      // Rows read it for their reorder menu items.
+      workingShelfEnabled,
     }),
     [
       workstreams.bindingRevision,
@@ -896,6 +894,7 @@ export function HomeScreen(props: HomeScreenProps) {
       listEnvironments,
       threadSearchMatchByKey,
       v2ProjectTitleByProjectKey,
+      workingShelfEnabled,
     ],
   );
 

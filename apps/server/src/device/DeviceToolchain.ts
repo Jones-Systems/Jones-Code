@@ -144,9 +144,7 @@ const installTool = Effect.fn("DeviceToolchain.installTool")(function* (
       .run({ command: "npm", args: installArgs, timeout: INSTALL_TIMEOUT })
       .pipe(
         Effect.catchTags({
-          ProcessSpawnError: (
-            error,
-          ): Effect.Effect<ProcessRunner.ProcessRunOutput, ProcessRunner.ProcessRunError> =>
+          ProcessSpawnError: (error) =>
             error.cause instanceof PlatformError.PlatformError &&
             error.cause.reason._tag === "NotFound"
               ? runner.run({

@@ -5,6 +5,11 @@ description: Test T3 Code's web and desktop UI through its built-in Browser pane
 
 # Test T3 web and desktop
 
+M Jones grants [standing local app testing permission](../../../docs/operations/contributor-guidance.md#local-app-testing-permission)
+for browser and computer use with isolated synthetic state. Do not ask for
+per-task reconfirmation; protected data, credentials, and shared routes retain
+their exact authorization gates.
+
 Use T3's built-in Browser panel for verification. If its tools are absent or
 the panel reports unavailable, explain the blocker and stop verification.
 Do not install or switch to another automation system. For native mobile
@@ -34,7 +39,12 @@ for a fresh one. Keep using the same tab.
 
 ## Verify and retain
 
-Follow [capture-ui-evidence](../capture-ui-evidence/SKILL.md) for the common evidence format. Use snapshots and focused locators to exercise the changed flow, assert its visible result, and check backend readback or reload persistence where relevant. Capture the states that demonstrate the action and record the tested revision, served build/source correspondence, route, actual viewport/scale/theme, fixture, and coverage limits. Distinguish an interaction's before/after states from a comparison of two separately built source revisions.
+Follow [capture-ui-evidence](../capture-ui-evidence/SKILL.md) for the common
+evidence format. Exercise the changed flow with snapshots and focused locators,
+assert its visible result, and check backend readback or reload persistence when
+relevant. Record the revision, served build/source correspondence, actual
+viewport/scale/theme, fixture, and coverage limits. Distinguish interaction
+states within one build from two separately built source revisions.
 
 Keep the server, state, and panel available while the user inspects or iterates.
 An assistant turn ending is not teardown. Stop only processes you started,

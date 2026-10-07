@@ -28,9 +28,11 @@ const interactive = (target: EventTarget | null) =>
 export default function PdfPreview({
   src,
   title,
+  onRetry,
 }: {
   readonly src: string;
   readonly title: string;
+  readonly onRetry?: (() => void | Promise<void>) | undefined;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<HTMLDivElement>(null);
@@ -48,6 +50,8 @@ export default function PdfPreview({
   const [input, setInput] = useState("100");
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [attempt, setAttempt] = useState(0);
+  const [retrying, setRetrying] = useState(false);
+  const retryGeneration = useRef(0);
 
   const zoomTo = useCallback((value: number, origin?: [number, number]) => {
     const viewer = viewerRef.current;
@@ -113,6 +117,7 @@ export default function PdfPreview({
     setPercent(100);
     setInput("100");
     setStatus("loading");
+    setRetrying(false);
     setSearchOpen(false);
     setQuery("");
     setMatches("");
@@ -177,6 +182,7 @@ export default function PdfPreview({
     container.addEventListener("wheel", wheel, { passive: false });
     return () => {
       disposed = true;
+      retryGeneration.current += 1;
       readyRef.current = false;
       viewerRef.current = null;
       eventBusRef.current = null;
@@ -196,6 +202,23 @@ export default function PdfPreview({
       void task.destroy().catch(() => {});
     };
   }, [src, attempt, zoomTo]);
+
+  const retry = async () => {
+    if (!onRetry) {
+      setAttempt((value) => value + 1);
+      return;
+    }
+    const generation = retryGeneration.current;
+    setRetrying(true);
+    try {
+      // The owning panel remounts after renewing authorization; never reload the expired URL here.
+      await onRetry();
+    } catch {
+      // Keep the failure and external-open fallback available when reauthorization fails.
+    } finally {
+      if (generation === retryGeneration.current) setRetrying(false);
+    }
+  };
 
   const find = (value: string, previous = false, again = false) => {
     eventBusRef.current?.dispatch("find", {
@@ -394,7 +417,7 @@ export default function PdfPreview({
             role="alert"
           >
             <p>Unable to preview this PDF.</p>
-            <Button variant="outline" size="sm" onClick={() => setAttempt((value) => value + 1)}>
+            <Button variant="outline" size="sm" disabled={retrying} onClick={retry}>
               Retry
             </Button>
             <a href={src} target="_blank" rel="noopener noreferrer">

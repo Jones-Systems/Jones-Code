@@ -13,11 +13,6 @@ import * as Schema from "effect/Schema";
 
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import * as EventSink from "./EventSink.ts";
-import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
-import { OrchestrationEffectRequestV2 } from "./EffectOutbox.ts";
-import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
-import * as NodeCrypto from "node:crypto";
 
 export class RuntimeRequestResponseExecutionError extends Schema.TaggedError<RuntimeRequestResponseExecutionError>()(
   "RuntimeRequestResponseExecutionError",
@@ -60,8 +55,6 @@ export interface RuntimeRequestServiceV2Shape {
     readonly requestId: RuntimeRequestId;
     readonly decision?: ProviderApprovalDecision;
     readonly answers?: ProviderUserInputAnswers;
-    readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
-    readonly ordinaryCheckoutExecution?: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
   }) => Effect.Effect<void, RuntimeRequestResponseExecutionError>;
 }
 
@@ -73,24 +66,17 @@ export class RuntimeRequestServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   RuntimeRequestServiceV2,
   never,
-  | ProjectionStore.ProjectionStoreV2
-  | ProviderSessionManager.ProviderSessionManagerV2
-  | EventSink.EventSinkV2
+  ProjectionStore.ProjectionStoreV2 | ProviderSessionManager.ProviderSessionManagerV2
 > = Layer.effect(
   RuntimeRequestServiceV2,
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-    const eventSink = yield* EventSink.EventSinkV2;
 
     return RuntimeRequestServiceV2.of({
       respond: (input) =>
         Effect.gen(function* () {
-          const context = yield* projections.getRuntimeResponseContext(
-            input.threadId,
-            input.requestId,
-          );
-          const request = context.request;
+          const request = yield* projections.getRuntimeRequest(input.threadId, input.requestId);
           if (request === undefined) {
             return yield* new RuntimeRequestResponseExecutionError({
               reason: "request-missing",
@@ -120,76 +106,6 @@ export const layer: Layer.Layer<
               requestId: input.requestId,
             });
           }
-          if (
-            context.node === undefined ||
-            context.node.id !== request.nodeId ||
-            context.node.threadId !== input.threadId
-          ) {
-            return yield* new RuntimeRequestResponseExecutionError({
-              reason: "request-not-resumable",
-              threadId: input.threadId,
-              providerSessionId: input.providerSessionId,
-              requestId: input.requestId,
-              cause: "The runtime response has no recorded request node.",
-            });
-          }
-          const admission =
-            context.node.runId === null
-              ? null
-              : yield* eventSink.readOrdinaryCheckoutAdmissionForRun({
-                  threadId: input.threadId,
-                  runId: context.node.runId,
-                });
-          const execution = input.ordinaryCheckoutExecution;
-          const requestDigest = nativeCreationSha256(
-            nativeCreationCanonicalJson(
-              yield* Schema.encodeEffect(OrchestrationEffectRequestV2)({
-                type: "runtime-request.respond",
-                providerSessionId: input.providerSessionId,
-                requestId: input.requestId,
-                ...(input.decision === undefined ? {} : { decision: input.decision }),
-                ...(input.answers === undefined ? {} : { answers: input.answers }),
-              }).pipe(Effect.orDie),
-            ),
-          );
-          if (
-            (input.ordinaryCheckoutUse !== undefined && execution === undefined) ||
-            (admission !== null &&
-              (execution === undefined ||
-                execution.originalUse.admission.admissionId !== admission.admissionId ||
-                execution.originalUse.admission.admissionSha256 !==
-                  OrdinaryCheckout.ordinaryCheckoutAdmissionRefV1(admission).admissionSha256)) ||
-            (execution !== undefined &&
-              (admission === null ||
-                execution.executor.kind !== "actual_outbox_claim" ||
-                execution.originalUse.lease.ownerThreadId !== input.threadId ||
-                execution.executor.source.link.threadId !== input.threadId ||
-                execution.executor.source.link.requestSha256 !== requestDigest ||
-                (input.ordinaryCheckoutUse !== undefined &&
-                  nativeCreationCanonicalJson(
-                    yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
-                      input.ordinaryCheckoutUse,
-                    ).pipe(Effect.orDie),
-                  ) !==
-                    nativeCreationCanonicalJson(
-                      yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
-                        execution.originalUse,
-                      ).pipe(Effect.orDie),
-                    ))))
-          ) {
-            return yield* new RuntimeRequestResponseExecutionError({
-              reason: "request-not-resumable",
-              threadId: input.threadId,
-              providerSessionId: input.providerSessionId,
-              requestId: input.requestId,
-              cause: "The runtime response has no matching original checkout claim.",
-            });
-          }
-          const revalidate =
-            execution === undefined
-              ? Effect.void
-              : eventSink.revalidateOrdinaryCheckoutExecution(execution).pipe(Effect.asVoid);
-          yield* revalidate;
           const session = yield* sessions.get(input.providerSessionId);
           if (Option.isNone(session)) {
             return yield* new RuntimeRequestResponseExecutionError({
@@ -199,18 +115,7 @@ export const layer: Layer.Layer<
               requestId: input.requestId,
             });
           }
-          yield* revalidate;
           yield* session.value.respondToRuntimeRequest({
-            nativeOperation: {
-              operationId: `runtime-response:${input.requestId}:${NodeCrypto.randomUUID()}`,
-              operation: "respond_to_request",
-              instanceId: session.value.instanceId,
-              threadId: input.threadId,
-              providerSessionId: input.providerSessionId,
-              ...(session.value.runtimeGeneration === undefined
-                ? {}
-                : { runtimeGeneration: session.value.runtimeGeneration }),
-            },
             requestId: input.requestId,
             ...(input.decision === undefined ? {} : { decision: input.decision }),
             ...(input.answers === undefined ? {} : { answers: input.answers }),

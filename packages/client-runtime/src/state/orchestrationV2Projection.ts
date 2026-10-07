@@ -217,9 +217,6 @@ export function applyOrchestrationV2ProjectionEvent(
         ...base,
         providerSessions: upsertEntity(base.providerSessions, event.payload),
       };
-    case "provider-session.detach-requested":
-      // Acceptance does not prove detachment; the stream owns cursor advancement.
-      return projection;
     case "provider-session.detached":
       return {
         ...base,

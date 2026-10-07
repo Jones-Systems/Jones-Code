@@ -99,7 +99,7 @@ it("requires durable phases and never upgrades legacy pending state", () => {
     id: "phase-test",
     fromVersion: "1.0.0",
     targetVersion: "1.1.0",
-    dbPath: "/fixture/userdata/state.sqlite",
+    dbPath: "/fixture/userdata/statev2.sqlite",
     status: "pending",
   };
   for (const phase of [undefined, "unknown"]) {
@@ -147,9 +147,18 @@ it("binds service updates to the configured database path", () => {
   const baseDir = "/fixture/t3-service-path-test";
   const configuredPath = configuredDatabasePathForBaseDir(baseDir);
   assert.equal(validateDatabasePathForBaseDir(baseDir, configuredPath), configuredPath);
+  assert.equal(configuredPath, "/fixture/t3-service-path-test/userdata/statev2.sqlite");
+  assert.throws(
+    () =>
+      validateDatabasePathForBaseDir(
+        baseDir,
+        "/fixture/t3-service-path-test/userdata/state.sqlite",
+      ),
+    /configured userdata\/statev2.sqlite/,
+  );
   assert.throws(
     () => validateDatabasePathForBaseDir(baseDir, "/fixture/alternate.sqlite"),
-    /selected userdata database/,
+    /configured userdata\/statev2.sqlite/,
   );
 });
 
@@ -254,11 +263,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
         }),
       );
 
-      const launcher = new Launcher(
-        root,
-        yield* Effect.promise(() => readServiceState(statePath)),
-        { databasePath: path.join(root, "userdata", "state.sqlite") },
-      );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
       const running = launcher.run();
       const stopping = launcher.stop("SIGTERM");
       // An explicit stop leaves the marker that tells a child shutting down
@@ -276,7 +281,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-flow-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "before trial");
       // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
@@ -310,11 +315,7 @@ if (context.update?.status === "pending") {
         }),
       );
 
-      const launcher = new Launcher(
-        root,
-        yield* Effect.promise(() => readServiceState(statePath)),
-        { databasePath: path.join(root, "userdata", "state.sqlite") },
-      );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
       yield* Effect.promise(() =>
         launcher.run().then(
           () => Promise.reject(new Error("launcher unexpectedly completed")),
@@ -334,7 +335,7 @@ if (context.update?.status === "pending") {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-rollback-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "before trial");
       // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
@@ -365,11 +366,7 @@ if (context.update?.status === "pending") {
         }),
       );
 
-      const launcher = new Launcher(
-        root,
-        yield* Effect.promise(() => readServiceState(statePath)),
-        { databasePath: path.join(root, "userdata", "state.sqlite") },
-      );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
       yield* Effect.promise(() =>
         launcher.run().then(
           () => Promise.reject(new Error("launcher unexpectedly completed")),
@@ -387,27 +384,25 @@ if (context.update?.status === "pending") {
     }),
   );
 
-  it.effect.each(["state.sqlite", "statev2.sqlite"])(
-    "restores the selected %s database when a migrating trial exits",
-    (databaseName) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-db-" });
-        const statePath = path.join(root, "runtime", "service-state.json");
-        const databasePath = path.join(root, "userdata", databaseName);
-        const authorityStateDir = path.join(root, "native-store-authority");
-        const original = "SQLite format 3\0database before migration";
-        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
-        yield* fs.writeFileString(databasePath, original);
-        yield* fs.writeFileString(
-          path.join(root, "userdata", "environment-id"),
-          "environment-launcher\n",
-        );
-        initializeNativeStoreAuthority(authorityStateDir, "environment-launcher");
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
-        const encodedDatabasePath = JSON.stringify(databasePath);
-        const childSource = `
+  it.effect("restores the database when a migrating trial exits", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-db-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      const authorityStateDir = path.join(root, "native-store-authority");
+      const original = "SQLite format 3\0database before migration";
+      yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+      yield* fs.writeFileString(databasePath, original);
+      yield* fs.writeFileString(
+        path.join(root, "userdata", "environment-id"),
+        "environment-launcher\n",
+      );
+      initializeNativeStoreAuthority(authorityStateDir, "environment-launcher");
+      // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
+      const encodedDatabasePath = JSON.stringify(databasePath);
+      const childSource = `
 import { writeFileSync } from "node:fs";
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 if (context.update?.status === "pending") {
@@ -422,46 +417,42 @@ if (context.update?.status === "pending") {
   process.exit(0);
 }
 `;
-        for (const version of ["1.0.0", "1.1.0"]) {
-          yield* writeFakeRuntime(
-            fs,
-            path,
-            path.join(root, "runtime", "versions", version),
-            childSource,
-          );
-        }
-        yield* Effect.promise(() =>
-          writeServiceState(statePath, {
-            protocol: SERVICE_LAUNCHER_PROTOCOL,
-            activeVersion: "1.0.0",
-          }),
+      for (const version of ["1.0.0", "1.1.0"]) {
+        yield* writeFakeRuntime(
+          fs,
+          path,
+          path.join(root, "runtime", "versions", version),
+          childSource,
         );
+      }
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+        }),
+      );
 
-        const launcher = new Launcher(
-          root,
-          yield* Effect.promise(() => readServiceState(statePath)),
-          { databasePath: path.join(root, "userdata", databaseName) },
-        );
-        yield* Effect.promise(() =>
-          launcher.run().then(
-            () => Promise.reject(new Error("launcher unexpectedly completed")),
-            () => Promise.resolve(),
-          ),
-        );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
 
-        const state = yield* Effect.promise(() => readServiceState(statePath));
-        assert.equal(state.activeVersion, "1.0.0");
-        assert.equal(state.update?.status, "rolled-back");
-        assert.equal(yield* fs.readFileString(databasePath), original);
-        const authority = readNativeStoreAuthorityState(authorityStateDir);
-        assert.equal(authority.state, "active");
-        assert.equal(authority.store_generation, 2);
-        assert.isFalse(yield* fs.exists(`${databasePath}-wal`));
-        assert.isFalse(yield* fs.exists(`${databasePath}-shm`));
-        const updateId = state.update?.id;
-        assert.isDefined(updateId);
-        assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup", updateId)));
-      }),
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "rolled-back");
+      assert.equal(yield* fs.readFileString(databasePath), original);
+      const authority = readNativeStoreAuthorityState(authorityStateDir);
+      assert.equal(authority.state, "active");
+      assert.equal(authority.store_generation, 2);
+      assert.isFalse(yield* fs.exists(`${databasePath}-wal`));
+      assert.isFalse(yield* fs.exists(`${databasePath}-shm`));
+      const updateId = state.update?.id;
+      assert.isDefined(updateId);
+      assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup", updateId)));
+    }),
   );
 
   it.effect("returns to the previous executable when the pretrial backup fails", () =>
@@ -477,7 +468,7 @@ if (context.update?.status === "pending") {
           "process.exit(0);\n",
         );
       }
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       const statePath = path.join(root, "runtime", "service-state.json");
       yield* Effect.promise(() =>
         writeServiceState(statePath, {
@@ -493,11 +484,7 @@ if (context.update?.status === "pending") {
           },
         }),
       );
-      const launcher = new Launcher(
-        root,
-        yield* Effect.promise(() => readServiceState(statePath)),
-        { databasePath: path.join(root, "userdata", "state.sqlite") },
-      );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
       yield* Effect.promise(() =>
         launcher.run().then(
           () => Promise.reject(new Error("launcher unexpectedly completed")),
@@ -523,7 +510,7 @@ if (context.update?.status === "pending") {
         prefix: "t3-service-launcher-missing-backup-",
       });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.join(root, "userdata"), { recursive: true });
       yield* fs.writeFileString(databasePath, "SQLite format 3\0trial-modified database");
       yield* fs.writeFileString(
@@ -555,11 +542,7 @@ if (context.update?.status === "pending") {
         }),
       );
 
-      const launcher = new Launcher(
-        root,
-        yield* Effect.promise(() => readServiceState(statePath)),
-        { databasePath: path.join(root, "userdata", "state.sqlite") },
-      );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
       yield* Effect.promise(() =>
         launcher.run().then(
           () => Promise.reject(new Error("launcher unexpectedly completed")),
@@ -592,7 +575,7 @@ if (context.update?.status === "pending") {
       });
       const updateId = "restore-resume-update";
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       const backupDir = path.join(root, "runtime", "db-backup", updateId);
       yield* fs.makeDirectory(path.join(root, "userdata"), { recursive: true });
       yield* fs.makeDirectory(backupDir, { recursive: true });
@@ -668,11 +651,7 @@ if (context.update?.status === "pending") {
         }),
       );
 
-      const launcher = new Launcher(
-        root,
-        yield* Effect.promise(() => readServiceState(statePath)),
-        { databasePath: path.join(root, "userdata", "state.sqlite") },
-      );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
       yield* Effect.promise(() =>
         launcher.run().then(
           () => Promise.reject(new Error("launcher unexpectedly completed")),

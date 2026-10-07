@@ -8,8 +8,6 @@ import * as Schema from "effect/Schema";
 import {
   defaultInstanceIdForDriver,
   EnvironmentId,
-  CommandId,
-  RunId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -71,9 +69,9 @@ import {
   COMPOSER_DRAFT_STORAGE_KEY,
   clearComposerDraftsEnvironment,
   composerDraftHasUserContent,
-  deriveEffectiveComposerModelState,
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
+  deriveEffectiveComposerModelState,
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThreadByRef,
   restoreFailedBackgroundDraftThread,
@@ -81,10 +79,6 @@ import {
   type ComposerImageAttachment,
   composerFileNeedsReattach,
   partializeComposerDraftStoreState,
-  reserveImportedContinuationPointer,
-  clearImportedContinuationPointer,
-  reserveCurrentRuntimeStopPointer,
-  clearCurrentRuntimeStopPointer,
   useComposerDraftStore,
   DraftId,
 } from "./composerDraftStore";
@@ -2972,187 +2966,6 @@ function createMockStorage() {
 }
 
 describe("composer draft persistence", () => {
-  it("flushes an exact stop target before RPC, preserves empty correlation through reload and clears only its matching terminal pointer", async () => {
-    await useComposerDraftStore.persist.clearStorage();
-    vi.useFakeTimers();
-    vi.stubGlobal("localStorage", createMockStorage());
-    try {
-      resetComposerDraftStore();
-      const pointer = {
-        environmentId: TEST_ENVIRONMENT_ID,
-        threadId: ThreadId.make("stop-durable"),
-        commandId: CommandId.make("stop:original"),
-        target: {
-          binding: {
-            threadId: ThreadId.make("stop-durable"),
-            providerThreadId: "provider:current" as never,
-            providerSessionId: "session:current" as never,
-            instanceId: CODEX_INSTANCE,
-            runtimeGeneration: "generation:current",
-            nativeThreadId: "native:current",
-          },
-          driver: CODEX_DRIVER,
-          evidenceRevision: 7,
-        },
-      };
-      const threadRef = scopeThreadRef(pointer.environmentId, pointer.threadId);
-      useComposerDraftStore.getState().setPrompt(threadRef, "Existing draft");
-      reserveCurrentRuntimeStopPointer(pointer);
-      useComposerDraftStore.getState().clearComposerContent(threadRef);
-      expect(
-        composerDraftHasUserContent(useComposerDraftStore.getState().getComposerDraft(threadRef)),
-      ).toBe(false);
-      reserveCurrentRuntimeStopPointer(pointer);
-      resetComposerDraftStore();
-      await useComposerDraftStore.persist.rehydrate();
-      expect(
-        useComposerDraftStore.getState().getComposerDraft(threadRef)?.currentRuntimeStop,
-      ).toEqual(pointer);
-      expect(
-        partializeComposerDraftStoreState(useComposerDraftStore.getState()).draftsByThreadKey[
-          scopedThreadKey(threadRef)
-        ]?.currentRuntimeStop,
-      ).toEqual(pointer);
-      expect(() =>
-        reserveCurrentRuntimeStopPointer({
-          ...pointer,
-          commandId: CommandId.make("stop:replacement"),
-        }),
-      ).toThrow("previous runtime stop");
-      const wrongTarget = { ...pointer, target: { ...pointer.target, evidenceRevision: 8 } };
-      expect(() => reserveCurrentRuntimeStopPointer(wrongTarget)).toThrow("previous runtime stop");
-      clearCurrentRuntimeStopPointer(wrongTarget);
-      clearCurrentRuntimeStopPointer({ ...pointer, environmentId: OTHER_TEST_ENVIRONMENT_ID });
-      expect(
-        useComposerDraftStore.getState().getComposerDraft(threadRef)?.currentRuntimeStop,
-      ).toEqual(pointer);
-      useComposerDraftStore.getState().setPrompt(threadRef, "A newer draft");
-      clearCurrentRuntimeStopPointer(pointer);
-      expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
-        "A newer draft",
-      );
-      expect(
-        useComposerDraftStore.getState().getComposerDraft(threadRef)?.currentRuntimeStop,
-      ).toBeUndefined();
-    } finally {
-      await useComposerDraftStore.persist.clearStorage();
-      vi.unstubAllGlobals();
-      vi.useRealTimers();
-      resetComposerDraftStore();
-    }
-  });
-
-  it.each(["message", "queued_run"] as const)(
-    "flushes and restores the exact %s operation pointer without persisting a delivery payload",
-    async (type) => {
-      await useComposerDraftStore.persist.clearStorage();
-      vi.useFakeTimers();
-      vi.stubGlobal("localStorage", createMockStorage());
-      try {
-        resetComposerDraftStore();
-        const pointer = {
-          environmentId: TEST_ENVIRONMENT_ID,
-          threadId: ThreadId.make("imported-durable"),
-          commandId: CommandId.make("command:original"),
-          target:
-            type === "message"
-              ? { type, messageId: MessageId.make("message:original") }
-              : {
-                  type,
-                  messageId: MessageId.make("message:original"),
-                  runId: RunId.make("run:original"),
-                },
-        };
-        const threadRef = scopeThreadRef(pointer.environmentId, pointer.threadId);
-        useComposerDraftStore.getState().setPrompt(threadRef, "Keep my draft");
-        reserveImportedContinuationPointer(pointer);
-        const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
-        expect(
-          persisted.draftsByThreadKey[scopedThreadKey(threadRef)]?.importedContinuation,
-        ).toEqual(pointer);
-        expect(
-          persisted.draftsByThreadKey[scopedThreadKey(threadRef)]?.importedContinuation,
-        ).not.toHaveProperty("delivery");
-        resetComposerDraftStore();
-        await useComposerDraftStore.persist.rehydrate();
-        expect(
-          useComposerDraftStore.getState().getComposerDraft(threadRef)?.importedContinuation,
-        ).toEqual(pointer);
-        expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
-          "Keep my draft",
-        );
-        useComposerDraftStore.getState().clearComposerContent(threadRef);
-        expect(
-          useComposerDraftStore.getState().getComposerDraft(threadRef)?.importedContinuation,
-        ).toEqual(pointer);
-        expect(
-          composerDraftHasUserContent(useComposerDraftStore.getState().getComposerDraft(threadRef)),
-        ).toBe(false);
-        expect(() =>
-          reserveImportedContinuationPointer({
-            ...pointer,
-            commandId: CommandId.make("command:replacement"),
-          }),
-        ).toThrow("previous imported-history operation");
-        expect(() =>
-          reserveImportedContinuationPointer({
-            ...pointer,
-            target: { ...pointer.target, messageId: MessageId.make("message:replacement") },
-          }),
-        ).toThrow("previous imported-history operation");
-        clearImportedContinuationPointer({
-          ...pointer,
-          commandId: CommandId.make("command:stale"),
-        });
-        clearImportedContinuationPointer({
-          ...pointer,
-          target: { ...pointer.target, messageId: MessageId.make("message:replacement") },
-        });
-        expect(
-          useComposerDraftStore.getState().getComposerDraft(threadRef)?.importedContinuation,
-        ).toEqual(pointer);
-        useComposerDraftStore.getState().setPrompt(threadRef, "New edited draft");
-        clearImportedContinuationPointer(pointer);
-        expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
-          "New edited draft",
-        );
-        expect(
-          useComposerDraftStore.getState().getComposerDraft(threadRef)?.importedContinuation,
-        ).toBeUndefined();
-      } finally {
-        await useComposerDraftStore.persist.clearStorage();
-        vi.unstubAllGlobals();
-        vi.useRealTimers();
-        resetComposerDraftStore();
-      }
-    },
-  );
-
-  it("does not admit a pointer when its synchronous durable write fails", async () => {
-    await useComposerDraftStore.persist.clearStorage();
-    vi.useFakeTimers();
-    vi.stubGlobal("localStorage", createMockStorage());
-    const stringify = vi.spyOn(JSON, "stringify").mockImplementation(() => {
-      throw new Error("Storage is full");
-    });
-    try {
-      expect(() =>
-        reserveImportedContinuationPointer({
-          environmentId: TEST_ENVIRONMENT_ID,
-          threadId: ThreadId.make("storage-failure"),
-          commandId: CommandId.make("command:unsent"),
-          target: { type: "message", messageId: MessageId.make("message:unsent") },
-        }),
-      ).toThrow("Storage is full");
-    } finally {
-      stringify.mockRestore();
-      await useComposerDraftStore.persist.clearStorage();
-      vi.unstubAllGlobals();
-      vi.useRealTimers();
-      resetComposerDraftStore();
-    }
-  });
-
   it("defers attachment reads and serialization until typing stops, then restores the last draft", async () => {
     await useComposerDraftStore.persist.clearStorage();
     vi.useFakeTimers();

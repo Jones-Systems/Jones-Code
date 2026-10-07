@@ -5,7 +5,6 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
-  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -16,15 +15,6 @@ import * as Schema from "effect/Schema";
 
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import * as EventSink from "./EventSink.ts";
-import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
-import { OrchestrationEffectRequestV2 } from "./EffectOutbox.ts";
-import { nativeCreationCanonicalJson, nativeCreationSha256 } from "./NativeCreationPreparation.ts";
-import * as NodeCrypto from "node:crypto";
-import type {
-  ProviderNativeOperationContext,
-  ProviderAdapterV2SessionRuntime,
-} from "./ProviderAdapter.ts";
 
 const yieldToRuntime = Effect.yieldNow.pipe(
   Effect.andThen(
@@ -50,11 +40,6 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
 
 const isProviderTurnControlError = Schema.is(ProviderTurnControlError);
 
-interface OrdinaryCheckoutControlContext {
-  readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
-  readonly ordinaryCheckoutExecution?: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
-}
-
 export interface ProviderTurnControlServiceV2Shape {
   readonly interrupt: (input: {
     readonly threadId: ThreadId;
@@ -62,29 +47,21 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
   }) => Effect.Effect<void, ProviderTurnControlError>;
-  readonly steer: (
-    input: {
-      readonly threadId: ThreadId;
-      readonly providerSessionId: ProviderSessionId;
-      readonly providerThreadId: ProviderThreadId;
-      readonly providerTurnId: ProviderTurnId;
-      readonly messageId: MessageId;
-    } & OrdinaryCheckoutControlContext,
-  ) => Effect.Effect<void, ProviderTurnControlError>;
-  readonly interruptAndAwaitTerminal: (
-    input: {
-      readonly threadId: ThreadId;
-      readonly providerSessionId: ProviderSessionId;
-      readonly replacementProviderSessionId?: ProviderSessionId;
-      readonly providerThreadId: ProviderThreadId;
-      readonly providerTurnId: ProviderTurnId;
-      readonly interruptedAttemptId: RunAttemptId;
-      readonly ordinaryCheckoutRestartRequest?: Extract<
-        OrchestrationEffectRequestV2,
-        { readonly type: "provider-turn.restart" }
-      >;
-    } & OrdinaryCheckoutControlContext,
-  ) => Effect.Effect<void, ProviderTurnControlError>;
+  readonly steer: (input: {
+    readonly threadId: ThreadId;
+    readonly providerSessionId: ProviderSessionId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly providerTurnId: ProviderTurnId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<void, ProviderTurnControlError>;
+  readonly interruptAndAwaitTerminal: (input: {
+    readonly threadId: ThreadId;
+    readonly providerSessionId: ProviderSessionId;
+    readonly replacementProviderSessionId?: ProviderSessionId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly providerTurnId: ProviderTurnId;
+    readonly interruptedAttemptId: RunAttemptId;
+  }) => Effect.Effect<void, ProviderTurnControlError>;
 }
 
 export class ProviderTurnControlServiceV2 extends Context.Service<
@@ -95,95 +72,12 @@ export class ProviderTurnControlServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
-  | ProjectionStore.ProjectionStoreV2
-  | ProviderSessionManager.ProviderSessionManagerV2
-  | EventSink.EventSinkV2
+  ProjectionStore.ProjectionStoreV2 | ProviderSessionManager.ProviderSessionManagerV2
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-    const eventSink = yield* EventSink.EventSinkV2;
-    const requireOrdinaryExecution = (
-      input: OrdinaryCheckoutControlContext & {
-        readonly threadId: ThreadId;
-        readonly providerTurnId: ProviderTurnId;
-      },
-      runId: RunId,
-      request: OrchestrationEffectRequestV2 | undefined,
-      operation: "steer" | "restart" = "steer",
-    ) =>
-      Effect.gen(function* () {
-        const admission = yield* eventSink.readOrdinaryCheckoutAdmissionForRun({
-          threadId: input.threadId,
-          runId,
-        });
-        const execution = input.ordinaryCheckoutExecution;
-        if (
-          (input.ordinaryCheckoutUse !== undefined && execution === undefined) ||
-          (admission !== null &&
-            (execution === undefined ||
-              execution.originalUse.admission.admissionId !== admission.admissionId ||
-              execution.originalUse.admission.admissionSha256 !==
-                OrdinaryCheckout.ordinaryCheckoutAdmissionRefV1(admission).admissionSha256)) ||
-          (execution !== undefined &&
-            (admission === null ||
-              request === undefined ||
-              execution.executor.kind !== "actual_outbox_claim" ||
-              execution.originalUse.lease.ownerThreadId !== input.threadId ||
-              execution.executor.source.link.threadId !== input.threadId ||
-              execution.executor.source.link.requestSha256 !==
-                nativeCreationSha256(
-                  nativeCreationCanonicalJson(
-                    yield* Schema.encodeEffect(OrchestrationEffectRequestV2)(request).pipe(
-                      Effect.orDie,
-                    ),
-                  ),
-                ) ||
-              (input.ordinaryCheckoutUse !== undefined &&
-                nativeCreationCanonicalJson(
-                  yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
-                    input.ordinaryCheckoutUse,
-                  ).pipe(Effect.orDie),
-                ) !==
-                  nativeCreationCanonicalJson(
-                    yield* Schema.encodeEffect(OrdinaryCheckout.OrdinaryCheckoutUseV1)(
-                      execution.originalUse,
-                    ).pipe(Effect.orDie),
-                  ))))
-        )
-          return yield* new ProviderTurnControlError({
-            threadId: input.threadId,
-            operation,
-            providerTurnId: input.providerTurnId,
-            cause: "The provider control has no matching original checkout claim.",
-          });
-        const revalidate =
-          execution === undefined
-            ? Effect.void
-            : eventSink.revalidateOrdinaryCheckoutExecution(execution).pipe(Effect.asVoid);
-        yield* revalidate;
-        return revalidate;
-      });
-    const operation = (
-      kind: "interrupt_turn" | "steer_turn",
-      input: {
-        readonly threadId: ThreadId;
-        readonly providerSessionId: ProviderSessionId;
-        readonly providerThreadId: ProviderThreadId;
-      },
-      session: ProviderAdapterV2SessionRuntime,
-    ): ProviderNativeOperationContext => ({
-      operationId: `${kind}:${NodeCrypto.randomUUID()}`,
-      operation: kind,
-      instanceId: session.instanceId,
-      threadId: input.threadId,
-      providerSessionId: input.providerSessionId,
-      providerThreadId: input.providerThreadId,
-      ...(session.runtimeGeneration === undefined
-        ? {}
-        : { runtimeGeneration: session.runtimeGeneration }),
-    });
 
     const load = (input: {
       readonly threadId: ThreadId;
@@ -193,15 +87,9 @@ export const layer: Layer.Layer<
       readonly providerTurnId: ProviderTurnId;
       readonly operation: "interrupt" | "restart" | "steer";
       readonly messageId?: MessageId;
-      readonly interruptedAttemptId?: RunAttemptId;
     }) =>
       Effect.gen(function* () {
-        const context = yield* projections.getProviderControlContext(input.threadId, {
-          ...input,
-          ...(input.interruptedAttemptId === undefined
-            ? {}
-            : { attemptId: input.interruptedAttemptId }),
-        });
+        const context = yield* projections.getProviderControlContext(input.threadId, input);
         const { providerThread, providerTurn } = context;
         const targetsRecordedSession =
           providerThread?.providerSessionId === input.providerSessionId;
@@ -293,7 +181,6 @@ export const layer: Layer.Layer<
           // stops it or reports there is nothing left to stop. Background work
           // the projection still shows is settled by the orchestrator after.
           yield* session.value.interruptTurn({
-            nativeOperation: operation("interrupt_turn", input, session.value),
             providerThread: loaded.providerThread,
             providerTurnId: loaded.providerTurn.id,
             requestRuntimeRestart: true,
@@ -313,38 +200,6 @@ export const layer: Layer.Layer<
       interruptAndAwaitTerminal: (input) =>
         Effect.gen(function* () {
           const loaded = yield* load({ ...input, operation: "restart" });
-          const request = input.ordinaryCheckoutRestartRequest;
-          if (
-            (input.ordinaryCheckoutExecution !== undefined && request === undefined) ||
-            (request !== undefined &&
-              (request.providerSessionId !== input.providerSessionId ||
-                request.providerThreadId !== input.providerThreadId ||
-                request.providerTurnId !== input.providerTurnId ||
-                request.interruptedAttemptId !== input.interruptedAttemptId ||
-                (request.sessionTransition?.type === "replace"
-                  ? request.sessionTransition.replacementProviderSessionId
-                  : undefined) !== input.replacementProviderSessionId))
-          )
-            return yield* new ProviderTurnControlError({
-              threadId: input.threadId,
-              operation: "restart",
-              providerTurnId: input.providerTurnId,
-              cause: "The restart control differs from its complete actual claimed request.",
-            });
-          const targetRunId = request?.runId ?? loaded.context.attempt?.runId;
-          if (targetRunId === undefined)
-            return yield* new ProviderTurnControlError({
-              threadId: input.threadId,
-              operation: "restart",
-              providerTurnId: input.providerTurnId,
-              cause: "The restart control has no recorded run.",
-            });
-          const revalidate = yield* requireOrdinaryExecution(
-            input,
-            targetRunId,
-            request,
-            "restart",
-          );
           if (Option.isNone(loaded.session)) {
             // No live adapter: nothing can emit a terminal provider-turn update
             // from interrupt. Do not poll for projection terminalization or the
@@ -362,15 +217,12 @@ export const layer: Layer.Layer<
             return;
           }
 
-          yield* revalidate;
           yield* loaded.session.value.interruptTurn({
-            nativeOperation: operation("interrupt_turn", input, loaded.session.value),
             providerThread: loaded.providerThread,
             providerTurnId: loaded.providerTurn.id,
           });
 
           for (let remaining = 1_000; remaining > 0; remaining -= 1) {
-            yield* revalidate;
             const { providerTurn, attempt } = yield* projections.getProviderControlContext(
               input.threadId,
               {
@@ -433,12 +285,7 @@ export const layer: Layer.Layer<
           const loaded = yield* load({ ...input, operation: "steer" });
           if (Option.isNone(loaded.session)) return;
           const { message, run } = loaded.context;
-          if (
-            message === undefined ||
-            run === undefined ||
-            message.runId !== run.id ||
-            loaded.providerTurn.runAttemptId !== run.activeAttemptId
-          ) {
+          if (message === undefined || run === undefined) {
             return yield* new ProviderTurnControlError({
               threadId: input.threadId,
               operation: "steer",
@@ -446,17 +293,8 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
-          const revalidate = yield* requireOrdinaryExecution(input, run.id, {
-            type: "provider-turn.steer",
-            providerSessionId: input.providerSessionId,
-            providerThreadId: input.providerThreadId,
-            providerTurnId: input.providerTurnId,
-            messageId: input.messageId,
-          });
-          yield* revalidate;
           yield* loaded.session.value
             .steerTurn({
-              nativeOperation: operation("steer_turn", input, loaded.session.value),
               threadId: input.threadId,
               runId: run.id,
               providerThread: loaded.providerThread,

@@ -12,11 +12,12 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
-import { decodeOrchestrationEffectPayloadV2 } from "../orchestration-v2/EffectOutbox.ts";
+import { OrchestrationEffectRequestV2 } from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
@@ -56,7 +57,6 @@ const servicesLayer = Layer.mergeAll(
             resolve: () => Effect.succeed(null),
           }),
           Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
-            invalidate: () => Effect.void,
             resolvePath: () => Effect.succeed(null),
           }),
         ),
@@ -67,6 +67,9 @@ const servicesLayer = Layer.mergeAll(
 const databaseLayer = SqlitePersistenceMemory.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "project-deletion-test-" })),
   Layer.provideMerge(NodeServices.layer),
+);
+const decodeEffectRequest = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationEffectRequestV2),
 );
 
 const seedProject = Effect.fn("ProjectDeletionTest.seedProject")(function* (projectId: ProjectId) {
@@ -194,14 +197,9 @@ it.effect("retries a partial project deletion without repeating child events or 
       assert.lengthOf(partialEvents, 1);
       assert.equal(partialEvents[0]?.stream_id, firstThreadId);
       assert.equal(partialEvents[0]?.event_type, "thread.deleted");
-      assert.lengthOf(partialCleanup, 2);
-      assert.deepEqual(
-        partialCleanup.map((effect) => [effect.thread_id, effect.effect_type]),
-        [
-          [firstThreadId, "attachment.cleanup"],
-          [firstThreadId, "terminal.cleanup"],
-        ],
-      );
+      assert.lengthOf(partialCleanup, 1);
+      assert.equal(partialCleanup[0]?.thread_id, firstThreadId);
+      assert.equal(partialCleanup[0]?.effect_type, "terminal.cleanup");
 
       const deletedProject = yield* service.delete(input);
       assert.isNotNull(deletedProject.deletedAt);
@@ -222,7 +220,7 @@ it.effect("retries a partial project deletion without repeating child events or 
       assert.deepEqual(finalEvents[0], partialEvents[0]);
       assert.equal(finalEvents[2]?.command_id, commandId);
       const finalCleanup = yield* readCleanup;
-      assert.lengthOf(finalCleanup, 4);
+      assert.lengthOf(finalCleanup, 2);
       assert.deepEqual(
         finalCleanup.filter((effect) => effect.thread_id === firstThreadId),
         partialCleanup,
@@ -232,12 +230,6 @@ it.effect("retries a partial project deletion without repeating child events or 
         assert.deepEqual(
           finalCleanup.filter((effect) => effect.thread_id === threadId),
           [
-            {
-              effect_id: `effect:${expectedCommandId}:attachment.cleanup`,
-              thread_id: threadId,
-              command_id: expectedCommandId,
-              effect_type: "attachment.cleanup",
-            },
             {
               effect_id: `effect:${expectedCommandId}:terminal.cleanup`,
               thread_id: threadId,
@@ -357,9 +349,7 @@ it.effect(
         assert.lengthOf(cleanup, 1);
         assert.equal(cleanup[0]?.command_id, `${commandId}:delete-thread:${threadId}`);
         assert.equal(cleanup[0]?.status, "pending");
-        const { request } = yield* decodeOrchestrationEffectPayloadV2(
-          cleanup[0]?.payload_json ?? assert.fail("Missing attachment cleanup payload"),
-        );
+        const request = yield* decodeEffectRequest(cleanup[0]?.payload_json);
         assert.deepEqual(request, {
           type: "attachment.cleanup",
           attachmentIds: ["legacy_screenshot"],

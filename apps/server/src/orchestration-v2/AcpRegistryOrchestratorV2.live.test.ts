@@ -24,14 +24,11 @@ import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "../background/HostPowerMonitor.ts";
 import * as ServerConfig from "../config.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import * as AuthSessions from "../persistence/AuthSessions.ts";
-import * as NativeCreationRepositoryLayer from "../persistence/Layers/NativeCreationRepository.ts";
-import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
-import { TerminalManager } from "../terminal/Manager.ts";
 import * as AntigravityInstallation from "../provider/AntigravityInstallation.ts";
 import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
+import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
 import { ProviderInstanceRegistryHydrationLive } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as ProviderEventLoggers from "../provider/Layers/ProviderEventLoggers.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
@@ -42,8 +39,6 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { worktreeRepairDependenciesTestLayer } from "./ProviderTurnStartService.testkit.ts";
 import { OrchestrationV2LayerLive } from "./runtimeLayer.ts";
-import { LegacyLeaseInventoryError } from "./LegacyLeaseCleanup.ts";
-import { NativeCreationAuthorityUnavailable } from "./NativeCreationAuthority.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 
 // The Antigravity switch is a durable, named conformance fixture for Google's
@@ -119,6 +114,7 @@ const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe
         ProviderEventLoggers.NoOpProviderEventLoggers,
       ),
       ModelManifest.layerTest,
+      ProcessAttribution.layer,
       AntigravityInstallation.AntigravityInstallation.layer.pipe(
         Layer.provide(serverConfigLayer.pipe(Layer.provide(PlatformTestLayer))),
         Layer.provide(FetchHttpClient.layer),
@@ -137,33 +133,13 @@ const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe
   ),
 );
 
-// The server supplies these outside the orchestration runtime: native creation
-// stays unavailable as in production, and legacy terminal inventory fails closed.
-const serverSuppliedRuntimeInputs = Layer.mergeAll(
-  NativeCreationAuthorityUnavailable.pipe(
-    Layer.provide(AuthSessions.layer),
-    Layer.provideMerge(NativeCreationRepositoryLayer.layer),
-  ),
-  Layer.mock(TerminalManager)({
-    withLegacyOwnerAbsent: (owner) =>
-      Effect.fail(
-        new LegacyLeaseInventoryError({
-          threadId: owner.originalBirth.threadId,
-          reason: "Live provider fixture has no terminal inventory",
-        }),
-      ),
-  }),
-);
-
 const liveLayer = OrchestrationV2LayerLive.pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
-  Layer.provide(serverSuppliedRuntimeInputs),
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(checkpointStoreLayer),
   Layer.provide(serverConfigLayer),
   Layer.provide(serverSettingsLayer),
   Layer.provide(providerInstanceRegistryLayer),
-  Layer.provide(ProcessAttribution.layer),
   Layer.provide(ResetCreditCoordinator.layer),
   Layer.provide(backgroundPolicyLayer),
   Layer.provide(worktreeRepairDependenciesTestLayer),

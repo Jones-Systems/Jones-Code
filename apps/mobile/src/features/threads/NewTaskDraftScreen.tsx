@@ -96,6 +96,7 @@ import {
   captureComposerDraftInsertion,
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftSnapshot,
+  composerDraftsAtom,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
   updateComposerDraftSettings,
@@ -117,7 +118,12 @@ import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/re
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
 import { useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
 import { useNewTaskFlow } from "./new-task-flow-provider";
+import {
+  nextEnvironmentId,
+  useHardwareKeyboardCommand,
+} from "../keyboard/hardwareKeyboardCommands";
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
+import { createProjectThreadStartLatch } from "./projectThreadStartLatch";
 import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import {
   resolveNewTaskBranchLabel,
@@ -303,6 +309,7 @@ export function NewTaskDraftScreen(props: {
   const queuesInsteadOfStarting = !environmentConnected || attachmentsUploading;
   const promptInputRef = useRef<ComposerEditorHandle>(null);
   const loadedBranchesProjectKeyRef = useRef<string | null>(null);
+  const startLatchRef = useRef(createProjectThreadStartLatch());
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
@@ -434,6 +441,26 @@ export function NewTaskDraftScreen(props: {
   const isImportingContext = flow.draftKey ? contextImports[flow.draftKey] === true : false;
   const isComposerInteractionLocked =
     isIncomingShareTransferPending || flow.submitting || isImportingContext;
+  // Hardware keyboard: step to the next machine, from the one a switch in
+  // progress is heading to so repeated presses keep advancing.
+  const { environments, selectedEnvironmentId, switchEnvironment, switchingToEnvironmentId } = flow;
+  const cycleEnvironment = useCallback(() => {
+    if (isComposerInteractionLocked) return true;
+    const next = nextEnvironmentId(environments, switchingToEnvironmentId ?? selectedEnvironmentId);
+    if (next !== null) void switchEnvironment(next);
+    return true;
+  }, [
+    environments,
+    isComposerInteractionLocked,
+    selectedEnvironmentId,
+    switchEnvironment,
+    switchingToEnvironmentId,
+  ]);
+  const cycleEnvironmentCommands = useMemo(
+    () => (environments.length > 1 ? (["cycleHost"] as const) : []),
+    [environments.length],
+  );
+  useHardwareKeyboardCommand(cycleEnvironmentCommands, cycleEnvironment);
   // Also guard while a submit is in flight: an Android back press or iOS
   // Cancel would otherwise abandon the screen while the task still starts.
   // T3 owns /usage-limits only where Limits has data for the selected provider.
@@ -473,7 +500,9 @@ export function NewTaskDraftScreen(props: {
   });
   const voiceInput = useVoiceInputController({
     ownerKey: flow.draftKey,
-    draftMessage: flow.prompt,
+    label: selectedProject ? `New task in ${selectedProject.title}` : "New task",
+    readDraftMessage: () => (flow.draftKey ? getComposerDraftSnapshot(flow.draftKey).text : null),
+    subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
     selection: composerMenu.selection,
     disabled: isIncomingShareTransferPending || isImportingShare || flow.submitting,
     onChangeDraftMessage: flow.setPrompt,
@@ -977,15 +1006,15 @@ export function NewTaskDraftScreen(props: {
     flow.environments.find(
       (environment) => environment.environmentId === flow.selectedEnvironmentId,
     )?.environmentLabel ?? "Environment";
-  const availableCurrentBranchName =
-    flow.availableBranches.find((branch) => branch.current)?.name ??
+  const availableDefaultBranchName =
     flow.availableBranches.find((branch) => branch.isDefault)?.name ??
+    flow.availableBranches.find((branch) => branch.current && !branch.isRemote)?.name ??
     null;
   const selectedBranchName = resolveProjectThreadCreationBranch({
     workspaceMode: flow.workspaceMode,
     selectedBranch:
       flow.selectedBranchName ??
-      (flow.workspaceMode === "worktree" ? availableCurrentBranchName : null),
+      (flow.workspaceMode === "worktree" ? availableDefaultBranchName : null),
     currentCheckoutBranch: flow.currentCheckoutBranchName,
   });
   const selectedBranchLabel = resolveNewTaskBranchLabel({
@@ -1181,6 +1210,17 @@ export function NewTaskDraftScreen(props: {
   );
 
   async function handleStart(): Promise<void> {
+    if (flow.submitting) return;
+    await startLatchRef.current.run(async () => {
+      try {
+        await submitTask();
+      } finally {
+        flow.setSubmitting(false);
+      }
+    });
+  }
+
+  async function submitTask(): Promise<void> {
     if (voiceInput.blocksSubmission || pendingPastedTextAttachmentCountRef.current > 0) return;
     const selectedProject = flow.selectedProject;
     const draftKey = flow.draftKey;
@@ -1196,16 +1236,13 @@ export function NewTaskDraftScreen(props: {
         selectedEnvironmentServerConfig,
         draft.modelSelection ?? null,
       ) ?? flow.selectedModel;
-    const workspaceMode = draft.workspaceSelection?.mode ?? flow.workspaceMode;
-    const selectedBranchName = draft.workspaceSelection?.branch ?? flow.selectedBranchName;
     const initialMessageText = draft.text.trim();
 
     if (
       attachmentBlockReason !== null ||
       !modelSelection ||
       initialMessageText.length === 0 ||
-      flow.submitting ||
-      (workspaceMode === "worktree" && !selectedBranchName)
+      flow.submitting
     ) {
       return;
     }
@@ -1300,8 +1337,6 @@ export function NewTaskDraftScreen(props: {
         error instanceof Error ? error.message : "The task could not be saved to the outbox.",
       );
       return;
-    } finally {
-      flow.setSubmitting(false);
     }
     const draftSnapshot = getComposerDraftSnapshot(draftKey);
     if (editingPendingTask) {
@@ -1360,8 +1395,7 @@ export function NewTaskDraftScreen(props: {
     !isImportingShare &&
     !flow.submitting &&
     pendingPastedTextAttachmentCount === 0 &&
-    !voiceInput.blocksSubmission &&
-    !(flow.workspaceMode === "worktree" && !flow.selectedBranchName);
+    !voiceInput.blocksSubmission;
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     // A draft attachment lives only in the draft. Without its key the screen would fall through
     // to a remote lookup for bytes the server has never seen.

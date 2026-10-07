@@ -1,18 +1,14 @@
 import { assert, describe, expect, it, vi } from "@effect/vitest";
-import * as Context from "effect/Context";
-import * as Deferred from "effect/Deferred";
-import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
-import { VcsRepositoryDetectionError } from "@t3tools/contracts";
+import { VcsRepositoryDetectionError, VcsUnsupportedOperationError } from "@t3tools/contracts";
 
 import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import * as VcsDriver from "../vcs/VcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 function makeLayer(input: {
@@ -58,6 +54,49 @@ describe("GitWorkflowService", () => {
       ),
     ),
   );
+
+  it.effect("keeps remote worktree lookup failures typed when repository resolution fails", () => {
+    const lookup = vi.fn(() => null);
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const error = yield* workflow
+        .resolveRemoteTrackingCommitIfExists({
+          cwd: "/not-a-repo",
+          remoteName: "origin",
+          branchName: "develop",
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "GitCommandError",
+        operation: "GitWorkflowService.resolveRemoteTrackingCommitIfExists",
+        cwd: "/not-a-repo",
+      });
+      expect(lookup).not.toHaveBeenCalled();
+    }).pipe(
+      Effect.provide(
+        GitWorkflowService.layer.pipe(
+          Layer.provide(
+            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+              resolve: () =>
+                Effect.fail(
+                  new VcsUnsupportedOperationError({
+                    operation: "VcsDriverRegistry.resolve",
+                    kind: "unknown",
+                    detail: "No Git repository is available.",
+                  }),
+                ),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(GitVcsDriver.GitVcsDriver)({
+              resolveRemoteTrackingCommitIfExists: () => Effect.sync(lookup),
+            }),
+          ),
+          Layer.provide(Layer.mock(GitManager.GitManager)({})),
+        ),
+      ),
+    );
+  });
 
   it.effect("returns an empty local status when no VCS repository is detected", () =>
     Effect.gen(function* () {
@@ -225,92 +264,3 @@ describe("GitWorkflowService", () => {
     );
   });
 });
-
-class WorkflowMutationGuard extends Context.Service<
-  WorkflowMutationGuard,
-  { readonly current: boolean }
->()("t3/git/GitWorkflowService.test/WorkflowMutationGuard") {}
-
-it.effect("forwards typed mutation guards only after resolving the Git workflow", () =>
-  Effect.gen(function* () {
-    const resolving = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
-    const stale = { _tag: "StaleWorkflowMutation" } as const;
-    let checks = 0;
-    const driver = yield* VcsDriver.VcsDriver;
-    const workflow = yield* GitWorkflowService.make.pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          Layer.mock(GitManager.GitManager)({}),
-          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
-            resolve: () =>
-              Deferred.succeed(resolving, undefined).pipe(
-                Effect.andThen(Deferred.await(release)),
-                Effect.as({
-                  kind: "git" as const,
-                  driver,
-                  repository: {
-                    kind: "git" as const,
-                    rootPath: "/repo",
-                    metadataPath: "/repo/.git",
-                    freshness: {
-                      source: "live-local" as const,
-                      observedAt: DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
-                      expiresAt: Option.none(),
-                    },
-                  },
-                }),
-              ),
-          }),
-          Layer.mock(GitVcsDriver.GitVcsDriver)({
-            createWorktree: (input, options) =>
-              (options?.revalidateMutation ?? Effect.void).pipe(
-                Effect.as({
-                  worktree: { path: input.path ?? "/worktree", refName: input.refName },
-                }),
-              ),
-            pruneWorktrees: (input) => input.revalidateMutation ?? Effect.void,
-          }),
-        ),
-      ),
-    );
-    const guard = Effect.gen(function* () {
-      checks++;
-      if (!(yield* WorkflowMutationGuard).current) return yield* Effect.fail(stale);
-    });
-    const fiber = yield* workflow
-      .createWorktree(
-        { cwd: "/repo", path: "/worktree", refName: "main" },
-        { revalidateMutation: guard },
-      )
-      .pipe(
-        Effect.provideService(WorkflowMutationGuard, { current: false }),
-        Effect.flip,
-        Effect.forkChild,
-      );
-    yield* Deferred.await(resolving);
-    assert.equal(checks, 0);
-    yield* Deferred.succeed(release, undefined);
-    assert.strictEqual(yield* Fiber.join(fiber), stale);
-    assert.strictEqual(
-      yield* workflow
-        .pruneWorktrees({ cwd: "/repo", revalidateMutation: guard })
-        .pipe(Effect.provideService(WorkflowMutationGuard, { current: false }), Effect.flip),
-      stale,
-    );
-    assert.equal(checks, 2);
-  }).pipe(
-    Effect.provide(
-      Layer.mock(VcsDriver.VcsDriver)({
-        capabilities: {
-          kind: "git",
-          supportsWorktrees: true,
-          supportsBookmarks: false,
-          supportsAtomicSnapshot: false,
-          supportsPushDefaultRemote: true,
-          ignoreClassifier: "native",
-        },
-      }),
-    ),
-  ),
-);

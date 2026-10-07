@@ -1,7 +1,4 @@
-import packageJson from "../package.json" with { type: "json" };
-import { awaitJonesTrialCommit } from "./jonesUpdates/trialGate.ts";
-import * as NodeCrypto from "node:crypto";
-export const nativeCreationBootId = NodeCrypto.randomUUID();
+import * as ServerUpdateContinuation from "./orchestration-v2/ServerUpdateContinuation.ts";
 import {
   CommandId,
   DEFAULT_MODEL,
@@ -14,7 +11,6 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
@@ -29,24 +25,18 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as HttpServer from "effect/unstable/http/HttpServer";
 
 import * as ServerConfig from "./config.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
-import {
-  decodeServiceLauncherContext,
-  SERVICE_LAUNCHER_CONTEXT_ENV,
-} from "./cloud/serviceProtocol.ts";
 import { flushCompileCache } from "./compileCache.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
-import type { RestartContinuationMarkerV2 } from "./orchestration-v2/EventSink.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
+import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
-import * as ThreadDeletion from "./orchestration-v2/ThreadDeletion.ts";
 import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -79,56 +69,22 @@ export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeS
   }
 }
 
-export class ServerUpdateThreadContinuationError extends Schema.TaggedError<ServerUpdateThreadContinuationError>()(
-  "ServerUpdateThreadContinuationError",
-  { operation: Schema.Literals(["prepare", "clear"]), cause: Schema.Defect() },
-) {}
-
-export const markRunningProviderSessionsForContinuation = Effect.flatMap(
-  ProviderRuntimeRecovery.ProviderRuntimeRecoveryService,
-  (service) => service.prepareForServerUpdate({ respectProjectPreference: false }),
-).pipe(
-  Effect.mapError(
-    (cause) => new ServerUpdateThreadContinuationError({ operation: "prepare", cause }),
-  ),
-);
-
-export const markOptedInProviderSessionsForContinuation = Effect.flatMap(
-  ProviderRuntimeRecovery.ProviderRuntimeRecoveryService,
-  (service) => service.prepareForServerUpdate({ respectProjectPreference: true }),
-).pipe(
-  Effect.mapError(
-    (cause) => new ServerUpdateThreadContinuationError({ operation: "prepare", cause }),
-  ),
-);
-
-export const clearProviderSessionContinuationMarkers = (
-  markers: ReadonlyArray<RestartContinuationMarkerV2>,
-) =>
-  Effect.flatMap(ProviderRuntimeRecovery.ProviderRuntimeRecoveryService, (service) =>
-    service.clearServerUpdatePreparation(markers),
-  ).pipe(
-    Effect.mapError(
-      (cause) => new ServerUpdateThreadContinuationError({ operation: "clear", cause }),
-    ),
-  );
-
 export class ServerRuntimeStartup extends Context.Service<
   ServerRuntimeStartup,
   {
-    readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
-    readonly markHttpListening: Effect.Effect<void>;
     readonly markRunningProviderSessionsForContinuation: Effect.Effect<
-      ReadonlyArray<RestartContinuationMarkerV2>,
-      ServerUpdateThreadContinuationError
+      ReadonlyArray<ThreadId>,
+      ServerRuntimeStartupError
     >;
     readonly markOptedInProviderSessionsForContinuation: Effect.Effect<
-      ReadonlyArray<RestartContinuationMarkerV2>,
-      ServerUpdateThreadContinuationError
+      ReadonlyArray<ThreadId>,
+      ServerRuntimeStartupError
     >;
     readonly clearProviderSessionContinuationMarkers: (
-      markers: ReadonlyArray<RestartContinuationMarkerV2>,
-    ) => Effect.Effect<void, ServerUpdateThreadContinuationError>;
+      threadIds: ReadonlyArray<ThreadId>,
+    ) => Effect.Effect<void, ServerRuntimeStartupError>;
+    readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
+    readonly markHttpListening: Effect.Effect<void>;
     readonly enqueueCommand: <A, E>(
       effect: Effect.Effect<A, E>,
     ) => Effect.Effect<A, E | ServerRuntimeStartupError>;
@@ -311,7 +267,7 @@ export const resolveWelcomeBase = Effect.gen(function* () {
   } as const;
 });
 
-export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
+const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const randomUUID = crypto.randomUUIDv4;
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -443,71 +399,31 @@ export function runOrderedV2StartupPhases<
   Bootstrap,
   ImportError,
   RecoveryError,
+  DelegationError,
   WorkerError,
   BootstrapError,
   ImportContext,
   RecoveryContext,
+  DelegationContext,
   WorkerContext,
   BootstrapContext,
 >(input: {
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
+  /** Settles delegated tasks whose runs recovery just terminalized. */
+  readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
   readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
 }) {
   return Effect.gen(function* () {
     yield* input.importLegacyShells;
     const recovery = yield* input.recover;
+    yield* input.recoverDelegatedTasks;
     yield* input.startEffectWorker;
     const bootstrap = yield* input.autoBootstrap;
     return { recovery, bootstrap } as const;
   });
 }
-
-export const prepareServiceLauncherTrial = Effect.gen(function* () {
-  const config = yield* ServerConfig.ServerConfig;
-  const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
-  const environment = yield* HostProcessEnvironment;
-  const path = yield* Path.Path;
-  const rawContext = environment[SERVICE_LAUNCHER_CONTEXT_ENV];
-  const context = rawContext === undefined ? undefined : decodeServiceLauncherContext(rawContext);
-  if (
-    (rawContext !== undefined && context === undefined) ||
-    (context?.update?.status === "pending" &&
-      (path.resolve(context.update.dbPath) !== path.resolve(config.dbPath) ||
-        environment.T3CODE_HOME === undefined ||
-        path.resolve(environment.T3CODE_HOME) !== path.resolve(config.baseDir)))
-  )
-    return yield* new ServerRuntimeStartupError({
-      mode: config.mode,
-      host: config.host ?? null,
-      port: config.port,
-      cause: "The service trial does not bind the selected home and database.",
-    });
-  return yield* launcher.prepareTrial;
-});
-
-export const runOrderedV2ActivationPhases = <Prepared, E, R>(input: {
-  readonly awaitHttpListening: Effect.Effect<void, E, R>;
-  readonly awaitAuxiliaryParked: Effect.Effect<void, E, R>;
-  readonly prepareTrial: Effect.Effect<Prepared, E, R>;
-  readonly commitJonesTrial: Effect.Effect<void, E, R>;
-  readonly reconcileAfterTrial: Effect.Effect<void, E, R>;
-  readonly publishWelcome: Effect.Effect<void, E, R>;
-  readonly activate: Effect.Effect<void, E, R>;
-  readonly signalCommandReady: Effect.Effect<void, E, R>;
-}) =>
-  Effect.gen(function* () {
-    yield* input.awaitHttpListening;
-    yield* input.awaitAuxiliaryParked;
-    const prepared = yield* input.prepareTrial;
-    yield* input.commitJonesTrial;
-    yield* input.reconcileAfterTrial;
-    yield* input.publishWelcome;
-    yield* input.activate;
-    yield* input.signalCommandReady;
-    return prepared;
-  });
 
 const make = (options?: StartupOptions) =>
   Effect.gen(function* () {
@@ -515,7 +431,7 @@ const make = (options?: StartupOptions) =>
     const keybindings = yield* Keybindings.Keybindings;
     const legacyV1ThreadImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
     const providerRuntimeRecovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
-    const leaseCleanup = yield* ThreadDeletion.ThreadDeletionLeaseCleanup;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
     const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -523,9 +439,21 @@ const make = (options?: StartupOptions) =>
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
     const crypto = yield* Crypto.Crypto;
     const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
-    // The Jones trial reports the listener this runtime was built against.
-    const httpServer = yield* HttpServer.HttpServer;
 
+    const continuationContext = yield* Effect.context<
+      | Effect.Services<typeof ServerUpdateContinuation.markRunningProviderSessionsForContinuation>
+      | Effect.Services<typeof ServerUpdateContinuation.markOptedInProviderSessionsForContinuation>
+      | Effect.Services<
+          ReturnType<typeof ServerUpdateContinuation.clearProviderSessionContinuationMarkers>
+        >
+    >();
+    const continuationError = (cause: unknown) =>
+      new ServerRuntimeStartupError({
+        mode: serverConfig.mode,
+        host: serverConfig.host ?? null,
+        port: serverConfig.port,
+        cause,
+      });
     const commandGate = yield* makeCommandGate;
     const httpListening = yield* Deferred.make<void>();
     const effectWorkerFiber = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
@@ -613,9 +541,10 @@ const make = (options?: StartupOptions) =>
             ),
           ),
         ),
-        recover: runStartupPhase(
-          "orchestration-v2.recovery.stage",
-          providerRuntimeRecovery.stageStartupRecovery,
+        recover: runStartupPhase("orchestration-v2.recovery", providerRuntimeRecovery.recover),
+        recoverDelegatedTasks: runStartupPhase(
+          "orchestration-v2.delegated-tasks.recover",
+          orchestrator.recoverDelegatedTasks,
         ),
         startEffectWorker: runStartupPhase(
           "orchestration-v2.effect-worker.start",
@@ -633,16 +562,14 @@ const make = (options?: StartupOptions) =>
           : Effect.succeed({})
         ).pipe(Effect.map((targets): AutoBootstrapWelcomeTargets => targets)),
       });
-      yield* Effect.logInfo("V2 orchestration recovery staged", {
-        continuationMarkerCount: recovery.continuationMarkers.length,
-      });
+      yield* Effect.logInfo("V2 orchestration recovery completed", recovery);
       yield* runStartupPhase(
         "projects.auto-pull",
         Effect.gen(function* () {
           const projects = yield* (yield* ProjectStore.ProjectStoreV2).listShells();
           const settings = yield* serverSettings.getSettings;
           yield* autoPullProjects(projects, settings);
-        }).pipe(forkParked),
+        }),
       );
 
       const importPendingTranscripts = legacyV1ThreadImporter.importPendingTranscripts.pipe(
@@ -697,93 +624,38 @@ const make = (options?: StartupOptions) =>
         }),
       );
 
-      const updateOutcome = yield* runOrderedV2ActivationPhases({
-        awaitHttpListening: runStartupPhase("http.wait", Deferred.await(httpListening)),
-        awaitAuxiliaryParked: runStartupPhase(
-          "auxiliary-roots.parked",
-          options?.awaitAuxiliaryParked ?? Effect.void,
-        ),
-        prepareTrial: prepareServiceLauncherTrial,
-        commitJonesTrial: Effect.gen(function* () {
-          const address = httpServer.address;
-          if (typeof address === "string" || !("port" in address))
-            return yield* new ServerRuntimeStartupError({
-              mode: serverConfig.mode,
-              host: serverConfig.host ?? null,
-              port: serverConfig.port,
-              cause: "The Jones trial requires the actual HTTP listener address.",
-            });
-          return yield* Effect.tryPromise({
-            try: (signal) =>
-              awaitJonesTrialCommit({
-                descriptorPath: process.env.T3CODE_JONES_TRIAL_DESCRIPTOR,
-                home: serverConfig.baseDir,
-                databasePath: serverConfig.dbPath,
-                profile: process.env.T3CODE_DESKTOP_USER_DATA_DIR,
-                environmentId: environment.environmentId,
-                version: packageJson.version,
-                buildMetadata: packageJson,
-                listener: `http://${formatHostForUrl(serverConfig.host ?? "127.0.0.1")}:${address.port}`,
-                signal,
-              }),
-            catch: (cause) =>
-              new ServerRuntimeStartupError({
-                mode: serverConfig.mode,
-                host: serverConfig.host ?? null,
-                port: serverConfig.port,
-                cause,
-              }),
-          });
-        }),
-        reconcileAfterTrial: runStartupPhase(
-          "orchestration-v2.recovery.after-trial",
-          providerRuntimeRecovery.reconcileAfterStartupTrial(recovery).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ServerRuntimeStartupError({
-                  mode: serverConfig.mode,
-                  host: serverConfig.host ?? null,
-                  port: serverConfig.port,
-                  cause,
-                }),
-            ),
-            Effect.tap((summary) =>
-              Effect.logInfo("V2 orchestration recovery completed", {
-                terminalizedRuns: summary.terminalizedRuns,
-                stoppedSessions: summary.stoppedSessions,
-                closedRequests: summary.closedRequests,
-                retiredEffects: summary.retiredEffects,
-                requeuedEffects: summary.requeuedEffects,
-                failedThreadCount: summary.failedThreadIds.length,
-                releasedContinuationCount: summary.releasedContinuationMarkerIds.length,
-                heldContinuationCount: summary.heldContinuationMarkers.length,
-              }),
-            ),
-            Effect.asVoid,
-            Effect.andThen(
-              runStartupPhase(
-                "orchestration-v2.lease-cleanup.after-trial",
-                leaseCleanup.reconcileLeaseOwners.pipe(
-                  Effect.catch(() =>
-                    Effect.logWarning("Retained worktree ownership inventory is unavailable."),
-                  ),
-                  Effect.asVoid,
-                ),
-              ),
-            ),
-          ),
-        ),
-        publishWelcome: runStartupPhase(
-          "welcome.publish",
-          lifecycleEvents.publish({
-            version: 1,
-            type: "welcome",
-            payload: { environment, ...welcomeBase, ...bootstrapTargets },
-          }),
-        ),
-        activate: options?.activate ?? Effect.void,
-        signalCommandReady: commandGate.signalCommandReady,
+      yield* Effect.logDebug("startup phase: waiting for http listener");
+      yield* runStartupPhase("http.wait", Deferred.await(httpListening));
+      yield* runStartupPhase(
+        "auxiliary-roots.parked",
+        options?.awaitAuxiliaryParked ?? Effect.void,
+      );
+
+      const updateOutcome = yield* launcher.prepareTrial;
+
+      yield* Effect.logDebug("startup phase: publishing welcome event", {
+        environmentId: environment.environmentId,
+        cwd: welcomeBase.cwd,
+        projectName: welcomeBase.projectName,
+        bootstrapProjectId: bootstrapTargets.bootstrapProjectId,
+        bootstrapThreadId: bootstrapTargets.bootstrapThreadId,
       });
+      yield* runStartupPhase(
+        "welcome.publish",
+        lifecycleEvents.publish({
+          version: 1,
+          type: "welcome",
+          payload: {
+            environment,
+            ...welcomeBase,
+            ...bootstrapTargets,
+          },
+        }),
+      );
+
+      yield* options?.activate ?? Effect.void;
+      yield* Effect.logDebug("Accepting commands");
+      yield* commandGate.signalCommandReady;
       yield* Effect.logDebug("startup phase: publishing ready event");
       yield* runStartupPhase(
         "ready.publish",
@@ -829,27 +701,23 @@ const make = (options?: StartupOptions) =>
     );
 
     return {
+      markRunningProviderSessionsForContinuation:
+        ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+          Effect.provide(continuationContext),
+          Effect.mapError(continuationError),
+        ),
+      markOptedInProviderSessionsForContinuation:
+        ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+          Effect.provide(continuationContext),
+          Effect.mapError(continuationError),
+        ),
+      clearProviderSessionContinuationMarkers: (ids) =>
+        ServerUpdateContinuation.clearProviderSessionContinuationMarkers(ids).pipe(
+          Effect.provide(continuationContext),
+          Effect.mapError(continuationError),
+        ),
       awaitCommandReady: commandGate.awaitCommandReady,
       markHttpListening: Deferred.succeed(httpListening, undefined),
-      markRunningProviderSessionsForContinuation: markRunningProviderSessionsForContinuation.pipe(
-        Effect.provideService(
-          ProviderRuntimeRecovery.ProviderRuntimeRecoveryService,
-          providerRuntimeRecovery,
-        ),
-      ),
-      markOptedInProviderSessionsForContinuation: markOptedInProviderSessionsForContinuation.pipe(
-        Effect.provideService(
-          ProviderRuntimeRecovery.ProviderRuntimeRecoveryService,
-          providerRuntimeRecovery,
-        ),
-      ),
-      clearProviderSessionContinuationMarkers: (markers) =>
-        clearProviderSessionContinuationMarkers(markers).pipe(
-          Effect.provideService(
-            ProviderRuntimeRecovery.ProviderRuntimeRecoveryService,
-            providerRuntimeRecovery,
-          ),
-        ),
       enqueueCommand: commandGate.enqueueCommand,
     } satisfies ServerRuntimeStartup["Service"];
   });

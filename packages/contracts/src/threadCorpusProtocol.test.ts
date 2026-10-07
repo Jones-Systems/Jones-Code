@@ -7,7 +7,7 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadDetailWindow,
-} from "../test-fixtures/thread-corpus-v1-schema.ts";
+} from "./legacyOrchestrationCompatibility.ts";
 import { QUEUE_DISPATCH_CAPABILITY } from "./queueProtocol.ts";
 import { THREAD_CORPUS_CAPABILITY, ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
 
@@ -70,7 +70,7 @@ const detail = {
   },
 };
 
-describe("historical V1 thread corpus capability", () => {
+describe("thread corpus capability", () => {
   it("round-trips the five-field fixture and shares the existing auth contract", () => {
     const decoded = decodeCapability(capabilityFixture);
     expect(Schema.encodeSync(ThreadCorpusCapability)(decoded)).toEqual(capabilityFixture);
@@ -113,7 +113,7 @@ describe("historical V1 thread corpus capability", () => {
     ).toBeUndefined();
   });
 
-  it("parses historical V1 shell placement, nullable identity, lifecycle and activity sequence", () => {
+  it("parses native shell placement, nullable identity, lifecycle and activity sequence", () => {
     const decode = Schema.decodeUnknownSync(OrchestrationShellSnapshot);
     const snapshot = decode({
       snapshotSequence: 42,
@@ -137,7 +137,7 @@ describe("historical V1 thread corpus capability", () => {
     ).toThrow();
   });
 
-  it("preserves historical V1 windows, opaque exclusive cursors and optional page watermarks", () => {
+  it("preserves opt-in windows, opaque exclusive cursors and optional page watermarks", () => {
     const decodeWindow = Schema.decodeUnknownSync(OrchestrationThreadDetailWindow);
     expect(decodeWindow({})).toEqual({});
     const window = { turnLimit: 2, beforeCursor: "opaque-thread-bound-cursor" };
@@ -160,7 +160,7 @@ describe("historical V1 thread corpus capability", () => {
     expect(() => decodeDetail({ ...detail, page: { ...page, beforeCursor: 123 } })).toThrow();
   });
 
-  it("preserves historical V1 message text beyond consumer budgets without inventing truncation", () => {
+  it("preserves message text beyond consumer budgets without inventing native truncation", () => {
     const text = "x".repeat(24001);
     const decoded = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot)({
       ...detail,

@@ -177,11 +177,6 @@ export class DesktopTelemetryReceiver extends Context.Service<
         requestId. */
     readonly requestDesktopUpdate: (
       requestId: string,
-      selection?: {
-        readonly action: "check" | "download";
-        readonly artifactId?: number;
-        readonly sourceSha?: string;
-      },
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -651,12 +646,11 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     health: Ref.get(health),
     subscribeHealth: subscribeBeforeSnapshotWithoutMutex(healthChanges, Ref.get(health)),
     setDiagnosticsDemand,
-    requestDesktopUpdate: (requestId, selection) =>
+    requestDesktopUpdate: (requestId) =>
       sendControlMessage({
         version: 1,
         type: "requestDesktopUpdate",
         requestId,
-        ...selection,
       }),
     commitDesktopUpdate: (requestId) =>
       sendControlMessage({ version: 1, type: "commitDesktopUpdate", requestId }),

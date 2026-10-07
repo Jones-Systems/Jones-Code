@@ -2,8 +2,8 @@ import {
   ArrowLeftIcon,
   BookOpenIcon,
   ChartNoAxesColumnIcon,
-  MicIcon,
   ListTodoIcon,
+  MicIcon,
   SettingsIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -14,6 +14,8 @@ import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { usePullRequestsSupported } from "../../state/environments";
 import { SidebarActiveThreadsPill } from "./SidebarActiveThreadsPill";
+import { SidebarWorkModePill } from "../../jones/workMode/SidebarWorkModePill";
+import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
   resolveSidebarStageBackdropVariant,
@@ -42,11 +44,9 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   activeThreadCount,
   activeOnly,
   onToggleActiveOnly,
-  operatingScopeLabel,
 }: {
   isElectron: boolean;
-  activeThreadCount?: number | null;
-  operatingScopeLabel?: "project" | "environment";
+  activeThreadCount?: number;
   activeOnly?: boolean;
   onToggleActiveOnly?: () => void;
 }) {
@@ -65,7 +65,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
     // The titlebar row, not a padded SidebarHeader: it aligns to the window controls.
     <div
       className={cn(
-        "@container/sidebar-header relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:px-0",
+        "relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:pl-0",
         isElectron && "drag-region",
       )}
     >
@@ -75,28 +75,60 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         variant={backdropVariant ? "media-navigation" : "ghost"}
         className="relative top-auto z-10 translate-y-0 md:hidden"
       />
-      <SidebarBrand onBackdrop={backdropVariant !== null} />
-      {onToggleActiveOnly ? (
-        <SidebarActiveThreadsPill
-          count={activeThreadCount ?? null}
-          {...(operatingScopeLabel === undefined ? {} : { scopeLabel: operatingScopeLabel })}
-          activeOnly={activeOnly ?? false}
-          onToggle={onToggleActiveOnly}
-        />
-      ) : null}
-      {pillLabel ? (
-        <Badge
-          className="relative z-10 ml-1 hidden @[15rem]/sidebar-header:inline-flex"
-          data-environment-identification="pill"
-          size="sm"
-          variant="secondary"
-        >
-          {pillLabel}
-        </Badge>
-      ) : null}
+      {/* One visible line: the pills wrap onto the clipped second line once it no longer fits.
+          The padding keeps the brand's focus ring inside the clip. */}
+      <div className="relative z-10 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-2 overflow-hidden py-0.5">
+        <SidebarBrand onBackdrop={backdropVariant !== null} />
+        {onToggleActiveOnly ? (
+          <SidebarActiveThreadsPill
+            count={activeThreadCount ?? 0}
+            activeOnly={activeOnly ?? false}
+            onToggle={onToggleActiveOnly}
+          />
+        ) : null}
+        <SidebarWorkModePill />
+        {pillLabel ? (
+          <div className="ml-1 flex h-7 items-center">
+            <Badge data-environment-identification="pill" size="sm" variant="secondary">
+              {pillLabel}
+            </Badge>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 });
+
+// Measures the brand at its titlebar inset, plus the header's right padding and the
+// sidebar border, so the sidebar minimum follows font size, zoom and macOS window controls.
+export function SidebarBrandWidthProbe({
+  onWidthChange,
+}: {
+  onWidthChange: (width: number) => void;
+}) {
+  const observeWidth = useCallback(
+    (probe: HTMLDivElement) => {
+      const observer = new ResizeObserver(([entry]) => {
+        if (entry) onWidthChange(entry.borderBoxSize[0]?.inlineSize ?? probe.offsetWidth);
+      });
+      observer.observe(probe);
+      return () => observer.disconnect();
+    },
+    [onWidthChange],
+  );
+
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none invisible fixed top-0 left-0 flex w-max border-r border-transparent pr-3"
+      ref={observeWidth}
+    >
+      <div className="ml-[var(--workspace-titlebar-content-left)] flex">
+        <SidebarBrandMark onBackdrop={false} />
+      </div>
+    </div>
+  );
+}
 
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
   return (
@@ -108,19 +140,25 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
       )}
       to="/"
     >
-      {/* Center the visible capitals, without the font's ascender/descender space. */}
-      <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-        <span className="[text-box:trim-both_cap_alphabetic]">Jones</span>
-        <span
-          className={cn(
-            "truncate font-bold [text-box:trim-both_cap_alphabetic]",
-            onBackdrop ? "text-white/70" : "text-muted-foreground",
-          )}
-        >
-          Code
-        </span>
-      </span>
+      <SidebarBrandMark onBackdrop={onBackdrop} />
     </Link>
+  );
+}
+
+function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
+  return (
+    // Center the visible capitals, without the font's ascender/descender space.
+    <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
+      <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
+      <span
+        className={cn(
+          "truncate [text-box:trim-both_cap_alphabetic]",
+          onBackdrop ? "text-white/70" : "text-muted-foreground",
+        )}
+      >
+        Code
+      </span>
+    </span>
   );
 }
 
@@ -175,6 +213,14 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigate({ to: "/conversations" });
   }, [closeMobileSidebar, navigate]);
+  const handleWorkQueueClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/work-queue" });
+  }, [closeMobileSidebar, navigate]);
+  const handleVoiceReviewClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/voice-review" });
+  }, [closeMobileSidebar, navigate]);
   const handleSettingsClick = useCallback(() => {
     closeMobileSidebar();
     void navigate({ to: "/settings" });
@@ -191,16 +237,6 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigateToMainApp();
   }, [closeMobileSidebar, navigateToMainApp]);
-
-  const handleVoiceReviewClick = useCallback(() => {
-    closeMobileSidebar();
-    void navigate({ to: "/voice-review" });
-  }, [closeMobileSidebar, navigate]);
-
-  const handleWorkQueueClick = useCallback(() => {
-    closeMobileSidebar();
-    void navigate({ to: "/work-queue" });
-  }, [closeMobileSidebar, navigate]);
 
   return (
     <SidebarMenu className="flex-row items-center">
@@ -236,16 +272,15 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             onClick={handleUsageClick}
           />
           <SidebarUtilityItem
+            icon={<ListTodoIcon />}
+            label="Submitted work"
+            onClick={handleWorkQueueClick}
+          />
+          <SidebarUtilityItem
             icon={<MicIcon />}
             label="Voice review"
             tooltip="Review, edit, and pause voice prompts"
             onClick={handleVoiceReviewClick}
-          />
-          <SidebarUtilityItem
-            icon={<ListTodoIcon />}
-            label="Submitted work"
-            tooltip="View submitted work queue samples"
-            onClick={handleWorkQueueClick}
           />
         </>
       )}

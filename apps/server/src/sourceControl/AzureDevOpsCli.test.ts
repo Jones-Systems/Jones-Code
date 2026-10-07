@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { type VcsError, VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
+import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as AzureDevOpsCli from "./AzureDevOpsCli.ts";
@@ -19,16 +19,11 @@ const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   stderrTruncated: false,
 });
 
-// Source-control CLIs never pass a mutation guard, so the recorder accepts any guard type.
-type RecordedRun = (
-  input: VcsProcess.VcsProcessInput<unknown, unknown>,
-) => Effect.Effect<VcsProcess.VcsProcessOutput, VcsError>;
-
-const mockRun = vi.fn<RecordedRun>();
+const mockRun = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>();
 
 const supportLayer = Layer.mergeAll(
   Layer.mock(VcsProcess.VcsProcess)({
-    run: (input) => mockRun(input),
+    run: mockRun,
   }),
   NodeServices.layer,
 );

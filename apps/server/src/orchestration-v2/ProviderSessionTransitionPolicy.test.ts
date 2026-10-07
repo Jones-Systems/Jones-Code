@@ -155,49 +155,6 @@ it("uses portable handoff for incompatible continuation identities", () => {
   );
 });
 
-it("requires the missing native thread of a stopped compatible Codex account switch", () => {
-  assert.deepEqual(
-    decideProviderSessionTransition({
-      current: { ...base, stoppedWithoutNativeThread: true },
-      target: {
-        ...base,
-        modelSelection: {
-          ...base.modelSelection,
-          instanceId: ProviderInstanceId.make("codex_other"),
-        },
-        available: true,
-      },
-    }),
-    {
-      type: "reject",
-      reason:
-        "Switching this stopped Codex conversation to a compatible account requires its saved native thread.",
-    },
-  );
-});
-
-it("preserves first starts and incompatible handoff when a stopped native thread is missing", () => {
-  assert.deepEqual(
-    decideProviderSessionTransition({ current: null, target: { ...base, available: true } }),
-    { type: "create_with_handoff" },
-  );
-  assert.deepEqual(
-    decideProviderSessionTransition({
-      current: { ...base, stoppedWithoutNativeThread: true },
-      target: {
-        ...base,
-        modelSelection: {
-          ...base.modelSelection,
-          instanceId: ProviderInstanceId.make("codex_other"),
-        },
-        continuationIdentity: { driverKind: driver, continuationKey: "codex:account:other" },
-        available: true,
-      },
-    }),
-    { type: "create_with_handoff" },
-  );
-});
-
 it("uses portable handoff for cross-driver transitions", () => {
   const claudeDriver = ProviderDriverKind.make("claude");
   assert.deepEqual(

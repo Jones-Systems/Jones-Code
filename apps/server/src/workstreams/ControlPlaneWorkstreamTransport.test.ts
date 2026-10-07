@@ -2,30 +2,17 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import {
-  WORKSTREAM_COUNTS_MANIFEST_SHA256,
+  WORKSTREAM_APPEARANCE_CONTRACT,
+  WORKSTREAM_APPEARANCE_MANIFEST,
   WORKSTREAM_CONTRACT_FAMILY,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_VERSION,
-  WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
-  WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
-  T3_PLACEMENT_CONTRACT,
-  T3_PLACEMENT_MANIFEST_SHA256,
-  T3_PLACEMENT_ROUTE,
 } from "@t3tools/contracts";
 import {
   makeControlPlaneWorkstreamTransport,
   signWorkstreamRequest,
   type WorkstreamFetch,
 } from "./ControlPlaneWorkstreamTransport.ts";
-import {
-  encodeFixtureJson,
-  response as registrationResponse,
-} from "./registrationContext/testFixtures.ts";
-
-const registrationHeaders = {
-  "x-control-contract-version": WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
-  "x-control-contract-manifest": WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
-};
 
 const activation = {
   state: "enabled",
@@ -38,6 +25,50 @@ const activation = {
     signingSecret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
   },
 } as const;
+
+it.effect("negotiates independent appearance without interpreting errors as automatic colors", () =>
+  Effect.gen(function* () {
+    const old = makeControlPlaneWorkstreamTransport(
+      activation,
+      async () => new Response("Not found", { status: 404 }),
+    );
+    expect(
+      yield* old.transport.readAppearance!({ workstream_ids: ["workstream-fixture"] }),
+    ).toEqual({ supported: false });
+    const unavailable = makeControlPlaneWorkstreamTransport(
+      activation,
+      async () => new Response("Unavailable", { status: 503 }),
+    );
+    const failure = yield* unavailable.transport.readAppearance!({
+      workstream_ids: ["workstream-fixture"],
+    }).pipe(Effect.flip);
+    expect(failure.effect).toBe("no-effect");
+    const configured = makeControlPlaneWorkstreamTransport(activation, async (input, init) => {
+      expect(String(input)).toBe("https://control-plane.example/workstream-appearance/v1/read");
+      expect(new Headers(init?.headers).get("x-control-contract-version")).toBe(
+        WORKSTREAM_APPEARANCE_CONTRACT,
+      );
+      return new Response(
+        JSON.stringify({
+          owner_id: "owner-fixture",
+          server_generation: 7,
+          permissions: ["workstreams:read"],
+          items: [{ workstream_id: "workstream-fixture", border_color: "#123ABC", version: 1 }],
+        }),
+        {
+          headers: {
+            "x-control-contract-version": WORKSTREAM_APPEARANCE_CONTRACT,
+            "x-control-contract-manifest": WORKSTREAM_APPEARANCE_MANIFEST,
+          },
+        },
+      );
+    });
+    const result = yield* configured.transport.readAppearance!({
+      workstream_ids: ["workstream-fixture"],
+    });
+    expect(result.supported && result.page.items[0]?.border_color).toBe("#123ABC");
+  }),
+);
 
 it("matches the control-plane canonicalSignedRequest fixed 32-byte key vector", () => {
   expect(
@@ -269,204 +300,5 @@ it.effect("does not expose transport or decoder causes", () =>
       "Control-plane returned invalid JSON for the accepted contract.",
     );
     expect(decoderFailure.cause).toBeUndefined();
-  }),
-);
-
-it.effect("uses the negotiated counts manifest without changing legacy route pins", () =>
-  Effect.gen(function* () {
-    const requests: Array<{ target: string; manifest: string | null }> = [];
-    const { transport } = makeControlPlaneWorkstreamTransport(activation, async (url, init) => {
-      const headers = new Headers(init?.headers);
-      requests.push({
-        target: new URL(String(url)).pathname,
-        manifest: headers.get("x-control-contract-manifest"),
-      });
-      return new Response(
-        JSON.stringify({
-          context: { owner_id: "owner-fixture", server_generation: 7, registry_version: 11 },
-          principal_id: "principal-fixture",
-          observed_at: "2026-10-02T00:00:00Z",
-          authority_effect: "none",
-          total: 7,
-          active: 4,
-          unknown_lifecycle: 1,
-        }),
-        {
-          headers: {
-            "x-control-contract-version": "workstreams/1.0.0",
-            "x-control-contract-manifest": WORKSTREAM_COUNTS_MANIFEST_SHA256,
-          },
-        },
-      );
-    });
-    expect((yield* transport.getRegistryCounts!()).active).toBe(4);
-    expect(requests).toEqual([
-      { target: "/workstreams/v1/counts", manifest: WORKSTREAM_COUNTS_MANIFEST_SHA256 },
-    ]);
-    const invalid = makeControlPlaneWorkstreamTransport(
-      activation,
-      async () =>
-        new Response("{}", {
-          headers: {
-            "x-control-contract-version": "workstreams/1.0.0",
-            "x-control-contract-manifest": WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-          },
-        }),
-    );
-    expect(yield* invalid.transport.getRegistryCounts!().pipe(Effect.flip)).toMatchObject({
-      detail: "http_error",
-      effect: "no-effect",
-    });
-  }),
-);
-
-it.effect(
-  "signs a fixed registration GET with its separate family and keeps Workstreams and placement families",
-  () =>
-    Effect.gen(function* () {
-      const requests: Array<{ url: string; headers: Headers; init: RequestInit | undefined }> = [];
-      const configured = makeControlPlaneWorkstreamTransport(activation, async (input, init) => {
-        const url = String(input);
-        requests.push({ url, headers: new Headers(init?.headers), init });
-        if (url.endsWith("/t3/registration-context")) {
-          return new Response(encodeFixtureJson(registrationResponse), {
-            headers: registrationHeaders,
-          });
-        }
-        if (url.endsWith(T3_PLACEMENT_ROUTE)) {
-          return new Response(
-            JSON.stringify({
-              inventory_sha256: "a".repeat(64),
-              context: {
-                owner_id: activation.value.ownerId,
-                principal_id: activation.value.principalId,
-                authorization_revision: activation.value.authorizationRevision,
-                server_generation: 1,
-                registry_version: 1,
-              },
-              items: [],
-              next_cursor: null,
-            }),
-            {
-              headers: {
-                "x-control-contract-version": T3_PLACEMENT_CONTRACT,
-                "x-control-contract-manifest": T3_PLACEMENT_MANIFEST_SHA256,
-              },
-            },
-          );
-        }
-        return new Response(
-          JSON.stringify({
-            contract_family: WORKSTREAM_CONTRACT_FAMILY,
-            contract_version: WORKSTREAM_CONTRACT_VERSION,
-            manifest_sha256: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-            context: {
-              owner_id: activation.value.ownerId,
-              server_generation: 1,
-              registry_version: 1,
-            },
-            permissions: ["workstreams:read"],
-            max_request_bytes: 32_768,
-            max_response_bytes: 1_048_576,
-            max_json_depth: 10,
-            max_page_items: 100,
-            max_pr_response_bytes: 262_144,
-            max_pr_request_seconds: 15,
-            cursor_ttl_seconds: 900,
-          }),
-        );
-      });
-      expect(yield* configured.registrationContext.readRegistrationContext).toBe(
-        encodeFixtureJson(registrationResponse),
-      );
-      expect(configured.registrationContext.configuredBinding).toEqual({
-        ownerId: activation.value.ownerId,
-        principalId: activation.value.principalId,
-        authorizationRevision: activation.value.authorizationRevision,
-      });
-      const registered = requests[0]!;
-      expect(registered.url).toBe(
-        "https://control-plane.example/workstreams/v1/t3/registration-context",
-      );
-      expect(registered.init?.method).toBe("GET");
-      expect(registered.init?.body).toBeUndefined();
-      expect(registered.init?.redirect).toBe("error");
-      expect(registered.headers.get("idempotency-key")).toBeNull();
-      expect(registered.headers.get("x-control-contract-version")).toBe(
-        WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
-      );
-      expect(registered.headers.get("x-control-contract-manifest")).toBe(
-        WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
-      );
-      expect(registered.headers.get("x-control-signature")).toBe(
-        signWorkstreamRequest({
-          contractVersion: WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
-          requestId: registered.headers.get("x-control-request-id")!,
-          sentAt: registered.headers.get("x-control-timestamp")!,
-          nonce: registered.headers.get("x-control-nonce")!,
-          principalId: activation.value.principalId,
-          keyId: activation.value.keyId,
-          method: "GET",
-          target: "/workstreams/v1/t3/registration-context",
-          contentSha256: registered.headers.get("x-control-content-sha256")!,
-          signingSecret: activation.value.signingSecret,
-        }),
-      );
-      yield* configured.transport.getCapabilities({
-        contractVersion: "workstreams/1.0.0",
-        contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-      });
-      yield* configured.transport.listThreadPlacements!({ identities: [], limit: 50 });
-      expect(requests[1]?.headers.get("x-control-contract-version")).toBe("workstreams/1.0.0");
-      expect(requests[1]?.headers.get("x-control-contract-manifest")).toBe(
-        WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-      );
-      expect(requests[2]?.headers.get("x-control-contract-version")).toBe(T3_PLACEMENT_CONTRACT);
-      expect(requests[2]?.headers.get("x-control-contract-manifest")).toBe(
-        T3_PLACEMENT_MANIFEST_SHA256,
-      );
-    }),
-);
-
-it.effect("bounds registration response bytes before parsing and rejects another family", () =>
-  Effect.gen(function* () {
-    let cancelled = false;
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(8_192));
-        controller.enqueue(new Uint8Array(1));
-      },
-      cancel() {
-        cancelled = true;
-      },
-    });
-    const bounded = makeControlPlaneWorkstreamTransport(
-      activation,
-      async () => new Response(stream, { headers: registrationHeaders }),
-    );
-    const tooLarge = yield* bounded.registrationContext.readRegistrationContext.pipe(Effect.flip);
-    expect(tooLarge.detail).toBe("response_too_large");
-    expect(tooLarge.effect).toBe("no-effect");
-    expect(cancelled).toBe(true);
-    const wrongFamily = makeControlPlaneWorkstreamTransport(
-      activation,
-      async () =>
-        new Response(encodeFixtureJson(registrationResponse), {
-          headers: {
-            "x-control-contract-version": "workstreams/1.0.0",
-            "x-control-contract-manifest": WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-          },
-        }),
-    );
-    expect(
-      (yield* wrongFamily.registrationContext.readRegistrationContext.pipe(Effect.flip)).detail,
-    ).toBe("http_error");
-    const disabled = makeControlPlaneWorkstreamTransport({ state: "disabled" }, async () => {
-      throw new TypeError("disabled transport must not fetch");
-    });
-    expect(disabled.registrationContext.configuredBinding).toBeNull();
-    expect(
-      (yield* disabled.registrationContext.readRegistrationContext.pipe(Effect.flip)).effect,
-    ).toBe("no-effect");
   }),
 );

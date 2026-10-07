@@ -1067,16 +1067,6 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={awaitingBootstrapTurn ? handleCancelWorktreeSetup : handleStopThread}
           onSendMessage={composer.onSendMessage}
-          importedContinuation={
-            composer.importedContinuationPresentation === null
-              ? null
-              : {
-                  presentation: composer.importedContinuationPresentation,
-                  queued: composer.queuedRunEdit !== null,
-                  onStart: composer.onStartWithImportedHistory,
-                  onObserve: composer.onObserveImportedHistory,
-                }
-          }
           onReconnectEnvironment={handleReconnectEnvironment}
           canSwitchThreadProvider={composer.canSwitchThreadProvider}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

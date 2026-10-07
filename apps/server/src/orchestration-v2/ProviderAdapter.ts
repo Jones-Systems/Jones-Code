@@ -1,9 +1,15 @@
+import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
   MessageId,
   ModelSelection,
+  ObservedRuntimeIdentity,
+  ProviderRuntimeBinding,
+  ProviderRuntimeEvidenceCapture,
+  RequestedRuntimeIdentity,
+  RuntimeIdentityAttestation,
   NodeId,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
@@ -29,171 +35,20 @@ import {
   ProviderTurnId,
   RuntimeMode,
   RuntimeRequestId,
-  RuntimeIdentityAttestation,
   RunAttemptId,
   RunId,
   ThreadId,
-  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
-import * as Effect from "effect/Effect";
+import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
-
-import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
-import type { NativeEffectConfirmationV1 } from "../persistence/Services/NativeCreationRepository.ts";
-import {
-  authorizeNativeCreationExecution,
-  type NativeCreationExecutionContextV2,
-  type NativeCreationResources,
-} from "./NativeCreationAuthority.ts";
 
 import type {
   ProviderSelectionTransitionInput,
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
-
-export const ProviderNativeEffectOperation = Schema.Literals([
-  "open_session",
-  "close_session",
-  "read_thread_snapshot",
-  "ensure_thread",
-  "resume_thread",
-  "inject_history",
-  "start_turn",
-  "compact_thread",
-  "steer_turn",
-  "interrupt_turn",
-  "respond_to_request",
-  "unload_thread",
-  "rollback_thread",
-  "fork_thread",
-]);
-export type ProviderNativeEffectOperation = typeof ProviderNativeEffectOperation.Type;
-
-export const ProviderNativeOperationContext = Schema.Struct({
-  operationId: TrimmedNonEmptyString,
-  operation: ProviderNativeEffectOperation,
-  instanceId: Schema.optional(ProviderInstanceId),
-  threadId: Schema.optional(ThreadId),
-  providerSessionId: Schema.optional(ProviderSessionId),
-  providerThreadId: Schema.optional(ProviderThreadId),
-  runtimeGeneration: Schema.optional(TrimmedNonEmptyString),
-  attemptId: Schema.optional(RunAttemptId),
-});
-export type ProviderNativeOperationContext = typeof ProviderNativeOperationContext.Type;
-
-/**
- * Evidence covers the complete operation, including eager activation, lazy
- * initialization, registration and history injection before the final RPC.
- * Missing or mismatched evidence is unknown; a safe last request cannot prove
- * that an earlier stage had no effect.
- */
-export const ProviderNativeEffectEvidence = Schema.Struct({
-  ...ProviderNativeOperationContext.fields,
-  outcome: Schema.Literals(["confirmed_success", "known_no_effect", "unknown"]),
-});
-export type ProviderNativeEffectEvidence = typeof ProviderNativeEffectEvidence.Type;
-
-export interface ProviderDeclaredHandoffDelivery {
-  readonly canConsumeHandoffSummaries: boolean;
-  readonly supportsFullThreadHandoff: boolean;
-  readonly supportsProviderSwitchingViaHandoff: boolean;
-}
-
-/** Declared delivery support only; this proves no native resume or store accessibility. */
-export function makeProviderDeclaredHandoffDelivery(
-  capabilities: OrchestrationV2ProviderCapabilities,
-): ProviderDeclaredHandoffDelivery {
-  return Object.freeze({
-    canConsumeHandoffSummaries: capabilities.context.canConsumeHandoffSummaries,
-    supportsFullThreadHandoff: capabilities.context.supportsFullThreadHandoff,
-    supportsProviderSwitchingViaHandoff: capabilities.sessions.supportsProviderSwitchingViaHandoff,
-  });
-}
-
-export const ProviderContinuationSourceIdentity = Schema.Struct({
-  driverKind: ProviderDriverKind,
-  continuationKey: TrimmedNonEmptyString,
-  runtimeGeneration: TrimmedNonEmptyString,
-});
-export type ProviderContinuationSourceIdentity = typeof ProviderContinuationSourceIdentity.Type;
-
-export const ProviderRuntimeBinding = Schema.Struct({
-  threadId: ThreadId,
-  providerThreadId: ProviderThreadId,
-  providerSessionId: ProviderSessionId,
-  instanceId: ProviderInstanceId,
-  runtimeGeneration: TrimmedNonEmptyString,
-  nativeThreadId: Schema.optional(TrimmedNonEmptyString),
-});
-export type ProviderRuntimeBinding = typeof ProviderRuntimeBinding.Type;
-
-export interface ProviderPendingStartStopInput {
-  readonly binding: ProviderRuntimeBinding & { readonly nativeThreadId: string };
-  readonly runId: RunId;
-  readonly attemptId: RunAttemptId;
-  /** Original start operation correlation; binding carries the actual dispatch incarnation. */
-  readonly startOperation: ProviderNativeOperationContext;
-}
-
-/** Logical cancellation and provider-session cleanup only; no OS descendant-exit claim. */
-export type ProviderPendingStartStopResult =
-  | {
-      readonly status: "not_pending";
-      readonly binding: ProviderPendingStartStopInput["binding"];
-      readonly runId: RunId;
-      readonly attemptId: RunAttemptId;
-      readonly startOperationId: string;
-    }
-  | {
-      readonly status: "cancelled";
-      readonly binding: ProviderPendingStartStopInput["binding"];
-      readonly runId: RunId;
-      readonly attemptId: RunAttemptId;
-      readonly startOperationId: string;
-    }
-  | { readonly status: "unknown"; readonly reason: string };
-
-export const ProviderOwnedRuntimeIdentity = Schema.Struct({
-  instanceId: ProviderInstanceId,
-  providerSessionId: ProviderSessionId,
-  runtimeGeneration: TrimmedNonEmptyString,
-  handleToken: TrimmedNonEmptyString,
-  pid: Schema.Int,
-});
-export type ProviderOwnedRuntimeIdentity = typeof ProviderOwnedRuntimeIdentity.Type;
-
-/** An actual numeric exit code proves leader exit only, not group, wake or drain completion. */
-export const ProviderOwnedRuntimeExitObservation = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literal("leader_exited"),
-    identity: ProviderOwnedRuntimeIdentity,
-    exitCode: Schema.Int,
-    observedAt: Schema.String,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("unknown"),
-    reason: TrimmedNonEmptyString,
-    identity: Schema.optional(ProviderOwnedRuntimeIdentity),
-  }),
-]);
-export type ProviderOwnedRuntimeExitObservation = typeof ProviderOwnedRuntimeExitObservation.Type;
-
-export const ProviderRuntimeObservation = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literals(["working", "monitoring", "busy", "idle"]),
-    binding: ProviderRuntimeBinding,
-    observedAt: Schema.String,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("unknown"),
-    binding: Schema.optional(ProviderRuntimeBinding),
-    reason: Schema.String,
-  }),
-]);
-export type ProviderRuntimeObservation = typeof ProviderRuntimeObservation.Type;
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
@@ -231,63 +86,79 @@ export const ProviderAdapterV2Event = Schema.Union([
     type: Schema.Literal("runtime_identity.observed"),
     driver: ProviderDriverKind,
     binding: ProviderRuntimeBinding,
-    attestation: RuntimeIdentityAttestation,
+    requested: RequestedRuntimeIdentity,
+    observed: ObservedRuntimeIdentity,
   }),
   Schema.Struct({
     type: Schema.Literal("app_thread.created"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     appThread: OrchestrationV2AppThread,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_session.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerSession: OrchestrationV2ProviderSession,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_thread.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThread: OrchestrationV2ProviderThread,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_turn.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: Schema.optional(ThreadId),
     providerTurn: OrchestrationV2ProviderTurn,
   }),
   Schema.Struct({
     type: Schema.Literal("node.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     node: OrchestrationV2ExecutionNode,
   }),
   Schema.Struct({
     type: Schema.Literal("subagent.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     subagent: OrchestrationV2Subagent,
   }),
   Schema.Struct({
     type: Schema.Literal("message.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     message: OrchestrationV2ConversationMessage,
   }),
   Schema.Struct({
     type: Schema.Literal("turn_item.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     turnItem: OrchestrationV2TurnItem,
   }),
   Schema.Struct({
     type: Schema.Literal("runtime_request.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: Schema.optional(ThreadId),
     runtimeRequest: OrchestrationV2RuntimeRequest,
   }),
   Schema.Struct({
     type: Schema.Literal("plan.updated"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     plan: OrchestrationV2PlanArtifact,
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
+    providerTurn: Schema.optional(OrchestrationV2ProviderTurn),
+    evidenceKind: Schema.optional(
+      Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
+    ),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
@@ -297,7 +168,12 @@ export const ProviderAdapterV2Event = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
+    providerTurn: Schema.optional(OrchestrationV2ProviderTurn),
+    evidenceKind: Schema.optional(
+      Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
+    ),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
@@ -329,7 +205,6 @@ export class ProviderAdapterOpenSessionError extends Schema.TaggedError<Provider
     driver: ProviderDriverKind,
     providerSessionId: ProviderSessionId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -343,7 +218,6 @@ export class ProviderAdapterCloseSessionError extends Schema.TaggedError<Provide
     driver: ProviderDriverKind,
     providerSessionId: ProviderSessionId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -358,7 +232,6 @@ export class ProviderAdapterResumeThreadError extends Schema.TaggedError<Provide
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -372,7 +245,6 @@ export class ProviderAdapterEnsureThreadError extends Schema.TaggedError<Provide
     driver: ProviderDriverKind,
     threadId: ThreadId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -386,7 +258,6 @@ export class ProviderAdapterReadThreadSnapshotError extends Schema.TaggedError<P
     driver: ProviderDriverKind,
     providerThreadId: ProviderThreadId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -401,7 +272,6 @@ export class ProviderAdapterRollbackThreadError extends Schema.TaggedError<Provi
     providerThreadId: ProviderThreadId,
     checkpointId: Schema.optional(CheckpointId),
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -415,7 +285,6 @@ export class ProviderAdapterForkThreadError extends Schema.TaggedError<ProviderA
     driver: ProviderDriverKind,
     providerThreadId: ProviderThreadId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -431,7 +300,6 @@ export class ProviderAdapterTurnStartError extends Schema.TaggedError<ProviderAd
     providerThreadId: ProviderThreadId,
     runId: RunId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -458,7 +326,6 @@ export class ProviderAdapterSteerRunError extends Schema.TaggedError<ProviderAda
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -473,7 +340,6 @@ export class ProviderAdapterInterruptError extends Schema.TaggedError<ProviderAd
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -487,7 +353,6 @@ export class ProviderAdapterRuntimeRequestResponseError extends Schema.TaggedErr
     driver: ProviderDriverKind,
     requestId: RuntimeRequestId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -501,7 +366,6 @@ export class ProviderAdapterEventStreamError extends Schema.TaggedError<Provider
     driver: ProviderDriverKind,
     providerSessionId: ProviderSessionId,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
   },
 ) {
   override get message(): string {
@@ -515,7 +379,6 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
     driver: ProviderDriverKind,
     detail: Schema.String,
     cause: Schema.optional(Schema.Defect()),
-    nativeEffect: Schema.optional(ProviderNativeEffectEvidence),
     payload: Schema.optional(Schema.Unknown),
   },
 ) {
@@ -524,7 +387,22 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
   }
 }
 
+export class ProviderRuntimeBindingError extends Schema.TaggedError<ProviderRuntimeBindingError>()(
+  "ProviderRuntimeBindingError",
+  { driver: ProviderDriverKind, detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
+) {}
+
+export function hasUnknownRuntimeBinding(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth += 1) {
+    if (Reflect.get(current, "_tag") === "ProviderRuntimeBindingError") return true;
+    current = Reflect.get(current, "cause");
+  }
+  return false;
+}
+
 export const ProviderAdapterV2Error = Schema.Union([
+  ProviderRuntimeBindingError,
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
   ProviderAdapterCloseSessionError,
@@ -543,125 +421,92 @@ export const ProviderAdapterV2Error = Schema.Union([
 ]);
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
-/** Recheck the current opaque grant with unchanged resources at the actual native callee. */
-export function authorizeProviderNativeCreation(
-  execution: ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
-  driver: ProviderDriverKind,
-  actualDirectory: string | null | undefined,
-): Effect.Effect<void, ProviderAdapterV2Error> {
-  if (execution === undefined) return Effect.void;
-  if (
-    actualDirectory == null ||
-    actualDirectory.trim().length === 0 ||
-    actualDirectory !== execution.resources.worktreePath
-  ) {
-    return Effect.fail(
-      new ProviderAdapterProtocolError({
-        driver,
-        detail: "Native creation resources do not match the actual runtime directory.",
-      }),
-    );
-  }
-  return authorizeNativeCreationExecution(execution.context, {
-    stage: "native_command",
-    resources: execution.resources,
-  }).pipe(
-    Effect.asVoid,
-    Effect.mapError(
-      (cause) =>
-        new ProviderAdapterProtocolError({
-          driver,
-          detail: "Native creation authorization failed at the actual native callee.",
-          cause,
-        }),
-    ),
-  );
+export interface ProviderRuntimeLifecycle {
+  readonly reserve: (threadId: ThreadId) => Effect.Effect<string, ProviderAdapterV2Error>;
+  readonly bind: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly runtimeGeneration: string;
+    readonly requested: RequestedRuntimeIdentity;
+    readonly observed: ObservedRuntimeIdentity;
+  }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
+  readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly invalidate: (
+    binding: ProviderRuntimeBinding,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
 }
 
-/** Wrap the complete exposed operation, never just its final native request. */
-export function withProviderNativeEffect<A, E extends ProviderAdapterV2Error, R>(
-  effect: Effect.Effect<A, E, R>,
-  nativeOperation: ProviderNativeOperationContext | undefined,
-): Effect.Effect<A, E, R> {
-  if (nativeOperation === undefined) return effect;
-  return effect.pipe(
-    Effect.mapError((error) => {
-      const evidence = "nativeEffect" in error ? error.nativeEffect : undefined;
-      if (
-        Schema.is(ProviderNativeEffectEvidence)(evidence) &&
-        evidence.operationId === nativeOperation.operationId &&
-        evidence.operation === nativeOperation.operation &&
-        (
-          [
-            "instanceId",
-            "threadId",
-            "providerSessionId",
-            "providerThreadId",
-            "runtimeGeneration",
-            "attemptId",
-          ] as const
-        ).every(
-          (key) => nativeOperation[key] === undefined || nativeOperation[key] === evidence[key],
-        )
-      ) {
-        return error;
-      }
-      const enriched = Object.create(
-        Object.getPrototypeOf(error),
-        Object.getOwnPropertyDescriptors(error),
-      ) as E;
-      Object.defineProperty(enriched, "nativeEffect", {
-        value: { ...nativeOperation, outcome: "unknown" },
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-      return enriched;
-    }),
-  );
+export function requestedRuntimeIdentity(
+  selection: ModelSelection,
+  driver: ProviderDriverKind,
+): RequestedRuntimeIdentity {
+  const tier = selection.options?.find((option) => option.id === "serviceTier")?.value;
+  return {
+    providerInstanceId: selection.instanceId,
+    providerDriver: driver,
+    model: selection.model,
+    serviceTier: typeof tier === "string" ? tier : null,
+  };
+}
+
+export function unobservedRuntimeIdentity(): ObservedRuntimeIdentity {
+  return {
+    backend: { status: "unknown" },
+    model: { status: "unknown" },
+    account: {
+      status: "unavailable",
+      reason: "No supported provider event safely binds an account to this runtime.",
+    },
+    serviceTier: { status: "unknown" },
+  };
+}
+
+export function runtimeBinding(
+  thread: OrchestrationV2ProviderThread,
+  runtimeGeneration: string,
+): ProviderRuntimeBinding | undefined {
+  if (
+    thread.appThreadId === null ||
+    thread.providerSessionId === null ||
+    thread.nativeThreadRef === null ||
+    thread.nativeThreadRef.nativeId === null
+  )
+    return undefined;
+  return {
+    threadId: thread.appThreadId,
+    providerThreadId: thread.id,
+    providerSessionId: thread.providerSessionId,
+    providerInstanceId: thread.providerInstanceId,
+    driver: thread.driver,
+    nativeThreadId: thread.nativeThreadRef.nativeId,
+    runtimeGeneration,
+  };
+}
+
+export function identityForRequest(
+  requested: RequestedRuntimeIdentity,
+  previous?: RuntimeIdentityAttestation,
+): RuntimeIdentityAttestation {
+  const sameOwner =
+    previous?.requested.providerInstanceId === requested.providerInstanceId &&
+    previous.requested.providerDriver === requested.providerDriver;
+  const sameRequest =
+    sameOwner &&
+    previous.requested.model === requested.model &&
+    previous.requested.serviceTier === requested.serviceTier;
+  return {
+    ...(sameOwner && previous.runtimeGeneration !== undefined
+      ? { runtimeGeneration: previous.runtimeGeneration }
+      : {}),
+    ...(sameOwner && previous.evidenceRevision !== undefined
+      ? { evidenceRevision: previous.evidenceRevision }
+      : {}),
+    requested,
+    observed: sameRequest ? previous.observed : unobservedRuntimeIdentity(),
+  };
 }
 
 export interface ProviderAdapterV2OpenSessionInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
-  /**
-   * Runtime-only opaque context and exact issued resources. Retain for lazy
-   * replacements and reauthorize immediately before each native stage effect;
-   * this bundle is not serialized and grants no other stage or resource.
-   */
-  readonly nativeCreationExecution?: {
-    readonly context: NativeCreationExecutionContextV2;
-    readonly resources: NativeCreationResources;
-  };
-  /**
-   * Await before native spawn, connect or query effects for each reserved
-   * incarnation, including lazy replacements. The manager fences old registered
-   * evidence; allocating or registering this generation does not attest a live
-   * process. New observations still require the actual new native handle/query.
-   */
-  readonly beforeRuntimeReplacement?: (
-    nextGeneration: string,
-  ) => Effect.Effect<void, ProviderAdapterV2Error>;
-  /**
-   * Managed internal refresh only. The manager reserves the single resident
-   * owner and excludes new attachments through replacement and registration.
-   * The supplied effect fences old evidence before closing or opening a native
-   * handle, then initializes and restores its native binding. Existing unknown
-   * effects never authorize replay; this reservation is not live-process proof.
-   */
-  readonly withRuntimeReplacement?: (
-    nextGeneration: string,
-    replace: Effect.Effect<void, ProviderAdapterV2Error>,
-  ) => Effect.Effect<void, ProviderAdapterV2Error>;
-  /**
-   * Reserve the exact single resident owner before cancelling an unreturned
-   * start and closing its captured incarnation. Exclude attachments and reuse
-   * through cleanup; this close-only span requires no new initialized runtime.
-   * Missing ownership leaves the pending native operation unknown.
-   */
-  readonly withPendingStartStop?: (
-    input: ProviderPendingStartStopInput,
-    stop: Effect.Effect<void, ProviderAdapterV2Error>,
-  ) => Effect.Effect<ProviderPendingStartStopResult, ProviderAdapterV2Error>;
+  readonly runtimeLifecycle?: ProviderRuntimeLifecycle;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
@@ -674,12 +519,6 @@ export interface ProviderAdapterV2OpenSessionInput {
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
-  /** Current operation only; a prior caller's open context cannot authorize this mutation. */
-  readonly nativeCreationExecution?: {
-    readonly context: NativeCreationExecutionContextV2;
-    readonly resources: NativeCreationResources;
-  };
   readonly threadId: ThreadId;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
@@ -688,17 +527,6 @@ export interface ProviderAdapterV2EnsureThreadInput {
 }
 
 export interface ProviderAdapterV2TurnInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
-  /** Current configured default for native option resolution; never persisted as the user's selection. */
-  readonly configuredDefaultModelSelection?: {
-    readonly modelSelection: ModelSelection;
-    readonly driver: ProviderDriverKind;
-  };
-  /** Current operation only; a prior caller's open context cannot authorize this mutation. */
-  readonly nativeCreationExecution?: {
-    readonly context: NativeCreationExecutionContextV2;
-    readonly resources: NativeCreationResources;
-  };
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -710,11 +538,12 @@ export interface ProviderAdapterV2TurnInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly message: ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
+  /** Dispatch-only default; never changes durable requested model options. */
+  readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
 }
 
 export interface ProviderAdapterV2SteerInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
   readonly threadId: ThreadId;
   readonly runId: RunId;
   readonly providerThread: OrchestrationV2ProviderThread;
@@ -723,7 +552,6 @@ export interface ProviderAdapterV2SteerInput {
 }
 
 export interface ProviderAdapterV2InterruptInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
   /** When true, the next `startTurn` may respawn the provider runtime (Grok Stop recovery). */
@@ -731,7 +559,6 @@ export interface ProviderAdapterV2InterruptInput {
 }
 
 export interface ProviderAdapterV2RuntimeRequestResponseInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
   readonly requestId: RuntimeRequestId;
   readonly decision?: ProviderApprovalDecision;
   readonly answers?: ProviderUserInputAnswers;
@@ -747,7 +574,6 @@ export interface ProviderAdapterV2ThreadSnapshot {
 }
 
 export interface ProviderAdapterV2ReadThreadSnapshotInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
   readonly providerThread: OrchestrationV2ProviderThread;
 }
 
@@ -765,14 +591,12 @@ export type ProviderAdapterV2RollbackTarget =
     };
 
 export interface ProviderAdapterV2RollbackThreadInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly target: ProviderAdapterV2RollbackTarget;
   readonly providerThreadTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
 }
 
 export interface ProviderAdapterV2ForkThreadInput {
-  readonly nativeOperation?: ProviderNativeOperationContext;
   readonly sourceProviderThread: OrchestrationV2ProviderThread;
   readonly sourceProviderTurns?: ReadonlyArray<OrchestrationV2ProviderTurn>;
   readonly providerTurnId?: ProviderTurnId;
@@ -793,41 +617,6 @@ export interface ProviderAdapterV2HistoricalContext {
 }
 
 export interface ProviderAdapterV2SessionRuntime {
-  /** Incarnation correlation; allocating it alone does not prove a live native handle. */
-  readonly runtimeGeneration?: string;
-  /** Frozen identity of the actual owned handle; retaining it alone proves no live process. */
-  readonly ownedRuntimeIdentity?: ProviderOwnedRuntimeIdentity | undefined;
-  /**
-   * Read only the captured handle, checking the exact expected identity before
-   * and after observation, including after scope closure. Missing ownership,
-   * mismatches and read failures are unknown; leader exit is not a STOP proof.
-   */
-  readonly observeOwnedRuntimeExit?: (
-    expected: ProviderOwnedRuntimeIdentity,
-  ) => Effect.Effect<ProviderOwnedRuntimeExitObservation>;
-  /**
-   * Immutable source-store provenance for one successfully initialized native
-   * incarnation. Absent before initialize/query success and during replacement
-   * reservation; persist only with a native-bound tuple matching its generation.
-   * This internal identity does not attest a live handle or grant store access.
-   */
-  readonly continuationSourceIdentity?: ProviderContinuationSourceIdentity | undefined;
-  /**
-   * Notify only after committed confirmation readback and current binding,
-   * effect, attempt and issuer-reference checks. This conveys correlation, not
-   * execution permission; remove only the matching covered-unresolved record.
-   * Missing or mismatched proof retains unresolved state and does not gate reads.
-   */
-  readonly onNativeEffectConfirmed?: (input: {
-    readonly context: NativeCreationExecutionContextV2;
-    readonly confirmation: NativeEffectConfirmationV1;
-  }) => Effect.Effect<void, ProviderAdapterV2Error>;
-  readonly observeThreadRuntime?: (
-    binding: ProviderRuntimeBinding,
-  ) => Effect.Effect<ProviderRuntimeObservation, ProviderAdapterV2Error>;
-  readonly getGoal?: (
-    binding: ProviderRuntimeBinding,
-  ) => Effect.Effect<ProviderGoalReadResult, ProviderAdapterV2Error>;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
@@ -871,23 +660,6 @@ export interface ProviderAdapterV2SessionRuntime {
     input: ProviderAdapterV2EnsureThreadInput,
   ) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
   readonly resumeThread: (input: {
-    readonly nativeOperation?: ProviderNativeOperationContext;
-    /** Current operation only; a prior caller's open context cannot authorize this mutation. */
-    readonly nativeCreationExecution?: {
-      readonly context: NativeCreationExecutionContextV2;
-      readonly resources: NativeCreationResources;
-    };
-    /**
-     * Await after actual native initialization and source capture, before native
-     * resume or attach. The manager validates historical driver/key against the
-     * current initialized incarnation and rechecks current binding/run authority;
-     * a historical process generation need not equal the new generation.
-     * Rejection after open/initialize leaves the complete operation unknown;
-     * skipping the resume RPC alone does not prove no effect or allow fallback.
-     */
-    readonly beforeNativeResume?: (
-      actual: ProviderContinuationSourceIdentity | undefined,
-    ) => Effect.Effect<void, ProviderAdapterV2Error>;
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly threadId?: ThreadId;
     readonly modelSelection?: ModelSelection;
@@ -896,12 +668,6 @@ export interface ProviderAdapterV2SessionRuntime {
   /** False means the native protocol explicitly does not support history injection. */
   readonly injectHistory?: (
     input: ProviderAdapterV2HistoricalContext & {
-      readonly nativeOperation?: ProviderNativeOperationContext;
-      /** Current operation only; a prior caller's open context cannot authorize this mutation. */
-      readonly nativeCreationExecution?: {
-        readonly context: NativeCreationExecutionContextV2;
-        readonly resources: NativeCreationResources;
-      };
       readonly providerThread: OrchestrationV2ProviderThread;
     },
   ) => Effect.Effect<boolean, ProviderAdapterV2Error>;
@@ -918,27 +684,19 @@ export interface ProviderAdapterV2SessionRuntime {
     input: ProviderAdapterV2InterruptInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
   /**
-   * Stop an actually dispatched start before its native turn ID is returned.
-   * Match the original operation ID and run/attempt against the retained
-   * request, and the binding against its actual dispatch generation. A managed
-   * refresh may have changed generation since the original context was issued.
-   * Closing an incarnation requires withPendingStartStop; absent means unknown.
-   */
-  readonly stopPendingStart?: (
-    input: ProviderPendingStartStopInput,
-  ) => Effect.Effect<ProviderPendingStartStopResult, ProviderAdapterV2Error>;
-  /**
    * Lets a runtime shared by several app threads unload one provider thread's
    * native state (and its MCP servers) when that app thread detaches, while
    * the runtime keeps serving the others. A later resume reloads it.
    */
   readonly unloadThread?: (input: {
-    readonly nativeOperation?: ProviderNativeOperationContext;
     readonly providerThread: OrchestrationV2ProviderThread;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly readGoalState?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<ProviderGoalReadResult>;
   readonly readThreadSnapshot: (
     input: ProviderAdapterV2ReadThreadSnapshotInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;
@@ -958,62 +716,9 @@ export interface ProviderAdapterV2SessionRuntime {
   ) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
 }
 
-/** Preserve incarnation getters while adding conservative whole-operation error evidence. */
-export function withProviderNativeEffects(
-  runtime: ProviderAdapterV2SessionRuntime,
-): ProviderAdapterV2SessionRuntime {
-  const injectHistory = runtime.injectHistory;
-  const compactThread = runtime.compactThread;
-  const unloadThread = runtime.unloadThread;
-  const methods = {
-    ensureThread: (input: ProviderAdapterV2EnsureThreadInput) =>
-      withProviderNativeEffect(runtime.ensureThread(input), input.nativeOperation),
-    resumeThread: (input: Parameters<ProviderAdapterV2SessionRuntime["resumeThread"]>[0]) =>
-      withProviderNativeEffect(runtime.resumeThread(input), input.nativeOperation),
-    startTurn: (input: ProviderAdapterV2TurnInput) =>
-      withProviderNativeEffect(runtime.startTurn(input), input.nativeOperation),
-    steerTurn: (input: ProviderAdapterV2SteerInput) =>
-      withProviderNativeEffect(runtime.steerTurn(input), input.nativeOperation),
-    interruptTurn: (input: ProviderAdapterV2InterruptInput) =>
-      withProviderNativeEffect(runtime.interruptTurn(input), input.nativeOperation),
-    respondToRuntimeRequest: (input: ProviderAdapterV2RuntimeRequestResponseInput) =>
-      withProviderNativeEffect(runtime.respondToRuntimeRequest(input), input.nativeOperation),
-    readThreadSnapshot: (input: ProviderAdapterV2ReadThreadSnapshotInput) =>
-      withProviderNativeEffect(runtime.readThreadSnapshot(input), input.nativeOperation),
-    rollbackThread: (input: ProviderAdapterV2RollbackThreadInput) =>
-      withProviderNativeEffect(runtime.rollbackThread(input), input.nativeOperation),
-    forkThread: (input: ProviderAdapterV2ForkThreadInput) =>
-      withProviderNativeEffect(runtime.forkThread(input), input.nativeOperation),
-    ...(injectHistory === undefined
-      ? {}
-      : {
-          injectHistory: (input: Parameters<typeof injectHistory>[0]) =>
-            withProviderNativeEffect(injectHistory.call(runtime, input), input.nativeOperation),
-        }),
-    ...(compactThread === undefined
-      ? {}
-      : {
-          compactThread: (input: ProviderAdapterV2TurnInput) =>
-            withProviderNativeEffect(compactThread.call(runtime, input), input.nativeOperation),
-        }),
-    ...(unloadThread === undefined
-      ? {}
-      : {
-          unloadThread: (input: Parameters<typeof unloadThread>[0]) =>
-            withProviderNativeEffect(unloadThread.call(runtime, input), input.nativeOperation),
-        }),
-  };
-  return Object.create(Object.getPrototypeOf(runtime), {
-    ...Object.getOwnPropertyDescriptors(runtime),
-    ...Object.getOwnPropertyDescriptors(methods),
-  }) as ProviderAdapterV2SessionRuntime;
-}
-
 export interface ProviderAdapterV2Shape {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
-  /** Factory-captured declarations; reading them performs no native capability probe. */
-  readonly declaredHandoffDelivery?: ProviderDeclaredHandoffDelivery | undefined;
   readonly getCapabilities: () => Effect.Effect<
     OrchestrationV2ProviderCapabilities,
     ProviderAdapterV2Error

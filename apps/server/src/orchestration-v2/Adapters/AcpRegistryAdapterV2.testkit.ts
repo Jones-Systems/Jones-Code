@@ -52,7 +52,7 @@ function makeAcpRegistryProviderAdapterRegistryReplayLayer(
       const serverConfig = yield* ServerConfig.ServerConfig;
       const replayGate = options.replayGate;
       const replayDir = yield* fileSystem
-        .makeTempDirectoryScoped({
+        .makeTempDirectory({
           prefix: `t3-orchestration-v2-acp-registry-replay-${transcript.scenario}-`,
         })
         .pipe(Effect.orDie);

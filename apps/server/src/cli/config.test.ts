@@ -44,6 +44,52 @@ const makeDesktopBootstrap = (
 });
 
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
+  it.effect("keeps an explicitly configured native authority directory outside userdata", () =>
+    Effect.gen(function* () {
+      const { join } = yield* Path.Path;
+      const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-authority-base");
+      const authorityStateDir = join(NodeOS.tmpdir(), "t3-cli-config-authority-state");
+      const paths = yield* deriveServerPaths(baseDir, undefined, {
+        authorityStateDir,
+      });
+      expect(paths.authorityStateDir).toBe(authorityStateDir);
+      expect(paths.authorityStateDir).not.toBe(paths.stateDir);
+      expect(paths.authorityStateDir).not.toContain(`${paths.stateDir}/`);
+    }),
+  );
+
+  it.effect("rejects authority directories overlapping state or rollback backups", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-cli-config-authority-overlap-",
+      });
+      const defaults = yield* deriveServerPaths(baseDir, undefined);
+      const overlapping = [
+        defaults.stateDir,
+        path.join(defaults.stateDir, "nested"),
+        baseDir,
+        path.join(baseDir, "runtime"),
+        path.join(baseDir, "runtime", "db-backup"),
+        path.join(baseDir, "runtime", "db-backup", "nested"),
+      ];
+
+      for (const authorityStateDir of overlapping) {
+        const paths = yield* deriveServerPaths(baseDir, undefined, { authorityStateDir });
+        expect((yield* Effect.result(ensureServerDirectories(paths)))._tag).toBe("Failure");
+      }
+
+      yield* fs.makeDirectory(defaults.stateDir, { recursive: true });
+      const symlinkedAuthorityStateDir = path.join(baseDir, "authority-alias");
+      NodeFS.symlinkSync(defaults.stateDir, symlinkedAuthorityStateDir, "dir");
+      const symlinkedPaths = yield* deriveServerPaths(baseDir, undefined, {
+        authorityStateDir: symlinkedAuthorityStateDir,
+      });
+      expect((yield* Effect.result(ensureServerDirectories(symlinkedPaths)))._tag).toBe("Failure");
+    }),
+  );
+
   const defaultObservabilityConfig = {
     traceMinLevel: "Info",
     traceTimingEnabled: true,
@@ -309,52 +355,6 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       });
       assert.equal(resolved.dbPath, join(baseDir, "userdata", "statev2.sqlite"));
       assert.equal(resolved.authorityStateDir, join(baseDir, "native-store-authority"));
-    }),
-  );
-
-  it.effect("keeps an explicitly configured native authority directory outside userdata", () =>
-    Effect.gen(function* () {
-      const { join } = yield* Path.Path;
-      const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-authority-base");
-      const authorityStateDir = join(NodeOS.tmpdir(), "t3-cli-config-authority-state");
-      const paths = yield* deriveServerPaths(baseDir, undefined, {
-        authorityStateDir,
-      });
-      expect(paths.authorityStateDir).toBe(authorityStateDir);
-      expect(paths.authorityStateDir).not.toBe(paths.stateDir);
-      expect(paths.authorityStateDir).not.toContain(`${paths.stateDir}/`);
-    }),
-  );
-
-  it.effect("rejects authority directories overlapping state or rollback backups", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped({
-        prefix: "t3-cli-config-authority-overlap-",
-      });
-      const defaults = yield* deriveServerPaths(baseDir, undefined);
-      const overlapping = [
-        defaults.stateDir,
-        path.join(defaults.stateDir, "nested"),
-        baseDir,
-        path.join(baseDir, "runtime"),
-        path.join(baseDir, "runtime", "db-backup"),
-        path.join(baseDir, "runtime", "db-backup", "nested"),
-      ];
-
-      for (const authorityStateDir of overlapping) {
-        const paths = yield* deriveServerPaths(baseDir, undefined, { authorityStateDir });
-        expect((yield* Effect.result(ensureServerDirectories(paths)))._tag).toBe("Failure");
-      }
-
-      yield* fs.makeDirectory(defaults.stateDir, { recursive: true });
-      const symlinkedAuthorityStateDir = path.join(baseDir, "authority-alias");
-      NodeFS.symlinkSync(defaults.stateDir, symlinkedAuthorityStateDir, "dir");
-      const symlinkedPaths = yield* deriveServerPaths(baseDir, undefined, {
-        authorityStateDir: symlinkedAuthorityStateDir,
-      });
-      expect((yield* Effect.result(ensureServerDirectories(symlinkedPaths)))._tag).toBe("Failure");
     }),
   );
 

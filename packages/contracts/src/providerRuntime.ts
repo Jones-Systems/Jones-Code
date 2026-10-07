@@ -16,13 +16,11 @@ import {
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderUsageLimitsUpdate } from "./providerUsageLimits.ts";
 import { ProviderApprovalOption } from "./providerPolicy.ts";
-import { ObservedRuntimeIdentity } from "./runtimeIdentity.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
 
 const RuntimeEventRawSource = Schema.Union([
-  Schema.Literal("codex.app-server.response"),
   Schema.Literal("codex.app-server.notification"),
   Schema.Literal("codex.app-server.request"),
   Schema.Literal("codex.eventmsg"),
@@ -30,7 +28,6 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("claude.sdk.permission"),
   Schema.Literal("codex.sdk.thread-event"),
   Schema.Literal("opencode.sdk.event"),
-  Schema.Literal("t3.provider-service.recovery"),
   Schema.Literal("acp.jsonrpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
@@ -209,7 +206,6 @@ const ProviderRuntimeEventBase = Schema.Struct({
   // for the routing-key-vs-driver-id distinction. Once every emitter
   // populates it (post-slice-4), routing flips to instance-id-only.
   providerInstanceId: Schema.optional(ProviderInstanceId),
-  runtimeGeneration: Schema.optional(TrimmedNonEmptyStringSchema),
   threadId: ThreadId,
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
@@ -228,8 +224,6 @@ export type SessionStartedPayload = typeof SessionStartedPayload.Type;
 
 const SessionConfiguredPayload = Schema.Struct({
   config: UnknownRecordSchema,
-  /** Provider-attested fields only; requested configuration is not observation. */
-  identity: Schema.optional(ObservedRuntimeIdentity),
 });
 export type SessionConfiguredPayload = typeof SessionConfiguredPayload.Type;
 

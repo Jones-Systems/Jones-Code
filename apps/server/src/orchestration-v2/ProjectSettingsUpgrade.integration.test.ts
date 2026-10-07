@@ -15,8 +15,6 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
-import * as AuthSessions from "../persistence/AuthSessions.ts";
-import * as NativeCreationRepositoryLayer from "../persistence/Layers/NativeCreationRepository.ts";
 import { makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
 import { runMigrations } from "../persistence/Migrations.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
@@ -24,13 +22,10 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
-import * as TerminalManager from "../terminal/Manager.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
-import { LegacyLeaseInventoryError } from "./LegacyLeaseCleanup.ts";
-import { NativeCreationAuthorityUnavailable } from "./NativeCreationAuthority.ts";
 import { OrchestrationV2LayerLive, ProjectServiceLayerLive } from "./runtimeLayer.ts";
 
 const projectId = ProjectId.make("project:upgrade");
@@ -131,20 +126,6 @@ const makeRuntimeLayer = (dbPath: string) => {
   const serverConfig = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-project-upgrade-",
   });
-  // The server's own native-creation persistence; this database has no terminal inventory.
-  const nativeCreation = NativeCreationAuthorityUnavailable.pipe(
-    Layer.provide(AuthSessions.layer),
-    Layer.provideMerge(NativeCreationRepositoryLayer.layer),
-  );
-  const terminals = Layer.mock(TerminalManager.TerminalManager)({
-    withLegacyOwnerAbsent: (owner) =>
-      Effect.fail(
-        new LegacyLeaseInventoryError({
-          threadId: owner.originalBirth.threadId,
-          reason: "Upgrade fixture has no terminal inventory",
-        }),
-      ),
-  });
   const checkpointStore = CheckpointStore.layer.pipe(
     Layer.provide(
       VcsDriverRegistry.layer.pipe(
@@ -171,7 +152,6 @@ const makeRuntimeLayer = (dbPath: string) => {
       }),
     ),
     Layer.provide(McpSessionRegistryTestkit.layer),
-    Layer.provide(Layer.merge(nativeCreation, terminals)),
     Layer.provideMerge(makeSqlitePersistenceLive(dbPath)),
     Layer.provide(checkpointStore),
     Layer.provide(serverConfig),

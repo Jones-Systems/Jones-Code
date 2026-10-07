@@ -8,7 +8,7 @@ import {
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "react-native";
 
 import {
@@ -24,10 +24,6 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
-import {
-  squashAtomCommandFailure,
-  type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { nextPastedTextFileName, pastedTextDisposition } from "@t3tools/client-runtime/text-paste";
 import {
@@ -37,11 +33,7 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
-import {
-  composerContextSendBlockReason,
-  reidentifyComposerContext,
-  uploadedComposerContext,
-} from "../lib/composerContext";
+import { composerContextSendBlockReason, reidentifyComposerContext } from "../lib/composerContext";
 import { uuidv4 } from "../lib/uuid";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
@@ -84,11 +76,6 @@ import {
   setComposerDraftText,
   updateComposerDraftSettings,
   useComposerDraft,
-  replaceComposerDraftAttachments,
-  flushComposerDrafts,
-  saveComposerImportedContinuationPointer,
-  clearComposerImportedContinuationPointer,
-  waitForComposerDraftsLoaded,
 } from "./use-composer-drafts";
 import {
   resolveComposerDispatchMode,
@@ -118,21 +105,6 @@ import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
-import { environmentCatalog } from "../connection/catalog";
-import { environmentSession, usePreparedConnection } from "./session";
-import * as Option from "effect/Option";
-import {
-  createMobileImportedContinuationDelivery,
-  canUseOrdinaryImportedContinuationDelivery,
-  presentMobileImportedContinuation,
-  type MobileImportedContinuationPorts,
-} from "../features/threads/importedContinuationDelivery";
-
-async function importedCommandValue<A, E>(result: Promise<AtomCommandResult<A, E>>): Promise<A> {
-  const value = await result;
-  if (value._tag !== "Success") throw squashAtomCommandFailure(value);
-  return value.value;
-}
 
 const EMPTY_QUEUE_WORKFLOW_ATOM = Atom.make<null>(null).pipe(
   Atom.withLabel("mobile-thread-queue-workflow:empty"),
@@ -221,18 +193,6 @@ export function useThreadComposerState() {
   });
   const editQueuedRun = useAtomCommand(threadEnvironment.editQueuedRun, {
     label: "edit queued message",
-    reportFailure: false,
-  });
-  const prepareImported = useAtomCommand(threadEnvironment.prepareImportedContinuation, {
-    reportFailure: false,
-  });
-  const reviewImported = useAtomCommand(threadEnvironment.reviewImportedHistoryStart, {
-    reportFailure: false,
-  });
-  const deliverImported = useAtomCommand(threadEnvironment.deliverImportedContinuation, {
-    reportFailure: false,
-  });
-  const observeImported = useAtomCommand(threadEnvironment.observeImportedHistoryStart, {
     reportFailure: false,
   });
   const [isSavingQueuedEdit, setIsSavingQueuedEdit] = useState(false);
@@ -378,247 +338,6 @@ export function useThreadComposerState() {
         selectedDraft?.interactionMode ?? selectedThread.interactionMode,
       )
     : null;
-
-  const preparedConnection = usePreparedConnection(selectedThread?.environmentId ?? null);
-  const selectedKeyRef = useRef(selectedThreadKey);
-  selectedKeyRef.current = selectedThreadKey;
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-  const readContinuationConnection = useCallback(() => {
-    if (selectedThread === null) return null;
-    const environmentId = selectedThread.environmentId;
-    const prepared = appAtomRegistry.get(
-      environmentSession.preparedConnectionValueAtom(environmentId),
-    );
-    const connection = appAtomRegistry.get(environmentCatalog.stateAtom(environmentId));
-    const session = appAtomRegistry.get(environmentSession.sessionStateAtom(environmentId));
-    return Option.isSome(prepared) &&
-      AsyncResult.isSuccess(connection) &&
-      connection.value.phase === "connected" &&
-      AsyncResult.isSuccess(session) &&
-      session.value.authenticated
-      ? { prepared: prepared.value, generation: connection.value.generation }
-      : null;
-  }, [selectedThread]);
-  const continuationPortsRef = useRef<(() => MobileImportedContinuationPorts) | null>(null);
-  continuationPortsRef.current = () => {
-    if (selectedThread === null || selectedThreadKey === null)
-      throw new Error("No selected thread.");
-    const environmentId = selectedThread.environmentId;
-    const threadId = selectedThread.id;
-    const targetKey = selectedThreadKey;
-    const connection = readContinuationConnection();
-    return {
-      environmentId,
-      threadId,
-      review: (input) => importedCommandValue(reviewImported({ environmentId, input })),
-      deliver: (input) => importedCommandValue(deliverImported({ environmentId, input })),
-      observe: (input) => importedCommandValue(observeImported({ environmentId, input })),
-      savePointer: (pointer) => saveComposerImportedContinuationPointer(targetKey, pointer),
-      isCurrent: () => {
-        const current = readContinuationConnection();
-        return (
-          mountedRef.current &&
-          selectedKeyRef.current === targetKey &&
-          connection !== null &&
-          current?.prepared === connection.prepared &&
-          current.generation === connection.generation
-        );
-      },
-    };
-  };
-  const importedContinuation = useMemo(
-    () =>
-      selectedThreadKey === null
-        ? null
-        : createMobileImportedContinuationDelivery(() => continuationPortsRef.current!()),
-    [selectedThreadKey],
-  );
-  const importedState = useSyncExternalStore(
-    importedContinuation?.subscribe ?? (() => () => {}),
-    importedContinuation?.getSnapshot ?? (() => null),
-  );
-  const preparingContinuationRef = useRef(false);
-  const reviewedDraftRef = useRef<{ threadKey: string; signature: string } | null>(null);
-  const reviewedConnectionRef = useRef<ReturnType<typeof readContinuationConnection>>(null);
-  const continuationConnectionGeneration = readContinuationConnection()?.generation;
-  const continuationDraftSignature = useCallback(() => {
-    if (selectedThreadKey === null) return "";
-    const draft = getComposerDraftSnapshot(selectedThreadKey);
-    const { importedContinuation: _pointer, ...content } = draft;
-    const edit = getQueuedRunEdit(selectedThreadKey);
-    return JSON.stringify({
-      content,
-      queuedTarget: edit === null ? null : { runId: edit.runId, messageId: edit.messageId },
-      modelSelection: selectedThread?.modelSelection,
-      runtimeMode: selectedThread?.runtimeMode,
-      interactionMode: selectedThread?.interactionMode,
-    });
-  }, [selectedThread, selectedThreadKey]);
-  useEffect(() => {
-    const reviewed = reviewedDraftRef.current;
-    if (
-      reviewed !== null &&
-      (reviewed.threadKey !== selectedThreadKey ||
-        reviewed.signature !== continuationDraftSignature())
-    ) {
-      importedContinuation?.invalidateReview();
-      reviewedDraftRef.current = null;
-    }
-  }, [
-    composerDrafts,
-    queuedRunEdit,
-    selectedThreadKey,
-    continuationDraftSignature,
-    importedContinuation,
-    preparedConnection,
-    selectedEnvironmentRuntime?.connectionState,
-  ]);
-  useEffect(() => {
-    importedContinuation?.invalidateReview();
-    reviewedDraftRef.current = null;
-    reviewedConnectionRef.current = null;
-  }, [importedContinuation, preparedConnection, continuationConnectionGeneration]);
-  useEffect(() => {
-    if (importedContinuation === null || selectedThreadKey === null) return;
-    const pointer = selectedDraft?.importedContinuation;
-    if (pointer !== undefined && importedContinuation.getSnapshot().pointer === null) {
-      importedContinuation.restorePointer(pointer);
-      void importedContinuation.observe();
-    }
-  }, [
-    selectedDraft?.importedContinuation,
-    selectedThreadKey,
-    importedContinuation,
-    preparedConnection,
-    selectedEnvironmentRuntime?.connectionState,
-  ]);
-  useEffect(() => {
-    if (
-      importedContinuation === null ||
-      selectedThreadKey === null ||
-      importedState?.pointer == null
-    )
-      return;
-    if (
-      (importedState.receipt?.status === "pending" ||
-        importedState.receipt?.status === "started") &&
-      importedState.receipt.intentAccepted &&
-      importedState.command?.delivery.type === "message" &&
-      selectedKeyRef.current === selectedThreadKey &&
-      reviewedDraftRef.current?.threadKey === selectedThreadKey &&
-      reviewedDraftRef.current.signature === continuationDraftSignature()
-    ) {
-      const attachments = getComposerDraftSnapshot(selectedThreadKey).attachments;
-      clearComposerDraftContent(selectedThreadKey, { deferAttachmentCleanup: true });
-      scheduleUnusedComposerAttachmentCleanup(attachments);
-      reviewedDraftRef.current = null;
-    }
-    if (importedState.receipt?.status !== "started" && importedState.receipt?.status !== "rejected")
-      return;
-    const pointer = importedState.pointer;
-    if (clearComposerImportedContinuationPointer(selectedThreadKey, pointer)) {
-      importedContinuation.retirePointer(pointer);
-      void flushComposerDrafts().catch(() => {});
-    }
-  }, [importedContinuation, importedState, selectedThreadKey, continuationDraftSignature]);
-  const importedContinuationPresentation =
-    importedState === null ? null : presentMobileImportedContinuation(importedState);
-  const onStartWithImportedHistory = useCallback(async () => {
-    const previous = importedContinuation?.getSnapshot();
-    if (previous?.saveFailedBeforeDelivery && previous.command !== null) {
-      await importedContinuation?.start(previous.command.commandId);
-      return;
-    }
-    const currentConnection = readContinuationConnection();
-    const reviewedConnection = reviewedConnectionRef.current;
-    if (
-      importedContinuation === null ||
-      selectedThreadKey === null ||
-      reviewedDraftRef.current?.threadKey !== selectedThreadKey ||
-      reviewedDraftRef.current.signature !== continuationDraftSignature() ||
-      reviewedConnection === null ||
-      currentConnection?.prepared !== reviewedConnection.prepared ||
-      currentConnection.generation !== reviewedConnection.generation
-    ) {
-      importedContinuation?.invalidateReview();
-      return;
-    }
-    const existing = importedContinuation.getSnapshot().command;
-    await importedContinuation.start(existing?.commandId ?? CommandId.make(uuidv4()));
-  }, [
-    importedContinuation,
-    selectedThreadKey,
-    continuationDraftSignature,
-    readContinuationConnection,
-  ]);
-  const onObserveImportedHistory = useCallback(async () => {
-    await importedContinuation?.observe();
-  }, [importedContinuation]);
-  const reviewImportedDelivery = useCallback(
-    async (input: Parameters<typeof prepareImported>[0]["input"]): Promise<boolean> => {
-      if (importedContinuation === null || selectedThreadKey === null || selectedThread === null)
-        return false;
-      if (
-        getComposerDraftSnapshot(selectedThreadKey).importedContinuation !== undefined ||
-        presentMobileImportedContinuation(importedContinuation.getSnapshot()).blocksOrdinarySend ||
-        preparingContinuationRef.current
-      )
-        return false;
-      const targetKey = selectedThreadKey;
-      const signature = continuationDraftSignature();
-      const connection = readContinuationConnection();
-      if (connection === null) return true;
-      const stillCurrent = () => {
-        const current = readContinuationConnection();
-        return (
-          mountedRef.current &&
-          selectedKeyRef.current === targetKey &&
-          continuationDraftSignature() === signature &&
-          current?.prepared === connection.prepared &&
-          current.generation === connection.generation
-        );
-      };
-      preparingContinuationRef.current = true;
-      try {
-        const prepared = await importedCommandValue(
-          prepareImported({ environmentId: selectedThread.environmentId, input }),
-        );
-        if (!stillCurrent()) return false;
-        reviewedDraftRef.current = { threadKey: targetKey, signature };
-        reviewedConnectionRef.current = connection;
-        await importedContinuation.review(prepared);
-        if (!stillCurrent()) return false;
-        return canUseOrdinaryImportedContinuationDelivery(
-          importedContinuation.getSnapshot(),
-          getComposerDraftSnapshot(targetKey).importedContinuation,
-        );
-      } catch {
-        return (
-          stillCurrent() &&
-          canUseOrdinaryImportedContinuationDelivery(
-            importedContinuation.getSnapshot(),
-            getComposerDraftSnapshot(targetKey).importedContinuation,
-          )
-        );
-      } finally {
-        preparingContinuationRef.current = false;
-      }
-    },
-    [
-      importedContinuation,
-      selectedThreadKey,
-      selectedThread,
-      continuationDraftSignature,
-      readContinuationConnection,
-      prepareImported,
-    ],
-  );
   // Whether the model picker may leave this thread's provider. Derived here
   // because the projection already drives this hook; the composer only needs
   // the answer, not a subscription to every projection update.
@@ -837,43 +556,11 @@ export function useThreadComposerState() {
       if (selectedThreadCreation !== null) {
         return null;
       }
-      const operationKey = scopedThreadKey(
-        selectedThreadShell.environmentId,
-        selectedThreadShell.id,
-      );
-      try {
-        await waitForComposerDraftsLoaded();
-      } catch {
-        setPendingConnectionError(
-          "Could not load the saved draft. Check the existing request before sending again.",
-        );
-        return null;
-      }
-      if (selectedKeyRef.current !== operationKey) return null;
-      if (
-        getComposerDraftSnapshot(operationKey).importedContinuation !== undefined ||
-        (importedContinuation !== null &&
-          presentMobileImportedContinuation(importedContinuation.getSnapshot()).blocksOrdinarySend)
-      ) {
-        return null;
-      }
 
-      // An ordinary queued send saves the edit in place. An eligible imported
-      // run first waits for the separate choice to start its saved message.
+      // Editing a queued message repurposes the composer: the send button saves
+      // the edit in place instead of enqueuing a new message.
       const editKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
-      const queuedEdit = getQueuedRunEdit(editKey);
-      if (queuedEdit !== null) {
-        if (
-          !(await reviewImportedDelivery({
-            threadId: selectedThreadShell.id,
-            delivery: {
-              type: "queued_run",
-              runId: queuedEdit.runId,
-              messageId: queuedEdit.messageId,
-            },
-          }))
-        )
-          return null;
+      if (getQueuedRunEdit(editKey) !== null) {
         await saveQueuedRunEdit();
         return null;
       }
@@ -883,7 +570,7 @@ export function useThreadComposerState() {
       if (appAtomRegistry.get(composerContextImportsAtom)[threadKey]) return null;
       const thread = selectedThreadShell;
       const text = draft.text.trim();
-      let attachments = draft.attachments;
+      const attachments = draft.attachments;
       if (
         composerAttachmentUploadBlockReason({
           environmentId: selectedThreadShell.environmentId,
@@ -983,69 +670,6 @@ export function useThreadComposerState() {
 
       const metadata = makeQueuedMessageMetadata();
       const messageId = MessageId.make(metadata.messageId);
-      const sendConnection = readContinuationConnection();
-      if (sendConnection !== null) {
-        const signature = continuationDraftSignature();
-        const prepared = await prepareTurnAttachments({
-          environmentId: thread.environmentId,
-          attachments,
-          supportsImageUploads: serverConfig?.environment.capabilities.attachmentUploads === true,
-          persistUploadedReferences: async (uploadedDrafts) => {
-            if (selectedKeyRef.current !== threadKey || continuationDraftSignature() !== signature)
-              return "abandon";
-            replaceComposerDraftAttachments(threadKey, uploadedDrafts);
-            await flushComposerDrafts();
-            return "persisted";
-          },
-        });
-        const currentConnection = readContinuationConnection();
-        if (
-          prepared.status !== "ready" ||
-          selectedKeyRef.current !== threadKey ||
-          currentConnection?.prepared !== sendConnection.prepared ||
-          currentConnection.generation !== sendConnection.generation
-        )
-          return null;
-        const currentDraft = getComposerDraftSnapshot(threadKey);
-        if (
-          currentDraft.text !== draft.text ||
-          JSON.stringify(currentDraft.context) !== JSON.stringify(draft.context) ||
-          currentDraft.modelSelection !== draft.modelSelection ||
-          currentDraft.runtimeMode !== draft.runtimeMode ||
-          currentDraft.interactionMode !== draft.interactionMode ||
-          JSON.stringify(currentDraft.attachments) !== JSON.stringify(prepared.draftAttachments)
-        )
-          return null;
-        if (
-          !(await reviewImportedDelivery({
-            threadId: thread.id,
-            delivery: {
-              type: "message",
-              messageId,
-              text,
-              attachments: prepared.attachments,
-              ...(draft.context === undefined
-                ? {}
-                : {
-                    context: uploadedComposerContext(
-                      draft.context,
-                      attachments,
-                      prepared.attachments,
-                    ),
-                  }),
-              modelSelection,
-              runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
-              interactionMode: resolveProviderInteractionMode(
-                provider,
-                draft.interactionMode ?? thread.interactionMode,
-              ),
-              dispatchMode: { type: "start_immediately" },
-            },
-          }))
-        )
-          return null;
-        attachments = prepared.draftAttachments;
-      }
       // Enqueue publishes the queued atom synchronously (the durable write
       // happens behind it), so clearing the draft here gives send feedback on
       // the tap frame instead of after file I/O. If the write fails the message
@@ -1099,10 +723,6 @@ export function useThreadComposerState() {
       selectedThreadCreation,
       selectedThreadShell,
       uploadThreadFeedback,
-      importedContinuation,
-      reviewImportedDelivery,
-      readContinuationConnection,
-      continuationDraftSignature,
     ],
   );
 
@@ -1450,9 +1070,6 @@ export function useThreadComposerState() {
     onNativePasteText,
     onRemoveDraftImage,
     onSendMessage,
-    importedContinuationPresentation,
-    onStartWithImportedHistory,
-    onObserveImportedHistory,
     onUpdateModelSelection,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,

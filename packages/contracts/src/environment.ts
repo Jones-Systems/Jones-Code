@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+
 import { QueueDispatchCapability } from "./queueProtocol.ts";
 import { ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
 
@@ -105,18 +106,18 @@ const nativeBootstrapCapabilityStruct = <Fields extends Schema.Struct.Fields>(fi
 export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct({
   submissionSchema: Schema.Literal("t3.native-bootstrap-submission/v1"),
   preparationSchema: Schema.Literal("voice.t3-bootstrap-preparation/v1"),
-  observationSchema: Schema.Literal("t3.native-creation-observation/v2"),
+  observationSchema: Schema.Literal("t3.native-creation-observation/v1"),
   guardRequired: Schema.Literal(true),
 });
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
-  workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
+  worktreeDefaultBase: Schema.optionalKey(Schema.Boolean),
   /** Missing on older servers, which still accept inline image attachments. */
   attachmentUploads: Schema.optionalKey(Schema.Boolean),
   /** Uploaded files may accompany question answers. */
@@ -164,6 +165,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
   /** An enrolled adapter can explicitly read one configured, canonically validated saved report. */
   savedTokenAccounting: Schema.optionalKey(Schema.Boolean),
+  /** Server persists model mappings and folds mapped usage into the target model. */
+  usageModelAliases: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.pin / thread.unpin commands. Same
       version-skew contract as threadSettlement. */
   threadPinning: Schema.optionalKey(Schema.Boolean),
@@ -172,6 +175,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadPinReorder: Schema.optionalKey(Schema.Boolean),
   /** Server persists manual Active order through thread.active.reorder. */
   threadActiveReorder: Schema.optionalKey(Schema.Boolean),
+  workMode: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.auto-settle.set (per-thread auto-settle off).
       Same version-skew contract as threadSettlement. */
   threadAutoSettleOptOut: Schema.optionalKey(Schema.Boolean),
@@ -189,7 +193,11 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       identified rollback readiness. Clients retain projection-based command
       shaping and validation when this is absent. */
   serverResolvedCommandContext: Schema.optionalKey(Schema.Boolean),
+  /** Opted-in owner queues can deliver at successful foreground tool boundaries. */
+  queuedToolBoundaryDelivery: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
+  /** Server understands thread.pull-request.watch and wakes agents on pull request changes. */
+  threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
   /** The update path clients should offer for this server. Absent on
       servers that must be relaunched manually (dev checkouts, Windows

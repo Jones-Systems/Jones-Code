@@ -1,0 +1,19 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "codex-provider",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/codex/CodexCapacityContinuation.ts",
+    "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+    "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.ts"
+  ],
+  "tombstones": ["apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.test.ts"],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexCapacityContinuation.ts"
+    }
+  ]
+}

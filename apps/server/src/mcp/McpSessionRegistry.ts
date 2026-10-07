@@ -92,24 +92,6 @@ const getHttpMcpEndpointHost = (address: NetAddress.IpAddress): string =>
     ? "127.0.0.1"
     : NetAddress.formatUrlHostString(NetAddress.formatIp(address));
 
-const capabilitiesForRequest = (request: McpCredentialRequest) => {
-  const capabilities = new Set<McpInvocationContext.McpCapability>(
-    request.capabilities ?? [
-      "orchestration",
-      "worktree",
-      "pull-requests",
-      ...(request.browserToolsAvailable === false ? [] : (["preview"] as const)),
-    ],
-  );
-  if (
-    request.browserToolsAvailable !== undefined &&
-    request.browserToolsAvailable !== capabilities.has("preview")
-  ) {
-    throw new Error("MCP browser availability contradicts its preview grant");
-  }
-  return capabilities;
-};
-
 const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   options: McpSessionRegistryOptions = {},
 ) {
@@ -140,17 +122,22 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
 
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {
-      const capabilities = yield* Effect.sync(() => capabilitiesForRequest(request));
       const issuedAt = yield* currentTimeMillis;
       const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
+      const browserToolsAvailable = request.browserToolsAvailable ?? true;
       const scope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities,
+        capabilities: new Set<McpInvocationContext.McpCapability>([
+          "orchestration",
+          "worktree",
+          "pull-requests",
+          ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
+        ]),
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
@@ -250,10 +237,9 @@ export const issueActiveMcpCredential = (
   request: McpCredentialRequest,
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
-    ? Effect.sync(() => capabilitiesForRequest(request)).pipe(
-        Effect.andThen(activeMcpSessionRegistry.revokeThread(request.threadId)),
-        Effect.andThen(activeMcpSessionRegistry.issue(request)),
-      )
+    ? activeMcpSessionRegistry
+        .revokeThread(request.threadId)
+        .pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
     : Effect.undefined;
 
 /**
@@ -263,10 +249,10 @@ export const issueActiveMcpCredential = (
 export const touchActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.touch(threadId) : Effect.void;
 
-export const revokeActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
+const revokeActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeThread(threadId) : Effect.void;
 
-export const revokeAllActiveMcpCredentials = (): Effect.Effect<void> =>
+const revokeAllActiveMcpCredentials = (): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeAll : Effect.void;
 
 /** Exposed for tests. */

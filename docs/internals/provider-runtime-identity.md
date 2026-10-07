@@ -1,32 +1,47 @@
 # Provider runtime identity
 
-Routing settings describe what the user requested. They cannot establish which
-backend, model, account, or service tier actually served a runtime. Keep that
-request separate from provider observations, including when the values agree.
-An absent identity in historical sessions means no evidence was recorded;
-`unknown` and `unavailable` must never be filled from settings, launch arguments,
-model catalogs, or authentication metadata.
+A requested model is routing intent. An observed model describes native evidence
+from the process that serves a particular conversation. Keep them separate even
+when their values happen to match. Neither provider settings, authentication
+metadata nor a model catalog establishes observed backend, model, account or tier.
+The [identity contract](../../packages/contracts/src/providerRuntimeIdentity.ts)
+uses unknown and unavailable states so missing evidence stays visible.
 
-Only provider-native evidence can create an observation. Codex's typed thread
-start/resume response reports its model, backend, and sometimes service tier;
-a null tier is unavailable. A native Codex reroute changes only the observed
-model. Claude's SDK `system:init` reports only the model. None of these events
-safely binds an account, and other adapters currently provide no attestation.
-Adapter-generated turn-start model metadata is requested configuration.
+Identity belongs to a provider thread, not a shared session. One Codex app-server
+can serve native conversations with different models. Its process generation is
+reserved before launch and captured by its callbacks; a logical session ID or an
+idle-timer generation cannot substitute for that incarnation. Typed Codex
+thread-open responses provide model/backend/tier evidence. Native reroute
+notifications update only observed model. Claude SDK init provides model evidence only. Neither boundary safely
+binds an account to the process.
 
-Every launch receives a generation before it starts. Events retain the emitting
-runtime's generation and provider instance; looking up the latest session while
-emitting an old event can falsely attest a replacement runtime. Ingestion requires
-an exact driver, instance, and generation match. A live model change or a change
-to the explicit `serviceTier` option clears old observations while retaining the
-running process's generation, so subsequent native observations remain
-correlatable. The legacy `fastMode` alias is not normalized into the requested
-service tier; changing that alias alone does not invalidate a prior observation.
+[Session management](../../apps/server/src/orchestration-v2/ProviderSessionManager.ts)
+publishes the successful binding boundary before releasing observations. A failed
+or interrupted candidate cannot become current. Replacement invalidates the old
+issuer. Codex token rotation resumes the same native cursor with the current
+request before sending the next prompt. It refuses replacement while shared
+active or background work remains. A capacity retry remains attached to its original prompt and
+producer; runtime drift cancels it rather than replaying the prompt.
 
-Startup events wait until binding succeeds. Recovery publishes its new generation
-boundary before releasing buffered observations. Failed or interrupted launches
-discard their buffered events and restore the previous correlation. Session
-projections persist the optional identity and expose it consistently through
-snapshot, shell, and detail queries; historical null storage stays absent on the
-wire. The fork migration ledger owns this additive column independently of the
-upstream migration sequence.
+Claude rewind closes the old query and preserves or resets its continuation.
+The replacement generation exists only when the next send actually launches a
+query. Rollback itself is not a replacement-process observation. Historical
+identity in JSON likewise records past evidence; replay never activates a producer.
+
+The [event sink](../../apps/server/src/orchestration-v2/EventSink.ts) validates the
+native binding inside the same transaction as the projection write. Evidence
+revision can advance within an incarnation. With a pinned generation, later
+revisions are valid only for the same application thread, provider thread, session,
+driver, instance and native conversation; revision regression remains invalid.
+Without a generation, a captured revision must match exactly. Late snapshots
+preserve newer requested configuration and observations. A start captured before an
+observation-only revision advance may still commit when the exact previous
+instance, driver, model and explicit tier remain current. A requested-configuration
+change rejects that stale writer even when the process generation is unchanged.
+
+Full and detail views retain each provider thread's own identity. Shell identity
+comes only from the exact active provider thread of that application thread. Old snapshots may omit identity, and legacy Jones migration002 remains compatibility
+storage rather than evidence of a live V2 runtime. Explicit service-tier options
+are recorded as requested; normalization of the fast-mode alias remains deferred.
+A native launch followed by binding-publication failure remains an unknown effect:
+fail visibly and stop replay. Automatic recovery of that boundary is deferred.

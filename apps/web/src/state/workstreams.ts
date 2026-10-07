@@ -11,7 +11,6 @@ import type {
   WorkstreamReferencePage,
   WorkstreamCommand,
   WorkstreamReceipt,
-  WorkstreamsRegistrationContextResponse,
 } from "@t3tools/contracts";
 import {
   EnvironmentHttpConflictError,
@@ -232,20 +231,10 @@ export async function loadCompleteWorkstreamDetail(
 export interface WorkstreamListView {
   readonly placementInventory: NativePlacementInventory;
   readonly placements: LiveT3Placements | null;
-  readonly references: WorkstreamReferencePage | null;
-  readonly registrationContext: WorkstreamsRegistrationContextResponse | null;
   readonly data: T3WorkstreamListResult | null;
   readonly error: string | null;
   readonly loading: boolean;
   readonly refresh: () => void;
-  readonly retry: () => Promise<void>;
-  readonly loadActionSnapshot: (options?: {
-    readonly signal?: AbortSignal;
-  }) => Promise<WorkstreamActionSnapshot>;
-  readonly observeCommand: (
-    commandId: string,
-    options?: { readonly signal?: AbortSignal },
-  ) => Promise<WorkstreamReceipt>;
   readonly submit: (command: WorkstreamCommand) => Promise<WorkstreamReceipt>;
   readonly runBindingOperation: <A>(
     operation: (submit: (command: WorkstreamCommand) => Promise<WorkstreamReceipt>) => Promise<A>,
@@ -258,99 +247,6 @@ export interface WorkstreamListView {
     nativeReferenceId: string,
     options?: { readonly signal?: AbortSignal },
   ) => Promise<WorkstreamReferenceDetail>;
-}
-
-export interface WorkstreamActionSnapshot {
-  readonly data: T3WorkstreamListResult;
-  readonly references: WorkstreamReferencePage;
-  readonly placements: LiveT3Placements | null;
-  readonly registrationContext: WorkstreamsRegistrationContextResponse | null;
-}
-
-export class WorkstreamActionError extends Error {
-  constructor(
-    readonly reason: "activation" | "stale" | "denied" | "unknown" | "ambiguous" | "invalid-pr",
-  ) {
-    super(workstreamActionMessage(reason));
-    this.name = "WorkstreamActionError";
-  }
-}
-
-function workstreamActionMessage(reason: WorkstreamActionError["reason"]): string {
-  switch (reason) {
-    case "activation":
-      return "Reference preparation is unavailable until its source is activated.";
-    case "stale":
-      return "Workstreams or reference verification changed. Reload and take a new action.";
-    case "denied":
-      return "The Workstream action was denied. No further changes were submitted.";
-    case "ambiguous":
-      return "Conflicting references require resolution before this action can continue.";
-    case "invalid-pr":
-      return "Enter a full GitHub pull request URL.";
-    case "unknown":
-      return "The effect is unknown. Retry reloads metadata and checks the existing command; it does not resubmit.";
-  }
-}
-
-export const workstreamFailureMessage = (cause: unknown): string =>
-  cause instanceof WorkstreamActionError ? cause.message : workstreamActionMessage("unknown");
-
-export function assertWorkstreamReadContext(
-  data: T3WorkstreamListResult,
-  context: WorkstreamReadContext,
-): void {
-  if (
-    context.owner_id !== data.binding.ownerId ||
-    context.server_generation !== data.binding.serverGeneration ||
-    context.registry_version !== data.binding.registryVersion
-  )
-    throw new WorkstreamActionError("stale");
-}
-
-export function assertWorkstreamActionSnapshot(snapshot: WorkstreamActionSnapshot): void {
-  const { data, references, placements, registrationContext } = snapshot;
-  assertWorkstreamReadContext(data, references.context);
-  for (const context of [placements?.context, registrationContext]) {
-    if (!context) continue;
-    assertWorkstreamReadContext(data, context);
-    if (
-      context.principal_id !== data.binding.principalId ||
-      context.authorization_revision !== data.binding.authorizationRevision
-    )
-      throw new WorkstreamActionError("stale");
-  }
-  if (references.next_cursor !== null) throw new WorkstreamActionError("stale");
-}
-
-export function assertWorkstreamSnapshotAuthority(
-  started: T3WorkstreamListResult["binding"] | undefined,
-  current: T3WorkstreamListResult["binding"] | undefined,
-  returned: T3WorkstreamListResult["binding"],
-): void {
-  const authorityKey = (binding: T3WorkstreamListResult["binding"]) =>
-    workstreamBindingKey({ ...binding, registryVersion: 0 });
-  if (started && (!current || authorityKey(started) !== authorityKey(current)))
-    throw new WorkstreamActionError("stale");
-  const expected = started ?? current;
-  if (expected && authorityKey(expected) !== authorityKey(returned))
-    throw new WorkstreamActionError("stale");
-}
-
-export async function loadCompleteWorkstreamReferences(
-  load: (cursor?: string) => Promise<WorkstreamReferencePage>,
-  options: CursorRestartOptions = {},
-): Promise<WorkstreamReferencePage> {
-  return withCursorRestart(() => loadAllPages(load, options.signal), options);
-}
-
-export async function retryWorkstreamCommands(input: {
-  readonly load: () => Promise<unknown>;
-  readonly commandIds: readonly string[];
-  readonly observe: (commandId: string) => Promise<WorkstreamReceipt>;
-}): Promise<void> {
-  await input.load();
-  for (const commandId of input.commandIds) await input.observe(commandId);
 }
 
 export interface NativePlacementInventory {
@@ -485,9 +381,6 @@ export function useWorkstreams(
     [inventory.json],
   );
   const [placements, setPlacements] = useState<LiveT3Placements | null>(null);
-  const [references, setReferences] = useState<WorkstreamReferencePage | null>(null);
-  const [registrationContext, setRegistrationContext] =
-    useState<WorkstreamsRegistrationContextResponse | null>(null);
   const [data, setData] = useState<T3WorkstreamListResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -495,131 +388,15 @@ export function useWorkstreams(
   const generation = useRef(0);
   const listRequest = useRef<AbortController | null>(null);
   const commandRequests = useRef(new Set<BindingOperationRequest>());
-  const attemptedCommands = useRef(
-    new Map<string, { readonly binding: string; receipt: WorkstreamReceipt | null }>(),
-  );
   const currentBindingKey = data ? workstreamBindingKey(data.binding) : null;
   const currentBindingKeyRef = useRef(currentBindingKey);
   currentBindingKeyRef.current = currentBindingKey;
-  const currentBindingRef = useRef(data?.binding);
-  currentBindingRef.current = data?.binding;
   const refresh = useCallback(() => {
     listRequest.current?.abort();
     generation.current += 1;
     setPlacements(null);
     setRevision((value) => value + 1);
   }, []);
-
-  const loadActionSnapshot = useCallback(
-    async (options: { readonly signal?: AbortSignal } = {}): Promise<WorkstreamActionSnapshot> => {
-      const signal = options.signal;
-      const startedBinding = currentBindingRef.current;
-      const value = await loadCompleteWorkstreamList(
-        (cursor) =>
-          request(
-            (client) =>
-              client.workstreams.list({
-                headers: {},
-                payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
-              }),
-            signal,
-          ),
-        options,
-      );
-      const [completeReferences, context, projection] = await Promise.all([
-        loadCompleteWorkstreamReferences(
-          (cursor) =>
-            request(
-              (client) =>
-                client.workstreams.references({
-                  headers: {},
-                  payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
-                }),
-              signal,
-            ),
-          options,
-        ),
-        request((client) => client.workstreams.registrationContext({ headers: {} }), signal).catch(
-          (cause: unknown) => {
-            throwIfAborted(signal);
-            void cause;
-            return null;
-          },
-        ),
-        placementsEnabled
-          ? loadLiveT3Placements(value, identities, () =>
-              request(
-                (client) =>
-                  client.workstreams.threadPlacements({ headers: {}, payload: { identities } }),
-                signal,
-              ),
-            ).catch(() => {
-              throwIfAborted(signal);
-              return null;
-            })
-          : Promise.resolve(null),
-      ]);
-      throwIfAborted(signal);
-      const snapshot = {
-        data: value,
-        references: completeReferences,
-        registrationContext: context,
-        placements: projection,
-      };
-      assertWorkstreamActionSnapshot(snapshot);
-      const key = workstreamBindingKey(value.binding);
-      assertWorkstreamSnapshotAuthority(startedBinding, currentBindingRef.current, value.binding);
-      for (const operation of commandRequests.current) {
-        operation.controller.signal.throwIfAborted();
-        if (!operation.acceptedBindingKeys.has(key)) throw new WorkstreamActionError("stale");
-      }
-      metadataCache.write(value);
-      currentBindingKeyRef.current = key;
-      currentBindingRef.current = value.binding;
-      setData(value);
-      setReferences(completeReferences);
-      setRegistrationContext(context);
-      setPlacements(projection);
-      setError(null);
-      return snapshot;
-    },
-    [identities, placementsEnabled],
-  );
-
-  const observeCommand = useCallback(
-    async (commandId: string, options: { readonly signal?: AbortSignal } = {}) => {
-      const attempt = attemptedCommands.current.get(commandId);
-      if (
-        !attempt ||
-        !data ||
-        attempt.binding !== workstreamBindingKey({ ...data.binding, registryVersion: 0 })
-      )
-        throw new WorkstreamActionError("stale");
-      const receipt = await request(
-        (client) => client.workstreams.command({ headers: {}, params: { commandId } }),
-        options.signal,
-      );
-      attempt.receipt = receipt;
-      return receipt;
-    },
-    [data],
-  );
-
-  const retry = useCallback(async () => {
-    await retryWorkstreamCommands({
-      load: () => loadActionSnapshot(),
-      commandIds: [...attemptedCommands.current]
-        .filter(
-          ([, attempt]) =>
-            attempt.receipt === null ||
-            attempt.receipt.state === "pending" ||
-            attempt.receipt.state === "unresolved",
-        )
-        .map(([id]) => id),
-      observe: (id) => observeCommand(id),
-    });
-    await loadActionSnapshot();
-  }, [loadActionSnapshot, observeCommand]);
 
   useEffect(() => {
     for (const operation of commandRequests.current) {
@@ -645,8 +422,6 @@ export function useWorkstreams(
     listRequest.current = controller;
     const current = ++generation.current;
     setPlacements(null);
-    setReferences(null);
-    setRegistrationContext(null);
     setLoading(true);
     void loadCompleteWorkstreamList(
       (cursor) =>
@@ -666,46 +441,6 @@ export function useWorkstreams(
         metadataCache.write(normalized);
         setData(metadataCache.read(normalized.binding));
         setError(null);
-        const [referencePage, sourceContext] = await Promise.all([
-          loadCompleteWorkstreamReferences(
-            (cursor) =>
-              request(
-                (client) =>
-                  client.workstreams.references({
-                    headers: {},
-                    payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
-                  }),
-                controller.signal,
-              ),
-            { signal: controller.signal },
-          ).catch(() => null),
-          request(
-            (client) => client.workstreams.registrationContext({ headers: {} }),
-            controller.signal,
-          ).catch(() => null),
-        ]);
-        if (generation.current !== current) return;
-        if (referencePage) {
-          try {
-            assertWorkstreamReadContext(normalized, referencePage.context);
-            setReferences(referencePage);
-          } catch {
-            setReferences(null);
-          }
-        }
-        if (sourceContext) {
-          try {
-            assertWorkstreamActionSnapshot({
-              data: normalized,
-              references: referencePage ?? { context: sourceContext, items: [], next_cursor: null },
-              placements: null,
-              registrationContext: sourceContext,
-            });
-            setRegistrationContext(sourceContext);
-          } catch {
-            setRegistrationContext(null);
-          }
-        }
         if (placementsEnabled) {
           try {
             const projection = await loadLiveT3Placements(normalized, identities, () =>
@@ -729,9 +464,7 @@ export function useWorkstreams(
         // Authorization/session lifecycle failures must hide previously authorized content.
         metadataCache.purgeAuthorization();
         setData(null);
-        setReferences(null);
-        setRegistrationContext(null);
-        setError(workstreamFailureMessage(cause));
+        setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
       })
       .finally(() => {
         if (listRequest.current === controller) listRequest.current = null;
@@ -760,17 +493,6 @@ export function useWorkstreams(
     ) => {
       const startedBinding = data?.binding;
       if (startedBinding === undefined) throw new Error("Workstream binding is unavailable.");
-      const authorityBinding = workstreamBindingKey({ ...startedBinding, registryVersion: 0 });
-      if (
-        [...attemptedCommands.current.values()].some(
-          (attempt) =>
-            attempt.binding === authorityBinding &&
-            (attempt.receipt === null ||
-              attempt.receipt.state === "pending" ||
-              attempt.receipt.state === "unresolved"),
-        )
-      )
-        throw new WorkstreamActionError("unknown");
       const controller = new AbortController();
       const operationRequest: BindingOperationRequest = {
         controller,
@@ -795,22 +517,32 @@ export function useWorkstreams(
       };
       const submitCommand = async (command: WorkstreamCommand) => {
         assertCurrentBinding();
-        if (attemptedCommands.current.has(command.command_id))
-          throw new WorkstreamActionError("unknown");
-        const attempt = {
-          binding: workstreamBindingKey({ ...startedBinding, registryVersion: 0 }),
-          receipt: null as WorkstreamReceipt | null,
-        };
-        attemptedCommands.current.set(command.command_id, attempt);
         commandAttempted = true;
-        const receipt = await request(
+        let receipt = await request(
           (client) => client.workstreams.submit({ headers: {}, payload: { command } }),
           controller.signal,
         );
-        attempt.receipt = receipt;
         acceptReceiptBinding(receipt);
         assertCurrentBinding();
-        // Pending effects are retained for explicit GET-only Retry; commands are never resubmitted.
+        // Pending effects reconcile through the exact GET route; commands are never resubmitted.
+        while (receipt.state === "pending" || receipt.state === "unresolved") {
+          const retryAfterSeconds = receipt.retry_after_seconds;
+          await waitForRetry(
+            Math.min(30_000, Math.max(250, retryAfterSeconds * 1_000)),
+            controller.signal,
+          );
+          assertCurrentBinding();
+          receipt = await request(
+            (client) =>
+              client.workstreams.command({
+                headers: {},
+                params: { commandId: command.command_id },
+              }),
+            controller.signal,
+          );
+          acceptReceiptBinding(receipt);
+          assertCurrentBinding();
+        }
         return receipt;
       };
       try {
@@ -822,6 +554,8 @@ export function useWorkstreams(
         if (!controller.signal.aborted && currentBindingIsAccepted()) {
           generation.current += 1;
           setPlacements(null);
+          metadataCache.purgeAuthorization();
+          setData(null);
           refreshAfterOperation = commandAttempted;
         }
         throw cause;
@@ -897,7 +631,7 @@ export function useWorkstreams(
         setPlacements(null);
         metadataCache.purgeAuthorization();
         setData(null);
-        setError(workstreamFailureMessage(cause));
+        setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
         throw cause;
       }
     },
@@ -917,7 +651,7 @@ export function useWorkstreams(
         setPlacements(null);
         metadataCache.purgeAuthorization();
         setData(null);
-        setError(workstreamFailureMessage(cause));
+        setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
         throw cause;
       }
     },
@@ -927,15 +661,10 @@ export function useWorkstreams(
   return {
     placementInventory: inventory,
     placements,
-    references,
-    registrationContext,
     data,
     error,
     loading,
     refresh,
-    retry,
-    loadActionSnapshot,
-    observeCommand,
     submit,
     runBindingOperation,
     loadDetail,

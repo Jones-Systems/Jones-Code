@@ -11,17 +11,12 @@ import { validateNativeStoreAuthorityPath } from "./nativeStoreAuthorityPath.ts"
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
   advanceNativeStoreAuthority,
-  advanceNativeStoreAuthorityForBaseDir,
   decodeNativeStoreAuthorityState,
   fenceNativeStoreAuthority,
-  fenceNativeStoreAuthorityForBaseDir,
   initializeNativeStoreAuthority,
   initializeNativeStoreAuthorityForBaseDir,
   nativeStoreAuthorityPaths,
   readNativeStoreAuthorityState,
-  readExistingNativeStoreAuthorityState,
-  requireNativeStoreAuthorityLauncherProtocolForBaseDir,
-  requireNativeStoreAuthoritySelectedStoreForBaseDir,
 } from "./nativeStoreAuthorityPersistence.ts";
 
 const withDirectory = (run: (directory: string) => void): void => {
@@ -34,32 +29,6 @@ const withDirectory = (run: (directory: string) => void): void => {
 };
 
 describe("native store authority persistence", () => {
-  it("existing-state reader never creates missing directories, state or writer locks", () => {
-    withDirectory((authorityStateDir) => {
-      const root = NodePath.dirname(authorityStateDir);
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("missing");
-      expect(NodeFS.readdirSync(root)).toEqual([]);
-      NodeFS.mkdirSync(authorityStateDir, { mode: 0o700 });
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("missing");
-      expect(NodeFS.readdirSync(authorityStateDir)).toEqual([]);
-      const state = {
-        record_version: "t3-native-store-authority/1.0.0",
-        environment_id: "synthetic-environment",
-        authority_namespace: "t3-native:12345678-1234-4234-8234-123456789abc",
-        store_generation: 7,
-        state: "active",
-        transition_id: null,
-      };
-      const statePath = nativeStoreAuthorityPaths(authorityStateDir).statePath;
-      NodeFS.writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
-      const before = NodeFS.statSync(statePath);
-      expect(readExistingNativeStoreAuthorityState(authorityStateDir)).toEqual(state);
-      expect(NodeFS.readdirSync(authorityStateDir)).toEqual([NodePath.basename(statePath)]);
-      expect(NodeFS.statSync(statePath).mtimeMs).toBe(before.mtimeMs);
-      NodeFS.writeFileSync(statePath, "x".repeat(8193));
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("bounded");
-    });
-  });
   it("enrolls only from the persisted T3 environment identity", () => {
     const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-native-enroll-test-"));
     try {
@@ -74,112 +43,12 @@ describe("native store authority persistence", () => {
         JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
         { mode: 0o600 },
       );
-      const dbPath = NodePath.join(root, "userdata", "state.sqlite");
-      const state = initializeNativeStoreAuthorityForBaseDir(
-        root,
-        SERVICE_LAUNCHER_PROTOCOL,
-        dbPath,
-      );
+      const state = initializeNativeStoreAuthorityForBaseDir(root, SERVICE_LAUNCHER_PROTOCOL);
       expect(state.environment_id).toBe("environment-native-enrollment");
       expect(state.state).toBe("active");
       expect(() =>
-        initializeNativeStoreAuthorityForBaseDir(root, SERVICE_LAUNCHER_PROTOCOL, dbPath),
+        initializeNativeStoreAuthorityForBaseDir(root, SERVICE_LAUNCHER_PROTOCOL),
       ).not.toThrow();
-    } finally {
-      NodeFS.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects changed selected stores before enrollment, launcher trust or authority transitions", () => {
-    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-native-binding-test-"));
-    try {
-      const dbPath = NodePath.join(root, "userdata", "state.sqlite");
-      const authorityDir = NodePath.join(root, "native-store-authority");
-      NodeFS.mkdirSync(NodePath.dirname(dbPath));
-      NodeFS.writeFileSync(dbPath, "SQLite format 3\0");
-      NodeFS.writeFileSync(NodePath.join(root, "userdata", "environment-id"), "env-binding\n");
-      const selectedPaths = [
-        NodePath.join(root, "userdata", "statev2.sqlite"),
-        NodePath.join(root, "custom.sqlite"),
-      ];
-      for (const selectedPath of selectedPaths) {
-        NodeFS.copyFileSync(dbPath, selectedPath);
-        expect(() =>
-          initializeNativeStoreAuthorityForBaseDir(root, SERVICE_LAUNCHER_PROTOCOL, selectedPath),
-        ).toThrow("separate native store qualification");
-        expect(NodeFS.existsSync(authorityDir)).toBe(false);
-      }
-      const initial = initializeNativeStoreAuthority(authorityDir, "env-binding");
-      const statePath = nativeStoreAuthorityPaths(authorityDir).statePath;
-      const lockPath = nativeStoreAuthorityPaths(authorityDir).lockDatabasePath;
-      for (const state of [initial, fenceNativeStoreAuthority(authorityDir, "env-binding")]) {
-        NodeFS.writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
-        const stateBefore = NodeFS.readFileSync(statePath);
-        const lockBefore = NodeFS.readFileSync(lockPath);
-        for (const selectedPath of selectedPaths) {
-          const selectedBefore = NodeFS.readFileSync(selectedPath);
-          for (const operation of [
-            () =>
-              initializeNativeStoreAuthorityForBaseDir(
-                root,
-                SERVICE_LAUNCHER_PROTOCOL,
-                selectedPath,
-              ),
-            () => fenceNativeStoreAuthorityForBaseDir(root, selectedPath),
-            () => advanceNativeStoreAuthorityForBaseDir(root, selectedPath),
-            () =>
-              requireNativeStoreAuthorityLauncherProtocolForBaseDir(
-                root,
-                SERVICE_LAUNCHER_PROTOCOL,
-                "1.0.0",
-                selectedPath,
-              ),
-          ]) {
-            expect(operation).toThrow("separate native store qualification");
-            expect(NodeFS.readFileSync(statePath)).toEqual(stateBefore);
-            expect(NodeFS.readFileSync(lockPath)).toEqual(lockBefore);
-            expect(NodeFS.readFileSync(selectedPath)).toEqual(selectedBefore);
-            expect(readExistingNativeStoreAuthorityState(authorityDir).store_generation).toBe(1);
-          }
-        }
-      }
-      for (const raw of [
-        "corrupt authority record",
-        JSON.stringify({ ...initial, environment_id: "another-environment", store_generation: 7 }),
-        JSON.stringify({ ...initial, dbPath: selectedPaths[0] }),
-      ]) {
-        NodeFS.writeFileSync(statePath, raw);
-        const lockBefore = NodeFS.readFileSync(lockPath);
-        for (const selectedPath of selectedPaths) {
-          expect(() => fenceNativeStoreAuthorityForBaseDir(root, selectedPath)).toThrow(
-            "separate native store qualification",
-          );
-          expect(() => advanceNativeStoreAuthorityForBaseDir(root, selectedPath)).toThrow(
-            "separate native store qualification",
-          );
-          expect(NodeFS.readFileSync(statePath, "utf8")).toBe(raw);
-          expect(NodeFS.readFileSync(lockPath)).toEqual(lockBefore);
-        }
-      }
-      NodeFS.unlinkSync(statePath);
-      const missingEntries = NodeFS.readdirSync(authorityDir);
-      for (const selectedPath of selectedPaths) {
-        expect(() =>
-          initializeNativeStoreAuthorityForBaseDir(root, SERVICE_LAUNCHER_PROTOCOL, selectedPath),
-        ).toThrow("separate native store qualification");
-        expect(fenceNativeStoreAuthorityForBaseDir(root, selectedPath)).toBeNull();
-        expect(advanceNativeStoreAuthorityForBaseDir(root, selectedPath)).toBeNull();
-        expect(NodeFS.readdirSync(authorityDir)).toEqual(missingEntries);
-      }
-      expect(() => requireNativeStoreAuthoritySelectedStoreForBaseDir(root, dbPath)).not.toThrow();
-      NodeFS.unlinkSync(dbPath);
-      NodeFS.symlinkSync(selectedPaths[0]!, dbPath);
-      expect(() => requireNativeStoreAuthoritySelectedStoreForBaseDir(root, dbPath)).toThrow(
-        "separate native store qualification",
-      );
-      expect(() => decodeNativeStoreAuthorityState({ ...initial, dbPath })).toThrow(
-        "schema checks",
-      );
     } finally {
       NodeFS.rmSync(root, { recursive: true, force: true });
     }

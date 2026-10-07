@@ -21,8 +21,6 @@
  *
  * @module orchestration-v2/Adapters/OpenCode2AdapterV2
  */
-import * as NodeCrypto from "node:crypto";
-
 import {
   AbsolutePath,
   Agent,
@@ -57,7 +55,6 @@ import {
   type RuntimeRequestId,
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
-import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -73,12 +70,15 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "../../config.ts";
 import { paginate, type OpenCode2StreamEvent } from "../../provider/opencode2/OpenCode2Client.ts";
 import * as OpenCode2Server from "../../provider/opencode2/OpenCode2Server.ts";
-import { parseOpenCodeModelSlug, OpenCodeRuntimeError } from "../../provider/opencodeRuntime.ts";
+import {
+  parseOpenCodeModelSlug,
+  type OpenCodeRuntimeError,
+} from "../../provider/opencodeRuntime.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import { t3OrchestrationSystemPrompt } from "../../provider/T3OrchestrationInstructions.ts";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
 import { causeErrorTag } from "@t3tools/shared/observability";
 
 import { providerMessageTextWithAttachmentPaths } from "../AttachmentPrompt.ts";
@@ -92,13 +92,6 @@ import {
   subagentThreadTitle,
 } from "../SubagentProjection.ts";
 import * as ProviderAdapter from "../ProviderAdapter.ts";
-import {
-  readProviderEventOrigin,
-  stampProviderEvent,
-  type ProviderEventProducerOrigin,
-} from "../ProviderEventOrigin.ts";
-import type { ProviderAssistantOutputOwner } from "../ProviderEventIngestor.ts";
-import { getNativeCreationExecutionReference } from "../NativeCreationAuthority.ts";
 import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
 import { OPENCODE_PROVIDER, openCodePermissionRequestKind } from "./OpenCodeAdapterV2.ts";
 import { openCodeToolTurnItem } from "./OpenCodeToolItems.ts";
@@ -205,8 +198,6 @@ type Tokens = EventOf<"session.step.ended">["data"]["tokens"];
 
 /** What a turn reports against: a run's own turn, or a subagent session's runless one. */
 interface TurnOwner {
-  readonly nativeCreationExecution?: ProviderAdapter.ProviderAdapterV2TurnInput["nativeCreationExecution"];
-  readonly attemptId?: ProviderAdapter.ProviderAdapterV2TurnInput["attemptId"];
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: OrchestrationV2AppThread["id"];
   readonly runId: RunId | null;
@@ -818,11 +809,6 @@ const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["s
         hasSubagents: turn.usedSubagents,
       };
 
-class FollowEventProducer extends Context.Reference<ProviderEventProducerOrigin | undefined>(
-  "t3/OpenCode2Adapter/FollowEventProducer",
-  { defaultValue: () => undefined },
-) {}
-
 /**
  * The adapter for one provider instance. It talks to the instance's
  * {@link OpenCode2Server.OpenCode2Server}, which the driver builds from the instance's settings.
@@ -838,105 +824,27 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
    * Lends the instance's server to a session until its scope closes. A spawned
    * server that died is started again on the next borrow.
    */
-  const borrow = (
-    beforeNativeCreation?: (actualDirectory: string) => Effect.Effect<void, unknown>,
-  ) =>
-    Effect.gen(function* () {
-      const lent = yield* Deferred.make<
-        OpenCode2Server.OpenCode2Connection,
-        OpenCodeRuntimeError
-      >();
-      yield* server
-        .withConnection(
-          (connection) => Deferred.succeed(lent, connection).pipe(Effect.andThen(Effect.never)),
-          beforeNativeCreation,
-        )
-        .pipe(
-          Effect.catch((error) => Deferred.fail(lent, error)),
-          Effect.forkScoped,
-        );
-      return yield* Deferred.await(lent);
-    });
+  const borrow = Effect.gen(function* () {
+    const lent = yield* Deferred.make<OpenCode2Server.OpenCode2Connection, OpenCodeRuntimeError>();
+    yield* server
+      .withConnection((connection) =>
+        Deferred.succeed(lent, connection).pipe(Effect.andThen(Effect.never)),
+      )
+      .pipe(
+        Effect.catch((error) => Deferred.fail(lent, error)),
+        Effect.forkScoped,
+      );
+    return yield* Deferred.await(lent);
+  });
 
   const openSession = Effect.fn("OpenCode2Adapter.openSession")(function* (
     input: Parameters<ProviderAdapter.ProviderAdapterV2Shape["openSession"]>[0],
     initial: {
       readonly connection: OpenCode2Server.OpenCode2Connection;
       readonly scope: Scope.Closeable;
-      readonly generation: { current: string };
-      readonly adoptOwnedGeneration: (
-        connection: OpenCode2Server.OpenCode2Connection,
-      ) => Effect.Effect<void, OpenCodeRuntimeError | ProviderAdapter.ProviderAdapterV2Error>;
     },
   ) {
     let connection = initial.connection;
-    // Only committed, correlated confirmation can release a covered bootstrap gap.
-    type NativeCreationRecord = {
-      readonly execution: NonNullable<
-        ProviderAdapter.ProviderAdapterV2OpenSessionInput["nativeCreationExecution"]
-      >;
-      readonly reference: ReturnType<typeof getNativeCreationExecutionReference>;
-      readonly operation: ProviderAdapter.ProviderNativeOperationContext | undefined;
-      readonly generation: string;
-      readonly runId?: RunId;
-      readonly attemptId?: ProviderAdapter.ProviderAdapterV2TurnInput["attemptId"];
-      readonly binding?: ProviderAdapter.ProviderRuntimeBinding;
-    };
-    const unresolvedNativeCreations = new Set<NativeCreationRecord>();
-    const currentNativeCreations = new Set<NativeCreationRecord>();
-    const rememberNativeCreation = (
-      execution: NonNullable<
-        ProviderAdapter.ProviderAdapterV2OpenSessionInput["nativeCreationExecution"]
-      >,
-      operation: ProviderAdapter.ProviderNativeOperationContext | undefined,
-      turn?: ProviderAdapter.ProviderAdapterV2TurnInput,
-    ): NativeCreationRecord => {
-      const nativeThreadId = turn?.providerThread.nativeThreadRef?.nativeId;
-      const record: NativeCreationRecord = {
-        execution,
-        reference: getNativeCreationExecutionReference(execution.context),
-        operation: operation === undefined ? undefined : Object.freeze({ ...operation }),
-        generation: initial.generation.current,
-        ...(turn === undefined ? {} : { runId: turn.runId, attemptId: turn.attemptId }),
-        ...(turn === undefined || nativeThreadId == null
-          ? {}
-          : {
-              binding: Object.freeze({
-                instanceId,
-                providerSessionId: input.providerSessionId,
-                runtimeGeneration: initial.generation.current,
-                threadId: turn.threadId,
-                providerThreadId: turn.providerThread.id,
-                nativeThreadId,
-              }),
-            }),
-      };
-      unresolvedNativeCreations.add(record);
-      return record;
-    };
-    if (input.nativeCreationExecution !== undefined) {
-      rememberNativeCreation(input.nativeCreationExecution, input.nativeOperation);
-    }
-    const withCurrentNativeCreation = <A, E, R>(
-      execution: ProviderAdapter.ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
-      operation: ProviderAdapter.ProviderNativeOperationContext | undefined,
-      effect: Effect.Effect<A, E, R>,
-      turn?: ProviderAdapter.ProviderAdapterV2TurnInput,
-    ): Effect.Effect<A, E, R> => {
-      if (execution === undefined) return effect;
-      return Effect.acquireUseRelease(
-        Effect.sync(() => {
-          const record = rememberNativeCreation(execution, operation, turn);
-          currentNativeCreations.add(record);
-          return record;
-        }),
-        () => effect,
-        (record) =>
-          Effect.sync(() => {
-            currentNativeCreations.delete(record);
-          }),
-      );
-    };
     // Replaced when the session reconnects to a restarted server.
     let client = connection.client;
     const sessionScope = yield* Effect.scope;
@@ -992,72 +900,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         }
         return gate.withPermit(effect);
       };
-    let currentProducer: ProviderEventProducerOrigin;
-    const makeProducer = (
-      source: OpenCode2Server.OpenCode2Connection,
-      token: object,
-    ): ProviderEventProducerOrigin => {
-      const generation = initial.generation.current;
-      const capturedToken = Object.freeze({ connection: source, stream: token });
-      return {
-        token: capturedToken,
-        driver,
-        instanceId,
-        providerSessionId: input.providerSessionId,
-        runtimeGeneration: generation,
-        revalidateCurrent: Effect.suspend(() =>
-          currentProducer.token === capturedToken &&
-          connection === source &&
-          initial.generation.current === generation
-            ? Effect.void
-            : Effect.fail(
-                new ProviderAdapter.ProviderAdapterProtocolError({
-                  driver,
-                  detail: "The OpenCode event stream source was replaced.",
-                }),
-              ),
-        ),
-      };
-    };
-    currentProducer = makeProducer(connection, connection);
-    const turnOwners = new WeakMap<object, Map<string, ProviderAssistantOutputOwner>>();
-    const nodeOwners = new WeakMap<object, Map<string, ProviderAssistantOutputOwner>>();
-    const ownerMaps = (producer: ProviderEventProducerOrigin) => {
-      let turns = turnOwners.get(producer.token);
-      let nodes = nodeOwners.get(producer.token);
-      if (turns === undefined) {
-        turns = new Map();
-        turnOwners.set(producer.token, turns);
-      }
-      if (nodes === undefined) {
-        nodes = new Map();
-        nodeOwners.set(producer.token, nodes);
-      }
-      return { turns, nodes };
-    };
     const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-      Effect.gen(function* () {
-        const producer = (yield* FollowEventProducer) ?? currentProducer;
-        const { turns, nodes } = ownerMaps(producer);
-        const providerTurnId =
-          event.type === "provider_turn.updated"
-            ? event.providerTurn.id
-            : event.type === "turn.terminal"
-              ? event.providerTurnId
-              : event.type === "node.updated"
-                ? event.node.providerTurnId
-                : event.type === "turn_item.updated"
-                  ? event.turnItem.providerTurnId
-                  : undefined;
-        const owner = providerTurnId == null ? undefined : turns.get(providerTurnId);
-        if (event.type === "node.updated" && owner !== undefined) nodes.set(event.node.id, owner);
-        const turn =
-          event.type === "message.updated" && event.message.nodeId !== null
-            ? nodes.get(event.message.nodeId)
-            : owner;
-        stampProviderEvent(event, { producer, ...(turn === undefined ? {} : { turn }) });
-        yield* Queue.offer(events, event);
-      });
+      Queue.offer(events, event).pipe(Effect.asVoid);
     const ownerOf = (sessionId: string) => childOwners.get(sessionId) ?? threads.get(sessionId);
 
     const newThreadState = (
@@ -1197,30 +1041,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       updatedAt,
     });
 
-    const rememberTurnOwner = Effect.fnUntraced(function* (state: ThreadState, turn: ActiveTurn) {
-      const producer = (yield* FollowEventProducer) ?? currentProducer;
-      const nativeThreadId = state.providerThread.nativeThreadRef?.nativeId;
-      if (
-        turn.input.runId !== null &&
-        turn.input.attemptId !== undefined &&
-        nativeThreadId != null &&
-        producer.runtimeGeneration !== undefined
-      )
-        ownerMaps(producer).turns.set(turn.providerTurn.id, {
-          runId: turn.input.runId,
-          attemptId: turn.input.attemptId,
-          providerTurnId: turn.providerTurn.id,
-          binding: {
-            threadId: turn.input.threadId,
-            providerThreadId: state.providerThread.id,
-            providerSessionId: input.providerSessionId,
-            instanceId,
-            runtimeGeneration: producer.runtimeGeneration,
-            nativeThreadId,
-          },
-        });
-    });
-
     const emitNode = (
       state: ThreadState,
       turn: ActiveTurn,
@@ -1230,31 +1050,27 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       startedAt: DateTime.Utc,
       completedAt: DateTime.Utc | null,
     ) =>
-      rememberTurnOwner(state, turn).pipe(
-        Effect.andThen(
-          emit({
-            type: "node.updated",
-            driver,
-            node: {
-              id: idAllocator.derive.nodeFromProviderItem({ driver, nativeItemId: nativeId }),
-              threadId: turn.input.threadId,
-              runId: turn.input.runId,
-              parentNodeId: turn.input.rootNodeId,
-              rootNodeId: turn.input.rootNodeId,
-              kind,
-              status,
-              countsForRun: false,
-              providerThreadId: state.providerThread.id,
-              providerTurnId: turn.providerTurn.id,
-              nativeItemRef: ref(nativeId),
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt,
-              completedAt,
-            },
-          }),
-        ),
-      );
+      emit({
+        type: "node.updated",
+        driver,
+        node: {
+          id: idAllocator.derive.nodeFromProviderItem({ driver, nativeItemId: nativeId }),
+          threadId: turn.input.threadId,
+          runId: turn.input.runId,
+          parentNodeId: turn.input.rootNodeId,
+          rootNodeId: turn.input.rootNodeId,
+          kind,
+          status,
+          countsForRun: false,
+          providerThreadId: state.providerThread.id,
+          providerTurnId: turn.providerTurn.id,
+          nativeItemRef: ref(nativeId),
+          runtimeRequestId: null,
+          checkpointScopeId: null,
+          startedAt,
+          completedAt,
+        },
+      });
 
     /** One text or reasoning block, re-emitted with its accumulated text on every change. */
     const emitText = Effect.fnUntraced(function* (
@@ -1402,14 +1218,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       providerTurn: OrchestrationV2ProviderTurn,
     ) => {
       state.providerTurns.set(String(providerTurn.id), providerTurn);
-      return Effect.gen(function* () {
-        yield* rememberTurnOwner(state, turn);
-        yield* emit({
-          type: "provider_turn.updated",
-          driver,
-          threadId: turn.input.threadId,
-          providerTurn,
-        });
+      return emit({
+        type: "provider_turn.updated",
+        driver,
+        threadId: turn.input.threadId,
+        providerTurn,
       });
     };
 
@@ -1572,6 +1385,27 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       });
     });
 
+    const withReportedModel = (
+      providerThread: OrchestrationV2ProviderThread,
+      model: ModelRef | undefined,
+    ): OrchestrationV2ProviderThread => {
+      if (model === undefined) return providerThread;
+      const modelSelection: ModelSelection = {
+        instanceId,
+        model: `${model.providerID}/${model.id}`,
+        options: model.variant === undefined ? [] : [{ id: "variant", value: model.variant }],
+      };
+      if (
+        providerThread.nativeMetadata?.modelSelection !== undefined &&
+        modelSelectionsEqual(providerThread.nativeMetadata.modelSelection, modelSelection)
+      )
+        return providerThread;
+      return {
+        ...providerThread,
+        nativeMetadata: { ...providerThread.nativeMetadata, modelSelection },
+      };
+    };
+
     /**
      * Gives a subagent call its session once both are known: OpenCode names
      * the session on the call's progress, and announces it just before. The
@@ -1650,7 +1484,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const child =
         previous ?? newThreadState(childId, providerThread, call.state.directory, subagent);
       child.subagent = subagent;
-      child.providerThread = providerThread;
+      child.model = info?.model ?? child.model;
+      child.providerThread = withReportedModel(providerThread, child.model);
       child.directory = call.state.directory;
       child.agent = info?.agent ?? call.agent ?? child.agent;
       // OpenCode gives a new session its parent's rules, which are the thread's.
@@ -1659,7 +1494,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       childOwners.set(childId, rootOf(call.state));
       call.child = child;
       yield* emit({ type: "app_thread.created", driver, appThread });
-      yield* emit({ type: "provider_thread.updated", driver, providerThread });
+      yield* emit({
+        type: "provider_thread.updated",
+        driver,
+        providerThread: child.providerThread,
+      });
       yield* emitSubagent(call);
       // A session called again was not made now, so it may hold the rules of
       // a mode the thread has left. OpenCode applies a rules change to the
@@ -1824,6 +1663,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       state: ThreadState,
       terminal: TurnTerminal,
       threadDisposition: "reusable" | "broken" = "reusable",
+      evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "local_failure",
     ) {
       const turn = state.active;
       if (turn === undefined) return;
@@ -1934,6 +1774,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       yield* setSessionStatus(pending.size > 0 ? "waiting" : anyActive ? "running" : "ready", null);
       const base = {
         type: "turn.terminal" as const,
+        providerTurn: state.providerTurns.get(String(turn.providerTurn.id))!,
+        evidenceKind:
+          terminal.status === "interrupted" && evidenceKind === "provider_result"
+            ? "attributed_abort"
+            : evidenceKind,
         driver,
         providerThreadId: state.providerThread.id,
         providerTurnId: turn.providerTurn.id,
@@ -2052,10 +1897,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
      * T3 shows none of those requests (a restart or a closed session expired
      * them), and OpenCode would wait on them forever.
      */
-    const stopLeftoverRequests = Effect.fnUntraced(function* (
-      state: ThreadState,
-      nativeCreationExecution?: ProviderAdapter.ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
-    ) {
+    const stopLeftoverRequests = Effect.fnUntraced(function* (state: ThreadState) {
       const sessionID = Session.ID.make(state.sessionId);
       const listed = yield* Effect.all([
         client.permission.list({ sessionID }),
@@ -2069,19 +1911,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       // The stopped run's end is not the next turn's.
       state.unsettled = true;
       for (const request of permissions) {
-        yield* ProviderAdapter.authorizeProviderNativeCreation(
-          nativeCreationExecution,
-          driver,
-          state.directory,
-        );
         yield* stopStaleRequest(state.sessionId, { type: "permission", id: request.id });
       }
       for (const form of forms) {
-        yield* ProviderAdapter.authorizeProviderNativeCreation(
-          nativeCreationExecution,
-          driver,
-          state.directory,
-        );
         yield* stopStaleRequest(state.sessionId, { type: "form", id: form.id });
       }
     });
@@ -2590,13 +2422,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         turn.heldEnd = end;
         return;
       }
-      yield* finishTurn(state, end);
+      yield* finishTurn(state, end, "reusable", "provider_result");
     });
 
     /** Ends a turn held for its steers once none is left to deliver. */
     const endIfSettled = (state: ThreadState, turn: ActiveTurn) =>
       turn.heldEnd !== undefined && turn.steers.size === 0
-        ? finishTurn(state, turn.heldEnd)
+        ? finishTurn(state, turn.heldEnd, "reusable", "provider_result")
         : Effect.void;
 
     const handleEvent = Effect.fnUntraced(function* (event: OpenCode2StreamEvent) {
@@ -2720,6 +2552,18 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       if (sessionId === undefined) return;
       const state = threads.get(sessionId);
       if (state === undefined) return;
+      if (event.type === "session.model.selected" || event.type === "session.step.started") {
+        if (event.type === "session.model.selected") state.model = event.data.model;
+        const providerThread = withReportedModel(state.providerThread, event.data.model);
+        if (providerThread !== state.providerThread) {
+          state.providerThread = { ...providerThread, updatedAt: yield* DateTime.now };
+          yield* emit({
+            type: "provider_thread.updated",
+            driver,
+            providerThread: state.providerThread,
+          });
+        }
+      }
       if (
         event.type === "session.inbox.enqueued" &&
         state.subagent !== undefined &&
@@ -2782,9 +2626,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     // The stream is the only terminal signal, and it is volatile: events sent
     // while it is down are gone, and a restarted server never ends the
     // execution it lost. So a lost stream reconnects, then reconciles each
-    // running turn from the server's own state (see `reconcile`). A failed
-    // acquisition or registration stops recovery; only subscription transport
-    // failures are retried. Set first, so a turn starting meanwhile waits or refuses.
+    // running turn from the server's own state (see `reconcile`). Only when
+    // reconnecting keeps failing are the turns failed and the session broken,
+    // so T3 reopens it. Set first, so a turn starting meanwhile waits or refuses.
     let streamFailure: string | undefined;
     let reconnected = yield* Deferred.make<void>();
     const failAll = Effect.fnUntraced(function* (message: string) {
@@ -2972,115 +2816,35 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
 
     /**
      * Subscribes again, on a restarted server if the old one is gone, and
-     * reconciles. Only subscription transport failures are retried; native
-     * acquisition and registration failures fail the session.
+     * reconciles. Retried a few times; the caller fails everything after that.
      */
     const reconnect = Effect.gen(function* () {
       const scope = yield* Scope.make();
-      const next = yield* borrow((actualDirectory) =>
-        Effect.gen(function* () {
-          if (unresolvedNativeCreations.size === 0) return;
-          const records = [...currentNativeCreations].filter((record) =>
-            unresolvedNativeCreations.has(record),
-          );
-          const active = [...threads.values()].flatMap((state) => {
-            const turn = state.active;
-            const execution = turn?.input.nativeCreationExecution;
-            const record =
-              turn === undefined || execution === undefined
-                ? undefined
-                : [...unresolvedNativeCreations].find(
-                    (entry) =>
-                      entry.execution.context === execution.context &&
-                      entry.runId === turn.input.runId &&
-                      entry.attemptId === turn.input.attemptId,
-                  );
-            return record === undefined || turn === undefined
-              ? []
-              : [{ state, turn, record, execution: record.execution }];
-          });
-          if (records.length === 0 && active.length === 0) {
-            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-              driver,
-              detail:
-                "Covered OpenCode runtime replacement has no proved current creation authority.",
-            });
-          }
-          for (const { execution } of [...records, ...active]) {
-            yield* ProviderAdapter.authorizeProviderNativeCreation(
-              execution,
-              driver,
-              actualDirectory,
-            );
-          }
-          if (
-            records.some(
-              (record) =>
-                !currentNativeCreations.has(record) || !unresolvedNativeCreations.has(record),
-            ) ||
-            active.some(
-              ({ state, turn, record }) =>
-                state.active !== turn || !unresolvedNativeCreations.has(record),
-            )
-          ) {
-            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-              driver,
-              detail: "Current OpenCode creation authority changed before native replacement.",
-            });
-          }
-        }),
-      ).pipe(
+      const next = yield* borrow.pipe(
         Effect.provideService(Scope.Scope, scope),
         Effect.tapError(() => Scope.close(scope, Exit.void)),
       );
-      yield* initial
-        .adoptOwnedGeneration(next)
-        .pipe(Effect.tapError(() => Scope.close(scope, Exit.void)));
-      const stream = yield* next.events.pipe(
-        Effect.retry({
-          times: RECONNECT_ATTEMPTS - 1,
-          schedule: Schedule.spaced(RECONNECT_DELAY),
-          while: (error) => error.reason._tag === "TransportError",
-        }),
-        Effect.tapError(() => Scope.close(scope, Exit.void)),
-      );
-      yield* initial
-        .adoptOwnedGeneration(next)
-        .pipe(Effect.tapError(() => Scope.close(scope, Exit.void)));
+      const stream = yield* next.events.pipe(Effect.tapError(() => Scope.close(scope, Exit.void)));
       const previous = currentScope;
       connection = next;
       client = next.client;
       currentScope = scope;
-      // Each subscription owns its source even when an old callback is suspended.
-      const producer = makeProducer(next, stream);
-      currentProducer = producer;
       yield* Scope.close(previous, Exit.void);
       // A restarted server forgot T3's MCP servers; the next turn adds them again.
       for (const state of threads.values()) state.mcp = undefined;
-      yield* lock
-        .withPermit(reconcile)
-        .pipe(
-          Effect.timeout(RECONCILE_TIMEOUT),
-          Effect.provideService(FollowEventProducer, producer),
-        );
-      return { stream, producer };
-    });
+      yield* lock.withPermit(reconcile).pipe(Effect.timeout(RECONCILE_TIMEOUT));
+      return stream;
+    }).pipe(
+      Effect.retry({ times: RECONNECT_ATTEMPTS - 1, schedule: Schedule.spaced(RECONNECT_DELAY) }),
+    );
 
     let currentScope = initial.scope;
     // The borrow in use when the session closes is returned with it, so a
     // spawned server can still reach its idle shutdown.
     yield* Effect.addFinalizer(() => Scope.close(currentScope, Exit.void));
-    const follow = (
-      stream: Stream.Stream<OpenCode2StreamEvent, unknown>,
-      producer: ProviderEventProducerOrigin,
-    ): Effect.Effect<void> =>
+    const follow = (stream: Stream.Stream<OpenCode2StreamEvent, unknown>): Effect.Effect<void> =>
       stream.pipe(
-        Stream.runForEach((event) => {
-          stampProviderEvent(event, { producer });
-          return lock
-            .withPermit(handleEvent(event))
-            .pipe(Effect.provideService(FollowEventProducer, producer));
-        }),
+        Stream.runForEach((event) => lock.withPermit(handleEvent(event))),
         Effect.exit,
         Effect.flatMap(() =>
           Effect.gen(function* () {
@@ -3105,14 +2869,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             const done = reconnected;
             reconnected = yield* Deferred.make<void>();
             yield* Deferred.succeed(done, undefined);
-            return yield* follow(next.value.stream, next.value.producer);
+            return yield* follow(next.value);
           }),
         ),
       );
     // Subscribed before any session or prompt call, so no event of theirs is missed.
-    const initialStream = yield* connection.events;
-    currentProducer = makeProducer(connection, initialStream);
-    yield* follow(initialStream, currentProducer).pipe(Effect.forkScoped);
+    yield* follow(yield* connection.events).pipe(Effect.forkScoped);
 
     // A server T3 did not start keeps running after T3 stops, so stop the turns
     // it would otherwise finish unseen. A spawned server stops with its owner.
@@ -3221,19 +2983,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     });
 
     /** Writes the session's rules for `policy` when they differ from what it has. */
-    const writeRules = Effect.fnUntraced(function* (
-      state: ThreadState,
-      policy: RulesPolicy,
-      nativeCreationExecution?: ProviderAdapter.ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
-    ) {
+    const writeRules = Effect.fnUntraced(function* (state: ThreadState, policy: RulesPolicy) {
       // A subagent's session may use its thread's T3 server, the root's.
       const rules = yield* rulesFor(state, policy, rootOf(state).providerThread.appThreadId);
       if (!sameRules(state.rules, rules)) {
-        yield* ProviderAdapter.authorizeProviderNativeCreation(
-          nativeCreationExecution,
-          driver,
-          state.directory,
-        );
         yield* client.session.update({
           sessionID: Session.ID.make(state.sessionId),
           permissions: rules,
@@ -3253,6 +3006,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       },
       directory: string,
     ) => {
+      providerThread = withReportedModel(providerThread, native.model);
       const existing = threads.get(native.id);
       if (existing !== undefined) {
         existing.providerThread = providerThread;
@@ -3493,21 +3247,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           state.mcp.directory !== wanted.directory ||
           state.mcp.credential !== wanted.credential)
       ) {
-        yield* ProviderAdapter.authorizeProviderNativeCreation(
-          turnInput.nativeCreationExecution,
-          driver,
-          directory,
-        );
         yield* removeMcp(state.mcp);
         state.mcp = undefined;
       }
       // T3's tools are an addition: a server that cannot add them still runs the turn.
       if (wanted !== undefined && state.mcp === undefined) {
-        yield* ProviderAdapter.authorizeProviderNativeCreation(
-          turnInput.nativeCreationExecution,
-          driver,
-          directory,
-        );
         const added = yield* client.mcp
           .add({
             server: name,
@@ -3537,11 +3281,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         .filter((part) => part !== undefined && part.length > 0)
         .join("\n\n");
       if (instructions !== state.instructions) {
-        yield* ProviderAdapter.authorizeProviderNativeCreation(
-          turnInput.nativeCreationExecution,
-          driver,
-          directory,
-        );
         yield* client.session.instructions.entry.put({
           sessionID: Session.ID.make(sessionId),
           key: INSTRUCTIONS_KEY,
@@ -3615,13 +3354,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     /** Feeds a held execution's events to the turn now running on its session. */
     const replay = Effect.fnUntraced(function* (wake: Wake) {
       wake.dropped = true;
-      for (const event of wake.events) {
-        const producer = readProviderEventOrigin(event)?.producer;
-        const routed = route(event, sessionOfEvent(event));
-        yield* producer === undefined
-          ? routed
-          : routed.pipe(Effect.provideService(FollowEventProducer, producer));
-      }
+      for (const event of wake.events) yield* route(event, sessionOfEvent(event));
     });
 
     /**
@@ -3772,11 +3505,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       // The turn's own id, so fork and rollback cut before this turn's item.
       const id = turnPromptId(sessionId, turnInput.attemptId);
       if (bare && text === "/compact") {
-        yield* ProviderAdapter.authorizeProviderNativeCreation(
-          turnInput.nativeCreationExecution,
-          driver,
-          state.directory,
-        );
         if (!sending()) return;
         return yield* client.session.compact({ sessionID, id }).pipe(Effect.asVoid);
       }
@@ -3793,11 +3521,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           // so the turn remembers where the history stood before it.
           const newest = yield* client.message.list({ sessionID, order: "desc", limit: 1 });
           yield* markBefore(sessionId, newest.data[0]?.id ?? null);
-          yield* ProviderAdapter.authorizeProviderNativeCreation(
-            turnInput.nativeCreationExecution,
-            driver,
-            state.directory,
-          );
           if (!sending()) return;
           return yield* client.session.command({ sessionID, ...command });
         }
@@ -3812,11 +3535,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             ),
           )
         : [];
-      yield* ProviderAdapter.authorizeProviderNativeCreation(
-        turnInput.nativeCreationExecution,
-        driver,
-        state.directory,
-      );
       if (!sending()) return;
       return yield* client.session
         .prompt({
@@ -3831,199 +3549,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     });
 
     const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
-      get runtimeGeneration() {
-        return initial.generation.current;
-      },
-      onNativeEffectConfirmed: ({ context, confirmation }) =>
-        lock.withPermit(
-          Effect.gen(function* () {
-            const reference = getNativeCreationExecutionReference(context);
-            const proofReference = confirmation.nativeExecutionReference;
-            const binding = confirmation.binding;
-            const evidence = confirmation.evidence;
-            if (
-              reference === null ||
-              proofReference === null ||
-              confirmation.version !== 1 ||
-              reference.version !== proofReference.version ||
-              reference.claimId !== proofReference.claimId ||
-              reference.stageCommandId !== proofReference.stageCommandId ||
-              reference.effectId !== proofReference.effectId ||
-              reference.stage !== proofReference.stage ||
-              reference.stage !== "native_command" ||
-              reference.effectId !== confirmation.effectId ||
-              reference.stageCommandId !== confirmation.commandId ||
-              binding.threadId !== confirmation.threadId ||
-              binding.instanceId !== instanceId ||
-              binding.providerSessionId !== input.providerSessionId ||
-              binding.runtimeGeneration !== initial.generation.current ||
-              binding.nativeThreadId === undefined ||
-              evidence.outcome !== "confirmed_success" ||
-              evidence.operationId !== confirmation.effectId ||
-              evidence.attemptId !== confirmation.attemptId ||
-              evidence.threadId !== binding.threadId ||
-              evidence.providerThreadId !== binding.providerThreadId ||
-              evidence.providerSessionId !== binding.providerSessionId ||
-              evidence.instanceId !== binding.instanceId ||
-              evidence.runtimeGeneration !== binding.runtimeGeneration
-            )
-              return;
-            const state = threads.get(binding.nativeThreadId);
-            const ownedProcess = connection.external ? undefined : connection.ownedProcess;
-            if (
-              state?.providerThread.id !== binding.providerThreadId ||
-              state.providerThread.appThreadId !== binding.threadId ||
-              state.providerThread.providerSessionId !== binding.providerSessionId ||
-              state.providerThread.providerInstanceId !== instanceId ||
-              state.providerThread.driver !== driver ||
-              state.sessionId !== binding.nativeThreadId ||
-              state.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId ||
-              ownedProcess?.runtimeGeneration !== binding.runtimeGeneration ||
-              session.status === "error" ||
-              session.status === "stopped" ||
-              streamFailure !== undefined
-            )
-              return;
-            const matchesBinding = (record: NativeCreationRecord) =>
-              record.binding !== undefined &&
-              (Object.keys(binding) as Array<keyof ProviderAdapter.ProviderRuntimeBinding>).every(
-                (key) => record.binding?.[key] === binding[key],
-              );
-            const matchingTurn = [...unresolvedNativeCreations].find(
-              (record) =>
-                record.execution.context === context &&
-                record.reference === reference &&
-                record.runId === confirmation.runId &&
-                record.attemptId === confirmation.attemptId &&
-                record.generation === binding.runtimeGeneration &&
-                matchesBinding(record) &&
-                record.operation?.operationId === confirmation.effectId &&
-                record.operation.operation === evidence.operation &&
-                record.operation.attemptId === confirmation.attemptId &&
-                record.operation.instanceId === binding.instanceId &&
-                record.operation.threadId === binding.threadId &&
-                record.operation.providerThreadId === binding.providerThreadId &&
-                record.operation.providerSessionId === binding.providerSessionId &&
-                record.operation.runtimeGeneration === binding.runtimeGeneration,
-            );
-            if (matchingTurn === undefined || ownedProcess === undefined) return;
-            const currentConnection = connection;
-            const running = yield* Effect.exit(ownedProcess.isRunning);
-            if (
-              Exit.isFailure(running) ||
-              !running.value ||
-              connection !== currentConnection ||
-              connection.ownedProcess !== ownedProcess ||
-              initial.generation.current !== binding.runtimeGeneration ||
-              threads.get(binding.nativeThreadId) !== state ||
-              state.providerThread.id !== binding.providerThreadId ||
-              state.providerThread.appThreadId !== binding.threadId ||
-              state.providerThread.providerSessionId !== binding.providerSessionId ||
-              state.providerThread.providerInstanceId !== instanceId ||
-              state.providerThread.driver !== driver ||
-              state.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId ||
-              streamFailure !== undefined ||
-              !unresolvedNativeCreations.has(matchingTurn)
-            )
-              return;
-            for (const record of unresolvedNativeCreations) {
-              const operation = record.operation;
-              if (
-                record.execution.context !== context ||
-                record.reference !== reference ||
-                record.generation !== binding.runtimeGeneration ||
-                operation?.operationId !== confirmation.effectId ||
-                (record.runId !== undefined && record.runId !== confirmation.runId) ||
-                (record.attemptId !== undefined && record.attemptId !== confirmation.attemptId) ||
-                (operation.attemptId !== undefined &&
-                  operation.attemptId !== confirmation.attemptId) ||
-                (["instanceId", "threadId", "providerSessionId", "providerThreadId"] as const).some(
-                  (key) => operation[key] !== undefined && operation[key] !== binding[key],
-                )
-              )
-                continue;
-              unresolvedNativeCreations.delete(record);
-              currentNativeCreations.delete(record);
-            }
-          }),
-        ),
-      observeThreadRuntime: (binding) =>
-        lock.withPermit(
-          Effect.gen(function* () {
-            const state =
-              binding.nativeThreadId === undefined
-                ? undefined
-                : threads.get(binding.nativeThreadId);
-            if (
-              binding.instanceId !== instanceId ||
-              binding.providerSessionId !== input.providerSessionId ||
-              binding.runtimeGeneration !== initial.generation.current ||
-              state?.providerThread.id !== binding.providerThreadId ||
-              state.providerThread.appThreadId !== binding.threadId ||
-              streamFailure !== undefined ||
-              session.status === "error" ||
-              session.status === "stopped"
-            ) {
-              return {
-                status: "unknown" as const,
-                reason: "OpenCode 2 runtime binding is not current.",
-              };
-            }
-            if (connection.external) {
-              return {
-                status: "unknown" as const,
-                binding,
-                reason:
-                  "External OpenCode 2 servers do not report their native process incarnation.",
-              };
-            }
-            const ownedProcess = connection.ownedProcess;
-            const generation = initial.generation.current;
-            if (ownedProcess === undefined || ownedProcess.runtimeGeneration !== generation) {
-              return {
-                status: "unknown" as const,
-                binding,
-                reason: "OpenCode 2 runtime has no matching owned process incarnation.",
-              };
-            }
-            const running = yield* Effect.exit(ownedProcess.isRunning);
-            if (Exit.isFailure(running) || !running.value) {
-              return {
-                status: "unknown" as const,
-                binding,
-                reason: "OpenCode 2 owned process is not confirmed running.",
-              };
-            }
-            const hasNativeAgent = sessionsOf(state).some((entry) => busy.has(entry.sessionId));
-            const status = hasNativeAgent
-              ? ("working" as const)
-              : state.wakes.length > 0
-                ? ("busy" as const)
-                : undefined;
-            if (status === undefined) {
-              return {
-                status: "unknown" as const,
-                binding,
-                reason: "OpenCode 2 stream does not prove complete native idle state.",
-              };
-            }
-            const observedAt = DateTime.formatIso(yield* DateTime.now);
-            const stillRunning = yield* Effect.exit(ownedProcess.isRunning);
-            if (
-              initial.generation.current !== generation ||
-              connection.ownedProcess !== ownedProcess ||
-              streamFailure !== undefined ||
-              Exit.isFailure(stillRunning) ||
-              !stillRunning.value
-            ) {
-              return {
-                status: "unknown" as const,
-                reason: "OpenCode 2 runtime changed during observation.",
-              };
-            }
-            return { status, binding, observedAt };
-          }),
-        ),
       instanceId,
       driver,
       providerSessionId: input.providerSessionId,
@@ -4053,12 +3578,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               threadId: threadInput.threadId,
               modelSelection: threadInput.modelSelection,
               runtimePolicy: threadInput.runtimePolicy,
-              ...(threadInput.nativeOperation === undefined
-                ? {}
-                : { nativeOperation: threadInput.nativeOperation }),
-              ...(threadInput.nativeCreationExecution === undefined
-                ? {}
-                : { nativeCreationExecution: threadInput.nativeCreationExecution }),
             });
           }
           yield* readModelsOnce(threadInput.runtimePolicy.cwd);
@@ -4076,11 +3595,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             { directory, agent: "build", grants: [] },
             policy,
             threadInput.threadId,
-          );
-          yield* ProviderAdapter.authorizeProviderNativeCreation(
-            threadInput.nativeCreationExecution,
-            driver,
-            directory,
           );
           const created = yield* client.session.create({
             location: Location.PublicRef.make({ directory: AbsolutePath.make(directory) }),
@@ -4113,7 +3627,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             directory,
           );
           state.policy = policy;
-          return providerThread;
+          return state.providerThread;
         }).pipe(
           Effect.mapError((cause) =>
             isProviderAdapterError(cause)
@@ -4131,13 +3645,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           if (threadInput.runtimePolicy !== undefined) {
             yield* readModelsOnce(threadInput.runtimePolicy.cwd);
           }
-          yield* threadInput.beforeNativeResume?.(undefined) ?? Effect.void;
-          // 1.x session ids survive the upgrade; a missing native session fails resume.
-          yield* ProviderAdapter.authorizeProviderNativeCreation(
-            threadInput.nativeCreationExecution,
-            driver,
-            threadInput.runtimePolicy?.cwd ?? serverConfig.cwd,
-          );
+          // 1.x session ids survive the upgrade; a server without this session
+          // fails the resume, so T3 recreates the thread with a handoff.
           const native = yield* client.session.get({ sessionID: Session.ID.make(sessionId) });
           const providerThread: OrchestrationV2ProviderThread = {
             ...threadInput.providerThread,
@@ -4150,34 +3659,18 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           const state = register(providerThread, native, cwd ?? native.location.directory);
           // OpenCode keeps no request across its own restart, but a server that
           // outlived T3 may still wait on one T3 no longer shows.
-          if (!loaded) {
-            yield* ProviderAdapter.authorizeProviderNativeCreation(
-              threadInput.nativeCreationExecution,
-              driver,
-              state.directory,
-            );
-            yield* stopLeftoverRequests(state, threadInput.nativeCreationExecution);
-          }
+          if (!loaded) yield* stopLeftoverRequests(state);
           // The session gets the rules for this thread's mode: it may have run
           // another mode, or been made by 1.x or an earlier build.
-          yield* writeRules(
-            state,
-            threadInput.runtimePolicy ?? state.policy,
-            threadInput.nativeCreationExecution,
-          );
+          yield* writeRules(state, threadInput.runtimePolicy ?? state.policy);
           // A thread moved to another worktree takes its session with it.
           if (cwd != null && native.location.directory !== cwd) {
-            yield* ProviderAdapter.authorizeProviderNativeCreation(
-              threadInput.nativeCreationExecution,
-              driver,
-              cwd,
-            );
             yield* client.session.move({
               sessionID: Session.ID.make(sessionId),
               directory: AbsolutePath.make(cwd),
             });
           }
-          return providerThread;
+          return state.providerThread;
         }).pipe(
           Effect.mapError((cause) =>
             isProviderAdapterError(cause)
@@ -4195,11 +3688,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         runtime.startTurn({ ...turnInput, message: { ...turnInput.message, text: "/compact" } }),
       startTurn: (turnInput) =>
         Effect.gen(function* () {
-          yield* ProviderAdapter.authorizeProviderNativeCreation(
-            turnInput.nativeCreationExecution,
-            driver,
-            turnInput.runtimePolicy.cwd ?? serverConfig.cwd,
-          );
           // A lost stream is reconnecting: wait for it rather than prompt into
           // a dead stream, and refuse the turn before any request if it gave up.
           // Waited out before the session's gate, so a rollback or fork is not
@@ -4233,6 +3721,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   detail: `OpenCode session ${sessionId} already has an active turn`,
                 });
               }
+              // Orchestration can rebind a native fork to its own thread ID.
+              // Adopt it before setup can emit updates, retaining native session state.
+              state.providerThread = { ...state.providerThread, id: turnInput.providerThread.id };
               // OpenCode already ran this turn on its own; it prompts nothing.
               if (isContinuation(turnInput)) return yield* runWake(state, turnInput);
               // After a timed-out Stop the server says whether that run is gone. A
@@ -4247,11 +3738,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   .pipe(Effect.timeout(ACTIVE_CHECK_TIMEOUT));
                 stillStopping = sessionId in active;
                 if (stillStopping) {
-                  yield* ProviderAdapter.authorizeProviderNativeCreation(
-                    turnInput.nativeCreationExecution,
-                    driver,
-                    state.directory,
-                  );
                   yield* client.session
                     .interrupt({ sessionID: Session.ID.make(sessionId) })
                     .pipe(Effect.timeout(INTERRUPT_TIMEOUT), Effect.ignore({ log: true }));
@@ -4289,11 +3775,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               // from `plan` queues OpenCode's own "Plan mode" reminder for the prompt.
               const agent = agentFor(turnInput);
               if (agent !== state.agent) {
-                yield* ProviderAdapter.authorizeProviderNativeCreation(
-                  turnInput.nativeCreationExecution,
-                  driver,
-                  state.directory,
-                );
                 yield* client.session.switchAgent({
                   sessionID: Session.ID.make(sessionId),
                   agent: Agent.ID.make(agent),
@@ -4302,50 +3783,25 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               }
               // The thread's mode may have changed since the session was loaded,
               // and its subagents still running hold the rules they started with.
-              // Native update failures are best effort; authority rejection holds the turn.
-              yield* writeRules(state, turnInput.runtimePolicy, turnInput.nativeCreationExecution);
+              // Those run on whether or not this turn starts, so theirs are best effort.
+              yield* writeRules(state, turnInput.runtimePolicy);
               for (const call of runningCalls(state)) {
                 if (call.child === undefined) continue;
-                yield* writeRules(
-                  call.child,
-                  turnInput.runtimePolicy,
-                  turnInput.nativeCreationExecution,
-                ).pipe(
+                yield* writeRules(call.child, turnInput.runtimePolicy).pipe(
                   Effect.timeout(REQUEST_REPLY_TIMEOUT),
-                  Effect.catch((cause) =>
-                    isProviderAdapterError(cause)
-                      ? Effect.fail(cause)
-                      : Effect.logWarning("Could not update OpenCode subagent rules.", cause),
-                  ),
+                  Effect.ignore({ log: true }),
                 );
               }
               // A selection changed since the last turn applies now; OpenCode keeps
               // the session's model otherwise.
               if (!sameModel(model, state.model)) {
-                yield* ProviderAdapter.authorizeProviderNativeCreation(
-                  turnInput.nativeCreationExecution,
-                  driver,
-                  state.directory,
-                );
                 yield* client.session.switchModel({ sessionID: Session.ID.make(sessionId), model });
                 state.model = model;
               }
               // Steers a stopped turn never delivered would reach the model first,
               // and a revert a failed rollback left staged would be committed.
-              yield* ProviderAdapter.authorizeProviderNativeCreation(
-                turnInput.nativeCreationExecution,
-                driver,
-                state.directory,
-              );
               yield* cancelStrandedSteers(state);
-              if (stagedReverts.has(sessionId)) {
-                yield* ProviderAdapter.authorizeProviderNativeCreation(
-                  turnInput.nativeCreationExecution,
-                  driver,
-                  state.directory,
-                );
-                yield* clearRevert(sessionId);
-              }
+              if (stagedReverts.has(sessionId)) yield* clearRevert(sessionId);
               yield* prepareTurn(sessionId, state, turnInput);
               const turn = yield* begin;
               turn.unsent = true;
@@ -4775,7 +4231,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               directory: AbsolutePath.make(cwd),
             });
           }
-          return providerThread;
+          return state.providerThread;
         }).pipe(
           exclusive(forkInput.sourceProviderThread),
           Effect.mapError((cause) =>
@@ -4789,109 +4245,26 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           ),
         ),
     };
-    const ensureThread = runtime.ensureThread;
-    const resumeThread = runtime.resumeThread;
-    const startTurn = runtime.startTurn;
-    Object.defineProperties(runtime, {
-      ensureThread: {
-        ...Object.getOwnPropertyDescriptor(runtime, "ensureThread"),
-        value: (operation: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) =>
-          withCurrentNativeCreation(
-            operation.nativeCreationExecution,
-            operation.nativeOperation,
-            ensureThread(operation),
-          ),
-      },
-      resumeThread: {
-        ...Object.getOwnPropertyDescriptor(runtime, "resumeThread"),
-        value: (operation: Parameters<typeof resumeThread>[0]) =>
-          withCurrentNativeCreation(
-            operation.nativeCreationExecution,
-            operation.nativeOperation,
-            resumeThread(operation),
-          ),
-      },
-      startTurn: {
-        ...Object.getOwnPropertyDescriptor(runtime, "startTurn"),
-        value: (operation: ProviderAdapter.ProviderAdapterV2TurnInput) =>
-          withCurrentNativeCreation(
-            operation.nativeCreationExecution,
-            operation.nativeOperation,
-            startTurn(operation),
-            operation,
-          ),
-      },
-    });
-    return ProviderAdapter.withProviderNativeEffects(runtime);
+    return runtime;
   });
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId,
     driver,
     getCapabilities: () => Effect.succeed(OpenCode2ProviderCapabilities),
-    declaredHandoffDelivery: ProviderAdapter.makeProviderDeclaredHandoffDelivery(
-      OpenCode2ProviderCapabilities,
-    ),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     // The session borrows the instance's server for as long as it is open, so a
     // spawned server is not idle-stopped under a long tool call.
     openSession: (input) =>
       Effect.gen(function* () {
-        const generation = {
-          current: input.nativeOperation?.runtimeGeneration ?? NodeCrypto.randomUUID(),
-        };
-        const reserveGeneration = (next: string) =>
-          Effect.gen(function* () {
-            generation.current = next;
-            yield* input.beforeRuntimeReplacement?.(next) ?? Effect.void;
-          });
-        yield* reserveGeneration(generation.current);
-        yield* server.subscribeBeforeRuntimeReplacement?.(reserveGeneration) ?? Effect.void;
-        const adoptOwnedGeneration = (connection: OpenCode2Server.OpenCode2Connection) =>
-          Effect.gen(function* () {
-            const ownedProcess = connection.external ? undefined : connection.ownedProcess;
-            if (ownedProcess === undefined) return;
-            if (!(yield* ownedProcess.isRunning)) {
-              return yield* new OpenCodeRuntimeError({
-                operation: "withConnection",
-                detail: "The owned OpenCode runtime is no longer running.",
-              });
-            }
-            if (generation.current !== ownedProcess.runtimeGeneration) {
-              yield* reserveGeneration(ownedProcess.runtimeGeneration);
-            }
-            if (
-              generation.current !== ownedProcess.runtimeGeneration ||
-              !(yield* ownedProcess.isRunning)
-            ) {
-              return yield* new OpenCodeRuntimeError({
-                operation: "withConnection",
-                detail: "The owned OpenCode runtime changed during registration.",
-              });
-            }
-          });
         const scope = yield* Scope.make();
         yield* Effect.addFinalizer((exit) => Scope.close(scope, exit));
-        const connection = yield* borrow(
-          input.nativeCreationExecution === undefined
-            ? undefined
-            : (actualDirectory) =>
-                ProviderAdapter.authorizeProviderNativeCreation(
-                  input.nativeCreationExecution,
-                  driver,
-                  actualDirectory,
-                ),
-        ).pipe(Effect.provideService(Scope.Scope, scope));
-        yield* adoptOwnedGeneration(connection);
-        return yield* openSession(input, { connection, scope, generation, adoptOwnedGeneration });
+        const connection = yield* borrow.pipe(Effect.provideService(Scope.Scope, scope));
+        return yield* openSession(input, { connection, scope });
       }).pipe(
         Effect.mapError(
           (cause) =>
             new ProviderAdapter.ProviderAdapterOpenSessionError({
-              nativeEffect:
-                input.nativeOperation === undefined
-                  ? undefined
-                  : { ...input.nativeOperation, outcome: "unknown" },
               driver,
               providerSessionId: input.providerSessionId,
               cause,

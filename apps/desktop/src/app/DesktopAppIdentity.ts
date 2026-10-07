@@ -1,4 +1,5 @@
 import * as NodeCrypto from "node:crypto";
+import type { PreviewAutomationRuntimeIdentity } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -7,7 +8,6 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import type { PreviewAutomationRuntimeIdentity } from "@t3tools/contracts";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopAssets from "./DesktopAssets.ts";
@@ -51,6 +51,7 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const userDataContext = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
   const commitHashCache = yield* Ref.make<Option.Option<Option.Option<string>>>(Option.none());
+
   const runtimeIdentityCache = yield* Ref.make<Option.Option<PreviewAutomationRuntimeIdentity>>(
     Option.none(),
   );

@@ -1,3 +1,8 @@
+import {
+  LegacyOwnedTerminalControl,
+  LegacyNoTerminalControl,
+} from "../orchestration-v2/RecordedTypes.ts";
+import * as Deferred from "effect/Deferred";
 /**
  * TerminalManager - Terminal session orchestration service interface.
  *
@@ -7,7 +12,6 @@
  * @module TerminalManager
  */
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
-import * as NodeCrypto from "node:crypto";
 import {
   DEFAULT_TERMINAL_ID,
   TerminalCwdError,
@@ -47,8 +51,6 @@ import { mergePathEntries } from "@t3tools/shared/shell";
 import { acpRegistryManagedBinaryDirectories } from "../provider/acp/AcpRegistrySupport.ts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
-import * as Cause from "effect/Cause";
-import * as Deferred from "effect/Deferred";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -80,11 +82,6 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
-import {
-  LegacyLeaseInventoryError,
-  type LegacyOwnerAbsencePort,
-} from "../orchestration-v2/LegacyLeaseCleanup.ts";
-import type { EventSinkV2Error } from "../orchestration-v2/EventSink.ts";
 
 export {
   TerminalCwdError,
@@ -116,58 +113,6 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const MAX_TERMINAL_LABEL_LENGTH = 128;
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
-
-export interface TerminalOwnerBirth {
-  readonly kind: "application_v2_thread_birth";
-  readonly threadId: string;
-  readonly eventId: string;
-  readonly sequence: number;
-}
-
-export class TerminalOwnerObservation extends Context.Reference<{
-  readonly observeCurrentBirth: (
-    threadId: string,
-  ) => Effect.Effect<TerminalOwnerBirth | null, EventSinkV2Error>;
-}>("t3/terminal/Manager/TerminalOwnerObservation", {
-  defaultValue: () => ({ observeCurrentBirth: () => Effect.succeed(null) }),
-}) {}
-
-export interface TerminalOwnedTarget {
-  readonly threadId: string;
-  readonly terminalId: string;
-  readonly handleId: string;
-  readonly ownerBirth: TerminalOwnerBirth;
-}
-
-export interface TerminalOwnedTargetCapture {
-  readonly managerId: string;
-  readonly threadId: string;
-  readonly ownerBirth: TerminalOwnerBirth;
-  readonly status: "captured" | "unknown";
-  readonly managedTargetsOnly: true;
-  readonly targets: ReadonlyArray<TerminalOwnedTarget>;
-}
-
-export interface TerminalOwnedTargetCloseResult {
-  readonly status: "closed" | "observed_absent" | "mismatch" | "unknown";
-  readonly managedTargetsOnly: true;
-  readonly processExitObserved: boolean;
-  readonly descendantsQuiescence: "unavailable";
-  readonly futureWakeClosure: "unavailable";
-}
-
-const sameTerminalOwnerBirth = (left: TerminalOwnerBirth, right: TerminalOwnerBirth) =>
-  left.kind === right.kind &&
-  left.threadId === right.threadId &&
-  left.eventId === right.eventId &&
-  left.sequence === right.sequence;
-
-const validTerminalOwnerBirth = (birth: TerminalOwnerBirth, threadId: string) =>
-  birth.kind === "application_v2_thread_birth" &&
-  birth.threadId === threadId &&
-  birth.eventId.trim().length > 0 &&
-  Number.isSafeInteger(birth.sequence) &&
-  birth.sequence >= 0;
 
 class TerminalSubprocessCheckError extends Schema.TaggedError<TerminalSubprocessCheckError>()(
   "TerminalSubprocessCheckError",
@@ -204,6 +149,55 @@ class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSigna
   }
 }
 
+export class LegacyTerminalControlError extends Schema.TaggedError<LegacyTerminalControlError>()(
+  "LegacyTerminalControlError",
+  { operation: Schema.Literals(["open", "write", "close", "guard"]), detail: Schema.String },
+) {}
+
+export class LegacyTerminalInputValidationError extends Schema.TaggedError<LegacyTerminalInputValidationError>()(
+  "LegacyTerminalInputValidationError",
+  {
+    binding: LegacyOwnedTerminalControl,
+    shell: Schema.String,
+    shellArgs: Schema.Array(Schema.String),
+    cwd: Schema.String,
+    detail: Schema.String,
+  },
+) {}
+
+const isLegacyTerminalInputValidationError = Schema.is(LegacyTerminalInputValidationError);
+
+export interface LegacyTerminalPreparationHooks {
+  readonly binding: LegacyOwnedTerminalControl;
+  readonly beforeSpawn: (plan: {
+    readonly binding: LegacyOwnedTerminalControl;
+    readonly shell: string;
+    readonly shellArgs: ReadonlyArray<string>;
+    readonly cwd: string;
+  }) => Effect.Effect<void, Error>;
+  readonly neverInvoked?: (
+    plan: Parameters<LegacyTerminalPreparationHooks["beforeSpawn"]>[0],
+  ) => Effect.Effect<void, Error>;
+  readonly afterSpawn: (proof: {
+    readonly binding: LegacyOwnedTerminalControl;
+    readonly shell: string;
+    readonly shellArgs: ReadonlyArray<string>;
+  }) => Effect.Effect<void, Error>;
+}
+interface LegacyTerminalWriteHooks {
+  readonly legacyOwnedControl: LegacyOwnedTerminalControl;
+  readonly beforeWrite: () => Effect.Effect<void, Error>;
+  readonly afterWrite: (
+    outcome: "accepted" | "unknown",
+    inputCount: number,
+  ) => Effect.Effect<void, Error>;
+}
+interface TerminalCloseOptions {
+  readonly legacyOwnedControl?: LegacyOwnedTerminalControl;
+}
+const sameLegacyOwnedControl = Schema.toEquivalence(LegacyOwnedTerminalControl);
+const decodeLegacyOwnedControl = Schema.decodeUnknownEffect(LegacyOwnedTerminalControl);
+
 /**
  * TerminalManager - Service tag for terminal session orchestration.
  */
@@ -216,9 +210,16 @@ export class TerminalManager extends Context.Service<
      * Reuses an existing session for the same thread/terminal id and restores
      * persisted history on first open.
      */
-    readonly open: (
-      input: TerminalOpenInput,
-    ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
+    readonly open: {
+      (input: TerminalOpenInput): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
+      (
+        input: TerminalOpenInput,
+        legacy: LegacyTerminalPreparationHooks,
+      ): Effect.Effect<
+        TerminalSessionSnapshot,
+        TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+      >;
+    };
 
     /**
      * Attach to a terminal and stream its initial snapshot followed by live events.
@@ -233,7 +234,13 @@ export class TerminalManager extends Context.Service<
     /**
      * Write input bytes to a terminal session.
      */
-    readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
+    readonly write: {
+      (input: TerminalWriteInput): Effect.Effect<void, TerminalError>;
+      (
+        input: TerminalWriteInput,
+        legacy: LegacyTerminalWriteHooks,
+      ): Effect.Effect<void, TerminalError | LegacyTerminalControlError>;
+    };
 
     /**
      * Resize the PTY backing a terminal session.
@@ -259,18 +266,22 @@ export class TerminalManager extends Context.Service<
      *
      * When `terminalId` is omitted, closes all sessions for the thread.
      */
-    readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
+    readonly close: {
+      (input: TerminalCloseInput): Effect.Effect<void, TerminalError>;
+      (
+        input: TerminalCloseInput,
+        options: TerminalCloseOptions,
+      ): Effect.Effect<void, TerminalError | LegacyTerminalControlError>;
+    };
 
-    readonly withLegacyOwnerAbsent: LegacyOwnerAbsencePort;
-
-    readonly captureOwnedTargets: (input: {
-      readonly threadId: string;
-      readonly ownerBirth: TerminalOwnerBirth;
-    }) => Effect.Effect<TerminalOwnedTargetCapture>;
-
-    readonly closeOwnedTargets: (
-      capture: TerminalOwnedTargetCapture,
-    ) => Effect.Effect<TerminalOwnedTargetCloseResult, TerminalError>;
+    readonly withLegacyOwnedControlGuard?: <A, E, R>(
+      binding: LegacyOwnedTerminalControl,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | LegacyTerminalControlError, R>;
+    readonly withLegacyNoControlGuard?: <A, E, R>(
+      binding: LegacyNoTerminalControl,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | LegacyTerminalControlError, R>;
 
     /**
      * Close a thread's terminals that wait at an idle shell prompt. A terminal
@@ -345,11 +356,6 @@ export interface TerminalStartInput extends TerminalOpenInput {
 }
 
 interface TerminalSessionState {
-  ownership: {
-    readonly handleId: string;
-    readonly ownerBirth: TerminalOwnerBirth | null;
-    processExitObserved: boolean;
-  };
   threadId: string;
   terminalId: string;
   cwd: string;
@@ -376,6 +382,9 @@ interface TerminalSessionState {
   /** Normalized child command name when `hasRunningSubprocess`; cleared when idle. */
   childCommandLabel: string | null;
   runtimeEnv: Record<string, string> | null;
+  legacyOwnedControl?: LegacyOwnedTerminalControl;
+  legacyOwnedProcess?: PtyAdapter.PtyProcess;
+  legacyExitObserved?: boolean;
 }
 
 interface PersistHistoryRequest {
@@ -1422,7 +1431,6 @@ function normalizedRuntimeEnv(
 
 interface TerminalManagerOptions {
   logsDir: string;
-  ownerObservation?: typeof TerminalOwnerObservation.Service;
   historyLineLimit?: number;
   historyByteLimit?: number;
   ptyAdapter: PtyAdapter.PtyAdapter["Service"];
@@ -1543,8 +1551,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const path = yield* Path.Path;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
-  const ownerObservation = options.ownerObservation ?? (yield* TerminalOwnerObservation);
-  const managerId = NodeCrypto.randomUUID();
 
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
@@ -2071,8 +2077,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     function* () {
       yield* modifyManagerState((state) => {
         const inactiveSessions = [...state.sessions.values()].filter(
-          (session) =>
-            (session.status === "exited" || session.status === "error") && session.process === null,
+          (session) => session.status !== "running",
         );
         if (inactiveSessions.length <= maxRetainedInactiveSessions) {
           return [undefined, state] as const;
@@ -2297,26 +2302,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return yield* trySpawn(shellCandidates, spawnEnv, session, index + 1, spawnError);
   });
 
-  const startSession = Effect.fn("terminal.startSession")(function* (
+  const startSessionEffect = Effect.fn("terminal.startSession")(function* (
     session: TerminalSessionState,
     input: TerminalStartInput,
     eventType: "started" | "restarted",
+    legacy?: LegacyTerminalPreparationHooks,
   ) {
-    const observedBirth = yield* ownerObservation
-      .observeCurrentBirth(session.threadId)
-      .pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(null),
-        ),
-      );
-    const ownership = {
-      handleId: NodeCrypto.randomUUID(),
-      ownerBirth:
-        observedBirth !== null && validTerminalOwnerBirth(observedBirth, session.threadId)
-          ? { ...observedBirth }
-          : null,
-      processExitObserved: false,
-    };
+    if (legacy === undefined) {
+      delete session.legacyOwnedControl;
+      delete session.legacyOwnedProcess;
+      delete session.legacyExitObserved;
+    }
     yield* stopProcess(session);
     yield* Effect.annotateCurrentSpan({
       "terminal.thread_id": session.threadId,
@@ -2327,7 +2323,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     const startingAt = yield* nowIso;
     yield* modifyManagerState((state) => {
-      session.ownership = ownership;
       session.status = "starting";
       session.cwd = input.cwd;
       session.worktreePath = input.worktreePath ?? null;
@@ -2346,6 +2341,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     let ptyProcess: PtyAdapter.PtyProcess | null = null;
     let startedShell: string | null = null;
+    let invocationEntered = false;
 
     const startResult = yield* Effect.result(
       increment(terminalSessionsTotal, { lifecycle: eventType }).pipe(
@@ -2386,7 +2382,78 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 }
               }
             }
-            const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
+            const chosenShell = shellCandidates[0];
+            if (legacy !== undefined) {
+              if (chosenShell === undefined)
+                return yield* new LegacyTerminalControlError({
+                  operation: "open",
+                  detail: "No exact shell plan is available.",
+                });
+              yield* legacy
+                .beforeSpawn({
+                  binding: legacy.binding,
+                  shell: chosenShell.shell,
+                  shellArgs: chosenShell.args ?? [],
+                  cwd: session.cwd,
+                })
+                .pipe(
+                  Effect.mapError(
+                    () =>
+                      new LegacyTerminalControlError({
+                        operation: "open",
+                        detail: "Spawn intent readback is unavailable.",
+                      }),
+                  ),
+                );
+            }
+            if (
+              legacy !== undefined &&
+              chosenShell !== undefined &&
+              (chosenShell.shell.length === 0 ||
+                chosenShell.shell.includes("\0") ||
+                (chosenShell.args ?? []).some((arg) => arg.includes("\0")))
+            ) {
+              const current = yield* sessionsForThread(session.threadId);
+              if (
+                invocationEntered ||
+                legacy.neverInvoked === undefined ||
+                current.length !== 1 ||
+                current[0] !== session ||
+                session.process !== null ||
+                session.pid !== null ||
+                session.legacyOwnedControl !== undefined ||
+                session.legacyOwnedProcess !== undefined
+              )
+                return yield* new LegacyTerminalControlError({
+                  operation: "open",
+                  detail: "Selected input refusal has no exact no-invocation owner proof.",
+                });
+              const plan = {
+                binding: legacy.binding,
+                shell: chosenShell.shell,
+                shellArgs: chosenShell.args ?? [],
+                cwd: session.cwd,
+              };
+              yield* legacy.neverInvoked(plan).pipe(
+                Effect.mapError(
+                  () =>
+                    new LegacyTerminalControlError({
+                      operation: "open",
+                      detail: "Never-invoked outcome readback is unavailable.",
+                    }),
+                ),
+              );
+              return yield* new LegacyTerminalInputValidationError({
+                ...plan,
+                detail: "Selected setup shell or arguments contain invalid terminal input.",
+              });
+            }
+            invocationEntered = true;
+            const spawnResult = yield* trySpawn(
+              legacy === undefined ? shellCandidates : shellCandidates.slice(0, 1),
+              terminalEnv,
+              session,
+            );
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
 
@@ -2401,6 +2468,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               session.process = ptyProcess;
               session.pid = processPid;
               session.status = "running";
+              if (legacy !== undefined) {
+                session.legacyOwnedControl = legacy.binding;
+                session.legacyOwnedProcess = spawnResult.process;
+                session.legacyExitObserved = false;
+              }
               // onExit may replay an exit immediately; accept it before subscribing.
               session.unsubscribeData = spawnResult.process.onData((data) => {
                 if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
@@ -2409,7 +2481,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 if (eventsActivated) runFork(drainProcessEvents(session, processPid));
               });
               session.unsubscribeExit = spawnResult.process.onExit((event) => {
-                ownership.processExitObserved = true;
+                if (session.legacyOwnedProcess === spawnResult.process)
+                  session.legacyExitObserved = true;
                 if (!enqueueProcessEvent(session, processPid, { type: "exit", event })) {
                   return;
                 }
@@ -2429,6 +2502,22 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             // Publish startup before draining any events replayed during subscription.
             eventsActivated = true;
             if (session.processEventDrainRunning) runFork(drainProcessEvents(session, processPid));
+            if (legacy !== undefined && chosenShell !== undefined)
+              yield* legacy
+                .afterSpawn({
+                  binding: legacy.binding,
+                  shell: chosenShell.shell,
+                  shellArgs: chosenShell.args ?? [],
+                })
+                .pipe(
+                  Effect.mapError(
+                    () =>
+                      new LegacyTerminalControlError({
+                        operation: "open",
+                        detail: "Spawn outcome readback is unavailable.",
+                      }),
+                  ),
+                );
           }),
         ),
       ),
@@ -2436,6 +2525,15 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     if (startResult._tag === "Success") {
       return;
+    }
+
+    if (legacy !== undefined) {
+      if (!invocationEntered && isLegacyTerminalInputValidationError(startResult.failure))
+        return yield* startResult.failure;
+      return yield* new LegacyTerminalControlError({
+        operation: "open",
+        detail: "Legacy spawn or journal outcome is unknown; retained control cannot be replayed.",
+      });
     }
 
     {
@@ -2480,6 +2578,26 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       });
     }
   });
+
+  function startSession(
+    session: TerminalSessionState,
+    input: TerminalStartInput,
+    eventType: "started" | "restarted",
+  ): Effect.Effect<void>;
+  function startSession(
+    session: TerminalSessionState,
+    input: TerminalStartInput,
+    eventType: "started" | "restarted",
+    legacy: LegacyTerminalPreparationHooks | undefined,
+  ): Effect.Effect<void, LegacyTerminalControlError | LegacyTerminalInputValidationError>;
+  function startSession(
+    session: TerminalSessionState,
+    input: TerminalStartInput,
+    eventType: "started" | "restarted",
+    legacy?: LegacyTerminalPreparationHooks,
+  ): Effect.Effect<void, LegacyTerminalControlError | LegacyTerminalInputValidationError> {
+    return startSessionEffect(session, input, eventType, legacy);
+  }
 
   const closeSession = Effect.fn("terminal.closeSession")(function* (
     threadId: string,
@@ -2683,25 +2801,45 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }).pipe(Effect.ignoreCause({ log: true })),
   );
 
-  const openWithWorkspaceLease = Effect.fn("terminal.openLocked")(function* (
+  const openWithWorkspaceLeaseEffect = Effect.fn("terminal.openLocked")(function* (
     input: TerminalOpenInput,
+    legacy?: LegacyTerminalPreparationHooks,
   ) {
     const terminalId = input.terminalId;
     yield* assertValidCwd(input.cwd);
 
     const sessionKey = toSessionKey(input.threadId, terminalId);
     const existing = yield* getSession(input.threadId, terminalId);
+    if (legacy !== undefined) {
+      const binding = yield* decodeLegacyOwnedControl(legacy.binding).pipe(
+        Effect.mapError(
+          () =>
+            new LegacyTerminalControlError({
+              operation: "open",
+              detail: "Legacy control binding is invalid.",
+            }),
+        ),
+      );
+      if (
+        binding.threadId !== input.threadId ||
+        binding.policy.threadId !== input.threadId ||
+        binding.policy.runId !== binding.runId ||
+        binding.terminalId !== terminalId ||
+        binding.generation.length === 0 ||
+        binding.preparationGeneration.length === 0 ||
+        Option.isSome(existing)
+      )
+        return yield* new LegacyTerminalControlError({
+          operation: "open",
+          detail: "Legacy control requires an exact new session and authenticated generation.",
+        });
+    }
     if (Option.isNone(existing)) {
       yield* flushPersist(input.threadId, terminalId);
       const history = yield* readHistory(input.threadId, terminalId);
       const cols = input.cols ?? DEFAULT_OPEN_COLS;
       const rows = input.rows ?? DEFAULT_OPEN_ROWS;
       const session: TerminalSessionState = {
-        ownership: {
-          handleId: NodeCrypto.randomUUID(),
-          ownerBirth: null,
-          processExitObserved: false,
-        },
         threadId: input.threadId,
         terminalId,
         cwd: input.cwd,
@@ -2748,6 +2886,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           ...(input.env ? { env: input.env } : {}),
         },
         "started",
+        legacy,
       );
       return snapshot(session);
     }
@@ -2814,17 +2953,71 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return snapshot(liveSession);
   });
 
-  const openLocked = (input: TerminalOpenInput) =>
-    withWorkspaceLease(
-      path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input),
-    );
+  function openWithWorkspaceLease(
+    input: TerminalOpenInput,
+  ): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
+  function openWithWorkspaceLease(
+    input: TerminalOpenInput,
+    legacy: LegacyTerminalPreparationHooks | undefined,
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  >;
+  function openWithWorkspaceLease(
+    input: TerminalOpenInput,
+    legacy?: LegacyTerminalPreparationHooks,
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  > {
+    return openWithWorkspaceLeaseEffect(input, legacy);
+  }
 
-  const open: TerminalManager["Service"]["open"] = (input) =>
-    withThreadLock(
-      input.threadId,
-      resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
+  function openLocked(
+    input: TerminalOpenInput,
+  ): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
+  function openLocked(
+    input: TerminalOpenInput,
+    legacy: LegacyTerminalPreparationHooks | undefined,
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  >;
+  function openLocked(
+    input: TerminalOpenInput,
+    legacy?: LegacyTerminalPreparationHooks,
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  > {
+    return withWorkspaceLease(
+      path.resolve(input.worktreePath ?? input.cwd),
+      openWithWorkspaceLease(input, legacy),
     );
+  }
+
+  function open(input: TerminalOpenInput): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
+  function open(
+    input: TerminalOpenInput,
+    legacy: LegacyTerminalPreparationHooks,
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  >;
+  function open(
+    input: TerminalOpenInput,
+    legacy?: LegacyTerminalPreparationHooks,
+  ): Effect.Effect<
+    TerminalSessionSnapshot,
+    TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+  > {
+    return withThreadLock(
+      input.threadId,
+      resolveLaunchInputEnvironment(input).pipe(
+        Effect.flatMap((resolved) => openLocked(resolved, legacy)),
+      ),
+    );
+  }
 
   const openOrAttachForStream = (input: TerminalAttachInput) =>
     withThreadLock(
@@ -3047,7 +3240,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
   };
 
-  const write: TerminalManager["Service"]["write"] = Effect.fn("terminal.write")(function* (input) {
+  const nativeWrite = Effect.fn("terminal.write")(function* (input: TerminalWriteInput) {
     const terminalId = input.terminalId;
     const session = yield* requireSession(input.threadId, terminalId);
     const process = session.process;
@@ -3070,6 +3263,180 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }),
     });
   });
+
+  const checkLegacyControl = (
+    session: TerminalSessionState,
+    binding: LegacyOwnedTerminalControl,
+    operation: "write" | "close" | "guard",
+  ) =>
+    session.legacyOwnedControl !== undefined &&
+    sameLegacyOwnedControl(session.legacyOwnedControl, binding) &&
+    session.threadId === binding.threadId &&
+    session.terminalId === binding.terminalId &&
+    session.legacyOwnedProcess !== undefined &&
+    (session.process === session.legacyOwnedProcess || session.legacyExitObserved === true)
+      ? Effect.void
+      : Effect.fail(
+          new LegacyTerminalControlError({
+            operation,
+            detail: "Owned terminal/session generation is replaced or unknown.",
+          }),
+        );
+
+  const withLegacyOwnedControlGuard = <A, E, R>(
+    supplied: LegacyOwnedTerminalControl,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | LegacyTerminalControlError, R> =>
+    withThreadLock(
+      supplied.threadId,
+      Effect.gen(function* () {
+        const binding = yield* decodeLegacyOwnedControl(supplied).pipe(
+          Effect.mapError(
+            () =>
+              new LegacyTerminalControlError({
+                operation: "guard",
+                detail: "Legacy control binding is invalid.",
+              }),
+          ),
+        );
+        const found = yield* getSession(binding.threadId, binding.terminalId);
+        if (Option.isNone(found))
+          return yield* new LegacyTerminalControlError({
+            operation: "guard",
+            detail: "Current owned terminal control is unavailable.",
+          });
+        const session = found.value;
+        return yield* withWorkspaceLease(
+          path.resolve(session.worktreePath ?? session.cwd),
+          Effect.gen(function* () {
+            yield* checkLegacyControl(session, binding, "guard");
+            if ((yield* sessionsForThread(binding.threadId)).some((other) => other !== session))
+              return yield* new LegacyTerminalControlError({
+                operation: "guard",
+                detail: "Another terminal control exists for this new shell.",
+              });
+            return yield* effect;
+          }),
+        );
+      }),
+    );
+
+  const withLegacyNoControlGuard = <A, E, R>(
+    supplied: LegacyNoTerminalControl,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | LegacyTerminalControlError, R> =>
+    withThreadLock(
+      supplied.threadId,
+      Effect.gen(function* () {
+        const binding = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)(supplied).pipe(
+          Effect.mapError(
+            () =>
+              new LegacyTerminalControlError({
+                operation: "guard",
+                detail: "No-control binding is invalid.",
+              }),
+          ),
+        );
+        if (binding.workspacePath !== path.resolve(binding.workspacePath))
+          return yield* new LegacyTerminalControlError({
+            operation: "guard",
+            detail: "No-control workspace is not an exact canonical target.",
+          });
+        return yield* withWorkspaceLease(
+          binding.workspacePath,
+          Effect.gen(function* () {
+            const realPath = yield* fileSystem.realPath(binding.workspacePath).pipe(
+              Effect.mapError(
+                () =>
+                  new LegacyTerminalControlError({
+                    operation: "guard",
+                    detail: "No-control workspace identity is unavailable.",
+                  }),
+              ),
+            );
+            const info = yield* fileSystem.stat(binding.workspacePath).pipe(
+              Effect.mapError(
+                () =>
+                  new LegacyTerminalControlError({
+                    operation: "guard",
+                    detail: "No-control workspace metadata is unavailable.",
+                  }),
+              ),
+            );
+            if (
+              info.type !== "Directory" ||
+              realPath !== binding.workspacePath ||
+              (yield* sessionsForThread(binding.threadId)).length !== 0
+            )
+              return yield* new LegacyTerminalControlError({
+                operation: "guard",
+                detail: "Current workspace or terminal absence is unproved.",
+              });
+            return yield* effect;
+          }),
+        );
+      }),
+    );
+
+  function write(input: TerminalWriteInput): Effect.Effect<void, TerminalError>;
+  function write(
+    input: TerminalWriteInput,
+    legacy: LegacyTerminalWriteHooks,
+  ): Effect.Effect<void, TerminalError | LegacyTerminalControlError>;
+  function write(
+    input: TerminalWriteInput,
+    legacy?: LegacyTerminalWriteHooks,
+  ): Effect.Effect<void, TerminalError | LegacyTerminalControlError> {
+    if (legacy === undefined) return nativeWrite(input);
+    return withThreadLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const binding = yield* decodeLegacyOwnedControl(legacy.legacyOwnedControl).pipe(
+          Effect.mapError(
+            () =>
+              new LegacyTerminalControlError({
+                operation: "write",
+                detail: "Legacy control binding is invalid.",
+              }),
+          ),
+        );
+        const session = yield* requireSession(input.threadId, input.terminalId);
+        yield* checkLegacyControl(session, binding, "write");
+        if (session.status !== "running" || session.process !== session.legacyOwnedProcess)
+          return yield* new LegacyTerminalControlError({
+            operation: "write",
+            detail: "Legacy script write requires the exact running control.",
+          });
+        return yield* withWorkspaceLease(
+          path.resolve(session.worktreePath ?? session.cwd),
+          Effect.gen(function* () {
+            yield* legacy.beforeWrite().pipe(
+              Effect.mapError(
+                () =>
+                  new LegacyTerminalControlError({
+                    operation: "write",
+                    detail: "Write intent readback is unavailable.",
+                  }),
+              ),
+            );
+            const result = yield* nativeWrite(input).pipe(Effect.result);
+            yield* legacy
+              .afterWrite(result._tag === "Success" ? "accepted" : "unknown", session.inputCount)
+              .pipe(
+                Effect.mapError(
+                  () =>
+                    new LegacyTerminalControlError({
+                      operation: "write",
+                      detail: "Write outcome readback is unavailable.",
+                    }),
+                ),
+              );
+            if (result._tag === "Failure") return yield* result.failure;
+          }),
+        );
+      }),
+    );
+  }
 
   const resizeLocked = Effect.fn("terminal.resize")(function* (input: TerminalResizeInput) {
     const session = yield* getSession(input.threadId, input.terminalId);
@@ -3125,11 +3492,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         session = {
-          ownership: {
-            handleId: NodeCrypto.randomUUID(),
-            ownerBirth: null,
-            processExitObserved: false,
-          },
           threadId: input.threadId,
           terminalId,
           cwd: input.cwd,
@@ -3208,7 +3570,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       ),
     );
 
-  const close: TerminalManager["Service"]["close"] = (input) =>
+  const nativeClose = (input: TerminalCloseInput) =>
     withThreadLock(
       input.threadId,
       Effect.gen(function* () {
@@ -3230,208 +3592,109 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }),
     );
 
-  const withLegacyOwnerAbsent: LegacyOwnerAbsencePort = (owner, body) =>
-    withThreadLock(
-      owner.originalBirth.threadId,
-      Effect.suspend(() => {
-        const threadId = owner.originalBirth.threadId;
-        const replacementBirth =
-          owner.replacementBirth === null ? null : { ...owner.replacementBirth };
-        const importedBirth = owner.importedBirth === null ? null : { ...owner.importedBirth };
-        let reserved = true;
-        const failure = (reason: string) => new LegacyLeaseInventoryError({ threadId, reason });
-        // Admission uses this same lock. The body retains it through SQL and must not mutate terminals.
-        return Effect.gen(function* () {
-          const state = yield* readManagerState;
-          // Pending kill handles have no thread provenance; their absence cannot be inferred from sessions.
-          if (state.killFibers.size > 0)
-            return yield* failure("terminal_unclassified_pending_kill");
-          const sessions = [...state.sessions.values()].filter(
-            (session) => session.threadId === threadId,
-          );
-          if (
-            sessions.some((session) => {
-              const birth = session.ownership.ownerBirth;
-              return (
-                birth === null ||
-                replacementBirth === null ||
-                !validTerminalOwnerBirth(replacementBirth, threadId) ||
-                !sameTerminalOwnerBirth(birth, replacementBirth) ||
-                (importedBirth !== null && sameTerminalOwnerBirth(birth, importedBirth))
-              );
-            })
-          )
-            return yield* failure("terminal_original_or_unclassified_handle");
-          const inventory = sessions.map((session) => ({
-            session,
-            ownership: session.ownership,
-            process: session.process,
-            status: session.status,
-            processExitObserved: session.ownership.processExitObserved,
-          }));
-          const revalidate = Effect.gen(function* () {
-            if (!reserved) return yield* failure("terminal_inventory_reservation_expired");
-            const current = yield* readManagerState;
-            if (!reserved) return yield* failure("terminal_inventory_reservation_expired");
-            if (current.killFibers.size > 0)
-              return yield* failure("terminal_unclassified_pending_kill");
-            const currentSessions = [...current.sessions.values()].filter(
-              (session) => session.threadId === threadId,
-            );
-            if (
-              currentSessions.length !== inventory.length ||
-              inventory.some(
-                (entry) =>
-                  !currentSessions.includes(entry.session) ||
-                  entry.session.ownership !== entry.ownership ||
-                  entry.session.process !== entry.process ||
-                  entry.session.status !== entry.status ||
-                  entry.session.ownership.processExitObserved !== entry.processExitObserved,
-              )
-            ) {
-              return yield* failure("terminal_inventory_changed");
-            }
-          });
-          return yield* body(revalidate);
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              reserved = false;
-            }),
-          ),
-        );
-      }),
-    );
-
-  const captureOwnedTargets: TerminalManager["Service"]["captureOwnedTargets"] = (input) =>
-    withThreadLock(
+  const settledLegacyCloses = new Map<string, LegacyOwnedTerminalControl>();
+  function close(input: TerminalCloseInput): Effect.Effect<void, TerminalError>;
+  function close(
+    input: TerminalCloseInput,
+    options: TerminalCloseOptions,
+  ): Effect.Effect<void, TerminalError | LegacyTerminalControlError>;
+  function close(
+    input: TerminalCloseInput,
+    options?: TerminalCloseOptions,
+  ): Effect.Effect<void, TerminalError | LegacyTerminalControlError> {
+    if (options?.legacyOwnedControl === undefined) return nativeClose(input);
+    const supplied = options.legacyOwnedControl;
+    return withThreadLock(
       input.threadId,
       Effect.gen(function* () {
-        const sessions = yield* sessionsForThread(input.threadId);
-        const unknown =
-          !validTerminalOwnerBirth(input.ownerBirth, input.threadId) ||
-          sessions.some((session) => session.ownership.ownerBirth === null);
-        return {
-          managerId,
-          threadId: input.threadId,
-          ownerBirth: { ...input.ownerBirth },
-          status: unknown ? "unknown" : "captured",
-          managedTargetsOnly: true,
-          targets: sessions.flatMap((session) =>
-            session.ownership.ownerBirth !== null &&
-            sameTerminalOwnerBirth(session.ownership.ownerBirth, input.ownerBirth)
-              ? [
-                  {
-                    threadId: session.threadId,
-                    terminalId: session.terminalId,
-                    handleId: session.ownership.handleId,
-                    ownerBirth: { ...session.ownership.ownerBirth },
-                  },
-                ]
-              : [],
+        const binding = yield* decodeLegacyOwnedControl(supplied).pipe(
+          Effect.mapError(
+            () =>
+              new LegacyTerminalControlError({
+                operation: "close",
+                detail: "Legacy control binding is invalid.",
+              }),
           ),
-        } satisfies TerminalOwnedTargetCapture;
-      }),
-    );
-
-  const closeOwnedTargets: TerminalManager["Service"]["closeOwnedTargets"] = (capture) =>
-    withThreadLock(
-      capture.threadId,
-      Effect.gen(function* () {
-        const result = (
-          status: TerminalOwnedTargetCloseResult["status"],
-          processExitObserved = false,
-        ): TerminalOwnedTargetCloseResult => ({
-          status,
-          managedTargetsOnly: true,
-          processExitObserved,
-          descendantsQuiescence: "unavailable",
-          futureWakeClosure: "unavailable",
-        });
-        if (
-          capture.managerId !== managerId ||
-          capture.status !== "captured" ||
-          !validTerminalOwnerBirth(capture.ownerBirth, capture.threadId)
-        )
-          return result("unknown");
-        const sessions = yield* sessionsForThread(capture.threadId);
-        if (sessions.some((session) => session.ownership.ownerBirth === null))
-          return result("unknown");
-        const owned = sessions.filter((session) =>
-          sameTerminalOwnerBirth(session.ownership.ownerBirth!, capture.ownerBirth),
         );
         if (
-          capture.targets.some(
-            (target) =>
-              target.threadId !== capture.threadId ||
-              !sameTerminalOwnerBirth(target.ownerBirth, capture.ownerBirth),
-          ) ||
-          owned.some(
-            (session) =>
-              !capture.targets.some(
-                (target) =>
-                  target.terminalId === session.terminalId &&
-                  target.handleId === session.ownership.handleId,
-              ),
-          )
+          input.threadId !== binding.threadId ||
+          (input.terminalId !== undefined && input.terminalId !== binding.terminalId)
         )
-          return result("mismatch");
-        for (const target of capture.targets) {
-          const current = sessions.find((session) => session.terminalId === target.terminalId);
-          if (
-            current !== undefined &&
-            (current.ownership.handleId !== target.handleId ||
-              !sameTerminalOwnerBirth(current.ownership.ownerBirth!, target.ownerBirth))
-          )
-            return result("mismatch");
-        }
-        if (owned.length === 0) return result("observed_absent");
-        let processExitObserved = true;
-        for (const session of owned) {
-          const ownership = session.ownership;
-          const process = session.process;
-          const exited = yield* Deferred.make<void>();
-          const stopExit = process?.onExit(() => {
-            ownership.processExitObserved = true;
-            runFork(Deferred.succeed(exited, undefined));
+          return yield* new LegacyTerminalControlError({
+            operation: "close",
+            detail: "Legacy cleanup targets another terminal.",
           });
-          const closed = yield* Effect.gen(function* () {
-            if (!ownership.processExitObserved && process !== null) {
-              const signalled = yield* Effect.result(Effect.try(() => process.kill("SIGTERM")));
-              if (signalled._tag === "Failure") return false;
-              const gracefulExit = yield* Deferred.await(exited).pipe(
-                Effect.timeoutOption(processKillGraceMs),
+        const key = toSessionKey(binding.threadId, binding.terminalId);
+        const found = yield* getSession(binding.threadId, binding.terminalId);
+        if (Option.isNone(found)) {
+          const settled = settledLegacyCloses.get(key);
+          if (settled !== undefined && sameLegacyOwnedControl(settled, binding)) return;
+          return yield* new LegacyTerminalControlError({
+            operation: "close",
+            detail: "Missing control has no exact settled close proof.",
+          });
+        }
+        const session = found.value;
+        yield* checkLegacyControl(session, binding, "close");
+        return yield* withWorkspaceLease(
+          path.resolve(session.worktreePath ?? session.cwd),
+          Effect.gen(function* () {
+            const process = session.legacyOwnedProcess;
+            if (process === undefined)
+              return yield* new LegacyTerminalControlError({
+                operation: "close",
+                detail: "Control identity is unknown.",
+              });
+            if (session.legacyExitObserved !== true) {
+              const stopped = yield* Deferred.make<void>();
+              const unsubscribe = process.onExit(() =>
+                runFork(Deferred.succeed(stopped, undefined)),
               );
-              if (Option.isNone(gracefulExit)) {
-                const forced = yield* Effect.result(Effect.try(() => process.kill("SIGKILL")));
-                if (forced._tag === "Failure") return false;
-                const forcedExit = yield* Deferred.await(exited).pipe(
+              yield* Effect.gen(function* () {
+                yield* Effect.try({
+                  try: () => process.kill("SIGTERM"),
+                  catch: () =>
+                    new LegacyTerminalControlError({
+                      operation: "close",
+                      detail: "Owned control stop outcome is unknown.",
+                    }),
+                });
+                const first = yield* Deferred.await(stopped).pipe(
                   Effect.timeoutOption(processKillGraceMs),
                 );
-                if (Option.isNone(forcedExit)) return false;
-              }
-            }
-            if (!ownership.processExitObserved) return false;
-            if (process !== null) {
-              yield* modifyManagerState((state) => {
-                if (session.process === process && session.ownership === ownership) {
-                  cleanupProcessHandles(session);
-                  session.process = null;
-                  session.pid = null;
+                if (Option.isNone(first)) {
+                  yield* Effect.try({
+                    try: () => process.kill("SIGKILL"),
+                    catch: () =>
+                      new LegacyTerminalControlError({
+                        operation: "close",
+                        detail: "Owned control stop outcome is unknown.",
+                      }),
+                  });
+                  const final = yield* Deferred.await(stopped).pipe(
+                    Effect.timeoutOption(processKillGraceMs),
+                  );
+                  if (Option.isNone(final))
+                    return yield* new LegacyTerminalControlError({
+                      operation: "close",
+                      detail: "No affirmative exit observation for the owned control.",
+                    });
                 }
-                return [undefined, state] as const;
-              });
-              yield* clearKillFiber(process);
+              }).pipe(Effect.ensuring(Effect.sync(unsubscribe)));
+              session.legacyExitObserved = true;
             }
-            yield* closeSession(session.threadId, session.terminalId, true);
-            return true;
-          }).pipe(Effect.ensuring(Effect.sync(() => stopExit?.())));
-          if (!closed) return result("unknown");
-          processExitObserved &&= ownership.processExitObserved;
-        }
-        return result("closed", processExitObserved);
+            yield* clearKillFiber(process);
+            cleanupProcessHandles(session);
+            session.process = null;
+            session.pid = null;
+            session.status = "exited";
+            yield* closeSession(binding.threadId, binding.terminalId, input.deleteHistory === true);
+            settledLegacyCloses.set(key, binding);
+          }),
+        );
       }),
     );
+  }
 
   const closeIdle: TerminalManager["Service"]["closeIdle"] = (input) =>
     withThreadLock(
@@ -3487,10 +3750,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     clear,
     restart,
     close,
-    withLegacyOwnerAbsent,
-    captureOwnedTargets,
-    closeOwnedTargets,
     closeIdle,
+    withLegacyOwnedControlGuard,
+    withLegacyNoControlGuard,
     subscribe,
     subscribeMetadata,
   });

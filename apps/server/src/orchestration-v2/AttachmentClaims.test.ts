@@ -20,7 +20,6 @@ import * as ServerConfig from "../config.ts";
 import {
   attachmentIsPendingUpload,
   claimPendingAttachments,
-  probePendingAttachment,
   releaseClaimedAttachments,
 } from "./AttachmentClaims.ts";
 
@@ -118,103 +117,6 @@ describe("AttachmentClaims", () => {
         entry.startsWith("pending-"),
       );
       expect(pendingFiles).toHaveLength(1);
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect("witnesses the actual copied bytes and random final ids in request order", () =>
-    Effect.gen(function* () {
-      const first = yield* stagePendingUpload({
-        name: "first.png",
-        bytes: new Uint8Array([1, 2, 3]),
-        mimeType: "image/png",
-      });
-      const second = yield* stagePendingUpload({
-        name: "second.png",
-        bytes: new Uint8Array([4, 5, 6]),
-        mimeType: "image/png",
-      });
-      const fileSystem = yield* FileSystem.FileSystem;
-      const copiedBytes = new Uint8Array([120, 121, 122]);
-      const changingSource = Object.create(fileSystem, {
-        copyFile: {
-          value: (from: string, to: string) =>
-            Effect.gen(function* () {
-              yield* fileSystem.writeFile(from, copiedBytes);
-              yield* fileSystem.copyFile(from, to);
-              yield* fileSystem.writeFile(from, new Uint8Array([97, 98, 99]));
-            }),
-        },
-      }) as FileSystem.FileSystem;
-      const claimed = yield* claimPendingAttachments({
-        threadId: "thread-witness",
-        attachments: [first, second],
-      }).pipe(Effect.provideService(FileSystem.FileSystem, changingSource));
-      expect(claimed.witnessAttachments).toEqual(
-        [first, second].map((attachment, index) => ({
-          pendingId: attachment.id,
-          finalId: claimed.attachments[index]!.id,
-          sizeBytes: 3,
-          contentSha256: "3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282",
-        })),
-      );
-      expect(new Set(claimed.attachments.map((attachment) => attachment.id)).size).toBe(2);
-      for (const path of claimed.claimedPaths)
-        expect(NodeFS.readFileSync(path)).toEqual(Buffer.from(copiedBytes));
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect(
-    "probes only pending bytes and permits an absent retry source without reading accepted copies",
-    () =>
-      Effect.gen(function* () {
-        const pending = yield* stagePendingUpload({
-          name: "probe.png",
-          bytes: new Uint8Array([120, 121, 122]),
-          mimeType: "image/png",
-        });
-        const config = yield* ServerConfig.ServerConfig;
-        const claimed = yield* claimPendingAttachments({
-          threadId: "thread-probe",
-          attachments: [pending],
-        });
-        NodeFS.writeFileSync(claimed.claimedPaths[0]!, new Uint8Array([9]));
-        expect(yield* probePendingAttachment(pending.id)).toEqual({
-          contentSha256: "3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282",
-          sizeBytes: 3,
-        });
-        NodeFS.unlinkSync(NodePath.join(config.attachmentsDir, `${pending.id}.png`));
-        expect(yield* probePendingAttachment(pending.id)).toBeNull();
-        expect(NodeFS.readFileSync(claimed.claimedPaths[0]!)).toEqual(Buffer.from([9]));
-        expect((yield* Effect.exit(probePendingAttachment(claimed.attachments[0]!.id)))._tag).toBe(
-          "Failure",
-        );
-      }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect("rejects a copy whose actual size changed and removes only its new destination", () =>
-    Effect.gen(function* () {
-      const pending = yield* stagePendingUpload({
-        name: "growth.png",
-        bytes: new Uint8Array([1, 2, 3]),
-        mimeType: "image/png",
-      });
-      const config = yield* ServerConfig.ServerConfig;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const growingSource = Object.create(fileSystem, {
-        copyFile: {
-          value: (from: string, to: string) =>
-            fileSystem
-              .writeFile(from, new Uint8Array([1, 2, 3, 4]))
-              .pipe(Effect.andThen(fileSystem.copyFile(from, to))),
-        },
-      }) as FileSystem.FileSystem;
-      const failure = yield* Effect.flip(
-        claimPendingAttachments({ threadId: "thread-growth", attachments: [pending] }).pipe(
-          Effect.provideService(FileSystem.FileSystem, growingSource),
-        ),
-      );
-      expect(failure.message).toContain("changed size while being copied");
-      expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([`${pending.id}.png`]);
     }).pipe(Effect.provide(testLayer)),
   );
 

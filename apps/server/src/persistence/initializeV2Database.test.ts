@@ -8,14 +8,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { afterEach, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "./Layers/Sqlite.ts";
@@ -25,12 +20,6 @@ import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
-
-vi.mock("node:sqlite", async (importOriginal) => ({
-  ...(await importOriginal<typeof NodeSqlite>()),
-}));
-
-afterEach(() => vi.restoreAllMocks());
 
 it.effect(
   "snapshots V1, imports transcripts lazily, and preserves both databases across switches",
@@ -136,7 +125,6 @@ it.effect("includes committed WAL data and does not publish a failed snapshot", 
     NodeFS.writeFileSync(sourcePath, "invalid SQLite");
     assert.isTrue((yield* Effect.result(initializeV2Database(destinationPath)))._tag === "Failure");
     assert.isFalse(NodeFS.existsSync(destinationPath));
-    assert.deepEqual(NodeFS.readdirSync(directory), ["state.sqlite"]);
     NodeFS.unlinkSync(sourcePath);
     const source = new NodeSqlite.DatabaseSync(sourcePath);
     try {
@@ -144,7 +132,6 @@ it.effect("includes committed WAL data and does not publish a failed snapshot", 
         "PRAGMA journal_mode=WAL; CREATE TABLE messages(text TEXT); INSERT INTO messages VALUES ('committed'); BEGIN; INSERT INTO messages VALUES ('uncommitted');",
       );
       yield* initializeV2Database(destinationPath);
-      assert.isFalse(NodeFS.readdirSync(directory).some((name) => name.startsWith(".v2-import-")));
       const copy = new NodeSqlite.DatabaseSync(destinationPath, { readOnly: true });
       try {
         assert.deepEqual(
@@ -209,201 +196,3 @@ it.effect("starts fresh without V1 and never imports over existing V2 state", ()
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
   );
 });
-
-const withSnapshotFixture = <A, E, R>(
-  use: (fixture: {
-    readonly directory: string;
-    readonly sourcePath: string;
-    readonly destinationPath: string;
-  }) => Effect.Effect<A, E, R>,
-) => {
-  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-snapshot-lifecycle-"));
-  return Effect.suspend(() =>
-    use({
-      directory,
-      sourcePath: NodePath.join(directory, "state.sqlite"),
-      destinationPath: NodePath.join(directory, "statev2.sqlite"),
-    }),
-  ).pipe(
-    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
-  );
-};
-
-const seedSnapshotSource = (sourcePath: string) => {
-  const source = new NodeSqlite.DatabaseSync(sourcePath);
-  try {
-    source.exec(
-      "CREATE TABLE snapshot_probe(value TEXT); INSERT INTO snapshot_probe VALUES ('source');",
-    );
-  } finally {
-    source.close();
-  }
-};
-
-it.effect("does not create a source, destination or temporary directory when V1 is absent", () =>
-  withSnapshotFixture(({ directory, sourcePath, destinationPath }) =>
-    Effect.gen(function* () {
-      yield* initializeV2Database(destinationPath);
-      assert.isFalse(NodeFS.existsSync(sourcePath));
-      assert.isFalse(NodeFS.existsSync(destinationPath));
-      assert.deepEqual(NodeFS.readdirSync(directory), []);
-    }),
-  ).pipe(Effect.provide(NodeServices.layer)),
-);
-
-it.effect("keeps the winner of a publication race and cleans the losing complete snapshot", () =>
-  withSnapshotFixture(({ directory, sourcePath, destinationPath }) =>
-    Effect.gen(function* () {
-      seedSnapshotSource(sourcePath);
-      const original = NodeFS.readFileSync(sourcePath);
-      const fs = yield* FileSystem.FileSystem;
-      const racingFileSystem = FileSystem.FileSystem.of({
-        ...fs,
-        link: Effect.fn(function* (snapshotPath, requestedDestination) {
-          const copy = new NodeSqlite.DatabaseSync(snapshotPath, { readOnly: true });
-          try {
-            assert.equal(copy.prepare("SELECT value FROM snapshot_probe").get()?.value, "source");
-          } finally {
-            copy.close();
-          }
-          NodeFS.writeFileSync(requestedDestination, "existing winner");
-          yield* fs.link(snapshotPath, requestedDestination);
-        }),
-      });
-      yield* initializeV2Database(destinationPath).pipe(
-        Effect.provideService(FileSystem.FileSystem, racingFileSystem),
-      );
-      assert.equal(NodeFS.readFileSync(destinationPath, "utf8"), "existing winner");
-      assert.deepEqual(NodeFS.readFileSync(sourcePath), original);
-      assert.deepEqual(NodeFS.readdirSync(directory).sort(), ["state.sqlite", "statev2.sqlite"]);
-    }),
-  ).pipe(Effect.provide(NodeServices.layer)),
-);
-
-it.effect("publication failure preserves V1 and removes every task-owned snapshot", () =>
-  withSnapshotFixture(({ directory, sourcePath, destinationPath }) =>
-    Effect.gen(function* () {
-      seedSnapshotSource(sourcePath);
-      const original = NodeFS.readFileSync(sourcePath);
-      const fs = yield* FileSystem.FileSystem;
-      const failingFileSystem = FileSystem.FileSystem.of({
-        ...fs,
-        link: (snapshotPath) =>
-          fs.link(snapshotPath, NodePath.join(directory, "absent", "statev2.sqlite")),
-      });
-      const result = yield* Effect.result(
-        initializeV2Database(destinationPath).pipe(
-          Effect.provideService(FileSystem.FileSystem, failingFileSystem),
-        ),
-      );
-      assert.equal(result._tag, "Failure");
-      if (result._tag === "Failure") {
-        assert.equal(result.failure._tag, "V2DatabaseImportError");
-        assert.equal(result.failure.sourcePath, sourcePath);
-        assert.equal(result.failure.destinationPath, destinationPath);
-      }
-      assert.isFalse(NodeFS.existsSync(destinationPath));
-      assert.deepEqual(NodeFS.readFileSync(sourcePath), original);
-      assert.deepEqual(NodeFS.readdirSync(directory), ["state.sqlite"]);
-    }),
-  ).pipe(Effect.provide(NodeServices.layer)),
-);
-
-it.effect("cancellation before publication closes the snapshot scope without publishing", () =>
-  withSnapshotFixture(({ directory, sourcePath, destinationPath }) =>
-    Effect.gen(function* () {
-      seedSnapshotSource(sourcePath);
-      const original = NodeFS.readFileSync(sourcePath);
-      const fs = yield* FileSystem.FileSystem;
-      const publicationReached = yield* Deferred.make<string>();
-      const blockedFileSystem = FileSystem.FileSystem.of({
-        ...fs,
-        link: Effect.fn(function* (requestedSnapshotPath) {
-          yield* Deferred.succeed(publicationReached, requestedSnapshotPath);
-          return yield* Effect.never;
-        }),
-      });
-      const fiber = yield* initializeV2Database(destinationPath).pipe(
-        Effect.provideService(FileSystem.FileSystem, blockedFileSystem),
-        Effect.forkChild,
-      );
-      const snapshotPath = yield* Deferred.await(publicationReached);
-      assert.isTrue(NodeFS.existsSync(snapshotPath));
-      yield* Fiber.interrupt(fiber);
-      assert.isFalse(NodeFS.existsSync(snapshotPath));
-      assert.isFalse(NodeFS.existsSync(destinationPath));
-      assert.deepEqual(NodeFS.readFileSync(sourcePath), original);
-      assert.deepEqual(NodeFS.readdirSync(directory), ["state.sqlite"]);
-    }),
-  ).pipe(Effect.provide(NodeServices.layer)),
-);
-
-it.effect(
-  "concurrent initializers publish one complete snapshot and clean their separate roots",
-  () =>
-    withSnapshotFixture(({ directory, sourcePath, destinationPath }) =>
-      Effect.gen(function* () {
-        seedSnapshotSource(sourcePath);
-        const original = NodeFS.readFileSync(sourcePath);
-        yield* Effect.all(
-          [initializeV2Database(destinationPath), initializeV2Database(destinationPath)],
-          { concurrency: 2 },
-        );
-        const copy = new NodeSqlite.DatabaseSync(destinationPath, { readOnly: true });
-        try {
-          assert.deepEqual(copy.prepare("SELECT value FROM snapshot_probe").all(), [
-            { value: "source" },
-          ]);
-        } finally {
-          copy.close();
-        }
-        assert.deepEqual(NodeFS.readFileSync(sourcePath), original);
-        assert.deepEqual(NodeFS.readdirSync(directory).sort(), ["state.sqlite", "statev2.sqlite"]);
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-);
-
-it.effect(
-  "cancellation during backup waits for SQLite to finish before closing and cleaning its scope",
-  () =>
-    withSnapshotFixture(({ directory, sourcePath, destinationPath }) =>
-      Effect.gen(function* () {
-        seedSnapshotSource(sourcePath);
-        const original = NodeFS.readFileSync(sourcePath);
-        const backupReached = yield* Deferred.make<{
-          readonly snapshotPath: string;
-          readonly database: NodeSqlite.DatabaseSync;
-        }>();
-        let releaseBackup: () => void = () => {};
-        const backupPermission = new Promise<void>((resolve) => {
-          releaseBackup = resolve;
-        });
-        const actualBackup = NodeSqlite.backup;
-        vi.spyOn(NodeSqlite, "backup").mockImplementationOnce(
-          async (database, snapshotPath, options) => {
-            Deferred.doneUnsafe(
-              backupReached,
-              Effect.succeed({ snapshotPath: String(snapshotPath), database }),
-            );
-            await backupPermission;
-            return actualBackup(database, snapshotPath, options);
-          },
-        );
-        const fiber = yield* initializeV2Database(destinationPath).pipe(Effect.forkChild);
-        const backup = yield* Deferred.await(backupReached);
-        try {
-          fiber.interruptUnsafe();
-          yield* Effect.yieldNow;
-          assert.isTrue(backup.database.isOpen);
-          assert.isTrue(NodeFS.existsSync(NodePath.dirname(backup.snapshotPath)));
-        } finally {
-          releaseBackup();
-        }
-        assert.isTrue(Exit.isFailure(yield* Fiber.await(fiber)));
-        assert.isFalse(backup.database.isOpen);
-        assert.isFalse(NodeFS.existsSync(destinationPath));
-        assert.deepEqual(NodeFS.readFileSync(sourcePath), original);
-        assert.deepEqual(NodeFS.readdirSync(directory), ["state.sqlite"]);
-      }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-);

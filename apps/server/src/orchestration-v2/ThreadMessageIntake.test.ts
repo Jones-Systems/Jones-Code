@@ -7,8 +7,7 @@ import {
   ChatAttachmentId,
   CommandId,
   EventId,
-  ProjectId,
-  RunId,
+  MessageId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -17,7 +16,6 @@ import {
   type OrchestrationV2StoredEvent,
   type UserInputAttachments,
 } from "@t3tools/contracts";
-import * as Arr from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,25 +23,15 @@ import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentS
 import * as ServerConfig from "../config.ts";
 import {
   OrchestratorCommandPreviouslyRejectedError,
+  OrchestratorThreadMessagesBlockedError,
   OrchestratorDispatchError,
 } from "./Orchestrator.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
-import * as AttachmentClaims from "./AttachmentClaims.ts";
 import { dispatchCommand } from "./ThreadMessageIntake.ts";
-import * as EventSink from "./EventSink.ts";
-import * as Witness from "./NormalizationWitness.ts";
-import { DispatchGuardRejectedError } from "./DispatchGuard.ts";
 
 const intakeTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-question-intake-",
-}).pipe(
-  Layer.provideMerge(NodeServices.layer),
-  Layer.provideMerge(
-    Layer.mock(EventSink.EventSinkV2)({
-      readNormalizationWitness: () => Effect.succeed({ witness: null, receipt: null }),
-    }),
-  ),
-);
+}).pipe(Layer.provideMerge(NodeServices.layer));
 
 const failingDispatch = (captured: OrchestrationV2ServerCommand[]) =>
   Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -779,305 +767,51 @@ it.effect("applies the image budget across all questions before dispatch", () =>
   }).pipe(Effect.provide(intakeTestLayer)),
 );
 
-for (const kind of ["queued-run.edit", "runtime-request.respond"] as const) {
-  it.effect(
-    `replays witnessed ${kind} through guards without recopying or changing edited accepted bytes`,
-    () =>
-      Effect.gen(function* () {
-        const config = yield* ServerConfig.ServerConfig;
-        const threadId = ThreadId.make("thread-normalized-replay");
-        const birth = {
-          kind: "application_v2_thread_birth" as const,
-          threadId,
-          eventId: EventId.make("birth-normalized-replay"),
-          sequence: 1,
-        };
-        const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
-        const pendingPath = NodePath.join(config.attachmentsDir, `${pendingId}.png`);
-        NodeFS.writeFileSync(pendingPath, new Uint8Array([1, 2, 3]));
-        const attachment = {
-          type: "image" as const,
-          id: pendingId,
-          name: "retry.png",
-          mimeType: "image/png",
-          sizeBytes: 3,
-        };
-        const command: OrchestrationV2Command =
-          kind === "queued-run.edit"
-            ? {
-                type: kind,
-                commandId: CommandId.make("command-normalized-replay"),
-                threadId,
-                runId: RunId.make("run-normalized-replay"),
-                text: "Edit",
-                attachments: [attachment],
-              }
-            : {
-                type: kind,
-                commandId: CommandId.make("command-normalized-replay"),
-                threadId,
-                requestId: RuntimeRequestId.make("request-normalized-replay"),
-                answers: { q: ["Answer"] },
-                attachmentsByQuestionId: { q: [attachment] },
-              };
-        let accepted: Witness.NormalizationWitnessV1 | undefined;
-        const firstDispatcher = Layer.mock(ThreadManagementService.ThreadManagementService)({
-          dispatch: (normalized) =>
-            Effect.gen(function* () {
-              const carrier = yield* Witness.NormalizationWitnessCarrier;
-              if (carrier === undefined)
-                return yield* Effect.die("Fresh normalization has no carrier");
-              accepted = {
-                ...carrier,
-                commandType: kind,
-                witnessVersion: 1,
-                acceptedCommand: carrier.acceptedCommand,
-                acceptedCommandDigest: Witness.acceptedCommandDigest(carrier.acceptedCommand),
-                receiptSequence: 2,
-                threadId,
-                projectId: ProjectId.make("project-normalized-replay"),
-                applicationBirth: birth,
-                createdAt: DateTime.formatIso(NOW),
-              };
-              return yield* new OrchestratorDispatchError({
-                commandId: normalized.commandId,
-                commandType: normalized.type,
-                cause: "Outcome was lost after fixture acceptance",
-              });
-            }),
-        });
-        yield* dispatchCommand(command).pipe(Effect.provide(firstDispatcher), Effect.result);
-        if (accepted === undefined)
-          return yield* Effect.die("Fixture did not observe normalized acceptance");
-        const row = accepted;
-        const finalAttachment =
-          row.acceptedCommand.type === "queued-run.edit"
-            ? row.acceptedCommand.attachments?.[0]
-            : row.acceptedCommand.type === "runtime-request.respond"
-              ? row.acceptedCommand.attachmentsByQuestionId?.q?.[0]
-              : undefined;
-        if (finalAttachment === undefined) return yield* Effect.die("Accepted attachment missing");
-        const finalPath = resolveAttachmentPath({
-          attachmentsDir: config.attachmentsDir,
-          attachment: finalAttachment,
-        });
-        if (finalPath === null) return yield* Effect.die("Accepted path missing");
-        NodeFS.writeFileSync(finalPath, new Uint8Array([9, 8, 7, 6]));
-        if (kind === "runtime-request.respond") {
-          NodeFS.unlinkSync(pendingPath);
-          const respondedAnswer =
-            row.acceptedCommand.type === "runtime-request.respond"
-              ? row.acceptedCommand.answers?.q
-              : undefined;
-          expect(Arr.isArray(respondedAnswer) && respondedAnswer[1]).toContain(finalPath);
-        }
-        const before = NodeFS.readdirSync(config.attachmentsDir).sort();
-        const observed: OrchestrationV2ServerCommand[] = [];
-        const replayServices = Layer.mergeAll(
-          Layer.mock(EventSink.EventSinkV2)({
-            readNormalizationWitness: () =>
-              Effect.succeed({
-                witness: row,
-                receipt: { status: "accepted", threadId, commandType: kind },
-              }),
-            readApplicationBirthRecord: () => Effect.succeed(birth),
-          }),
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            dispatch: (normalized) =>
-              Effect.gen(function* () {
-                observed.push(normalized);
-                expect((yield* Witness.NormalizationWitnessCarrier)?.mode).toBe("replay");
-                return yield* new DispatchGuardRejectedError({
-                  commandType: kind,
-                  reason: "stale_target",
-                  detail: "Current guard still applies",
-                });
-              }),
-          }),
-        );
-        const replayFailure = yield* Effect.flip(
-          dispatchCommand(command).pipe(Effect.provide(replayServices)),
-        );
-        expect(replayFailure._tag).toBe("DispatchGuardRejectedError");
-        expect(observed).toEqual([row.acceptedCommand]);
-        expect(NodeFS.readdirSync(config.attachmentsDir).sort()).toEqual(before);
-        expect(NodeFS.readFileSync(finalPath)).toEqual(Buffer.from([9, 8, 7, 6]));
-        const changed =
-          command.type === "queued-run.edit"
-            ? { ...command, text: "Different" }
-            : { ...command, answers: { q: ["Different"] } };
-        const conflict = yield* Effect.flip(
-          dispatchCommand(changed).pipe(Effect.provide(replayServices)),
-        );
-        expect(conflict._tag).toBe("OrchestratorCommandIdConflictError");
-        expect(observed).toHaveLength(1);
-        expect(NodeFS.readdirSync(config.attachmentsDir).sort()).toEqual(before);
-      }).pipe(Effect.provide(intakeTestLayer)),
-  );
-}
-
-it.effect("rejects an old accepted receipt with attachments before claiming or dispatching", () =>
-  Effect.gen(function* () {
-    const config = yield* ServerConfig.ServerConfig;
-    const id = ChatAttachmentId.make(createPendingAttachmentId()!);
-    NodeFS.writeFileSync(NodePath.join(config.attachmentsDir, `${id}.png`), new Uint8Array([1]));
-    const command: OrchestrationV2Command = {
-      type: "queued-run.edit",
-      commandId: CommandId.make("old-without-witness"),
-      threadId: ThreadId.make("thread-old"),
-      runId: RunId.make("run-old"),
-      text: "Edit",
-      attachments: [{ type: "image", id, name: "old.png", mimeType: "image/png", sizeBytes: 1 }],
-    };
-    const captured: OrchestrationV2ServerCommand[] = [];
-    const failure = yield* Effect.flip(
-      dispatchCommand(command).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            failingDispatch(captured),
-            Layer.mock(EventSink.EventSinkV2)({
-              readNormalizationWitness: () =>
-                Effect.succeed({
-                  witness: null,
-                  receipt: {
-                    status: "accepted",
-                    threadId: command.threadId,
-                    commandType: command.type,
-                  },
-                }),
-            }),
-          ),
-        ),
-      ),
-    );
-    expect(failure._tag).toBe("OrchestratorCommandIdConflictError");
-    expect(captured).toEqual([]);
-    expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([`${id}.png`]);
-  }).pipe(Effect.provide(intakeTestLayer)),
-);
-
-for (const collision of ["qualified", "unknown-detail", "changed-witness"] as const) {
-  it.effect(`keeps concurrent normalization cleanup bounded for ${collision}`, () =>
+it.effect(
+  "releases newly claimed message attachments when the target blocks foreign messages",
+  () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
-      const threadId = ThreadId.make("thread-concurrent-normalization");
       const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
       NodeFS.writeFileSync(
         NodePath.join(config.attachmentsDir, `${pendingId}.png`),
         new Uint8Array([1, 2, 3]),
       );
-      const attachment = {
-        type: "image" as const,
-        id: pendingId,
-        name: "race.png",
-        mimeType: "image/png",
-        sizeBytes: 3,
-      };
-      const command: Extract<OrchestrationV2Command, { readonly type: "queued-run.edit" }> = {
-        type: "queued-run.edit",
-        commandId: CommandId.make("command-concurrent-normalization"),
-        threadId,
-        runId: RunId.make("run-concurrent-normalization"),
-        text: "Edit",
-        attachments: [attachment],
-      };
-      const winner = yield* AttachmentClaims.claimPendingAttachments({
-        threadId,
-        attachments: [attachment],
-      });
-      const acceptedCommand = { ...command, attachments: winner.attachments };
-      const birth = {
-        kind: "application_v2_thread_birth" as const,
-        threadId,
-        eventId: EventId.make("birth-concurrent"),
-        sequence: 1,
-      };
-      const row: Witness.NormalizationWitnessV1 = {
-        commandId: command.commandId,
-        commandType: command.type,
-        witnessVersion: 1,
-        requestDigest: Witness.requestDigest(
-          collision === "changed-witness" ? { ...command, text: "Other" } : command,
+      const result = yield* dispatchCommand({
+        type: "message.dispatch",
+        commandId: CommandId.make("message-blocked"),
+        threadId: ThreadId.make("thread-rejected"),
+        senderThreadId: ThreadId.make("thread-sender"),
+        messageId: MessageId.make("message-blocked"),
+        text: "Foreign attachment",
+        attachments: [
+          { type: "image", id: pendingId, name: "screen.png", mimeType: "image/png", sizeBytes: 3 },
+        ],
+        createdBy: "agent",
+        creationSource: "mcp",
+        dispatchMode: { type: "start_immediately" },
+      }).pipe(
+        Effect.provide(
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            dispatch: (command) =>
+              Effect.fail(
+                new OrchestratorThreadMessagesBlockedError({
+                  commandId: command.commandId,
+                  threadId: ThreadId.make("thread-rejected"),
+                }),
+              ),
+          }),
         ),
-        attachments: winner.witnessAttachments,
-        contextRemaps: [],
-        acceptedCommand,
-        acceptedCommandDigest: Witness.acceptedCommandDigest(acceptedCommand),
-        receiptSequence: 2,
-        threadId,
-        projectId: ProjectId.make("project-concurrent"),
-        applicationBirth: birth,
-        createdAt: DateTime.formatIso(NOW),
-      };
-      let reads = 0;
-      const calls: OrchestrationV2ServerCommand[] = [];
-      let loserPath: string | null = null;
-      const failure = yield* Effect.flip(
-        dispatchCommand(command).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              Layer.mock(EventSink.EventSinkV2)({
-                readNormalizationWitness: () =>
-                  Effect.sync(() =>
-                    ++reads === 1
-                      ? { witness: null, receipt: null }
-                      : {
-                          witness: row,
-                          receipt: {
-                            status: "accepted" as const,
-                            threadId,
-                            commandType: command.type,
-                          },
-                        },
-                  ),
-                readApplicationBirthRecord: () => Effect.succeed(birth),
-              }),
-              Layer.mock(ThreadManagementService.ThreadManagementService)({
-                dispatch: (normalized) =>
-                  Effect.gen(function* () {
-                    calls.push(normalized);
-                    if (calls.length === 1) {
-                      if (
-                        normalized.type !== "queued-run.edit" ||
-                        normalized.attachments?.[0] === undefined
-                      )
-                        return yield* Effect.die("Missing losing attachment");
-                      loserPath = resolveAttachmentPath({
-                        attachmentsDir: config.attachmentsDir,
-                        attachment: normalized.attachments[0],
-                      });
-                      expect(loserPath).not.toBe(winner.claimedPaths[0]);
-                      expect(NodeFS.existsSync(loserPath!)).toBe(true);
-                      return yield* new DispatchGuardRejectedError({
-                        commandType: command.type,
-                        reason: "identity_conflict",
-                        detail:
-                          collision === "unknown-detail"
-                            ? "Unqualified conflict"
-                            : "checkout command or joined operation differs from its original acceptance",
-                      });
-                    }
-                    expect(NodeFS.existsSync(loserPath!)).toBe(false);
-                    expect((yield* Witness.NormalizationWitnessCarrier)?.mode).toBe("replay");
-                    return yield* new DispatchGuardRejectedError({
-                      commandType: command.type,
-                      reason: "stale_target",
-                      detail: "Current guard rejects replay",
-                    });
-                  }),
-              }),
-            ),
-          ),
-        ),
+        Effect.result,
       );
-      expect(failure._tag).toBe("DispatchGuardRejectedError");
-      expect(calls).toHaveLength(collision === "qualified" ? 2 : 1);
-      if (collision === "qualified") expect(calls[1]).toEqual(acceptedCommand);
-      expect(NodeFS.existsSync(loserPath!)).toBe(collision !== "qualified");
-      expect(NodeFS.readFileSync(winner.claimedPaths[0]!)).toEqual(Buffer.from([1, 2, 3]));
+      expect(result._tag).toBe("Failure");
+      expect(
+        NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
+          entry.startsWith("thread-rejected-"),
+        ),
+      ).toEqual([]);
       expect(NodeFS.existsSync(NodePath.join(config.attachmentsDir, `${pendingId}.png`))).toBe(
         true,
       );
     }).pipe(Effect.provide(intakeTestLayer)),
-  );
-}
+);

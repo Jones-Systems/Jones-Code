@@ -18,7 +18,6 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
 
 import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "../IdAllocator.ts";
@@ -519,12 +518,12 @@ function makeReplayServerConfig(
 ): Effect.Effect<
   ServerConfig.ServerConfig["Service"],
   PlatformError.PlatformError,
-  FileSystem.FileSystem | Path.Path | Scope.Scope
+  FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const baseDir = yield* fs.makeTempDirectoryScoped({
+    const baseDir = yield* fs.makeTempDirectory({
       prefix: `t3-orchestration-v2-cursor-${scenario}-`,
     });
     const stateDir = path.join(baseDir, "userdata");

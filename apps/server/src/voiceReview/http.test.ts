@@ -17,6 +17,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./http.ts";
+import * as VoiceReview from "./bridge.ts";
 
 class TestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.voiceReview) {}
 const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
@@ -40,10 +41,12 @@ const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
     );
   }),
 );
-const makeApp = () =>
+const makeApp = (
+  serviceLayer = VoiceReview.layer.pipe(Layer.provide(VoiceReview.dependenciesLayer)),
+) =>
   HttpRouter.toWebHandler(
     HttpApiBuilder.layer(TestApi).pipe(
-      Layer.provide(voiceReviewHttpApiLayer),
+      Layer.provide(voiceReviewHttpApiLayer.pipe(Layer.provide(serviceLayer))),
       Layer.provide(auth),
       Layer.provide(voiceReviewResponseHeadersLayer),
       Layer.provide(HttpPlatform.layer.pipe(Layer.provide(NodeServices.layer))),
@@ -121,6 +124,40 @@ it("rejects strict mutation and list-window violations before credential or brok
         )
       ).status,
     ).toBe(400);
+    expect(fetcher).not.toHaveBeenCalled();
+  } finally {
+    await app.dispose();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("delegates authenticated draft reads to the injected domain service", async () => {
+  const fetcher = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
+  const list = vi.fn(() => Effect.succeed({ server_now: "2026-10-02T00:00:00Z", drafts: [] }));
+  const app = makeApp(
+    Layer.succeed(VoiceReview.VoiceReview, {
+      recent: () => Effect.die("unexpected recent"),
+      registrySnapshot: () => Effect.die("unexpected registrySnapshot"),
+      registryWorkstreams: () => Effect.die("unexpected registryWorkstreams"),
+      registryEvents: () => Effect.die("unexpected registryEvents"),
+      correctAssociation: () => Effect.die("unexpected correctAssociation"),
+      correctLabel: () => Effect.die("unexpected correctLabel"),
+      diagnostics: () => Effect.die("unexpected diagnostics"),
+      list,
+      get: () => Effect.die("unexpected get"),
+      mutate: () => Effect.die("unexpected mutation"),
+    }),
+  );
+  try {
+    const response = await app.handler(
+      new Request("http://local/api/voice-review/drafts?scope=recent&limit=7", {
+        headers: { authorization: "Bearer owner" },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ server_now: "2026-10-02T00:00:00Z", drafts: [] });
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "owner" }), "recent", 7);
     expect(fetcher).not.toHaveBeenCalled();
   } finally {
     await app.dispose();

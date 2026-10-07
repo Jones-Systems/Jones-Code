@@ -17,8 +17,7 @@ import {
   type CollectedUint8StreamText,
 } from "./stream/collectUint8StreamText.ts";
 
-export interface ProcessRunInput<E = never, R = never> {
-  readonly revalidateMutation?: Effect.Effect<void, E, R>;
+export interface ProcessRunInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string | undefined;
@@ -143,9 +142,7 @@ export type ProcessRunError = typeof ProcessRunError.Type;
 export class ProcessRunner extends Context.Service<
   ProcessRunner,
   {
-    readonly run: <E = never, R = never>(
-      input: ProcessRunInput<E, R>,
-    ) => Effect.Effect<ProcessRunOutput, ProcessRunError | E, R>;
+    readonly run: (input: ProcessRunInput) => Effect.Effect<ProcessRunOutput, ProcessRunError>;
   }
 >()("t3/processRunner") {}
 
@@ -250,10 +247,10 @@ const collectText = Effect.fnUntraced(function* (input: {
   );
 });
 
-function finalizeRunProcess<E, R>(
-  effect: Effect.Effect<ProcessRunOutput, ProcessRunError | E, R | Scope.Scope>,
-  input: ProcessRunInput<E, R>,
-): Effect.Effect<ProcessRunOutput, ProcessRunError | E, R> {
+function finalizeRunProcess<R>(
+  effect: Effect.Effect<ProcessRunOutput, ProcessRunError, R | Scope.Scope>,
+  input: ProcessRunInput,
+): Effect.Effect<ProcessRunOutput, ProcessRunError, Exclude<R, Scope.Scope>> {
   const timeout = Duration.fromInputUnsafe(input.timeout ?? DEFAULT_TIMEOUT);
   const timeoutBehavior = input.timeoutBehavior ?? "error";
 
@@ -292,10 +289,10 @@ function finalizeRunProcess<E, R>(
 /** The executable name without its directory, recorded as `process.command` on process spans. */
 export const commandName = (command: string) => command.replace(/^.*[\\/]/, "");
 
-const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* <E = never, R = never>(
+const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
-  input: ProcessRunInput<E, R>,
-): Effect.fn.Return<ProcessRunOutput, ProcessRunError | E, R | Scope.Scope> {
+  input: ProcessRunInput,
+): Effect.fn.Return<ProcessRunOutput, ProcessRunError, Scope.Scope> {
   yield* Effect.annotateCurrentSpan("process.command", commandName(input.command));
   const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const outputMode = input.outputMode ?? "error";
@@ -307,7 +304,6 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* <E = 
     input.env === undefined ? {} : { env: input.env, extendEnv },
   );
 
-  yield* input.revalidateMutation ?? Effect.void;
   const child = yield* spawner
     .spawn(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {

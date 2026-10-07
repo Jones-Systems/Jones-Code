@@ -412,7 +412,7 @@ it.effect(
 
 it.effect("reports implemented tools separately from locally available executables", () => {
   const processMock = {
-    run: <E, R>(input: VcsProcess.VcsProcessInput<E, R>) => {
+    run: (input: VcsProcess.VcsProcessInput) => {
       if (input.command === "git") {
         return Effect.succeed(processOutput("git version 2.51.0\n"));
       }
@@ -537,7 +537,7 @@ it.effect("reports implemented tools separately from locally available executabl
 
 it.effect("probes provider authentication without exposing token details", () => {
   const processMock = {
-    run: <E, R>(input: VcsProcess.VcsProcessInput<E, R>) => {
+    run: (input: VcsProcess.VcsProcessInput) => {
       if (input.args[0] === "--version") {
         return Effect.succeed(processOutput(`${input.command} version test\n`));
       }

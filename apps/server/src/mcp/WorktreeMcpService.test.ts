@@ -50,7 +50,6 @@ const makeScope = (
 });
 
 interface ThreadFixture {
-  readonly modelSelection?: OrchestrationV2ThreadProjection["thread"]["modelSelection"];
   readonly branch?: string | null;
   readonly worktreePath?: string | null;
   readonly archivedAt?: string | null;
@@ -63,10 +62,6 @@ const makeProjection = (overrides: ThreadFixture = {}): OrchestrationV2ThreadPro
       id: threadId,
       projectId,
       title: "Worktree test thread",
-      modelSelection: {
-        instanceId: ProviderInstanceId.make("claudeAgent"),
-        model: "claude-sonnet-4",
-      },
       branch: null,
       worktreePath: null,
       archivedAt: null,
@@ -895,25 +890,6 @@ describe("t3_worktree_handoff", () => {
       expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "capability_denied" });
     });
   });
-
-  it.effect(
-    "rejects a credential from the previous provider instance before worktree effects",
-    () => {
-      const harness = makeHarness({
-        thread: {
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
-        },
-      });
-      return Effect.gen(function* () {
-        const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/stale-provider" }));
-        expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "capability_denied" });
-        expect(harness.localStatus).not.toHaveBeenCalled();
-        expect(harness.fetchRemote).not.toHaveBeenCalled();
-        expect(harness.createWorktree).not.toHaveBeenCalled();
-        expect(harness.dispatch).not.toHaveBeenCalled();
-      });
-    },
-  );
 
   it.effect("serializes concurrent handoffs for the same thread", () =>
     Effect.gen(function* () {

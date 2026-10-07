@@ -3,7 +3,6 @@ import {
   ProviderInstanceId,
   ThreadId,
   type OrchestrationProjectShell,
-  type OrchestrationV2ProviderCapabilities,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
@@ -14,98 +13,6 @@ export const v2Now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
 const v2ProjectId = ProjectId.make("project-v2");
 export const v2ThreadId = ThreadId.make("thread-v2");
 const v2ProviderInstanceId = ProviderInstanceId.make("codex");
-
-export const v2ProviderCapabilities: OrchestrationV2ProviderCapabilities = {
-  sessions: {
-    supportsMultipleProviderThreadsPerSession: false,
-    supportsModelSwitchInSession: false,
-    supportsProviderSwitchingViaHandoff: false,
-    supportsRuntimeModeSwitchInSession: false,
-    pendingRequestsSurviveRestart: false,
-  },
-  threads: {
-    canCreateEmptyThread: false,
-    canReadThreadSnapshot: false,
-    canRollbackThread: false,
-    canForkThread: false,
-    canForkFromTurn: false,
-    canForkFromSubagentThread: false,
-    exposesNativeThreadId: false,
-  },
-  turns: {
-    exposesNativeTurnId: false,
-    emitsTurnStarted: false,
-    emitsTurnCompleted: false,
-    supportsInterrupt: false,
-    supportsActiveSteering: false,
-    supportsSteeringByInterruptRestart: false,
-    supportsQueuedMessages: false,
-    terminalStatusQuality: "none",
-  },
-  streaming: {
-    streamsAssistantText: false,
-    streamsReasoning: false,
-    streamsToolOutput: false,
-    streamsPlanText: false,
-    emitsMessageCompleted: false,
-  },
-  tools: {
-    exposesToolItemIds: false,
-    emitsToolStarted: false,
-    emitsToolCompleted: false,
-    emitsToolOutput: false,
-    supportsMcpTools: false,
-    supportsDynamicToolCallbacks: false,
-  },
-  approvals: {
-    supportsCommandApproval: false,
-    supportsFileReadApproval: false,
-    supportsFileChangeApproval: false,
-    supportsApplyPatchApproval: false,
-    approvalsHaveNativeRequestIds: false,
-    approvalCallbacksAreLiveOnly: false,
-    approvalsCanOriginateFromSubagents: false,
-  },
-  planning: {
-    emitsPlanUpdated: false,
-    emitsTodoList: false,
-    emitsProposedPlan: false,
-    supportsStructuredQuestions: false,
-    planDeltasHaveItemIds: false,
-  },
-  subagents: {
-    supportsSubagents: false,
-    exposesSubagentThreadIds: false,
-    emitsSubagentLifecycle: false,
-    canWaitForSubagents: false,
-    canCloseSubagents: false,
-    canForkSubagentThread: false,
-  },
-  context: {
-    acceptsSystemContext: false,
-    acceptsDeveloperContext: false,
-    acceptsSyntheticUserContext: false,
-    canGenerateSummaries: false,
-    canConsumeHandoffSummaries: false,
-    supportsDeltaHandoff: false,
-    supportsFullThreadHandoff: false,
-    maxRecommendedHandoffChars: null,
-  },
-  checkpointing: {
-    appCanCheckpointFilesystem: false,
-    supportsNestedCheckpointScopes: false,
-    providerCanRollbackConversation: false,
-    providerRollbackReturnsSnapshot: false,
-    providerCanReadConversationSnapshot: false,
-  },
-  identity: {
-    nativeThreadIds: "none",
-    nativeTurnIds: "none",
-    nativeItemIds: "none",
-    nativeRequestIds: "none",
-  },
-  runtimePolicy: { enforcement: "client-boundary" },
-};
 
 export const v2Project: OrchestrationProjectShell = {
   id: v2ProjectId,

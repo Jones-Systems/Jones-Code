@@ -1,15 +1,16 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  AuthSessionId,
   CommandId,
-  EnvironmentAuthenticatedPrincipal,
   MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderThreadId,
+  ProviderTurnId,
   ThreadId,
-  type OrchestrationV2ImportedHistoryDelivery,
-  type OrchestrationV2StartWithImportedHistoryCommand,
+  TurnItemId,
+  type OrchestrationV2ProviderSession,
+  type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -19,12 +20,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as References from "effect/References";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { makeSqlitePersistenceLive } from "../../persistence/Layers/Sqlite.ts";
 import Migration0042 from "../../persistence/Migrations/042_ProjectionThreadLinkedPullRequest.ts";
@@ -35,14 +36,19 @@ import Migration0046 from "../../persistence/Migrations/046_RepairAutomaticSettl
 import Migration0047 from "../../persistence/Migrations/047_ProjectionProjectIcon.ts";
 import Migration0048 from "../../persistence/Migrations/048_ProjectionThreadBranchPullRequest.ts";
 import Migration0049 from "../../persistence/Migrations/049_ProjectionThreadsActiveOrderKey.ts";
-import * as EffectOutbox from "../EffectOutbox.ts";
+import { CodexProviderCapabilitiesV2 } from "../Adapters/CodexAdapterV2.ts";
+import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
 import * as EventStore from "../EventStore.ts";
-import { deriveProviderThread } from "../IdAllocator.ts";
 import * as LegacyV1ThreadImporter from "./LegacyV1ThreadImporter.ts";
+import * as Orchestrator from "../Orchestrator.ts";
 import * as ProjectionMaintenance from "../ProjectionMaintenance.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
-import * as ThreadManagementService from "../ThreadManagementService.ts";
+import {
+  ProviderAdapterProtocolError,
+  type ProviderAdapterV2Event,
+  type ProviderAdapterV2Shape,
+} from "../ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "../testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "../testkit/ReplayFixtureWorkspace.ts";
@@ -68,19 +74,7 @@ const ALL_THREADS = [
 const EARLIEST_MARKER = "EARLIEST_IMPORT_MARKER";
 const LATEST_MARKER = "LATEST_IMPORT_MARKER";
 const CONTINUATION_PROMPT = "Continue the migrated thread.";
-// Only the asserted provider-thread fields are read; the assertions stay authoritative.
-const decodePreparedProviderThreadPayload = Schema.decodeEffect(
-  Schema.fromJsonString(
-    Schema.Struct({
-      id: Schema.Unknown,
-      appThreadId: Schema.Unknown,
-      status: Schema.Unknown,
-      nativeThreadRef: Schema.Unknown,
-      nativeConversationHeadRef: Schema.Unknown,
-      providerSessionId: Schema.Unknown,
-    }),
-  ),
-);
+const CONTINUATION_RESPONSE = "codex continuation response";
 
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
@@ -94,15 +88,12 @@ const codexModelSelection = {
  * A V1 database as it exists on disk before a V2 server first opens it: schema
  * through migration 40 plus the 42-49 tail. Slot 41 carries a site-local
  * `ThreadSummaryTimeline` migration, matching production databases where local
- * builds recorded extra names under the shared id sequence. The current V2
- * migrations run on the copied database, preserving the source ledger and
- * applying Jones extensions through their separate ledger.
- *
- * The long thread's recorded worktree is the project root, so the other local
- * threads share its checkout. The active thread records its own worktree, so its
- * imported Start never needs the checkout the long thread's accepted Start owns.
+ * builds recorded extra names under the shared id sequence. The V2 runner only
+ * applies migrations past the recorded maximum id, so the cutover in this test
+ * applies 050, 051 and 052 on top of the untouched copy — the same path the
+ * real upgrade takes.
  */
-const seedV1Database = (fixturePath: string, workspace: string, activeWorktree: string) =>
+const seedV1Database = (fixturePath: string, workspace: string) =>
   Effect.scoped(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -230,7 +221,6 @@ const seedV1Database = (fixturePath: string, workspace: string, activeWorktree: 
         title: "Active conversation",
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-05T00:00:00.000Z",
-        worktreePath: activeWorktree,
         linkedPullRequestJson:
           '{"projectId":"project:cutover","repository":"pingdotgg/t3code","number":9100,"url":"https://github.com/pingdotgg/t3code/pull/9100"}',
       });
@@ -425,55 +415,175 @@ const seedV1Database = (fixturePath: string, workspace: string, activeWorktree: 
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: fixturePath }))),
   );
 
-const principal: EnvironmentAuthenticatedPrincipal["Service"] = {
-  sessionId: AuthSessionId.make("session:cutover:imported-start"),
-  subject: "user:synthetic-cutover",
-  method: "browser-session-cookie",
-  scopes: new Set(["orchestration:operate"]),
-};
+interface CapturedTurn {
+  readonly threadId: ThreadId;
+  readonly providerThreadId: ProviderThreadId;
+  readonly text: string;
+}
 
-const importedDelivery = (messageId: string): OrchestrationV2ImportedHistoryDelivery => ({
-  type: "message",
-  messageId: MessageId.make(messageId),
-  text: CONTINUATION_PROMPT,
-  attachments: [],
-  modelSelection: codexModelSelection,
-  runtimeMode: "full-access",
-  interactionMode: "default",
-  dispatchMode: { type: "start_immediately" },
-});
+const unimplemented = (detail: string) =>
+  Effect.fail(new ProviderAdapterProtocolError({ driver, detail }));
 
-// This fixture proves SQL acceptance only. A provider lookup would cross the
-// boundary under test and must fail instead of inventing native startup proof.
-const handoffRegistryLayer = Layer.succeed(
-  ProviderAdapterRegistry.ProviderAdapterRegistryV2,
-  ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
-    get: () => Effect.die(new Error("Provider lookup unused in imported cutover acceptance")),
-    list: () => Effect.succeed([instanceId]),
-    getHandoffDeliveryDescriptor: (requestedInstanceId) =>
-      requestedInstanceId === instanceId
-        ? Effect.succeed({
-            instanceId,
-            driver,
-            enabled: true,
-            declared: {
-              canConsumeHandoffSummaries: true,
-              supportsFullThreadHandoff: true,
-              supportsProviderSwitchingViaHandoff: true,
-            },
-          })
-        : Effect.fail(
-            new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({
-              instanceId: requestedInstanceId,
+const makeCodexAdapter = (capturedTurns: Ref.Ref<ReadonlyArray<CapturedTurn>>) =>
+  ({
+    instanceId,
+    driver,
+    getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+    planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+    openSession: (sessionInput) =>
+      Effect.gen(function* () {
+        const events = yield* PubSub.unbounded<ProviderAdapterV2Event>();
+        const now = yield* DateTime.now;
+        const providerSession: OrchestrationV2ProviderSession = {
+          id: sessionInput.providerSessionId,
+          driver,
+          providerInstanceId: instanceId,
+          status: "ready",
+          cwd: sessionInput.runtimePolicy.cwd ?? process.cwd(),
+          model: codexModelSelection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        };
+        return {
+          instanceId,
+          driver,
+          providerSessionId: sessionInput.providerSessionId,
+          providerSession,
+          events: Stream.fromPubSub(events),
+          ensureThread: (threadInput) =>
+            Effect.gen(function* () {
+              const createdAt = yield* DateTime.now;
+              const nativeThreadId = `${driver}:${threadInput.threadId}`;
+              return {
+                id: ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
+                driver,
+                providerInstanceId: instanceId,
+                providerSessionId: sessionInput.providerSessionId,
+                appThreadId: threadInput.threadId,
+                ownerNodeId: null,
+                nativeThreadRef: {
+                  driver,
+                  nativeId: nativeThreadId,
+                  strength: "strong",
+                },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: null,
+                lastRunOrdinal: null,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt,
+                updatedAt: createdAt,
+              } satisfies OrchestrationV2ProviderThread;
             }),
-          ),
-  }),
-);
+          resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+          startTurn: (turnInput) =>
+            Effect.gen(function* () {
+              yield* Ref.update(capturedTurns, (turns) => [
+                ...turns,
+                {
+                  threadId: turnInput.threadId,
+                  providerThreadId: turnInput.providerThread.id,
+                  text: turnInput.message.text,
+                },
+              ]);
+              const eventTime = yield* DateTime.now;
+              const providerTurnId = ProviderTurnId.make(
+                `provider-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+              );
+              yield* PubSub.publishAll(events, [
+                {
+                  type: "provider_turn.updated",
+                  driver,
+                  providerTurn: {
+                    id: providerTurnId,
+                    providerThreadId: turnInput.providerThread.id,
+                    nodeId: turnInput.rootNodeId,
+                    runAttemptId: turnInput.attemptId,
+                    nativeTurnRef: {
+                      driver,
+                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                      strength: "strong",
+                    },
+                    ordinal: turnInput.runOrdinal,
+                    status: "completed",
+                    startedAt: eventTime,
+                    completedAt: eventTime,
+                  },
+                },
+                {
+                  type: "turn_item.updated",
+                  driver,
+                  turnItem: {
+                    id: TurnItemId.make(
+                      `turn-item:${turnInput.threadId}:${turnInput.runOrdinal}:assistant`,
+                    ),
+                    threadId: turnInput.threadId,
+                    runId: turnInput.runId,
+                    nodeId: turnInput.rootNodeId,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerTurnId,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: turnInput.runOrdinal * 100 + 1,
+                    status: "completed",
+                    title: null,
+                    startedAt: eventTime,
+                    completedAt: eventTime,
+                    updatedAt: eventTime,
+                    type: "assistant_message",
+                    messageId: MessageId.make(
+                      `message:${turnInput.threadId}:${turnInput.runOrdinal}:assistant`,
+                    ),
+                    text: CONTINUATION_RESPONSE,
+                    streaming: false,
+                  },
+                },
+                {
+                  type: "turn.terminal",
+                  driver,
+                  providerThreadId: turnInput.providerThread.id,
+                  providerTurnId,
+                  runOrdinal: turnInput.runOrdinal,
+                  status: "completed",
+                  failure: null,
+                  threadDisposition: "reusable",
+                },
+              ] satisfies ReadonlyArray<ProviderAdapterV2Event>);
+            }),
+          steerTurn: () => Effect.void,
+          interruptTurn: () => Effect.void,
+          respondToRuntimeRequest: () => Effect.void,
+          readThreadSnapshot: () => unimplemented("readThreadSnapshot unused in cutover test"),
+          rollbackThread: () => unimplemented("rollbackThread unused in cutover test"),
+          forkThread: () => unimplemented("forkThread unused in cutover test"),
+        };
+      }),
+  }) satisfies ProviderAdapterV2Shape;
+
+const waitForIdle = Effect.fn("LegacyV1Cutover.waitForIdle")(function* (threadId: ThreadId) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const projection = yield* orchestrator.getThreadProjection(threadId);
+    if (
+      projection.runs.every(
+        (run) => !["queued", "starting", "running", "waiting"].includes(run.status),
+      )
+    ) {
+      return projection;
+    }
+    yield* Effect.sleep("5 millis");
+  }
+  return yield* Effect.die(new Error("Cutover test timed out waiting for idle"));
+});
 
 const makeBootLayer = (input: {
   readonly name: string;
   readonly dbPath: string;
   readonly workspace: string;
+  readonly capturedTurns: Ref.Ref<ReadonlyArray<CapturedTurn>>;
 }) => {
   const databaseLayer = makeSqlitePersistenceLive(input.dbPath).pipe(
     Layer.provide(NodeServices.layer),
@@ -499,23 +609,15 @@ const makeBootLayer = (input: {
         },
       },
     },
-    handoffRegistryLayer,
-    { databaseLayer, runEffectWorker: false },
+    ProviderAdapterRegistry.makeSingleLayer(makeCodexAdapter(input.capturedTurns)),
+    { databaseLayer },
   );
-  const threadManagementProvided = ThreadManagementService.layerWithLegacyImporter.pipe(
-    Layer.provide(Layer.mergeAll(importerProvided, orchestratorProvided)),
-  );
-  const outboxProvided = EffectOutbox.layer.pipe(Layer.provide(databaseLayer));
-  // The replay runtime also exposes a narrow ThreadManagementService mock; the
-  // later merged layer wins, so the real legacy-importing service comes last.
   return Layer.mergeAll(
-    outboxProvided,
     storesProvided,
     eventSinkProvided,
     importerProvided,
     maintenanceProvided,
     orchestratorProvided,
-    threadManagementProvided,
   );
 };
 
@@ -544,23 +646,22 @@ const messageOrdinals = (projection: OrchestrationV2ThreadProjection) =>
 
 describe("orchestration v2 legacy v1 cutover", () => {
   it.live(
-    "migrates an untouched v1 database copy through shell import, lazy transcripts, explicit imported Start and restart",
+    "migrates an untouched v1 database copy through shell import, lazy transcripts, continuation and restart",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const workspace = yield* checkpointWorkspace("legacy-v1-cutover");
-          const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v1-cutover-state-" });
+          const stateDir = yield* fs.makeTempDirectory({ prefix: "t3-v1-cutover-state-" });
           const fixturePath = path.join(stateDir, "v1-source.sqlite");
           const copyPath = path.join(stateDir, "userdata", "state.sqlite");
-          const activeWorktree = path.join(stateDir, "active-worktree");
           yield* fs.makeDirectory(path.join(stateDir, "userdata"), { recursive: true });
-          yield* fs.makeDirectory(activeWorktree);
 
-          yield* seedV1Database(fixturePath, workspace, activeWorktree);
+          yield* seedV1Database(fixturePath, workspace);
           yield* fs.copyFile(fixturePath, copyPath);
 
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const longThreadId = ThreadId.make(LONG_THREAD);
 
           // First boot: the real file-backed stack migrates the copied database.
@@ -571,27 +672,7 @@ describe("orchestration v2 legacy v1 cutover", () => {
               const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
               const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
               const projections = yield* ProjectionStore.ProjectionStoreV2;
-              const threads = yield* ThreadManagementService.ThreadManagementService;
-              const sink = yield* EventSink.EventSinkV2;
-              const outbox = yield* EffectOutbox.EffectOutboxV2;
-              const auth = yield* AuthSessions.make;
-              const issuedAt = yield* DateTime.now;
-              yield* auth.create({
-                sessionId: principal.sessionId,
-                subject: principal.subject,
-                method: principal.method,
-                scopes: ["orchestration:operate"],
-                client: {
-                  label: null,
-                  ipAddress: null,
-                  userAgent: null,
-                  deviceType: "unknown",
-                  os: null,
-                  browser: null,
-                },
-                issuedAt,
-                expiresAt: DateTime.makeUnsafe(DateTime.toEpochMillis(issuedAt) + 3_600_000),
-              });
+              const orchestrator = yield* Orchestrator.OrchestratorV2;
 
               assert.equal(yield* importer.pendingThreadCount, ALL_THREADS.length);
               const shellImport = yield* importer.reconcileShells;
@@ -604,34 +685,6 @@ describe("orchestration v2 legacy v1 cutover", () => {
                 importedThreadCount: 0,
                 importedMessageCount: 0,
               });
-              const delivery = importedDelivery("message:cutover:long:continuation");
-              const previewReview = yield* threads.reviewImportedHistoryStart({
-                threadId: longThreadId,
-                delivery,
-              });
-              assert.equal(previewReview.transcriptEligibility.type, "unknown");
-              assert.isNull(previewReview.reviewedBasis);
-              const blocked = yield* threads
-                .dispatch({
-                  type: "message.dispatch",
-                  createdBy: "user",
-                  creationSource: "web",
-                  commandId: CommandId.make("command:cutover:implicit-rejected"),
-                  threadId: longThreadId,
-                  messageId: MessageId.make("message:cutover:implicit-rejected"),
-                  text: CONTINUATION_PROMPT,
-                  attachments: [],
-                  dispatchMode: { type: "start_immediately" },
-                })
-                .pipe(Effect.flip);
-              assert.equal(blocked._tag, "OrchestratorImportedContinuationHeldError");
-              if (blocked._tag === "OrchestratorImportedContinuationHeldError") {
-                assert.equal(blocked.reason, "continuation_unknown");
-              }
-              const stillPreview = yield* projections.getThreadProjection(longThreadId);
-              assert.equal(stillPreview.messages.length, 2);
-              assert.equal(stillPreview.runs.length, 0);
-              assert.equal(stillPreview.providerThreads.length, 0);
               assert.isTrue((yield* maintenance.rebuild).valid);
 
               const shellSnapshot = yield* projections.getShellSnapshot();
@@ -656,12 +709,6 @@ describe("orchestration v2 legacy v1 cutover", () => {
               );
               assert.equal(activeShell.thread.historyOrigin, "v1_import");
               assert.isNull(activeShell.thread.activeProviderThreadId);
-              assert.deepEqual(activeShell.runs, []);
-              assert.deepEqual(activeShell.attempts, []);
-              assert.deepEqual(activeShell.providerSessions, []);
-              assert.deepEqual(activeShell.runtimeRequests, []);
-              assert.deepEqual(activeShell.providerTurns, []);
-              assert.isTrue(activeShell.messages.every((message) => message.runId === null));
               assert.deepStrictEqual(
                 activeShell.messages.map((message) => message.id),
                 ["message:cutover:active:3", "message:cutover:active:4"],
@@ -772,217 +819,58 @@ describe("orchestration v2 legacy v1 cutover", () => {
                 ["message:cutover:interrupted:2", 2, "interrupted"],
               ]);
 
-              // Full imported parity permits an explicit reviewed handoff. SQL
-              // acceptance remains pending until a real native effect is acknowledged.
-              const review = yield* threads.reviewImportedHistoryStart({
-                threadId: longThreadId,
-                delivery,
-              });
-              assert.equal(review.applicability, "imported");
-              assert.equal(review.qualification.type, "unknown");
-              assert.equal(review.restoredBinding.type, "missing");
-              assert.equal(review.nativeEffects.type, "clear");
-              assert.equal(review.transcriptEligibility.type, "eligible");
-              assert.isTrue(review.capability.startWithImportedHistory);
-              if (review.reviewedBasis === null)
-                return yield* Effect.die(new Error("Expected complete imported review basis"));
-              const command: OrchestrationV2StartWithImportedHistoryCommand = {
-                type: "thread.imported-history.start",
+              // First continuation of a migrated thread: a fresh provider session
+              // receives the newest transcript suffix inside the 32k handoff.
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
                 commandId: CommandId.make("command:cutover:continue"),
                 threadId: longThreadId,
-                reviewedBasis: review.reviewedBasis,
-                delivery,
-              };
-              const accepted = yield* threads.startWithImportedHistory(command);
-              assert.equal(accepted.intentStatus, "accepted");
-              assert.equal(accepted.execution.status, "pending");
-              assert.isNull(accepted.execution.nativeThreadId);
-              assert.isNull(accepted.execution.providerSessionId);
-              assert.isNull(accepted.execution.effectOutcome);
-              const continued = yield* projections.getThreadProjection(longThreadId);
-              assert.equal(continued.runs.length, 1);
-              assert.equal(continued.runs[0]?.status, "starting");
-              assert.isNull(continued.runs[0]?.startedAt);
-              assert.equal(continued.providerThreads.length, 1);
-              assert.equal(continued.providerThreads[0]?.status, "not_loaded");
-              assert.isNull(continued.providerThreads[0]?.nativeThreadRef);
-              assert.isNull(continued.providerThreads[0]?.providerSessionId);
-              assert.isNull(continued.providerThreads[0]?.nativeConversationHeadRef);
-              assert.equal(accepted.execution.runId, continued.runs[0]!.id);
-              const preparedProviderThreadId = deriveProviderThread({
-                driver,
-                nativeThreadId: `pending:${continued.runs[0]!.id}`,
+                messageId: MessageId.make("message:cutover:long:continuation"),
+                text: CONTINUATION_PROMPT,
+                attachments: [],
+                dispatchMode: { type: "start_immediately" },
               });
-              assert.equal(continued.providerThreads[0]!.id, preparedProviderThreadId);
-              assert.equal(continued.thread.activeProviderThreadId, preparedProviderThreadId);
-              assert.equal(continued.runs[0]!.providerThreadId, preparedProviderThreadId);
-              const preparedEvents = yield* sql<{ readonly payload_json: string }>`
-                SELECT payload_json FROM orchestration_events
-                WHERE command_id = ${command.commandId} AND stream_id = ${longThreadId}
-                  AND application_event_version = 2 AND event_type = 'provider-thread.updated'
-              `;
-              assert.lengthOf(preparedEvents, 1);
-              const preparedPayload = yield* decodePreparedProviderThreadPayload(
-                preparedEvents[0]!.payload_json,
-              );
-              assert.equal(preparedPayload.id, preparedProviderThreadId);
-              assert.equal(preparedPayload.appThreadId, longThreadId);
-              assert.equal(preparedPayload.status, "not_loaded");
-              assert.isNull(preparedPayload.nativeThreadRef);
-              assert.isNull(preparedPayload.nativeConversationHeadRef);
-              assert.isNull(preparedPayload.providerSessionId);
-              assert.isNull(yield* sink.readProviderRuntimeEvidence(longThreadId));
-              assert.isEmpty(continued.providerSessions);
-              assert.isEmpty(continued.providerTurns);
+              const continued = yield* waitForIdle(longThreadId);
+
+              const runs = continued.runs.filter((run) => run.ordinal >= 1);
+              assert.equal(runs.at(-1)?.status, "completed");
+              assert.equal(continued.providerThreads.length, 1);
+              assert.isNotNull(continued.providerThreads[0]?.nativeThreadRef);
               assert.equal(continued.contextHandoffs.length, 1);
               const handoff = continued.contextHandoffs[0]!;
               assert.equal(handoff.strategy, "manual_context");
-              assert.equal(handoff.targetRunId, continued.runs[0]!.id);
-              assert.equal(handoff.toProviderThreadId, preparedProviderThreadId);
               assert.isAtMost(handoff.summaryText.length, 32_000);
               assert.include(handoff.summaryText, LATEST_MARKER);
               assert.notInclude(handoff.summaryText, EARLIEST_MARKER);
-              assert.equal(
-                continued.messages.filter((message) => message.runId !== null).length,
-                1,
-              );
-              const effects = yield* outbox.listByCommandId(command.commandId);
-              assert.equal(effects.length, 1);
-              assert.equal(effects[0]?.request.type, "provider-turn.start");
-              assert.equal(effects[0]?.status, "pending");
-              const replayed = yield* threads.startWithImportedHistory(command);
-              assert.deepStrictEqual(replayed, accepted);
-              assert.deepStrictEqual(
-                yield* projections.getThreadProjection(longThreadId),
-                continued,
-              );
-              assert.deepStrictEqual(yield* outbox.listByCommandId(command.commandId), effects);
-              const observed = yield* threads.observeImportedHistoryStart({
-                threadId: longThreadId,
-                commandId: command.commandId,
-              });
-              assert.deepStrictEqual(observed, accepted);
-              const reusedAsOrdinary = yield* threads
-                .dispatch({
-                  type: "message.dispatch",
-                  createdBy: "user",
-                  creationSource: "web",
-                  commandId: command.commandId,
-                  threadId: longThreadId,
-                  messageId: MessageId.make("message:cutover:identity-conflict"),
-                  text: "One more.",
-                  attachments: [],
-                  dispatchMode: { type: "start_immediately" },
-                })
-                .pipe(Effect.flip);
-              assert.equal(reusedAsOrdinary._tag, "DispatchGuardRejectedError");
-              assert.deepStrictEqual(
-                yield* projections.getThreadProjection(longThreadId),
-                continued,
-              );
+              const turns = yield* Ref.get(capturedTurns);
+              assert.equal(turns.length, 1);
+              assert.include(turns[0]!.text, "Context handoff (manual_context):");
+              assert.include(turns[0]!.text, `User message:\n${CONTINUATION_PROMPT}`);
 
-              const activeId = ThreadId.make(ACTIVE_THREAD);
-              const staleDelivery = importedDelivery("message:cutover:stale-basis");
-              const staleReview = yield* threads.reviewImportedHistoryStart({
-                threadId: activeId,
-                delivery: staleDelivery,
-              });
-              if (staleReview.reviewedBasis === null)
-                return yield* Effect.die(new Error("Expected active imported review basis"));
-              const activeBefore = yield* projections.getThreadProjection(activeId);
-              const source = yield* sql<{
-                readonly updated_at: string;
-              }>`SELECT updated_at FROM projection_threads WHERE thread_id = ${activeId}`;
-              yield* sql`UPDATE projection_threads SET updated_at = '2026-03-01T00:00:00.000Z' WHERE thread_id = ${activeId}`;
-              const rejected = yield* threads.startWithImportedHistory({
-                type: "thread.imported-history.start",
-                commandId: CommandId.make("command:cutover:stale-basis"),
-                threadId: activeId,
-                reviewedBasis: staleReview.reviewedBasis,
-                delivery: staleDelivery,
-              });
-              assert.equal(rejected.intentStatus, "rejected");
-              assert.equal(rejected.rejectionReason, "imported_history_review_changed");
-              assert.equal(rejected.execution.status, "not_started");
-              assert.deepStrictEqual(
-                yield* projections.getThreadProjection(activeId),
-                activeBefore,
-              );
-              assert.equal((yield* outbox.listByCommandId(rejected.commandId)).length, 0);
-              yield* sql`UPDATE projection_threads SET updated_at = ${source[0]!.updated_at} WHERE thread_id = ${activeId}`;
-
-              // A thread sharing the long thread's checkout stays refused while
-              // that thread's accepted Start owns it.
-              const pinnedId = ThreadId.make(PINNED_THREAD);
-              const sharedDelivery = importedDelivery("message:cutover:shared-checkout");
-              const sharedReview = yield* threads.reviewImportedHistoryStart({
-                threadId: pinnedId,
-                delivery: sharedDelivery,
-              });
-              if (sharedReview.reviewedBasis === null)
-                return yield* Effect.die(new Error("Expected pinned imported review basis"));
-              const pinnedBefore = yield* projections.getThreadProjection(pinnedId);
-              const sharedCommandId = CommandId.make("command:cutover:shared-checkout");
-              const refused = yield* threads
-                .startWithImportedHistory({
-                  type: "thread.imported-history.start",
-                  commandId: sharedCommandId,
-                  threadId: pinnedId,
-                  reviewedBasis: sharedReview.reviewedBasis,
-                  delivery: sharedDelivery,
-                })
-                .pipe(Effect.flip);
-              assert.equal(refused._tag, "WorktreeOwnershipConflictError");
-              if (refused._tag === "WorktreeOwnershipConflictError") {
-                assert.equal(refused.ownerThreadId, longThreadId);
-                assert.equal(refused.requestingThreadId, pinnedId);
-              }
-              assert.deepStrictEqual(
-                yield* projections.getThreadProjection(pinnedId),
-                pinnedBefore,
-              );
-              assert.equal((yield* outbox.listByCommandId(sharedCommandId)).length, 0);
-
-              // A claim with unknown outcome remains held; review cannot silently
-              // authorize a second fresh attempt and restart cannot clear it.
-              const claimed = yield* outbox.claimNext({
-                workerId: "worker:cutover",
-                leaseDurationMs: 60_000,
-              });
-              if (Option.isNone(claimed))
-                return yield* Effect.die(new Error("Expected pending imported Start effect"));
-              assert.equal(claimed.value.id, effects[0]!.id);
-              assert.isTrue(
-                yield* outbox.holdUnknown({
-                  effectId: claimed.value.id,
-                  workerId: "worker:cutover",
-                  expectedAttempt: claimed.value.attemptCount,
-                  operationId: "operation:cutover:unknown",
-                  evidence: {
-                    operationId: "operation:cutover:unknown",
-                    operation: "start_turn",
-                    threadId: longThreadId,
-                    outcome: "unknown",
-                  },
-                }),
-              );
-              const heldReview = yield* threads.reviewImportedHistoryStart({
+              // The next continuation reuses the provider thread without a new
+              // handoff: the imported context is only reissued until a v2 run
+              // completes.
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make("command:cutover:continue:again"),
                 threadId: longThreadId,
-                delivery: importedDelivery("message:cutover:held-retry"),
+                messageId: MessageId.make("message:cutover:long:continuation:2"),
+                text: "One more.",
+                attachments: [],
+                dispatchMode: { type: "start_immediately" },
               });
-              assert.equal(heldReview.nativeEffects.type, "unknown");
-              assert.isNull(heldReview.reviewedBasis);
-              const heldReceipt = yield* threads.observeImportedHistoryStart({
-                threadId: longThreadId,
-                commandId: command.commandId,
-              });
-              assert.equal(heldReceipt.intentStatus, "accepted");
-              assert.equal(heldReceipt.execution.status, "unknown");
-              assert.isNull(heldReceipt.execution.nativeThreadId);
-              assert.equal((yield* outbox.listHeldByThreadId(longThreadId)).length, 1);
-              const historicalDisposition =
-                yield* sink.readLegacyContinuationDisposition(longThreadId);
-              assert.equal(historicalDisposition?.qualification.type, "unknown");
+              const continuedAgain = yield* waitForIdle(longThreadId);
+              assert.equal(continuedAgain.contextHandoffs.length, 1);
+              assert.equal((yield* Ref.get(capturedTurns)).length, 2);
+
+              // Drain the outbox worker so the persisted event count is settled
+              // before the restart boot re-reads it.
+              const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+              yield* worker.drain();
 
               const migrationEventCount = yield* sql<{ readonly count: number }>`
               SELECT COUNT(*) AS count
@@ -1015,9 +903,7 @@ describe("orchestration v2 legacy v1 cutover", () => {
                 importRows,
                 legacyMessageCount: legacyMessageCount[0]?.count ?? 0,
                 legacyThreadCount: legacyThreadCount[0]?.count ?? 0,
-                longProjection: continued,
-                importedCommand: command,
-                heldReceipt,
+                longProjection: continuedAgain,
                 migration41Name: recordedMigration41[0]?.name ?? null,
                 authSessionColumnNames: authSessionColumns.map((column) => column.name),
               };
@@ -1027,6 +913,7 @@ describe("orchestration v2 legacy v1 cutover", () => {
                   name: "legacy-v1-cutover-first",
                   dbPath: copyPath,
                   workspace,
+                  capturedTurns,
                 }),
               ),
               Effect.provideService(
@@ -1105,54 +992,10 @@ describe("orchestration v2 legacy v1 cutover", () => {
               // migration events (message + turn item); nothing else repeats.
               assert.equal(migrationEventCount[0]?.count, firstBoot.migrationEventCount + 2);
 
-              const threads = yield* ThreadManagementService.ThreadManagementService;
-              const outbox = yield* EffectOutbox.EffectOutboxV2;
               const restarted = yield* projections.getThreadProjection(longThreadId);
               assert.equal(restarted.thread.historyOrigin, "v1_import");
               assert.equal(restarted.contextHandoffs.length, 1);
-              // Explicit Start links its prepared SQL thread before any native
-              // effect. Restart preserves that exact prepared row.
-              assert.equal(
-                restarted.thread.activeProviderThreadId,
-                firstBoot.longProjection.thread.activeProviderThreadId,
-              );
-              assert.deepStrictEqual(
-                restarted.providerThreads,
-                firstBoot.longProjection.providerThreads,
-              );
-              assert.isNull(restarted.providerThreads[0]?.nativeThreadRef);
-              assert.isNull(restarted.providerThreads[0]?.providerSessionId);
-              assert.isNull(restarted.providerThreads[0]?.nativeConversationHeadRef);
-              const sink = yield* EventSink.EventSinkV2;
-              assert.isNull(yield* sink.readProviderRuntimeEvidence(longThreadId));
-              assert.isEmpty(restarted.providerSessions);
-              assert.isEmpty(restarted.providerTurns);
-              assert.deepStrictEqual(
-                yield* threads.observeImportedHistoryStart({
-                  threadId: longThreadId,
-                  commandId: firstBoot.importedCommand.commandId,
-                }),
-                firstBoot.heldReceipt,
-              );
-              assert.deepStrictEqual(
-                yield* threads.startWithImportedHistory(firstBoot.importedCommand),
-                firstBoot.heldReceipt,
-              );
-              assert.deepStrictEqual(
-                yield* projections.getThreadProjection(longThreadId),
-                restarted,
-              );
-              assert.equal(
-                (yield* outbox.listByCommandId(firstBoot.importedCommand.commandId)).length,
-                1,
-              );
-              assert.equal((yield* outbox.listHeldByThreadId(longThreadId)).length, 1);
-              const restartReview = yield* threads.reviewImportedHistoryStart({
-                threadId: longThreadId,
-                delivery: importedDelivery("message:cutover:restart-held"),
-              });
-              assert.equal(restartReview.nativeEffects.type, "unknown");
-              assert.isNull(restartReview.reviewedBasis);
+              assert.isNotNull(restarted.thread.activeProviderThreadId);
               assert.deepStrictEqual(
                 restarted.runs.map((run) => run.status),
                 firstBoot.longProjection.runs.map((run) => run.status),
@@ -1181,6 +1024,7 @@ describe("orchestration v2 legacy v1 cutover", () => {
                   name: "legacy-v1-cutover-restart",
                   dbPath: copyPath,
                   workspace,
+                  capturedTurns,
                 }),
               ),
               Effect.provideService(
@@ -1195,10 +1039,7 @@ describe("orchestration v2 legacy v1 cutover", () => {
           assert.isTrue(
             boot2Logs.some((log) => String(log.message).includes("migration history diverges")),
           );
-        }).pipe(
-          Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
-          Effect.provide(NodeServices.layer),
-        ),
+        }).pipe(Effect.provide(NodeServices.layer)),
       ),
   );
 });

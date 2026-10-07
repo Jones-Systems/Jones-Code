@@ -13,7 +13,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
-import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
@@ -62,7 +61,6 @@ it.effect("attributes a launched thread's first message to the calling thread", 
             projection: {
               thread: { id: input.threadId, projectId, modelSelection },
               runs: [],
-              messages: [],
             },
             resumed: false,
           } as unknown as ThreadLaunch.ThreadLaunchResult);
@@ -70,9 +68,6 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       }),
       Layer.mock(Project.ProjectService)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
-      Layer.mock(EventSink.EventSinkV2)({
-        readNormalizationWitness: () => Effect.succeed({ witness: null, receipt: null }),
-      }),
       NodeServices.layer,
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-link-" }).pipe(
         Layer.provide(NodeServices.layer),
@@ -128,7 +123,6 @@ it.effect("launches a scratch thread into the Scratch project", () =>
             projection: {
               thread: { id: input.threadId, projectId: input.projectId, modelSelection },
               runs: [],
-              messages: [],
             },
             resumed: false,
           } as unknown as ThreadLaunch.ThreadLaunchResult);
@@ -138,9 +132,6 @@ it.effect("launches a scratch thread into the Scratch project", () =>
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         ensureScratchProject: Effect.succeed({ projectId: scratchProjectId }),
-      }),
-      Layer.mock(EventSink.EventSinkV2)({
-        readNormalizationWitness: () => Effect.succeed({ witness: null, receipt: null }),
       }),
       NodeServices.layer,
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-scratch-launch-" }).pipe(

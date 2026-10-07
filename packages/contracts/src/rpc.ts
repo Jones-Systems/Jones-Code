@@ -1,16 +1,4 @@
-import { NativeBootstrapSubmission } from "./nativeCreation.ts";
-import {
-  OrchestrationV2ThreadRuntimeAttachmentResult,
-  OrchestrationV2ThreadRuntimeObservationResult,
-  OrchestrationV2OperatingCountsResult,
-  OrchestrationV2CurrentThreadRuntimeTarget,
-  OrchestrationV2StopCurrentThreadRuntimeResult,
-  OrchestrationV2ThreadDeletionCleanupObservation,
-  NativeBootstrapDispatchResultV2,
-  OrchestrationV2ImportedHistoryReviewResult,
-  OrchestrationV2ImportedHistoryStartReceipt,
-  ThreadTurnDispatchGuardV2,
-} from "./orchestrationNative.ts";
+import { QueueDispatchCommand } from "./queueDispatch.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
   ChatGptReconnectProfileInput,
@@ -22,13 +10,8 @@ import {
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import {
-  CommandId,
-  NonNegativeInt,
-  ProjectId,
-  ThreadId,
-  TrimmedNonEmptyString,
-} from "./baseSchemas.ts";
+import * as RpcMiddleware from "effect/unstable/rpc/RpcMiddleware";
+import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -162,6 +145,8 @@ import {
 } from "./provider.ts";
 import { ProviderInstanceId, ProviderInstanceMutation } from "./providerInstance.ts";
 import {
+  PullRequestCiStatusInput,
+  PullRequestCiStatusResult,
   PullRequestActionInput,
   PullRequestActivity,
   PullRequestCommentInput,
@@ -211,9 +196,6 @@ import {
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
   OrchestrationV2RpcSchemas,
-  OrchestrationV2ClientCommand,
-  OrchestrationV2ImportedHistoryDelivery,
-  OrchestrationV2StartWithImportedHistoryCommand,
   OrchestrationV2ThreadLaunchError,
 } from "./orchestrationV2.ts";
 import {
@@ -503,6 +485,7 @@ export const WS_METHODS = {
   cloudInstallRelayClient: "cloud.installRelayClient",
 
   // Pull request methods
+  pullRequestsCiStatus: "pullRequests.ciStatus",
   pullRequestsList: "pullRequests.list",
   pullRequestsListStats: "pullRequests.listStats",
   pullRequestsSummary: "pullRequests.summary",
@@ -915,6 +898,12 @@ const PullRequestRpcError = Schema.Union([
   PullRequestOperationError,
   EnvironmentAuthorizationError,
 ]);
+
+const WsPullRequestsCiStatusRpc = Rpc.make(WS_METHODS.pullRequestsCiStatus, {
+  payload: PullRequestCiStatusInput,
+  success: PullRequestCiStatusResult,
+  error: PullRequestRpcError,
+});
 
 const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
   payload: PullRequestListInput,
@@ -1524,207 +1513,15 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   stream: true,
 });
 
-export const WsOrchestrationDispatchBootstrapRpc = Rpc.make("orchestration.dispatchBootstrap", {
-  payload: NativeBootstrapSubmission,
-  success: Schema.Struct({ sequence: NonNegativeInt }),
-  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
-});
-
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
-  payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
+  payload: Schema.Union([OrchestrationV2RpcSchemas.dispatchCommand.input, QueueDispatchCommand]),
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
-  error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    OrchestrationV2DispatchCommandError,
+    OrchestrationDispatchCommandError,
+    EnvironmentAuthorizationError,
+  ]),
 });
-
-export const OrchestrationV2DispatchNativeBootstrapInput = NativeBootstrapSubmission;
-export type OrchestrationV2DispatchNativeBootstrapInput =
-  typeof OrchestrationV2DispatchNativeBootstrapInput.Type;
-export const WsOrchestrationV2DispatchNativeBootstrapRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
-  {
-    payload: OrchestrationV2DispatchNativeBootstrapInput,
-    success: NativeBootstrapDispatchResultV2,
-    error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
-  },
-);
-
-const OrchestrationV2GuardedMessageCommand = OrchestrationV2ClientCommand.pipe(
-  Schema.refine<
-    typeof OrchestrationV2ClientCommand,
-    Extract<OrchestrationV2ClientCommand, { readonly type: "message.dispatch" }>
-  >(
-    (
-      command,
-    ): command is Extract<OrchestrationV2ClientCommand, { readonly type: "message.dispatch" }> =>
-      command.type === "message.dispatch",
-    { message: "Guarded dispatch requires message.dispatch" },
-  ),
-);
-const OrchestrationV2GuardedDispatchFields = {
-  command: OrchestrationV2GuardedMessageCommand,
-  guard: ThreadTurnDispatchGuardV2,
-};
-const OrchestrationV2GuardedDispatchSchema = Schema.Struct(OrchestrationV2GuardedDispatchFields);
-export const OrchestrationV2GuardedDispatchInput = Schema.flip(
-  Schema.flip(OrchestrationV2GuardedDispatchSchema).check(
-    Schema.makeFilter(
-      (input) =>
-        input !== null &&
-        typeof input === "object" &&
-        Reflect.ownKeys(input).every((key) =>
-          Object.hasOwn(OrchestrationV2GuardedDispatchFields, key),
-        ),
-    ),
-  ),
-);
-export type OrchestrationV2GuardedDispatchInput = typeof OrchestrationV2GuardedDispatchInput.Type;
-
-export const WsOrchestrationV2DispatchGuardedRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.dispatchGuarded,
-  {
-    payload: OrchestrationV2GuardedDispatchInput,
-    success: OrchestrationV2RpcSchemas.dispatchCommand.output,
-    error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
-  },
-);
-
-export const OrchestrationV2GetThreadRuntimeAttachmentInput = Schema.Struct({ threadId: ThreadId });
-export type OrchestrationV2GetThreadRuntimeAttachmentInput =
-  typeof OrchestrationV2GetThreadRuntimeAttachmentInput.Type;
-
-export const WsOrchestrationV2GetThreadRuntimeAttachmentRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeAttachment,
-  {
-    payload: OrchestrationV2GetThreadRuntimeAttachmentInput,
-    success: OrchestrationV2ThreadRuntimeAttachmentResult,
-    error: EnvironmentAuthorizationError,
-  },
-);
-
-const closedOrchestrationV2RpcInput = <Fields extends Schema.Struct.Fields>(fields: Fields) => {
-  const schema = Schema.Struct(fields);
-  return Schema.flip(
-    Schema.flip(schema).check(
-      Schema.makeFilter((value) =>
-        Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
-      ),
-    ),
-  );
-};
-
-export const OrchestrationV2GetThreadRuntimeObservationInput = closedOrchestrationV2RpcInput({
-  threadId: ThreadId,
-});
-export type OrchestrationV2GetThreadRuntimeObservationInput =
-  typeof OrchestrationV2GetThreadRuntimeObservationInput.Type;
-export const OrchestrationV2GetOperatingCountsInput = closedOrchestrationV2RpcInput({
-  projectId: Schema.optionalKey(ProjectId),
-});
-export type OrchestrationV2GetOperatingCountsInput =
-  typeof OrchestrationV2GetOperatingCountsInput.Type;
-
-export const WsOrchestrationV2GetThreadRuntimeObservationRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation,
-  {
-    payload: OrchestrationV2GetThreadRuntimeObservationInput,
-    success: OrchestrationV2ThreadRuntimeObservationResult,
-    error: EnvironmentAuthorizationError,
-  },
-);
-export const WsOrchestrationV2GetOperatingCountsRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.getOperatingCounts,
-  {
-    payload: OrchestrationV2GetOperatingCountsInput,
-    success: OrchestrationV2OperatingCountsResult,
-    error: EnvironmentAuthorizationError,
-  },
-);
-
-export const OrchestrationV2StopCurrentThreadRuntimeInput = closedOrchestrationV2RpcInput({
-  commandId: CommandId,
-  threadId: ThreadId,
-  target: OrchestrationV2CurrentThreadRuntimeTarget,
-}).check(Schema.makeFilter((input) => input.target.binding.threadId === input.threadId));
-export type OrchestrationV2StopCurrentThreadRuntimeInput =
-  typeof OrchestrationV2StopCurrentThreadRuntimeInput.Type;
-
-export const OrchestrationV2ObserveCurrentThreadRuntimeStopInput = closedOrchestrationV2RpcInput({
-  threadId: ThreadId,
-  commandId: CommandId,
-});
-export type OrchestrationV2ObserveCurrentThreadRuntimeStopInput =
-  typeof OrchestrationV2ObserveCurrentThreadRuntimeStopInput.Type;
-
-export const OrchestrationV2ObserveThreadDeletionCleanupInput = closedOrchestrationV2RpcInput({
-  threadId: ThreadId,
-  commandId: CommandId,
-});
-export type OrchestrationV2ObserveThreadDeletionCleanupInput =
-  typeof OrchestrationV2ObserveThreadDeletionCleanupInput.Type;
-export const WsOrchestrationV2ObserveThreadDeletionCleanupRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup,
-  {
-    payload: OrchestrationV2ObserveThreadDeletionCleanupInput,
-    success: OrchestrationV2ThreadDeletionCleanupObservation,
-    error: EnvironmentAuthorizationError,
-  },
-);
-
-export const WsOrchestrationV2StopCurrentThreadRuntimeRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
-  {
-    payload: OrchestrationV2StopCurrentThreadRuntimeInput,
-    success: OrchestrationV2StopCurrentThreadRuntimeResult,
-    error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
-  },
-);
-export const WsOrchestrationV2ObserveCurrentThreadRuntimeStopRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
-  {
-    payload: OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
-    success: OrchestrationV2StopCurrentThreadRuntimeResult,
-    error: EnvironmentAuthorizationError,
-  },
-);
-
-export const OrchestrationV2ReviewImportedHistoryStartInput = closedOrchestrationV2RpcInput({
-  threadId: ThreadId,
-  delivery: OrchestrationV2ImportedHistoryDelivery,
-});
-export type OrchestrationV2ReviewImportedHistoryStartInput =
-  typeof OrchestrationV2ReviewImportedHistoryStartInput.Type;
-
-export const OrchestrationV2ObserveImportedHistoryStartInput = closedOrchestrationV2RpcInput({
-  threadId: ThreadId,
-  commandId: CommandId,
-});
-export type OrchestrationV2ObserveImportedHistoryStartInput =
-  typeof OrchestrationV2ObserveImportedHistoryStartInput.Type;
-
-export const WsOrchestrationV2ReviewImportedHistoryStartRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart,
-  {
-    payload: OrchestrationV2ReviewImportedHistoryStartInput,
-    success: OrchestrationV2ImportedHistoryReviewResult,
-    error: EnvironmentAuthorizationError,
-  },
-);
-export const WsOrchestrationV2StartWithImportedHistoryRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory,
-  {
-    payload: OrchestrationV2StartWithImportedHistoryCommand,
-    success: OrchestrationV2ImportedHistoryStartReceipt,
-    error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
-  },
-);
-export const WsOrchestrationV2ObserveImportedHistoryStartRpc = Rpc.make(
-  ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart,
-  {
-    payload: OrchestrationV2ObserveImportedHistoryStartInput,
-    success: OrchestrationV2ImportedHistoryStartReceipt,
-    error: EnvironmentAuthorizationError,
-  },
-);
 
 const WsOrchestrationV2GetTurnDiffRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnDiff, {
   payload: OrchestrationV2RpcSchemas.getTurnDiff.input,
@@ -1773,6 +1570,12 @@ const WsOrchestrationV2GetWorkflowScriptRpc = Rpc.make(
     error: Schema.Union([OrchestrationGetWorkflowScriptError, EnvironmentAuthorizationError]),
   },
 );
+
+const WsOrchestrationV2GetTurnItemRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnItem, {
+  payload: OrchestrationV2RpcSchemas.getTurnItem.input,
+  success: OrchestrationV2RpcSchemas.getTurnItem.output,
+  error: Schema.Union([OrchestrationV2GetThreadProjectionError, EnvironmentAuthorizationError]),
+});
 
 const WsOrchestrationV2LaunchThreadRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.launchThread, {
   payload: OrchestrationV2RpcSchemas.launchThread.input,
@@ -1908,6 +1711,16 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
+/**
+ * Checks the connection's scopes against the scope each RPC declares, before
+ * the handler runs. Every RPC in `WsRpcGroup` carries it, so a handler cannot
+ * be added without authorization.
+ */
+export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
+  "t3/contracts/RpcScopeAuthorization",
+  { error: EnvironmentAuthorizationError },
+) {}
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
@@ -1968,6 +1781,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetBackgroundPolicyRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
+  WsPullRequestsCiStatusRpc,
   WsPullRequestsListRpc,
   WsPullRequestsListStatsRpc,
   WsPullRequestsSummaryRpc,
@@ -2072,20 +1886,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
-  WsOrchestrationDispatchBootstrapRpc,
   WsOrchestrationV2DispatchCommandRpc,
-  WsOrchestrationV2DispatchGuardedRpc,
-  WsOrchestrationV2DispatchNativeBootstrapRpc,
-  WsOrchestrationV2GetThreadRuntimeAttachmentRpc,
-  WsOrchestrationV2GetThreadRuntimeObservationRpc,
-  WsOrchestrationV2GetOperatingCountsRpc,
-  WsOrchestrationV2StopCurrentThreadRuntimeRpc,
-  WsOrchestrationV2ObserveCurrentThreadRuntimeStopRpc,
-  WsOrchestrationV2ObserveThreadDeletionCleanupRpc,
-  WsOrchestrationV2ReviewImportedHistoryStartRpc,
-  WsOrchestrationV2StartWithImportedHistoryRpc,
-  WsOrchestrationV2ObserveImportedHistoryStartRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
+  WsOrchestrationV2GetTurnItemRpc,
   WsOrchestrationV2GetTurnDiffRpc,
   WsOrchestrationV2GetFullThreadDiffRpc,
   WsOrchestrationV2SearchThreadsRpc,
@@ -2095,4 +1898,4 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeArchivedShellRpc,
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
-);
+).middleware(RpcScopeAuthorization);

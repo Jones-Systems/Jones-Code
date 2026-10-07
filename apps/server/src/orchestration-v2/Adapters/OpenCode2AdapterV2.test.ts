@@ -6,10 +6,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
-  AuthSessionId,
-  CommandId,
   EnvironmentId,
-  EventId,
   MessageId,
   NodeId,
   ProviderInstanceId,
@@ -19,8 +16,6 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
-  NativeCreationHistoricalBinding,
-  OrchestrationV2Command,
   type ModelSelection,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
@@ -35,79 +30,29 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
-import * as Queue from "effect/Queue";
 import * as References from "effect/References";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Exit from "effect/Exit";
-import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TestClock } from "effect/testing";
 import { describe } from "vite-plus/test";
 
 import type {
   ProviderAdapterV2Event,
   ProviderAdapterV2SessionRuntime,
-  ProviderRuntimeBinding,
 } from "../ProviderAdapter.ts";
-import { ProviderAdapterProtocolError } from "../ProviderAdapter.ts";
-import { AuthSessionRecord, AuthSessionRepository } from "../../persistence/AuthSessions.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import { layer as nativeCreationRepositoryLayer } from "../../persistence/Layers/NativeCreationRepository.ts";
-import { NativeCreationRepository } from "../../persistence/Services/NativeCreationRepository.ts";
-import * as EffectOutbox from "../EffectOutbox.ts";
-import {
-  makeNativeCreationAuthority,
-  NativeCreationBindingResolver,
-  NativeCreationGrantResolver,
-  type NativeCreationGrant,
-} from "../NativeCreationAuthority.ts";
-import {
-  NativePreparationBinding,
-  nativeCreationCanonicalJson,
-  nativeCreationSha256,
-  nativePreparationCommand,
-  validateNativeCreationPreparation,
-} from "../NativeCreationPreparation.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import * as ServerConfig from "../../config.ts";
-import * as OpenCode2Server from "../../provider/opencode2/OpenCode2Server.ts";
-import type { OpenCode2StreamEvent } from "../../provider/opencode2/OpenCode2Client.ts";
-import { OpenCodeRuntimeError } from "../../provider/opencodeRuntime.ts";
 import * as IdAllocator from "../IdAllocator.ts";
-import { readProviderEventOrigin } from "../ProviderEventOrigin.ts";
 import type { ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import * as ProviderContinuationRequests from "../ProviderContinuationRequests.ts";
 import { OPENCODE_PROVIDER } from "./OpenCodeAdapterV2.ts";
 import { OPENCODE_2_STILL_STOPPING } from "./OpenCode2AdapterV2.ts";
-import * as OpenCode2AdapterV2 from "./OpenCode2AdapterV2.ts";
 import { openCode2ReplayRuntime } from "./OpenCode2AdapterV2.testkit.ts";
 
-const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const SESSION = "ses_f148ca2deffeJcwCnRQtb0YFNX";
 const WORK = "/work/opencode2";
 const instanceId = ProviderInstanceId.make("opencode");
 const threadId = ThreadId.make("thread:opencode2-adapter");
-
-// Match the owned server's failure boundaries before replacement and native creation.
-const runLifecycleGuard = <E>(
-  guard: ((value: string) => Effect.Effect<void, E>) | undefined,
-  value: string,
-  operation: "beforeRuntimeReplacement" | "beforeNativeCreation",
-) =>
-  (guard?.(value) ?? Effect.void).pipe(
-    Effect.mapError(
-      (cause) =>
-        new OpenCodeRuntimeError({
-          operation,
-          detail:
-            operation === "beforeRuntimeReplacement"
-              ? "Could not register the replacement OpenCode runtime."
-              : "Could not authorize creation of the owned OpenCode runtime.",
-          cause,
-        }),
-    ),
-  );
 
 const out = (type: string, input?: unknown): ProviderReplayEntry => ({
   type: "expect_outbound",
@@ -452,790 +397,7 @@ const history = {
   cursor: {},
 };
 
-const nativeConfirmationLayer = Layer.mergeAll(
-  nativeCreationRepositoryLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
-  EffectOutbox.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
-);
-
-const nativeConfirmationFixture = Effect.gen(function* () {
-  const repository = yield* NativeCreationRepository;
-  const sql = yield* SqlClient.SqlClient;
-  const timestamp = DateTime.formatIso(yield* DateTime.now);
-  const actorSessionId = AuthSessionId.make("opencode2-confirmation-actor");
-  const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
-    backend_instance: "synthetic-backend",
-    environment_id: "synthetic-environment",
-    project_id: "synthetic-project",
-    project_cwd: "/project",
-    account_ref: "synthetic-account",
-    runtime_mode: "full-access",
-    interaction_mode: "default",
-    base_branch: "main",
-    start_from_origin: false,
-    run_setup_script: false,
-    provider_model_selection: bigPickle,
-  }).pipe(Effect.orDie);
-  const bootstrap = nativePreparationCommand(
-    "opencode2-confirmation",
-    binding,
-    "/compact",
-    "Synthetic confirmation",
-    timestamp,
-  );
-  const preparation = yield* validateNativeCreationPreparation(
-    new TextEncoder().encode(
-      nativeCreationCanonicalJson({
-        schema: "voice.t3-bootstrap-preparation/v1",
-        operation_id: "opencode2-confirmation",
-        binding,
-        command: bootstrap,
-        preparation_id: bootstrap.commandId.replace("voice-command-", "voice-bootstrap-"),
-        binding_digest: nativeCreationSha256(nativeCreationCanonicalJson(binding)),
-        prompt_digest: nativeCreationSha256(bootstrap.message.text),
-        command_digest: nativeCreationSha256(nativeCreationCanonicalJson(bootstrap)),
-      }),
-    ),
-  );
-  const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
-    backendInstance: binding.backend_instance,
-    environmentId: binding.environment_id,
-    projectId: binding.project_id,
-    projectCwd: binding.project_cwd,
-    accountRef: binding.account_ref,
-    accountBindingId: "synthetic-qualified-account",
-    accountBindingRevision: 1,
-    providerModelSelection: binding.provider_model_selection,
-    runtimeMode: binding.runtime_mode,
-    interactionMode: binding.interaction_mode,
-    baseBranch: binding.base_branch,
-    startFromOrigin: false,
-    runSetupScript: false,
-    requestedBranch: bootstrap.bootstrap.prepareWorktree.branch,
-  }).pipe(Effect.orDie);
-  const resources = {
-    projectCwd: binding.project_cwd,
-    branch: historical.requestedBranch,
-    worktreePath: WORK,
-  };
-  const claimId = "opencode2-confirmation-claim";
-  yield* sql`INSERT INTO native_creation_automation_enrollments (session_id, enrolled_at) VALUES (${actorSessionId}, ${timestamp})`;
-  yield* repository.claim(
-    {
-      preparation,
-      resources,
-      claimId,
-      claimedBootId: "synthetic-boot",
-      claimedAt: timestamp,
-      actorSessionId,
-      grantId: "synthetic-grant",
-      grantRevision: 1,
-    },
-    Effect.succeed(historical),
-  );
-  const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
-    type: "prepared-run.release",
-    commandId: CommandId.make(bootstrap.commandId),
-    threadId: ThreadId.make(bootstrap.threadId),
-    runId: RunId.make("run:opencode2-confirmation"),
-  }).pipe(Effect.orDie);
-  if (command.type !== "prepared-run.release")
-    return yield* Effect.die("Synthetic command is not a release");
-  yield* repository.reserveCommandIdentities(claimId, [command.commandId]);
-  yield* repository.recordNormalizedCommand(claimId, command);
-  const digest = Option.getOrThrow(
-    yield* repository.getReservedCommand(command.commandId),
-  ).commandDigest;
-  const eventId = EventId.make("event:opencode2-confirmation");
-  const event = yield* sql<{ readonly sequence: number }>`INSERT INTO orchestration_events
-    (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, command_id,
-      actor_kind, payload_json, metadata_json, application_event_version)
-    VALUES (${eventId}, 'thread', ${command.threadId}, 1, 'run.updated', ${timestamp}, ${command.commandId}, 'system', '{}', '{}', 2)
-    RETURNING sequence`;
-  yield* sql`INSERT INTO orchestration_command_receipts
-    (command_id, aggregate_kind, aggregate_id, command_type, accepted_at, result_sequence, status)
-    VALUES (${command.commandId}, 'thread', ${command.threadId}, ${command.type}, ${timestamp}, ${event[0]!.sequence}, 'accepted')`;
-  yield* sql`INSERT INTO orchestration_v2_native_command_identities
-    (command_id, kind, version, command_type, aggregate_kind, aggregate_id, normalized_command_digest, binding_digest)
-    VALUES (${command.commandId}, 'native_creation_stage', 2, ${command.type}, 'thread', ${command.threadId},
-      ${digest}, ${preparation.bindingDigest})`;
-  const effectId = `effect:${command.commandId}:provider-turn.start:${command.runId}`;
-  const reference = {
-    version: 2 as const,
-    claimId,
-    stageCommandId: command.commandId,
-    effectId,
-    stage: "native_command" as const,
-  };
-  const outbox = yield* EffectOutbox.EffectOutboxV2;
-  yield* outbox.enqueue([
-    {
-      id: effectId,
-      commandId: command.commandId,
-      threadId: command.threadId,
-      request: { type: "provider-turn.start", runId: command.runId },
-      nativeCreationExecutionReference: reference,
-    },
-  ]);
-  const claimed = Option.getOrThrow(
-    yield* outbox.claimNext({ workerId: "synthetic-worker", leaseDurationMs: 60_000 }),
-  );
-  let revoked = false;
-  let grantChecks = 0;
-  const grant: NativeCreationGrant = {
-    grantId: "synthetic-grant",
-    revision: 1,
-    actorSessionId,
-    issuerId: "synthetic-issuer",
-    expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
-    revoked: false,
-    operationId: preparation.operationId,
-    preparationId: preparation.preparationId,
-    preparationSha256: preparation.preparationSha256,
-    bindingDigest: preparation.bindingDigest,
-    binding: historical,
-    resources,
-    allowedStages: ["native_command"],
-    recoveryScopes: [],
-  };
-  const actor = yield* Schema.decodeUnknownEffect(AuthSessionRecord)({
-    sessionId: actorSessionId,
-    subject: "Synthetic actor",
-    scopes: ["orchestration:operate"],
-    method: "bearer-access-token",
-    client: {
-      label: null,
-      ipAddress: null,
-      userAgent: null,
-      deviceType: "bot",
-      os: null,
-      browser: null,
-    },
-    issuedAt: "2026-01-01T00:00:00Z",
-    expiresAt: "2099-01-01T00:00:00Z",
-    revokedAt: null,
-    lastConnectedAt: null,
-  }).pipe(Effect.orDie);
-  const authority = yield* makeNativeCreationAuthority.pipe(
-    Effect.provideService(
-      AuthSessionRepository,
-      AuthSessionRepository.of({
-        getById: () => Effect.succeed(Option.some(actor)),
-        create: () => Effect.void,
-        createReplacingActive: () => Effect.succeed([]),
-        createIfAbsent: () => Effect.void,
-        listActive: () => Effect.succeed([]),
-        revoke: () => Effect.succeed(false),
-        revokeAllExcept: () => Effect.succeed([]),
-        setLastConnectedAt: () => Effect.void,
-        setClientConnection: () => Effect.void,
-      }),
-    ),
-    Effect.provideService(NativeCreationGrantResolver, {
-      resolveCurrent: () =>
-        Effect.sync(() => {
-          grantChecks++;
-          return {
-            enrolledSessionId: actorSessionId,
-            trustedIssuerId: "synthetic-issuer",
-            grant: { ...grant, revoked },
-          };
-        }),
-    }),
-    Effect.provideService(NativeCreationBindingResolver, {
-      resolveCurrent: () => Effect.succeed(historical),
-    }),
-  );
-  const context = yield* authority.issueExecution({ reference, timestamp });
-  const confirm = (runtimeBinding: ProviderRuntimeBinding, attemptId: RunAttemptId) =>
-    Effect.gen(function* () {
-      const providerThreadId = runtimeBinding.providerThreadId;
-      const providerSessionId = runtimeBinding.providerSessionId;
-      const runtimeThreadId = runtimeBinding.threadId;
-      const userMessageId = MessageId.make("message:opencode2-confirmation");
-      yield* sql`INSERT INTO orchestration_v2_projection_threads
-        (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
-        VALUES (${runtimeThreadId}, 'synthetic-project', 'Synthetic', ${instanceId}, 'full-access', 'default', ${timestamp}, ${timestamp},
-          ${yield* Schema.encodeEffect(UnknownFromJsonString)({ activeProviderThreadId: providerThreadId, modelSelection: bigPickle }).pipe(Effect.orDie)})`;
-      yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions
-        (provider_session_id, thread_id, provider, driver, provider_instance_id, status, updated_at, payload_json)
-        VALUES (${providerSessionId}, ${runtimeThreadId}, ${instanceId}, ${OPENCODE_PROVIDER}, ${instanceId}, 'ready', ${timestamp}, '{}')`;
-      yield* sql`INSERT INTO orchestration_v2_projection_provider_threads
-        (provider_thread_id, thread_id, provider, driver, provider_instance_id, provider_session_id, status, updated_at, payload_json)
-        VALUES (${providerThreadId}, ${runtimeThreadId}, ${instanceId}, ${OPENCODE_PROVIDER}, ${instanceId}, ${providerSessionId}, 'running', ${timestamp},
-          ${yield* Schema.encodeEffect(UnknownFromJsonString)({ nativeThreadRef: { nativeId: runtimeBinding.nativeThreadId } }).pipe(Effect.orDie)})`;
-      yield* sql`INSERT INTO orchestration_v2_projection_provider_session_bindings (provider_session_id, thread_id)
-        VALUES (${providerSessionId}, ${runtimeThreadId})`;
-      yield* sql`INSERT INTO orchestration_v2_provider_runtime_evidence
-        (thread_id, provider_thread_id, provider_session_id, provider_instance_id, driver, native_thread_id, runtime_generation, evidence_revision, registered_at)
-        VALUES (${runtimeThreadId}, ${providerThreadId}, ${providerSessionId}, ${instanceId}, ${OPENCODE_PROVIDER},
-          ${runtimeBinding.nativeThreadId}, ${runtimeBinding.runtimeGeneration}, 1, ${timestamp})`;
-      yield* sql`INSERT INTO orchestration_v2_projection_runs
-        (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, payload_json)
-        VALUES (${command.runId}, ${runtimeThreadId}, 1, ${instanceId}, ${providerThreadId}, 'running', ${timestamp},
-          ${yield* Schema.encodeEffect(UnknownFromJsonString)({
-            activeAttemptId: attemptId,
-            providerThreadId,
-            userMessageId,
-            modelSelection: preparation.binding.provider_model_selection,
-          }).pipe(Effect.orDie)})`;
-      yield* sql`INSERT INTO orchestration_v2_projection_run_attempts
-        (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider, provider_thread_id, status, payload_json)
-        VALUES (${attemptId}, ${runtimeThreadId}, ${command.runId}, 1, 'synthetic-node', ${instanceId}, ${providerThreadId}, 'running',
-          ${yield* Schema.encodeEffect(UnknownFromJsonString)({ providerThreadId }).pipe(Effect.orDie)})`;
-      yield* sql`INSERT INTO orchestration_v2_projection_messages
-        (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
-        VALUES (${userMessageId}, ${runtimeThreadId}, 'user', 0, ${timestamp}, ${timestamp},
-          ${yield* Schema.encodeEffect(UnknownFromJsonString)({ text: "/compact", attachments: [] }).pipe(Effect.orDie)})`;
-      const proof = yield* repository.recordNativeEffectConfirmation({
-        effectId,
-        workerId: "synthetic-worker",
-        expectedAttempt: claimed.attemptCount,
-        runId: command.runId,
-        attemptId,
-        binding: runtimeBinding,
-        expectedEvidenceRevision: 1,
-        evidence: {
-          instanceId: runtimeBinding.instanceId,
-          threadId: runtimeBinding.threadId,
-          providerThreadId: runtimeBinding.providerThreadId,
-          providerSessionId: runtimeBinding.providerSessionId,
-          runtimeGeneration: runtimeBinding.runtimeGeneration,
-          outcome: "confirmed_success",
-          operation: "compact_thread",
-          operationId: effectId,
-          attemptId,
-        },
-      });
-      const readback = yield* repository.readNativeEffectConfirmation(effectId);
-      assert.deepEqual(readback, proof);
-      if (readback === null)
-        return yield* Effect.die("Committed synthetic native confirmation is missing");
-      return readback;
-    });
-  return {
-    context,
-    resources,
-    effectId,
-    command,
-    confirm,
-    revoke: () => {
-      revoked = true;
-    },
-    grantChecks: () => grantChecks,
-  };
-});
-
 describe("OpenCode2 adapter", () => {
-  for (const scenario of [
-    "matching",
-    "wrong context",
-    "stale generation",
-    "unrelated attempt",
-  ] as const) {
-    it.effect(`clears only committed matching native confirmation (${scenario})`, () =>
-      Effect.gen(function* () {
-        const fixture = yield* nativeConfirmationFixture;
-        const sdkEvents = yield* Queue.unbounded<OpenCode2StreamEvent, Cause.Done>();
-        const replacementSubscribed = yield* Deferred.make<void>();
-        let borrows = 0;
-        let factoryEffects = 0;
-        let listener: ((generation: string) => Effect.Effect<void, unknown>) | undefined;
-        const client: OpenCode2Server.OpenCode2Connection["client"] = {
-          model: { list: () => Effect.succeed({ data: [] }) },
-          session: {
-            get: () => Effect.succeed(sessionInfo()),
-            update: () => Effect.void,
-            instructions: { entry: { put: () => Effect.void } },
-            compact: () => Effect.void,
-            active: () => Effect.succeed({ [SESSION]: {} }),
-            form: { list: () => Effect.succeed([]) },
-          },
-          permission: { list: () => Effect.succeed([]) },
-          message: { list: () => Effect.succeed({ data: [], cursor: {} }) },
-        } as never;
-        const connection: OpenCode2Server.OpenCode2Connection = {
-          url: "http://synthetic.invalid",
-          version: "2.0.18",
-          external: false,
-          client,
-          events: Effect.succeed(Stream.fromQueue(sdkEvents)),
-          ownedProcess: Object.freeze({
-            runtimeGeneration: "owned-native-first",
-            isRunning: Effect.succeed(true),
-          }),
-        };
-        const replacement: OpenCode2Server.OpenCode2Connection = {
-          ...connection,
-          events: Deferred.succeed(replacementSubscribed, undefined).pipe(Effect.as(Stream.never)),
-          ownedProcess: Object.freeze({
-            runtimeGeneration: "owned-native-second",
-            isRunning: Effect.succeed(true),
-          }),
-        };
-        const server = OpenCode2Server.OpenCode2Server.of({
-          subscribeBeforeRuntimeReplacement: (next) =>
-            Effect.acquireRelease(
-              Effect.sync(() => {
-                listener = next;
-              }),
-              () =>
-                Effect.sync(() => {
-                  listener = undefined;
-                }),
-            ),
-          withConnection: (use, beforeNativeCreation) =>
-            Effect.gen(function* () {
-              borrows++;
-              if (borrows === 1) return yield* use(connection);
-              yield* runLifecycleGuard(
-                listener,
-                "reserved-replacement",
-                "beforeRuntimeReplacement",
-              );
-              yield* runLifecycleGuard(beforeNativeCreation, WORK, "beforeNativeCreation");
-              factoryEffects++;
-              return yield* use(replacement);
-            }),
-        });
-        const adapter = yield* OpenCode2AdapterV2.make(instanceId).pipe(
-          Effect.provideService(OpenCode2Server.OpenCode2Server, server),
-        );
-        const providerSessionId = ProviderSessionId.make("provider-session:opencode2-confirmation");
-        const currentThreadId = fixture.command.threadId;
-        const execution = { context: fixture.context, resources: fixture.resources };
-        const runtime = yield* adapter.openSession({
-          threadId: currentThreadId,
-          providerSessionId,
-          modelSelection: bigPickle,
-          runtimePolicy: policy(),
-          nativeCreationExecution: execution,
-          nativeOperation: {
-            operation: "open_session",
-            operationId: fixture.effectId,
-            instanceId,
-            threadId: currentThreadId,
-            providerSessionId,
-            runtimeGeneration: "owned-native-first",
-          },
-        });
-        const thread = yield* runtime.resumeThread({
-          providerThread: {
-            ...providerThread(yield* DateTime.now),
-            appThreadId: currentThreadId,
-            providerSessionId,
-          },
-        });
-        const attemptId = RunAttemptId.make("attempt:opencode2-confirmation");
-        const runtimeBinding: ProviderRuntimeBinding = {
-          threadId: currentThreadId,
-          providerThreadId: thread.id,
-          providerSessionId,
-          instanceId,
-          runtimeGeneration: runtime.runtimeGeneration!,
-          nativeThreadId: SESSION,
-        };
-        const nativeOperation = {
-          operationId: fixture.effectId,
-          operation: "compact_thread" as const,
-          instanceId,
-          threadId: currentThreadId,
-          providerThreadId: thread.id,
-          providerSessionId,
-          runtimeGeneration: runtime.runtimeGeneration!,
-          attemptId,
-        };
-        const turn = {
-          ...turnInput(thread),
-          threadId: currentThreadId,
-          runId: fixture.command.runId,
-          attemptId,
-          nativeOperation,
-          nativeCreationExecution: execution,
-        };
-        const compactThread = runtime.compactThread;
-        if (compactThread === undefined)
-          return yield* Effect.die("OpenCode fixture must support compaction.");
-        yield* compactThread(turn);
-        if (scenario === "unrelated attempt") {
-          const otherAttempt = RunAttemptId.make("attempt:opencode2-unrelated");
-          const other = yield* compactThread({
-            ...turn,
-            attemptId: otherAttempt,
-            nativeOperation: { ...nativeOperation, attemptId: otherAttempt },
-          }).pipe(Effect.exit);
-          assert.isTrue(Exit.isFailure(other));
-        }
-        const proof = yield* fixture.confirm(
-          scenario === "stale generation"
-            ? { ...runtimeBinding, runtimeGeneration: "historical-native-generation" }
-            : runtimeBinding,
-          attemptId,
-        );
-        if (runtime.onNativeEffectConfirmed === undefined)
-          return yield* Effect.die("Runtime has no confirmation receiver");
-        yield* runtime.onNativeEffectConfirmed({
-          context: scenario === "wrong context" ? (Object.freeze({}) as never) : fixture.context,
-          confirmation: proof,
-        });
-        const checksBeforeReplacement = fixture.grantChecks();
-        fixture.revoke();
-        const failed =
-          scenario === "matching"
-            ? undefined
-            : yield* runtime.events.pipe(
-                Stream.takeUntil(
-                  (event) =>
-                    event.type === "provider_session.updated" &&
-                    event.providerSession.status === "error",
-                ),
-                Stream.runDrain,
-                Effect.forkChild,
-              );
-        yield* Queue.end(sdkEvents);
-        yield* TestClock.adjust("12 seconds");
-        if (scenario === "matching") {
-          yield* Deferred.await(replacementSubscribed);
-          assert.equal(factoryEffects, 1);
-          assert.equal(runtime.runtimeGeneration, "owned-native-second");
-          assert.notEqual(runtime.providerSession.status, "error");
-          assert.equal(fixture.grantChecks(), checksBeforeReplacement);
-        } else {
-          if (failed !== undefined) yield* Fiber.join(failed);
-          assert.equal(factoryEffects, 0);
-          assert.equal(runtime.providerSession.status, "error");
-        }
-        assert.equal(borrows, 2);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(IdAllocator.layer),
-        Effect.provide(Layer.fresh(nativeConfirmationLayer)),
-        Effect.provideService(ServerConfig.ServerConfig, {
-          cwd: WORK,
-        } as ServerConfig.ServerConfig["Service"]),
-      ),
-    );
-  }
-
-  it.effect("holds a covered bootstrap gap before background native creation", () =>
-    Effect.gen(function* () {
-      const sdkEvents = yield* Queue.unbounded<OpenCode2StreamEvent, Cause.Done>();
-      let borrows = 0;
-      let factoryEffects = 0;
-      let listener: ((generation: string) => Effect.Effect<void, unknown>) | undefined;
-      const connection: OpenCode2Server.OpenCode2Connection = {
-        url: "http://synthetic.invalid",
-        version: "2.0.18",
-        external: false,
-        client: { model: { list: () => Effect.succeed({ data: [] }) } } as never,
-        events: Effect.succeed(Stream.fromQueue(sdkEvents)),
-        ownedProcess: Object.freeze({
-          runtimeGeneration: "owned-native-first",
-          isRunning: Effect.succeed(true),
-        }),
-      };
-      const server = OpenCode2Server.OpenCode2Server.of({
-        subscribeBeforeRuntimeReplacement: (next) =>
-          Effect.acquireRelease(
-            Effect.sync(() => {
-              listener = next;
-            }),
-            () =>
-              Effect.sync(() => {
-                listener = undefined;
-              }),
-          ),
-        withConnection: (use, beforeNativeCreation) =>
-          Effect.gen(function* () {
-            borrows++;
-            // The first loan is an already-running process, so no factory guard runs.
-            if (borrows === 1) return yield* use(connection);
-            yield* runLifecycleGuard(listener, "reserved-replacement", "beforeRuntimeReplacement");
-            yield* runLifecycleGuard(beforeNativeCreation, WORK, "beforeNativeCreation");
-            factoryEffects++;
-            return yield* use(connection);
-          }),
-      });
-      const adapter = yield* OpenCode2AdapterV2.make(instanceId).pipe(
-        Effect.provideService(OpenCode2Server.OpenCode2Server, server),
-      );
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("opencode2-covered-bootstrap"),
-        modelSelection: bigPickle,
-        runtimePolicy: policy(),
-        nativeCreationExecution: {
-          context: {} as never,
-          resources: { projectCwd: "/project", branch: "feature/native", worktreePath: WORK },
-        },
-      });
-      const failed = yield* runtime.events.pipe(
-        Stream.takeUntil(
-          (event) =>
-            event.type === "provider_session.updated" && event.providerSession.status === "error",
-        ),
-        Stream.runCollect,
-        Effect.forkChild,
-      );
-      yield* Queue.end(sdkEvents);
-      yield* TestClock.adjust("12 seconds");
-      yield* Fiber.join(failed);
-      assert.equal(borrows, 2);
-      assert.equal(factoryEffects, 0);
-      assert.equal(runtime.providerSession.status, "error");
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(IdAllocator.layer),
-      Effect.provideService(ServerConfig.ServerConfig, {
-        cwd: WORK,
-      } as ServerConfig.ServerConfig["Service"]),
-    ),
-  );
-
-  it.effect("reauthorizes the current creation call and preserves an ordinary later call", () =>
-    Effect.gen(function* () {
-      let creates = 0;
-      const connection: OpenCode2Server.OpenCode2Connection = {
-        url: "http://synthetic.invalid",
-        version: "2.0.18",
-        external: false,
-        client: {
-          model: { list: () => Effect.succeed({ data: [] }) },
-          agent: { list: () => Effect.succeed({ data: [{ id: "build", permissions: [] }] }) },
-          session: {
-            create: () =>
-              Effect.sync(() => {
-                creates++;
-                return {
-                  id: SESSION,
-                  model: { providerID: "opencode", id: "big-pickle" },
-                  agent: "build",
-                };
-              }),
-          },
-        } as never,
-        events: Effect.succeed(Stream.never),
-      };
-      const adapter = yield* OpenCode2AdapterV2.make(instanceId).pipe(
-        Effect.provideService(OpenCode2Server.OpenCode2Server, {
-          withConnection: (use) => use(connection),
-        }),
-      );
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("opencode2-current-creation"),
-        modelSelection: bigPickle,
-        runtimePolicy: policy(),
-      });
-      const nativeOperation = {
-        operationId: "opencode2-current-create",
-        operation: "ensure_thread" as const,
-        instanceId,
-        threadId,
-        providerSessionId: runtime.providerSessionId,
-        runtimeGeneration: runtime.runtimeGeneration!,
-      };
-      const rejected = yield* runtime
-        .ensureThread({
-          threadId,
-          modelSelection: bigPickle,
-          runtimePolicy: policy(),
-          nativeOperation,
-          nativeCreationExecution: {
-            context: {} as never,
-            resources: { projectCwd: "/project", branch: "feature/native", worktreePath: WORK },
-          },
-        })
-        .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
-      assert.isDefined(rejected);
-      assert.equal(creates, 0);
-      if (rejected !== undefined) {
-        assert.equal(rejected._tag, "ProviderAdapterProtocolError");
-        assert.deepEqual("nativeEffect" in rejected ? rejected.nativeEffect : undefined, {
-          ...nativeOperation,
-          outcome: "unknown",
-        });
-      }
-      yield* runtime.ensureThread({ threadId, modelSelection: bigPickle, runtimePolicy: policy() });
-      assert.equal(creates, 1);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(IdAllocator.layer),
-      Effect.provideService(ServerConfig.ServerConfig, {
-        cwd: WORK,
-      } as ServerConfig.ServerConfig["Service"]),
-    ),
-  );
-
-  it.effect(
-    "rejects unproved native resume before attachment and keeps complete effects unknown",
-    () =>
-      Effect.gen(function* () {
-        let gets = 0;
-        const connection: OpenCode2Server.OpenCode2Connection = {
-          url: "http://synthetic.invalid",
-          version: "2.0.18",
-          external: false,
-          client: {
-            model: { list: () => Effect.succeed({ data: [] }) },
-            session: {
-              get: () => {
-                gets++;
-                return Effect.fail(
-                  new OpenCodeRuntimeError({
-                    operation: "session.get",
-                    detail: "Synthetic native lookup was reached.",
-                  }),
-                );
-              },
-            },
-          } as never,
-          events: Effect.succeed(Stream.never),
-        };
-        const adapter = yield* OpenCode2AdapterV2.make(instanceId).pipe(
-          Effect.provideService(OpenCode2Server.OpenCode2Server, {
-            withConnection: (use) => use(connection),
-          }),
-        );
-        const runtime = yield* adapter.openSession({
-          threadId,
-          providerSessionId: ProviderSessionId.make("opencode2-resume-proof-gate"),
-          modelSelection: bigPickle,
-          runtimePolicy: policy(),
-        });
-        const thread = providerThread(yield* DateTime.now);
-        const nativeOperation = {
-          operationId: "opencode2-proof-gated-resume",
-          operation: "resume_thread" as const,
-          instanceId,
-          threadId,
-          providerThreadId: thread.id,
-          providerSessionId: runtime.providerSessionId,
-          runtimeGeneration: runtime.runtimeGeneration!,
-        };
-        let gated = false;
-        const result = yield* runtime
-          .resumeThread({
-            providerThread: thread,
-            nativeOperation,
-            beforeNativeResume: (actual) =>
-              Effect.gen(function* () {
-                assert.isUndefined(actual);
-                yield* Effect.yieldNow;
-                gated = true;
-                return yield* new ProviderAdapterProtocolError({
-                  driver: OPENCODE_PROVIDER,
-                  detail: "Native source proof is unavailable.",
-                });
-              }),
-          })
-          .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
-        assert.isTrue(gated);
-        assert.equal(gets, 0);
-        assert.isDefined(result);
-        if (result !== undefined) {
-          assert.equal(result._tag, "ProviderAdapterProtocolError");
-          assert.deepEqual("nativeEffect" in result ? result.nativeEffect : undefined, {
-            ...nativeOperation,
-            outcome: "unknown",
-          });
-        }
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(IdAllocator.layer),
-        Effect.provideService(ServerConfig.ServerConfig, {
-          cwd: WORK,
-        } as ServerConfig.ServerConfig["Service"]),
-      ),
-  );
-
-  for (const operation of [
-    "beforeRuntimeReplacement",
-    "startOpenCodeServerProcess",
-    "server.info",
-  ] as const) {
-    it.effect(`holds unknown ${operation} failure without retrying native acquisition`, () =>
-      Effect.gen(function* () {
-        const sdkEvents = yield* Queue.unbounded<OpenCode2StreamEvent, Cause.Done>();
-        let borrows = 0;
-        let listener: ((generation: string) => Effect.Effect<void, unknown>) | undefined;
-        let runtime: ProviderAdapterV2SessionRuntime | undefined;
-        const connection: OpenCode2Server.OpenCode2Connection = {
-          url: "http://synthetic.invalid",
-          version: "2.0.18",
-          external: false,
-          client: { model: { list: () => Effect.succeed({ data: [] }) } } as never,
-          events: Effect.succeed(Stream.fromQueue(sdkEvents)),
-          ownedProcess: Object.freeze({
-            runtimeGeneration: "owned-native-first",
-            isRunning: Effect.succeed(true),
-          }),
-        };
-        const error = new OpenCodeRuntimeError({
-          operation,
-          detail: "Native replacement effect is unknown.",
-        });
-        const server = OpenCode2Server.OpenCode2Server.of({
-          subscribeBeforeRuntimeReplacement: (next) =>
-            Effect.acquireRelease(
-              Effect.sync(() => {
-                listener = next;
-              }),
-              () =>
-                Effect.sync(() => {
-                  listener = undefined;
-                }),
-            ),
-          withConnection: (use) =>
-            Effect.gen(function* () {
-              borrows++;
-              if (borrows === 1) return yield* use(connection);
-              yield* runLifecycleGuard(
-                listener,
-                "reserved-replacement",
-                "beforeRuntimeReplacement",
-              );
-              return yield* Effect.fail(error);
-            }),
-        });
-        const adapter = yield* OpenCode2AdapterV2.make(instanceId).pipe(
-          Effect.provideService(OpenCode2Server.OpenCode2Server, server),
-        );
-        runtime = yield* adapter.openSession({
-          threadId,
-          providerSessionId: ProviderSessionId.make(`synthetic-session-${operation}`),
-          modelSelection: bigPickle,
-          runtimePolicy: policy(),
-          beforeRuntimeReplacement: (next) =>
-            Effect.gen(function* () {
-              if (runtime !== undefined) assert.equal(runtime.runtimeGeneration, next);
-              yield* Effect.yieldNow;
-            }),
-        });
-        assert.equal(runtime.runtimeGeneration, "owned-native-first");
-        const failed = yield* runtime.events.pipe(
-          Stream.takeUntil(
-            (event) =>
-              event.type === "provider_session.updated" && event.providerSession.status === "error",
-          ),
-          Stream.runCollect,
-          Effect.forkChild,
-        );
-        yield* Queue.end(sdkEvents);
-        yield* TestClock.adjust("12 seconds");
-        yield* Fiber.join(failed);
-        assert.equal(borrows, 2);
-        assert.equal(runtime.runtimeGeneration, "reserved-replacement");
-        assert.equal(runtime.providerSession.status, "error");
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(IdAllocator.layer),
-        Effect.provideService(ServerConfig.ServerConfig, {
-          cwd: WORK,
-        } as ServerConfig.ServerConfig["Service"]),
-      ),
-    );
-  }
-
   it.effect("switches the session's model and variant before a turn that changed them", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([
@@ -1248,6 +410,11 @@ describe("OpenCode2 adapter", () => {
         promptAccepted,
         event("session.execution.succeeded", { sessionID: SESSION }),
       ]);
+      assert.deepEqual(thread.nativeMetadata?.modelSelection, {
+        ...bigPickle,
+        options: [{ id: "variant", value: "default" }],
+      });
+      assert.equal(bigPickle.options, undefined);
       const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
       yield* runtime.startTurn(
         turnInput(thread, {
@@ -1313,6 +480,10 @@ describe("OpenCode2 adapter", () => {
       yield* runtime.startTurn(turnInput(thread));
       const seen = yield* Fiber.join(collected);
       const terminals = seen.filter((event) => event.type === "turn.terminal");
+      assert.equal(terminals[0]?.evidenceKind, "provider_result");
+      assert.equal(terminals[0]?.providerTurn?.id, terminals[0]?.providerTurnId);
+      assert.equal(terminals[0]?.providerTurn?.status, "completed");
+      assert.isNotNull(terminals[0]?.providerTurn?.completedAt);
       assert.deepEqual(
         terminals.map((event) => event.type === "turn.terminal" && event.status),
         ["completed"],
@@ -2360,74 +1531,6 @@ describe("OpenCode2 adapter", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect(
-    "keeps complete resume effects unknown after lookup registration and failed rules update",
-    () =>
-      Effect.gen(function* () {
-        const runtime = yield* openCode2ReplayRuntimeWithInstructions([
-          ...opening,
-          out("session.get", { sessionID: SESSION }),
-          replyData("session.get", sessionInfo({ permissions: [] })),
-          ...noOpenRequests,
-          out("session.update", { sessionID: SESSION, permissions: t3Rules }),
-          reply("session.update", {
-            status: 500,
-            body: { _tag: "UnknownError", message: "rules update reply lost" },
-          }),
-        ]);
-        const thread = providerThread(yield* DateTime.now);
-        const nativeOperation = {
-          operationId: "opencode2-complete-resume",
-          operation: "resume_thread" as const,
-          instanceId,
-          threadId,
-          providerSessionId: runtime.providerSessionId,
-          providerThreadId: thread.id,
-          runtimeGeneration: runtime.runtimeGeneration!,
-        };
-        const failed = yield* runtime
-          .resumeThread({
-            providerThread: thread,
-            threadId,
-            modelSelection: bigPickle,
-            runtimePolicy: policy(),
-            nativeOperation,
-          })
-          .pipe(Effect.flip);
-        assert.equal(failed._tag, "ProviderAdapterResumeThreadError");
-        assert.deepEqual("nativeEffect" in failed ? failed.nativeEffect : undefined, {
-          ...nativeOperation,
-          outcome: "unknown",
-        });
-      }).pipe(Effect.scoped),
-  );
-
-  it.effect("keeps unprobed native idle unknown without issuing activation requests", () =>
-    Effect.gen(function* () {
-      const { runtime, thread } = yield* resumed([]);
-      const binding = {
-        threadId,
-        providerThreadId: thread.id,
-        providerSessionId: runtime.providerSessionId,
-        instanceId,
-        runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: SESSION,
-      };
-      assert.isString(runtime.runtimeGeneration);
-      assert.isUndefined(runtime.getGoal);
-      const observation = yield* runtime.observeThreadRuntime!(binding);
-      assert.equal(observation.status, "unknown");
-      assert.deepEqual(observation.binding, binding);
-      assert.equal(
-        (yield* runtime.observeThreadRuntime!({
-          ...binding,
-          providerThreadId: ProviderThreadId.make("wrong-provider-thread"),
-        })).status,
-        "unknown",
-      );
-    }).pipe(Effect.scoped),
-  );
-
   it.effect("gives a resumed session T3's rules when it was made with others", () =>
     Effect.gen(function* () {
       const runtime = yield* openCode2ReplayRuntimeWithInstructions([
@@ -3128,6 +2231,75 @@ describe("OpenCode2 adapter", () => {
     );
   });
 
+  it.effect.each(["text", "reasoning"] as const)(
+    "finalizes buffered %s before a lost OpenCode 2 stream ends the session",
+    (kind) =>
+      Effect.gen(function* () {
+        const { runtime, thread } = yield* resumed([
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event(`session.${kind}.started`, {
+            sessionID: SESSION,
+            assistantMessageID: "msg_buffered_exit",
+            ordinal: 0,
+            ...(kind === "reasoning" ? { state: { reasoningField: "reasoning_content" } } : {}),
+          }),
+          event(`session.${kind}.delta`, {
+            sessionID: SESSION,
+            assistantMessageID: "msg_buffered_exit",
+            ordinal: 0,
+            delta: "Answer preserved across provider exit.",
+          }),
+          { type: "runtime_exit", status: "success" },
+        ]);
+        const events = yield* runtime.events.pipe(Stream.runCollect, Effect.forkScoped);
+        yield* runtime.startTurn(turnInput(thread));
+        yield* TestClock.adjust("1 minute");
+        const collected = Array.from(yield* Fiber.join(events));
+        const itemType = kind === "text" ? "assistant_message" : "reasoning";
+        const items = collected.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === itemType
+            ? [event.turnItem]
+            : [],
+        );
+        const first = items[0]!;
+        const last = items.at(-1)!;
+        assert.equal(first.status, "running");
+        assert.equal(last.status, "completed");
+        if (last.type !== "assistant_message" && last.type !== "reasoning") {
+          return assert.fail("Expected buffered text or reasoning item");
+        }
+        assert.equal(last.text, "Answer preserved across provider exit.");
+        assert.isFalse(last.streaming);
+        assert.equal(last.id, first.id);
+        assert.equal(last.providerTurnId, first.providerTurnId);
+        assert.lengthOf(
+          items.filter((item) => item.status === "completed"),
+          1,
+        );
+        const completionIndex = collected.findIndex(
+          (event) => event.type === "turn_item.updated" && event.turnItem === last,
+        );
+        const terminalIndex = collected.findIndex((event) => event.type === "turn.terminal");
+        assert.isTrue(completionIndex < terminalIndex);
+        assert.deepInclude(collected[terminalIndex], {
+          status: "failed",
+          threadDisposition: "broken",
+        });
+        if (kind === "text") {
+          const message = collected.findLast((event) => event.type === "message.updated");
+          assert.equal(
+            message?.type === "message.updated" ? message.message.text : undefined,
+            last.text,
+          );
+          assert.equal(
+            message?.type === "message.updated" ? message.message.streaming : undefined,
+            false,
+          );
+        }
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.effect("fails the session once reconnecting to a lost event stream has given up", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([
@@ -3471,12 +2643,6 @@ describe("OpenCode2 adapter", () => {
       const { runtime, thread } = yield* resumed([
         out("session.prompt", { sessionID: SESSION, id: PROMPT_ID, text: "<any>" }),
         promptAccepted,
-        event("session.text.ended", {
-          sessionID: SESSION,
-          assistantMessageID: "msg_assistant_before",
-          ordinal: 0,
-          text: "Queued on the old stream.",
-        }),
         ...reconnected({ [SESSION]: { type: "running" } }),
         ...openRequests([]),
         event("session.text.ended", {
@@ -3504,35 +2670,6 @@ describe("OpenCode2 adapter", () => {
         "Arrived on the new stream.",
       ]);
       assert.deepInclude(collected.at(-1), { type: "turn.terminal", status: "completed" });
-      const before = collected.find(
-        (event) =>
-          event.type === "message.updated" && event.message.text === "Queued on the old stream.",
-      );
-      const after = collected.find(
-        (event) =>
-          event.type === "message.updated" && event.message.text === "Arrived on the new stream.",
-      );
-      assert.isDefined(before);
-      assert.isDefined(after);
-      const oldOrigin = readProviderEventOrigin(before!);
-      const freshOrigin = readProviderEventOrigin(after!);
-      assert.isDefined(oldOrigin?.turn);
-      assert.isDefined(freshOrigin?.turn);
-      assert.notEqual(oldOrigin?.producer.token, freshOrigin?.producer.token);
-      assert.equal(oldOrigin?.turn?.runId, turnInput(thread).runId);
-      assert.equal(freshOrigin?.turn?.attemptId, turnInput(thread).attemptId);
-      assert.equal(
-        freshOrigin?.turn?.binding.runtimeGeneration,
-        freshOrigin?.producer.runtimeGeneration,
-      );
-      assert.equal(oldOrigin?.turn?.providerTurnId, freshOrigin?.turn?.providerTurnId);
-      const replaced = yield* oldOrigin!.producer.revalidateCurrent.pipe(Effect.flip);
-      assert.instanceOf(replaced, ProviderAdapterProtocolError);
-      yield* freshOrigin!.producer.revalidateCurrent;
-      assert.equal(
-        readProviderEventOrigin(collected.at(-1)!)?.producer.token,
-        freshOrigin?.producer.token,
-      );
     }).pipe(Effect.scoped),
   );
 
@@ -3605,7 +2742,6 @@ describe("OpenCode2 adapter", () => {
           providerInstanceId: instanceId,
           endpoint: "http://127.0.0.1:3773/mcp",
           authorizationHeader: "Bearer thread-credential",
-          capabilities: new Set<string>(),
           browserToolsAvailable: false,
         });
         yield* Effect.addFinalizer(() =>
@@ -3774,6 +2910,10 @@ describe("OpenCode2 adapter", () => {
         threadId,
         modelSelection: bigPickle,
         runtimePolicy: customPolicy,
+      });
+      assert.deepEqual(thread.nativeMetadata?.modelSelection, {
+        ...bigPickle,
+        options: [{ id: "variant", value: "default" }],
       });
       // Each directory keeps its own limit, whichever was read last.
       assert.equal(runtime.getModelContextWindow?.(bigPickle, WORK), 160000);
@@ -4032,81 +3172,78 @@ describe("OpenCode2 adapter", () => {
     }).pipe(Effect.scoped, Effect.provide(IdAllocator.layer)),
   );
 
-  for (const running of [true, false]) {
-    it.effect(
-      running
-        ? "refuses a rollback while a timed-out Stop's run is still going"
-        : "rolls back once a timed-out Stop's run has left the server",
-      () =>
-        Effect.gen(function* () {
-          const prompt = `msg_t3_turn_${SESSION}:attempt:opencode2-adapter`;
-          const { runtime, thread } = yield* resumed([
-            ...stopTimedOut,
-            // The server says whether the stopped run still goes.
-            out("session.active"),
-            reply("session.active", { data: running ? { [SESSION]: { type: "running" } } : {} }),
-            // Gone: the cut is made. Running: nothing is read or cut meanwhile.
-            ...(running
-              ? []
-              : [
-                  out("message.list", "<any>"),
-                  reply("message.list", {
-                    data: [{ id: prompt, time: { created: 1 }, text: "hi", type: "user" }],
-                    cursor: {},
-                  }),
-                  out("session.revert.stage", {
-                    sessionID: SESSION,
-                    messageID: prompt,
-                    files: false,
-                  }),
-                  replyData("session.revert.stage", { messageID: prompt, files: [] }),
-                  out("session.revert.commit", { sessionID: SESSION }),
-                  reply("session.revert.commit", null),
-                  out("message.list", "<any>"),
-                  reply("message.list", { data: [], cursor: {} }),
-                ]),
-          ]);
-          yield* stopFirstTurn(runtime, thread);
-          const now = yield* DateTime.now;
-          const first = {
-            id: yield* providerTurnId,
-            providerThreadId: thread.id,
-            nodeId: NodeId.make("node:opencode2-adapter"),
-            runAttemptId: RunAttemptId.make("attempt:opencode2-adapter"),
-            nativeTurnRef: {
-              driver: OPENCODE_PROVIDER,
-              nativeId: prompt,
-              strength: "weak" as const,
-            },
-            ordinal: 1,
-            status: "interrupted" as const,
-            startedAt: now,
-            completedAt: now,
-          };
-          const rollback = yield* runtime
-            .rollbackThread({
-              providerThread: thread,
-              target: {
-                type: "thread_start",
-                checkpointId: CheckpointId.make("checkpoint:start"),
-                appRunOrdinal: 0,
-              },
-              providerThreadTurns: [first],
-            })
-            .pipe(Effect.exit);
-          if (running) {
-            assert.isTrue(Exit.isFailure(rollback));
-            const error = Exit.isFailure(rollback) ? Cause.squash(rollback.cause) : undefined;
-            assert.equal(
-              (error as { _tag?: string } | undefined)?._tag,
-              "ProviderAdapterProtocolError",
-            );
-          } else {
-            assert.isTrue(Exit.isSuccess(rollback));
-          }
-        }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
-    );
-  }
+  it.effect.each([
+    ["refuses a rollback while a timed-out Stop's run is still going", true],
+    ["rolls back once a timed-out Stop's run has left the server", false],
+  ] as const)("%s", ([, running]) =>
+    Effect.gen(function* () {
+      const prompt = `msg_t3_turn_${SESSION}:attempt:opencode2-adapter`;
+      const { runtime, thread } = yield* resumed([
+        ...stopTimedOut,
+        // The server says whether the stopped run still goes.
+        out("session.active"),
+        reply("session.active", { data: running ? { [SESSION]: { type: "running" } } : {} }),
+        // Gone: the cut is made. Running: nothing is read or cut meanwhile.
+        ...(running
+          ? []
+          : [
+              out("message.list", "<any>"),
+              reply("message.list", {
+                data: [{ id: prompt, time: { created: 1 }, text: "hi", type: "user" }],
+                cursor: {},
+              }),
+              out("session.revert.stage", {
+                sessionID: SESSION,
+                messageID: prompt,
+                files: false,
+              }),
+              replyData("session.revert.stage", { messageID: prompt, files: [] }),
+              out("session.revert.commit", { sessionID: SESSION }),
+              reply("session.revert.commit", null),
+              out("message.list", "<any>"),
+              reply("message.list", { data: [], cursor: {} }),
+            ]),
+      ]);
+      yield* stopFirstTurn(runtime, thread);
+      const now = yield* DateTime.now;
+      const first = {
+        id: yield* providerTurnId,
+        providerThreadId: thread.id,
+        nodeId: NodeId.make("node:opencode2-adapter"),
+        runAttemptId: RunAttemptId.make("attempt:opencode2-adapter"),
+        nativeTurnRef: {
+          driver: OPENCODE_PROVIDER,
+          nativeId: prompt,
+          strength: "weak" as const,
+        },
+        ordinal: 1,
+        status: "interrupted" as const,
+        startedAt: now,
+        completedAt: now,
+      };
+      const rollback = yield* runtime
+        .rollbackThread({
+          providerThread: thread,
+          target: {
+            type: "thread_start",
+            checkpointId: CheckpointId.make("checkpoint:start"),
+            appRunOrdinal: 0,
+          },
+          providerThreadTurns: [first],
+        })
+        .pipe(Effect.exit);
+      if (running) {
+        assert.isTrue(Exit.isFailure(rollback));
+        const error = Exit.isFailure(rollback) ? Cause.squash(rollback.cause) : undefined;
+        assert.equal(
+          (error as { _tag?: string } | undefined)?._tag,
+          "ProviderAdapterProtocolError",
+        );
+      } else {
+        assert.isTrue(Exit.isSuccess(rollback));
+      }
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
 
   it.effect("takes back a stranded steer again when its first cancel failed", () =>
     Effect.gen(function* () {
@@ -4318,92 +3455,92 @@ describe("OpenCode2 adapter", () => {
     }).pipe(Effect.scoped),
   );
 
-  for (const running of [true, false]) {
-    it.effect(
-      running
-        ? "refuses to roll back a session not loaded yet while the server runs it"
-        : "keeps the recorded turns before the target when rolling back a session not loaded yet",
-      () =>
-        Effect.gen(function* () {
-          const first = `msg_t3_turn_${SESSION}:attempt:first`;
-          const second = `msg_t3_turn_${SESSION}:attempt:second`;
-          // A runtime that never loaded the session, as after a T3 restart
-          // against a server that kept running.
-          const runtime = yield* openCode2ReplayRuntime([
-            ...opening,
-            out("session.active"),
-            reply("session.active", { data: running ? { [SESSION]: { type: "running" } } : {} }),
-            ...(running
-              ? []
-              : [
-                  out("session.get", { sessionID: SESSION }),
-                  replyData("session.get", sessionInfo()),
-                  ...noOpenRequests,
-                  out("message.list", "<any>"),
-                  reply("message.list", {
-                    data: [
-                      { id: second, time: { created: 2 }, text: "second", type: "user" },
-                      { id: first, time: { created: 1 }, text: "first", type: "user" },
-                    ],
-                    cursor: {},
-                  }),
-                  out("session.revert.stage", {
-                    sessionID: SESSION,
-                    messageID: second,
-                    files: false,
-                  }),
-                  replyData("session.revert.stage", { messageID: second, files: [] }),
-                  out("session.revert.commit", { sessionID: SESSION }),
-                  reply("session.revert.commit", null),
-                  out("message.list", "<any>"),
-                  reply("message.list", {
-                    data: [{ id: first, time: { created: 1 }, text: "first", type: "user" }],
-                    cursor: {},
-                  }),
-                ]),
-          ]);
-          const thread = providerThread(yield* DateTime.now);
-          const now = yield* DateTime.now;
-          const recorded = (key: string, ordinal: number, nativeId: string) => ({
-            id: ProviderTurnId.make(`provider-turn:${key}`),
-            providerThreadId: thread.id,
-            nodeId: NodeId.make(`node:${key}`),
-            runAttemptId: RunAttemptId.make(`attempt:${key}`),
-            nativeTurnRef: { driver: OPENCODE_PROVIDER, nativeId, strength: "weak" as const },
-            ordinal,
-            status: "completed" as const,
-            startedAt: now,
-            completedAt: now,
-          });
-          const kept = recorded("first", 1, first);
-          const rollback = yield* runtime
-            .rollbackThread({
-              providerThread: thread,
-              target: {
-                type: "provider_turn",
-                checkpointId: CheckpointId.make("checkpoint:first"),
-                appRunOrdinal: 1,
-                providerTurn: kept,
-              },
-              providerThreadTurns: [kept, recorded("second", 2, second)],
-            })
-            .pipe(Effect.exit);
-          if (running) {
-            const error = Exit.isFailure(rollback) ? Cause.squash(rollback.cause) : undefined;
-            assert.equal(
-              (error as { _tag?: string } | undefined)?._tag,
-              "ProviderAdapterProtocolError",
-            );
-          } else {
-            assert.isTrue(Exit.isSuccess(rollback));
-            assert.deepEqual(
-              Exit.isSuccess(rollback) ? rollback.value.providerTurns.map((turn) => turn.id) : [],
-              [kept.id],
-            );
-          }
-        }).pipe(Effect.scoped),
-    );
-  }
+  it.effect.each([
+    ["refuses to roll back a session not loaded yet while the server runs it", true],
+    [
+      "keeps the recorded turns before the target when rolling back a session not loaded yet",
+      false,
+    ],
+  ] as const)("%s", ([, running]) =>
+    Effect.gen(function* () {
+      const first = `msg_t3_turn_${SESSION}:attempt:first`;
+      const second = `msg_t3_turn_${SESSION}:attempt:second`;
+      // A runtime that never loaded the session, as after a T3 restart
+      // against a server that kept running.
+      const runtime = yield* openCode2ReplayRuntime([
+        ...opening,
+        out("session.active"),
+        reply("session.active", { data: running ? { [SESSION]: { type: "running" } } : {} }),
+        ...(running
+          ? []
+          : [
+              out("session.get", { sessionID: SESSION }),
+              replyData("session.get", sessionInfo()),
+              ...noOpenRequests,
+              out("message.list", "<any>"),
+              reply("message.list", {
+                data: [
+                  { id: second, time: { created: 2 }, text: "second", type: "user" },
+                  { id: first, time: { created: 1 }, text: "first", type: "user" },
+                ],
+                cursor: {},
+              }),
+              out("session.revert.stage", {
+                sessionID: SESSION,
+                messageID: second,
+                files: false,
+              }),
+              replyData("session.revert.stage", { messageID: second, files: [] }),
+              out("session.revert.commit", { sessionID: SESSION }),
+              reply("session.revert.commit", null),
+              out("message.list", "<any>"),
+              reply("message.list", {
+                data: [{ id: first, time: { created: 1 }, text: "first", type: "user" }],
+                cursor: {},
+              }),
+            ]),
+      ]);
+      const thread = providerThread(yield* DateTime.now);
+      const now = yield* DateTime.now;
+      const recorded = (key: string, ordinal: number, nativeId: string) => ({
+        id: ProviderTurnId.make(`provider-turn:${key}`),
+        providerThreadId: thread.id,
+        nodeId: NodeId.make(`node:${key}`),
+        runAttemptId: RunAttemptId.make(`attempt:${key}`),
+        nativeTurnRef: { driver: OPENCODE_PROVIDER, nativeId, strength: "weak" as const },
+        ordinal,
+        status: "completed" as const,
+        startedAt: now,
+        completedAt: now,
+      });
+      const kept = recorded("first", 1, first);
+      const rollback = yield* runtime
+        .rollbackThread({
+          providerThread: thread,
+          target: {
+            type: "provider_turn",
+            checkpointId: CheckpointId.make("checkpoint:first"),
+            appRunOrdinal: 1,
+            providerTurn: kept,
+          },
+          providerThreadTurns: [kept, recorded("second", 2, second)],
+        })
+        .pipe(Effect.exit);
+      if (running) {
+        const error = Exit.isFailure(rollback) ? Cause.squash(rollback.cause) : undefined;
+        assert.equal(
+          (error as { _tag?: string } | undefined)?._tag,
+          "ProviderAdapterProtocolError",
+        );
+      } else {
+        assert.isTrue(Exit.isSuccess(rollback));
+        assert.deepEqual(
+          Exit.isSuccess(rollback) ? rollback.value.providerTurns.map((turn) => turn.id) : [],
+          [kept.id],
+        );
+      }
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("refuses to fork a session while OpenCode runs a follow-up on it", () =>
     Effect.gen(function* () {
@@ -4514,6 +3651,107 @@ describe("OpenCode2 adapter", () => {
         .pipe(Effect.flip);
       assert.equal(refused._tag, "ProviderAdapterProtocolError");
     }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["native", "orchestration"] as const)(
+    "keeps a fork's %s thread identity through its first turn",
+    (identity) =>
+      Effect.gen(function* () {
+        const FORK = "ses_f1484db83ffeLGtrRCFimo1H0e";
+        const targetThreadId = ThreadId.make("thread:opencode2-adapter:fork");
+        const runtime = yield* openCode2ReplayRuntime([
+          ...opening,
+          out("session.get", { sessionID: SESSION }),
+          replyData("session.get", sessionInfo()),
+          ...noOpenRequests,
+          out("session.fork", { sessionID: SESSION }),
+          replyData("session.fork", sessionInfo({ id: FORK })),
+          out("session.update", {
+            sessionID: FORK,
+            permissions: [
+              { action: "*", resource: "*", effect: "allow" },
+              { action: "t3-code-*", resource: "*", effect: "deny" },
+              { action: "t3-code-thread_opencode2-adapter_fork_*", resource: "*", effect: "allow" },
+            ],
+          }),
+          reply("session.update", null),
+          out("session.instructions.entry.put", {
+            sessionID: FORK,
+            key: "t3-code",
+            value: "<any>",
+          }),
+          reply("session.instructions.entry.put", null),
+          out("session.prompt", { sessionID: FORK, text: "hi" }),
+          replyData("session.prompt", {
+            id: PROMPT_ID,
+            sessionID: FORK,
+            time: { created: 1790656601410 },
+            type: "user",
+            payload: { text: "hi" },
+            delivery: "steer",
+          }),
+          event("session.execution.started", { sessionID: FORK }),
+          event("session.execution.succeeded", { sessionID: FORK }),
+        ]);
+        const source = yield* runtime.resumeThread({
+          providerThread: providerThread(yield* DateTime.now),
+          threadId,
+          modelSelection: bigPickle,
+          runtimePolicy: policy(),
+        });
+        const forked = yield* runtime.forkThread({
+          sourceProviderThread: source,
+          targetThreadId,
+          runtimePolicy: policy(),
+        });
+        const expectedId =
+          identity === "native"
+            ? forked.id
+            : ProviderThreadId.make("provider-thread:orchestration-owned-fork");
+        // Orchestration binds the returned native fork to its already-recorded thread ID.
+        const input = {
+          ...turnInput({ ...forked, id: expectedId }),
+          threadId: targetThreadId,
+        };
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* runtime.startTurn(input);
+        const seen = yield* Fiber.join(collected);
+        const turns = seen.filter((event) => event.type === "provider_turn.updated");
+        assert.deepEqual(
+          turns.map(({ providerTurn }) => [providerTurn.providerThreadId, providerTurn.status]),
+          [
+            [expectedId, "running"],
+            [expectedId, "completed"],
+          ],
+        );
+        const threads = seen.filter((event) => event.type === "provider_thread.updated");
+        assert.deepEqual(
+          threads.map(({ providerThread }) => [providerThread.id, providerThread.status]),
+          [
+            [expectedId, "active"],
+            [expectedId, "idle"],
+          ],
+        );
+        for (const { providerThread } of threads) {
+          assert.deepEqual(providerThread.nativeThreadRef, forked.nativeThreadRef);
+          assert.equal(providerThread.providerSessionId, forked.providerSessionId);
+          assert.deepEqual(providerThread.forkedFrom, { providerThreadId: source.id });
+          assert.deepEqual(providerThread.nativeMetadata, forked.nativeMetadata);
+        }
+        const terminal = seen.find((event) => event.type === "turn.terminal");
+        assert.isDefined(terminal);
+        assert.equal(terminal?.providerThreadId, expectedId);
+        assert.equal(terminal?.status, "completed");
+        assert.equal(terminal?.evidenceKind, "provider_result");
+        assert.deepEqual(terminal?.providerTurn, turns.at(-1)?.providerTurn);
+        assert.equal(terminal?.providerTurn?.runAttemptId, input.attemptId);
+        assert.equal(terminal?.providerTurnId, turns[0]?.providerTurn.id);
+        assert.equal(terminal?.runOrdinal, input.runOrdinal);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("moves a fork into its target thread's worktree before the first prompt", () =>
@@ -4814,3 +4052,44 @@ const providerTurnId = Effect.gen(function* () {
     nativeTurnId: `${SESSION}:attempt:attempt:opencode2-adapter`,
   });
 }).pipe(Effect.provide(IdAllocator.layer));
+
+describe("OpenCode reported model variants", () => {
+  it.effect(
+    "updates reported variants from selected-model and step events without duplicate updates",
+    () =>
+      Effect.gen(function* () {
+        const model = { providerID: "opencode", id: "big-pickle", variant: "thinking" };
+        const step = {
+          sessionID: SESSION,
+          assistantMessageID: "msg_0eb735d5b001oAFVeY5jz3WD4Z",
+          agent: "build",
+          model,
+          started: 1,
+        };
+        const { runtime, thread } = yield* resumed([
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.started", { sessionID: SESSION }),
+          event("session.model.selected", { sessionID: SESSION, model }),
+          event("session.step.started", step),
+          event("session.step.started", { ...step, model: { ...model, variant: "none" } }),
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ]);
+        const collected = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* runtime.startTurn(turnInput(thread));
+        const updates = (yield* Fiber.join(collected)).filter(
+          (event) => event.type === "provider_thread.updated",
+        );
+        assert.deepEqual(
+          updates.map(
+            (event) => event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value,
+          ),
+          ["default", "thinking", "none", "none"],
+        );
+      }).pipe(Effect.scoped),
+  );
+});

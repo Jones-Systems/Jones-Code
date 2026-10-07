@@ -1,10 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   EnvironmentId as EnvironmentIdSchema,
-  CommandId,
-  ThreadId,
-  MessageId,
-  RunId,
   ModelSelection as ModelSelectionSchema,
   ComposerContextId,
   ComposerContextRecord,
@@ -328,24 +324,11 @@ export class ComposerDraftPersistenceError extends Schema.TaggedError<ComposerDr
   }
 }
 
-export const ImportedContinuationPointerSchema = Schema.Struct({
-  environmentId: EnvironmentIdSchema,
-  threadId: ThreadId,
-  commandId: CommandId,
-  target: Schema.Union([
-    Schema.Struct({ type: Schema.Literal("message"), messageId: MessageId }),
-    Schema.Struct({ type: Schema.Literal("queued_run"), runId: RunId, messageId: MessageId }),
-  ]),
-});
-export type ImportedContinuationPointer = typeof ImportedContinuationPointerSchema.Type;
-
 export interface ComposerDraft {
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly importedShareIds?: ReadonlyArray<string>;
-  /** Receipt lookup correlation only; the server owns admission and execution. */
-  readonly importedContinuation?: ImportedContinuationPointer;
   readonly modelSelection?: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: ProviderInteractionMode;
@@ -408,7 +391,6 @@ const ComposerDraftSchema = Schema.Struct({
   context: Schema.optional(PersistedComposerContextSchema),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
-  importedContinuation: Schema.optional(ImportedContinuationPointerSchema),
   modelSelection: Schema.optional(ModelSelectionSchema),
   runtimeMode: Schema.optional(RuntimeModeSchema),
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
@@ -582,8 +564,7 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.modelSelection === undefined &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
-    draft.workspaceSelection === undefined &&
-    draft.importedContinuation === undefined
+    draft.workspaceSelection === undefined
   );
 }
 
@@ -1513,40 +1494,6 @@ export function setComposerDraftAttachmentUpload(
   });
   if (previous) scheduleUnusedComposerAttachmentCleanup([previous]);
   return previous !== undefined;
-}
-
-export async function saveComposerImportedContinuationPointer(
-  draftKey: string,
-  pointer: ImportedContinuationPointer,
-): Promise<void> {
-  await waitForComposerDraftsLoaded();
-  if (draftKey !== `${pointer.environmentId}:${pointer.threadId}`) {
-    throw new Error("Imported continuation belongs to another draft.");
-  }
-  const previous = getComposerDraftSnapshot(draftKey).importedContinuation;
-  if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(pointer)) {
-    throw new Error("Observe the existing imported continuation before starting another.");
-  }
-  updateComposerDrafts((current) => ({
-    ...current,
-    [draftKey]: { ...normalizeDraft(current[draftKey]), importedContinuation: pointer },
-  }));
-  await flushComposerDrafts();
-}
-
-export function clearComposerImportedContinuationPointer(
-  draftKey: string,
-  expected: ImportedContinuationPointer,
-): boolean {
-  const draft = getComposerDraftSnapshot(draftKey);
-  if (
-    draftKey !== `${expected.environmentId}:${expected.threadId}` ||
-    JSON.stringify(draft.importedContinuation) !== JSON.stringify(expected)
-  )
-    return false;
-  const { importedContinuation: _pointer, ...retained } = draft;
-  updateComposerDrafts((current) => withComposerDraft(current, draftKey, retained));
-  return true;
 }
 
 export function updateComposerDraftSettings(

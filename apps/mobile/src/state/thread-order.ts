@@ -1,4 +1,3 @@
-import type { MobileThreadOrderSource } from "../lib/threadOrderScope";
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect } from "react";
 import { Atom } from "effect/unstable/reactivity";
@@ -33,7 +32,6 @@ export function usePendingThreadOrder(nowMinute: string, snoozeWakeTick: number)
 }
 
 let refreshPendingOrder: (() => void) | undefined;
-let cancelPendingOrder: (() => void) | undefined;
 
 /** Shared by Home and the navigation sidebar, including their action guards. */
 export function getPendingThreadOrder(): PendingThreadOrder | null {
@@ -41,40 +39,22 @@ export function getPendingThreadOrder(): PendingThreadOrder | null {
   return appAtomRegistry.get(pendingThreadOrderAtom);
 }
 
-export function beginPendingThreadOrder(
-  pending: PendingThreadOrder,
-  source?: MobileThreadOrderSource,
-) {
-  cancelPendingOrder?.();
+export function beginPendingThreadOrder(pending: PendingThreadOrder) {
   const unsubscribers: (() => void)[] = [];
   const cancel = () => {
     if (refreshPendingOrder !== refresh) return;
     refreshPendingOrder = undefined;
-    cancelPendingOrder = undefined;
     for (const unsubscribe of unsubscribers) unsubscribe();
     appAtomRegistry.set(pendingThreadOrderAtom, null);
   };
   const refresh = () => {
     if (refreshPendingOrder !== refresh) return;
     const current = appAtomRegistry.get(pendingThreadOrderAtom);
-    if (current === null) {
-      cancel();
-      return;
-    }
-    const snapshot = source?.read();
-    if (
-      source !== undefined &&
-      (snapshot == null || snapshot.revision !== current.sourceRevision)
-    ) {
-      cancel();
-      return;
-    }
+    if (current === null) return;
     const configs = appAtomRegistry.get(environmentServerConfigsAtom);
     const ordered = getThreadListV2OrderedSection({
       threads: appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
       section: current.section,
-      scope: current.scope,
-      snapshot,
       now: new Date().toISOString(),
       queuedThreadKeys: appAtomRegistry.get(queuedThreadKeysAtom),
       settlementEnvironmentIds: new Set(
@@ -93,9 +73,7 @@ export function beginPendingThreadOrder(
     else if (next !== current) appAtomRegistry.set(pendingThreadOrderAtom, next);
   };
   refreshPendingOrder = refresh;
-  cancelPendingOrder = cancel;
   appAtomRegistry.set(pendingThreadOrderAtom, pending);
-  if (source !== undefined) unsubscribers.push(source.subscribe(refresh));
   unsubscribers.push(
     appAtomRegistry.subscribe(environmentThreadShells.threadShellsAtom, refresh),
     appAtomRegistry.subscribe(environmentServerConfigsAtom, refresh),

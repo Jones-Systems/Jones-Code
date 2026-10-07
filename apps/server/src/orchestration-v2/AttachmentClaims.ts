@@ -1,4 +1,3 @@
-import * as NodeCrypto from "node:crypto";
 import * as FileSystem from "effect/FileSystem";
 import {
   ChatAttachmentId,
@@ -7,17 +6,14 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 
 import {
   parseThreadSegmentFromAttachmentId,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
   planAttachmentClaim,
   resolveAttachmentPath,
-  resolveAttachmentPathById,
 } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
-import type { NormalizationAttachmentV1 } from "./NormalizationWitness.ts";
 
 export class AttachmentClaimError extends Schema.TaggedError<AttachmentClaimError>()(
   "AttachmentClaimError",
@@ -37,54 +33,11 @@ export const validateAttachmentLimits = Effect.fn("AttachmentClaims.validateAtta
 export interface ClaimedAttachments {
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly claimedPaths: ReadonlyArray<string>;
-  readonly witnessAttachments: ReadonlyArray<NormalizationAttachmentV1>;
 }
 
 export function attachmentIsPendingUpload(attachment: ChatAttachment): boolean {
   return parseThreadSegmentFromAttachmentId(attachment.id) === PENDING_ATTACHMENT_THREAD_SEGMENT;
 }
-
-const hashFile = Effect.fnUntraced(function* (path: string) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const hash = NodeCrypto.createHash("sha256");
-  let sizeBytes = 0;
-  yield* fileSystem.stream(path).pipe(
-    Stream.runForEach((bytes) =>
-      Effect.sync(() => {
-        hash.update(bytes);
-        sizeBytes += bytes.byteLength;
-      }),
-    ),
-  );
-  return { contentSha256: hash.digest("hex"), sizeBytes };
-});
-
-export const probePendingAttachment = Effect.fn("AttachmentClaims.probePendingAttachment")(
-  function* (pendingId: string) {
-    if (parseThreadSegmentFromAttachmentId(pendingId) !== PENDING_ATTACHMENT_THREAD_SEGMENT)
-      return yield* new AttachmentClaimError({
-        message: "Normalization witness does not identify a pending upload.",
-      });
-    const config = yield* ServerConfig.ServerConfig;
-    const path = resolveAttachmentPathById({
-      attachmentsDir: config.attachmentsDir,
-      attachmentId: pendingId,
-    });
-    if (path === null) return null;
-    return yield* hashFile(path).pipe(
-      Effect.catchTag("PlatformError", (cause) =>
-        cause.reason._tag === "NotFound"
-          ? Effect.succeed(null)
-          : Effect.fail(
-              new AttachmentClaimError({
-                message: "Pending upload could not be checked for replay.",
-                cause,
-              }),
-            ),
-      ),
-    );
-  },
-);
 
 /** Remove partial claims only before dispatch, or after proving they were not accepted. */
 export const releaseClaimedAttachments = Effect.fn("AttachmentClaims.releaseClaimedAttachments")(
@@ -121,16 +74,11 @@ export const claimPendingAttachments = Effect.fn("AttachmentClaims.claimPendingA
       });
     }
     if (!input.attachments.some(attachmentIsPendingUpload)) {
-      return {
-        attachments: input.attachments,
-        claimedPaths: [],
-        witnessAttachments: [],
-      } satisfies ClaimedAttachments;
+      return { attachments: input.attachments, claimedPaths: [] } satisfies ClaimedAttachments;
     }
     const serverConfig = yield* ServerConfig.ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
     const claimedPaths: string[] = [];
-    const witnessAttachments: NormalizationAttachmentV1[] = [];
     const attachments = yield* Effect.forEach(
       input.attachments,
       (attachment) =>
@@ -192,24 +140,10 @@ export const claimPendingAttachments = Effect.fn("AttachmentClaims.claimPendingA
             Effect.andThen(Effect.sync(() => claimedPaths.push(claim.finalPath))),
             Effect.uninterruptible,
           );
-          const copied = yield* hashFile(claim.finalPath).pipe(
-            Effect.mapError(
-              (cause) =>
-                new AttachmentClaimError({
-                  message: `Failed to witness attachment '${attachment.name}'.`,
-                  cause,
-                }),
-            ),
-          );
-          if (copied.sizeBytes !== attachment.sizeBytes)
-            return yield* new AttachmentClaimError({
-              message: `Attachment '${attachment.name}' changed size while being copied.`,
-            });
-          witnessAttachments.push({ pendingId: attachment.id, finalId: claim.finalId, ...copied });
           return normalized;
         }),
       { concurrency: 1 },
     ).pipe(Effect.onError(() => releaseClaimedAttachments(claimedPaths)));
-    return { attachments, claimedPaths, witnessAttachments } satisfies ClaimedAttachments;
+    return { attachments, claimedPaths } satisfies ClaimedAttachments;
   },
 );

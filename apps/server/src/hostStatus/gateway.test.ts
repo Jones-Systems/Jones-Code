@@ -79,6 +79,79 @@ describe("Netdata host status", () => {
     expect(() => decode({ ...legacy, load1: 1, availableMemoryBytes: 1024 })).toThrow();
   });
 
+  it("reads available Linux RAM separately from free RAM and retains legacy occupied semantics", async () => {
+    const fallback = fixtureFetch();
+    const fetcher = vi.fn<typeof fetch>(async (input, init) =>
+      new URL(String(input)).searchParams.get("contexts") === "mem.available"
+        ? Response.json(data("avail", 6144.5, "MiB", now / 1000 - 4))
+        : fallback(input, init),
+    );
+    expect((await readHostStatus(config, fetcher, () => now)).hosts[0]).toMatchObject({
+      status: "available",
+      availableMemoryBytes: 6144.5 * 1024 ** 2,
+      occupiedMemoryBytes: 8589934592 - 4096.5 * 1024 ** 2,
+      sampledAt: "2027-01-15T07:59:56.000Z",
+    });
+  });
+
+  it("estimates Mac available RAM including speculative, inactive, and purgeable pages", async () => {
+    const memory = data("free", 1024, "MiB");
+    memory.result.labels.push(
+      "speculative",
+      "inactive",
+      "purgeable",
+      "active",
+      "wired",
+      "compressed",
+    );
+    memory.result.data[0]!.push(256, 2048, 512, 2048, 1024, 128);
+    const macCpu = {
+      ...cpu(),
+      result: { labels: ["time", "user", "nice", "system"], data: [[now / 1000, 10, 0, 10]] },
+    };
+    expect(
+      (await readHostStatus(config, fixtureFetch(macCpu, memory), () => now)).hosts[0],
+    ).toMatchObject({
+      status: "available",
+      availableMemoryBytes: 3840 * 1024 ** 2,
+      occupiedMemoryBytes: 7 * 1024 ** 3,
+    });
+  });
+
+  it.each([data("avail", 0, "MiB"), data("avail", 8192, "MiB")])(
+    "accepts zero and total available RAM",
+    async (payload) => {
+      const fallback = fixtureFetch();
+      const fetcher: typeof fetch = async (input, init) =>
+        new URL(String(input)).searchParams.get("contexts") === "mem.available"
+          ? Response.json(payload)
+          : fallback(input, init);
+      expect((await readHostStatus(config, fetcher, () => now)).hosts[0]).toMatchObject({
+        status: "available",
+        availableMemoryBytes: Number(payload.result.data[0]![1]) * 1024 ** 2,
+      });
+    },
+  );
+
+  it.each([
+    data("avail", null, "MiB"),
+    data("avail", -1, "MiB"),
+    data("avail", 8193, "MiB"),
+    data("avail", 1, "MB"),
+    data("free", 1, "MiB"),
+    data("avail", 1, "MiB", now / 1000 - 31),
+    { api: 3 },
+  ])("keeps CPU usable without claiming unavailable or invalid available RAM", async (payload) => {
+    const fallback = fixtureFetch();
+    const fetcher: typeof fetch = async (input, init) =>
+      new URL(String(input)).searchParams.get("contexts") === "mem.available"
+        ? Response.json(payload)
+        : fallback(input, init);
+    const host = (await readHostStatus(config, fetcher, () => now)).hosts[0];
+    expect(host).toMatchObject({ status: "available", cpuUsagePercent: 16 });
+    expect(host).not.toHaveProperty("availableMemoryBytes");
+  });
+
   it("always returns fixed ordered unavailable hosts when unconfigured without fetching", async () => {
     const fetcher = fixtureFetch();
     expect(await readHostStatus({}, fetcher)).toEqual({
@@ -123,7 +196,7 @@ describe("Netdata host status", () => {
       sampledAt: "2027-01-15T07:59:58.000Z",
     });
     const calls = fetcher.mock.calls;
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     for (const [input, init] of calls) {
       expect(init?.redirect).toBe("error");
       expect(init?.headers).toMatchObject({ authorization: "Bearer test-only-secret" });
@@ -271,14 +344,15 @@ describe("Netdata host status", () => {
       { id: "mini", status: "unavailable", reason: "not_configured" },
       { id: "home", status: "unavailable", reason: "not_configured" },
     ]);
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(8);
     const queries = fetcher.mock.calls
       .map(([input]) => new URL(String(input)))
       .filter((url) => url.pathname.endsWith("data"));
     for (const selected of [guid, testGuid]) {
       const scoped = queries.filter((url) => url.searchParams.get("nodes") === selected);
-      expect(scoped).toHaveLength(2);
+      expect(scoped).toHaveLength(3);
       expect(scoped.map((url) => url.searchParams.get("contexts")).sort()).toEqual([
+        "mem.available",
         "system.cpu",
         "system.ram",
       ]);
@@ -288,7 +362,7 @@ describe("Netdata host status", () => {
           scope_nodes: selected,
           nodes: selected,
           contexts: url.searchParams.get("contexts"),
-          dimensions: url.searchParams.get("contexts") === "system.cpu" ? "*" : "free",
+          dimensions: url.searchParams.get("contexts") === "mem.available" ? "avail" : "*",
           after: "-5",
           points: "1",
           format: "json",
@@ -470,24 +544,24 @@ describe("Netdata host status", () => {
     const fetcher = fixtureFetch();
     const result = await readHostStatus(shared, fetcher, () => now);
     expect(result.hosts.every((host) => host.status === "available")).toBe(true);
-    expect(fetcher).toHaveBeenCalledTimes(12);
+    expect(fetcher).toHaveBeenCalledTimes(16);
     const credentials = fetcher.mock.calls.map(([input, init]) => ({
       origin: new URL(String(input)).origin,
       authorization: new Headers(init?.headers).get("authorization"),
     }));
     expect(credentials.filter(({ origin }) => origin === "https://override.example")).toEqual(
-      Array.from({ length: 3 }, () => ({
+      Array.from({ length: 4 }, () => ({
         origin: "https://override.example",
         authorization: null,
       })),
     );
     for (const authorization of ["Bearer shared-test-token", "Bearer mini-test-token"]) {
       expect(credentials.filter((call) => call.authorization === authorization)).toEqual(
-        Array.from({ length: 3 }, () => ({ origin: "https://collector.example", authorization })),
+        Array.from({ length: 4 }, () => ({ origin: "https://collector.example", authorization })),
       );
     }
     expect(credentials.filter(({ origin }) => origin === "https://home.example")).toEqual(
-      Array.from({ length: 3 }, () => ({
+      Array.from({ length: 4 }, () => ({
         origin: "https://home.example",
         authorization: "Bearer home-test-token",
       })),

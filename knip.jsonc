@@ -14,14 +14,12 @@
     },
     "scripts": {
       // Knip loads its preprocessor through a CLI option; native verification and
-      // worktree setup (from t3.json) run directly.
+      // worktree setup (from t3.json) run directly. Retain the CLI archive verifier.
       "entry": [
         "knip-schemas.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
-        // Retained CLI archive verifier for the deferred release workflow.
         "smoke-cli-archive.ts",
-        "runtime-adoption-qualification/run.mjs",
       ],
     },
     "apps/server": {
@@ -36,11 +34,11 @@
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
-        // Staged native creation ports are consumed by the dependent execution slice.
-        // Analyzer entries preserve their source API without enabling runtime authority.
-        "src/orchestration/NativeCreationPreparation.ts",
-        "src/orchestration/NativeCreationAuthority.ts",
-        "src/persistence/Layers/NativeCreationRepository.ts",
+        // Staged native creation substrate is consumed by the deferred L39 execution slice.
+        // Analyzer entries preserve these APIs without registering runtime authority or launch.
+        "src/jones/nativeCreation/NativeCreationPreparation.ts",
+        "src/jones/nativeCreation/NativeCreationAuthority.ts",
+        "src/jones/nativeCreation/NativeCreationRepositorySqlite.ts",
       ],
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
@@ -83,9 +81,10 @@
       "ignoreIssues": { "src/components/ui/*.tsx": ["exports", "nsExports", "duplicates"] },
     },
     "apps/mobile": {
-      // Expo loads plugins by string; Metro embeds the browser entry in the native WebView.
+      // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
       "entry": [
         "index.ts!",
+        "fingerprint.config.js",
         "plugins/*.cjs",
         "scripts/generate-device-stream.mts",
         "src/features/devices/device-stream.browser.ts!",

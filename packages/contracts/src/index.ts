@@ -7,19 +7,19 @@ export * from "./acpRegistry.ts";
 export * from "./auth.ts";
 export * from "./environment.ts";
 export * from "./environmentHttp.ts";
+export * from "./voiceReview.ts";
 export * from "./relayClient.ts";
 export * from "./desktopBootstrap.ts";
 export * from "./desktopAppActivation.ts";
 export * from "./remoteAccess.ts";
 export * from "./ipc.ts";
 export * from "./terminal.ts";
-export * from "./worktreeOwnership.ts";
 export * from "./provider.ts";
 export * from "./providerInstance.ts";
 export * from "./providerSetup.ts";
 export * from "./providerRuntime.ts";
+export * from "./providerRuntimeIdentity.ts";
 export * from "./providerUsageLimits.ts";
-export * from "./providerQueue.ts";
 export * from "./usageLimitSourceId.ts";
 export * from "./providerPolicy.ts";
 export * from "./modelSelection.ts";
@@ -35,6 +35,7 @@ export * from "./sourceControl.ts";
 export * from "./projectClone.ts";
 export * from "./pullRequest.ts";
 export * from "./orchestrationDispatch.ts";
+export * from "./nativeCreation.ts";
 export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
 export * from "./applicationEvent.ts";
@@ -60,25 +61,26 @@ export * from "./usage.ts";
 export * from "./tokenAccounting.ts";
 export * from "./scheduledTask.ts";
 export * from "./worktreeMcp.ts";
+export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 
+export * from "./providerQueue.ts";
+
+export * from "./queueDispatch.ts";
 export * from "./workstreams.ts";
 export * from "./workstreamPlacements.ts";
-export * from "./hostStatus.ts";
-
-export * from "./jonesUpdates.ts";
-export * from "./voiceReview.ts";
-
 export * from "./threadRegistry.ts";
 export * from "./queueProtocol.ts";
-
 export * from "./threadCorpusProtocol.ts";
-export * from "./threadActivity.ts";
-export * from "./workstreamsNativeProvider.ts";
-export * from "./workstreamsRegistrationContext.ts";
+export {
+  ThreadTurnDispatchGuard,
+  OrchestrationCommandObservation,
+  OrchestrationShellSnapshot,
+  OrchestrationThreadDetailWindow,
+  OrchestrationThreadDetailSnapshot,
+} from "./legacyOrchestrationCompatibility.ts";
+export * from "./hostStatus.ts";
+export * from "./jones/workstreamAppearance.ts";
 
-export * from "./nativeCreation.ts";
-export * from "./orchestrationNative.ts";
-export * from "./runtimeIdentity.ts";
-export * from "./workQueueMetadata.ts";
+export * from "./jones/organizationMetadata.ts";

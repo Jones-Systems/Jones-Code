@@ -1,4 +1,5 @@
 import * as Option from "effect/Option";
+import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
@@ -57,7 +58,7 @@ import { stripInlineContextReferences } from "~/lib/composerContextReferences";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { collapseExpandedComposerCursor, type ComposerSubmissionIntent } from "../composer-logic";
 import type { ReviewCommentContext } from "../reviewCommentContext";
-import type { TimelineEntry } from "../session-logic";
+import { derivePhase, type TimelineEntry } from "../session-logic";
 import type { PreviewMiniPlayerSource } from "../previewMiniPlayerStore";
 import type { DesktopPreviewOverlay } from "../previewStateStore";
 import type { RightPanelSurface } from "../rightPanelStore";
@@ -827,6 +828,25 @@ export function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+// Preserve New worktree intent while automatic base selection is still loading.
+export function resolveFirstSendWorktreePreparation(input: {
+  isFirstMessage: boolean;
+  sendEnvMode: DraftThreadEnvMode;
+  worktreePath: string | null;
+  projectCwd: string;
+  baseBranch: string | null;
+  startFromOrigin: boolean;
+}): NonNullable<StartThreadTurnInput["bootstrap"]>["prepareWorktree"] {
+  if (!input.isFirstMessage || input.sendEnvMode !== "worktree" || input.worktreePath !== null) {
+    return undefined;
+  }
+  return {
+    projectCwd: input.projectCwd,
+    ...(input.baseBranch !== null ? { baseBranch: input.baseBranch } : {}),
+    ...(input.startFromOrigin ? { startFromOrigin: true } : {}),
+  };
+}
+
 export function resolveSendEnvMode(input: {
   requestedEnvMode: DraftThreadEnvMode;
   isGitRepo: boolean;
@@ -1248,7 +1268,10 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   if (input.hasPendingApproval || input.hasPendingUserInput || Boolean(input.threadError)) {
     return true;
   }
-  if (input.phase === "connecting") {
+  // The thread shell can report a preparing or starting run before the detail
+  // projection behind `phase` loads, so either source still connecting holds
+  // the send.
+  if (input.phase === "connecting" || derivePhase(input.runtime ?? null) === "connecting") {
     return false;
   }
 
@@ -1353,4 +1376,28 @@ export function restorePlanFollowUpComposer(input: {
     prompt: input.snapshot.prompt,
     detectTrigger: true,
   });
+}
+
+export function resolveComposerPickerModelSelection(input: {
+  instanceId: ProviderInstanceId;
+  model: string;
+  currentSelection: ModelSelection | null | undefined;
+  rememberedOptions: ModelSelection["options"];
+}): ModelSelection {
+  const options =
+    input.rememberedOptions?.filter((option) => option.id !== "reasoningEffort") ?? [];
+  if (
+    input.currentSelection?.instanceId === input.instanceId &&
+    input.currentSelection.model === input.model
+  ) {
+    const effort = input.currentSelection.options?.find(
+      (option) => option.id === "reasoningEffort",
+    );
+    if (effort !== undefined) options.push(effort);
+  }
+  return {
+    instanceId: input.instanceId,
+    model: input.model,
+    ...(options.length ? { options } : {}),
+  };
 }

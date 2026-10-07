@@ -1897,7 +1897,6 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
 
         yield* Effect.gen(function* () {
           const scanner = yield* AgentSessionScanner.AgentSessionScanner;
-          // A fresh scanner first opens each file for project discovery.
           const initial = yield* scanner.recentThreads(workspace).pipe(Stream.runCollect);
           const imported = initial[0];
           expect(imported?._tag).toBe("Importable");

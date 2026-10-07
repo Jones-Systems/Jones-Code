@@ -135,11 +135,3 @@ export function moveNativeThreadOrder(
   next.splice(next.indexOf(neighborId) + (after ? 1 : 0), 0, movedId);
   return next;
 }
-
-export async function executeMobileShelfMove<A>(input: {
-  readonly removePrimary: () => Promise<void>;
-  readonly moveNative: () => Promise<A>;
-}): Promise<A> {
-  await input.removePrimary();
-  return input.moveNative();
-}

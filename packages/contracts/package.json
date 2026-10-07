@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./conversationLibrary": {
+      "types": "./src/conversationLibrary.ts",
+      "import": "./src/conversationLibrary.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
@@ -19,9 +23,9 @@
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
     },
-    "./conversationLibrary": {
-      "types": "./src/conversationLibrary.ts",
-      "import": "./src/conversationLibrary.ts"
+    "./jones/organizationMetadata": {
+      "types": "./src/jones/organizationMetadata.ts",
+      "import": "./src/jones/organizationMetadata.ts"
     }
   },
   "scripts": {

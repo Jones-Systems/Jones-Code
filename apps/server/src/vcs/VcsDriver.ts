@@ -14,14 +14,12 @@ import type {
 import { CheckpointRef } from "@t3tools/contracts";
 import * as VcsProcess from "./VcsProcess.ts";
 
-export interface VcsCaptureCheckpointInput<E = never, R = never> {
-  readonly revalidateMutation?: Effect.Effect<void, E, R>;
+export interface VcsCaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
 }
 
-export interface VcsRestoreCheckpointInput<E = never, R = never> {
-  readonly revalidateMutation?: Effect.Effect<void, E, R>;
+export interface VcsRestoreCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
   readonly fallbackToHead?: boolean;
@@ -36,35 +34,32 @@ export interface VcsDiffCheckpointsInput {
   readonly format?: "patch" | "numstat";
 }
 
-export interface VcsDeleteCheckpointRefsInput<E = never, R = never> {
-  readonly revalidateMutation?: Effect.Effect<void, E, R>;
+export interface VcsDeleteCheckpointRefsInput {
   readonly cwd: string;
   readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
 }
 
 export interface VcsCheckpointOps {
-  readonly captureCheckpoint: <E = never, R = never>(
-    input: VcsCaptureCheckpointInput<E, R>,
-  ) => Effect.Effect<void, VcsError | E, R>;
+  readonly captureCheckpoint: (input: VcsCaptureCheckpointInput) => Effect.Effect<void, VcsError>;
   readonly hasCheckpointRef: (
     input: Omit<VcsRestoreCheckpointInput, "fallbackToHead">,
   ) => Effect.Effect<boolean, VcsError>;
-  readonly restoreCheckpoint: <E = never, R = never>(
-    input: VcsRestoreCheckpointInput<E, R>,
-  ) => Effect.Effect<boolean, VcsError | E, R>;
+  readonly restoreCheckpoint: (
+    input: VcsRestoreCheckpointInput,
+  ) => Effect.Effect<boolean, VcsError>;
   readonly diffCheckpoints: (input: VcsDiffCheckpointsInput) => Effect.Effect<string, VcsError>;
-  readonly deleteCheckpointRefs: <E = never, R = never>(
-    input: VcsDeleteCheckpointRefsInput<E, R>,
-  ) => Effect.Effect<void, VcsError | E, R>;
+  readonly deleteCheckpointRefs: (
+    input: VcsDeleteCheckpointRefsInput,
+  ) => Effect.Effect<void, VcsError>;
 }
 
 export class VcsDriver extends Context.Service<
   VcsDriver,
   {
     readonly capabilities: VcsDriverCapabilities;
-    readonly execute: <E = never, R = never>(
-      input: Omit<VcsProcess.VcsProcessInput<E, R>, "command">,
-    ) => Effect.Effect<VcsProcess.VcsProcessOutput, VcsError | E, R>;
+    readonly execute: (
+      input: Omit<VcsProcess.VcsProcessInput, "command">,
+    ) => Effect.Effect<VcsProcess.VcsProcessOutput, VcsError>;
     readonly checkpoints?: VcsCheckpointOps;
     readonly detectRepository: (
       cwd: string,

@@ -7,8 +7,6 @@ export interface McpProviderSessionConfig {
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;
   readonly authorizationHeader: string;
-  /** Capabilities explicitly granted to this provider credential. */
-  readonly capabilities: ReadonlySet<string>;
   /**
    * Whether this credential includes the "preview" capability. Adapters read
    * it to keep developer instructions truthful: when the user withholds agent
@@ -16,6 +14,8 @@ export interface McpProviderSessionConfig {
    * call would reject.
    */
   readonly browserToolsAvailable: boolean;
+  /** Capabilities the credential grants ("preview", "device"). */
+  readonly capabilities?: ReadonlySet<string>;
   /**
    * Set when the session may drive devices. Adapters spread this into the
    * provider subprocess environment so the `agent-device` CLI is on PATH and
@@ -44,9 +44,6 @@ export function withAgentDeviceEnvironment(
 const sessionsByThread = new Map<ThreadId, McpProviderSessionConfig>();
 
 export function setMcpProviderSession(config: McpProviderSessionConfig): void {
-  if (config.browserToolsAvailable !== config.capabilities.has("preview")) {
-    throw new Error("MCP browser availability contradicts its preview grant");
-  }
   sessionsByThread.set(config.threadId, config);
 }
 

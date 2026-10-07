@@ -20,8 +20,7 @@ import {
 } from "@t3tools/contracts";
 import * as ProcessRunner from "../processRunner.ts";
 
-export interface VcsProcessInput<E = never, R = never> {
-  readonly revalidateMutation?: Effect.Effect<void, E, R>;
+export interface VcsProcessInput {
   readonly operation: string;
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -51,19 +50,9 @@ export interface VcsProcessOutput {
 export class VcsProcess extends Context.Service<
   VcsProcess,
   {
-    readonly run: <E = never, R = never>(
-      input: VcsProcessInput<E, R>,
-    ) => Effect.Effect<VcsProcessOutput, VcsError | E, R>;
+    readonly run: (input: VcsProcessInput) => Effect.Effect<VcsProcessOutput, VcsError>;
   }
 >()("t3/vcs/VcsProcess") {}
-
-class MutationRevalidationError<E> {
-  readonly _tag = "MutationRevalidationError";
-  readonly error: E;
-  constructor(error: E) {
-    this.error = error;
-  }
-}
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
@@ -129,9 +118,7 @@ export const make = Effect.gen(function* () {
   const vcsProcesses = yield* Semaphore.make(VCS_PROCESS_CONCURRENCY);
   const githubProcesses = yield* Semaphore.make(GITHUB_PROCESS_CONCURRENCY);
 
-  const runUnbounded = Effect.fn("VcsProcess.runUnbounded")(function* <E = never, R = never>(
-    input: VcsProcessInput<E, R>,
-  ): Effect.fn.Return<VcsProcessOutput, VcsError | MutationRevalidationError<E>, R> {
+  const runUnbounded = Effect.fn("VcsProcess.runUnbounded")(function* (input: VcsProcessInput) {
     const baseError = {
       operation: input.operation,
       command: input.command,
@@ -143,13 +130,6 @@ export const make = Effect.gen(function* () {
       .run({
         command: input.command,
         args: input.args,
-        ...(input.revalidateMutation !== undefined
-          ? {
-              revalidateMutation: input.revalidateMutation.pipe(
-                Effect.mapError((error) => new MutationRevalidationError(error)),
-              ),
-            }
-          : {}),
         cwd: input.cwd,
         ...(input.spawnCwd !== undefined ? { spawnCwd: input.spawnCwd } : {}),
         ...(input.stdin !== undefined ? { stdin: input.stdin } : {}),
@@ -162,36 +142,32 @@ export const make = Effect.gen(function* () {
         timeoutBehavior: "error",
       })
       .pipe(
-        Effect.mapError((error) =>
-          error instanceof MutationRevalidationError
-            ? error
-            : Match.value(error).pipe(
-                Match.tagsExhaustive({
-                  ProcessSpawnError: (error) =>
-                    VcsProcessSpawnError.fromProcessSpawnError(baseError, error),
-                  ProcessOutputLimitError: (error) =>
-                    new VcsProcessOutputLimitError({
-                      ...baseError,
-                      stream: error.stream,
-                      maxBytes: error.maxBytes,
-                      observedBytes: error.observedBytes,
-                    }),
-                  ProcessTimeoutError: (error) =>
-                    VcsProcessTimeoutError.fromProcessTimeoutError(baseError, error),
-                  ProcessStdinError: (error) =>
-                    new VcsProcessStdinWriteError({
-                      ...baseError,
-                      stdinBytes: error.stdinBytes,
-                      cause: error.cause,
-                    }),
-                  ProcessReadError: (error) =>
-                    new VcsProcessOutputReadError({
-                      ...baseError,
-                      stream: error.stream,
-                      cause: error.cause,
-                    }),
-                }),
-              ),
+        Effect.mapError(
+          Match.valueTags({
+            ProcessSpawnError: (error) =>
+              VcsProcessSpawnError.fromProcessSpawnError(baseError, error),
+            ProcessOutputLimitError: (error) =>
+              new VcsProcessOutputLimitError({
+                ...baseError,
+                stream: error.stream,
+                maxBytes: error.maxBytes,
+                observedBytes: error.observedBytes,
+              }),
+            ProcessTimeoutError: (error) =>
+              VcsProcessTimeoutError.fromProcessTimeoutError(baseError, error),
+            ProcessStdinError: (error) =>
+              new VcsProcessStdinWriteError({
+                ...baseError,
+                stdinBytes: error.stdinBytes,
+                cause: error.cause,
+              }),
+            ProcessReadError: (error) =>
+              new VcsProcessOutputReadError({
+                ...baseError,
+                stream: error.stream,
+                cause: error.cause,
+              }),
+          }),
         ),
       );
 
@@ -226,9 +202,7 @@ export const make = Effect.gen(function* () {
     } satisfies VcsProcessOutput;
   });
 
-  const run = Effect.fn("VcsProcess.run")(function* <E = never, R = never>(
-    input: VcsProcessInput<E, R>,
-  ): Effect.fn.Return<VcsProcessOutput, VcsError | MutationRevalidationError<E>, R> {
+  const run = Effect.fn("VcsProcess.run")(function* (input: VcsProcessInput) {
     const bounded = vcsProcesses.withPermits(1)(runUnbounded(input));
     if (
       input.command === "git" &&
@@ -253,14 +227,7 @@ export const make = Effect.gen(function* () {
     return yield* input.command === "gh" ? githubProcesses.withPermits(1)(bounded) : bounded;
   });
 
-  return VcsProcess.of({
-    run: <E = never, R = never>(input: VcsProcessInput<E, R>) =>
-      run(input).pipe(
-        Effect.mapError((error) =>
-          error instanceof MutationRevalidationError ? error.error : error,
-        ),
-      ),
-  });
+  return VcsProcess.of({ run });
 });
 
 export const layer = Layer.effect(VcsProcess, make).pipe(Layer.provide(ProcessRunner.layer));

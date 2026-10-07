@@ -91,14 +91,6 @@ const make = Effect.gen(function* () {
         (projection) => projection.thread.deletedAt === null,
         () => failure("thread_not_found", `Thread '${scope.threadId}' was not found.`),
       ),
-      Effect.filterOrFail(
-        (projection) => projection.thread.modelSelection.instanceId === scope.providerInstanceId,
-        () =>
-          failure(
-            "capability_denied",
-            "This credential no longer owns the thread's provider binding.",
-          ),
-      ),
     );
 
   const loadProject = (scope: McpInvocationScope, projectId: ProjectId) =>

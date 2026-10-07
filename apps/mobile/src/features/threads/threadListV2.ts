@@ -1,10 +1,3 @@
-import { nativeWorkstreamThreadKey } from "@t3tools/client-runtime/state/workstreams";
-import {
-  mobileThreadOrderSection,
-  sameMobileThreadOrderScope,
-  type MobileThreadOrderScope,
-  type MobileThreadOrderSnapshot,
-} from "../../lib/threadOrderScope";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import {
   canSnooze,
@@ -16,20 +9,21 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { resolveThreadOperatingState } from "@t3tools/client-runtime/state/thread-continuation";
 import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
+import {
+  createInboxReturnTracker,
+  isThreadWorking,
+  sortInboxThreadsByReturn,
+  sortWorkingThreadsBySend,
+} from "@t3tools/client-runtime/state/thread-inbox";
 import {
   sortActiveThreadsByOrderKey,
   resolveSettledThreadTimestamp,
   sortPinnedThreadsByOrderKey,
   sortSettledThreads,
 } from "@t3tools/client-runtime/state/thread-sort";
-import type {
-  EnvironmentId,
-  ProjectId,
-  OrchestrationV2ThreadRuntimeObservation,
-} from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 
 import type { ThreadListProvider } from "../../state/thread-list-environments";
 import type { ThreadMoveAvailability } from "./threadOrder";
@@ -44,6 +38,11 @@ import {
 } from "./threadOrder";
 
 export { snoozeWakeLabel };
+
+/** Working section beta: when this device saw each thread leave the Working
+    shelf. One instance for Home and the iPad sidebar, so both lists order the
+    inbox the same way and the order survives screens that unmount. */
+export const threadListInboxReturns = createInboxReturnTracker();
 
 /**
  * Provider drivers for a row's trailing icon stack, back to front. Instances
@@ -70,19 +69,20 @@ export function resolveThreadListV2ProviderDrivers(
  * Thread List v2 model, ported from the web sidebar v2
  * (apps/web/src/components/Sidebar.logic.ts + SidebarV2.tsx).
  *
- * Foreground requests outrank work labels. Waiting requires current monitoring
- * from the active owner; an idle runtime or historical task roster does not
- * establish background liveness. Ready is the unlabeled resting state.
+ * Six visual states. Color distinguishes approval, input, active work, and
+ * failures. Ready is the unlabeled resting state; waiting (runtime status "idle") is the agent
+ * parked on open background tasks, grey like working rather than a false Done.
+ * The orchestrator v2 presentation bridge parks runtime at idle when the
+ * post-settlement background roster holds the run's completion (subagents,
+ * monitors); commands left running, such as a dev server, read as ready.
  */
 export type ThreadListV2Status =
   | "approval"
   | "input"
-  | "plan"
   | "working"
   | "waiting"
   | "failed"
   | "limited"
-  | "unknown"
   | "ready";
 export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
 
@@ -183,42 +183,26 @@ export function threadHasUnseenCompletion(
 }
 
 export function resolveThreadListV2Status(
-  thread: Pick<
-    EnvironmentThreadShell,
-    | "id"
-    | "activeProviderThreadId"
-    | "archivedAt"
-    | "hasPendingApprovals"
-    | "hasPendingUserInput"
-    | "hasActionableProposedPlan"
-    | "runtime"
-  >,
-  observation?: OrchestrationV2ThreadRuntimeObservation,
-  options: { readonly foregroundCurrent?: boolean } = {},
+  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "runtime">,
 ): ThreadListV2Status {
-  const foreground = options.foregroundCurrent === false ? { ...thread, runtime: null } : thread;
-  const operating = resolveThreadOperatingState(
-    foreground,
-    observation ?? { status: "unknown", reason: "Current runtime has not been observed." },
-  );
-  if (operating.foregroundAttention !== null) return operating.foregroundAttention;
+  if (thread.hasPendingApprovals) {
+    return "approval";
+  }
+  if (thread.hasPendingUserInput) {
+    return "input";
+  }
   if (
-    foreground.runtime !== null &&
-    ["preparing", "queued", "starting", "running", "waiting"].includes(foreground.runtime.status)
+    thread.runtime !== null &&
+    ["preparing", "queued", "starting", "running", "waiting"].includes(thread.runtime.status)
   ) {
     return "working";
   }
-  if (foreground.runtime?.status === "failed") {
-    return foreground.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
+  if (thread.runtime?.status === "idle") {
+    return "waiting";
   }
-  if (operating.backgroundDisplay === "working") return "working";
-  if (operating.backgroundDisplay === "monitoring") return "waiting";
-  if (
-    observation !== undefined &&
-    operating.backgroundStatus === "unknown" &&
-    thread.activeProviderThreadId !== null
-  )
-    return "unknown";
+  if (thread.runtime?.status === "failed") {
+    return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
+  }
   return "ready";
 }
 
@@ -243,10 +227,8 @@ export function sortThreadsForListV2<
   return sortActiveThreadsByOrderKey(threads);
 }
 
-/** Canonical move population, independent of display filters. */
+/** Canonical card section for Move up/down, independent of search or scope. */
 export function getThreadListV2OrderedSection(input: {
-  readonly scope?: MobileThreadOrderScope;
-  readonly snapshot?: MobileThreadOrderSnapshot | null;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly section: "pinned" | "active";
   readonly pendingOrder?: PendingThreadOrder | null;
@@ -255,9 +237,6 @@ export function getThreadListV2OrderedSection(input: {
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly queuedThreadKeys?: ReadonlySet<string>;
 }): EnvironmentThreadShell[] {
-  const scope = input.scope ?? { kind: "shelf", section: input.section };
-  const section = mobileThreadOrderSection(scope);
-  const grouping = input.snapshot?.enabled === true;
   const threads = input.threads.filter((thread) => {
     if (thread.archivedAt !== null || thread.lineage.relationshipToParent === "subagent")
       return false;
@@ -274,31 +253,17 @@ export function getThreadListV2OrderedSection(input: {
     ) {
       return false;
     }
-    const groupKey = input.snapshot?.primaryGroupByThreadKey.get(
-      nativeWorkstreamThreadKey(thread.environmentId, thread.id),
-    );
-    if (grouping) {
-      if (scope.kind === "workstream")
-        return scope.groupKey === null
-          ? groupKey === undefined && thread.pinnedAt == null
-          : groupKey === scope.groupKey;
-      if (groupKey !== undefined) return false;
-    }
-    return (thread.pinnedAt != null) === (section === "pinned");
+    return (thread.pinnedAt != null) === (input.section === "pinned");
   });
   const ordered =
-    section === "pinned"
+    input.section === "pinned"
       ? sortPinnedThreadsByOrderKey(threads)
       : sortActiveThreadsByOrderKey(threads);
   const pending =
-    input.pendingOrder?.section === section &&
-    (input.pendingOrder.scope === undefined ||
-      sameMobileThreadOrderScope(input.pendingOrder.scope, scope)) &&
-    (input.pendingOrder.sourceRevision === undefined ||
-      input.pendingOrder.sourceRevision === input.snapshot?.revision)
+    input.pendingOrder?.section === input.section
       ? reconcilePendingThreadOrder(input.pendingOrder, ordered)
       : null;
-  return applyPendingThreadOrder(ordered, section, pending);
+  return applyPendingThreadOrder(ordered, input.section, pending);
 }
 
 export interface ThreadListV2Item {
@@ -306,7 +271,7 @@ export interface ThreadListV2Item {
   readonly variant: "card" | "slim";
   /** Snoozed-shelf row: shows the wake countdown and offers Wake. */
   readonly snoozed: boolean;
-  /** Pin state: renders the pin glyph and offers Unpin, including in workstreams. */
+  /** Pinned-block row: renders the pin glyph and offers Unpin. */
   readonly pinned: boolean;
   readonly isLast: boolean;
 }
@@ -315,6 +280,10 @@ export interface ThreadListV2Layout {
   readonly items: ThreadListV2Item[];
   /** Settled threads beyond the render limit (behind "Show more"). */
   readonly hiddenSettledCount: number;
+  /** Working threads folded away by the Working section beta. */
+  readonly workingCount: number;
+  /** Index in `items` where the Working shelf header belongs. */
+  readonly workingShelfHeaderIndex: number | null;
   /** Snoozed threads matching the current filters. */
   readonly snoozedCount: number;
   /** Index in `items` where the Snoozed shelf header belongs. The header is
@@ -372,6 +341,15 @@ export interface ThreadListV2PendingListItem {
   readonly showTrailingDivider: boolean;
 }
 
+export interface ThreadListV2WorkingShelfListItem {
+  readonly type: "v2-working-shelf";
+  readonly key: "v2-working-shelf";
+  readonly count: number;
+  readonly expanded: boolean;
+  /** See the snoozed shelf header's field. */
+  readonly disabled: boolean;
+}
+
 export interface ThreadListV2SnoozedShelfListItem {
   readonly type: "v2-snoozed-shelf";
   readonly key: "v2-snoozed-shelf";
@@ -399,6 +377,7 @@ export interface ThreadListV2WorkstreamListItem {
   readonly groupKey: string;
   readonly name: string;
   readonly color: string;
+  readonly borderColor?: string;
   readonly count: number;
   readonly expanded: boolean;
 }
@@ -407,6 +386,7 @@ export type ThreadListV2ListItem =
   | ThreadListV2WorkstreamListItem
   | ThreadListV2ThreadListItem
   | ThreadListV2PendingListItem
+  | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
   | ThreadListV2SettledShelfListItem;
 
@@ -419,6 +399,7 @@ export function isThreadListV2ListItem(value: {
     value.type === "v2-workstream" ||
     value.type === "v2-thread" ||
     value.type === "v2-pending" ||
+    value.type === "v2-working-shelf" ||
     value.type === "v2-snoozed-shelf" ||
     value.type === "v2-settled-shelf"
   );
@@ -443,6 +424,7 @@ export function threadListV2ListItemsAreEqual(
         previous.groupKey === item.groupKey &&
         previous.name === item.name &&
         previous.color === item.color &&
+        previous.borderColor === item.borderColor &&
         previous.count === item.count &&
         previous.expanded === item.expanded
       );
@@ -470,6 +452,13 @@ export function threadListV2ListItemsAreEqual(
         previous.pendingTask === item.pendingTask &&
         previous.showPendingDivider === item.showPendingDivider &&
         previous.showTrailingDivider === item.showTrailingDivider
+      );
+    case "v2-working-shelf":
+      return (
+        previous.type === "v2-working-shelf" &&
+        previous.count === item.count &&
+        previous.expanded === item.expanded &&
+        previous.disabled === item.disabled
       );
     case "v2-snoozed-shelf":
       return (
@@ -511,13 +500,17 @@ function resolveThreadListV2ItemTimeLabel(
 }
 
 /**
- * Builds the shared mobile order: active → pending → snoozed shelf → settled.
- * Pending tasks are waiting rather than asking, and parked work remains
- * reachable without competing with either the inbox or settled history.
+ * Builds the shared mobile order: active → pending → working shelf (beta) →
+ * snoozed shelf → settled. Pending tasks are waiting rather than asking, and
+ * busy or parked work remains reachable without competing with either the
+ * inbox or settled history.
  */
 export function buildThreadListV2ListItems(input: {
   readonly items: ReadonlyArray<ThreadListV2Item>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
+  readonly workingCount?: number;
+  readonly workingShelfExpanded?: boolean;
+  readonly workingShelfHeaderIndex?: number | null;
   readonly snoozedCount?: number;
   readonly snoozedShelfExpanded?: boolean;
   readonly snoozedShelfHeaderIndex?: number | null;
@@ -584,14 +577,27 @@ export function buildThreadListV2ListItems(input: {
     showPendingDivider: index === 0,
     showTrailingDivider: false,
   }));
+  const workingCount = input.workingCount ?? 0;
+  const workingShelfHeaderIndex = input.workingShelfHeaderIndex ?? null;
   const snoozedCount = input.snoozedCount ?? 0;
   const snoozedShelfHeaderIndex = input.snoozedShelfHeaderIndex ?? null;
   const settledCount = input.settledCount ?? 0;
   const settledShelfHeaderIndex = input.settledShelfHeaderIndex ?? null;
-  const activeEnd = snoozedShelfHeaderIndex ?? settledShelfHeaderIndex ?? threadItems.length;
   const snoozedEnd = settledShelfHeaderIndex ?? threadItems.length;
+  const workingEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
+  const activeEnd = workingShelfHeaderIndex ?? workingEnd;
   const result: ThreadListV2ListItem[] = [...threadItems.slice(0, activeEnd), ...pendingItems];
   const shelfDisabled = input.shelfPreferencesLoading === true;
+  if (workingShelfHeaderIndex !== null && workingCount > 0) {
+    result.push({
+      type: "v2-working-shelf",
+      key: "v2-working-shelf",
+      count: workingCount,
+      expanded: input.workingShelfExpanded === true,
+      disabled: shelfDisabled,
+    });
+    result.push(...threadItems.slice(workingShelfHeaderIndex, workingEnd));
+  }
   if (snoozedShelfHeaderIndex !== null && snoozedCount > 0) {
     result.push({
       type: "v2-snoozed-shelf",
@@ -630,7 +636,6 @@ export function buildThreadListV2ListItems(input: {
  * the settled recency tail, matching the web v2 list.
  */
 export function buildThreadListV2Items(input: {
-  readonly snapshot?: MobileThreadOrderSnapshot | null;
   readonly pendingOrder?: PendingThreadOrder | null;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
   readonly environmentId: EnvironmentId | null;
@@ -651,6 +656,15 @@ export function buildThreadListV2Items(input: {
   readonly settledLimit?: number;
   /** Second-precise clock used for time-based classification. */
   readonly now: string;
+  /** Working section beta: unpinned working threads fold into the Working
+      shelf, and the inbox orders by when each thread came back to the user
+      instead of the saved arrangement. */
+  readonly workingShelfEnabled?: boolean;
+  /** Expands the Working shelf into rows. Collapsed is the default. */
+  readonly workingShelfExpanded?: boolean;
+  /** Returns this device observed but the server does not stamp, such as an
+      approval request mid-turn. Only read while the beta is on. */
+  readonly inboxReturnAt?: (thread: EnvironmentThreadShell) => number | undefined;
   /** Expands the snoozed shelf into rows. Collapsed is the default. */
   readonly snoozedShelfExpanded?: boolean;
   /** Expands the settled shelf into rows. Expanded is the default. */
@@ -665,16 +679,13 @@ export function buildThreadListV2Items(input: {
 }): ThreadListV2Layout {
   const now = input.now;
   const pending =
-    input.pendingOrder == null ||
-    (input.pendingOrder.sourceRevision !== undefined &&
-      input.pendingOrder.sourceRevision !== input.snapshot?.revision)
+    input.pendingOrder == null
       ? null
       : reconcilePendingThreadOrder(
           input.pendingOrder,
           getThreadListV2OrderedSection({
             ...input,
             section: input.pendingOrder.section,
-            scope: input.pendingOrder.scope,
             pendingOrder: null,
           }),
         );
@@ -683,8 +694,10 @@ export function buildThreadListV2Items(input: {
     ? new Set(input.projectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`))
     : null;
 
+  const workingShelfEnabled = input.workingShelfEnabled === true;
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
+  const working: EnvironmentThreadShell[] = [];
   const settled: EnvironmentThreadShell[] = [];
   const snoozed: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
@@ -728,27 +741,33 @@ export function buildThreadListV2Items(input: {
       input.queuedThreadKeys?.has(`${thread.environmentId}:${thread.id}`) === true;
     if (supportsSettlement && thread.settledOverride === "settled" && !hasQueuedMessages) {
       settled.push(thread);
-    } else if (
-      thread.pinnedAt != null &&
-      !(
-        input.snapshot?.enabled &&
-        input.snapshot.primaryGroupByThreadKey.has(
-          nativeWorkstreamThreadKey(thread.environmentId, thread.id),
-        )
-      )
-    ) {
+    } else if (thread.pinnedAt != null) {
       pinned.push(thread);
+    } else if (workingShelfEnabled && isThreadWorking(thread)) {
+      working.push(thread);
     } else {
       active.push(thread);
     }
   }
 
-  const orderedActive = applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
+  // The beta inbox is time-ordered, so the saved arrangement (and any move in
+  // flight) is kept but not applied until the beta is off again.
+  const orderedActive = workingShelfEnabled
+    ? sortInboxThreadsByReturn(active, input.inboxReturnAt)
+    : applyPendingThreadOrder(sortThreadsForListV2(active), "active", pending);
+  // Newest send first; finishing and waking again do not move a row.
+  const orderedWorking = sortWorkingThreadsBySend(working);
   const orderedSnoozed = [...snoozed].sort(
     (left, right) =>
       parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
   );
   const selectedThreadKey = input.selectedThreadKey ?? null;
+  const visibleWorking =
+    input.workingShelfExpanded === true
+      ? orderedWorking
+      : orderedWorking.filter(
+          (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
+        );
   const visibleSnoozed =
     input.snoozedShelfExpanded === true
       ? orderedSnoozed
@@ -789,7 +808,17 @@ export function buildThreadListV2Items(input: {
       thread,
       variant: "card",
       snoozed: false,
-      pinned: thread.pinnedAt != null,
+      pinned: false,
+      isLast: false,
+    });
+  }
+  const workingShelfHeaderIndex = orderedWorking.length > 0 ? items.length : null;
+  for (const thread of visibleWorking) {
+    items.push({
+      thread,
+      variant: "card",
+      snoozed: false,
+      pinned: false,
       isLast: false,
     });
   }
@@ -820,6 +849,8 @@ export function buildThreadListV2Items(input: {
   return {
     items,
     hiddenSettledCount: orderedSettled.length - pagedSettled.length,
+    workingCount: orderedWorking.length,
+    workingShelfHeaderIndex,
     snoozedCount: orderedSnoozed.length,
     snoozedShelfHeaderIndex,
     settledCount: orderedSettled.length,

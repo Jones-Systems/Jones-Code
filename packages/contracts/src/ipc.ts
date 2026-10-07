@@ -1,5 +1,4 @@
 import * as Schema from "effect/Schema";
-import { JonesUpdateState } from "./jonesUpdates.ts";
 
 import {
   PreviewAutomationClickInput,
@@ -279,7 +278,6 @@ export interface DesktopRuntimeInfo {
 }
 
 export interface DesktopUpdateState {
-  jones?: JonesUpdateState;
   enabled: boolean;
   status: DesktopUpdateStatus;
   channel: DesktopUpdateChannel;
@@ -311,7 +309,6 @@ export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
 });
 
 export const DesktopUpdateStateSchema = Schema.Struct({
-  jones: Schema.optionalKey(JonesUpdateState),
   enabled: Schema.Boolean,
   status: DesktopUpdateStatusSchema,
   channel: DesktopUpdateChannelSchema,
@@ -1248,7 +1245,7 @@ export interface DesktopBridge {
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
-  installUpdate: (stagedHandle?: string) => Promise<DesktopUpdateActionResult>;
+  installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /** Present when the desktop shell accepts `t3 app` activation requests. */
   appActivation?: {

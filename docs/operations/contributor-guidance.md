@@ -104,24 +104,23 @@ receipts have a separate role in idempotent dispatch.
 
 ### UI evidence
 
-For user-visible changes, follow
-[capture-ui-evidence](../../.agents/skills/capture-ui-evidence/SKILL.md) to select
-the client and retain evidence. The primary agent exercises the affected flow
+For user-visible changes, select the affected client and retain evidence.
+The primary agent exercises the affected flow
 once after integration, checks observable results, and retains captures.
 A screenshot alone does not prove the interaction worked. Subagents do not
 launch their own development servers.
 
-Reuse existing browser or computer-use authorization within the task's scope.
-Obtain authorization when the task has not authorized that verification.
+M Jones's [standing local app testing permission](#local-app-testing-permission)
+covers browser and native app verification with isolated synthetic test state.
+Do not request per-task reconfirmation for covered testing.
 
 Use [test-t3-app](../../.agents/skills/test-t3-app/SKILL.md) and T3's Browser panel
 for seeing, clicking, typing, and inspecting the shared web/desktop renderer.
 Unavailable Preview tools do not authorize switching to a standalone browser.
 
-Use the qualified Linux Electron runner for desktop-shell behavior and
-repeatable native screenshots or scenarios. Qualification must pass for the
-exact harness revision. That runner does not cover macOS, packaged builds,
-signing, native dialogs, provider/network flows, or message content.
+Renderer checks do not establish desktop-shell or packaged-build behavior.
+When those are affected, record the native platform and packaging coverage
+required by the task; unavailable harnesses remain a verification gap.
 
 Use [test-t3-mobile](../../.agents/skills/test-t3-mobile/SKILL.md) for mobile.
 For authorized mobile verification, a missing or outdated native client is a
@@ -133,6 +132,28 @@ node scripts/mobile-native-client.ts ensure <ios|android> <device-id>
 
 It checks the local Expo fingerprint and builds or installs when needed.
 Follow the mobile skill for the complete workflow and host scope.
+
+### Local app testing permission
+
+M Jones authorizes browser and computer use across tasks to test behavior in
+owner-built local applications, including Jones Code and T3 Code. Opening the
+app, navigating, clicking, typing synthetic inputs, inspecting results, and
+retaining test captures need no per-task reconfirmation. Reuse this standing
+owner authorization when a testing workflow asks for browser permission.
+
+Bind verification to the task's exact source/build and use isolated, task-owned
+synthetic state with a defined lifetime and cleanup owner. Reuse separately
+authorized sanitized fixtures only within their approved scope. Use T3's Browser
+panel for the shared renderer and the applicable qualified desktop or device
+harness for native behavior; preserve the routes and evidence requirements above.
+
+This permission does not authorize external-site or ChatGPT automation,
+credential access, private or live application state, production changes,
+deployment, shared route changes, sudo, or interaction with unrelated apps.
+Those effects retain their existing exact authorization gates. In particular,
+use only the task's isolated development pairing token, never the user's token
+or a live application credential. Continue covered verification and surface the
+exact uncovered effect if the flow requires one.
 
 ## Pull requests
 

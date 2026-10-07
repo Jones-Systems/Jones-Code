@@ -45,22 +45,11 @@ export const ProviderAdapterRegistryV2Error = Schema.Union([
 ]);
 export type ProviderAdapterRegistryV2Error = typeof ProviderAdapterRegistryV2Error.Type;
 
-export interface ProviderHandoffDeliveryDescriptor {
-  readonly instanceId: ProviderInstanceId;
-  readonly driver: ProviderDriverKind;
-  readonly enabled: boolean | undefined;
-  readonly declared: ProviderAdapter.ProviderDeclaredHandoffDelivery | undefined;
-}
-
 export interface ProviderAdapterRegistryV2Shape {
   readonly get: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderAdapter.ProviderAdapterV2Shape, ProviderAdapterRegistryV2Error>;
   readonly list: () => Effect.Effect<ReadonlyArray<ProviderInstanceId>>;
-  /** Pure current-instance declarations; no capability call, source key or native probe. */
-  readonly getHandoffDeliveryDescriptor?: (
-    instanceId: ProviderInstanceId,
-  ) => Effect.Effect<ProviderHandoffDeliveryDescriptor, ProviderAdapterRegistryLookupError>;
   readonly getMetadata?: (instanceId: ProviderInstanceId) => Effect.Effect<
     {
       readonly driver: ProviderAdapter.ProviderAdapterV2Shape["driver"];
@@ -152,21 +141,6 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
         instances.listInstances.pipe(
           Effect.map((available) => available.map((instance) => instance.instanceId)),
         ),
-      getHandoffDeliveryDescriptor: (instanceId) =>
-        instances.getInstance(instanceId).pipe(
-          Effect.flatMap((instance) =>
-            instance === undefined
-              ? Effect.fail(new ProviderAdapterRegistryLookupError({ instanceId }))
-              : Effect.succeed(
-                  Object.freeze({
-                    instanceId: instance.instanceId,
-                    driver: instance.driverKind,
-                    enabled: instance.enabled,
-                    declared: instance.orchestrationAdapter.declaredHandoffDelivery,
-                  }),
-                ),
-          ),
-        ),
       getMetadata: (instanceId) =>
         Effect.gen(function* () {
           const instance = yield* instances.getInstance(instanceId);
@@ -196,7 +170,6 @@ export type ProviderAdapterRegistryBuildError = typeof ProviderAdapterRegistryBu
 
 function makeRegistry(
   adapters: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Shape>,
-  enabledByInstance?: ReadonlyMap<ProviderInstanceId, boolean>,
 ): ProviderAdapterRegistryV2Shape {
   return {
     get: (instanceId) =>
@@ -208,20 +181,6 @@ function makeRegistry(
         return adapter;
       }),
     list: () => Effect.succeed(adapters.map((adapter) => adapter.instanceId)),
-    getHandoffDeliveryDescriptor: (instanceId) =>
-      Effect.suspend(() => {
-        const adapter = adapters.find((candidate) => candidate.instanceId === instanceId);
-        return adapter === undefined
-          ? Effect.fail(new ProviderAdapterRegistryLookupError({ instanceId }))
-          : Effect.succeed(
-              Object.freeze({
-                instanceId: adapter.instanceId,
-                driver: adapter.driver,
-                enabled: enabledByInstance?.get(instanceId),
-                declared: adapter.declaredHandoffDelivery,
-              }),
-            );
-      }),
   };
 }
 
@@ -236,7 +195,7 @@ export function makeLayer(
 
 export function makeLayerEffect<R, E>(
   adapters: Effect.Effect<ReadonlyArray<ProviderAdapter.ProviderAdapterV2Shape>, E, R>,
-): Layer.Layer<ProviderAdapterRegistryV2, E, Exclude<R, Scope.Scope>> {
+): Layer.Layer<ProviderAdapterRegistryV2, E, R> {
   return Layer.effect(
     ProviderAdapterRegistryV2,
     adapters.pipe(Effect.map((entries) => ProviderAdapterRegistryV2.of(makeRegistry(entries)))),
@@ -259,7 +218,6 @@ const decodedConfigEnabled = (config: unknown): boolean | undefined => {
 
 interface LiveAdapterEntry {
   readonly adapter: ProviderAdapter.ProviderAdapterV2Shape;
-  readonly enabled: boolean;
   readonly scope: Scope.Closeable;
   readonly entry: ProviderInstanceConfig;
 }
@@ -308,14 +266,13 @@ const createAdapterEntryFromConfigEntry = Effect.fn(
     Scope.close(childScope, Exit.void).pipe(Effect.ignore),
   );
 
-  const enabled = input.entry.enabled ?? decodedConfigEnabled(typedConfig) ?? true;
   const adapter = yield* driver
     .create({
       instanceId: input.instanceId,
       displayName: input.entry.displayName,
       accentColor: input.entry.accentColor,
       environment: input.entry.environment ?? [],
-      enabled,
+      enabled: input.entry.enabled ?? decodedConfigEnabled(typedConfig) ?? true,
       config: typedConfig,
     })
     .pipe(
@@ -325,7 +282,6 @@ const createAdapterEntryFromConfigEntry = Effect.fn(
 
   return {
     adapter,
-    enabled,
     scope: childScope,
     entry: input.entry,
   };
@@ -378,10 +334,7 @@ export function makeRegistryFromConfigMap<R>(input: {
   return Effect.gen(function* () {
     const parentScope = yield* Effect.scope;
     const entries = yield* buildAdaptersFromConfigMap({ ...input, parentScope });
-    return makeRegistry(
-      Array.from(entries.values()).map((entry) => entry.adapter),
-      new Map(Array.from(entries, ([instanceId, entry]) => [instanceId, entry.enabled] as const)),
-    );
+    return makeRegistry(Array.from(entries.values()).map((entry) => entry.adapter));
   });
 }
 
@@ -405,6 +358,12 @@ const layerFromProviderAdapter: Layer.Layer<
   ProviderAdapterRegistryV2,
   Effect.gen(function* () {
     const adapter = yield* ProviderAdapter.ProviderAdapterV2;
-    return ProviderAdapterRegistryV2.of(makeRegistry([adapter]));
+    return ProviderAdapterRegistryV2.of({
+      get: (instanceId) =>
+        adapter.instanceId === instanceId
+          ? Effect.succeed(adapter)
+          : Effect.fail(new ProviderAdapterRegistryLookupError({ instanceId })),
+      list: () => Effect.succeed([adapter.instanceId]),
+    } satisfies ProviderAdapterRegistryV2Shape);
   }),
 );

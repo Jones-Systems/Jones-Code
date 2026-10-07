@@ -24,7 +24,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { isImageAttachment, type ChatMessage } from "../../types";
 import { cn } from "~/lib/utils";
 import { ComposerBanner } from "./ComposerBanner";
-import { QueuedContinuationChoice } from "./ContinuationChoiceBanner";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
@@ -364,17 +363,7 @@ export function QueuedRunsControl({
                       </Button>
                     ) : null}
                   </ComposerBanner.Icon>
-                  <ComposerBanner.Content className="flex-wrap text-foreground/80">
-                    {rowRunId !== null && item.messageId !== null ? (
-                      <QueuedContinuationChoice
-                        environmentId={props.environmentId}
-                        threadId={props.threadId}
-                        runId={rowRunId}
-                        messageId={item.messageId}
-                        snapshot={projection}
-                        disabled={isEditing || busyRunId !== null}
-                      />
-                    ) : null}
+                  <ComposerBanner.Content className="text-foreground/80">
                     {isEditing ? <span className="sr-only">Editing queued message: </span> : null}
                     {item.pending ? (
                       <Clock3Icon

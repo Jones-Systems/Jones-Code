@@ -35,43 +35,6 @@ const isLiveStreamBufferError = Schema.is(LiveStreamBufferError);
 const TestLayer = OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory));
 const layer = it.layer(TestLayer);
 
-it.effect(
-  "reads command attribution without reading or decoding event payload or metadata JSON",
-  () =>
-    Effect.gen(function* () {
-      const eventStore = yield* OrchestrationEventStore.OrchestrationEventStore;
-      const sql = yield* SqlClient.SqlClient;
-      const commandId = CommandId.make("command-content-free");
-      yield* sql`INSERT INTO orchestration_events
-        (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, command_id,
-          causation_event_id, correlation_id, actor_kind, payload_json, metadata_json, application_event_version)
-        VALUES ('event-content-free', 'thread', 'thread-content-free', 0, 'thread.settled',
-          '2026-01-01T00:00:00.000Z', ${commandId}, NULL, NULL, 'client', 'not-json', 'not-json', 2)`;
-      const rows = yield* eventStore.readMetadataByCommandId(commandId);
-      assert.equal(rows.length, 1);
-      assert.deepEqual(Object.keys(rows[0]!).sort(), [
-        "aggregateId",
-        "aggregateKind",
-        "applicationEventVersion",
-        "commandId",
-        "eventId",
-        "occurredAt",
-        "sequence",
-        "type",
-      ]);
-      assert.equal(rows[0]!.type, "thread.settled");
-      assert.deepEqual(yield* eventStore.readMetadataByCommandId("unrelated-command"), []);
-      assert.equal(
-        (yield* Stream.runCollect(
-          eventStore.readAgentEvents({ afterSequence: rows[0]!.sequence - 1, limit: 1 }),
-        ).pipe(Effect.result))._tag,
-        "Failure",
-      );
-    }).pipe(
-      Effect.provide(OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
-    ),
-);
-
 layer("OrchestrationEventStore", (it) => {
   it.effect("retains only shell metadata from oversized replay and live application events", () =>
     Effect.scoped(
@@ -431,8 +394,9 @@ layer("OrchestrationEventStore", (it) => {
   );
 });
 
-for (const phase of ["high-water", "replay"] as const) {
-  it.effect(`bounds application live events while the ${phase} query is blocked`, () =>
+it.effect.each(["high-water", "replay"] as const)(
+  "bounds application live events while the %s query is blocked",
+  (phase) =>
     Effect.scoped(
       Effect.gen(function* () {
         const store = yield* OrchestrationEventStore.OrchestrationEventStore;
@@ -501,8 +465,7 @@ for (const phase of ["high-water", "replay"] as const) {
         }
       }),
     ).pipe(Effect.provide(Layer.fresh(TestLayer))),
-  );
-}
+);
 
 it.effect("releases consumed application replay pages", () =>
   Effect.gen(function* () {

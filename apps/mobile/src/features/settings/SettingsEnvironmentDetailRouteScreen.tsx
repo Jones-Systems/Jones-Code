@@ -8,15 +8,14 @@ import { Alert, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/AppText";
+import { WorkModeSettings } from "../../jones/workMode/WorkModeSettings";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ScreenScrollView } from "../../components/ScreenScrollView";
-import { jonesUpdates } from "../../state/jonesUpdates";
 import { serverEnvironment } from "../../state/server";
 import { environmentSession } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { ConnectionEnvironmentRow } from "../connection/ConnectionEnvironmentRow";
-import { JonesUpdateControls } from "./JonesUpdateControls";
 import { SettingsActionRow } from "./components/SettingsActionRow";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
@@ -51,7 +50,6 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   const session = useAtomValue(environmentSession.sessionStateValueAtom(environmentId));
   const sessionResult = useAtomValue(environmentSession.sessionStateAtom(environmentId));
   const updateState = useAtomValue(serverEnvironment.updateStateAtom(environmentId));
-  const jonesState = useAtomValue(jonesUpdates.value(environmentId));
   const updateServer = useAtomCommand(serverEnvironment.updateServer);
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders);
@@ -170,6 +168,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                 onUpdate={connections.onUpdateEnvironment}
               />
             </SettingsSection>
+            <WorkModeSettings key={environmentId} environmentId={environmentId} />
             {!connected ? (
               <Text className="px-2 text-sm text-foreground-muted">
                 Connect this environment to manage it.
@@ -220,49 +219,44 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       </Text>
                     ) : null}
                   </View>
-                  {jonesState === null ? (
-                    <>
-                      <SettingsActionRow
-                        icon="arrow.clockwise"
-                        label="Check for updates"
-                        disabled={disabled}
-                        loading={pending === "check"}
-                        onPress={() => {
-                          if (disabled) return;
-                          void run("check", async () => {
-                            const controller = new AbortController();
-                            checkController.current = controller;
-                            const timeout = setTimeout(() => controller.abort(), 20_000);
-                            try {
-                              const targetVersion = await findEnvironmentUpdate(
-                                config.environment.serverVersion,
-                                controller.signal,
-                              );
-                              setRelease({
-                                fromVersion: config.environment.serverVersion,
-                                targetVersion,
-                              });
-                            } finally {
-                              clearTimeout(timeout);
-                              checkController.current = null;
-                            }
+                  <SettingsActionRow
+                    icon="arrow.clockwise"
+                    label="Check for updates"
+                    disabled={disabled}
+                    loading={pending === "check"}
+                    onPress={() => {
+                      if (disabled) return;
+                      void run("check", async () => {
+                        const controller = new AbortController();
+                        checkController.current = controller;
+                        const timeout = setTimeout(() => controller.abort(), 20_000);
+                        try {
+                          const targetVersion = await findEnvironmentUpdate(
+                            config.environment.serverVersion,
+                            controller.signal,
+                          );
+                          setRelease({
+                            fromVersion: config.environment.serverVersion,
+                            targetVersion,
                           });
-                        }}
-                      />
-                      {checkedRelease?.targetVersion &&
-                      supportsEnvironmentUpdate(config.environment.capabilities) ? (
-                        <SettingsActionRow
-                          icon="arrow.up.circle"
-                          label={`Update to ${checkedRelease.targetVersion}`}
-                          disabled={disabled}
-                          loading={pending === "server" || running}
-                          onPress={requestServerUpdate}
-                        />
-                      ) : null}
-                    </>
+                        } finally {
+                          clearTimeout(timeout);
+                          checkController.current = null;
+                        }
+                      });
+                    }}
+                  />
+                  {checkedRelease?.targetVersion &&
+                  supportsEnvironmentUpdate(config.environment.capabilities) ? (
+                    <SettingsActionRow
+                      icon="arrow.up.circle"
+                      label={`Update to ${checkedRelease.targetVersion}`}
+                      disabled={disabled}
+                      loading={pending === "server" || running}
+                      onPress={requestServerUpdate}
+                    />
                   ) : null}
                 </SettingsSection>
-                <JonesUpdateControls environmentId={environmentId} allowed={allowed} />
                 <SettingsSection title="Providers">
                   <SettingsActionRow
                     icon="arrow.clockwise"

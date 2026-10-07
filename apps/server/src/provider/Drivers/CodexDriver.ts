@@ -4,7 +4,7 @@
  * A driver is a plain value (not a Context.Service) whose `create()` returns
  * one `ProviderInstance` bundling:
  *   - `snapshot`   — the live `ServerProviderShape` for this instance;
- *   - `orchestrationAdapter` — the V2 Codex session/turn/approval runtime;
+ *   - `adapter`    — the Codex session/turn/approval runtime;
  *   - `textGeneration` — commit/PR/branch/title generation via `codex exec`.
  *
  * Each call to `create()` captures the `codexConfig` argument in closures
@@ -14,10 +14,10 @@
  * environments — no shared mutable state.
  *
  * Resource lifecycle: `create()` runs in a scope handed in by the registry.
- * Closing that scope releases the managed snapshot's refresh fibre and
- * driver-owned setup resources when the registry removes or rebuilds an
- * instance. Native session processes belong to the scopes supplied to
- * `orchestrationAdapter.openSession`; the session manager owns their teardown.
+ * Closing that scope releases the adapter's child processes, the managed
+ * snapshot's refresh fibre, and the text-generation binaries' transient
+ * scratch files. The registry uses this to tear down an instance when its
+ * `providerInstances` entry disappears or its config changes.
  *
  * @module provider/Drivers/CodexDriver
  */
@@ -33,7 +33,6 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../../config.ts";
-import * as ProcessAttribution from "../../resourceTelemetry/ProcessAttribution.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import * as ProviderEventLoggers from "../Layers/ProviderEventLoggers.ts";
 import {
@@ -119,7 +118,6 @@ export type CodexDriverEnv =
   | HttpClient.HttpClient
   | ModelManifest.ModelManifest
   | Path.Path
-  | ProcessAttribution.ProcessAttribution
   | ProviderEventLoggers.ProviderEventLoggers
   | ServerConfig.ServerConfig
   | ServerSettings.ServerSettingsService
@@ -154,7 +152,6 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const modelManifest = yield* ModelManifest.ModelManifest;
-      const processAttribution = yield* ProcessAttribution.ProcessAttribution;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const homeLayout = yield* resolveCodexHomeLayout(config);
       const continuationIdentity = codexContinuationIdentity(homeLayout);
@@ -206,9 +203,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
           config,
         },
         {
-          processAttribution,
           onUsageLimits: (update) => snapshot.applyUsageLimits(update),
-          getModelCatalog: () => snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+          getModelCatalog: Effect.suspend(() =>
+            snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+          ),
         },
       ).pipe(
         Effect.mapError(

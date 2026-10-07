@@ -6,32 +6,6 @@ import { ProviderRuntimeEvent } from "./providerRuntime.ts";
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
 describe("ProviderRuntimeEvent", () => {
-  it("preserves string launch correlation and provider identity observations through configured events", () => {
-    const event = {
-      type: "session.configured",
-      eventId: "configured-event-1",
-      provider: "codex",
-      providerInstanceId: "codex_work",
-      runtimeGeneration: "launch-generation-1",
-      threadId: "thread-1",
-      createdAt: "2026-10-02T12:00:00Z",
-      payload: {
-        config: { model: "requested-model" },
-        identity: {
-          backend: { status: "observed", value: "openai", sourceEvent: "codex.thread/open" },
-          model: { status: "unknown" },
-          account: { status: "unavailable", reason: "No native account evidence." },
-          serviceTier: { status: "unknown" },
-        },
-      },
-    };
-    const decoded = decodeRuntimeEvent(event);
-    expect(Schema.encodeSync(ProviderRuntimeEvent)(decoded)).toEqual(event);
-    const { runtimeGeneration: _generation, ...legacy } = event;
-    expect(Schema.encodeSync(ProviderRuntimeEvent)(decodeRuntimeEvent(legacy))).toEqual(legacy);
-    expect(() => decodeRuntimeEvent({ ...event, runtimeGeneration: 1 })).toThrow();
-  });
-
   it("requires input and output totals for complete turn usage", () => {
     const completeEvent = {
       type: "turn.completed",

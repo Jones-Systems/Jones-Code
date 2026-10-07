@@ -1,8 +1,17 @@
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type ModelSelection,
+  type ServerProviderModel,
+  type ServerSettings as ServerSettingsValue,
+} from "@t3tools/contracts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import type { ProviderAdapterV2TurnInput } from "./ProviderAdapter.ts";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
-  GitCommandError,
+  ContextHandoffId,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -15,7 +24,6 @@ import {
   ThreadId,
   ProjectId,
   type OrchestrationV2ThreadProjection,
-  type VcsCreateWorktreeInput,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -27,19 +35,18 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
-import type * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/Services/ProviderAuthService.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
+import { ProviderAdapterEventStreamError, ProviderRuntimeBindingError } from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -96,11 +103,7 @@ it("does not commit running state when inherited background routing cannot be re
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({
-          readOrdinaryCheckoutAdmissionForRun: () => Effect.succeed(null),
-          writeIfRunCurrent,
-          readLegacyContinuationDisposition: () => Effect.succeed(null),
-        }),
+        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
         Layer.succeed(FileSystem.FileSystem, { exists: () => Effect.succeed(false) } as never),
         Layer.mock(GitWorkflow.GitWorkflowService)({ pruneWorktrees, createWorktree }),
@@ -137,6 +140,8 @@ it("does not commit running state when inherited background routing cannot be re
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
+        Layer.mock(ServerSettings.ServerSettingsService)({}),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
       ),
     ),
@@ -162,26 +167,19 @@ it("does not commit running state when inherited background routing cannot be re
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
-  readonly ordinaryAdmission?: OrdinaryCheckout.OrdinaryCheckoutAdmissionV1;
-  readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
-  readonly ordinaryCheckoutExecution?: OrdinaryCheckout.OrdinaryCheckoutExecutionRefV1;
-  readonly ordinaryMissingCheckout?: {
-    readonly projectRoot: string;
-    readonly worktreePath: string;
-    readonly branch: string;
-    readonly staleBeforeCreate?: boolean;
-    readonly nativeCreateFailure?: boolean;
+  readonly keepWarm?: boolean;
+  readonly liveKeepWarmSession?: boolean;
+  readonly effortProof?: {
+    readonly getSettings: Effect.Effect<ServerSettingsValue>;
+    readonly selection?: ModelSelection;
+    readonly beforeDispatch?: Effect.Effect<void>;
+    readonly duringHandoff?: Effect.Effect<void>;
+    readonly models: ReadonlyArray<ServerProviderModel>;
   };
-  readonly onOrdinaryManagedRunStarted?: Parameters<
-    ProviderTurnStart.ProviderTurnStartServiceV2Shape["start"]
-  >[0]["onOrdinaryManagedRunStarted"];
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
   readonly openFailure?: unknown;
-  readonly openEvidence?: "unknown" | "mismatched";
-  readonly willRetry?: boolean;
-  readonly returnStoredEvents?: boolean;
   /** Opens the session, then fails loading its provider thread. */
   readonly ensureThreadFailure?: unknown;
   /**
@@ -189,11 +187,12 @@ function makeLocalCommandHarness(input: {
    * fallback succeeds, then reading history for its handoff fails.
    */
   readonly historyReadFailureAfterFallback?: unknown;
-  readonly uncertainResume?: boolean;
-  readonly importedContinuation?: "unknown" | "unsupported";
+  readonly unknownResumeBinding?: boolean;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
+  /** Loads the thread and starts the run, then fails every later state read. */
+  readonly failReadsAfterRunning?: boolean;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -206,13 +205,15 @@ function makeLocalCommandHarness(input: {
   const oldInstanceId = ProviderInstanceId.make("antigravity-personal");
   const newInstanceId = ProviderInstanceId.make("codex-personal");
   const checkpointScopeId = CheckpointScopeId.make("scope-native-account-command");
-  const messageId = MessageId.make("message-native-account-command");
+  const messageId = MessageId.make(
+    input.keepWarm ? "work-mode:thread:generation" : "message-native-account-command",
+  );
   const run: OrchestrationV2ThreadProjection["runs"][number] = {
     id: runId,
     threadId,
     ordinal: 2,
     providerInstanceId: newInstanceId,
-    modelSelection: { instanceId: newInstanceId, model: "gpt-5.4" },
+    modelSelection: input.effortProof?.selection ?? { instanceId: newInstanceId, model: "gpt-5.4" },
     providerThreadId,
     userMessageId: messageId,
     rootNodeId,
@@ -259,9 +260,9 @@ function makeLocalCommandHarness(input: {
     thread: {
       id: threadId,
       activeProviderThreadId: providerThreadId,
-      projectId: input.ordinaryAdmission?.capture.projectId,
-      branch: input.ordinaryMissingCheckout?.branch ?? null,
-      worktreePath: input.ordinaryMissingCheckout?.worktreePath ?? null,
+      projectId: ProjectId.make("effort-project"),
+      branch: null,
+      worktreePath: null,
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
       ...(input.previousNativeSession
@@ -337,7 +338,12 @@ function makeLocalCommandHarness(input: {
         id: MessageId.make(`previous-message-${index}`),
         text,
       })),
-      message,
+      {
+        ...message,
+        ...(input.keepWarm
+          ? { createdBy: "system" as const, creationSource: "server" as const }
+          : {}),
+      },
     ],
     checkpointScopes: [
       {
@@ -356,7 +362,26 @@ function makeLocalCommandHarness(input: {
     ],
     providerSessions: [],
     providerTurns: [],
-    contextHandoffs: [],
+    contextHandoffs:
+      input.effortProof?.duringHandoff === undefined
+        ? []
+        : [
+            {
+              id: ContextHandoffId.make("effort-handoff"),
+              threadId,
+              targetRunId: runId,
+              fromProviderThreadIds: [oldProviderThreadId],
+              toProviderThreadId: providerThreadId,
+              coveredRunOrdinals: { from: 1, to: 1 },
+              strategy: "full_thread_summary",
+              status: "ready",
+              summaryMessageId: null,
+              summaryText: "Prior synthetic account context",
+              createdByProviderInstanceId: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
     contextTransfers: [],
     turnItems: [],
     visibleTurnItems: [],
@@ -366,7 +391,7 @@ function makeLocalCommandHarness(input: {
     checkpoints: [],
     updatedAt: now,
   };
-  if ("historyReadFailureAfterFallback" in input || input.uncertainResume) {
+  if ("historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true) {
     const nativeThreadRef = {
       driver: providerThread.driver,
       nativeId: "native-resume-thread",
@@ -390,57 +415,46 @@ function makeLocalCommandHarness(input: {
       ),
     };
   };
-  const ensureThread = vi.fn(
-    ({
-      nativeOperation,
-    }: Parameters<
-      import("./ProviderAdapter.ts").ProviderAdapterV2SessionRuntime["ensureThread"]
-    >[0]) =>
-      Effect.sync(() => {
-        if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-      }).pipe(
-        Effect.andThen(
-          Effect.fail(
-            new ProviderAdapterEventStreamError({
-              driver: providerThread.driver,
-              providerSessionId,
-              cause: input.ensureThreadFailure,
-              ...(nativeOperation === undefined
-                ? {}
-                : { nativeEffect: { ...nativeOperation, outcome: "known_no_effect" as const } }),
-            }),
-          ),
+  const ensureThread = vi.fn(() =>
+    Effect.sync(() => {
+      if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+    }).pipe(
+      Effect.andThen(
+        Effect.fail(
+          new ProviderAdapterEventStreamError({
+            driver: providerThread.driver,
+            providerSessionId,
+            cause: input.ensureThreadFailure,
+          }),
         ),
       ),
+    ),
   );
-  const ensureFallbackThread = vi.fn(() => Effect.succeed(providerThread));
   const resumeFallbackSession = {
     driver: providerThread.driver,
-    runtimeGeneration: "test-generation",
-    resumeThread: ({
-      nativeOperation,
-    }: {
-      readonly nativeOperation?: import("./ProviderAdapter.ts").ProviderNativeOperationContext;
-    }) =>
+    resumeThread: () =>
       Effect.fail(
-        new ProviderAdapterEventStreamError({
-          driver: providerThread.driver,
-          providerSessionId,
-          cause: "native thread is gone",
-          ...(input.uncertainResume || nativeOperation === undefined
-            ? {}
-            : { nativeEffect: { ...nativeOperation, outcome: "known_no_effect" as const } }),
-        }),
+        input.unknownResumeBinding === true
+          ? new ProviderRuntimeBindingError({
+              driver: providerThread.driver,
+              detail: "Native launch succeeded but its binding is unknown.",
+            })
+          : new ProviderAdapterEventStreamError({
+              driver: providerThread.driver,
+              providerSessionId,
+              cause: "native thread is gone",
+            }),
       ),
-    ensureThread: ensureFallbackThread,
+    ensureThread: vi.fn(() => Effect.succeed(providerThread)),
   };
+  const dispatched: Array<ProviderAdapterV2TurnInput> = [];
   const open = vi.fn(
-    ({
-      nativeOperation,
-    }: Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["open"]>[0]) =>
+    (
+      _openInput: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["open"]>[0],
+    ) =>
       input.interruptOpen === true
         ? Effect.interrupt
-        : "historyReadFailureAfterFallback" in input || input.uncertainResume
+        : "historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true
           ? Effect.succeed(resumeFallbackSession as never)
           : "ensureThreadFailure" in input
             ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
@@ -450,62 +464,71 @@ function makeLocalCommandHarness(input: {
                 }).pipe(
                   Effect.andThen(
                     Effect.fail(
-                      Object.assign(
-                        new ProviderSessionManager.ProviderSessionOpenError({
-                          instanceId: newInstanceId,
-                          providerSessionId,
-                          cause: input.openFailure,
-                        }),
-                        nativeOperation === undefined
-                          ? {}
-                          : {
-                              nativeEffect: {
-                                ...nativeOperation,
-                                ...(input.openEvidence === "mismatched"
-                                  ? { operationId: "another-open-operation" }
-                                  : {}),
-                                outcome:
-                                  input.openEvidence === "unknown"
-                                    ? ("unknown" as const)
-                                    : ("known_no_effect" as const),
-                              },
-                            },
-                      ),
+                      new ProviderSessionManager.ProviderSessionOpenError({
+                        instanceId: newInstanceId,
+                        providerSessionId,
+                        cause: input.openFailure,
+                      }),
                     ),
                   ),
                 )
-              : Effect.die("A local command must not open a native session."),
+              : input.failReadsAfterRunning === true || input.effortProof !== undefined
+                ? Effect.succeed({
+                    driver: providerThread.driver,
+                    providerSession: {
+                      id: providerSessionId,
+                      driver: providerThread.driver,
+                      providerInstanceId: newInstanceId,
+                      status: "ready",
+                      cwd: "/tmp/native-account-command",
+                      model: null,
+                      capabilities: CodexProviderCapabilitiesV2,
+                      createdAt: now,
+                      updatedAt: now,
+                      lastError: null,
+                    },
+                    ensureThread: () => Effect.succeed(providerThread),
+                    startTurn: (value: ProviderAdapterV2TurnInput) =>
+                      Effect.sync(() => {
+                        dispatched.push(value);
+                      }),
+                  } as never)
+                : Effect.die("A local command must not open a native session."),
   );
-  const startRootRun = vi.fn(() => Effect.die("A local command must not start a native turn."));
-  const creationEffects: Array<string> = [];
-  const pruneWorktrees = vi.fn(() =>
-    Effect.die("The exact ordinary checkout grant cannot prune repository metadata."),
+  const startRootRun = vi.fn<
+    (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
+  >((startInput) =>
+    input.effortProof !== undefined
+      ? Effect.gen(function* () {
+          yield* input.effortProof!.beforeDispatch ?? Effect.void;
+          yield* startInput.session
+            .startTurn({
+              appThread: startInput.appThread,
+              threadId,
+              runId,
+              runOrdinal: startInput.run.ordinal,
+              providerTurnOrdinal: startInput.providerTurnOrdinal,
+              attemptId,
+              rootNodeId,
+              providerThread: startInput.providerThread,
+              message: startInput.message,
+              modelSelection: startInput.modelSelection,
+              runtimePolicy: startInput.runtimePolicy,
+            })
+            .pipe(Effect.orDie);
+        })
+      : input.failReadsAfterRunning === true
+        ? Effect.void
+        : Effect.die("A local command must not start a native turn."),
   );
-  const createWorktree = vi.fn(
-    (
-      _target: VcsCreateWorktreeInput,
-      _options?: GitVcsDriver.CreateWorktreeOptions<unknown, unknown>,
-    ) => {},
+  const failReadIfRunning = Effect.suspend(() =>
+    input.failReadsAfterRunning === true &&
+    projection.runs.find((candidate) => candidate.id === runId)?.status === "running"
+      ? Effect.fail(
+          new ProjectionStore.ProjectionStoreReadError({ threadId, cause: "database unavailable" }),
+        )
+      : Effect.void,
   );
-  const createWorktreeImplementation = <E = never, R = never>(
-    target: VcsCreateWorktreeInput,
-    options?: GitVcsDriver.CreateWorktreeOptions<E, R>,
-  ) => {
-    createWorktree(target, options);
-    return Effect.gen(function* () {
-      if (input.ordinaryMissingCheckout?.staleBeforeCreate === true) interruptRun();
-      if (options?.revalidateMutation !== undefined) yield* options.revalidateMutation;
-      creationEffects.push("native_create");
-      if (input.ordinaryMissingCheckout?.nativeCreateFailure === true)
-        return yield* new GitCommandError({
-          operation: "createWorktree",
-          command: "worktree add",
-          cwd: target.cwd,
-          detail: "Synthetic native worktree creation failed.",
-        });
-      return { worktree: { path: target.path!, refName: target.refName } };
-    });
-  };
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
       ? Effect.succeed(true)
@@ -538,17 +561,7 @@ function makeLocalCommandHarness(input: {
               projection = ProjectionStore.applyToProjection(projection, event);
             }
           }
-          return {
-            committed,
-            storedEvents:
-              committed && input.returnStoredEvents === true
-                ? incoming.map((event: OrchestrationV2DomainEvent, index: number) => ({
-                    sequence: index + 3,
-                    commandId: null,
-                    event,
-                  }))
-                : [],
-          };
+          return { committed, storedEvents: [] };
         }),
   );
   const layer = ProviderTurnStart.layer.pipe(
@@ -558,65 +571,13 @@ function makeLocalCommandHarness(input: {
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
         Layer.mock(EventSink.EventSinkV2)({
-          readOrdinaryCheckoutAdmissionForRun: () =>
-            Effect.succeed(input.ordinaryAdmission ?? null),
-          revalidateOrdinaryCheckoutExecution: (ref) => Effect.succeed(ref),
-          readOrdinaryCheckoutUse: () =>
-            Effect.succeed(
-              input.ordinaryCheckoutUse === undefined || input.ordinaryMissingCheckout === undefined
-                ? null
-                : {
-                    subject: {
-                      schema: "t3.ordinary-checkout-use/v1" as const,
-                      use: input.ordinaryCheckoutUse,
-                      source: {
-                        projectWorkspaceRoot: input.ordinaryMissingCheckout.projectRoot,
-                        worktreePath: input.ordinaryMissingCheckout.worktreePath,
-                      },
-                    },
-                    state: "started" as const,
-                    startedAt: DateTime.formatIso(now),
-                  },
-            ),
           writeIfRunCurrent,
-          onCommit: (effect) => effect,
-          readCurrentProviderRuntimeOwner: () => Effect.succeed(null),
-          readLegacyContinuationDisposition: () =>
-            Effect.succeed(
-              input.importedContinuation === undefined
-                ? null
-                : {
-                    threadId,
-                    provenance: "legacy_row" as const,
-                    qualification: {
-                      type: input.importedContinuation,
-                      reason: "historical_source_unproved",
-                    },
-                    evidence: null,
-                    importedAt: DateTime.formatIso(now),
-                  },
-            ),
+          write: () => (input.effortProof?.duringHandoff ?? Effect.void).pipe(Effect.as([])),
         }),
         IdAllocator.layer,
-        FileSystem.layerNoop(
-          input.ordinaryMissingCheckout === undefined
-            ? {}
-            : { exists: () => Effect.succeed(false) },
-        ),
-        Layer.mock(GitWorkflow.GitWorkflowService)({
-          createWorktree: createWorktreeImplementation,
-          pruneWorktrees,
-        }),
-        Layer.mock(ProjectService.ProjectService)({
-          getById: () =>
-            Effect.succeed(
-              input.ordinaryMissingCheckout === undefined
-                ? Option.none()
-                : Option.some({
-                    workspaceRoot: input.ordinaryMissingCheckout.projectRoot,
-                  } as never),
-            ),
-        }),
+        FileSystem.layerNoop({}),
+        Layer.mock(GitWorkflow.GitWorkflowService)({}),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getTurnStartContext: () =>
             Effect.succeed({
@@ -628,7 +589,7 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getRuntimeRecoveryProjection: () =>
-            Effect.succeed({
+            Effect.as(failReadIfRunning, {
               ...projection,
               hasConversation: projection.messages.some(
                 (m) =>
@@ -637,19 +598,44 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getTurnStartHistory: () =>
-            Effect.fail(
-              new ProjectionStore.ProjectionStoreReadError({
-                threadId,
-                cause: input.historyReadFailureAfterFallback,
-              }),
-            ),
+            input.effortProof === undefined
+              ? Effect.fail(
+                  new ProjectionStore.ProjectionStoreReadError({
+                    threadId,
+                    cause: input.historyReadFailureAfterFallback,
+                  }),
+                )
+              : Effect.succeed([]),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
-          registerRuntimeBinding: () => Effect.void,
+          get: () =>
+            Effect.succeed(
+              input.liveKeepWarmSession
+                ? Option.some(resumeFallbackSession as never)
+                : Option.none(),
+            ),
         }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
+
+        Layer.mock(ServerSettings.ServerSettingsService)({
+          getSettings: input.effortProof?.getSettings ?? Effect.succeed(DEFAULT_SERVER_SETTINGS),
+        }),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: (instanceId) =>
+            Effect.succeed({
+              instanceId,
+              driverKind: ProviderDriverKind.make("codex"),
+              snapshot: {
+                getSnapshot: Effect.succeed({
+                  instanceId,
+                  driver: ProviderDriverKind.make("codex"),
+                  models: input.effortProof?.models ?? [],
+                }),
+              },
+            } as never),
+        }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: () => Effect.succeed({} as never),
         }),
@@ -657,13 +643,13 @@ function makeLocalCommandHarness(input: {
     ),
   );
   return {
+    resumeFallbackSession,
+    dispatched,
+    interruptRun,
     open,
-    ensureFallbackThread,
+    fallbackEnsure: resumeFallbackSession.ensureThread,
     writeIfRunCurrent,
     startRootRun,
-    createWorktree,
-    pruneWorktrees,
-    creationEffects,
     tryHandlePromptCommand,
     events,
     oldInstanceId,
@@ -671,20 +657,7 @@ function makeLocalCommandHarness(input: {
     attemptId,
     projection: () => projection,
     start: Effect.gen(function* () {
-      yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({
-        threadId,
-        runId,
-        ...(input.willRetry === undefined ? {} : { willRetry: input.willRetry }),
-        ...(input.ordinaryCheckoutUse === undefined
-          ? {}
-          : { ordinaryCheckoutUse: input.ordinaryCheckoutUse }),
-        ...(input.ordinaryCheckoutExecution === undefined
-          ? {}
-          : { ordinaryCheckoutExecution: input.ordinaryCheckoutExecution }),
-        ...(input.onOrdinaryManagedRunStarted === undefined
-          ? {}
-          : { onOrdinaryManagedRunStarted: input.onOrdinaryManagedRunStarted }),
-      });
+      yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({ threadId, runId });
     }).pipe(Effect.provide(layer)),
     startWithRetry: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({
@@ -695,39 +668,6 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
-
-effectIt.effect(
-  "holds an uncertain resume without opening a fresh native thread on the final attempt",
-  () =>
-    Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({ text: "Continue", uncertainResume: true });
-      const error = yield* harness.start.pipe(Effect.flip);
-      expect(error._tag).toBe("ProviderTurnStartError");
-      expect(harness.ensureFallbackThread).not.toHaveBeenCalled();
-      expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
-      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
-    }),
-);
-
-effectIt.effect(
-  "holds unknown and unsupported imported continuation before opening a runtime",
-  () =>
-    Effect.gen(function* () {
-      for (const importedContinuation of ["unknown", "unsupported"] as const) {
-        const harness = makeLocalCommandHarness({
-          text: "Continue",
-          uncertainResume: true,
-          importedContinuation,
-        });
-        const error = yield* harness.startWithRetry.pipe(Effect.flip);
-        expect(error._tag).toBe("ProviderTurnStartError");
-        expect(harness.open).not.toHaveBeenCalled();
-        expect(harness.ensureFallbackThread).not.toHaveBeenCalled();
-        expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
-        expect(harness.projection().runs.at(-1)?.status).toBe("starting");
-      }
-    }),
-);
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
   Effect.gen(function* () {
@@ -906,19 +846,30 @@ effectIt.effect(
       // The provider succeeded; the failing stage is the projection read, so
       // the run is not failed as a provider error on the last attempt.
       expect(error._tag).toBe("ProviderTurnStartError");
-      expect((error.cause as { _tag?: string } | undefined)?._tag).toBe(
-        "ProviderNativeOperationUnknownError",
-      );
-      expect(
-        (error.cause as { nativeEffect?: { outcome?: string } } | undefined)?.nativeEffect?.outcome,
-      ).toBe("unknown");
-      expect((error.cause as { cause?: { _tag?: string } } | undefined)?.cause?._tag).toBe(
-        "ProjectionStoreReadError",
-      );
+      expect((error.cause as { _tag?: string } | undefined)?._tag).toBe("ProjectionStoreReadError");
       expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
       expect(harness.projection().runs.at(-1)?.status).toBe("starting");
       expect(harness.events).toEqual([]);
     }),
+);
+
+effectIt.effect("does not mistake a failed state read for a superseded run", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue", failReadsAfterRunning: true });
+
+    yield* harness.start;
+
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    const controls = harness.startRootRun.mock.calls[0]?.[0];
+    expect(controls).toBeDefined();
+    if (controls === undefined) return;
+    // "false" would skip the provider turn or the terminal write and leave the
+    // run active. A read failure must reach the caller instead.
+    const startCheck = yield* Effect.flip(controls.shouldStartProviderTurn!());
+    const finalizeCheck = yield* Effect.flip(controls.shouldFinalizeRun!());
+    expect(startCheck._tag).toBe("ProjectionStoreReadError");
+    expect(finalizeCheck._tag).toBe("ProjectionStoreReadError");
+  }),
 );
 
 effectIt.effect("does not overwrite a run interrupted while its thread loads", () =>
@@ -1021,354 +972,187 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
   );
 }
 
-function admittedOrdinaryLocalHarnessSource(checkout?: {
-  readonly projectRoot: string;
-  readonly worktreePath: string;
-  readonly branch: string;
-}) {
-  const at = "2026-09-04T12:00:00.000Z";
-  const command = {
-    type: "message.dispatch",
-    commandId: "command:ordinary-local-harness",
-    threadId: "thread-native-account-command",
-    text: "Continue",
-  };
-  const birth = Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryApplicationBirthV1)({
-    kind: "application_v2_thread_birth",
-    threadId: "thread-native-account-command",
-    eventId: "event:ordinary-local-harness:birth",
-    sequence: 1,
-  });
-  const capture = Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutCaptureV1)({
-    version: 1,
-    commandId: command.commandId,
-    commandType: command.type,
-    canonicalCommand: command,
-    commandDigest: OrdinaryCheckout.ordinaryCheckoutCommandDigestV1(command),
-    origin: { kind: "command" },
-    threadId: command.threadId,
-    applicationBirth: birth,
-    projectId: "project:ordinary-local-harness",
-    canonicalProjectRoot: checkout?.projectRoot ?? "/fixture/ordinary-local-harness",
-    canonicalCheckoutPath: checkout?.worktreePath ?? "/fixture/ordinary-local-harness",
-    branch: checkout?.branch ?? null,
-    lease: {
-      resourcePath: checkout?.worktreePath ?? "/fixture/ordinary-local-harness",
-      leaseId: "lease:ordinary-local-harness",
-      ownerThreadId: command.threadId,
-      ownerIncarnation: OrdinaryCheckout.ordinaryApplicationIncarnationV1(birth),
-      branch: checkout?.branch ?? null,
-      acquiredAtMs: 1,
-      renewedAtMs: 1,
-      expiresAtMs: 300001,
-    },
-  });
-  const admission = Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutAdmissionV1)({
-    version: 1,
-    admissionId: OrdinaryCheckout.ordinaryCheckoutAdmissionIdV1(capture),
-    capture: Schema.encodeSync(OrdinaryCheckout.OrdinaryCheckoutCaptureV1)(capture),
-    receipt: {
-      commandId: command.commandId,
-      threadId: command.threadId,
-      commandType: command.type,
-      acceptedAt: at,
-      resultSequence: 2,
-      status: "accepted",
-      error: null,
-    },
-    eventBasis: [
-      {
-        eventId: "event:ordinary-local-harness:accepted",
-        sequence: 2,
-        threadId: command.threadId,
-        commandId: command.commandId,
-        eventType: "run.updated",
-      },
-    ],
-    run: {
-      runId: "run-native-account-command",
-      runAttemptId: "attempt-native-account-command",
-      nodeId: "root-native-account-command",
-      messageId: "message-native-account-command",
-    },
-    recordedAt: at,
-  });
-  const source = {
-    kind: "outbox",
-    link: {
-      version: 1,
-      effectId: "effect:ordinary-local-harness",
-      commandId: command.commandId,
-      threadId: command.threadId,
-      requestSha256: "c".repeat(64),
-      admission: OrdinaryCheckout.ordinaryCheckoutAdmissionRefV1(admission),
-      recordedAt: at,
-    },
-    workerId: "worker:ordinary-local-harness",
-    expectedAttempt: 1,
-    leaseExpiresAt: "2026-09-04T12:05:00.000Z",
-  };
-  const originalUse = Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutUseV1)({
-    version: 1,
-    kind: "ordinary_checkout_use",
-    operationId: "effect:ordinary-local-harness:ordinary-checkout:attempt:1",
-    admission: source.link.admission,
-    source,
-    lease: capture.lease,
-  });
-  const execution = OrdinaryCheckout.makeOrdinaryCheckoutExecutionRefV1({
-    originalUse,
-    executor: Schema.decodeUnknownSync(OrdinaryCheckout.OrdinaryCheckoutExecutionExecutorV1)({
-      kind: "actual_outbox_claim",
-      source,
-    }),
-  });
-  return { admission, originalUse, execution };
-}
-
-effectIt.effect(
-  "ordinary admitted start cannot substitute a plain original use for its actual execution actor",
-  () =>
-    Effect.gen(function* () {
-      const original = admittedOrdinaryLocalHarnessSource();
-      const harness = makeLocalCommandHarness({
-        text: "Continue",
-        ordinaryAdmission: original.admission,
-        ordinaryCheckoutUse: original.originalUse,
-      });
-      const error = yield* harness.start.pipe(Effect.flip);
-      expect(error._tag).toBe("ProviderTurnStartError");
-      expect(harness.open).not.toHaveBeenCalled();
-      expect(harness.ensureFallbackThread).not.toHaveBeenCalled();
-      expect(harness.startRootRun).not.toHaveBeenCalled();
-      expect(harness.tryHandlePromptCommand).not.toHaveBeenCalled();
-      expect(harness.events).toEqual([]);
-    }),
-);
-
-effectIt.effect("ordinary managed start requires activation handoff before native open", () =>
+effectIt.effect("keep-warm does not reopen an expired provider session", () =>
   Effect.gen(function* () {
-    const original = admittedOrdinaryLocalHarnessSource();
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      ordinaryAdmission: original.admission,
-      ordinaryCheckoutUse: original.originalUse,
-      ordinaryCheckoutExecution: original.execution,
-    });
-    const error = yield* harness.start.pipe(Effect.flip);
-    expect(error._tag).toBe("ProviderTurnStartError");
-    expect(String(error.cause)).toContain("scoped activation handoff");
+    const harness = makeLocalCommandHarness({ text: "@@@@@", keepWarm: true });
+    yield* harness.start;
     expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.ensureFallbackThread).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.events).toEqual([]);
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
   }),
 );
 
-const ordinaryMissingTarget = {
-  projectRoot: "/fixture/ordinary-local-harness",
-  worktreePath: "/fixture/ordinary-local-harness/checkouts/feature",
-  branch: "feature/ordinary-missing",
-};
-
+effectIt.effect("keep-warm does not replace a native conversation when resume fails", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "@@@@@",
+      keepWarm: true,
+      liveKeepWarmSession: true,
+      historyReadFailureAfterFallback: new Error("must not reach fallback history"),
+    });
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.resumeFallbackSession.ensureThread).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
 effectIt.effect(
-  "ordinary missing checkout is recreated at its exact admitted target without repository pruning",
+  "fails visibly without starting a fresh native conversation after an unknown resume binding",
   () =>
     Effect.gen(function* () {
-      const original = admittedOrdinaryLocalHarnessSource(ordinaryMissingTarget);
       const harness = makeLocalCommandHarness({
-        text: "Continue",
-        ordinaryAdmission: original.admission,
-        ordinaryCheckoutUse: original.originalUse,
-        ordinaryCheckoutExecution: original.execution,
-        ordinaryMissingCheckout: ordinaryMissingTarget,
-        openFailure: "Synthetic provider entry rejection after physical creation",
-        onOrdinaryManagedRunStarted: () =>
-          Effect.die("The synthetic provider rejects before managed start"),
+        text: "Continue once",
+        unknownResumeBinding: true,
       });
       yield* harness.start;
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
       expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-      expect(harness.creationEffects).toEqual(["native_create"]);
-      expect(harness.createWorktree).toHaveBeenCalledOnce();
-      expect(harness.createWorktree.mock.calls[0]?.[0]).toEqual({
-        cwd: ordinaryMissingTarget.projectRoot,
-        refName: ordinaryMissingTarget.branch,
-        path: ordinaryMissingTarget.worktreePath,
-      });
-      expect(harness.createWorktree.mock.calls[0]?.[1]?.revalidateMutation).toBeDefined();
-      expect(harness.pruneWorktrees).not.toHaveBeenCalled();
-      expect(harness.open).toHaveBeenCalledOnce();
-      expect(harness.startRootRun).not.toHaveBeenCalled();
-    }),
-);
-
-effectIt.effect(
-  "ordinary missing checkout loses its original attempt inside creation guard before native work",
-  () =>
-    Effect.gen(function* () {
-      const original = admittedOrdinaryLocalHarnessSource(ordinaryMissingTarget);
-      const harness = makeLocalCommandHarness({
-        text: "Continue",
-        ordinaryAdmission: original.admission,
-        ordinaryCheckoutUse: original.originalUse,
-        ordinaryCheckoutExecution: original.execution,
-        ordinaryMissingCheckout: { ...ordinaryMissingTarget, staleBeforeCreate: true },
-        onOrdinaryManagedRunStarted: () => Effect.die("Superseded target cannot activate"),
-      });
-      const error = yield* harness.start.pipe(Effect.flip);
-      expect(error._tag).toBe("ProviderTurnStartError");
-      expect(error.cause).toBeInstanceOf(OrdinaryCheckout.OrdinaryCheckoutOwnershipError);
-      expect(harness.createWorktree).toHaveBeenCalledOnce();
-      expect(harness.creationEffects).toEqual([]);
-      expect(harness.pruneWorktrees).not.toHaveBeenCalled();
-      expect(harness.open).not.toHaveBeenCalled();
-      expect(harness.startRootRun).not.toHaveBeenCalled();
-      expect(harness.events).toEqual([]);
-    }),
-);
-
-effectIt.effect(
-  "ordinary missing checkout native creation failure holds before provider open",
-  () =>
-    Effect.gen(function* () {
-      const original = admittedOrdinaryLocalHarnessSource(ordinaryMissingTarget);
-      const harness = makeLocalCommandHarness({
-        text: "Continue",
-        ordinaryAdmission: original.admission,
-        ordinaryCheckoutUse: original.originalUse,
-        ordinaryCheckoutExecution: original.execution,
-        ordinaryMissingCheckout: { ...ordinaryMissingTarget, nativeCreateFailure: true },
-        onOrdinaryManagedRunStarted: () => Effect.die("Failed native creation cannot activate"),
-      });
-      const error = yield* harness.start.pipe(Effect.flip);
-      expect(error._tag).toBe("ProviderTurnStartError");
-      expect(error.cause).toBeInstanceOf(GitCommandError);
-      expect(harness.creationEffects).toEqual(["native_create"]);
-      expect(harness.pruneWorktrees).not.toHaveBeenCalled();
-      expect(harness.open).not.toHaveBeenCalled();
-      expect(harness.startRootRun).not.toHaveBeenCalled();
-      expect(harness.events).toEqual([]);
-    }),
-);
-
-for (const variant of [
-  "final",
-  "retry",
-  "stale",
-  "unknown",
-  "mismatched",
-  "interrupted",
-  "write-failed",
-  "opened-then-failed",
-] as const) {
-  effectIt.effect(
-    `failed-before-open issuer requires exact final committed no-effect evidence: ${variant}`,
-    () =>
-      Effect.gen(function* () {
-        const original = admittedOrdinaryLocalHarnessSource();
-        const observed: EventSink.StartFailedBeforeOpenObservationV1[] = [];
-        const retryObserved: EventSink.StartRetryBeforeOpenObservationV1[] = [];
-        const harness = makeLocalCommandHarness({
-          text: "Continue",
-          ordinaryAdmission: original.admission,
-          ordinaryCheckoutUse: original.originalUse,
-          ordinaryCheckoutExecution: original.execution,
-          onOrdinaryManagedRunStarted: () => Effect.die("A failed open cannot activate"),
-          returnStoredEvents: true,
-          willRetry: variant === "retry",
-          openFailure: "synthetic provider rejection",
-          ...(variant === "stale" ? { interruptRunBeforeOpenFailure: true } : {}),
-          ...(variant === "unknown" || variant === "mismatched" ? { openEvidence: variant } : {}),
-          ...(variant === "interrupted" ? { interruptOpen: true } : {}),
-          ...(variant === "write-failed" ? { writeFailure: "terminal commit failed" } : {}),
-          ...(variant === "opened-then-failed"
-            ? { ensureThreadFailure: "failure after a successful open" }
-            : {}),
-        });
-        yield* harness.start.pipe(
-          Effect.provideService(ProviderTurnStart.StartOutcomeSink, (value) =>
-            Effect.sync(() => {
-              observed.push(value);
-            }),
-          ),
-          Effect.provideService(ProviderTurnStart.StartRetryOutcomeSink, (value) =>
-            Effect.sync(() => {
-              retryObserved.push(value);
-            }),
-          ),
-          Effect.exit,
-        );
-        expect(observed).toHaveLength(variant === "final" ? 1 : 0);
-        expect(retryObserved).toHaveLength(variant === "retry" ? 1 : 0);
-        if (variant === "retry") {
-          const retry = retryObserved[0]!;
-          expect(ProviderTurnStart.readIssuedStartRetryBeforeOpenObservation(retry)).toBe(retry);
-          expect(
-            ProviderTurnStart.readIssuedStartRetryBeforeOpenObservation({ ...retry }),
-          ).toBeNull();
-          expect("terminalEvents" in retry).toBe(false);
-          Reflect.set(retry.nativeEffect, "operationId", "mutated-operation");
-          expect(ProviderTurnStart.readIssuedStartRetryBeforeOpenObservation(retry)).toBeNull();
-        }
-        if (variant === "final") {
-          const observation = observed[0]!;
-          expect(ProviderTurnStart.readIssuedStartFailedBeforeOpenObservation(observation)).toBe(
-            observation,
-          );
-          expect(
-            ProviderTurnStart.readIssuedStartFailedBeforeOpenObservation({ ...observation }),
-          ).toBeNull();
-          expect(
-            ProviderTurnStart.readIssuedStartFailedBeforeOpenObservation(
-              yield* Schema.encodeEffect(
-                Schema.fromJsonString(EventSink.StartFailedBeforeOpenObservationV1),
-              )(observation).pipe(
-                Effect.flatMap(
-                  Schema.decodeUnknownEffect(
-                    Schema.fromJsonString(EventSink.StartFailedBeforeOpenObservationV1),
-                  ),
-                ),
-              ),
-            ),
-          ).toBeNull();
-          expect(observation.terminalEvents).toHaveLength(4);
-          const firstEvent = observation.terminalEvents[0]!;
-          Reflect.set(firstEvent, "sequence", firstEvent.sequence + 1);
-          expect(
-            ProviderTurnStart.readIssuedStartFailedBeforeOpenObservation(observation),
-          ).toBeNull();
-        }
-      }),
-  );
-}
-
-for (const variant of ["stale", "unknown", "mismatched", "interrupted"] as const) {
-  effectIt.effect(`retry-before-open issuer rejects ${variant} producer results`, () =>
-    Effect.gen(function* () {
-      const original = admittedOrdinaryLocalHarnessSource();
-      const observed: EventSink.StartRetryBeforeOpenObservationV1[] = [];
-      const harness = makeLocalCommandHarness({
-        text: "Continue",
-        ordinaryAdmission: original.admission,
-        ordinaryCheckoutUse: original.originalUse,
-        ordinaryCheckoutExecution: original.execution,
-        onOrdinaryManagedRunStarted: () => Effect.die("A failed open cannot activate"),
-        returnStoredEvents: true,
-        willRetry: true,
-        openFailure: "synthetic provider rejection",
-        ...(variant === "stale" ? { interruptRunBeforeOpenFailure: true } : {}),
-        ...(variant === "unknown" || variant === "mismatched" ? { openEvidence: variant } : {}),
-        ...(variant === "interrupted" ? { interruptOpen: true } : {}),
-      });
-      yield* harness.start.pipe(
-        Effect.provideService(ProviderTurnStart.StartRetryOutcomeSink, (value) =>
-          Effect.sync(() => {
-            observed.push(value);
-          }),
-        ),
-        Effect.exit,
+      const failure = harness.events.find(
+        (event) => event.type === "run.updated" && event.payload.status === "failed",
       );
-      expect(observed).toHaveLength(0);
+      expect(failure).toBeDefined();
     }),
-  );
-}
+);
+
+const effortModels: ReadonlyArray<ServerProviderModel> = [
+  {
+    slug: "gpt-5.4",
+    name: "GPT",
+    isCustom: false,
+    capabilities: {
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          options: ["low", "medium", "high", "xhigh"].map((id) => ({ id, label: id })),
+          currentValue: "medium",
+        },
+      ],
+    },
+  },
+];
+
+effectIt.effect.each([
+  { model: "gpt-5.4", effort: "high", explicit: undefined, expected: "high" },
+  { model: "gpt-5.4", effort: "xhigh", explicit: "low", expected: undefined },
+  { model: "another-model", effort: "high", explicit: undefined, expected: undefined },
+  { model: "gpt-5.4", effort: "unsupported", explicit: undefined, expected: undefined },
+])("resolves dispatch-only defaults without replacing the persisted selection: %j", (row) =>
+  Effect.gen(function* () {
+    const selection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex-personal"),
+      model: "gpt-5.4",
+      ...(row.explicit === undefined
+        ? {}
+        : { options: [{ id: "reasoningEffort", value: row.explicit }] }),
+    };
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      effortProof: {
+        selection,
+        models: effortModels,
+        getSettings: Effect.succeed({
+          ...DEFAULT_SERVER_SETTINGS,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex-work"),
+            model: row.model,
+            options: [{ id: "reasoningEffort", value: row.effort }],
+          },
+        }),
+      },
+    });
+    yield* harness.start;
+    expect(harness.dispatched).toHaveLength(1);
+    expect(harness.dispatched[0]?.configuredReasoningEffort).toBe(row.expected);
+    expect(harness.dispatched[0]?.modelSelection).toEqual(selection);
+    expect(harness.open.mock.calls[0]?.[0].modelSelection).toEqual(selection);
+    expect(harness.projection().runs.at(-1)?.modelSelection).toEqual(selection);
+  }),
+);
+
+effectIt.effect("rechecks the attempt after reading current settings", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      effortProof: {
+        models: effortModels,
+        getSettings: Effect.sync(() => {
+          harness.interruptRun();
+          return DEFAULT_SERVER_SETTINGS;
+        }),
+      },
+    });
+    yield* harness.start;
+    expect(harness.dispatched).toHaveLength(0);
+    expect(harness.projection().runs.at(-1)?.status).toBe("interrupted");
+  }),
+);
+
+effectIt.effect("reads changed defaults after the actual handoff delivery awaits", () =>
+  Effect.gen(function* () {
+    let effort = "low";
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      effortProof: {
+        models: effortModels,
+        duringHandoff: Effect.gen(function* () {
+          yield* Effect.yieldNow;
+          effort = "xhigh";
+        }),
+        getSettings: Effect.sync(() => ({
+          ...DEFAULT_SERVER_SETTINGS,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex-work"),
+            model: "gpt-5.4",
+            options: [{ id: "reasoningEffort", value: effort }],
+          },
+        })),
+      },
+    });
+    yield* harness.start;
+    expect(harness.dispatched[0]?.configuredReasoningEffort).toBe("xhigh");
+    expect(harness.dispatched[0]?.modelSelection.options).toBeUndefined();
+  }),
+);
+
+effectIt.effect(
+  "uses the project effort default before the environment default at actual delivery",
+  () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("codex-personal");
+      const model = "gpt-5.4";
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        effortProof: {
+          models: effortModels,
+          getSettings: Effect.succeed({
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [instanceId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+            },
+            defaultModelSelection: {
+              instanceId,
+              model,
+              options: [{ id: "reasoningEffort", value: "low" }],
+            },
+            projectSettingsOverrides: {
+              "effort-project": {
+                defaultModelSelection: {
+                  instanceId,
+                  model,
+                  options: [{ id: "reasoningEffort", value: "high" }],
+                },
+              },
+            },
+          }),
+        },
+      });
+      yield* harness.start;
+      expect(harness.dispatched[0]?.configuredReasoningEffort).toBe("high");
+      expect(harness.open.mock.calls[0]?.[0].modelSelection.options).toBeUndefined();
+      expect(harness.projection().runs.at(-1)?.modelSelection.options).toBeUndefined();
+    }),
+);

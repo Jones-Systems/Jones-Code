@@ -1,8 +1,37 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { T3_MCP_TOOL_NAMES, resolveT3McpToolPresentation } from "./t3McpToolPresentation.ts";
+import {
+  T3_MCP_TOOL_NAMES,
+  resolveT3McpToolDefinition,
+  resolveT3McpToolPresentation,
+  resolveT3McpToolSummaryAction,
+} from "./t3McpToolPresentation.ts";
 
 describe("resolveT3McpToolPresentation", () => {
+  it("presents deferred self-settlement as a request across provider name forms", () => {
+    expect(T3_MCP_TOOL_NAMES.has("t3_thread_settle")).toBe(true);
+    for (const prefix of ["", "mcp__t3-code__", "T3-code."]) {
+      const name = `${prefix}t3_thread_settle`;
+      expect(resolveT3McpToolDefinition(name)).toEqual({
+        displayName: "Request settlement of this thread",
+        labels: [
+          "Request settlement of",
+          "Requesting settlement of",
+          "Requested settlement of",
+          "this thread",
+        ],
+        icon: "t3-code",
+        summaryAction: "thread-settle",
+      });
+      expect(resolveT3McpToolPresentation(name)).toEqual({
+        displayName: "Request settlement of this thread",
+        logo: "t3-code",
+      });
+      expect(resolveT3McpToolSummaryAction(name)).toBe("thread-settle");
+    }
+    expect(resolveT3McpToolDefinition("mcp__another-server__t3_thread_settle")).toBeNull();
+  });
+
   it("recognizes every T3 tool across provider prefixes and completion suffixes", () => {
     for (const tool of T3_MCP_TOOL_NAMES) {
       const presentation = resolveT3McpToolPresentation(tool);

@@ -380,9 +380,6 @@ export class SessionStore extends Context.Service<
        */
       readonly replaceActiveForSubjectAndMethod?: boolean;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
-    readonly materializeReservedBearerSession: (
-      expected: AuthSessions.CreateAuthSessionInput,
-    ) => Effect.Effect<IssuedSession, SessionCredentialIssueError>;
     readonly verify: (token: string) => Effect.Effect<VerifiedSession, SessionCredentialError>;
     readonly issueWebSocketToken: (
       sessionId: AuthSessionId,
@@ -437,105 +434,6 @@ const SessionClaims = Schema.Struct({
   exp: Schema.Number,
 });
 type SessionClaims = typeof SessionClaims.Type;
-
-const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
-const encodeSessionToken = (claims: SessionClaims, signingSecret: Uint8Array) =>
-  encodeClaims(claims).pipe(
-    Effect.map(base64UrlEncode),
-    Effect.mapError(
-      (cause) =>
-        new SessionCredentialIssueError({
-          sessionId: claims.sid,
-          cause: new SessionClaimsEncodingError({
-            sessionId: claims.sid,
-            operation: "encode_session_claims",
-            cause,
-          }),
-        }),
-    ),
-    Effect.map((payload) => `${payload}.${signPayload(payload, signingSecret)}`),
-  );
-
-export const matchesReservedAuthSession = (
-  record: AuthSessions.AuthSessionRecord,
-  expected: AuthSessions.CreateAuthSessionInput,
-): boolean =>
-  record.sessionId === expected.sessionId &&
-  record.subject === expected.subject &&
-  record.method === expected.method &&
-  JSON.stringify(record.scopes) === JSON.stringify(expected.scopes) &&
-  record.issuedAt.epochMilliseconds === expected.issuedAt.epochMilliseconds &&
-  record.expiresAt.epochMilliseconds === expected.expiresAt.epochMilliseconds &&
-  record.client.label === expected.client.label &&
-  record.client.ipAddress === expected.client.ipAddress &&
-  record.client.userAgent === expected.client.userAgent &&
-  record.client.deviceType === expected.client.deviceType &&
-  record.client.os === expected.client.os &&
-  record.client.browser === expected.client.browser;
-
-const reservedBearerMaterializer =
-  (
-    authSessions: AuthSessions.AuthSessionRepository["Service"],
-    signingSecret: Uint8Array,
-  ): SessionStore["Service"]["materializeReservedBearerSession"] =>
-  (expected) =>
-    Effect.gen(function* () {
-      const row = yield* authSessions
-        .getById({ sessionId: expected.sessionId })
-        .pipe(
-          Effect.mapError(
-            (cause) => new SessionCredentialIssueError({ sessionId: expected.sessionId, cause }),
-          ),
-        );
-      const now = yield* DateTime.now;
-      if (
-        expected.method !== "bearer-access-token" ||
-        Option.isNone(row) ||
-        row.value.revokedAt !== null ||
-        !matchesReservedAuthSession(row.value, expected) ||
-        expected.issuedAt.epochMilliseconds > now.epochMilliseconds ||
-        expected.expiresAt.epochMilliseconds <= now.epochMilliseconds ||
-        expected.expiresAt.epochMilliseconds <= expected.issuedAt.epochMilliseconds
-      ) {
-        return yield* new SessionCredentialIssueError({
-          sessionId: expected.sessionId,
-          cause: "reserved_session_mismatch",
-        });
-      }
-      const token = yield* encodeSessionToken(
-        {
-          v: 1,
-          kind: "session",
-          sid: expected.sessionId,
-          sub: expected.subject,
-          scopes: expected.scopes,
-          method: "bearer-access-token",
-          iat: expected.issuedAt.epochMilliseconds,
-          exp: expected.expiresAt.epochMilliseconds,
-        },
-        signingSecret,
-      );
-      return {
-        sessionId: expected.sessionId,
-        token,
-        method: "bearer-access-token",
-        client: toClientMetadata(expected.client),
-        expiresAt: expected.expiresAt,
-        scopes: expected.scopes,
-      } satisfies IssuedSession;
-    });
-
-// Enrollment must read an existing key; normal SessionStore startup still owns key creation.
-export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
-  const authSessions = yield* AuthSessions.AuthSessionRepository;
-  const secrets = yield* ServerSecretStore.ServerSecretStore;
-  const secret = yield* secrets
-    .get(SIGNING_SECRET_NAME)
-    .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause })));
-  if (Option.isNone(secret) || secret.value.byteLength !== 32)
-    return yield* new SessionCredentialIssueError({ cause: "signing_key_missing" });
-  return reservedBearerMaterializer(authSessions, secret.value);
-});
 
 const WebSocketClaims = Schema.Struct({
   v: Schema.Literal(1),
@@ -747,6 +645,7 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markDisconnected"),
     );
 
+  const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
   const issue: SessionStore["Service"]["issue"] = Effect.fn("SessionStore.issue")(
     function* (input) {
       const sessionId = AuthSessionId.make(
@@ -770,7 +669,21 @@ export const make = Effect.gen(function* () {
         exp: expiresAt.epochMilliseconds,
       };
 
-      const token = yield* encodeSessionToken(claims, signingSecret);
+      const encodedPayload = yield* encodeClaims(claims).pipe(
+        Effect.map(base64UrlEncode),
+        Effect.mapError(
+          (cause) =>
+            new SessionCredentialIssueError({
+              sessionId,
+              cause: new SessionClaimsEncodingError({
+                sessionId,
+                operation: "encode_session_claims",
+                cause,
+              }),
+            }),
+        ),
+      );
+      const signature = signPayload(encodedPayload, signingSecret);
       const client = input?.client ?? createDefaultClientMetadata();
       const sessionRecord = {
         sessionId,
@@ -822,7 +735,7 @@ export const make = Effect.gen(function* () {
 
       return {
         sessionId,
-        token,
+        token: `${encodedPayload}.${signature}`,
         method: claims.method,
         client,
         expiresAt: expiresAt,
@@ -1122,7 +1035,6 @@ export const make = Effect.gen(function* () {
     cookieName,
     legacyCookieName,
     issue,
-    materializeReservedBearerSession: reservedBearerMaterializer(authSessions, signingSecret),
     verify,
     issueWebSocketToken,
     verifyWebSocketToken,

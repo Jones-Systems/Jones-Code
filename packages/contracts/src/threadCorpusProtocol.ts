@@ -21,8 +21,9 @@ export const ThreadCorpusCapability = Schema.flip(
 export type ThreadCorpusCapability = typeof ThreadCorpusCapability.Type;
 
 /**
- * Legacy protocol-1 shell and thread detail semantics, retained for decoding older
- * environment descriptors. Protocol-2 servers must not advertise this capability.
+ * Required legacy read semantics for compatible shell and thread detail endpoints.
+ * Advertise only after the receiving server proves these behaviors; the DTO
+ * schemas alone do not establish runtime compatibility.
  * The shell carries global snapshotSequence and updatedAt; projects carry id,
  * workspaceRoot and optional nullable repositoryIdentity. Threads join by projectId
  * and carry nullable worktreePath/branch, archivedAt/settledAt, latestUserMessageAt,

@@ -10,7 +10,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { type VcsError, VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
+import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubCli from "./GitHubCli.ts";
@@ -32,17 +32,12 @@ const quotaOutput = (remaining = 5000, resetAt = "2099-01-01T00:00:00Z") =>
     JSON.stringify({ data: { rateLimit: { cost: 1, limit: 5000, remaining, resetAt } } }),
   );
 
-const isBudgetReading = <E, R>(input: VcsProcess.VcsProcessInput<E, R>) =>
+const isBudgetReading = (input: VcsProcess.VcsProcessInput) =>
   input.args[0] === "api" &&
   input.args[1] === "graphql" &&
   input.args.at(-1)?.includes("rateLimit");
 
-// Source-control CLIs never pass a mutation guard, so the recorder accepts any guard type.
-type RecordedRun = (
-  input: VcsProcess.VcsProcessInput<unknown, unknown>,
-) => Effect.Effect<VcsProcess.VcsProcessOutput, VcsError>;
-
-const mockRun = vi.fn<RecordedRun>();
+const mockRun = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>();
 
 // Budget readings are answered here, so `mockRun` sees only the commands under test.
 const layer = GitHubCli.layer.pipe(
@@ -252,7 +247,7 @@ describe("GitHubCli.listPullRequestsByHead", () => {
     ),
   );
   const jsonOutput = (value: unknown) => processOutput(JSON.stringify(value));
-  const git = <E, R>(input: VcsProcess.VcsProcessInput<E, R>) =>
+  const git = (input: VcsProcess.VcsProcessInput) =>
     input.args[0] === "remote"
       ? processOutput(remoteOutput)
       : { ...processOutput(""), exitCode: ChildProcessSpawner.ExitCode(1) };

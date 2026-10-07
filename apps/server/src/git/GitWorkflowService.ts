@@ -67,10 +67,10 @@ export class GitWorkflowService extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
-    readonly createWorktree: <E = never, R = never>(
+    readonly createWorktree: (
       input: VcsCreateWorktreeInput,
-      options?: GitVcsDriver.CreateWorktreeOptions<E, R>,
-    ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError | E, R>;
+      options?: GitVcsDriver.CreateWorktreeOptions,
+    ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
     readonly listLocalBranchNames: (cwd: string) => Effect.Effect<string[], GitCommandError>;
     readonly fetchRemote: (input: {
       readonly cwd: string;
@@ -94,12 +94,15 @@ export class GitWorkflowService extends Context.Service<
       { readonly commitSha: string; readonly remoteRefName: string },
       GitCommandError
     >;
+    readonly resolveRemoteTrackingCommitIfExists: (
+      input: GitVcsDriver.GitResolveRemoteTrackingCommitIfExistsInput,
+    ) => Effect.Effect<GitVcsDriver.GitResolveRemoteTrackingCommitResult | null, GitCommandError>;
     readonly removeWorktree: (
       input: VcsRemoveWorktreeInput,
     ) => Effect.Effect<void, GitCommandError>;
-    readonly pruneWorktrees: <E = never, R = never>(
-      input: GitVcsDriver.PruneWorktreesInput<E, R>,
-    ) => Effect.Effect<void, GitCommandError | E, R>;
+    readonly pruneWorktrees: (input: {
+      readonly cwd: string;
+    }) => Effect.Effect<void, GitCommandError>;
     readonly deleteLocalBranch: (
       input: GitVcsDriver.GitDeleteLocalBranchInput,
     ) => Effect.Effect<void, GitCommandError>;
@@ -110,6 +113,7 @@ export class GitWorkflowService extends Context.Service<
       input: VcsSwitchRefInput,
     ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
     readonly renameBranch: (input: {
+      readonly legacyPreparation?: GitVcsDriver.LegacyBranchRenameHooks;
       readonly exactName?: boolean;
       readonly cwd: string;
       readonly oldBranch: string;
@@ -368,6 +372,10 @@ export const make = Effect.gen(function* () {
     resolveRemoteTrackingCommit: (input) =>
       ensureGitCommand("GitWorkflowService.resolveRemoteTrackingCommit", input.cwd).pipe(
         Effect.andThen(git.resolveRemoteTrackingCommit(input)),
+      ),
+    resolveRemoteTrackingCommitIfExists: (input) =>
+      ensureGitCommand("GitWorkflowService.resolveRemoteTrackingCommitIfExists", input.cwd).pipe(
+        Effect.andThen(git.resolveRemoteTrackingCommitIfExists(input)),
       ),
     removeWorktree: (input) =>
       ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(

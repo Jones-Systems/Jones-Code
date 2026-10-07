@@ -6,7 +6,6 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
-  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import { onTestFinished, vi } from "vite-plus/test";
@@ -174,8 +173,6 @@ import {
   findLocalComposerClipboardAttachment,
   flushComposerDrafts,
   getComposerDraftSnapshot,
-  saveComposerImportedContinuationPointer,
-  clearComposerImportedContinuationPointer,
   mergeComposerDraftContentState,
   migrateLegacyNewTaskDraft,
   modelOptionMemoryAtom,
@@ -203,87 +200,6 @@ const DRAFT: ComposerDraft = {
   text: "hello",
   attachments: [],
 };
-
-describe("imported continuation receipt pointers", () => {
-  const pointer = {
-    environmentId: EnvironmentId.make("receipt-environment"),
-    threadId: ThreadId.make("receipt-thread"),
-    commandId: CommandId.make("receipt-command"),
-    target: { type: "message" as const, messageId: MessageId.make("receipt-message") },
-  };
-  const key = `${pointer.environmentId}:${pointer.threadId}`;
-
-  it("durably retains an empty draft's pointer and restores only correlation metadata", async () => {
-    await saveComposerImportedContinuationPointer(key, pointer);
-    const restored = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()));
-    expect(restored.drafts[key]?.importedContinuation).toEqual(pointer);
-    expect(restored.drafts[key]?.text).toBe("");
-    expect(restored.drafts[key]?.attachments).toEqual([]);
-    await expect(
-      saveComposerImportedContinuationPointer(key, {
-        ...pointer,
-        commandId: CommandId.make("replacement-command"),
-      }),
-    ).rejects.toThrow("Observe the existing");
-    await expect(
-      saveComposerImportedContinuationPointer(key, {
-        ...pointer,
-        target: { type: "message", messageId: MessageId.make("replacement-message") },
-      }),
-    ).rejects.toThrow("Observe the existing");
-  });
-
-  it("preserves draft content after failed flush and refuses a stale correlation clear", async () => {
-    await waitForComposerDraftsLoaded();
-    setComposerDraftText(key, "Edited after the previous request");
-    composerDraftFileMocks.setWriteError(new Error("disk full"));
-    await expect(saveComposerImportedContinuationPointer(key, pointer)).rejects.toThrow();
-    expect(getComposerDraftSnapshot(key).text).toBe("Edited after the previous request");
-    expect(getComposerDraftSnapshot(key).importedContinuation).toEqual(pointer);
-    expect(
-      clearComposerImportedContinuationPointer(key, {
-        ...pointer,
-        commandId: CommandId.make("stale-command"),
-      }),
-    ).toBe(false);
-    expect(clearComposerImportedContinuationPointer(key, pointer)).toBe(true);
-    expect(getComposerDraftSnapshot(key).text).toBe("Edited after the previous request");
-    composerDraftFileMocks.setWriteError(null);
-    await flushComposerDrafts();
-  });
-
-  it("keeps pending queued correlation through empty-content clearing and cannot clear another environment or target", async () => {
-    const queued = {
-      ...pointer,
-      target: {
-        type: "queued_run" as const,
-        runId: RunId.make("held-run"),
-        messageId: pointer.target.messageId,
-      },
-    };
-    await saveComposerImportedContinuationPointer(key, queued);
-    setComposerDraftText(key, "Unsaved queued edit");
-    clearComposerDraftContent(key);
-    await flushComposerDrafts();
-    const restored = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()))
-      .drafts[key];
-    expect(restored?.importedContinuation).toEqual(queued);
-    expect(restored?.text).toBe("");
-    expect(
-      clearComposerImportedContinuationPointer(key, {
-        ...queued,
-        environmentId: EnvironmentId.make("different-environment"),
-      }),
-    ).toBe(false);
-    expect(
-      clearComposerImportedContinuationPointer(key, {
-        ...queued,
-        target: { ...queued.target, runId: RunId.make("different-run") },
-      }),
-    ).toBe(false);
-    expect(getComposerDraftSnapshot(key).importedContinuation).toEqual(queued);
-  });
-});
 
 afterEach(() => {
   vi.useRealTimers();

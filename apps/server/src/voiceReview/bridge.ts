@@ -25,16 +25,29 @@ import {
   VoiceReviewNotFoundError,
   VoiceReviewConflictError,
   VoiceReviewUnavailableError,
+  VoiceReviewError,
   type VoiceReviewAction,
   type VoiceReviewMutationPayload,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Clock from "effect/Clock";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Effect FileSystem OpenFlag cannot express numeric O_NOFOLLOW | O_NONBLOCK credential guards.
 import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - native descriptors preserve guarded open, fstat, bounded read, and finally close on the same credential file.
 import * as NodeFSP from "node:fs/promises";
-import type { VoiceReviewConfig } from "./config.ts";
+import {
+  voiceReviewConfigFromEnv,
+  voiceReviewNativeBindingFromEnv,
+  type VoiceReviewConfig,
+  type VoiceReviewNativeBinding,
+} from "./config.ts";
+import {
+  makeVoiceReviewCompositionFactory,
+  type VoiceReviewCompositionFactory,
+} from "./composition.ts";
 import { validateVoiceReviewNativePlacementResult } from "./native.ts";
 
 export const VOICE_REVIEW_MAX_REQUEST_BYTES = 610_000;
@@ -401,3 +414,127 @@ export const makeVoiceReviewBridge = (
     },
   };
 };
+
+export class VoiceReviewDependencies extends Context.Service<
+  VoiceReviewDependencies,
+  {
+    readonly config: VoiceReviewConfig | null;
+    readonly fetcher: typeof fetch;
+    readonly binding?: VoiceReviewNativeBinding | null;
+    readonly compositionFactory?: VoiceReviewCompositionFactory;
+  }
+>()("t3/voiceReview/bridge/VoiceReviewDependencies") {}
+
+export class VoiceReview extends Context.Service<
+  VoiceReview,
+  {
+    readonly recent: (
+      principal: EnvironmentSessionPrincipalShape,
+      limit: number,
+    ) => Effect.Effect<typeof VoiceReviewRecentList.Type, VoiceReviewError>;
+    readonly registrySnapshot: (
+      principal: EnvironmentSessionPrincipalShape,
+      cursor: string | undefined,
+      limit: number,
+    ) => Effect.Effect<ThreadRegistryComposedSnapshot, VoiceReviewError>;
+    readonly registryWorkstreams: (
+      principal: EnvironmentSessionPrincipalShape,
+    ) => Effect.Effect<ThreadRegistryWorkstreams, VoiceReviewError>;
+    readonly registryEvents: (
+      principal: EnvironmentSessionPrincipalShape,
+      after: number,
+      limit: number,
+    ) => Effect.Effect<ThreadRegistryEvents, VoiceReviewError>;
+    readonly correctAssociation: (
+      principal: EnvironmentSessionPrincipalShape,
+      payload: typeof ThreadRegistryAssociationPayload.Type,
+    ) => Effect.Effect<ThreadRegistryMutationReceipt, VoiceReviewError>;
+    readonly correctLabel: (
+      principal: EnvironmentSessionPrincipalShape,
+      payload: typeof ThreadRegistryLabelPayload.Type,
+    ) => Effect.Effect<ThreadRegistryMutationReceipt, VoiceReviewError>;
+    readonly diagnostics: (
+      principal: EnvironmentSessionPrincipalShape,
+      id: string,
+    ) => Effect.Effect<typeof VoiceReviewDiagnostics.Type, VoiceReviewError>;
+    readonly list: (
+      principal: EnvironmentSessionPrincipalShape,
+      scope: "pending" | "recent",
+      limit: number,
+    ) => Effect.Effect<VoiceReviewDraftList, VoiceReviewError>;
+    readonly get: (
+      principal: EnvironmentSessionPrincipalShape,
+      id: string,
+    ) => Effect.Effect<VoiceReviewDraft, VoiceReviewError>;
+    readonly mutate: (
+      principal: EnvironmentSessionPrincipalShape,
+      id: string,
+      action: VoiceReviewAction,
+      payload: VoiceReviewMutationPayload,
+    ) => Effect.Effect<VoiceReviewMutationResult, VoiceReviewError>;
+  }
+>()("t3/voiceReview/bridge/VoiceReview") {}
+
+const isReviewError = Schema.is(VoiceReviewError);
+const make = Effect.gen(function* () {
+  const { config, fetcher, binding, compositionFactory } = yield* VoiceReviewDependencies;
+  const clock = yield* Clock.Clock;
+  const now = () => clock.currentTimeMillisUnsafe();
+  const bridge = makeVoiceReviewBridge(config, fetcher, undefined, now);
+  const call = <A>(run: () => Promise<A>) =>
+    Effect.tryPromise({
+      try: run,
+      catch: (error) => (isReviewError(error) ? error : new VoiceReviewUnavailableError({})),
+    });
+  return VoiceReview.of({
+    recent: (principal, limit) => call(() => bridge.recent(principal, limit)),
+    registrySnapshot: (principal, cursor, limit) =>
+      Effect.gen(function* () {
+        const native =
+          compositionFactory === undefined
+            ? undefined
+            : yield* compositionFactory({
+                binding: binding ?? null,
+                reviewConfig: config,
+                principal,
+              });
+        return yield* call(() =>
+          makeVoiceReviewBridge(config, fetcher, native, now).registrySnapshot(
+            principal,
+            cursor,
+            limit,
+          ),
+        );
+      }),
+    registryWorkstreams: (principal) => call(() => bridge.registryWorkstreams(principal)),
+    registryEvents: (principal, after, limit) =>
+      call(() => bridge.registryEvents(principal, after, limit)),
+    correctAssociation: (principal, payload) =>
+      call(() => bridge.correctAssociation(principal, payload)),
+    correctLabel: (principal, payload) => call(() => bridge.correctLabel(principal, payload)),
+    diagnostics: (principal, id) => call(() => bridge.diagnostics(principal, id)),
+    list: (principal, scope, limit) => call(() => bridge.list(principal, scope, limit)),
+    get: (principal, id) => call(() => bridge.get(principal, id)),
+    mutate: (principal, id, action, payload) =>
+      call(() => bridge.mutate(principal, id, action, payload)),
+  });
+});
+
+export const layer = Layer.effect(VoiceReview, make);
+export const dependenciesLayer = Layer.sync(VoiceReviewDependencies, () => ({
+  config: voiceReviewConfigFromEnv(process.env),
+  fetcher: globalThis.fetch,
+}));
+
+export const dependenciesLayerLive = Layer.effect(
+  VoiceReviewDependencies,
+  Effect.gen(function* () {
+    const compositionFactory = yield* makeVoiceReviewCompositionFactory();
+    return {
+      config: voiceReviewConfigFromEnv(process.env),
+      fetcher: globalThis.fetch,
+      binding: voiceReviewNativeBindingFromEnv(process.env),
+      compositionFactory,
+    };
+  }),
+);

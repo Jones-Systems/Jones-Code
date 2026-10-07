@@ -1,3 +1,10 @@
+import {
+  type LegacyGuardRejectionDeleteCommand,
+  type LegacyFailureDeleteCommand,
+  type RecordedServerCommand as OrchestrationV2ServerCommand,
+  type RecordedRun as OrchestrationV2Run,
+  type RecordedThreadProjection as OrchestrationV2ThreadProjection,
+} from "./RecordedTypes.ts";
 import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
@@ -10,18 +17,17 @@ import {
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
-  type OrchestrationV2ServerCommand,
+  type OrchestrationV2GetTurnItemResult,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
-  type OrchestrationV2Run,
   type OrchestrationV2ThreadShellSnapshot,
-  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   ProjectId,
   RunId,
   type ScheduledTaskId,
   ThreadId,
+  type TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -31,12 +37,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { DispatchGuardRejectedError, nativeCommandCanonicalJsonV2 } from "./DispatchGuard.ts";
-import {
-  NormalizationWitnessCarrier,
-  type NormalizationWitnessPreparation,
-} from "./NormalizationWitness.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 
 export type ThreadManagementSendMode = "auto" | "queue" | "steer" | "restart";
@@ -113,11 +115,6 @@ export interface ThreadManagementSendInput {
   readonly mode: ThreadManagementSendMode;
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
-}
-
-export interface ThreadManagementSendNormalization {
-  readonly preparation: NormalizationWitnessPreparation;
-  readonly acceptedCommand?: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
 }
 
 export interface ThreadManagementSendResult {
@@ -278,51 +275,29 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
-  readonly ensureApplicationAttachmentInventory: LegacyV1ThreadImporter.LegacyV1ThreadImporterShape["ensureApplicationAttachmentInventory"];
+  readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
-    prepare?: Effect.Effect<void, Orchestrator.OrchestratorV2Error>,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
-  readonly dispatchNativeWorkstreamSettlement: Orchestrator.OrchestratorV2["Service"]["dispatchNativeWorkstreamSettlement"];
-  readonly observeNativeWorkstreamSettlementBinding: Orchestrator.OrchestratorV2["Service"]["observeNativeWorkstreamSettlementBinding"];
-  readonly dispatchGuarded: Orchestrator.OrchestratorV2["Service"]["dispatchGuarded"];
-  readonly dispatchRestartContinuation: Orchestrator.OrchestratorV2["Service"]["dispatchRestartContinuation"];
-  readonly dispatchNativeCreationStage: Orchestrator.OrchestratorV2["Service"]["dispatchNativeCreationStage"];
-  readonly dispatchNativeCreationRecovery: Orchestrator.OrchestratorV2["Service"]["dispatchNativeCreationRecovery"];
-  readonly reviewImportedHistoryStart: (
-    input: Parameters<Orchestrator.OrchestratorV2["Service"]["reviewImportedHistoryStart"]>[0],
-  ) => ReturnType<Orchestrator.OrchestratorV2["Service"]["reviewImportedHistoryStart"]>;
-  readonly observeImportedHistoryStart: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
-  readonly observeCurrentThreadRuntimeStop: Orchestrator.OrchestratorV2["Service"]["observeCurrentThreadRuntimeStop"];
-  readonly observeThreadDeletionCleanup: Orchestrator.OrchestratorV2["Service"]["observeThreadDeletionCleanup"];
-  readonly stopCurrentThreadRuntime: Orchestrator.OrchestratorV2["Service"]["stopCurrentThreadRuntime"];
-  readonly startWithImportedHistory: (
-    command: Parameters<Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"]>[0],
-  ) => ReturnType<Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"]>;
-  readonly observeCommand: Orchestrator.OrchestratorV2["Service"]["observeCommand"];
-  readonly observeLegacyCommand: Orchestrator.OrchestratorV2["Service"]["observeLegacyCommand"];
-  readonly readCurrentThreadRuntimeAttachment: Orchestrator.OrchestratorV2["Service"]["readCurrentThreadRuntimeAttachment"];
-  readonly observeCurrentThreadRuntime: Orchestrator.OrchestratorV2["Service"]["observeCurrentThreadRuntime"];
-  readonly getOperatingCounts: Orchestrator.OrchestratorV2["Service"]["getOperatingCounts"];
-  readonly acquireWorktreeOwnership: Orchestrator.OrchestratorV2["Service"]["acquireWorktreeOwnership"];
-  readonly acquireOrdinaryWorktreeOwnership: Orchestrator.OrchestratorV2["Service"]["acquireOrdinaryWorktreeOwnership"];
-  readonly captureOrdinaryPreparedLaunch: Orchestrator.OrchestratorV2["Service"]["captureOrdinaryPreparedLaunch"];
-  readonly readOrdinaryCheckoutAdmissionForRun: Orchestrator.OrchestratorV2["Service"]["readOrdinaryCheckoutAdmissionForRun"];
-  readonly beginOrdinaryPreparedCheckoutUse: Orchestrator.OrchestratorV2["Service"]["beginOrdinaryPreparedCheckoutUse"];
-  readonly revalidateOrdinaryCheckoutUse: Orchestrator.OrchestratorV2["Service"]["revalidateOrdinaryCheckoutUse"];
-  readonly dispatchOrdinaryPreparedBranchRename: Orchestrator.OrchestratorV2["Service"]["dispatchOrdinaryPreparedBranchRename"];
-  readonly dispatchOrdinaryPreparedRunRelease: Orchestrator.OrchestratorV2["Service"]["dispatchOrdinaryPreparedRunRelease"];
-  readonly registerOrdinaryCheckoutExecution: Orchestrator.OrchestratorV2["Service"]["registerOrdinaryCheckoutExecution"];
-  readonly revalidateOrdinaryCheckoutExecution: Orchestrator.OrchestratorV2["Service"]["revalidateOrdinaryCheckoutExecution"];
-  readonly releaseWorktreeOwnership: Orchestrator.OrchestratorV2["Service"]["releaseWorktreeOwnership"];
-  readonly getThreadOwnershipIncarnation: Orchestrator.OrchestratorV2["Service"]["getThreadOwnershipIncarnation"];
-  readonly getOrdinaryThreadOwnershipIncarnation: Orchestrator.OrchestratorV2["Service"]["getOrdinaryThreadOwnershipIncarnation"];
-  readonly listWorktreeOwnershipLeases: Orchestrator.OrchestratorV2["Service"]["listWorktreeOwnershipLeases"];
+  readonly dispatchLegacyFailureDelete?: (
+    command: LegacyFailureDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyGuardRejectionDelete?: (
+    command: LegacyGuardRejectionDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
+  /**
+   * One turn item with the input and output the thread stream withholds,
+   * bounded for the wire. Clients fetch it when a tool row is expanded.
+   */
+  readonly getTurnItem: (input: {
+    readonly threadId: ThreadId;
+    readonly itemId: TurnItemId;
+  }) => Effect.Effect<OrchestrationV2GetTurnItemResult, Orchestrator.OrchestratorV2Error>;
   readonly getThreadRecords: Orchestrator.OrchestratorV2["Service"]["getThreadRecords"];
   readonly getThreadProjection: (
     threadId: ThreadId,
@@ -352,7 +327,6 @@ export interface ThreadManagementServiceShape {
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2ThreadShell>, ThreadManagementError>;
   readonly sendToThread: (
     input: ThreadManagementSendInput,
-    normalization?: ThreadManagementSendNormalization,
   ) => Effect.Effect<ThreadManagementSendResult, ThreadManagementFailure>;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
@@ -361,6 +335,8 @@ export interface ThreadManagementServiceShape {
     input: ThreadManagementInterruptInput,
   ) => Effect.Effect<ThreadManagementInterruptResult, ThreadManagementFailure>;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
+  readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
+  readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
   readonly streamStoredEvents: Orchestrator.OrchestratorV2["Service"]["streamStoredEvents"];
   readonly streamStoredEventsFrom: Orchestrator.OrchestratorV2["Service"]["streamStoredEventsFrom"];
   readonly streamDomainEvents: Orchestrator.OrchestratorV2["Service"]["streamDomainEvents"];
@@ -490,11 +466,8 @@ const make = Effect.gen(function* () {
       Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
     );
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command, prepare) =>
-    orchestrator.dispatch(
-      command,
-      ensureCommandTranscripts(command).pipe(Effect.andThen(prepare ?? Effect.void)),
-    );
+  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
+    ensureCommandTranscripts(command).pipe(Effect.andThen(orchestrator.dispatch(command)));
 
   const getProjectThread: ThreadManagementServiceShape["getProjectThread"] = (input) =>
     getThreadProjection(input.threadId).pipe(
@@ -570,7 +543,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const sendToThread: ThreadManagementServiceShape["sendToThread"] = (input, normalization) =>
+  const sendToThread: ThreadManagementServiceShape["sendToThread"] = (input) =>
     Effect.gen(function* () {
       const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
       if (target.thread.archivedAt !== null) {
@@ -579,51 +552,31 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const acceptedCommand = normalization?.acceptedCommand;
-      if (
-        normalization !== undefined &&
-        (normalization.preparation.commandId !== input.commandId ||
-          !(
-            (normalization.preparation.mode === "fresh" && acceptedCommand === undefined) ||
-            (normalization.preparation.mode === "replay" && acceptedCommand !== undefined)
-          ))
-      ) {
-        return yield* new DispatchGuardRejectedError({
-          commandType: "message.dispatch",
-          reason: "identity_conflict",
-          detail: "Message normalization does not match this send request.",
-        });
-      }
-
+      const steerableRun = latestSteerableRun(target);
       let dispatchMode: Extract<
         OrchestrationV2Command,
         { readonly type: "message.dispatch" }
       >["dispatchMode"];
-      if (acceptedCommand !== undefined) {
-        dispatchMode = acceptedCommand.dispatchMode;
-      } else {
-        const steerableRun = latestSteerableRun(target);
-        if (input.mode === "steer" || input.mode === "restart") {
-          if (steerableRun === undefined) {
-            return yield* new ThreadManagementNoSteerableRunError({
-              threadId: input.threadId,
-              mode: input.mode,
-            });
-          }
-          dispatchMode = {
-            type: input.mode === "steer" ? "steer_active" : "restart_active",
-            targetRunId: steerableRun.id,
-          };
-        } else if (input.mode === "auto" && steerableRun !== undefined) {
-          dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
-        } else {
-          dispatchMode = {
-            type: input.mode === "queue" ? "queue_after_active" : "start_immediately",
-          };
+      if (input.mode === "steer" || input.mode === "restart") {
+        if (steerableRun === undefined) {
+          return yield* new ThreadManagementNoSteerableRunError({
+            threadId: input.threadId,
+            mode: input.mode,
+          });
         }
+        dispatchMode = {
+          type: input.mode === "steer" ? "steer_active" : "restart_active",
+          targetRunId: steerableRun.id,
+        };
+      } else if (input.mode === "auto" && steerableRun !== undefined) {
+        dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
+      } else {
+        dispatchMode = {
+          type: input.mode === "queue" ? "queue_after_active" : "start_immediately",
+        };
       }
 
-      const command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> = {
+      const dispatch = yield* orchestrator.dispatch({
         type: "message.dispatch",
         commandId: input.commandId,
         threadId: input.threadId,
@@ -636,28 +589,7 @@ const make = Effect.gen(function* () {
         dispatchMode,
         createdBy: input.createdBy,
         creationSource: input.creationSource,
-      };
-      if (
-        acceptedCommand !== undefined &&
-        nativeCommandCanonicalJsonV2(acceptedCommand) !== nativeCommandCanonicalJsonV2(command)
-      ) {
-        return yield* new DispatchGuardRejectedError({
-          commandType: "message.dispatch",
-          reason: "identity_conflict",
-          detail: "Accepted message normalization differs from this send request.",
-        });
-      }
-      const selectedCommand = acceptedCommand ?? command;
-      const dispatch = yield* orchestrator
-        .dispatch(selectedCommand)
-        .pipe(
-          Effect.provideService(
-            NormalizationWitnessCarrier,
-            normalization === undefined
-              ? undefined
-              : { ...normalization.preparation, acceptedCommand: selectedCommand },
-          ),
-        );
+      });
       const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
         messageIds: [input.messageId],
         turnItemTypes: ["user_message"],
@@ -801,48 +733,19 @@ const make = Effect.gen(function* () {
     });
 
   return ThreadManagementService.of({
-    ensureApplicationAttachmentInventory: legacyImporter.ensureApplicationAttachmentInventory,
+    requestSelfSettlement: orchestrator.requestSelfSettlement,
     ensureLegacyTranscript,
     dispatch,
-    dispatchNativeWorkstreamSettlement: orchestrator.dispatchNativeWorkstreamSettlement,
-    observeNativeWorkstreamSettlementBinding: orchestrator.observeNativeWorkstreamSettlementBinding,
-    dispatchGuarded: orchestrator.dispatchGuarded,
-    dispatchRestartContinuation: orchestrator.dispatchRestartContinuation,
-    dispatchNativeCreationStage: orchestrator.dispatchNativeCreationStage,
-    dispatchNativeCreationRecovery: orchestrator.dispatchNativeCreationRecovery,
-    reviewImportedHistoryStart: (input) =>
-      orchestrator.reviewImportedHistoryStart(
-        input,
-        legacyImporter.readTranscriptSnapshotEvidence(input.threadId),
-      ),
-    observeImportedHistoryStart: orchestrator.observeImportedHistoryStart,
-    observeCurrentThreadRuntimeStop: orchestrator.observeCurrentThreadRuntimeStop,
-    observeThreadDeletionCleanup: orchestrator.observeThreadDeletionCleanup,
-    stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime,
-    startWithImportedHistory: (command) =>
-      orchestrator.startWithImportedHistory(
-        command,
-        legacyImporter.readTranscriptSnapshotEvidence(command.threadId),
-      ),
-    observeCommand: orchestrator.observeCommand,
-    observeLegacyCommand: orchestrator.observeLegacyCommand,
-    readCurrentThreadRuntimeAttachment: orchestrator.readCurrentThreadRuntimeAttachment,
-    observeCurrentThreadRuntime: orchestrator.observeCurrentThreadRuntime,
-    getOperatingCounts: orchestrator.getOperatingCounts,
-    acquireWorktreeOwnership: orchestrator.acquireWorktreeOwnership,
-    acquireOrdinaryWorktreeOwnership: orchestrator.acquireOrdinaryWorktreeOwnership,
-    captureOrdinaryPreparedLaunch: orchestrator.captureOrdinaryPreparedLaunch,
-    readOrdinaryCheckoutAdmissionForRun: orchestrator.readOrdinaryCheckoutAdmissionForRun,
-    beginOrdinaryPreparedCheckoutUse: orchestrator.beginOrdinaryPreparedCheckoutUse,
-    revalidateOrdinaryCheckoutUse: orchestrator.revalidateOrdinaryCheckoutUse,
-    dispatchOrdinaryPreparedBranchRename: orchestrator.dispatchOrdinaryPreparedBranchRename,
-    dispatchOrdinaryPreparedRunRelease: orchestrator.dispatchOrdinaryPreparedRunRelease,
-    registerOrdinaryCheckoutExecution: orchestrator.registerOrdinaryCheckoutExecution,
-    revalidateOrdinaryCheckoutExecution: orchestrator.revalidateOrdinaryCheckoutExecution,
-    releaseWorktreeOwnership: orchestrator.releaseWorktreeOwnership,
-    getThreadOwnershipIncarnation: orchestrator.getThreadOwnershipIncarnation,
-    getOrdinaryThreadOwnershipIncarnation: orchestrator.getOrdinaryThreadOwnershipIncarnation,
-    listWorktreeOwnershipLeases: orchestrator.listWorktreeOwnershipLeases,
+    ...(orchestrator.dispatchLegacyFailureDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete,
+        }),
+    ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete,
+        }),
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getTimelinePage(threadId, options)),
@@ -850,6 +753,11 @@ const make = Effect.gen(function* () {
     getMessageCount: (threadId) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getMessageCount(threadId)),
+      ),
+    getTurnItem: (input) =>
+      ensureProjectionTranscript(input.threadId).pipe(
+        Effect.andThen(orchestrator.getTurnItem(input)),
+        Effect.map((item) => ({ item: item === null ? null : projectTurnItemForDetail(item) })),
       ),
     getThreadRecords: (threadId, fields, filter) =>
       ensureProjectionTranscript(threadId).pipe(
@@ -868,6 +776,8 @@ const make = Effect.gen(function* () {
     waitForThread,
     interruptThread,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
+    recoverDelegatedTask: orchestrator.recoverDelegatedTask,
+    delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
     streamStoredEvents: orchestrator.streamStoredEvents,
     streamStoredEventsFrom: orchestrator.streamStoredEventsFrom,
     streamDomainEvents: orchestrator.streamDomainEvents,
@@ -877,14 +787,8 @@ const make = Effect.gen(function* () {
 const legacyV1ThreadImporterNoopLayer = Layer.succeed(
   LegacyV1ThreadImporter.LegacyV1ThreadImporter,
   LegacyV1ThreadImporter.LegacyV1ThreadImporter.of({
-    ensureApplicationAttachmentInventory: () =>
-      Effect.succeed({
-        status: "unavailable" as const,
-        reason: "imported_application_inventory_source_unavailable",
-      }),
     pendingThreadCount: Effect.succeed(0),
     reconcileShells: Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
-    readTranscriptSnapshotEvidence: () => Effect.succeed(null),
     ensureTranscript: () => Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
     importPendingTranscripts: Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
   }),

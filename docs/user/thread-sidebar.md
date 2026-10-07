@@ -19,7 +19,9 @@ A thread does not need a project. To start one without a project, click **or
 start without a project** under a new thread's heading, pick **No project** from
 the project menu in that heading or from **New thread in...** in the command
 palette, or press `mod+alt+n`. On mobile, pick **No project** from the project
-list. To move a draft into a project, pick the project in the heading.
+list. It starts on your current machine; before sending, pick another machine
+from the machine menu to move it there. To move a draft into a project, pick the
+project in the heading.
 
 Each thread without a project works in its own folder under `~/.t3/scratch` (the
 `scratch` folder of your T3 data directory), named after its date, the first words
@@ -41,29 +43,15 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
-## Operating threads
-
-The **Operating** filter shows threads with a running or starting turn, current
-background work, or current monitoring. Settled and snoozed threads can still be
-Operating; archived threads are excluded. Approval, input, and plan prompts stay
-visible as attention states even when background work continues.
-
-The count covers the selected project or environment. A **—** count means the
-current count is unavailable. **Unknown** means current background activity
-could not be confirmed. Changing the selected account does not change which
-runtime is currently working. Workstream **Running** counts include confirmed
-work; monitoring alone does not add to Running.
-
 ## Pin and reorder threads
 
-Pin a thread from its menu to keep it in Pinned when it is outside a Workstream. A pinned Workstream member stays pinned while appearing inside its group.
-
-On web and desktop, Shift-click to select a range of visible threads, or Ctrl-click on Windows and Linux or Cmd-click on macOS to select individual threads. Drag a selected row to move the selection together while keeping its relative order. Dragging an unselected row moves only that thread. A move that stops partway through reports which threads moved and keeps the remaining selection available.
+Pin a thread from its menu to keep it above your active work.
 
 On web and desktop, unpinning, settling, snoozing, and archiving a thread each show
 a notification with **Undo** for five seconds. Undo restores the thread's previous
 state, including its pinned position, and reopens an archived thread you were
-viewing. `mod+z` triggers the most recent Undo when no text field is focused; see
+viewing. Discarding an unsent draft from the sidebar works the same way: Undo brings
+back its text and attachments. `mod+z` triggers the most recent Undo when no text field is focused; see
 [Keybindings](./keybindings.md#commands-with-special-behavior).
 
 On web and desktop, you can also drag files from your computer onto any thread row:
@@ -126,13 +114,15 @@ open.
 
 ### Fold working threads (beta)
 
-On web and desktop, turn on **Settings → General → Working section (beta)** to move threads that
-are working or monitoring into a collapsed **Working** section at the bottom of the sidebar. A
-thread returns to the top of the active list when it finishes, fails, or needs an approval or
-answer. Pinned threads stay in the pinned section.
+Turn on **Settings → General → Working section (beta)** on web and desktop, or **Settings →
+Thread behavior → Working section** on iOS and Android, to move threads that are working or
+monitoring into a collapsed **Working** section below the active list. A thread returns to the top
+of the active list when it finishes, fails, or needs an approval or answer. The Working section
+lists the thread you last sent work to first. Pinned threads stay in the pinned section. Each
+device keeps its own choice.
 
 While this is on, the active list is ordered by when each thread last came back to you, so you
-cannot drag to reorder it. Your saved order returns when you turn it off.
+cannot drag or move threads within it. Your saved order returns when you turn it off.
 
 ## Settle finished work
 
@@ -144,23 +134,24 @@ sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
-Choose **Kill Thread** from the same menu to stop the thread's current agent
-runtime. It is available when the environment supports the action and identifies
-an attached runtime, including an idle runtime or one reporting an error. The
-conversation, sidebar position, and terminals stay available.
+On web and desktop, choose **Stop thread** from the sidebar or chat header menu
+to stop the thread's agent sessions while keeping its conversation, pin, and
+settlement state. Sending another message starts a session again. Stop leaves
+terminals open. Use **Settle thread** to move finished work out of the active
+list, or **Delete** to permanently clear the conversation history.
 
-A pending stop does not mean the runtime has stopped. Use **Check status** on
-the notification, or **Check saved stop** after reloading, to check the original
-request. An unknown outcome keeps that request on hold; checking status does not
-send another stop or target a replacement runtime. Saved queued work remains
-held until you explicitly resume it.
+On web and desktop, press a thread's **Settle** button and drag up or down to
+settle every thread in that section between it and the one you release on.
+The **Un-settle** and **Wake** buttons work the same way in their sections.
+Press `Escape` while dragging to cancel.
 
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle
 thread. Work in progress, pending questions or approvals, and live background work
 prevent automatic settlement. An open pull request does not prevent inactivity
 settlement, but an old closed or merged pull request does not settle work you
-resumed after it closed.
+resumed after it closed. Only your own messages count as resuming. A turn that
+finished background work or a pull request watch starts on its own does not.
 
 To keep one thread out of the settled shelf no matter how long it sits idle, open its menu,
 choose **Auto-settle behavior**, and pick **Disabled**. The current option is checked. Pick
@@ -196,6 +187,17 @@ Use **Settings → Keybindings** to find or customize shortcuts for searching fi
 and copying a thread reference. A copied reference uses the thread's pull request
 link when available, otherwise its thread ID. See [keybindings](./keybindings.md)
 for custom configuration.
+
+## Block messages from other threads
+
+Ask the agent to block incoming messages for its thread, or for another thread
+in the same project. The block stays in place across restarts. You can still
+message the thread directly, and task-completion notifications and work already
+accepted into its queue continue normally.
+
+To allow messages again, ask the agent in the blocked thread to unblock itself.
+Agents in other threads cannot remove its block. New forks and subagent threads
+start with their own unblocked setting.
 
 ## Inspect agent work
 

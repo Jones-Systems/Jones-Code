@@ -1,28 +1,18 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import {
-  CommandId,
-  EnvironmentId,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  type OrchestrationV2CurrentThreadRuntimeTarget,
-} from "@t3tools/contracts";
-import type {
-  CurrentRuntimeStopOperation,
-  CurrentRuntimeStopOutcome,
-} from "../hooks/useCurrentRuntimeStop";
-import { restartCommandPaletteRuntime, type CommandPaletteRestartNotice } from "./CommandPalette";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import type { Project, Thread } from "../types";
 import { makeThreadFixture } from "../test-fixtures";
 import {
   buildBrowseGroups,
   buildCommandPaletteProjectMetadata,
+  buildCommandPaletteRows,
   buildProjectActionItems,
   buildThreadActionItems,
   buildLinkedThreadActionItems,
   enumerateCommandPaletteItems,
   filterPinnedBrowseEntries,
   filterCommandPaletteGroups,
+  findHighlightedCommandPaletteItem,
   reduceCommandPaletteUiState,
   type CommandPaletteActionItem,
   type CommandPaletteGroup,
@@ -862,193 +852,45 @@ describe("filterCommandPaletteGroups", () => {
   });
 });
 
-describe("command palette runtime restart", () => {
-  const threadRef = {
-    environmentId: LOCAL_ENVIRONMENT_ID,
-    threadId: ThreadId.make("restart-thread"),
-  };
-  const target = {
-    binding: {
-      threadId: threadRef.threadId,
-      providerThreadId: "provider:current",
-      providerSessionId: "session:current",
-      instanceId: ProviderInstanceId.make("current-owner"),
-      runtimeGeneration: "generation:current",
-      nativeThreadId: "native:current",
-    },
-    driver: "codex",
-    evidenceRevision: 7,
-  } as OrchestrationV2CurrentThreadRuntimeTarget;
-  const stopState = (status: CurrentRuntimeStopOutcome["status"]): CurrentRuntimeStopOutcome => ({
-    status,
-    commandAccepted: status !== "rejected",
-    queueFenceInstalled: status !== "rejected",
-    reason: null,
-    commandId: CommandId.make("stop:original"),
-    target,
+describe("virtualized command palette rows", () => {
+  const action = (value: string, disabled = false): CommandPaletteActionItem => ({
+    kind: "action",
+    value,
+    searchTerms: [],
+    title: value,
+    icon: null,
+    ...(disabled ? { disabled } : {}),
+    run: async () => {},
   });
-  const harness = () => {
-    const runtimeStop = {
-      capture: vi.fn(async () => ({ status: "current" as const, target })),
-      request: vi.fn(async () => stopState("pending")),
-      observe: vi.fn<
-        (
-          _ref: typeof threadRef,
-          _expected?: CurrentRuntimeStopOperation,
-        ) => Promise<CurrentRuntimeStopOutcome | null>
-      >(async () => null),
-    };
-    const refresh = vi.fn(async (_target: OrchestrationV2CurrentThreadRuntimeTarget) => {});
-    const notify = vi.fn<(_: CommandPaletteRestartNotice) => void>();
-    return { threadRef, runtimeStop, refresh, notify };
-  };
+  const groups: CommandPaletteGroup[] = [
+    { value: "actions", label: "Actions", items: [action("new-thread"), action("offline", true)] },
+    { value: "threads", label: "Threads", items: [action("thread-a"), action("thread-b")] },
+  ];
 
-  it("does not refresh or claim restart success from acceptance and a queue fence", async () => {
-    const input = harness();
-    await restartCommandPaletteRuntime(input);
-    expect(input.runtimeStop.request).toHaveBeenCalledWith(threadRef, target);
-    expect(input.refresh).not.toHaveBeenCalled();
-    expect(input.notify).toHaveBeenCalledWith(expect.objectContaining({ status: "pending" }));
-    expect(input.notify.mock.calls.some(([notice]) => notice.status === "stopped")).toBe(false);
+  it("keeps group order and headings while indexing only enabled items", () => {
+    const { rows, itemValues, rowIndexByItemIndex } = buildCommandPaletteRows(groups);
+
+    expect(rows.map((row) => (row.kind === "label" ? `# ${row.label}` : row.key))).toEqual([
+      "# Actions",
+      "actions:new-thread",
+      "actions:offline",
+      "# Threads",
+      "threads:thread-a",
+      "threads:thread-b",
+    ]);
+    expect(itemValues).toEqual(["new-thread", "thread-a", "thread-b"]);
+    expect(rowIndexByItemIndex).toEqual([1, 4, 5]);
+    expect(rows.flatMap((row) => (row.kind === "item" ? [row.itemIndex] : []))).toEqual([
+      0,
+      null,
+      1,
+      2,
+    ]);
   });
 
-  it("observes the original stop after pending or lost responses and refreshes its captured owner", async () => {
-    const input = harness();
-    input.runtimeStop.request.mockResolvedValue(stopState("unknown"));
-    await restartCommandPaletteRuntime(input);
-    const firstNotice = input.notify.mock.calls[0]?.[0];
-    input.runtimeStop.observe.mockResolvedValueOnce(null);
-    await firstNotice?.checkStatus?.();
-    expect(input.refresh).not.toHaveBeenCalled();
-    const unknownNotice = input.notify.mock.calls.at(-1)?.[0];
-    expect(unknownNotice?.status).toBe("unknown");
-    input.runtimeStop.observe.mockResolvedValueOnce(stopState("stopped"));
-    await unknownNotice?.checkStatus?.();
-    expect(input.runtimeStop.capture).toHaveBeenCalledTimes(1);
-    expect(input.runtimeStop.request).toHaveBeenCalledTimes(1);
-    expect(input.runtimeStop.observe).toHaveBeenLastCalledWith(threadRef, {
-      commandId: CommandId.make("stop:original"),
-      target,
-    });
-    expect(input.refresh).toHaveBeenCalledWith(target);
-    expect(input.notify.mock.calls.at(-1)?.[0].status).toBe("stopped");
-  });
-
-  it("waits for the captured owner's refresh before announcing restart success", async () => {
-    const input = harness();
-    input.runtimeStop.request.mockResolvedValue(stopState("stopped"));
-    let finishRefresh: (() => void) | undefined;
-    let signalRefreshStarted: (() => void) | undefined;
-    const refreshStarted = new Promise<void>((resolve) => {
-      signalRefreshStarted = resolve;
-    });
-    input.refresh.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishRefresh = resolve;
-          signalRefreshStarted?.();
-        }),
-    );
-    const restarting = restartCommandPaletteRuntime(input);
-    await refreshStarted;
-    expect(input.refresh).toHaveBeenCalledWith(target);
-    expect(input.notify).not.toHaveBeenCalled();
-    finishRefresh?.();
-    await restarting;
-    expect(input.notify).toHaveBeenCalledWith({ status: "stopped", reason: null });
-  });
-
-  it.each(["unavailable", "known-stopped"] as const)(
-    "does not claim it stopped a runtime from %s capture",
-    async (status) => {
-      const input = harness();
-      const capture =
-        status === "unavailable"
-          ? { status, reason: "Runtime not resident; native closure is unproved." }
-          : { status, observedAt: "2026-10-03T00:00:00Z" };
-      await restartCommandPaletteRuntime({
-        ...input,
-        runtimeStop: { ...input.runtimeStop, capture: vi.fn(async () => capture) },
-      });
-      expect(input.runtimeStop.request).not.toHaveBeenCalled();
-      expect(input.refresh).not.toHaveBeenCalled();
-      expect(input.notify).toHaveBeenCalledWith({
-        status,
-        reason: "reason" in capture ? capture.reason : null,
-      });
-    },
-  );
-
-  it("recovers a remounted original stop before reading a different current runtime", async () => {
-    const input = harness();
-    const originalTarget = {
-      ...target,
-      binding: { ...target.binding, instanceId: ProviderInstanceId.make("original-owner") },
-    };
-    input.runtimeStop.observe.mockResolvedValueOnce({
-      ...stopState("stopped"),
-      target: originalTarget,
-    });
-    await restartCommandPaletteRuntime(input);
-    expect(input.runtimeStop.capture).not.toHaveBeenCalled();
-    expect(input.runtimeStop.request).not.toHaveBeenCalled();
-    expect(input.refresh).toHaveBeenCalledWith(originalTarget);
-    expect(input.notify).toHaveBeenCalledWith({ status: "stopped", reason: null });
-  });
-
-  it("keeps a stale status callback bound to its original operation after pointer replacement", async () => {
-    const input = harness();
-    await restartCommandPaletteRuntime(input);
-    const checkStatus = input.notify.mock.calls[0]?.[0].checkStatus;
-    input.runtimeStop.observe.mockResolvedValue({
-      ...stopState("unknown"),
-      commandId: null,
-      target: null,
-      reason: "The saved stop no longer matches the original operation.",
-    });
-    await checkStatus?.();
-    const retryOriginal = input.notify.mock.calls.at(-1)?.[0].checkStatus;
-    await retryOriginal?.();
-    expect(input.runtimeStop.observe).toHaveBeenLastCalledWith(threadRef, {
-      commandId: CommandId.make("stop:original"),
-      target,
-    });
-    expect(input.runtimeStop.request).toHaveBeenCalledTimes(1);
-    expect(input.runtimeStop.capture).toHaveBeenCalledTimes(1);
-    expect(input.refresh).not.toHaveBeenCalled();
-    expect(input.notify.mock.calls.at(-1)?.[0].status).toBe("unknown");
-  });
-
-  it.each(["pending", "stopped"] as const)(
-    "does not refresh from %s without original correlation",
-    async (status) => {
-      const input = harness();
-      input.runtimeStop.observe.mockResolvedValueOnce({
-        ...stopState(status),
-        commandId: null,
-        target: null,
-      });
-      await restartCommandPaletteRuntime(input);
-      expect(input.runtimeStop.capture).not.toHaveBeenCalled();
-      expect(input.runtimeStop.request).not.toHaveBeenCalled();
-      expect(input.refresh).not.toHaveBeenCalled();
-      expect(input.notify).toHaveBeenCalledWith(expect.objectContaining({ status: "unknown" }));
-    },
-  );
-
-  it("propagates refresh failure without a premature success notice", async () => {
-    const input = harness();
-    input.runtimeStop.request.mockResolvedValue(stopState("stopped"));
-    input.refresh.mockRejectedValue(new Error("refresh unavailable"));
-    await expect(restartCommandPaletteRuntime(input)).rejects.toThrow("refresh unavailable");
-    expect(input.notify).not.toHaveBeenCalled();
-  });
-
-  it("reports a rejected stop without refreshing or offering redispatch", async () => {
-    const input = harness();
-    input.runtimeStop.request.mockResolvedValue(stopState("rejected"));
-    await restartCommandPaletteRuntime(input);
-    expect(input.refresh).not.toHaveBeenCalled();
-    expect(input.notify).toHaveBeenCalledWith({ status: "rejected", reason: null });
+  it("resolves Enter to the highlighted item without needing its row mounted", () => {
+    expect(findHighlightedCommandPaletteItem(groups, "thread-b")?.value).toBe("thread-b");
+    expect(findHighlightedCommandPaletteItem(groups, "offline")).toBeNull();
+    expect(findHighlightedCommandPaletteItem(groups, null)).toBeNull();
   });
 });

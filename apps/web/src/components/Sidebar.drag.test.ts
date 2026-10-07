@@ -37,9 +37,7 @@ function layout(
   const rects = items.map((item) => {
     const height =
       item.kind === "thread"
-        ? (item.section === "pinned" || item.section === "active" || item.section === "working"
-            ? cardHeight
-            : 36) * scale
+        ? (item.section === "pinned" || item.section === "active" ? cardHeight : 36) * scale
         : item.marker === "pinned-header" || item.marker === "pinned-divider"
           ? 0
           : (item.marker.endsWith("placeholder") ? 0 : 32) * scale;
@@ -127,31 +125,20 @@ describe("sidebar collision detection", () => {
   });
 
   it.each([
-    { sourceSection: "active", pins: 0, activeFirst: false },
-    { sourceSection: "active", pins: 1, activeFirst: false },
-    { sourceSection: "pinned", pins: 1, activeFirst: false },
-    { sourceSection: "settled", pins: 1, activeFirst: false },
-    { sourceSection: "active", pins: 0, activeFirst: true },
-    { sourceSection: "active", pins: 1, activeFirst: true },
-    { sourceSection: "pinned", pins: 1, activeFirst: true },
-    { sourceSection: "settled", pins: 1, activeFirst: true },
+    { sourceSection: "active", pins: 0 },
+    { sourceSection: "active", pins: 1 },
+    { sourceSection: "pinned", pins: 1 },
+    { sourceSection: "settled", pins: 1 },
   ] as const)(
-    "switches on crossing the boundary from $sourceSection with $pins pins, active first: $activeFirst",
-    ({ sourceSection, pins, activeFirst }) => {
-      const pinnedRows = [
+    "switches on crossing the divider row from $sourceSection with $pins pins",
+    ({ sourceSection, pins }) => {
+      const items = [
         pinnedHeader,
         ...(pins ? [thread("p", "pinned")] : []),
         ...(sourceSection === "pinned" ? [thread("source", "pinned")] : []),
         divider,
-      ];
-      const activeRows = [
         thread("a", "active"),
         ...(sourceSection === "active" ? [thread("source", "active")] : []),
-      ];
-      const items = [
-        ...(activeFirst
-          ? [marker("active-placeholder"), ...activeRows, ...pinnedRows]
-          : [...pinnedRows, ...activeRows]),
         settledHeader,
         ...(sourceSection === "settled" ? [thread("source", "settled")] : []),
       ];
@@ -170,7 +157,7 @@ describe("sidebar collision detection", () => {
       } as unknown as HTMLElement;
       const detector = createSidebarCollisionDetection(() => true, {
         items,
-        activationY: (sourceSection === "pinned") !== activeFirst ? 200 : 600,
+        activationY: sourceSection === "pinned" ? 200 : 600,
       });
       const at = (center: number) => {
         const collisionRect = {
@@ -197,7 +184,7 @@ describe("sidebar collision detection", () => {
             data: { current: {} },
             node: {
               current:
-                item === (activeFirst ? pinnedHeader : divider)
+                item === divider
                   ? boundaryNode
                   : item === settledHeader
                     ? ({ getBoundingClientRect: () => ({ top: 600 }) } as unknown as HTMLElement)
@@ -209,20 +196,18 @@ describe("sidebar collision detection", () => {
         const over = detector(args)[0];
         return over ? resolveSidebarDropTarget(items, "source", String(over.id))?.section : null;
       };
-      const above = activeFirst ? "active" : "pinned";
-      const below = activeFirst ? "pinned" : "active";
-      expect(at(330)).toBe(below);
-      expect(at(317)).toBe(below);
-      expect(at(316)).toBe(above);
-      // The preview moves the boundary; a stationary pointer must not undo the drop target.
+      expect(at(330)).toBe("active");
+      expect(at(317)).toBe("active");
+      expect(at(316)).toBe("pinned");
+      // The preview moves the divider; a stationary pointer must not undo the drop target.
       boundaryTop = 400;
-      expect(at(316)).toBe(above);
-      expect(at(399)).toBe(above);
-      expect(at(400)).toBe(below);
+      expect(at(316)).toBe("pinned");
+      expect(at(399)).toBe("pinned");
+      expect(at(400)).toBe("active");
       boundaryTop = 300;
-      expect(at(400)).toBe(below);
-      expect(at(317)).toBe(below);
-      expect(at(316)).toBe(above);
+      expect(at(400)).toBe("active");
+      expect(at(317)).toBe("active");
+      expect(at(316)).toBe("pinned");
     },
   );
 
@@ -692,54 +677,6 @@ describe("sidebar drag projection", () => {
     expect(byTime.get("a2")?.y).toBe(-83);
     expect(byTime.get(sidebarMarkerId("working-header"))).toEqual(stationary);
     expect(byTime.get("w")).toEqual(stationary);
-  });
-
-  it("previews a time-ordered active-first drop while retaining the Working shelf", () => {
-    const items = [
-      marker("active-placeholder"),
-      thread("a1", "active"),
-      thread("a2", "active"),
-      pinnedHeader,
-      thread("p1", "pinned"),
-      thread("p2", "pinned"),
-      divider,
-      marker("working-header"),
-      thread("w", "working"),
-      settledHeader,
-      thread("s", "settled"),
-    ];
-    const result = preview(
-      {
-        items,
-        activeOrder: ["a1", "p1", "a2"],
-        settledOrder: ["s"],
-        settledExpanded: true,
-      },
-      "p1",
-      "a1",
-    );
-    const { rects } = layout(items, "p1", "a1");
-    const positions = items.flatMap((item, index) => {
-      const id = sidebarListItemId(item);
-      const transform = result.get(id);
-      return id === "p1" || transform?.scaleY === 0
-        ? []
-        : [{ id, top: rects[index]!.top + (transform?.y ?? 0) }];
-    });
-    expect(positions.toSorted((left, right) => left.top - right.top).map(({ id }) => id)).toEqual([
-      "a1",
-      "a2",
-      sidebarMarkerId("pinned-header"),
-      "p2",
-      sidebarMarkerId("pinned-divider"),
-      sidebarMarkerId("working-header"),
-      "w",
-      sidebarMarkerId("settled-header"),
-      "s",
-    ]);
-    const top = (id: string) => positions.find((item) => item.id === id)!.top;
-    expect(top("a2") - top("a1")).toBe(166);
-    expect(top("w") - top(sidebarMarkerId("working-header"))).toBe(33);
   });
 
   it("derives missing card geometry from the measured root scale", () => {

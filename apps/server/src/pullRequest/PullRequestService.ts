@@ -26,6 +26,8 @@ import {
   resolvePullRequestAuthorFilter,
   type OrchestrationProjectShell,
   type ProjectId,
+  type PullRequestCiStatusInput,
+  type PullRequestCiStatusResult,
   type PullRequestAction,
   type PullRequestActionInput,
   type PullRequestActivity,
@@ -74,6 +76,8 @@ import {
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import { AllowGitHubReserve } from "../sourceControl/GitHubCli.ts";
+import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import * as PullRequestCiStatus from "../jones/pullRequestCi/PullRequestCiStatus.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -173,6 +177,9 @@ type CredentialRef = PullRequestRef & { readonly [credentialNamespace]?: string 
 export class PullRequestService extends Context.Service<
   PullRequestService,
   {
+    readonly ciStatus: (
+      input: PullRequestCiStatusInput,
+    ) => Effect.Effect<PullRequestCiStatusResult, PullRequestError>;
     readonly list: (
       input: PullRequestListInput,
     ) => Effect.Effect<PullRequestListResult, PullRequestError>;
@@ -477,7 +484,12 @@ function toPullRequestError(
   return (error) =>
     isProviderUnusable(error)
       ? toUnavailableError(error)
-      : new PullRequestOperationError({ operation, detail: error.detail, cause: error });
+      : new PullRequestOperationError({
+          operation,
+          detail: error.detail,
+          ...(error.reason === "not-found" ? { reason: "not-found" as const } : {}),
+          cause: error,
+        });
 }
 
 function withRateLimitBackoff(
@@ -635,6 +647,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
+  const githubCi = yield* Effect.serviceOption(GitHubCli.GitHubCli);
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,
@@ -1511,6 +1524,13 @@ export const make = Effect.gen(function* () {
     return { ...identity, host, provider: "github" as const };
   });
 
+  const ciStatus = yield* PullRequestCiStatus.createCiStatus({
+    listWorkspaceProjects,
+    registry,
+    githubCi,
+    rateLimits,
+  });
+
   const withRoutingCredential: PullRequestService["Service"]["withRoutingCredential"] = (
     input,
     operation,
@@ -1697,6 +1717,7 @@ export const make = Effect.gen(function* () {
             ...(changeRequest.headRepositoryNameWithOwner === undefined
               ? {}
               : { headRepositoryNameWithOwner: changeRequest.headRepositoryNameWithOwner }),
+            ...(changeRequest.headSha ? { headSha: changeRequest.headSha } : {}),
             baseBranch: changeRequest.baseBranch,
             createdAt: changeRequest.createdAt,
             updatedAt: changeRequest.updatedAt,
@@ -1777,6 +1798,9 @@ export const make = Effect.gen(function* () {
               comments: activity.comments,
               commentCount: activity.commentCount,
               commentsTruncated: activity.commentsTruncated,
+              ...(activity.reviewThreadsTruncated === undefined
+                ? {}
+                : { reviewThreadsTruncated: activity.reviewThreadsTruncated }),
               reviewThreads: activity.reviewThreads,
               commits: activity.commits,
               ...(activity.reactions === undefined ? {} : { reactions: activity.reactions }),
@@ -3254,6 +3278,7 @@ export const make = Effect.gen(function* () {
       });
 
   return PullRequestService.of({
+    ciStatus,
     routing,
     routingIdentity,
     withRoutingCredential,
@@ -3297,4 +3322,4 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(PullRequestService, make);
+export const layer = Layer.effect(PullRequestService, make).pipe(Layer.provide(GitHubCli.layer));

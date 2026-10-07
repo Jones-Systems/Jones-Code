@@ -66,9 +66,12 @@ describe("mobile model options", () => {
       });
       expect(descriptors[0]?.currentValue).toBe(effort);
       expect(selection.options).toBeUndefined();
-      const modelOption = buildModelOptions(config, selection, {
-        defaultModelSelection: input.defaultModelSelection,
-      })[0]!;
+      const modelOption = buildModelOptions(
+        config,
+        selection,
+        undefined,
+        input.defaultModelSelection,
+      )[0]!;
       expect(modelOption.capabilities?.optionDescriptors?.[0]?.currentValue).toBe(effort);
       expect(modelOption.selection.options).toBeUndefined();
       expect(
@@ -288,9 +291,7 @@ describe("mobile model options", () => {
       "codex",
       "claudeAgent",
     ]);
-    expect(
-      buildModelOptions(config, selection, { providerInstanceId: selection.instanceId }),
-    ).toEqual(
+    expect(buildModelOptions(config, selection, selection.instanceId)).toEqual(
       buildModelOptions(config, selection).filter((option) => option.providerKey === "codex"),
     );
   });
@@ -317,80 +318,12 @@ describe("mobile model options", () => {
         providers: state === "missing" ? [] : [provider],
         settings: { providerInstances: { google_work: { driver: "antigravity" } } },
       } as unknown as ServerConfig;
-      const options = buildModelOptions(config, selection, {
-        providerInstanceId: selection.instanceId,
-      });
+      const options = buildModelOptions(config, selection, selection.instanceId);
       expect(options).toEqual(buildModelOptions(config, selection));
       expect(options).toHaveLength(1);
       expect(options[0]).toMatchObject({ selection, isUnavailable: true });
     },
   );
-
-  it("combines provider filtering and configured effort without changing catalog defaults", () => {
-    const capabilities = {
-      optionDescriptors: [
-        {
-          id: "reasoningEffort",
-          label: "Reasoning",
-          type: "select" as const,
-          currentValue: "medium",
-          options: [
-            { id: "medium", label: "Medium", isDefault: true },
-            { id: "high", label: "High" },
-          ],
-        },
-      ],
-    };
-    const provider = ProviderInstanceId.make("codex_personal");
-    const config = {
-      providers: [
-        {
-          instanceId: provider,
-          driver: "codex",
-          enabled: true,
-          installed: true,
-          auth: { status: "authenticated" },
-          models: [
-            { slug: "first", name: "First", isDefault: true, capabilities },
-            { slug: "configured", name: "Configured", capabilities },
-          ],
-        },
-        { instanceId: "codex_work", driver: "codex", models: [] },
-      ],
-    } as unknown as ServerConfig;
-    const defaultModelSelection = {
-      instanceId: ProviderInstanceId.make("codex_work"),
-      model: "configured",
-      options: [{ id: "reasoningEffort", value: "high" }],
-    };
-    const options = buildModelOptions(config, defaultModelSelection, {
-      providerInstanceId: provider,
-      defaultModelSelection,
-    });
-
-    expect(options.map((option) => option.providerKey)).toEqual([provider, provider]);
-    expect(options.map((option) => option.isDefault)).toEqual([true, false]);
-    expect(options[1]?.capabilities?.optionDescriptors?.[0]?.currentValue).toBe("high");
-    expect(options[1]?.selection.options).toBeUndefined();
-    expect(options[1]?.capabilities?.optionDescriptors?.[0]).toMatchObject({
-      options: [{ id: "medium", isDefault: true }, { id: "high" }],
-    });
-    expect(
-      buildModelOptions(null, defaultModelSelection, { providerInstanceId: provider }),
-    ).toEqual([]);
-    const explicitOptions = buildModelOptions(
-      config,
-      {
-        instanceId: provider,
-        model: "configured",
-        options: [{ id: "reasoningEffort", value: "medium" }],
-      },
-      { providerInstanceId: provider, defaultModelSelection },
-    );
-    expect(explicitOptions[1]?.selection.options).toEqual([
-      { id: "reasoningEffort", value: "medium" },
-    ]);
-  });
 
   it("rejects stored selections whose provider is not usable", () => {
     const config = {

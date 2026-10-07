@@ -9,12 +9,6 @@ import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as CheckpointCapture from "./CheckpointCaptureService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import * as CheckpointService from "./CheckpointService.ts";
-import type { OrdinaryFinalCheckpointCompletionBasisV1 } from "./EventSink.ts";
-import type {
-  OrdinaryCheckoutUseV1,
-  OrdinaryCheckoutExecutionRefV1,
-} from "./OrdinaryCheckoutOwnership.ts";
 
 export class RunFinalizationError extends Schema.TaggedError<RunFinalizationError>()(
   "RunFinalizationError",
@@ -50,13 +44,7 @@ export class RunFinalizationService extends Context.Service<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly scopeId: CheckpointScopeId;
-      readonly ordinaryCheckoutUse?: OrdinaryCheckoutUseV1;
-      readonly ordinaryCheckoutExecution?: OrdinaryCheckoutExecutionRefV1;
-      readonly ordinaryFinalCheckpointBasis?: OrdinaryFinalCheckpointCompletionBasisV1;
-    }) => Effect.Effect<
-      CheckpointCapture.CheckpointCaptureObservationV1,
-      RunFinalizationError | CheckpointService.OrdinaryCheckoutMutationError
-    >;
+    }) => Effect.Effect<void, RunFinalizationError>;
   }
 >()("t3/orchestration-v2/RunFinalizationService") {}
 
@@ -68,13 +56,11 @@ const make = Effect.gen(function* () {
   const finalize: RunFinalizationService["Service"]["finalize"] = Effect.fn(
     "RunFinalizationService.finalize",
   )(function* (input) {
-    const captured = yield* checkpointCapture
+    yield* checkpointCapture
       .execute(input)
       .pipe(
-        Effect.mapError((cause) =>
-          CheckpointService.isOrdinaryCheckoutMutationError(cause)
-            ? cause
-            : new RunFinalizationError({ ...input, operation: "capture-checkpoint", cause }),
+        Effect.mapError(
+          (cause) => new RunFinalizationError({ ...input, operation: "capture-checkpoint", cause }),
         ),
       );
     const projection = yield* projections
@@ -95,7 +81,6 @@ const make = Effect.gen(function* () {
           ),
         );
     }
-    return captured;
   });
   return RunFinalizationService.of({ finalize });
 });

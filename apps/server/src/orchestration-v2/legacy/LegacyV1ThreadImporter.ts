@@ -1,37 +1,27 @@
 import {
+  type RecordedAppThread as OrchestrationV2AppThread,
+  RecordedAppThreadJson as OrchestrationV2AppThreadJson,
+  type RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+} from "../RecordedTypes.ts";
+import {
   threadPullRequestKeysEqual,
   threadPullRequestsOf,
 } from "@t3tools/shared/threadPullRequests";
 import {
   ChatAttachment,
-  CommandId,
   OrchestrationMessageContext,
   DEFAULT_MODEL,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
   EventId,
-  IsoDateTime,
   MessageId,
   ModelSelection,
-  type OrchestrationV2AppThread,
-  OrchestrationV2AppThreadJson,
   type OrchestrationV2ConversationMessage,
-  type OrchestrationV2DomainEvent,
-  OrchestrationV2DomainEventJson,
-  type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
   ProjectId,
   ProviderInstanceId,
-  ProviderDriverKind,
-  ProviderInteractionMode,
-  RuntimeMode,
-  RuntimeIdentityAttestation,
   ThreadId,
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
   TurnItemId,
-  TurnId,
-  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -41,260 +31,12 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
 import * as EventSink from "../EventSink.ts";
-import * as IdAllocator from "../IdAllocator.ts";
-import {
-  qualifyProviderContinuation,
-  type ProviderContinuationQualification,
-} from "../ProviderContinuationQualification.ts";
 import { makeKeyedSerialExecutor } from "../KeyedSerialExecutor.ts";
 import { randomUuidV4 } from "../RandomUuid.ts";
-import { nativeCreationCanonicalJson, nativeCreationSha256 } from "../NativeCreationPreparation.ts";
-import {
-  ImportedApplicationAttachmentBirthV1,
-  type ImportedApplicationAttachmentQualificationV1,
-} from "../ImportedApplicationAttachmentInventory.ts";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
 const TRANSCRIPT_EVENT_BATCH_SIZE = 100;
-
-// These readers preserve stored V1 history only. Their output is never a V2
-// command, run, provider process, approval, or actionable plan.
-const historicalSourcePlan = Schema.Struct({
-  threadId: ThreadId,
-  planId: TrimmedNonEmptyString,
-});
-const historicalRuntimeMode = RuntimeMode.pipe(
-  Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE)),
-);
-const historicalInteractionMode = ProviderInteractionMode.pipe(
-  Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
-);
-const historicalMessageFields = {
-  role: Schema.Literals(["user", "assistant"]),
-  text: Schema.String,
-  attachments: Schema.optional(Schema.Array(ChatAttachment)),
-  context: Schema.optional(OrchestrationMessageContext),
-  turnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  streaming: Schema.Boolean,
-  createdAt: IsoDateTime,
-  updatedAt: IsoDateTime,
-};
-const historicalMessage = Schema.Struct({ id: MessageId, ...historicalMessageFields });
-const historicalProposedPlan = Schema.Struct({
-  id: TrimmedNonEmptyString,
-  turnId: Schema.NullOr(TurnId),
-  planMarkdown: TrimmedNonEmptyString,
-  implementedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  implementationThreadId: Schema.NullOr(ThreadId).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
-  createdAt: IsoDateTime,
-  updatedAt: IsoDateTime,
-});
-const historicalLatestTurn = Schema.Struct({
-  turnId: TurnId,
-  state: Schema.Literals(["running", "completed", "interrupted", "error"]),
-  requestedAt: IsoDateTime,
-  startedAt: Schema.NullOr(IsoDateTime),
-  completedAt: Schema.NullOr(IsoDateTime),
-  assistantMessageId: Schema.NullOr(MessageId),
-  sourceProposedPlan: Schema.optional(historicalSourcePlan),
-});
-export const HistoricalV1 = {
-  threadCreated: Schema.Struct({
-    threadId: ThreadId,
-    projectId: ProjectId,
-    title: TrimmedNonEmptyString,
-    modelSelection: ModelSelection,
-    runtimeMode: historicalRuntimeMode,
-    interactionMode: historicalInteractionMode,
-    branch: Schema.NullOr(TrimmedNonEmptyString),
-    worktreePath: Schema.NullOr(TrimmedNonEmptyString),
-    createdAt: IsoDateTime,
-    updatedAt: IsoDateTime,
-  }),
-  messageSent: Schema.Struct({
-    threadId: ThreadId,
-    messageId: MessageId,
-    ...historicalMessageFields,
-  }),
-  proposedPlan: historicalProposedPlan,
-  turnStartRequested: Schema.Struct({
-    threadId: ThreadId,
-    messageId: MessageId,
-    modelSelection: Schema.optional(ModelSelection),
-    titleSeed: Schema.optional(TrimmedNonEmptyString),
-    runtimeMode: historicalRuntimeMode,
-    interactionMode: historicalInteractionMode,
-    sourceProposedPlan: Schema.optional(historicalSourcePlan),
-    createdAt: IsoDateTime,
-  }),
-  latestTurn: historicalLatestTurn,
-  session: Schema.Struct({
-    threadId: ThreadId,
-    status: Schema.Literals([
-      "idle",
-      "starting",
-      "ready",
-      "running",
-      "interrupted",
-      "error",
-      "stopped",
-    ]),
-    providerName: Schema.NullOr(TrimmedNonEmptyString),
-    providerInstanceId: Schema.optional(ProviderInstanceId),
-    runtimeMode: historicalRuntimeMode,
-    activeTurnId: Schema.NullOr(TurnId),
-    lastError: Schema.NullOr(TrimmedNonEmptyString),
-    runtimeIdentity: Schema.optional(RuntimeIdentityAttestation),
-    updatedAt: IsoDateTime,
-  }),
-  thread: Schema.Struct({
-    id: ThreadId,
-    projectId: ProjectId,
-    title: TrimmedNonEmptyString,
-    modelSelection: ModelSelection,
-    runtimeMode: historicalRuntimeMode,
-    interactionMode: historicalInteractionMode,
-    branch: Schema.NullOr(TrimmedNonEmptyString),
-    worktreePath: Schema.NullOr(TrimmedNonEmptyString),
-    linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
-    pullRequests: Schema.Array(ThreadPullRequestLink).pipe(
-      Schema.withDecodingDefault(Effect.succeed([])),
-    ),
-    latestTurn: Schema.NullOr(historicalLatestTurn),
-    createdAt: IsoDateTime,
-    updatedAt: IsoDateTime,
-    archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-    settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])).pipe(
-      Schema.withDecodingDefault(Effect.succeed(null)),
-    ),
-    settledAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-    messages: Schema.Array(historicalMessage),
-    proposedPlans: Schema.Array(historicalProposedPlan).pipe(
-      Schema.withDecodingDefault(Effect.succeed([])),
-    ),
-  }),
-  historyImport: Schema.Struct({
-    type: Schema.Literal("thread.history.import"),
-    commandId: CommandId,
-    threadId: ThreadId,
-    messages: Schema.Array(
-      Schema.Struct({
-        messageId: MessageId,
-        role: Schema.Literals(["user", "assistant"]),
-        text: Schema.String,
-        createdAt: IsoDateTime,
-      }),
-    ).check(Schema.isNonEmpty()),
-  }),
-} as const;
-
-/** Historical source qualification is shared by the two importers, never a live-process proof. */
-export function qualifyLegacyV1ImportContinuation(input: {
-  readonly threadId: ThreadId;
-  readonly provenance: "legacy_row" | "native_import";
-  readonly sourceRow: ProviderSessionRuntime.ProviderSessionRuntime | null;
-  readonly source: "persisted_runtime_row" | "synthetic_import";
-  readonly supplied?: ProviderSessionRuntime.LegacyProviderContinuationInputV1;
-}): {
-  readonly qualification: ProviderContinuationQualification;
-  readonly evidence: ProviderSessionRuntime.LegacyProviderContinuationEvidenceV1 | null;
-} {
-  const unknown = (
-    reason: string,
-    evidence: ProviderSessionRuntime.LegacyProviderContinuationEvidenceV1 | null = null,
-  ) => ({ qualification: { type: "unknown", reason } as const, evidence });
-  const row = input.sourceRow;
-  if (row === null) return unknown("source_runtime_missing");
-  if (row.threadId !== input.threadId) return unknown("source_thread_mismatch");
-  const decodedDriver = Schema.decodeUnknownOption(ProviderDriverKind)(row.adapterKey);
-  const driver = row.providerName === row.adapterKey ? Option.getOrNull(decodedDriver) : null;
-  const nativeThreadId =
-    driver === "codex"
-      ? Option.getOrNull(
-          Option.map(
-            Schema.decodeUnknownOption(Schema.Struct({ threadId: TrimmedNonEmptyString }))(
-              row.resumeCursor,
-            ),
-            (cursor) => cursor.threadId,
-          ),
-        )
-      : Option.getOrNull(
-          Option.map(
-            Schema.decodeUnknownOption(Schema.Struct({ resume: TrimmedNonEmptyString }))(
-              row.resumeCursor,
-            ),
-            (cursor) => cursor.resume,
-          ),
-        );
-  const importedPayload = Schema.decodeUnknownOption(
-    Schema.Struct({
-      importOrigin: Schema.optional(Schema.String),
-      importedTranscripts: Schema.optional(Schema.Array(Schema.Unknown)),
-    }),
-  )(row.runtimePayload);
-  const source =
-    Option.isSome(importedPayload) &&
-    (importedPayload.value.importOrigin === "native_import" ||
-      importedPayload.value.importedTranscripts !== undefined)
-      ? "synthetic_import"
-      : input.source;
-  const stoppedProof = ProviderSessionRuntime.makeLegacyStoppedRuntimeProofV1({
-    sourceRow: row,
-    source,
-    driver,
-    nativeThreadId,
-  });
-  const supplied = input.supplied;
-  let evidence: ProviderSessionRuntime.LegacyProviderContinuationEvidenceV1;
-  try {
-    evidence = ProviderSessionRuntime.makeLegacyProviderContinuationEvidenceV1({
-      sourceRow: row,
-      provenance: input.provenance,
-      driver,
-      nativeThreadId,
-      continuationKey: supplied?.continuationKey ?? null,
-      historicalSourceIdentity: supplied?.historicalSourceIdentity ?? null,
-      stoppedProof,
-      accessibility: supplied?.accessibility ?? null,
-    });
-  } catch {
-    return unknown("historical_evidence_mismatch");
-  }
-  if (driver === null) return unknown("source_driver_unproved", evidence);
-  if (nativeThreadId === null) return unknown("native_reference_missing", evidence);
-  if (
-    supplied !== undefined &&
-    (supplied.driver !== driver || supplied.nativeThreadId !== nativeThreadId)
-  )
-    return unknown("historical_native_reference_mismatch", evidence);
-  if (supplied === undefined) return unknown("target_identity_missing", evidence);
-  if (
-    supplied.historicalSourceIdentity === null ||
-    supplied.historicalSourceIdentity.sourceHomeIdentity === null
-  )
-    return unknown("historical_source_identity_unproved", evidence);
-  return {
-    evidence,
-    qualification: qualifyProviderContinuation({
-      source: {
-        provenance: input.provenance,
-        threadId: row.threadId,
-        providerInstanceId: row.providerInstanceId,
-        driver,
-        nativeThreadId,
-        continuationKey: evidence.continuationKey,
-        status: row.status,
-      },
-      target: supplied.target,
-      ...(evidence.accessibility === null ? {} : { accessibility: evidence.accessibility }),
-      ...(stoppedProof === null ? {} : { stoppedProof }),
-    }),
-  };
-}
 
 interface LegacyThreadRow {
   readonly thread_id: string;
@@ -366,13 +108,6 @@ export class LegacyV1ThreadImportError extends Schema.TaggedError<LegacyV1Thread
 }
 
 export interface LegacyV1ThreadImporterShape {
-  readonly ensureApplicationAttachmentInventory: (input: {
-    readonly threadId: ThreadId;
-    readonly expectedBirth: ImportedApplicationAttachmentBirthV1;
-  }) => Effect.Effect<ImportedApplicationAttachmentQualificationV1, LegacyV1ThreadImportError>;
-  readonly readTranscriptSnapshotEvidence: (
-    threadId: ThreadId,
-  ) => Effect.Effect<EventSink.LegacyImportTranscriptSnapshotV1 | null, LegacyV1ThreadImportError>;
   readonly pendingThreadCount: Effect.Effect<number, LegacyV1ThreadImportError>;
   readonly reconcileShells: Effect.Effect<LegacyV1ImportSummary, LegacyV1ThreadImportError>;
   readonly ensureTranscript: (
@@ -614,65 +349,7 @@ function chunks<A>(items: ReadonlyArray<A>, size: number): Array<ReadonlyArray<A
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const eventSink = yield* EventSink.EventSinkV2;
-  const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
-  const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const transcriptImports = yield* makeKeyedSerialExecutor<ThreadId>();
-
-  const ensureApplicationAttachmentInventory: LegacyV1ThreadImporterShape["ensureApplicationAttachmentInventory"] =
-    (input) =>
-      eventSink
-        .withTransaction(eventSink.prepareImportedApplicationAttachmentInventory(input))
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new LegacyV1ThreadImportError({
-                operation: "prepare application attachment inventory for",
-                threadId: input.threadId,
-                cause,
-              }),
-          ),
-        );
-
-  const prepareApplicationAttachmentInventoryForThread = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const rows = yield* sql<{
-        readonly event_id: string;
-        readonly sequence: number;
-        readonly payload_json: string;
-      }>`
-      SELECT event_id, sequence, payload_json FROM orchestration_events
-      WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${threadId}
-        AND event_type = 'thread.created'
-      ORDER BY sequence DESC LIMIT 1
-    `;
-      const row = rows[0];
-      if (row === undefined) return;
-      const thread = decodeStoredThread(row.payload_json);
-      if (
-        Option.isNone(thread) ||
-        thread.value.id !== threadId ||
-        thread.value.historyOrigin !== "v1_import"
-      )
-        return;
-      const birth = Schema.decodeUnknownOption(ImportedApplicationAttachmentBirthV1)({
-        kind: "application_v2_thread_birth",
-        threadId,
-        eventId: row.event_id,
-        sequence: row.sequence,
-      });
-      if (Option.isNone(birth)) return;
-      yield* ensureApplicationAttachmentInventory({ threadId, expectedBirth: birth.value });
-    });
-
-  const prepareApplicationAttachmentInventories = Effect.gen(function* () {
-    const rows = yield* sql<{ readonly thread_id: string }>`
-      SELECT projection.thread_id FROM orchestration_v2_projection_threads AS projection
-      WHERE json_extract(projection.payload_json, '$.historyOrigin') = 'v1_import'
-      ORDER BY projection.thread_id
-    `;
-    for (const row of rows)
-      yield* prepareApplicationAttachmentInventoryForThread(ThreadId.make(row.thread_id));
-  });
 
   const listMessages = (threadId: ThreadId) =>
     sql<LegacyMessageRow>`
@@ -695,163 +372,6 @@ const make = Effect.gen(function* () {
         AND role IN ('user', 'assistant')
       ORDER BY created_at ASC, message_id ASC
     `;
-
-  const readTranscriptSnapshotEvidence: LegacyV1ThreadImporterShape["readTranscriptSnapshotEvidence"] =
-    (threadId) =>
-      sql
-        .withTransaction(
-          Effect.gen(function* () {
-            const markers = yield* sql<{
-              readonly source_updated_at: string;
-              readonly transcript_imported_at: string | null;
-              readonly imported_message_count: number;
-              readonly last_error: string | null;
-              readonly updated_at: string;
-              readonly project_id: string;
-              readonly payload_json: string;
-            }>`
-        SELECT marker.source_updated_at, marker.transcript_imported_at, marker.imported_message_count,
-          marker.last_error, source.updated_at, source.project_id, projection.payload_json
-        FROM orchestration_v2_legacy_imports AS marker
-        INNER JOIN projection_threads AS source ON source.thread_id = marker.thread_id
-        INNER JOIN orchestration_v2_projection_threads AS projection ON projection.thread_id = marker.thread_id
-        WHERE marker.thread_id = ${threadId}
-      `;
-            const marker = markers[0];
-            if (
-              marker === undefined ||
-              marker.transcript_imported_at === null ||
-              marker.last_error !== null ||
-              marker.source_updated_at !== marker.updated_at ||
-              Option.isNone(Schema.decodeUnknownOption(IsoDateTime)(marker.source_updated_at)) ||
-              Option.isNone(Schema.decodeUnknownOption(IsoDateTime)(marker.transcript_imported_at))
-            )
-              return null;
-            const projected = decodeStoredThread(marker.payload_json);
-            if (
-              Option.isNone(projected) ||
-              projected.value.id !== threadId ||
-              projected.value.projectId !== marker.project_id ||
-              projected.value.historyOrigin !== "v1_import"
-            )
-              return null;
-            const messages = yield* listMessages(threadId);
-            if (messages.length === 0 || messages.length !== marker.imported_message_count)
-              return null;
-            const rows = yield* sql<{
-              readonly event_id: string;
-              readonly sequence: number;
-              readonly application_event_version: number;
-              readonly aggregate_kind: string;
-              readonly event_type: string;
-              readonly command_id: string | null;
-              readonly occurred_at: string;
-              readonly payload_json: string;
-            }>`
-        SELECT event_id, sequence, application_event_version, aggregate_kind, event_type, command_id, occurred_at, payload_json
-        FROM orchestration_events
-        WHERE stream_id = ${threadId}
-          AND (event_id LIKE ${`${IMPORT_EVENT_PREFIX}:message:%`} OR event_id LIKE ${`${IMPORT_EVENT_PREFIX}:turn-item:%`})
-        ORDER BY sequence ASC
-      `;
-            const positions = yield* sql<{
-              readonly turn_item_id: string;
-              readonly ordinal: number;
-            }>`
-        SELECT turn_item_id, ordinal FROM orchestration_v2_turn_item_positions
-        WHERE thread_id = ${threadId} AND turn_item_id LIKE ${`${IMPORT_EVENT_PREFIX}:turn-item:%`}
-        ORDER BY ordinal ASC
-      `;
-            if (rows.length !== messages.length * 2 || positions.length !== messages.length)
-              return null;
-            const validated = yield* Effect.gen(function* () {
-              for (const message of messages) {
-                if (message.is_streaming !== 0 && message.is_streaming !== 1) return null;
-                if (
-                  message.attachments_json !== null &&
-                  Option.isNone(decodeAttachments(parseJson(message.attachments_json)))
-                )
-                  return null;
-              }
-              const expected = yield* Effect.try(() => messages.flatMap(messageEvents));
-              const encoded = yield* Effect.forEach(expected, (event) =>
-                Schema.encodeEffect(OrchestrationV2DomainEventJson)(event),
-              );
-              const expectedById = new Map(encoded.map((event) => [event.id, event]));
-              if (expectedById.size !== rows.length) return null;
-              const actual: unknown[] = [];
-              for (const row of rows) {
-                const event = expectedById.get(row.event_id);
-                if (
-                  event === undefined ||
-                  row.application_event_version !== 2 ||
-                  row.aggregate_kind !== "thread" ||
-                  row.event_type !== event.type ||
-                  row.command_id !== null ||
-                  !Number.isSafeInteger(row.sequence) ||
-                  row.sequence < 1 ||
-                  row.occurred_at !== event.occurredAt
-                )
-                  return null;
-                const payload = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
-                  row.payload_json,
-                );
-                if (
-                  nativeCreationCanonicalJson(payload) !==
-                  nativeCreationCanonicalJson(event.payload)
-                )
-                  return null;
-                actual.push({
-                  id: event.id,
-                  type: event.type,
-                  threadId,
-                  occurredAt: event.occurredAt,
-                  payload: event.payload,
-                });
-              }
-              for (const [index, message] of messages.entries()) {
-                if (
-                  positions[index]?.turn_item_id !==
-                    `${IMPORT_EVENT_PREFIX}:turn-item:${message.message_id}` ||
-                  positions[index]?.ordinal !== message.ordinal
-                )
-                  return null;
-              }
-              // Shell previews precede hydration in the event log. Source order is proved by item ordinals.
-              return {
-                version: 1,
-                threadId,
-                policy: "legacy_user_assistant_rows_v1",
-                sourceUpdatedAt: marker.source_updated_at,
-                messageCount: messages.length,
-                sourceRowsSha256: nativeCreationSha256(
-                  nativeCreationCanonicalJson({
-                    threadId,
-                    projectId: marker.project_id,
-                    sourceUpdatedAt: marker.source_updated_at,
-                    messages,
-                  }),
-                ),
-                eventsSha256: nativeCreationSha256(nativeCreationCanonicalJson(actual)),
-                eventBasis: rows.map((row) => ({
-                  eventId: EventId.make(row.event_id),
-                  sequence: row.sequence,
-                })),
-              } satisfies EventSink.LegacyImportTranscriptSnapshotV1;
-            }).pipe(Effect.option);
-            return Option.getOrNull(validated) ?? null;
-          }),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new LegacyV1ThreadImportError({
-                operation: "inspect transcript snapshot for",
-                threadId,
-                cause,
-              }),
-          ),
-        );
 
   const listShellMessages = (threadId: ThreadId) =>
     Effect.gen(function* () {
@@ -1089,89 +609,8 @@ const make = Effect.gen(function* () {
           payload: thread,
         },
       ];
-      yield* eventSink.withTransaction(
+      yield* sql.withTransaction(
         Effect.gen(function* () {
-          const sourceRow = Option.getOrNull(
-            yield* runtimes.getByThreadId({ threadId: thread.id }),
-          );
-          const supplied = (yield* ProviderSessionRuntime.LegacyProviderContinuationInputsV1).get(
-            thread.id,
-          );
-          let continuation = qualifyLegacyV1ImportContinuation({
-            threadId: thread.id,
-            provenance: "legacy_row",
-            sourceRow,
-            source: "persisted_runtime_row",
-            ...(supplied === undefined ? {} : { supplied }),
-          });
-          if (continuation.qualification.type === "qualified" && supplied !== undefined) {
-            if (thread.providerInstanceId !== supplied.target.providerInstanceId) {
-              continuation = {
-                ...continuation,
-                qualification: { type: "unknown", reason: "shell_target_instance_mismatch" },
-              };
-            } else {
-              const providerThreadId = idAllocator.derive.providerThread({
-                driver: supplied.target.driver,
-                nativeThreadId: continuation.qualification.nativeThreadId,
-                providerInstanceId: supplied.target.providerInstanceId,
-              });
-              const owners = yield* sql<{ readonly thread_id: string | null }>`
-                SELECT thread_id FROM orchestration_v2_projection_provider_threads
-                WHERE provider_thread_id = ${providerThreadId}
-              `;
-              if (owners.some((owner) => owner.thread_id !== thread.id)) {
-                continuation = {
-                  ...continuation,
-                  qualification: { type: "unknown", reason: "native_owner_conflict" },
-                };
-              } else {
-                const providerThread: OrchestrationV2ProviderThread = {
-                  id: providerThreadId,
-                  driver: supplied.target.driver,
-                  providerInstanceId: supplied.target.providerInstanceId,
-                  providerSessionId: null,
-                  appThreadId: thread.id,
-                  ownerNodeId: null,
-                  nativeThreadRef: {
-                    driver: supplied.target.driver,
-                    nativeId: continuation.qualification.nativeThreadId,
-                    strength: "strong",
-                  },
-                  nativeConversationHeadRef: null,
-                  status: "not_loaded",
-                  firstRunOrdinal: null,
-                  lastRunOrdinal: null,
-                  handoffIds: [],
-                  forkedFrom: null,
-                  pendingBackgroundTasks: [],
-                  createdAt: thread.createdAt,
-                  updatedAt: thread.updatedAt,
-                };
-                const qualifiedThread = { ...thread, activeProviderThreadId: providerThreadId };
-                for (const [index, event] of events.entries()) {
-                  if (event.type === "thread.created" || event.type === "thread.metadata-updated") {
-                    events[index] = { ...event, payload: qualifiedThread };
-                  }
-                }
-                events.push({
-                  id: EventId.make(`${IMPORT_EVENT_PREFIX}:provider-thread:${thread.id}`),
-                  type: "provider-thread.updated",
-                  threadId: thread.id,
-                  driver: providerThread.driver,
-                  providerInstanceId: providerThread.providerInstanceId,
-                  occurredAt: thread.updatedAt,
-                  payload: providerThread,
-                });
-              }
-            }
-          }
-          yield* eventSink.recordLegacyContinuationDisposition({
-            threadId: thread.id,
-            provenance: "legacy_row",
-            ...continuation,
-            importedAt: now,
-          });
           yield* Effect.forEach(
             previews,
             (message) =>
@@ -1210,15 +649,11 @@ const make = Effect.gen(function* () {
             )
             ON CONFLICT(thread_id) DO NOTHING
           `;
-          yield* prepareApplicationAttachmentInventoryForThread(thread.id);
         }),
       );
       importedThreadCount += 1;
       importedMessageCount += previews.length;
     }
-    // Inventory adoption is independent of transcript markers: answer-only,
-    // empty and already hydrated imports still need their materialized baseline.
-    yield* prepareApplicationAttachmentInventories;
     return { importedThreadCount, importedMessageCount };
   });
 
@@ -1252,10 +687,8 @@ const make = Effect.gen(function* () {
   );
 
   // Threads whose transcript import this process has already confirmed.
-  // Only a committed `transcript_imported_at` confirms the cache. A caller's
-  // outer import transaction can still roll back after hydration returns.
-  // The marker is never reset to NULL, so confirmed answers stay valid;
-  // ensureTranscript runs on most
+  // `transcript_imported_at` is never reset to NULL, so a positive answer
+  // stays valid for the process lifetime; ensureTranscript runs on most
   // thread reads and command dispatches, so skipping the lock + lookup here
   // keeps that path off the database entirely after first confirmation.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
@@ -1263,26 +696,22 @@ const make = Effect.gen(function* () {
   const ensureTranscriptBase = (threadId: ThreadId) =>
     transcriptImports.withLock(
       threadId,
-      eventSink.withTransaction(
-        Effect.gen(function* () {
-          const imports = yield* sql<LegacyImportRow>`
+      Effect.gen(function* () {
+        const imports = yield* sql<LegacyImportRow>`
           SELECT thread_id, transcript_imported_at
           FROM orchestration_v2_legacy_imports
           WHERE thread_id = ${threadId}
           LIMIT 1
         `;
-          const imported = imports[0];
-          if (imported === undefined || imported.transcript_imported_at !== null) {
-            if (imported !== undefined) {
-              yield* prepareApplicationAttachmentInventoryForThread(threadId);
-              yield* eventSink.onCommit(
-                Effect.sync(() => void confirmedTranscriptThreadIds.add(threadId)),
-              );
-            }
-            return { importedThreadCount: 0, importedMessageCount: 0 };
+        const imported = imports[0];
+        if (imported === undefined || imported.transcript_imported_at !== null) {
+          if (imported !== undefined) {
+            confirmedTranscriptThreadIds.add(threadId);
           }
-          const messages = yield* listMessages(threadId);
-          const existingRows = yield* sql<{ readonly event_id: string }>`
+          return { importedThreadCount: 0, importedMessageCount: 0 };
+        }
+        const messages = yield* listMessages(threadId);
+        const existingRows = yield* sql<{ readonly event_id: string }>`
           SELECT event_id
           FROM orchestration_events
           WHERE application_event_version = 2
@@ -1290,15 +719,15 @@ const make = Effect.gen(function* () {
             AND stream_id = ${threadId}
             AND event_id LIKE ${`${IMPORT_EVENT_PREFIX}:message:%`}
         `;
-          const existing = new Set(existingRows.map((row) => row.event_id));
-          const missing = messages.filter(
-            (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:message:${message.message_id}`),
-          );
-          for (const batch of chunks(missing, TRANSCRIPT_EVENT_BATCH_SIZE / 2)) {
-            yield* Effect.forEach(
-              batch,
-              (message) =>
-                sql`
+        const existing = new Set(existingRows.map((row) => row.event_id));
+        const missing = messages.filter(
+          (message) => !existing.has(`${IMPORT_EVENT_PREFIX}:message:${message.message_id}`),
+        );
+        for (const batch of chunks(missing, TRANSCRIPT_EVENT_BATCH_SIZE / 2)) {
+          yield* Effect.forEach(
+            batch,
+            (message) =>
+              sql`
                 INSERT INTO orchestration_v2_turn_item_positions (
                   thread_id,
                   turn_item_id,
@@ -1311,13 +740,13 @@ const make = Effect.gen(function* () {
                 )
                 ON CONFLICT(thread_id, turn_item_id) DO NOTHING
               `,
-              { discard: true },
-            );
-            yield* eventSink.write({ events: batch.flatMap(messageEvents) });
-            yield* Effect.yieldNow;
-          }
-          const now = DateTime.formatIso(yield* DateTime.now);
-          yield* sql`
+            { discard: true },
+          );
+          yield* eventSink.write({ events: batch.flatMap(messageEvents) });
+          yield* Effect.yieldNow;
+        }
+        const now = DateTime.formatIso(yield* DateTime.now);
+        yield* sql`
           UPDATE orchestration_v2_legacy_imports
           SET
             transcript_imported_at = ${now},
@@ -1325,16 +754,12 @@ const make = Effect.gen(function* () {
             last_error = NULL
           WHERE thread_id = ${threadId}
         `;
-          yield* prepareApplicationAttachmentInventoryForThread(threadId);
-          yield* eventSink.onCommit(
-            Effect.sync(() => void confirmedTranscriptThreadIds.add(threadId)),
-          );
-          return {
-            importedThreadCount: 1,
-            importedMessageCount: missing.length,
-          };
-        }),
-      ),
+        confirmedTranscriptThreadIds.add(threadId);
+        return {
+          importedThreadCount: 1,
+          importedMessageCount: missing.length,
+        };
+      }),
     );
 
   const ensureTranscript = (threadId: ThreadId) =>
@@ -1352,7 +777,6 @@ const make = Effect.gen(function* () {
         );
 
   const importPendingTranscripts = Effect.gen(function* () {
-    yield* prepareApplicationAttachmentInventories;
     const rows = yield* sql<LegacyImportRow>`
       SELECT thread_id, transcript_imported_at
       FROM orchestration_v2_legacy_imports
@@ -1397,8 +821,6 @@ const make = Effect.gen(function* () {
   );
 
   return LegacyV1ThreadImporter.of({
-    ensureApplicationAttachmentInventory,
-    readTranscriptSnapshotEvidence,
     pendingThreadCount,
     reconcileShells,
     ensureTranscript,
@@ -1410,6 +832,4 @@ export const layer: Layer.Layer<
   LegacyV1ThreadImporter,
   never,
   EventSink.EventSinkV2 | SqlClient.SqlClient
-> = Layer.effect(LegacyV1ThreadImporter, make).pipe(
-  Layer.provide(Layer.merge(ProviderSessionRuntime.layer, IdAllocator.layer)),
-);
+> = Layer.effect(LegacyV1ThreadImporter, make);

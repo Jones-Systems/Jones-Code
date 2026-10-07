@@ -130,26 +130,9 @@ function selectOpenCodeRuntimeAdapter(input: {
   const pick = <PE>(probed: Effect.Effect<ProbedOpenCode | undefined, PE>) =>
     byOpenCodeRuntime(probed, { v1: Effect.succeed(input.v1), v2: Effect.succeed(input.v2) });
   const hot = pick(Effect.map(input.probe.lastSuccess, Option.getOrUndefined));
-  const v1Delivery = input.v1.declaredHandoffDelivery;
-  const v2Delivery = input.v2.declaredHandoffDelivery;
-  // Review can use shared declarations without probing which native runtime is installed.
-  const declaredHandoffDelivery =
-    v1Delivery !== undefined &&
-    v2Delivery !== undefined &&
-    v1Delivery.canConsumeHandoffSummaries === v2Delivery.canConsumeHandoffSummaries &&
-    v1Delivery.supportsFullThreadHandoff === v2Delivery.supportsFullThreadHandoff &&
-    v1Delivery.supportsProviderSwitchingViaHandoff ===
-      v2Delivery.supportsProviderSwitchingViaHandoff
-      ? Object.freeze({
-          canConsumeHandoffSummaries: v1Delivery.canConsumeHandoffSummaries,
-          supportsFullThreadHandoff: v1Delivery.supportsFullThreadHandoff,
-          supportsProviderSwitchingViaHandoff: v1Delivery.supportsProviderSwitchingViaHandoff,
-        })
-      : undefined;
   return {
     instanceId: input.v1.instanceId,
     driver: DRIVER_KIND,
-    declaredHandoffDelivery,
     getCapabilities: () => Effect.flatMap(hot, (adapter) => adapter.getCapabilities()),
     planSelectionTransition: (transition) =>
       Effect.flatMap(hot, (adapter) => adapter.planSelectionTransition(transition)),

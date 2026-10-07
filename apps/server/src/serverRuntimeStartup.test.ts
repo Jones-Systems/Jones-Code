@@ -1,28 +1,15 @@
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
-  CommandId,
   DEFAULT_MODEL,
   ProjectId,
   ProviderInstanceId,
-  ThreadId,
-  type Project,
-  type ModelSelection,
-  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Crypto from "effect/Crypto";
-import * as Layer from "effect/Layer";
-import * as PlatformError from "effect/PlatformError";
-import * as ProjectService from "./project/ProjectService.ts";
-import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
-import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
-import * as ServerSettings from "./serverSettings.ts";
 
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
@@ -44,11 +31,20 @@ it.effect("starts without scanning or rebuilding projection history", () =>
     const result = yield* ServerRuntimeStartup.runOrderedV2StartupPhases({
       importLegacyShells: record("import"),
       recover: record("recover").pipe(Effect.as({ closedRequests: 2 })),
+      recoverDelegatedTasks: record("delegated"),
       startEffectWorker: record("worker"),
       autoBootstrap: record("bootstrap").pipe(Effect.as({ projectId: "project-1" })),
     });
 
-    assert.deepEqual(yield* Ref.get(calls), ["import", "recover", "worker", "bootstrap"]);
+    // Delegated recovery reads the runs recovery terminalizes, and settles them
+    // before the worker runs restart continuations that would otherwise race it.
+    assert.deepEqual(yield* Ref.get(calls), [
+      "import",
+      "recover",
+      "delegated",
+      "worker",
+      "bootstrap",
+    ]);
     assert.deepEqual(result, {
       recovery: { closedRequests: 2 },
       bootstrap: { projectId: "project-1" },
@@ -198,221 +194,3 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
     assert.deepStrictEqual(pulled, ["/inherited"]);
   }),
 );
-
-const bootstrapProject = {
-  id: ProjectId.make("startup-project"),
-  title: "Startup project",
-  workspaceRoot: "/fixture/startup-project",
-  defaultModelSelection: null,
-  scripts: [],
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z",
-  deletedAt: null,
-} satisfies Project;
-const bootstrapThreadId = ThreadId.make("startup-thread");
-const runBootstrap = (input: {
-  readonly bootstrap?: ProjectService.ProjectService["Service"]["bootstrap"];
-  readonly threads?: ReadonlyArray<OrchestrationV2ThreadShell>;
-  readonly launch?: ThreadLaunch.ThreadLaunchService["Service"]["launch"];
-  readonly settings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
-}) =>
-  ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
-    Effect.provideService(ServerConfig.ServerConfig, {
-      cwd: bootstrapProject.workspaceRoot,
-      autoBootstrapProjectFromCwd: true,
-    } as ServerConfig.ServerConfig["Service"]),
-    Effect.provide(
-      Layer.mock(ProjectService.ProjectService)({
-        bootstrap:
-          input.bootstrap ?? (() => Effect.succeed({ project: bootstrapProject, created: false })),
-      }),
-    ),
-    Effect.provide(
-      Layer.mock(ThreadManagement.ThreadManagementService)({
-        getShellSnapshot: () => Effect.succeed({ threads: input.threads ?? [] } as never),
-      }),
-    ),
-    Effect.provide(
-      Layer.mock(ThreadLaunch.ThreadLaunchService)({
-        launch:
-          input.launch ??
-          (() =>
-            Effect.succeed({
-              threadId: bootstrapThreadId,
-              projection: {} as never,
-              resumed: false,
-            })),
-      }),
-    ),
-    Effect.provide(
-      input.settings === undefined
-        ? ServerSettings.layerTest()
-        : Layer.mock(ServerSettings.ServerSettingsService)(input.settings),
-    ),
-  );
-
-it.layer(NodeServices.layer)("V2 bootstrap targets", (it) => {
-  it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and thread ids", () =>
-    Effect.gen(function* () {
-      let launches = 0;
-      const shell = (id: string, projectId: ProjectId, relationshipToParent: string | null) =>
-        ({
-          id: ThreadId.make(id),
-          projectId,
-          lineage: { relationshipToParent },
-        }) as OrchestrationV2ThreadShell;
-      const result = yield* runBootstrap({
-        threads: [
-          shell("other-project", ProjectId.make("other"), null),
-          shell("delegated", bootstrapProject.id, "subagent"),
-          shell(bootstrapThreadId, bootstrapProject.id, null),
-        ],
-        launch: () =>
-          Effect.sync(() => {
-            launches += 1;
-            return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
-          }),
-      });
-      assert.deepEqual(result, { bootstrapProjectId: bootstrapProject.id, bootstrapThreadId });
-      assert.equal(launches, 0);
-    }),
-  );
-
-  it.effect.each([
-    {
-      existing: false,
-      machineModel: null,
-      projectModel: null,
-      machineMode: "full-access",
-      projectMode: null,
-    },
-    {
-      existing: false,
-      machineModel: "claude-sonnet-4-6",
-      projectModel: null,
-      machineMode: "approval-required",
-      projectMode: null,
-    },
-    {
-      existing: true,
-      machineModel: "claude-sonnet-4-6",
-      projectModel: null,
-      machineMode: "auto",
-      projectMode: null,
-    },
-    {
-      existing: true,
-      machineModel: "claude-sonnet-4-6",
-      projectModel: "gpt-5.4",
-      machineMode: "full-access",
-      projectMode: "auto-accept-edits",
-    },
-  ] as const)("auto-bootstrap model and permissions precedence: %j", (options) =>
-    Effect.gen(function* () {
-      const machineSelection: ModelSelection | null =
-        options.machineModel === null
-          ? null
-          : {
-              instanceId: ProviderInstanceId.make("claude-code"),
-              model: options.machineModel,
-            };
-      const projectSelection: ModelSelection | null =
-        options.projectModel === null
-          ? null
-          : {
-              instanceId: ProviderInstanceId.make("codex"),
-              model: options.projectModel,
-            };
-      const project = { ...bootstrapProject, defaultModelSelection: projectSelection };
-      const settings = {
-        ...DEFAULT_SERVER_SETTINGS,
-        defaultModelSelection: machineSelection,
-        defaultRuntimeMode: options.machineMode,
-        projectSettingsOverrides: {
-          [project.id]: {
-            ...(options.projectMode === null ? {} : { defaultRuntimeMode: options.projectMode }),
-          },
-        },
-      };
-      let launch: ThreadLaunch.ThreadLaunchInput | undefined;
-      const result = yield* runBootstrap({
-        bootstrap: () => Effect.succeed({ project, created: !options.existing }),
-        settings: { getSettings: Effect.succeed(settings) },
-        launch: (input) =>
-          Effect.sync(() => {
-            launch = input;
-            return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
-          }),
-      });
-      assert.deepEqual(result, { bootstrapProjectId: project.id, bootstrapThreadId });
-      assert.deepEqual(
-        launch?.modelSelection,
-        projectSelection ??
-          machineSelection ?? {
-            instanceId: ProviderInstanceId.make("codex"),
-            model: DEFAULT_MODEL,
-          },
-      );
-      assert.equal(launch?.runtimeMode, options.projectMode ?? options.machineMode);
-      assert.equal(launch?.workspaceStrategy.type, "root");
-      assert.equal(launch?.createdBy, "system");
-      assert.equal(launch?.creationSource, "server");
-    }),
-  );
-
-  it.effect(
-    "resolveAutoBootstrapWelcomeTargets preserves a project created before thread failure",
-    () =>
-      Effect.gen(function* () {
-        let project: Project | undefined;
-        const failure = new ThreadLaunch.ThreadLaunchError({
-          operation: "resolve-project",
-          commandId: CommandId.make("launch-failed"),
-          projectId: bootstrapProject.id,
-          cause: "Thread launch unavailable",
-        });
-        const error = yield* runBootstrap({
-          bootstrap: () =>
-            Effect.sync(() => {
-              project = bootstrapProject;
-              return { project, created: true };
-            }),
-          launch: () => Effect.fail(failure),
-        }).pipe(Effect.flip);
-        assert.strictEqual(error, failure);
-        assert.strictEqual(project, bootstrapProject);
-      }),
-  );
-
-  it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation failures", () =>
-    Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto;
-      const failure = PlatformError.systemError({
-        _tag: "Unknown",
-        module: "Crypto",
-        method: "randomUUIDv4",
-        description: "UUID generation unavailable",
-      });
-      let created = 0;
-      let launched = 0;
-      const error = yield* runBootstrap({
-        bootstrap: () =>
-          Effect.sync(() => {
-            created += 1;
-            return { project: bootstrapProject, created: true };
-          }),
-        launch: () =>
-          Effect.sync(() => {
-            launched += 1;
-            return { threadId: bootstrapThreadId, projection: {} as never, resumed: false };
-          }),
-      }).pipe(
-        Effect.provideService(Crypto.Crypto, { ...crypto, randomUUIDv4: Effect.fail(failure) }),
-        Effect.flip,
-      );
-      assert.strictEqual(error, failure);
-      assert.equal(created, 0);
-      assert.equal(launched, 0);
-    }),
-  );
-});

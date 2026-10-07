@@ -13,7 +13,7 @@ export function resolveUserMessageIntentBadge(
     case "queued_turn":
       return {
         label: "queued",
-        accessibilityLabel: "Queued behind the active turn",
+        accessibilityLabel: "Queued for a safe tool boundary or the next turn",
         tone: "queued",
       };
     case "steer":

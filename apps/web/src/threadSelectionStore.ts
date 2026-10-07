@@ -18,8 +18,8 @@ interface ThreadSelectionStore extends ThreadSelectionState {
   toggleThread: (threadKey: string) => void;
   /**
    * Select a range of threads (Shift+Click).
-   * Requires scoped thread keys in their visible rendered order so hidden
-   * and collapsed rows do not participate in the range.
+   * Requires the ordered list of scoped thread keys within the same project
+   * so the store can compute which threads fall between anchor and target.
    */
   rangeSelectTo: (threadKey: string, orderedThreadKeys: readonly string[]) => void;
   /** Clear all selection state. */

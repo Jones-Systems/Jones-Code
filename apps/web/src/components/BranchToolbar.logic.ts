@@ -16,7 +16,8 @@ export {
 
 export interface EnvironmentOption {
   environmentId: EnvironmentId;
-  projectId: ProjectId;
+  /** Null when the machine's "No project" folder is not created yet. */
+  projectId: ProjectId | null;
   label: string;
   isPrimary: boolean;
   machine: EnvironmentMachineKind;
@@ -334,43 +335,20 @@ export function shouldIncludeBranchPickerItem(input: {
   );
 }
 
-export type BranchContextChangeResult =
-  | { readonly status: "complete"; readonly branch: string }
-  | { readonly status: "blocked"; readonly reason: string }
-  | { readonly status: "stale"; readonly checkoutCompleted: boolean }
-  | { readonly status: "failed" | "partial"; readonly error: unknown };
-
-// This orders this client's mutations; another device can still start a runtime before checkout.
-export async function runBranchContextChange(input: {
-  readonly branch: string;
-  readonly confirmStopped: () => Promise<{
-    readonly confirmed: boolean;
-    readonly reason: string | null;
-  }>;
-  readonly isCurrent: () => boolean;
-  readonly checkout?: () => Promise<string>;
-  readonly onCheckout: (branch: string) => void;
-  readonly updateMetadata: (branch: string) => Promise<void>;
-}): Promise<BranchContextChangeResult> {
-  let checkoutCompleted = false;
-  try {
-    if (!input.isCurrent()) return { status: "stale", checkoutCompleted };
-    const stop = await input.confirmStopped();
-    if (!input.isCurrent()) return { status: "stale", checkoutCompleted };
-    if (!stop.confirmed) {
-      return {
-        status: "blocked",
-        reason: stop.reason ?? "The current runtime has not been confirmed stopped.",
-      };
-    }
-    const branch = input.checkout ? await input.checkout() : input.branch;
-    checkoutCompleted = input.checkout !== undefined;
-    if (!input.isCurrent()) return { status: "stale", checkoutCompleted };
-    if (checkoutCompleted) input.onCheckout(branch);
-    await input.updateMetadata(branch);
-    if (!input.isCurrent()) return { status: "stale", checkoutCompleted };
-    return { status: "complete", branch };
-  } catch (error) {
-    return { status: checkoutCompleted ? "partial" : "failed", error };
+export function resolveAutomaticWorktreeBaseBranch(input: {
+  effectiveEnvMode: EnvMode;
+  envLocked: boolean;
+  activeWorktreePath: string | null;
+  activeThreadBranch: string | null;
+  worktreeBaseBranchCandidate: string | null;
+}): string | null {
+  if (
+    input.envLocked ||
+    input.effectiveEnvMode !== "worktree" ||
+    input.activeWorktreePath !== null ||
+    input.activeThreadBranch !== null
+  ) {
+    return null;
   }
+  return input.worktreeBaseBranchCandidate;
 }

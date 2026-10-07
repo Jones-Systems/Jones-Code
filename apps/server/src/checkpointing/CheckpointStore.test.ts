@@ -5,11 +5,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ThreadId, type VcsError } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
-import * as Fiber from "effect/Fiber";
-import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -20,7 +15,6 @@ import { describe, expect } from "vite-plus/test";
 import { checkpointRefForThreadTurn } from "./Utils.ts";
 import { parseTurnDiffFilesFromNumstat } from "./Diffs.ts";
 import * as CheckpointStore from "./CheckpointStore.ts";
-import * as VcsDriver from "../vcs/VcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ServerConfig from "../config.ts";
@@ -132,34 +126,6 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
     );
   });
 
-  describe("captureCheckpoint", () => {
-    for (const state of ["clean", "dirty"] as const) {
-      it.effect(`refuses ${state} primary checkouts without writing checkpoint refs`, () =>
-        Effect.gen(function* () {
-          const checkpointStore = yield* CheckpointStore.CheckpointStore;
-          const cwd = yield* makeTmpDir(`checkpoint-store-primary-${state}-`);
-          yield* initRepoWithCommit(cwd);
-          if (state === "dirty") {
-            yield* writeTextFile(NodePath.join(cwd, "README.md"), "dirty primary checkout\n");
-          }
-          const checkpointRef = checkpointRefForThreadTurn(
-            ThreadId.make(`thread-primary-checkout-${state}`),
-            0,
-          );
-          const result = yield* checkpointStore
-            .captureCheckpoint({ cwd, checkpointRef })
-            .pipe(Effect.result);
-
-          expect(result).toMatchObject({
-            _tag: "Failure",
-            failure: { _tag: "VcsPrimaryCheckoutCheckpointError" },
-          });
-          expect(yield* checkpointStore.hasCheckpointRef({ cwd, checkpointRef })).toBe(false);
-        }),
-      );
-    }
-  });
-
   it.effect("detects a nested workspace without its own .git entry", () =>
     Effect.gen(function* () {
       const tmp = yield* makeTmpDir();
@@ -171,6 +137,46 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
       expect(yield* checkpointStore.isGitRepository(nested)).toBe(true);
     }),
   );
+  describe("captureCheckpoint", () => {
+    it.effect.each(["clean", "dirty"] as const)(
+      "refuses %s primary checkouts without writing checkpoint refs",
+      (state) =>
+        Effect.gen(function* () {
+          const checkpointStore = yield* CheckpointStore.CheckpointStore;
+          const cwd = yield* makeTmpDir(`checkpoint-store-primary-${state}-`);
+          yield* initRepoWithCommit(cwd);
+          if (state === "dirty") {
+            yield* writeTextFile(NodePath.join(cwd, "README.md"), "dirty primary checkout\n");
+          }
+          const checkpointRef = checkpointRefForThreadTurn(
+            ThreadId.make(`thread-primary-checkout-${state}`),
+            0,
+          );
+          const fileSystem = yield* FileSystem.FileSystem;
+          yield* git(cwd, ["checkout", "-b", "primary-safety-test"]);
+          const originalIndex = yield* fileSystem.readFile(NodePath.join(cwd, ".git", "index"));
+          const originalObjects = yield* git(cwd, ["count-objects", "-v"]);
+          const originalMetadata = yield* fileSystem.readDirectory(NodePath.join(cwd, ".git"));
+          const result = yield* checkpointStore
+            .captureCheckpoint({ cwd, checkpointRef })
+            .pipe(Effect.result);
+
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "VcsPrimaryCheckoutCheckpointError" },
+          });
+          expect(yield* checkpointStore.hasCheckpointRef({ cwd, checkpointRef })).toBe(false);
+          expect(yield* fileSystem.readFile(NodePath.join(cwd, ".git", "index"))).toEqual(
+            originalIndex,
+          );
+          expect(yield* git(cwd, ["count-objects", "-v"])).toBe(originalObjects);
+          expect(yield* fileSystem.readDirectory(NodePath.join(cwd, ".git"))).toEqual(
+            originalMetadata,
+          );
+        }),
+    );
+  });
+
   describe("diffCheckpoints", () => {
     it.effect("returns full oversized checkpoint diffs without truncation", () =>
       Effect.gen(function* () {
@@ -493,95 +499,3 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
     );
   });
 });
-
-class CheckpointMutationGuard extends Context.Service<
-  CheckpointMutationGuard,
-  { readonly current: boolean }
->()("t3/checkpointing/CheckpointStore.test/CheckpointMutationGuard") {}
-
-it.effect(
-  "preserves mutation guard errors and requirements across checkpoint driver resolution",
-  () =>
-    Effect.gen(function* () {
-      const resolving = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const stale = { _tag: "StaleCheckpointMutation" } as const;
-      let checks = 0;
-      const driver = yield* VcsDriver.VcsDriver;
-      const store = yield* CheckpointStore.make.pipe(
-        Effect.provide(
-          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
-            resolve: () =>
-              Deferred.succeed(resolving, undefined).pipe(
-                Effect.andThen(Deferred.await(release)),
-                Effect.as({
-                  kind: "git" as const,
-                  driver,
-                  repository: {
-                    kind: "git" as const,
-                    rootPath: "/repo",
-                    metadataPath: "/repo/.git",
-                    freshness: {
-                      source: "live-local" as const,
-                      observedAt: DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
-                      expiresAt: Option.none(),
-                    },
-                  },
-                }),
-              ),
-          }),
-        ),
-      );
-      const guard = Effect.gen(function* () {
-        checks++;
-        if (!(yield* CheckpointMutationGuard).current) return yield* Effect.fail(stale);
-      });
-      const input = {
-        cwd: "/repo",
-        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("guard"), 1),
-        revalidateMutation: guard,
-      };
-      const fiber = yield* store
-        .restoreCheckpoint(input)
-        .pipe(
-          Effect.provideService(CheckpointMutationGuard, { current: false }),
-          Effect.flip,
-          Effect.forkChild,
-        );
-      yield* Deferred.await(resolving);
-      expect(checks).toBe(0);
-      yield* Deferred.succeed(release, undefined);
-      expect(yield* Fiber.join(fiber)).toBe(stale);
-      expect(
-        yield* store
-          .deleteCheckpointRefs({
-            cwd: input.cwd,
-            checkpointRefs: [input.checkpointRef],
-            revalidateMutation: guard,
-          })
-          .pipe(Effect.provideService(CheckpointMutationGuard, { current: false }), Effect.flip),
-      ).toBe(stale);
-      expect(checks).toBe(2);
-    }).pipe(
-      Effect.provide(
-        Layer.mock(VcsDriver.VcsDriver)({
-          capabilities: {
-            kind: "git",
-            supportsWorktrees: true,
-            supportsBookmarks: false,
-            supportsAtomicSnapshot: false,
-            supportsPushDefaultRemote: true,
-            ignoreClassifier: "native",
-          },
-          checkpoints: {
-            captureCheckpoint: () => Effect.void,
-            hasCheckpointRef: () => Effect.succeed(true),
-            diffCheckpoints: () => Effect.succeed(""),
-            restoreCheckpoint: (input) =>
-              (input.revalidateMutation ?? Effect.void).pipe(Effect.as(true)),
-            deleteCheckpointRefs: (input) => input.revalidateMutation ?? Effect.void,
-          },
-        }),
-      ),
-    ),
-);

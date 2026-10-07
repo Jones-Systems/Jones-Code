@@ -14,9 +14,7 @@ import * as Stream from "effect/Stream";
 import { McpProtocol, McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
-import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import { ProviderSessionManagerV2 } from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -871,37 +869,4 @@ it.effect("registers annotated tools and preserves authenticated request context
       }
     }),
   ).pipe(Effect.provide(TestLayer)),
-);
-
-it.effect("registers the focused decision snapshot tool and denies ungranted credentials", () =>
-  Effect.gen(function* () {
-    const server = yield* McpServer.McpServer;
-    const tool = server.tools.find(({ tool }) => tool.name === "decision_snapshot");
-    expect(tool?.tool.annotations?.readOnlyHint).toBe(true);
-    expect(tool?.tool.annotations?.destructiveHint).toBe(false);
-    expect(tool?.tool.annotations?.openWorldHint).toBe(false);
-    expect(tool?.tool.inputSchema).toMatchObject({ type: "object" });
-    const denied = yield* server
-      .callTool({ name: "decision_snapshot", arguments: {} })
-      .pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-        Effect.provideService(McpSchema.McpServerClient, client),
-      );
-    expect(denied.isError).toBe(true);
-    expect(denied.content).toEqual([
-      { type: "text", text: "MCP credential does not grant the decision-snapshot capability." },
-    ]);
-  }).pipe(
-    Effect.provide(
-      McpHttpServer.DecisionSnapshotToolkitRegistrationLive.pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.mock(ProviderSessionManagerV2)({}),
-            Layer.mock(WorkstreamGateway)({ purgeAuthorization: () => {} }),
-          ),
-        ),
-      ),
-    ),
-  ),
 );

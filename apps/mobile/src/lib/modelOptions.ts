@@ -183,15 +183,11 @@ export function resolveNewTaskModelSelection(input: {
   );
 }
 
-export type BuildModelOptionsOptions = {
-  readonly providerInstanceId?: ModelSelection["instanceId"] | undefined;
-  readonly defaultModelSelection?: ModelSelection | null | undefined;
-};
-
 export function buildModelOptions(
   config: T3ServerConfig | null | undefined,
   fallbackModelSelection: ModelSelection | null,
-  { providerInstanceId, defaultModelSelection }: BuildModelOptionsOptions = {},
+  providerInstanceId?: ModelSelection["instanceId"],
+  defaultModelSelection?: ModelSelection | null | undefined,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
 

@@ -1,8 +1,6 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
-  WORKSTREAM_COUNTS_MANIFEST_SHA256,
-  WorkstreamRegistryCounts,
   WORKSTREAM_CONTRACT_FAMILY,
   WORKSTREAM_CONTRACT_HEADER_VERSION,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
@@ -92,15 +90,19 @@ interface ContractInput {
   readonly contractManifest: typeof WORKSTREAM_CONTRACT_MANIFEST_SHA256;
 }
 
+import type {
+  WorkstreamAppearanceResult,
+  WorkstreamAppearanceWrite,
+  WorkstreamAppearance,
+} from "@t3tools/contracts";
+
 export interface WorkstreamTransport {
-  readonly getRegistryCounts?: () => Effect.Effect<
-    WorkstreamRegistryCounts,
-    WorkstreamTransportError
-  >;
-  readonly getCountsCapabilities?: () => Effect.Effect<
-    WorkstreamCapabilities,
-    WorkstreamTransportError
-  >;
+  readonly readAppearance?: (input: {
+    readonly workstream_ids: readonly string[];
+  }) => Effect.Effect<WorkstreamAppearanceResult, WorkstreamTransportError>;
+  readonly saveAppearance?: (
+    input: WorkstreamAppearanceWrite,
+  ) => Effect.Effect<WorkstreamAppearance, WorkstreamTransportError>;
   readonly listThreadPlacements?: (
     input: T3PlacementRequest,
   ) => Effect.Effect<T3PlacementPage, WorkstreamTransportError>;
@@ -157,13 +159,15 @@ export interface WorkstreamGatewayOptions {
 export class WorkstreamGateway extends Context.Service<
   WorkstreamGateway,
   {
+    readonly readAppearance: (
+      ids: readonly string[],
+    ) => Effect.Effect<WorkstreamAppearanceResult, WorkstreamGatewayError>;
+    readonly saveAppearance: (
+      input: WorkstreamAppearanceWrite,
+    ) => Effect.Effect<WorkstreamAppearance, WorkstreamGatewayError>;
     readonly readThreadPlacements: (
       input: T3PlacementLoadRequest,
     ) => Effect.Effect<T3PlacementResult, WorkstreamGatewayError>;
-    readonly readRegistryCounts: () => Effect.Effect<
-      WorkstreamRegistryCounts,
-      WorkstreamGatewayError
-    >;
     readonly readSession: () => Effect.Effect<T3WorkstreamBinding, WorkstreamGatewayError>;
     readonly readMetadata: (input?: {
       readonly limit?: number;
@@ -692,68 +696,49 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       });
 
     return WorkstreamGateway.of({
-      readRegistryCounts: () =>
+      readAppearance: (ids) =>
         Effect.gen(function* () {
-          if (
-            transport.getRegistryCounts === undefined ||
-            transport.getCountsCapabilities === undefined
-          )
-            return yield* new WorkstreamGatewayError({
-              reason: "contract-mismatch",
-              detail: "Registry counts capability is unavailable.",
-            });
-          const capabilities = yield* transport
-            .getCountsCapabilities()
+          const authorized = yield* authorize("workstreams:read");
+          if (!transport.readAppearance) return { supported: false as const };
+          const result = yield* transport
+            .readAppearance({ workstream_ids: ids })
             .pipe(Effect.mapError(transportFailure));
           if (
-            capabilities.manifest_sha256 !== WORKSTREAM_COUNTS_MANIFEST_SHA256 ||
-            capabilities.contract_family !== WORKSTREAM_CONTRACT_FAMILY ||
-            capabilities.contract_version !== WORKSTREAM_CONTRACT_VERSION ||
-            capabilities.registry_counts?.version !== 1 ||
-            capabilities.registry_counts.path !== "/workstreams/v1/counts"
-          )
-            return yield* new WorkstreamGatewayError({
-              reason: "contract-mismatch",
-              detail: "Registry counts contract is unsupported.",
-            });
-          if (
-            capabilities.context.owner_id !== options.binding.ownerId ||
-            !capabilities.permissions.includes("workstreams:read")
-          )
-            return yield* new WorkstreamGatewayError({
-              reason: "permission-denied",
-              detail: "Registry counts binding is unauthorized.",
-            });
-          const value = yield* transport
-            .getRegistryCounts()
-            .pipe(Effect.mapError(transportFailure));
-          const decoded = yield* Schema.decodeUnknownEffect(WorkstreamRegistryCounts)(value, {
-            onExcessProperty: "error",
-          }).pipe(
-            Effect.mapError(
-              () =>
-                new WorkstreamGatewayError({
-                  reason: "invalid-response",
-                  detail: "Registry counts response is invalid.",
-                }),
-            ),
-          );
-          if (
-            decoded.principal_id !== options.binding.principalId ||
-            decoded.context.owner_id !== options.binding.ownerId ||
-            decoded.context.server_generation !== capabilities.context.server_generation ||
-            decoded.context.registry_version !== capabilities.context.registry_version
-          )
-            return yield* new WorkstreamGatewayError({
-              reason: "stale",
-              detail: "Registry counts identity or revision changed.",
-            });
-          if (decoded.active + decoded.unknown_lifecycle > decoded.total)
+            result.supported &&
+            (result.page.owner_id !== authorized.binding.ownerId ||
+              result.page.server_generation !== authorized.binding.serverGeneration ||
+              result.page.items.length !== ids.length ||
+              result.page.items.some((item, index) => item.workstream_id !== ids[index]))
+          ) {
             return yield* new WorkstreamGatewayError({
               reason: "invalid-response",
-              detail: "Registry counts exceed total.",
+              detail: "Appearance owner, generation or requested inventory mismatch.",
             });
-          return decoded;
+          }
+          return result;
+        }),
+      saveAppearance: (input) =>
+        Effect.gen(function* () {
+          yield* authorize("workstreams:write");
+          if (!transport.saveAppearance)
+            return yield* new WorkstreamGatewayError({
+              reason: "version-conflict",
+              detail: "Appearance editing is unavailable.",
+            });
+          const result = yield* transport
+            .saveAppearance(input)
+            .pipe(Effect.mapError(transportFailure));
+          if (
+            result.workstream_id !== input.workstream_id ||
+            result.border_color !== input.border_color ||
+            (result.version !== input.expected_version &&
+              result.version !== input.expected_version + 1)
+          )
+            return yield* new WorkstreamGatewayError({
+              reason: "invalid-response",
+              detail: "Appearance receipt mismatch.",
+            });
+          return result;
         }),
       readThreadPlacements,
       readSession,

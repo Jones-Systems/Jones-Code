@@ -12,7 +12,6 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
-  RunAttemptId,
   RunId,
   RuntimeRequestId,
   ThreadId,
@@ -225,137 +224,6 @@ it.effect("selects unfinished recovery work without reading settled thread histo
   }).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect(
-  "reads only the completed latest run's active attempt and current idle provider thread",
-  () =>
-    Effect.gen(function* () {
-      const projections = yield* ProjectionStore.ProjectionStoreV2;
-      const sql = yield* SqlClient.SqlClient;
-      const now = yield* DateTime.now;
-      const threadId = yield* createThread("completed-marker-source");
-      const oldProviderThreadId = ProviderThreadId.make("provider-thread:recovery:old-source");
-      const currentProviderThreadId = ProviderThreadId.make(
-        "provider-thread:recovery:current-source",
-      );
-      for (const [id, ordinal] of [
-        [oldProviderThreadId, 1],
-        [currentProviderThreadId, 2],
-      ] as const) {
-        yield* projections.apply({
-          id: EventId.make(`event:${id}:idle`),
-          type: "provider-thread.updated",
-          threadId,
-          driver,
-          providerInstanceId,
-          occurredAt: now,
-          payload: {
-            id,
-            appThreadId: threadId,
-            ownerNodeId: null,
-            driver,
-            providerInstanceId,
-            providerSessionId: null,
-            nativeThreadRef: { driver, nativeId: `native:${id}`, strength: "strong" },
-            nativeConversationHeadRef: null,
-            status: "idle",
-            firstRunOrdinal: ordinal,
-            lastRunOrdinal: ordinal,
-            handoffIds: [],
-            forkedFrom: null,
-            pendingBackgroundTasks: [],
-            createdAt: now,
-            updatedAt: now,
-          },
-        });
-      }
-      const oldAttemptId = RunAttemptId.make("attempt:recovery:old-source");
-      const priorAttemptId = RunAttemptId.make("attempt:recovery:prior-latest-source");
-      const activeAttemptId = RunAttemptId.make("attempt:recovery:active-latest-source");
-      const rootNodeId = NodeId.make("node:recovery:completed-marker-source");
-      const oldRunId = yield* createRun(threadId, "completed", {
-        ordinal: 1,
-        providerThreadId: oldProviderThreadId,
-        activeAttemptId: oldAttemptId,
-        rootNodeId,
-      });
-      const latestRunId = yield* createRun(threadId, "completed", {
-        ordinal: 2,
-        providerThreadId: currentProviderThreadId,
-        activeAttemptId,
-        rootNodeId,
-      });
-      const activeAttempt = {
-        id: activeAttemptId,
-        runId: latestRunId,
-        attemptOrdinal: 2,
-        rootNodeId,
-        providerInstanceId,
-        providerThreadId: currentProviderThreadId,
-        providerTurnId: null,
-        reason: "retry" as const,
-        status: "completed" as const,
-        startedAt: now,
-        completedAt: now,
-      };
-      for (const attempt of [
-        {
-          ...activeAttempt,
-          id: oldAttemptId,
-          runId: oldRunId,
-          attemptOrdinal: 1,
-          providerThreadId: oldProviderThreadId,
-        },
-        { ...activeAttempt, id: priorAttemptId, attemptOrdinal: 1 },
-        activeAttempt,
-      ]) {
-        yield* projections.apply({
-          id: EventId.make(`event:${attempt.id}:completed`),
-          type: "run-attempt.created",
-          threadId,
-          runId: attempt.runId,
-          providerInstanceId,
-          occurredAt: now,
-          payload: attempt,
-        });
-      }
-      // Unrelated terminal records must stay outside this bounded recovery read.
-      yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = '{broken'
-      WHERE thread_id = ${threadId} AND run_id = ${oldRunId}`;
-      yield* sql`UPDATE orchestration_v2_projection_run_attempts SET payload_json = '{broken'
-      WHERE thread_id = ${threadId} AND attempt_id IN ${sql.in([oldAttemptId, priorAttemptId])}`;
-      yield* sql`UPDATE orchestration_v2_projection_provider_threads SET payload_json = '{broken'
-      WHERE provider_thread_id = ${oldProviderThreadId}`;
-      const recovered = yield* projections.getRuntimeRecoveryProjection(threadId);
-      assert.deepEqual(
-        recovered.runs.map((run) => run.id),
-        [latestRunId],
-      );
-      assert.deepEqual(recovered.attempts, [activeAttempt]);
-      assert.deepEqual(
-        recovered.providerThreads.map((providerThread) => ({
-          id: providerThread.id,
-          appThreadId: providerThread.appThreadId,
-          status: providerThread.status,
-          nativeThreadRef: providerThread.nativeThreadRef,
-        })),
-        [
-          {
-            id: currentProviderThreadId,
-            appThreadId: threadId,
-            status: "idle",
-            nativeThreadRef: {
-              driver,
-              nativeId: `native:${currentProviderThreadId}`,
-              strength: "strong",
-            },
-          },
-        ],
-      );
-      assert.deepEqual(recovered.providerSessions, []);
-      assert.deepEqual(recovered.providerTurns, []);
-    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
-);
-
 it.effect("recovers terminal subagent results until their cross-thread transfer exists", () =>
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -549,6 +417,73 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
       new Set(yield* projections.getUnreadableThreadIds()),
       new Set([first, second]),
     );
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("reads the run that owns a background roster, not a queued or resumed one", () =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const withRoster = Effect.fn(function* (threadId: ThreadId) {
+      yield* projections.apply({
+        id: EventId.make(`event:${threadId}:roster`),
+        type: "provider-thread.updated",
+        threadId,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          id: ProviderThreadId.make(`provider-thread:${threadId}`),
+          appThreadId: threadId,
+          ownerNodeId: null,
+          driver,
+          providerInstanceId,
+          providerSessionId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          pendingBackgroundTasks: [
+            { taskId: "background", description: "Still running", kind: "command" },
+          ],
+        },
+      });
+    });
+    const runIds = (threadId: ThreadId) =>
+      projections
+        .getRuntimeRecoveryProjection(threadId)
+        .pipe(Effect.map((state) => state.runs.map((run) => run.id)));
+    // Settled with background work left, then a queued follow-up.
+    const settled = yield* createThread("roster-before-queue");
+    const settledRun = yield* createRun(settled, "completed", {
+      providerThreadId: ProviderThreadId.make(`provider-thread:${settled}`),
+    });
+    const queuedRun = yield* createRun(settled, "queued", { ordinal: 2, completedAt: null });
+    yield* withRoster(settled);
+    assert.deepEqual(yield* runIds(settled), [settledRun, queuedRun]);
+    // A resumed queued run (ordinal 1) ended after a continuation (ordinal 2).
+    const resumed = yield* createThread("roster-after-resume");
+    const resumedRun = yield* createRun(resumed, "completed", {
+      providerThreadId: ProviderThreadId.make(`provider-thread:${resumed}`),
+      completedAt: DateTime.makeUnsafe("2026-10-03T10:05:00.000Z"),
+    });
+    const continuationRun = yield* createRun(resumed, "completed", {
+      providerThreadId: ProviderThreadId.make(`provider-thread:${resumed}`),
+      ordinal: 2,
+      completedAt: DateTime.makeUnsafe("2026-10-03T10:00:00.000Z"),
+    });
+    yield* withRoster(resumed);
+    assert.deepEqual(yield* runIds(resumed), [resumedRun, continuationRun]);
+    // Without a roster, settled history is not read.
+    const quiet = yield* createThread("no-roster-before-queue");
+    yield* createRun(quiet, "completed");
+    const quietQueued = yield* createRun(quiet, "queued", { ordinal: 2, completedAt: null });
+    assert.deepEqual(yield* runIds(quiet), [quietQueued]);
   }).pipe(Effect.provide(TestLayer)),
 );
 

@@ -11,24 +11,18 @@ import { ChatCanvasContext } from "./ChatCanvasContext";
 import { resolveChatCanvasLayout, type ChatCanvasPreview } from "./chatCanvasLayout";
 import type { PreviewMiniPlayerObstacles } from "../preview/previewMiniPlayerLayout";
 
-/** Owns the available conversation space. Floating cards never reserve it themselves. */
+/**
+ * Owns the available conversation space. Cards only report where they sit; the
+ * canvas decides when chat moves over to make room for them.
+ */
 export function ChatCanvas({
   composerOverlayElement,
-  onElementChange,
   children,
   ...props
 }: Omit<ComponentProps<"div">, "className" | "style" | "ref"> & {
   composerOverlayElement: HTMLElement | null;
-  onElementChange?: (element: HTMLDivElement | null) => void;
 }) {
   const elementRef = useRef<HTMLDivElement | null>(null);
-  const attachElement = useCallback(
-    (element: HTMLDivElement | null) => {
-      elementRef.current = element;
-      onElementChange?.(element);
-    },
-    [onElementChange],
-  );
   const widthProbeRef = useRef<HTMLDivElement | null>(null);
   const [timelineElement, registerTimeline] = useState<HTMLElement | null>(null);
   const [preview, setPreview] = useState<ChatCanvasPreview | null>(null);
@@ -105,6 +99,7 @@ export function ChatCanvas({
     const container = { width: measurements.width, height: measurements.height };
     return {
       container,
+      lane: { padding: measurements.padding, minChatWidth: measurements.minChatWidth },
       layout: resolveChatCanvasLayout({ ...measurements, container, preview, detailsCard }),
       previewKey: preview?.key ?? null,
       reportPreview,
@@ -118,7 +113,7 @@ export function ChatCanvas({
     <ChatCanvasContext value={context}>
       <div
         {...props}
-        ref={attachElement}
+        ref={elementRef}
         data-chat-canvas
         data-preview-overlaps-chat={layout.overlapsChat || undefined}
         className="relative flex min-h-0 min-w-0 flex-1 flex-col"

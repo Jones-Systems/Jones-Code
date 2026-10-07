@@ -1,4 +1,5 @@
 import {
+  type ModelSelection,
   type ModelCapabilities,
   type ProviderDriverKind,
   type ProviderInstanceId,
@@ -138,11 +139,13 @@ export function buildTraitsOptionSelections(
 
 function getDescriptorStringValue(
   descriptor: Extract<ProviderOptionDescriptor, { type: "select" }> | null,
+  selection?: ModelSelection | null,
+  reportedSelection?: ModelSelection | null,
 ): string | null {
   if (!descriptor) {
     return null;
   }
-  const value = getProviderOptionCurrentValue(descriptor);
+  const value = getProviderOptionCurrentValue(descriptor, selection, reportedSelection);
   return typeof value === "string" ? value : null;
 }
 
@@ -296,6 +299,7 @@ export interface TraitsMenuContentProps {
   prompt: string;
   onPromptChange: (prompt: string) => void;
   modelOptions?: ProviderOptions | null | undefined;
+  reportedModelSelection?: ModelSelection | null | undefined;
   allowPromptInjectedEffort?: boolean;
   planModeEnabled: boolean;
   triggerClassName?: string;
@@ -310,11 +314,14 @@ export function useTraitsSelection({
   prompt,
   onPromptChange,
   modelOptions,
+  reportedModelSelection,
   displayCapabilities,
   allowPromptInjectedEffort = true,
   planModeEnabled,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
+  const modelSelection =
+    instanceId && model ? { instanceId, model, options: modelOptions ?? [] } : null;
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
   const updateModelOptions = useCallback(
     (nextOptions: ProviderOptions | undefined) => {
@@ -388,7 +395,14 @@ export function useTraitsSelection({
     updateOption({ id: current.id, value });
   };
 
-  return { ...selected, updateOption, handleSelectChange, isSelectChangeDisabled };
+  return {
+    ...selected,
+    modelSelection,
+    reportedModelSelection,
+    updateOption,
+    handleSelectChange,
+    isSelectChangeDisabled,
+  };
 }
 
 export const TraitsMenuContent = memo(function TraitsMenuContentImpl(
@@ -406,6 +420,8 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl(
     updateOption,
     handleSelectChange,
     isSelectChangeDisabled,
+    modelSelection,
+    reportedModelSelection,
   } = useTraitsSelection(props);
 
   if (!hasAnyControls) {
@@ -416,7 +432,11 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl(
     return (
       <>
         {descriptors.map((descriptor, index) => {
-          const value = getProviderOptionCurrentLabel(descriptor);
+          const value = getProviderOptionCurrentLabel(
+            descriptor,
+            modelSelection,
+            reportedModelSelection,
+          );
           if (!value) return null;
           return (
             <div key={descriptor.id}>
@@ -440,7 +460,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl(
         const selectedValue =
           ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id
             ? "ultrathink"
-            : (getDescriptorStringValue(descriptor) ?? "");
+            : (getDescriptorStringValue(descriptor, modelSelection, reportedModelSelection) ?? "");
 
         return (
           <div key={descriptor.id}>
@@ -535,6 +555,8 @@ export function buildTraitsTriggerDisplay(input: {
   descriptors: ReadonlyArray<ProviderOptionDescriptor>;
   primarySelectDescriptorId: string | null;
   ultrathinkPromptControlled: boolean;
+  modelSelection?: ModelSelection | null;
+  reportedModelSelection?: ModelSelection | null | undefined;
 }): { label: string; speedIcon: "fast" | "ultrafast" | null } {
   let fastModeFallbackLabel: string | null = null;
   let speedIcon: "fast" | "ultrafast" | null = null;
@@ -574,7 +596,11 @@ export function buildTraitsTriggerDisplay(input: {
         ? "Ultrathink"
         : descriptor.type === "boolean"
           ? `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`
-          : getProviderOptionCurrentLabel(descriptor);
+          : getProviderOptionCurrentLabel(
+              descriptor,
+              input.modelSelection,
+              input.reportedModelSelection,
+            );
     if (typeof label === "string" && label.length > 0) {
       labels.push(label);
     }
@@ -597,6 +623,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   prompt,
   onPromptChange,
   modelOptions,
+  reportedModelSelection,
   displayCapabilities,
   allowPromptInjectedEffort = true,
   planModeEnabled,
@@ -643,6 +670,8 @@ export const TraitsPicker = memo(function TraitsPicker({
     descriptors,
     primarySelectDescriptorId: primarySelectDescriptor?.id ?? null,
     ultrathinkPromptControlled,
+    modelSelection: instanceId && model ? { instanceId, model, options: modelOptions ?? [] } : null,
+    reportedModelSelection,
   });
   const speedLabel = speedIcon === "ultrafast" ? "Ultrafast mode on" : "Fast mode on";
   const accessibleLabel = speedIcon ? `${triggerLabel}, ${speedLabel}` : triggerLabel;
@@ -741,6 +770,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           prompt={prompt}
           onPromptChange={onPromptChange}
           modelOptions={modelOptions}
+          reportedModelSelection={reportedModelSelection}
           displayCapabilities={displayCapabilities}
           allowPromptInjectedEffort={allowPromptInjectedEffort}
           planModeEnabled={planModeEnabled}

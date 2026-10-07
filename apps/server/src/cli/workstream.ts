@@ -8,7 +8,6 @@ import {
   NativeStoreAuthorityPersistenceError,
 } from "../environment/nativeStoreAuthorityPersistence.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
-import { workstreamProviderCommand } from "./workstreamProvider.ts";
 
 const authorityEnrollCommand = Command.make("enroll", projectLocationFlags).pipe(
   Command.withDescription(
@@ -19,11 +18,7 @@ const authorityEnrollCommand = Command.make("enroll", projectLocationFlags).pipe
       const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
       const state = yield* Effect.try({
         try: () =>
-          initializeNativeStoreAuthorityForBaseDir(
-            config.baseDir,
-            SERVICE_LAUNCHER_PROTOCOL,
-            config.dbPath,
-          ),
+          initializeNativeStoreAuthorityForBaseDir(config.baseDir, SERVICE_LAUNCHER_PROTOCOL),
         catch: (cause) =>
           cause instanceof NativeStoreAuthorityPersistenceError
             ? cause
@@ -47,5 +42,5 @@ const authorityCommand = Command.make("authority").pipe(
 
 export const workstreamCommand = Command.make("workstream").pipe(
   Command.withDescription("Manage cross-system workstream integration."),
-  Command.withSubcommands([authorityCommand, workstreamProviderCommand]),
+  Command.withSubcommands([authorityCommand]),
 );

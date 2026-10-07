@@ -1,5 +1,3 @@
-import { useOperatingCount, useThreadOperatingStates } from "../state/threads";
-import { filterSidebarOperatingThreads } from "./Sidebar.logic";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { Spinner } from "~/components/ui/spinner";
@@ -184,6 +182,9 @@ import {
   buildMultiSelectThreadContextMenuItems,
   deleteSelectedThreadEntries,
   getSidebarThreadIdsToPrewarm,
+  filterSidebarOperatingThreads,
+  filterSidebarV2VisibleThreads,
+  isSidebarThreadOperating,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
@@ -467,10 +468,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     [discoveredPorts, navigateToThread, openPreview, threadRef],
   );
   const isThreadRunning = !threadRuntimeCanArchive(thread.runtime);
-  const operatingStates = useThreadOperatingStates();
-  const currentOperatingState = operatingStates.get(threadKey);
   const threadStatus = resolveThreadStatusPill({
-    ...(currentOperatingState === undefined ? {} : { current: currentOperatingState }),
     thread: {
       ...thread,
       lastVisitedAt,
@@ -1277,17 +1275,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   // thread-list change).
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
-  const operatingStates = useThreadOperatingStates();
   const projectThreads = useMemo(
     () =>
       filterSidebarOperatingThreads(
-        sidebarThreads,
+        filterSidebarV2VisibleThreads(sidebarThreads, null),
         props.activeOnly,
-        (thread) =>
-          operatingStates.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))
-            ?.operating === true,
+        isSidebarThreadOperating,
       ),
-    [sidebarThreads, props.activeOnly, operatingStates],
+    [sidebarThreads, props.activeOnly],
   );
   const projectPreferenceKeys = useMemo(() => projectExpansionPreferenceKeys(project), [project]);
   const projectExpanded = useUiStateStore((state) =>
@@ -1355,11 +1350,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const lastVisitedAt = lastVisitedAtByThreadKey.get(
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       );
-      const current = operatingStates.get(
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      );
       return resolveThreadStatusPill({
-        ...(current === undefined ? {} : { current }),
         thread: {
           ...thread,
           ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
@@ -1380,7 +1371,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       projectStatus,
       visibleProjectThreads,
     };
-  }, [projectThreads, threadLastVisitedAts, threadSortOrder, operatingStates]);
+  }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
   const pinnedCollapsedThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
     if (!activeThreadKey || projectExpanded) {
@@ -1411,11 +1402,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const lastVisitedAt = lastVisitedAtByThreadKey.get(
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       );
-      const current = operatingStates.get(
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      );
       return resolveThreadStatusPill({
-        ...(current === undefined ? {} : { current }),
         thread: {
           ...thread,
           ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
@@ -1455,7 +1442,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     pinnedCollapsedThread,
     projectExpanded,
     projectThreads,
-    operatingStates,
     sidebarThreadPreviewCount,
     threadLastVisitedAts,
     visibleProjectThreads,
@@ -2774,7 +2760,11 @@ function ProjectSortMenu({
     <Menu>
       <Tooltip>
         <TooltipTrigger
-          render={<MenuTrigger render={<Button size="icon-xs" variant="ghost-muted" />} />}
+          render={
+            <MenuTrigger
+              render={<Button size="icon-xs" variant="ghost-muted" aria-label="Sidebar options" />}
+            />
+          }
         >
           <ArrowUpDownIcon className="size-3.5" />
         </TooltipTrigger>
@@ -3166,18 +3156,17 @@ export default function LegacySidebar() {
   const allSidebarThreads = useThreadShells();
   const [activeOnly, setActiveOnly] = useState(false);
   const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
-  const operatingStates = useThreadOperatingStates();
-  const activeThreadCount = useOperatingCount();
+  const visibleThreads = useMemo(
+    () => filterSidebarV2VisibleThreads(allSidebarThreads, null),
+    [allSidebarThreads],
+  );
+  const activeThreadCount = useMemo(
+    () => visibleThreads.filter(isSidebarThreadOperating).length,
+    [visibleThreads],
+  );
   const sidebarThreads = useMemo(
-    () =>
-      filterSidebarOperatingThreads(
-        allSidebarThreads,
-        activeOnly,
-        (thread) =>
-          operatingStates.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))
-            ?.operating === true,
-      ),
-    [allSidebarThreads, activeOnly, operatingStates],
+    () => filterSidebarOperatingThreads(visibleThreads, activeOnly, isSidebarThreadOperating),
+    [visibleThreads, activeOnly],
   );
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
@@ -3463,10 +3452,6 @@ export default function LegacySidebar() {
     animatedThreadListsRef.current.add(node);
   }, []);
 
-  const visibleThreads = useMemo(
-    () => allSidebarThreads.filter((thread) => thread.archivedAt === null),
-    [allSidebarThreads],
-  );
   const sortedProjects = useMemo(() => {
     const sortableProjects = sidebarProjects.map((project) => ({
       ...project,
