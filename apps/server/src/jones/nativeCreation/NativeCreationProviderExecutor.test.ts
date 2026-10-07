@@ -1,3 +1,4 @@
+import * as Guard from "./NativeCreationProviderGuard.ts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as Predicate from "effect/Predicate";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -586,7 +587,7 @@ const scenario = (mode: Mode) =>
       createdAt: DateTime.makeUnsafe(now),
       updatedAt: DateTime.makeUnsafe(now),
     });
-    const transport = (guard: Concrete.NativeProviderExecutionGuard) =>
+    const transport = (guard: Guard.NativeProviderExecutionGuard) =>
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -705,7 +706,7 @@ const scenario = (mode: Mode) =>
                         driver: binding.driver,
                         detail: "Synthetic native binding missing",
                       });
-                    yield* Concrete.bindNativeProviderGuard(guard, {
+                    yield* Guard.bindNativeProviderGuard(guard, {
                       ...captured,
                       runtimeGeneration:
                         mode === "transport-generation"
@@ -798,7 +799,7 @@ const scenario = (mode: Mode) =>
               runtimePolicy: policy,
               nativeCreationGuard: guard,
             });
-            const acknowledgement = Concrete.readNativeProviderAcknowledgement(guard);
+            const acknowledgement = Guard.readNativeProviderAcknowledgement(guard);
             if (acknowledgement === undefined)
               return yield* new Start.ProviderTurnStartError({
                 runId: f.command.runId,
@@ -819,7 +820,7 @@ const scenario = (mode: Mode) =>
             expected.push("turn/start");
           assert.deepEqual(requests, expected);
           if (mode !== "transport-success")
-            assert.isUndefined(Concrete.readNativeProviderAcknowledgement(guard));
+            assert.isUndefined(Guard.readNativeProviderAcknowledgement(guard));
           if (result._tag === "Failure") return yield* result.failure;
           return result.success;
         }),
@@ -832,18 +833,18 @@ const scenario = (mode: Mode) =>
           Effect.gen(function* () {
             calls += 1;
             if (mode.startsWith("transport-")) return yield* transport(input.guard);
-            yield* Concrete.revalidateNativeProviderGuard(input.guard, {
+            yield* Guard.revalidateNativeProviderGuard(input.guard, {
               threadId: input.threadId,
               cwd: resources.worktreePath,
             });
-            yield* Concrete.bindNativeProviderGuard(input.guard, binding);
+            yield* Guard.bindNativeProviderGuard(input.guard, binding);
             if (mode === "failure")
               return yield* new Start.ProviderTurnStartError({
                 runId: input.runId,
                 cause: "Synthetic lost acknowledgement",
               });
             if (mode !== "void")
-              yield* Concrete.acknowledgeNativeProviderGuard(input.guard, {
+              yield* Guard.acknowledgeNativeProviderGuard(input.guard, {
                 threadId: input.threadId,
                 runId: input.runId,
                 providerInstanceId: binding.providerInstanceId,

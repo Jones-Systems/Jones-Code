@@ -1,4 +1,4 @@
-import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
+import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { isWorkModeKeepWarm, workModeProviderPrompt } from "../jones/provider/workModePrompt.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";

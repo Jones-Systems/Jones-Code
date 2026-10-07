@@ -1,4 +1,4 @@
-import * as NativeProvider from "../../jones/nativeCreation/NativeCreationProviderExecutor.ts";
+import * as NativeProvider from "../../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import * as BackgroundLiveness from "../../jones/provider/observations/ProviderSessionBackgroundLiveness.ts";
 import type * as RuntimeObservation from "../../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
