@@ -1,0 +1,25 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "native-workspace-physical",
+  "jonesOwnedPaths": ["apps/server/src/terminal/NativeSetupControl.ts"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/terminal/NativeSetupControl.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/terminal/NativeSetupControl.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+      "to": "apps/server/src/terminal/NativeSetupControl.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/terminal/NativeSetupControl.ts"
+    }
+  ]
+}

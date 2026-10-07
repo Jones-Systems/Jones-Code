@@ -206,6 +206,17 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
       "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
+    },
+    {
+      "id": "native-workspace-physical",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeWorkspacePhysicalPorts.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.test.ts",
+        "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+        "apps/server/src/terminal/Manager.test.ts"
+      ],
+      "scope": "Exact Git/lstat workspace proof and retained native setup terminal with existing101 start/claim ownership. Missing qualified physical/grant/account owners deny before allocation; unknown original effects never replay."
     }
   ]
 }

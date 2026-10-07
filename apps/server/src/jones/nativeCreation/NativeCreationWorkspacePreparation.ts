@@ -1,3 +1,4 @@
+import * as SetupCustody from "./NativeWorkspaceSetupCustody.ts";
 import type {
   NativeWorkspaceBasis,
   NativeWorkspaceProof,
@@ -58,6 +59,7 @@ export class NativeWorkspacePorts extends Context.Service<
       basis: NativeWorkspaceBasis,
       proof: NativeWorkspaceProof,
       revalidate: Effect.Effect<void, NativeWorkspaceError>,
+      custody?: SetupCustody.NativeWorkspaceSetupCustody,
     ) => Effect.Effect<
       {
         readonly terminalId: string;
@@ -203,6 +205,7 @@ const make = Effect.gen(function* () {
         nativeCreationSha256(nativeCreationCanonicalJson({ claimId: input.claimId, stage, basis }));
       const timestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
       let retainedTerminalId: string | null = null;
+      let setupCustody: SetupCustody.NativeWorkspaceSetupCustody | undefined;
       const run = <A>(
         details: WorkspaceStageDetails,
         action: Effect.Effect<A, NativeWorkspaceError>,
@@ -222,6 +225,10 @@ const make = Effect.gen(function* () {
               },
               authorize(stage),
             );
+            if (started.kind === "setup") {
+              retainedTerminalId = started.terminalId;
+              setupCustody = SetupCustody.issue(intent, basis, started);
+            }
             const result = yield* Effect.exit(restore(action));
             const { ordinal: _ordinal, ...identity } = started;
             if (identity.kind === "setup") {
@@ -300,11 +307,25 @@ const make = Effect.gen(function* () {
       if (intent.binding.runSetupScript) {
         const preparedProof = proof;
         const setup = yield* run(
-          { kind: "setup", worktreePath: basis.worktreePath, terminalId: null },
+          {
+            kind: "setup",
+            worktreePath: basis.worktreePath,
+            terminalId: `native-setup-${nativeCreationSha256(effectId("setup"))}`,
+          },
           Effect.uninterruptibleMask((restoreCompletion) =>
             Effect.gen(function* () {
               // Retain the owned terminal before observing cancellation; only its completion wait is interruptible.
-              const terminal = yield* ports.setup(basis, preparedProof, revalidate("setup"));
+              const terminal = yield* ports.setup(
+                basis,
+                preparedProof,
+                revalidate("setup"),
+                setupCustody,
+              );
+              if (terminal.terminalId !== retainedTerminalId)
+                return yield* denied(
+                  "unknown",
+                  "Native setup terminal differs from its reserved start",
+                );
               retainedTerminalId = terminal.terminalId;
               const exitCode = yield* restoreCompletion(terminal.completion);
               return { terminalId: terminal.terminalId, exitCode };
