@@ -453,6 +453,8 @@ describe("jones-sqlite-health — closed fixture integration", () => {
           JSON.stringify(binding),
           "--include",
           "counts,integrity,foreign-keys",
+          "--max-records",
+          "256",
         ]),
         { receipt: context.fixture.receipt, expectedBinding: binding },
       );
@@ -500,6 +502,9 @@ describe("jones-sqlite-health — closed fixture integration", () => {
           },
         }),
       ).toBe("completed");
+      expect(accepted.value.limits.maxRecords).toBe(256);
+      expect(accepted.value.results.metadata.status).toBe("completed");
+      expect(accepted.value.results.metadata.data?.schema.length).toBeLessThanOrEqual(256);
       const custodyPin = syntheticFixtureReceiptSha256(fixtureCustodyReceipt(accepted.receipt));
       expect(accepted.receipt.schema).toBe("jones-performance-fixture/v2");
       expect(accepted.receiptSha256).not.toBe(custodyPin);
