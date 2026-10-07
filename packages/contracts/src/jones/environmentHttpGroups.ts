@@ -38,6 +38,15 @@ import {
   WorkstreamAppearance,
 } from "./workstreamAppearance.ts";
 
+import { WorkstreamsRegistrationContextResponse } from "./workstreamsRegistrationContext.ts";
+import {
+  WorkstreamsNativeContextResponse,
+  WorkstreamsNativeAttestationRequest,
+  WorkstreamsNativeAttestationResponse,
+  WorkstreamsNativeSettlementRequest,
+  WorkstreamsNativeSettlementResponse,
+} from "./workstreamsNativeProvider.ts";
+
 const EnvironmentConversationLibraryInvalidError = Schema.Struct({
   kind: Schema.Literal("error"),
   code: Schema.Literal("invalid"),
@@ -110,6 +119,7 @@ export const makeJonesHttpGroups = ({
   EnvironmentAuthenticatedAuth,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
+  EnvironmentHttpBadRequestError,
 }: {
   readonly OptionalBearerHeaders: Schema.Struct<{
     authorization: Schema.optionalKey<Schema.String>;
@@ -118,6 +128,7 @@ export const makeJonesHttpGroups = ({
   readonly EnvironmentAuthenticatedAuth: typeof Environment.EnvironmentAuthenticatedAuth;
   readonly EnvironmentScopeRequiredError: typeof Environment.EnvironmentScopeRequiredError;
   readonly EnvironmentInternalError: typeof Environment.EnvironmentInternalError;
+  readonly EnvironmentHttpBadRequestError: typeof Environment.EnvironmentHttpBadRequestError;
 }) => {
   class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make("conversationLibrary").add(
     HttpApiEndpoint.post("conversationLibrary", CONVERSATION_LIBRARY_PATH, {
@@ -312,6 +323,66 @@ export const makeJonesHttpGroups = ({
         success: WorkstreamAppearance,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamsRegistrationContextResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    ) {}
+
+  class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
+    .add(
+      HttpApiEndpoint.get("context", "/api/workstreams/native/v1/context", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamsNativeContextResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("attestations", "/api/workstreams/native/v1/attestations", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeAttestationRequest,
+        success: WorkstreamsNativeAttestationResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlements", "/api/workstreams/native/v1/settlements", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementLookup", "/api/workstreams/native/v1/settlements/lookup", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
   class EnvironmentWorkQueueMetadataHttpApi extends HttpApiGroup.make("workQueueMetadata").add(
@@ -328,5 +399,6 @@ export const makeJonesHttpGroups = ({
     EnvironmentHostStatusHttpApi,
     EnvironmentConversationLibraryHttpApi,
     EnvironmentWorkstreamAppearanceHttpApi,
+    EnvironmentWorkstreamsNativeHttpApi,
   };
 };

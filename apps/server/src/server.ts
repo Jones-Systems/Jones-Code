@@ -45,8 +45,11 @@ import { websocketRpcRouteLayer } from "./ws.ts";
 import {
   workstreamGatewayLayerLive,
   workstreamHttpApiLayer,
+  workstreamNativeAuthorityLayerLive,
+  workstreamRegistrationContextLayerLive,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
+import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
@@ -457,6 +460,7 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
 );
 
 const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
+  Layer.provide(workstreamNativeAuthorityLayerLive),
   Layer.provide(ProviderEventIngestor.analyticsLive),
   Layer.provide(CheckpointStoreLayerLive),
   Layer.provide(GitWorkflowLayerLive),
@@ -665,6 +669,7 @@ const makeRoutesLayer = Layer.mergeAll(
       JonesHttp.provideConversationAndVoiceReview,
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
+      Layer.provide(NativeWorkstreams.nativeWorkstreamsHttpApiLayer),
       Layer.provide(JonesHttp.hostStatusHttpApiLayer),
       Layer.provide(projectHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
@@ -691,7 +696,8 @@ const makeRoutesLayer = Layer.mergeAll(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
-  Layer.provide(workstreamGatewayLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer))),
+  Layer.provide(workstreamGatewayLayerLive),
+  Layer.provide(workstreamRegistrationContextLayerLive),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),

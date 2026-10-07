@@ -87,7 +87,18 @@
     "packages/contracts/src/workstreams.test.ts",
     "packages/contracts/src/workstreams.ts",
     "packages/contracts/test-fixtures/queue-dispatch-capability.json",
-    "packages/contracts/test-fixtures/thread-corpus-capability.json"
+    "packages/contracts/test-fixtures/thread-corpus-capability.json",
+    "apps/server/src/jones/workstreams/",
+    "packages/contracts/contracts/workstreams-registration-context/v1/README.md",
+    "packages/contracts/contracts/workstreams-registration-context/v1/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-registration-context/v1/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v1/manifest.json",
+    "packages/contracts/contracts/workstreams-registration-context/v1/schemas/registration-context.schema.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/README.md",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/manifest.json",
+    "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -95,6 +106,8 @@
     "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
     "apps/mobile/src/features/threads/threadListV2.test.ts",
     "apps/mobile/src/features/threads/threadListV2.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
+    "apps/server/src/auth/SessionStore.ts",
     "apps/server/src/binCli.ts",
     "apps/server/src/cli/config.test.ts",
     "apps/server/src/cli/config.ts",
@@ -105,6 +118,7 @@
     "apps/server/src/config.ts",
     "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.testkit.ts",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
     "apps/server/src/serviceLauncher.test.ts",
     "apps/server/src/serviceLauncher.ts",
@@ -112,7 +126,9 @@
     "apps/web/src/lib/runtime.test.ts",
     "apps/web/src/lib/runtime.ts",
     "apps/web/src/test/reactHookHarness.ts",
-    "packages/client-runtime/src/authorization/index.ts"
+    "packages/client-runtime/src/authorization/index.ts",
+    "packages/contracts/src/auth.ts",
+    "vite.config.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -215,6 +231,22 @@
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/legacyOrchestrationCompatibility.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/runtimeIntegration/native.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/workstreams/runtimeIntegration/native.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativeProvider.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamsRegistrationContext.ts"
     }
   ]
 }

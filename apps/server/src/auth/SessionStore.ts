@@ -478,6 +478,23 @@ function toAuthClientSession(input: Omit<AuthClientSession, "current">): AuthCli
   };
 }
 
+export const matchesReservedAuthSession = (
+  record: AuthSessions.AuthSessionRecord,
+  expected: AuthSessions.CreateAuthSessionInput,
+): boolean =>
+  record.sessionId === expected.sessionId &&
+  record.subject === expected.subject &&
+  record.method === expected.method &&
+  JSON.stringify(record.scopes) === JSON.stringify(expected.scopes) &&
+  record.issuedAt.epochMilliseconds === expected.issuedAt.epochMilliseconds &&
+  record.expiresAt.epochMilliseconds === expected.expiresAt.epochMilliseconds &&
+  record.client.label === expected.client.label &&
+  record.client.ipAddress === expected.client.ipAddress &&
+  record.client.userAgent === expected.client.userAgent &&
+  record.client.deviceType === expected.client.deviceType &&
+  record.client.os === expected.client.os &&
+  record.client.browser === expected.client.browser;
+
 export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* ServerConfig.ServerConfig;
