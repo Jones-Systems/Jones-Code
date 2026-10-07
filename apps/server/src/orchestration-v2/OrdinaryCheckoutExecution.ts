@@ -240,9 +240,36 @@ export const OrdinaryPreparedFailureObservationV1 = Schema.Struct({
     targetCount: Schema.Literal(0),
   }),
 });
+export const OrdinaryPreparedPrecreationFailureObservationV1 = Schema.Struct({
+  ...OrdinaryPreparedPhysicalFieldsV1,
+  kind: Schema.Literal("prepared_precreation_failure_observed"),
+  branch: Schema.NullOr(Schema.String),
+  readback: Schema.Struct({
+    cwd: Schema.NonEmptyString,
+    refName: Schema.NullOr(Schema.String),
+    isRepo: Schema.Literal(true),
+  }),
+  parentHeadBefore: Schema.NonEmptyString,
+  parentHeadAfter: Schema.NonEmptyString,
+  containerPath: Schema.NonEmptyString,
+  structuralParentPath: Schema.NonEmptyString,
+  plannedChildPath: Schema.NonEmptyString,
+  targetState: Schema.Literal("absent"),
+  worktree: Schema.Null,
+  failure: Schema.NonEmptyString,
+  setup: Schema.Struct({
+    status: Schema.Literal("no_managed_process"),
+    managerId: Schema.NonEmptyString,
+    ownerBirth: OrdinaryCheckout.OrdinaryApplicationBirthV1,
+    targetCount: Schema.Literal(0),
+  }),
+});
 export const OrdinaryPreparedFailedExecutorOutcomeV1 = Schema.Struct({
   kind: Schema.Literal("prepared_failed"),
-  observation: OrdinaryPreparedFailureObservationV1,
+  observation: Schema.Union([
+    OrdinaryPreparedFailureObservationV1,
+    OrdinaryPreparedPrecreationFailureObservationV1,
+  ]),
 });
 export const OrdinaryRollbackProducerObservationV1 = Schema.Struct({
   version: Schema.Literal(1),

@@ -19,6 +19,9 @@ import {
 } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../../../config.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as IntakeCommandReceipts from "../../../orchestration-v2/CommandReceiptStore.ts";
+import * as IntakeEventSink from "../../../orchestration-v2/EventSink.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
@@ -142,6 +145,9 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ManagedProjectFolders.ManagedProjectFolders,
     FileSystem.FileSystem,
     ServerConfig.ServerConfig,
+    SqlClient.SqlClient,
+    IntakeCommandReceipts.CommandReceiptStoreV2,
+    IntakeEventSink.EventSinkV2,
   ],
 })
   .annotate(Tool.Destructive, true)

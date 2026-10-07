@@ -228,6 +228,45 @@ export function planAttachmentClaim(input: {
   };
 }
 
+/** A prospective locator only; the intake owner must authenticate any reuse. */
+export function planCorrelatedAttachmentClaim(input: {
+  readonly attachmentsDir: string;
+  readonly threadId: string;
+  readonly attachmentId: string;
+  readonly requestDigest: string;
+  readonly bytesDigest: string;
+  readonly ordinal: number;
+}): AttachmentClaimPlan {
+  if (
+    parseThreadSegmentFromAttachmentId(input.attachmentId) !== PENDING_ATTACHMENT_THREAD_SEGMENT ||
+    parseAttachmentUuid(input.attachmentId) === null ||
+    !/^[a-f0-9]{64}$/.test(input.requestDigest) ||
+    !/^[a-f0-9]{64}$/.test(input.bytesDigest)
+  )
+    return { ok: false, reason: "invalid correlated upload identity" };
+  const currentPath = resolveAttachmentPathById(input);
+  const id = createDeterministicAttachmentId(
+    input.threadId,
+    JSON.stringify([
+      "t3.attachment-intake/v1",
+      input.requestDigest,
+      input.attachmentId,
+      input.bytesDigest,
+      input.ordinal,
+    ]),
+  );
+  if (currentPath === null || id === null)
+    return { ok: false, reason: "attachment not found or invalid thread" };
+  const finalId = `${id}${attachmentIdExtensionSuffix(parseAttachmentFileExtension(input.attachmentId) ?? undefined)}`;
+  const finalPath = resolveAttachmentRelativePath({
+    attachmentsDir: input.attachmentsDir,
+    relativePath: `${finalId}${NodePath.extname(currentPath)}`,
+  });
+  return finalPath === null
+    ? { ok: false, reason: "invalid correlated destination" }
+    : { ok: true, finalId, currentPath, finalPath };
+}
+
 export function sweepStalePendingAttachments(input: {
   readonly attachmentsDir: string;
   readonly nowMs: number;

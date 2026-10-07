@@ -221,11 +221,14 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
 import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as IntakeCommandReceipts from "./orchestration-v2/CommandReceiptStore.ts";
+import * as IntakeEventSink from "./orchestration-v2/EventSink.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
@@ -1197,6 +1200,9 @@ const makeWsRpcLayer = (
         | ThreadLaunchService.ThreadLaunchService
         | FileSystem.FileSystem
         | ServerConfig.ServerConfig
+        | SqlClient.SqlClient
+        | IntakeCommandReceipts.CommandReceiptStoreV2
+        | IntakeEventSink.EventSinkV2
       >();
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
       const projectStore = yield* ProjectStore.ProjectStoreV2;
@@ -1244,6 +1250,7 @@ const makeWsRpcLayer = (
               Effect.orElseSucceed(() => null),
             );
       const usage = yield* UsageService.UsageService;
+      const tokenAccounting = yield* TokenAccountingService.TokenAccountingService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
@@ -1675,6 +1682,9 @@ const makeWsRpcLayer = (
             yield* serverSettings.getSettings,
           );
           const environment = yield* serverEnvironment.getDescriptor;
+          const capabilities = { ...environment.capabilities };
+          delete capabilities.savedTokenAccounting;
+          if (yield* tokenAccounting.isAvailable) capabilities.savedTokenAccounting = true;
           const auth = yield* serverAuth.getDescriptor();
           const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
           const editorConfig = yield* resolveEditorConfig(
@@ -1683,7 +1693,7 @@ const makeWsRpcLayer = (
           );
 
           return {
-            environment,
+            environment: { ...environment, capabilities },
             auth,
             cwd: config.cwd,
             keybindingsConfigPath: config.keybindingsConfigPath,
@@ -2653,6 +2663,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.serverGetUsageSummary, usage.readSummary(input), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverReadTokenAccounting]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverReadTokenAccounting, tokenAccounting.read, {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverRefreshUsageRates]: (_input) =>
           observeRpcEffect(WS_METHODS.serverRefreshUsageRates, usage.refreshRates, {
             "rpc.aggregate": "server",
@@ -2726,6 +2740,10 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "cloud" },
           ),
+        [WS_METHODS.pullRequestsCiStatus]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsCiStatus, pullRequests.ciStatus(input), {
+            "rpc.aggregate": "pull-requests",
+          }),
         [WS_METHODS.pullRequestsList]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsList, pullRequests.list(input), {
             "rpc.aggregate": "pull-requests",

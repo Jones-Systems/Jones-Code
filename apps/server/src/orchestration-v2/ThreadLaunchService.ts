@@ -1,6 +1,11 @@
 import { canonicalJson } from "./CanonicalJson.ts";
 import * as DateTime from "effect/DateTime";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import {
+  readIssuedGitFetchTerminalFailure,
+  type IssuedGitFetchTerminalFailure,
+} from "../vcs/GitVcsDriverCore.ts";
 import * as ServerConfig from "../config.ts";
 import { nativeWorktreePath } from "../vcs/worktreePath.ts";
 import * as Stream from "effect/Stream";
@@ -252,7 +257,41 @@ export type OrdinaryPreparedPhysicalResultV1 = {
         readonly targetCount: 0;
       };
     }
+  | {
+      readonly kind: "prepared_precreation_failure_observed";
+      readonly branch: string | null;
+      readonly readback: {
+        readonly cwd: string;
+        readonly refName: string | null;
+        readonly isRepo: true;
+      };
+      readonly parentHeadBefore: string;
+      readonly parentHeadAfter: string;
+      readonly containerPath: string;
+      readonly structuralParentPath: string;
+      readonly plannedChildPath: string;
+      readonly targetState: "absent";
+      readonly worktree: null;
+      readonly failure: string;
+      readonly setup: {
+        readonly status: "no_managed_process";
+        readonly managerId: string;
+        readonly ownerBirth: OrdinaryCheckout.OrdinaryApplicationBirthV1;
+        readonly targetCount: 0;
+      };
+    }
 );
+
+const issuedPreparedPrecreationBackings = new WeakMap<
+  object,
+  {
+    readonly terminal: IssuedGitFetchTerminalFailure;
+    readonly revalidate: () => boolean;
+    readonly retired: () => boolean;
+  }
+>();
+
+const issuedPreparedFailureBackings = new WeakMap<object, { readonly retired: () => boolean }>();
 
 const issuedOrdinaryPreparedPhysicalResults = new WeakMap<
   object,
@@ -269,6 +308,66 @@ export function readIssuedOrdinaryPreparedPhysicalResult(
   const issued = issuedOrdinaryPreparedPhysicalResults.get(value);
   if (issued === undefined) return null;
   try {
+    if (issued.result.kind === "prepared_precreation_failure_observed") {
+      const backing = issuedPreparedPrecreationBackings.get(value);
+      if (
+        backing === undefined ||
+        !backing.revalidate() ||
+        readIssuedGitFetchTerminalFailure(backing.terminal.error, backing.terminal.request) !==
+          backing.terminal
+      )
+        return null;
+    }
+    return JSON.stringify(issued.result) === issued.snapshot ? issued.result : null;
+  } catch {
+    return null;
+  }
+}
+
+// Historical retry never revives the live producer predicate. This separate
+// reader recognizes the same issuer only after its original owned fiber ended.
+export function readIssuedRetiredPreparedPrecreationResult(
+  value: unknown,
+): Extract<
+  OrdinaryPreparedPhysicalResultV1,
+  { kind: "prepared_precreation_failure_observed" }
+> | null {
+  if (value === null || typeof value !== "object") return null;
+  const issued = issuedOrdinaryPreparedPhysicalResults.get(value);
+  const backing = issuedPreparedPrecreationBackings.get(value);
+  if (
+    issued === undefined ||
+    backing === undefined ||
+    issued.result.kind !== "prepared_precreation_failure_observed"
+  )
+    return null;
+  try {
+    if (
+      !backing.retired() ||
+      readIssuedGitFetchTerminalFailure(backing.terminal.error, backing.terminal.request) !==
+        backing.terminal
+    )
+      return null;
+    return JSON.stringify(issued.result) === issued.snapshot ? issued.result : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readIssuedRetiredPreparedFailureResult(
+  value: unknown,
+): Extract<OrdinaryPreparedPhysicalResultV1, { kind: "prepared_failure_observed" }> | null {
+  if (value === null || typeof value !== "object") return null;
+  const issued = issuedOrdinaryPreparedPhysicalResults.get(value);
+  const backing = issuedPreparedFailureBackings.get(value);
+  if (
+    issued === undefined ||
+    backing === undefined ||
+    issued.result.kind !== "prepared_failure_observed"
+  )
+    return null;
+  try {
+    if (!backing.retired()) return null;
     return JSON.stringify(issued.result) === issued.snapshot ? issued.result : null;
   } catch {
     return null;
@@ -344,10 +443,13 @@ function failureDetail(error: unknown): string {
   return `Workspace preparation failed: ${error instanceof Error ? error.message : String(error)}`;
 }
 
+const ORIGINAL_PRODUCER_RETIREMENT_WAIT = "5 seconds";
+
 const make = Effect.gen(function* () {
   const ordinaryEventSink = yield* Effect.serviceOption(EventSinkV2);
   const effectOutbox = yield* Effect.serviceOption(EffectOutbox.EffectOutboxV2);
   const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
+  const preparationPath = yield* Effect.serviceOption(Path.Path);
   const serverConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const projects = yield* ProjectService.ProjectService;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
@@ -370,6 +472,10 @@ const make = Effect.gen(function* () {
     readonly commands: ReadonlySet<CommandId>;
     readonly legacyResults: ReadonlyMap<CommandId, Deferred.Deferred<void, ThreadLaunchError>>;
   }>({ commands: new Set(), legacyResults: new Map() });
+  const preparationProducers = yield* Ref.make<ReadonlyMap<string, Fiber.Fiber<unknown, unknown>>>(
+    new Map(),
+  );
+  const preparationProducerKey = (threadId: ThreadId, runId: RunId) => `${threadId}\u0000${runId}`;
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
 
   const mapError =
@@ -1184,6 +1290,13 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     runId: RunId | null,
   ) {
+    const producerFiber = yield* Effect.fiber;
+    if (runId !== null)
+      yield* Ref.update(preparationProducers, (producers) => {
+        const next = new Map(producers);
+        next.set(preparationProducerKey(threadId, runId), producerFiber);
+        return next;
+      });
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
       Effect.flatMap(
@@ -1277,8 +1390,17 @@ const make = Effect.gen(function* () {
             branch: admission.capture.branch,
           };
     const producerId = yield* randomUuidV4;
-    const producerFiber = yield* Effect.fiber;
     let producerActive = true;
+    let precreationClosing = false;
+    let precreationScopeClosed = false;
+    let precreationFailureCleanupCompleted = false;
+    let originalFetchTerminal: IssuedGitFetchTerminalFailure | null = null;
+    let precreationBaseline: {
+      readonly parentHead: string;
+      readonly parentBranch: string | null;
+      readonly containerPath: string;
+      readonly structuralParentPath: string;
+    } | null = null;
     let created = input.workspaceStrategy.type !== "worktree";
     let creationEntered = false;
     let physicalUnknown = false;
@@ -1287,7 +1409,28 @@ const make = Effect.gen(function* () {
     let effectiveBranch = target.branch;
     let renameFiber: Fiber.Fiber<void, never> | null = null;
     let renameEntered = false;
+    const retainedPrecreationCurrent = () =>
+      precreationClosing &&
+      precreationScopeClosed &&
+      precreationFailureCleanupCompleted &&
+      !producerActive &&
+      !physicalUnknown &&
+      !ownershipLost &&
+      producerFiber.pollUnsafe() === undefined &&
+      originalFetchTerminal !== null &&
+      readIssuedGitFetchTerminalFailure(
+        originalFetchTerminal.error,
+        originalFetchTerminal.request,
+      ) === originalFetchTerminal;
     const revalidateProducer = Effect.gen(function* () {
+      if (!producerActive) {
+        if (retainedPrecreationCurrent()) return;
+        return yield* mapError(
+          input,
+          "provision-worktree",
+          threadId,
+        )("The sealed original preparation is unavailable for qualification.");
+      }
       if (
         !producerActive ||
         producerFiber.pollUnsafe() !== undefined ||
@@ -1334,11 +1477,26 @@ const make = Effect.gen(function* () {
         revalidateProducer,
       })
       .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-    const revalidateExecution = lifetime.revalidateExecution(execution).pipe(
+    const capturedRevalidateExecution = lifetime.revalidateExecution(execution);
+    const revalidateExecution = Effect.suspend<
+      Effect.Success<typeof capturedRevalidateExecution>,
+      Effect.Error<typeof capturedRevalidateExecution> | ThreadLaunchError,
+      Effect.Services<typeof capturedRevalidateExecution>
+    >(() =>
+      producerActive
+        ? capturedRevalidateExecution
+        : Effect.fail(
+            mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )("The original preparation has closed physical entry."),
+          ),
+    ).pipe(
       Effect.asVoid,
-      Effect.onError(() =>
+      Effect.onError((cause) =>
         Effect.sync(() => {
-          ownershipLost = true;
+          if (!Cause.hasInterruptsOnly(cause)) ownershipLost = true;
         }),
       ),
       Effect.mapError(mapError(input, "provision-worktree", threadId)),
@@ -1612,16 +1770,61 @@ const make = Effect.gen(function* () {
               const ambiguousOriginPrefix =
                 selectedRemote === undefined && baseRef.startsWith("origin/");
               yield* revalidateExecution;
-              yield* git
-                .fetchRemote({
-                  cwd: project.workspaceRoot,
-                  remoteName: "origin",
-                  ...(!ambiguousOriginPrefix &&
-                  (selectedRemote === undefined || selectedRemote === "origin")
-                    ? { refName: baseRef }
-                    : {}),
-                })
-                .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+              const originalFetchInput = {
+                cwd: project.workspaceRoot,
+                remoteName: "origin",
+                ...(!ambiguousOriginPrefix &&
+                (selectedRemote === undefined || selectedRemote === "origin")
+                  ? { refName: baseRef }
+                  : {}),
+              };
+              if (
+                target.worktreePath !== null &&
+                Option.isSome(serverConfig) &&
+                Option.isSome(preparationPath)
+              ) {
+                const actualPath = preparationPath.value;
+                const actualConfig = serverConfig.value;
+                const plannedChildPath = target.worktreePath;
+                precreationBaseline = yield* Effect.gen(function* () {
+                  const containerPath = yield* fs.realPath(actualConfig.worktreesDir);
+                  const structuralParentPath = yield* fs.realPath(
+                    actualPath.dirname(plannedChildPath),
+                  );
+                  const relative = actualPath.relative(containerPath, structuralParentPath);
+                  if (
+                    actualPath.isAbsolute(relative) ||
+                    relative === ".." ||
+                    relative.startsWith(`..${actualPath.sep}`) ||
+                    actualPath.join(structuralParentPath, actualPath.basename(plannedChildPath)) !==
+                      canonicalCheckoutPath ||
+                    (yield* fs.exists(canonicalCheckoutPath))
+                  )
+                    return null;
+                  const parent = yield* git.localStatus({ cwd: canonicalProjectRoot });
+                  if (!parent.isRepo) return null;
+                  return {
+                    parentHead: (yield* git.resolveCommit({
+                      cwd: canonicalProjectRoot,
+                      revision: "HEAD",
+                    })).commitSha,
+                    parentBranch: parent.refName,
+                    containerPath,
+                    structuralParentPath,
+                  };
+                }).pipe(Effect.catch(() => Effect.succeed(null)));
+              }
+              yield* git.fetchRemote(originalFetchInput).pipe(
+                Effect.tapError((error) =>
+                  Effect.sync(() => {
+                    originalFetchTerminal = readIssuedGitFetchTerminalFailure(
+                      error,
+                      originalFetchInput,
+                    );
+                  }),
+                ),
+                Effect.mapError(mapError(input, "provision-worktree", threadId)),
+              );
               const resolvedRemoteBase =
                 selectedRemote === undefined || selectedRemote === "origin"
                   ? yield* git
@@ -2230,15 +2433,104 @@ const make = Effect.gen(function* () {
           Effect.onError((cause) =>
             Effect.gen(function* () {
               const cancelled = Cause.hasInterruptsOnly(cause);
+              if (
+                !Cause.hasInterrupts(cause) &&
+                !ownershipLost &&
+                !physicalUnknown &&
+                !created &&
+                !creationEntered &&
+                !renameEntered &&
+                renameFiber === null &&
+                !releaseEntered &&
+                setupTerminalId === null &&
+                createdWorktreePath === null &&
+                worktreeResult === null &&
+                originalFetchTerminal !== null &&
+                precreationBaseline !== null &&
+                readIssuedGitFetchTerminalFailure(
+                  originalFetchTerminal.error,
+                  originalFetchTerminal.request,
+                ) === originalFetchTerminal
+              ) {
+                precreationClosing = true;
+                producerActive = false;
+              }
               yield* setupTracker.finish(
                 threadId,
                 cancelled ? "cancelled" : "failed",
                 cancelled ? null : failureDetail(Cause.squash(cause)),
               );
               if (renameFiber !== null)
-                yield* !cancelled && renameEntered
+                yield* !cancelled
                   ? Fiber.await(renameFiber)
-                  : Fiber.interrupt(renameFiber);
+                  : renameEntered
+                    ? Fiber.await(renameFiber)
+                    : Fiber.interrupt(renameFiber);
+              const cleanupEligible =
+                input.legacyBootstrap === undefined &&
+                tracked &&
+                reused === undefined &&
+                createdWorktreePath !== null &&
+                (cancelled || !workspaceRecorded) &&
+                !releaseEntered;
+              if (
+                cleanupEligible &&
+                createdWorktreePath === canonicalCheckoutPath &&
+                target.worktreePath === canonicalCheckoutPath &&
+                admission.capture.canonicalCheckoutPath === canonicalCheckoutPath &&
+                canonicalCheckoutPath !== canonicalProjectRoot &&
+                (worktreeResult === null || worktreeResult.path === canonicalCheckoutPath) &&
+                !ownershipLost &&
+                !physicalUnknown &&
+                !renameEntered &&
+                setupTerminalId === null
+              ) {
+                yield* Effect.gen(function* () {
+                  yield* revalidateExecution;
+                  const managed = yield* terminals.captureOwnedTargets({
+                    threadId,
+                    ownerBirth: admission.capture.applicationBirth,
+                  });
+                  if (
+                    managed.status !== "captured" ||
+                    managed.threadId !== threadId ||
+                    managed.targets.length > 0 ||
+                    canonicalJson(managed.ownerBirth) !==
+                      canonicalJson(admission.capture.applicationBirth)
+                  )
+                    return yield* mapError(
+                      input,
+                      "provision-worktree",
+                      threadId,
+                    )("The original planned checkout still has an unqualified managed owner.");
+                  yield* git.removeWorktree({
+                    cwd: project.workspaceRoot,
+                    path: canonicalCheckoutPath,
+                    force: true,
+                  });
+                  if (yield* fs.exists(canonicalCheckoutPath))
+                    return yield* mapError(
+                      input,
+                      "provision-worktree",
+                      threadId,
+                    )("The original planned checkout remains after removal.");
+                  if (workspaceRecorded)
+                    yield* threads.dispatch({
+                      type: "thread.metadata.update",
+                      commandId: CommandId.make(`${input.commandId}:cancel-workspace`),
+                      threadId,
+                      worktreePath: null,
+                      branch: null,
+                    });
+                }).pipe(
+                  Effect.catchCause((cleanupCause) =>
+                    Effect.logWarning("The original planned checkout cleanup is unqualified", {
+                      operationId: originalUse.operationId,
+                      detail: failureDetail(Cause.squash(cleanupCause)).slice(0, 512),
+                    }),
+                  ),
+                );
+              }
               const settleQualifiedFailure = Effect.gen(function* () {
                 yield* revalidateExecution;
                 const managed = yield* terminals.captureOwnedTargets({
@@ -2248,9 +2540,12 @@ const make = Effect.gen(function* () {
                 if (
                   managed.status !== "captured" ||
                   managed.threadId !== threadId ||
-                  managed.targets.length > 0
+                  managed.targets.length > 0 ||
+                  canonicalJson(managed.ownerBirth) !==
+                    canonicalJson(admission.capture.applicationBirth)
                 )
                   return false;
+                const managedSnapshot = canonicalJson(managed);
                 yield* git.invalidateLocalStatus(canonicalCheckoutPath);
                 const readback = yield* git.localStatus({ cwd: canonicalCheckoutPath });
                 const unspecifiedRoot =
@@ -2284,6 +2579,18 @@ const make = Effect.gen(function* () {
                     targetCount: 0,
                   },
                 });
+                issuedPreparedFailureBackings.set(physical, {
+                  retired: () =>
+                    producerFiber.pollUnsafe() !== undefined &&
+                    created &&
+                    worktreeResult !== null &&
+                    !physicalUnknown &&
+                    !ownershipLost &&
+                    !releaseEntered &&
+                    setupTerminalId === null &&
+                    (renameFiber === null || renameFiber.pollUnsafe() !== undefined) &&
+                    canonicalJson(managed) === managedSnapshot,
+                });
                 yield* lifetime.recordPreparedOutcome({
                   ref: execution,
                   actualProducerOutcome: { kind: "prepared_failed", observation: physical },
@@ -2292,30 +2599,37 @@ const make = Effect.gen(function* () {
                 });
                 return true;
               });
-              const settled =
-                cancelled ||
-                ownershipLost ||
-                physicalUnknown ||
-                releaseEntered ||
-                setupTerminalId !== null ||
-                (tracked ? worktreeResult === null : createdWorktreePath !== null)
-                  ? false
-                  : yield* settleQualifiedFailure.pipe(
-                      Effect.catchCause((settleCause) =>
-                        Effect.logWarning(
-                          "The failed preparation retains its unqualified physical end",
-                          { operationId: originalUse.operationId, cause: settleCause },
-                        ).pipe(Effect.as(false)),
-                      ),
-                    );
-              if (!settled) {
-                physicalUnknown = true;
-                yield* lifetime
-                  .retainExecutionUnknown(
-                    execution,
-                    `Original preparation outcome unavailable: ${String(Cause.squash(cause))}`,
-                  )
-                  .pipe(Effect.ignore);
+              if (precreationClosing) {
+                precreationFailureCleanupCompleted = true;
+              } else {
+                const settled =
+                  cleanupEligible ||
+                  cancelled ||
+                  ownershipLost ||
+                  physicalUnknown ||
+                  releaseEntered ||
+                  setupTerminalId !== null ||
+                  (tracked ? worktreeResult === null : createdWorktreePath !== null)
+                    ? false
+                    : yield* settleQualifiedFailure.pipe(
+                        Effect.catchCause((settleCause) =>
+                          Effect.logWarning(
+                            "The failed preparation retains its unqualified physical end",
+                            { operationId: originalUse.operationId, cause: settleCause },
+                          ).pipe(Effect.as(false)),
+                        ),
+                      );
+                if (!settled) {
+                  physicalUnknown = true;
+                  yield* lifetime
+                    .retainExecutionUnknown(
+                      execution,
+                      cleanupEligible
+                        ? "The original preparation removed its unrecorded or cancelled planned checkout; removal has no qualified outcome kind."
+                        : `Original preparation outcome unavailable: ${String(Cause.squash(cause))}`,
+                    )
+                    .pipe(Effect.ignore);
+                }
               }
             }),
           ),
@@ -2323,6 +2637,137 @@ const make = Effect.gen(function* () {
         yield* Effect.raceFirst(preparation, Fiber.join(renewal));
       }),
     ).pipe(
+      Effect.onError((cause) =>
+        Effect.gen(function* () {
+          if (!precreationClosing) return;
+          precreationScopeClosed = true;
+          const qualifyClosedPrecreation = Effect.gen(function* () {
+            if (
+              Cause.hasInterrupts(cause) ||
+              !retainedPrecreationCurrent() ||
+              precreationBaseline === null ||
+              originalFetchTerminal === null ||
+              target.worktreePath === null ||
+              Option.isNone(preparationPath) ||
+              Option.isNone(serverConfig)
+            )
+              return false;
+            const terminal = originalFetchTerminal;
+            const baseline = precreationBaseline;
+            const actualPath = preparationPath.value;
+            if (
+              (yield* fs.realPath(project.workspaceRoot)) !== canonicalProjectRoot ||
+              (yield* fs.realPath(serverConfig.value.worktreesDir)) !== baseline.containerPath ||
+              (yield* fs.realPath(actualPath.dirname(target.worktreePath))) !==
+                baseline.structuralParentPath ||
+              (yield* fs.exists(canonicalCheckoutPath))
+            )
+              return false;
+            const managed = yield* terminals.captureOwnedTargets({
+              threadId,
+              ownerBirth: admission.capture.applicationBirth,
+            });
+            if (
+              managed.status !== "captured" ||
+              managed.threadId !== threadId ||
+              managed.targets.length !== 0 ||
+              canonicalJson(managed.ownerBirth) !==
+                canonicalJson(admission.capture.applicationBirth)
+            )
+              return false;
+            const managedSnapshot = canonicalJson(managed);
+            yield* git.invalidateLocalStatus(canonicalProjectRoot);
+            const parent = yield* git.localStatus({ cwd: canonicalProjectRoot });
+            const parentHeadAfter = (yield* git.resolveCommit({
+              cwd: canonicalProjectRoot,
+              revision: "HEAD",
+            })).commitSha;
+            if (
+              !parent.isRepo ||
+              parent.refName !== baseline.parentBranch ||
+              parentHeadAfter !== baseline.parentHead ||
+              !retainedPrecreationCurrent()
+            )
+              return false;
+            const physical = issueOrdinaryPreparedPhysicalResult({
+              version: 1,
+              kind: "prepared_precreation_failure_observed",
+              producerId,
+              execution,
+              targetSource,
+              checkoutPath: canonicalCheckoutPath,
+              observedAt: DateTime.formatIso(yield* DateTime.now),
+              branch: effectiveBranch,
+              readback: { cwd: canonicalProjectRoot, refName: parent.refName, isRepo: true },
+              parentHeadBefore: baseline.parentHead,
+              parentHeadAfter,
+              containerPath: baseline.containerPath,
+              structuralParentPath: baseline.structuralParentPath,
+              plannedChildPath: canonicalCheckoutPath,
+              targetState: "absent",
+              worktree: null,
+              failure: failureDetail(Cause.squash(cause)),
+              setup: {
+                status: "no_managed_process",
+                managerId: managed.managerId,
+                ownerBirth: admission.capture.applicationBirth,
+                targetCount: 0,
+              },
+            });
+            issuedPreparedPrecreationBackings.set(physical, {
+              terminal,
+              revalidate: () =>
+                retainedPrecreationCurrent() &&
+                originalFetchTerminal === terminal &&
+                canonicalJson(managed) === managedSnapshot,
+              retired: () => {
+                const ended = producerFiber.pollUnsafe();
+                return (
+                  ended !== undefined &&
+                  Exit.isSuccess(ended) &&
+                  precreationClosing &&
+                  precreationScopeClosed &&
+                  precreationFailureCleanupCompleted &&
+                  !producerActive &&
+                  !physicalUnknown &&
+                  !ownershipLost &&
+                  !created &&
+                  !creationEntered &&
+                  !renameEntered &&
+                  !releaseEntered &&
+                  setupTerminalId === null &&
+                  originalFetchTerminal === terminal &&
+                  canonicalJson(managed) === managedSnapshot
+                );
+              },
+            });
+            yield* lifetime.recordPreparedOutcome({
+              ref: execution,
+              actualProducerOutcome: { kind: "prepared_failed", observation: physical },
+              revalidateProducer,
+              completeOriginalUse: true,
+            });
+            return true;
+          });
+          const qualified = yield* qualifyClosedPrecreation.pipe(
+            Effect.catchCause((qualificationCause) =>
+              Effect.logWarning(
+                "The original precreation failure retains its unsupported physical end",
+                { operationId: originalUse.operationId, cause: qualificationCause },
+              ).pipe(Effect.as(false)),
+            ),
+          );
+          if (!qualified) {
+            physicalUnknown = true;
+            yield* lifetime
+              .retainExecutionUnknown(
+                execution,
+                "The original precreation failure is not physically qualified.",
+              )
+              .pipe(Effect.ignore);
+          }
+        }),
+      ),
       Effect.ensuring(
         Effect.sync(() => {
           producerActive = false;
@@ -2602,7 +3047,22 @@ const make = Effect.gen(function* () {
               Effect.ensuring(releasePreparation(input.commandId)),
             ),
           );
-    yield* preparation.pipe(Effect.forkIn(preparationScope));
+    yield* preparation.pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          if (runId === null) return;
+          const producer = yield* Effect.fiber;
+          yield* Ref.update(preparationProducers, (producers) => {
+            const key = preparationProducerKey(threadId, runId);
+            if (producers.get(key) !== producer) return producers;
+            const next = new Map(producers);
+            next.delete(key);
+            return next;
+          });
+        }),
+      ),
+      Effect.forkIn(preparationScope),
+    );
   });
 
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
@@ -2709,6 +3169,7 @@ const make = Effect.gen(function* () {
               )
             : input.workspaceStrategy;
         let target: { readonly branch: string | null; readonly worktreePath: string | null };
+        let acceptedWorktreePath: string | null | undefined;
         if (Option.isSome(launchReceipt) && launchReceipt.value.status === "accepted") {
           if (Option.isNone(ordinaryEventSink))
             return yield* mapError(
@@ -2743,17 +3204,57 @@ const make = Effect.gen(function* () {
             branch: original.event.payload.branch,
             worktreePath: original.event.payload.worktreePath,
           };
-          if (
-            workspaceStrategy.type === "worktree" &&
-            (target.branch === null || target.worktreePath === null)
-          )
-            return yield* mapError(
-              input,
-              "provision-worktree",
-              candidateThreadId,
-            )(
-              "The accepted launch has no preplanned worktree target; reconcile its original preparation.",
-            );
+          acceptedWorktreePath = target.worktreePath;
+          if (workspaceStrategy.type === "worktree" && target.worktreePath === null) {
+            const lifetime = ordinaryEventSink.value.ordinaryCheckoutLifetime;
+            if (
+              lifetime === undefined ||
+              Option.isNone(serverConfig) ||
+              Option.isNone(fileSystem) ||
+              target.branch === null
+            )
+              return yield* mapError(
+                input,
+                "provision-worktree",
+                candidateThreadId,
+              )("The accepted launch has no retained preplanned worktree target.");
+            const admission = yield* lifetime
+              .readAdmission(
+                input.initialMessage === undefined
+                  ? input.commandId
+                  : CommandId.make(`${input.commandId}:initial-message`),
+                candidateThreadId,
+              )
+              .pipe(Effect.mapError(mapError(input, "read-receipt", candidateThreadId)));
+            const worktreesDir = yield* fileSystem.value
+              .realPath(serverConfig.value.worktreesDir)
+              .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId)));
+            const expected = nativeWorktreePath({
+              worktreesDir,
+              cwd: project.workspaceRoot,
+              branch: target.branch,
+            });
+            if (
+              admission === null ||
+              admission.capture.threadId !== candidateThreadId ||
+              admission.capture.projectId !== input.projectId ||
+              admission.capture.branch !== target.branch ||
+              admission.capture.canonicalCheckoutPath !== expected ||
+              admission.capture.canonicalProjectRoot !==
+                (yield* fileSystem.value
+                  .realPath(project.workspaceRoot)
+                  .pipe(
+                    Effect.mapError(mapError(input, "provision-worktree", candidateThreadId)),
+                  )) ||
+              (workspaceStrategy.branch !== undefined && workspaceStrategy.branch !== target.branch)
+            )
+              return yield* mapError(
+                input,
+                "provision-worktree",
+                candidateThreadId,
+              )("The accepted launch lost its original planned checkout admission.");
+            target = { branch: admission.capture.branch, worktreePath: expected };
+          }
         } else if (workspaceStrategy.type === "worktree") {
           if (Option.isNone(serverConfig) || Option.isNone(fileSystem))
             return yield* mapError(
@@ -2780,8 +3281,21 @@ const make = Effect.gen(function* () {
                 ? workspaceStrategy.worktreePath
                 : null,
           };
+        const messageWorkspaceStrategy: ThreadLaunchWorkspaceStrategy =
+          input.legacyBootstrap === undefined &&
+          input.workspaceStrategy.type === "root" &&
+          workspaceStrategy.type === "root" &&
+          typeof acceptedWorktreePath === "string"
+            ? { type: "existing_worktree", worktreePath: acceptedWorktreePath }
+            : workspaceStrategy;
         const initialBranch = target.branch;
-        const initialWorktreePath = target.worktreePath;
+        // The admission retains the planned path; metadata publishes only a created checkout.
+        const initialWorktreePath =
+          acceptedWorktreePath !== undefined
+            ? acceptedWorktreePath
+            : workspaceStrategy.type === "worktree"
+              ? null
+              : target.worktreePath;
         const claimCommand: Extract<
           RecordedServerCommand,
           { readonly type: "thread.create" | "thread.metadata.update" }
@@ -2895,7 +3409,7 @@ const make = Effect.gen(function* () {
               modelSelection: input.modelSelection,
               dispatchMode: {
                 type: "defer_start",
-                workspaceStrategy,
+                workspaceStrategy: messageWorkspaceStrategy,
                 ...(input.runSetupScript === undefined
                   ? {}
                   : { runSetupScript: input.runSetupScript }),
@@ -3124,15 +3638,177 @@ const make = Effect.gen(function* () {
     return dispatched;
   });
 
-  const scheduleRetriedPreparation = (
+  const scheduleRetriedPreparation = Effect.fnUntraced(function* (
     input: ThreadLaunchRetryInput,
     projection: OrchestrationV2ThreadProjection,
     run: OrchestrationV2ThreadProjection["runs"][number],
     workspacePreparation: ThreadLaunchWorkspaceStrategy,
-  ) => {
+  ) {
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
-    // A worktree the failed attempt already created is reused, not created again.
+    const fail = (
+      cause: unknown,
+      operation: ThreadLaunchError["operation"] = "provision-worktree",
+    ) =>
+      new ThreadLaunchError({
+        operation,
+        commandId: input.commandId,
+        projectId: projection.thread.projectId,
+        threadId: input.threadId,
+        cause,
+      });
+    // A retained handle is only a wait hint; the store's issued reader owns qualification.
+    const producer = (yield* Ref.get(preparationProducers)).get(
+      preparationProducerKey(input.threadId, run.id),
+    );
+    if (producer !== undefined) {
+      if ((yield* Effect.fiber).id === producer.id)
+        return yield* fail("The original preparation producer cannot await itself.");
+      const ended = yield* Fiber.await(producer).pipe(
+        Effect.timeoutOption(ORIGINAL_PRODUCER_RETIREMENT_WAIT),
+      );
+      if (Option.isNone(ended))
+        return yield* fail("The original preparation producer has not retired.");
+    }
+    let retryWorktreePath = projection.thread.worktreePath;
+    if (workspacePreparation.type === "worktree" && retryWorktreePath === null) {
+      const lifetime = Option.getOrUndefined(ordinaryEventSink)?.ordinaryCheckoutLifetime;
+      if (lifetime === undefined)
+        return yield* fail("The original planned checkout admission is unavailable.");
+      const admission = yield* lifetime.readAdmissionForRun({
+        threadId: input.threadId,
+        runId: run.id,
+      });
+      if (
+        admission === null ||
+        admission.capture.projectId !== projection.thread.projectId ||
+        admission.capture.branch !== projection.thread.branch ||
+        admission.capture.branch === null
+      )
+        return yield* fail("The unpublished preparation lost its original planned target.");
+      retryWorktreePath = admission.capture.canonicalCheckoutPath;
+    }
+    let uncreated = false;
+    if (
+      workspacePreparation.type === "worktree" &&
+      retryWorktreePath !== null &&
+      projection.thread.branch !== null
+    ) {
+      if (
+        Option.isNone(ordinaryEventSink) ||
+        ordinaryEventSink.value.ordinaryCheckoutLifetime?.readOriginalPreparedRetry === undefined ||
+        Option.isNone(fileSystem) ||
+        message === undefined
+      )
+        return yield* fail(
+          "The original completed preparation reader and physical observer are unavailable.",
+        );
+      const fs = fileSystem.value;
+      const lifetime = ordinaryEventSink.value.ordinaryCheckoutLifetime;
+      const project = Option.getOrNull(yield* projects.getById(projection.thread.projectId));
+      if (project === null) return yield* fail("Project no longer exists.", "resolve-project");
+      const canonicalProjectRoot = yield* fs.realPath(project.workspaceRoot);
+      const query = {
+        threadId: input.threadId,
+        projectId: project.id,
+        runId: run.id,
+        messageId: message.id,
+        canonicalProjectRoot,
+        canonicalCheckoutPath: retryWorktreePath,
+        branch: projection.thread.branch,
+        targetSource: {
+          projectWorkspaceRoot: project.workspaceRoot,
+          worktreePath: retryWorktreePath,
+        },
+      };
+      const original = yield* lifetime.readOriginalPreparedRetry(query);
+      const physical = original.outcome.observation;
+      if (physical.kind === "prepared_precreation_failure_observed") {
+        if (Option.isNone(preparationPath) || Option.isNone(serverConfig))
+          return yield* fail(
+            "The original completed preparation reader and physical observer are unavailable.",
+          );
+        const paths = preparationPath.value;
+        // Physical IO stays outside the captured SQL read transaction. Absence
+        // is checked against the already issued original outcome, never alone.
+        const container = yield* fs.realPath(serverConfig.value.worktreesDir);
+        const parent = yield* fs.realPath(paths.dirname(query.canonicalCheckoutPath));
+        const entries = yield* fs.readDirectory(parent);
+        const targetExists = yield* fs.exists(query.canonicalCheckoutPath);
+        const managed = yield* terminals.captureOwnedTargets({
+          threadId: input.threadId,
+          ownerBirth: physical.setup.ownerBirth,
+        });
+        yield* git.invalidateLocalStatus(canonicalProjectRoot);
+        const parentState = yield* git.localStatus({ cwd: canonicalProjectRoot });
+        const parentHead = yield* git.resolveCommit({
+          cwd: canonicalProjectRoot,
+          revision: "HEAD",
+        });
+        const relativeParent = paths.relative(container, parent);
+        if (
+          container !== physical.containerPath ||
+          parent !== physical.structuralParentPath ||
+          parent !== paths.dirname(query.canonicalCheckoutPath) ||
+          relativeParent === ".." ||
+          relativeParent.startsWith(`..${paths.sep}`) ||
+          paths.isAbsolute(relativeParent) ||
+          nativeWorktreePath({
+            worktreesDir: container,
+            cwd: project.workspaceRoot,
+            branch: query.branch,
+          }) !== query.canonicalCheckoutPath ||
+          entries.includes(paths.basename(query.canonicalCheckoutPath)) ||
+          targetExists ||
+          managed.status !== "captured" ||
+          managed.managerId !== physical.setup.managerId ||
+          managed.threadId !== input.threadId ||
+          managed.targets.length !== 0 ||
+          canonicalJson(managed.ownerBirth) !== canonicalJson(physical.setup.ownerBirth) ||
+          !parentState.isRepo ||
+          parentState.refName !== physical.readback.refName ||
+          parentHead.commitSha !== physical.parentHeadAfter ||
+          (yield* fs.realPath(project.workspaceRoot)) !== canonicalProjectRoot
+        )
+          return yield* fail(
+            "The original absent target or canonical parent changed before retry.",
+          );
+        // Rebind the same store-retained identity after the real reads. A copied
+        // observation, foreign store, revived actor or pending work refuses.
+        if ((yield* lifetime.readOriginalPreparedRetry(query)) !== original)
+          return yield* fail(
+            "The original completed preparation changed during retry qualification.",
+          );
+        uncreated = true;
+      } else if (physical.kind === "prepared_failure_observed") {
+        const managed = yield* terminals.captureOwnedTargets({
+          threadId: input.threadId,
+          ownerBirth: physical.setup.ownerBirth,
+        });
+        yield* git.invalidateLocalStatus(query.canonicalCheckoutPath);
+        const checkout = yield* git.localStatus({ cwd: query.canonicalCheckoutPath });
+        if (
+          managed.status !== "captured" ||
+          managed.managerId !== physical.setup.managerId ||
+          managed.threadId !== input.threadId ||
+          managed.targets.length !== 0 ||
+          canonicalJson(managed.ownerBirth) !== canonicalJson(physical.setup.ownerBirth) ||
+          !checkout.isRepo ||
+          checkout.refName !== query.branch ||
+          (yield* fs.realPath(query.canonicalCheckoutPath)) !== query.canonicalCheckoutPath ||
+          (yield* fs.realPath(project.workspaceRoot)) !== canonicalProjectRoot
+        )
+          return yield* fail(
+            "The original created checkout or managed owner changed before retry.",
+          );
+        if ((yield* lifetime.readOriginalPreparedRetry(query)) !== original)
+          return yield* fail(
+            "The original completed preparation changed during retry qualification.",
+          );
+      }
+    }
+    // An actually created checkout retains the existing reuse strategy.
     const reuse =
+      !uncreated &&
       workspacePreparation.type === "worktree" &&
       projection.thread.worktreePath !== null &&
       projection.thread.branch !== null
@@ -3145,11 +3821,19 @@ const make = Effect.gen(function* () {
             reusedWorktree: { baseRef: workspacePreparation.baseRef },
           }
         : null;
-    return schedulePreparation(
+    return yield* schedulePreparation(
       {
         commandId: input.commandId,
         projectId: projection.thread.projectId,
         workspaceStrategy: reuse?.strategy ?? workspacePreparation,
+        ...(uncreated
+          ? {
+              preparedTarget: {
+                branch: projection.thread.branch,
+                worktreePath: retryWorktreePath,
+              },
+            }
+          : {}),
         ...(run.workspaceRunSetupScript === undefined
           ? {}
           : { runSetupScript: run.workspaceRunSetupScript }),
@@ -3167,7 +3851,7 @@ const make = Effect.gen(function* () {
       input.threadId,
       run.id,
     );
-  };
+  });
 
   const prepareDelegated = Effect.fn("ThreadLaunchService.prepareDelegated")(function* (
     effect: EffectOutbox.OrchestrationEffectV2,

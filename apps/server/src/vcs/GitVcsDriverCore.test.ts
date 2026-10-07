@@ -33,6 +33,7 @@ import * as ServerConfig from "../config.ts";
 import { gitCommandDuration } from "../observability/Metrics.ts";
 import {
   makeGitVcsDriverCore,
+  readIssuedGitFetchTerminalFailure,
   parseGitCheckoutProgressLine,
   splitNullSeparatedGitStdoutPaths,
 } from "./GitVcsDriverCore.ts";
@@ -266,6 +267,63 @@ const initRepoWithCommit = (
     const initialBranch = yield* git(cwd, ["branch", "--show-current"]);
     return { initialBranch };
   });
+
+const acquireOriginalFetchFailureFixture = Effect.gen(function* () {
+  const root = yield* makeTmpDir("git-original-fetch-issuer-");
+  const fs = yield* FileSystem.FileSystem;
+  const paths = yield* Path.Path;
+  const driver = yield* GitVcsDriver.GitVcsDriver;
+  const upstream = paths.join(root, "upstream");
+  const origin = paths.join(root, "origin.git");
+  const cwd = paths.join(root, "project");
+  yield* fs.makeDirectory(upstream);
+  yield* initRepoWithCommit(upstream);
+  yield* git(upstream, ["branch", "-M", "main"]);
+  yield* git(root, ["clone", "--bare", "--no-hardlinks", upstream, origin]);
+  yield* git(root, ["clone", "--no-hardlinks", origin, cwd]);
+  yield* git(upstream, ["remote", "add", "origin", origin]);
+  yield* writeTextFile(upstream, "next.txt", "authentic remote update\n");
+  yield* git(upstream, ["add", "next.txt"]);
+  yield* git(upstream, ["commit", "-m", "authentic remote update"]);
+  const upstreamHead = yield* git(upstream, ["rev-parse", "HEAD"]);
+  yield* git(upstream, ["push", "origin", "main"]);
+  const parentHead = yield* git(cwd, ["rev-parse", "HEAD"]);
+  const trackingHead = yield* git(cwd, ["rev-parse", "refs/remotes/origin/main"]);
+  assert.equal(parentHead, trackingHead);
+  assert.notEqual(upstreamHead, trackingHead);
+  const rawLock = yield* git(cwd, ["rev-parse", "--git-path", "refs/remotes/origin/main.lock"]);
+  const lock = paths.resolve(cwd, rawLock);
+  const gitDirectory = yield* fs.realPath(paths.join(cwd, ".git"));
+  assert.equal(
+    paths.relative(gitDirectory, lock),
+    paths.join("refs", "remotes", "origin", "main.lock"),
+  );
+  const contents = "scope-owned original fetch ref lock\n";
+  yield* fs.writeFileString(lock, contents, { flag: "wx" });
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      assert.equal(yield* fs.readFileString(lock), contents);
+      yield* fs.remove(lock);
+    }).pipe(Effect.orDie),
+  );
+  const request = { cwd, remoteName: "origin", refName: "main" };
+  const error = yield* driver.fetchRemote(request).pipe(Effect.flip);
+  const original = readIssuedGitFetchTerminalFailure(error, request);
+  if (original === null)
+    return yield* Effect.die("The genuine ref-lock child issued no original terminal.");
+  assert.strictEqual(original.request, request);
+  assert.strictEqual(original.error, error);
+  assert.equal(original.command.operation, "GitVcsDriver.fetchRemote");
+  assert.equal(original.command.cwd, cwd);
+  assert.isFalse(original.result.stdoutTruncated);
+  assert.isFalse(original.result.stderrTruncated);
+  assert.isFalse(yield* original.child.isRunning);
+  assert.equal(yield* original.child.exitCode, original.result.exitCode);
+  assert.isAbove(original.result.exitCode ?? 0, 0);
+  assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), parentHead);
+  assert.equal(yield* git(cwd, ["rev-parse", "refs/remotes/origin/main"]), trackingHead);
+  return { request, error, original, parentHead, trackingHead };
+});
 
 it.effect("bounds Git bursts across drivers without timing out queued commands", () =>
   Effect.gen(function* () {
@@ -3981,6 +4039,81 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
 
         const registered = yield* git(cwd, ["worktree", "list", "--porcelain"]);
         assert.notInclude(registered, "stale");
+      }),
+    );
+  });
+
+  describe("authentic original fetch terminal issuer", () => {
+    it.effect("reads the awaited original ref-lock terminal and refuses copied identities", () =>
+      Effect.gen(function* () {
+        const fixture = yield* acquireOriginalFetchFailureFixture;
+        assert.strictEqual(
+          readIssuedGitFetchTerminalFailure(fixture.error, fixture.request),
+          fixture.original,
+        );
+        assert.isNull(readIssuedGitFetchTerminalFailure(fixture.error, { ...fixture.request }));
+        assert.isNull(readIssuedGitFetchTerminalFailure({ ...fixture.error }, fixture.request));
+        assert.isNull(readIssuedGitFetchTerminalFailure({ ...fixture.original }, fixture.request));
+        assert.strictEqual(
+          readIssuedGitFetchTerminalFailure(fixture.error, fixture.request),
+          fixture.original,
+        );
+      }),
+    );
+
+    it.effect.each(["cwd", "remoteName", "refName", "error", "result", "command"] as const)(
+      "refuses a changed original %s field and recognizes its exact restoration",
+      (field) =>
+        Effect.gen(function* () {
+          const fixture = yield* acquireOriginalFetchFailureFixture;
+          const { request, error, original } = fixture;
+          const object =
+            field === "error"
+              ? error
+              : field === "result"
+                ? original.result
+                : field === "command"
+                  ? original.command.args
+                  : request;
+          const key =
+            field === "error"
+              ? "detail"
+              : field === "result"
+                ? "stdout"
+                : field === "command"
+                  ? "0"
+                  : field;
+          const descriptor = Object.getOwnPropertyDescriptor(object, key);
+          if (descriptor === undefined)
+            return yield* Effect.die("The actual original mutation field is unavailable.");
+          assert.strictEqual(readIssuedGitFetchTerminalFailure(error, request), original);
+          try {
+            Object.defineProperty(object, key, {
+              ...descriptor,
+              value: "adversarial changed original field",
+            });
+            assert.isNull(readIssuedGitFetchTerminalFailure(error, request));
+          } finally {
+            Object.defineProperty(object, key, descriptor);
+          }
+          assert.deepEqual(Object.getOwnPropertyDescriptor(object, key), descriptor);
+          assert.strictEqual(readIssuedGitFetchTerminalFailure(error, request), original);
+        }),
+    );
+
+    it.effect("refuses an authentic original fetch spawn failure without a child terminal", () =>
+      Effect.gen(function* () {
+        const root = yield* makeTmpDir("git-original-fetch-spawn-");
+        const paths = yield* Path.Path;
+        const fs = yield* FileSystem.FileSystem;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const request = { cwd: paths.join(root, "absent"), remoteName: "origin", refName: "main" };
+        assert.isFalse(yield* fs.exists(request.cwd));
+        const error = yield* driver.fetchRemote(request).pipe(Effect.flip);
+        assert.equal(error.detail, "Failed to spawn Git process.");
+        assert.instanceOf(error.cause, PlatformError.PlatformError);
+        assert.isNull(readIssuedGitFetchTerminalFailure(error, request));
+        assert.isFalse(yield* fs.exists(request.cwd));
       }),
     );
   });

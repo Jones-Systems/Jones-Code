@@ -145,6 +145,8 @@ import {
 } from "./provider.ts";
 import { ProviderInstanceId, ProviderInstanceMutation } from "./providerInstance.ts";
 import {
+  PullRequestCiStatusInput,
+  PullRequestCiStatusResult,
   PullRequestActionInput,
   PullRequestActivity,
   PullRequestCommentInput,
@@ -303,6 +305,7 @@ import {
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import { TokenAccountingReadInput, TokenAccountingReadResult } from "./tokenAccounting.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   ScheduledTaskDeleteInput,
@@ -466,6 +469,7 @@ export const WS_METHODS = {
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
+  serverReadTokenAccounting: "server.readTokenAccounting",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
   // Scheduled tasks
@@ -481,6 +485,7 @@ export const WS_METHODS = {
   cloudInstallRelayClient: "cloud.installRelayClient",
 
   // Pull request methods
+  pullRequestsCiStatus: "pullRequests.ciStatus",
   pullRequestsList: "pullRequests.list",
   pullRequestsListStats: "pullRequests.listStats",
   pullRequestsSummary: "pullRequests.summary",
@@ -837,6 +842,12 @@ const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
 
+const WsServerReadTokenAccountingRpc = Rpc.make(WS_METHODS.serverReadTokenAccounting, {
+  payload: TokenAccountingReadInput,
+  success: TokenAccountingReadResult,
+  error: EnvironmentAuthorizationError,
+});
+
 /**
  * Refetches the model rate table ahead of its daily TTL, so a model released
  * since the last fetch gets priced. The next usage summary uses the new table.
@@ -887,6 +898,12 @@ const PullRequestRpcError = Schema.Union([
   PullRequestOperationError,
   EnvironmentAuthorizationError,
 ]);
+
+const WsPullRequestsCiStatusRpc = Rpc.make(WS_METHODS.pullRequestsCiStatus, {
+  payload: PullRequestCiStatusInput,
+  success: PullRequestCiStatusResult,
+  error: PullRequestRpcError,
+});
 
 const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
   payload: PullRequestListInput,
@@ -1750,6 +1767,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
   WsServerGetUsageSummaryRpc,
+  WsServerReadTokenAccountingRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksListRpc,
@@ -1763,6 +1781,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetBackgroundPolicyRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
+  WsPullRequestsCiStatusRpc,
   WsPullRequestsListRpc,
   WsPullRequestsListStatsRpc,
   WsPullRequestsSummaryRpc,

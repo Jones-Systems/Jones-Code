@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./conversationLibrary": {
+      "types": "./src/conversationLibrary.ts",
+      "import": "./src/conversationLibrary.ts"
+    },
     "./orchestrationV2ThreadError": {
       "types": "./src/orchestrationV2ThreadError.ts",
       "import": "./src/orchestrationV2ThreadError.ts"

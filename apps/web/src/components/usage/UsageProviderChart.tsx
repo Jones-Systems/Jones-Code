@@ -222,14 +222,16 @@ export function UsageProviderChart({
 
     const built = providers.map((provider) => {
       const providerIndex = PROVIDER_ORDER.indexOf(provider);
-      const line = curvePath(
-        smoothCurve(
-          columns.map((column, periodIndex) => ({
-            x: periodIndex * step,
-            y: toY(column.bands[providerIndex]?.value ?? 0),
-          })),
-        ),
-      );
+      const points = columns.map((column, periodIndex) => ({
+        x: periodIndex * step,
+        y: toY(column.bands[providerIndex]?.value ?? 0),
+      }));
+      const first = points[0];
+      const curvePoints =
+        points.length === 1 && first !== undefined
+          ? [first, { x: VIEW_WIDTH, y: first.y }]
+          : points;
+      const line = curvePath(smoothCurve(curvePoints));
       return {
         provider,
         total: columns.reduce((sum, column) => sum + (column.bands[providerIndex]?.value ?? 0), 0),
@@ -386,8 +388,8 @@ export function UsageProviderChart({
 
             {hoverIndex === null ? null : (
               <line
-                x1={hoverIndex * stepX}
-                x2={hoverIndex * stepX}
+                x1={periods.length === 1 ? VIEW_WIDTH / 2 : hoverIndex * stepX}
+                x2={periods.length === 1 ? VIEW_WIDTH / 2 : hoverIndex * stepX}
                 y1={PLOT_TOP}
                 y2={VIEW_HEIGHT}
                 stroke="currentColor"

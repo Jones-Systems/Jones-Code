@@ -192,6 +192,7 @@ describe("orchestration V2 thread fork", () => {
           ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
           return {
+            projectId,
             sourceThreadId,
             targetThreadId,
             commands,
@@ -217,6 +218,18 @@ describe("orchestration V2 thread fork", () => {
             runtimePolicyOverride: { cwd },
           },
           CodexOrchestratorReplayHarness,
+          {
+            checkoutFixture: {
+              projects: [
+                {
+                  projectId: materialized.projectId,
+                  workspaceRoot: cwd,
+                  title: "Thread fork project",
+                },
+              ],
+              resolvePath: () => undefined,
+            },
+          },
         ).pipe(provideDeterministicTestRuntime);
 
         const sourceProjection = result.projections.get(materialized.sourceThreadId);
@@ -368,6 +381,7 @@ describe("orchestration V2 thread fork", () => {
           ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
           return {
+            projectId,
             sourceThreadId,
             targetThreadId,
             commands,
@@ -392,6 +406,18 @@ describe("orchestration V2 thread fork", () => {
             runtimePolicyOverride: { cwd },
           },
           ClaudeOrchestratorReplayHarness,
+          {
+            checkoutFixture: {
+              projects: [
+                {
+                  projectId: materialized.projectId,
+                  workspaceRoot: cwd,
+                  title: "Thread fork project",
+                },
+              ],
+              resolvePath: () => undefined,
+            },
+          },
         ).pipe(provideDeterministicTestRuntime);
 
         const sourceProjection = result.projections.get(materialized.sourceThreadId);
@@ -616,6 +642,7 @@ describe("orchestration V2 thread fork", () => {
         ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
         return {
+          projectId,
           sourceThreadId,
           targetThreadId,
           commands,
@@ -642,6 +669,18 @@ describe("orchestration V2 thread fork", () => {
           runtimePolicyOverride: { cwd, ...CODEX_READ_ONLY_NEVER_POLICY },
         },
         CodexOrchestratorReplayHarness,
+        {
+          checkoutFixture: {
+            projects: [
+              {
+                projectId: materialized.projectId,
+                workspaceRoot: cwd,
+                title: "Thread fork project",
+              },
+            ],
+            resolvePath: () => undefined,
+          },
+        },
       ).pipe(provideDeterministicTestRuntime);
 
       const targetProjection = result.projections.get(materialized.targetThreadId);
@@ -795,6 +834,7 @@ describe("orchestration V2 thread fork", () => {
         ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
         return {
+          projectId,
           sourceThreadId,
           targetThreadId,
           commands,
@@ -821,6 +861,18 @@ describe("orchestration V2 thread fork", () => {
           runtimePolicyOverride: { cwd },
         },
         ClaudeOrchestratorReplayHarness,
+        {
+          checkoutFixture: {
+            projects: [
+              {
+                projectId: materialized.projectId,
+                workspaceRoot: cwd,
+                title: "Thread fork project",
+              },
+            ],
+            resolvePath: () => undefined,
+          },
+        },
       ).pipe(provideDeterministicTestRuntime);
 
       const targetProjection = result.projections.get(materialized.targetThreadId);
@@ -973,6 +1025,7 @@ describe("orchestration V2 thread fork", () => {
         ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
         return {
+          projectId,
           sourceThreadId,
           targetThreadId,
           secondRunId,
@@ -1007,6 +1060,18 @@ describe("orchestration V2 thread fork", () => {
           runtimePolicyOverride: { cwd },
         },
         ClaudeOrchestratorReplayHarness,
+        {
+          checkoutFixture: {
+            projects: [
+              {
+                projectId: materialized.projectId,
+                workspaceRoot: cwd,
+                title: "Thread fork project",
+              },
+            ],
+            resolvePath: () => undefined,
+          },
+        },
       ).pipe(provideDeterministicTestRuntime);
 
       const sourceProjection = result.projections.get(materialized.sourceThreadId);
@@ -1190,6 +1255,7 @@ describe("orchestration V2 thread fork", () => {
         ] satisfies ReadonlyArray<OrchestrationV2Command>;
 
         return {
+          projectId,
           sourceThreadId,
           targetThreadId,
           targetSecondRunId,
@@ -1226,6 +1292,18 @@ describe("orchestration V2 thread fork", () => {
           runtimePolicyOverride: { cwd },
         },
         ClaudeOrchestratorReplayHarness,
+        {
+          checkoutFixture: {
+            projects: [
+              {
+                projectId: materialized.projectId,
+                workspaceRoot: cwd,
+                title: "Thread fork project",
+              },
+            ],
+            resolvePath: () => undefined,
+          },
+        },
       ).pipe(provideDeterministicTestRuntime);
 
       const targetProjection = result.projections.get(materialized.targetThreadId);

@@ -25,10 +25,32 @@ import * as Threads from "./ThreadManagementService.ts";
 import * as Launch from "./ThreadLaunchService.ts";
 import * as Sink from "./EventSink.ts";
 import * as Bridge from "./QueueCompatibility.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as IntakeEventStore from "./EventStore.ts";
+import * as IntakeProjectionStore from "./ProjectionStore.ts";
+import * as IntakeCommandReceipts from "./CommandReceiptStore.ts";
+import * as IntakeEffectOutbox from "./EffectOutbox.ts";
+import * as IntakeProjectStore from "./ProjectStore.ts";
+import * as IntakeTurnItemPositions from "./TurnItemPositionStore.ts";
+import * as IntakeEventSink from "./EventSink.ts";
+
 import {
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorDispatchError,
 } from "./Orchestrator.ts";
+
+const intakeReaderStores = Layer.mergeAll(
+  IntakeEventStore.layer,
+  IntakeProjectionStore.layer,
+  IntakeCommandReceipts.layer,
+  IntakeEffectOutbox.layer,
+  IntakeProjectStore.layer,
+  IntakeTurnItemPositions.layer,
+);
+const intakeReaders = Layer.mergeAll(
+  intakeReaderStores,
+  IntakeEventSink.layerFromStores.pipe(Layer.provide(intakeReaderStores)),
+).pipe(Layer.provideMerge(SqlitePersistenceMemory));
 
 const command = {
   type: "thread.turn.start",
@@ -50,6 +72,7 @@ const fixture = (
   Effect.gen(function* () {
     const received: OrchestrationV2ServerCommand[] = [];
     const services = Layer.mergeAll(
+      intakeReaders,
       Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: () => Effect.succeed(null),
         dispatch: (input) => {
@@ -82,7 +105,13 @@ const fixture = (
         listByThreadId: () => Effect.succeed([]),
         awaitCompletion: () => Effect.void,
       }),
-      Layer.mock(Sink.EventSinkV2)({ latestSequence: () => Effect.succeed(42) }),
+      Layer.effect(
+        Sink.EventSinkV2,
+        Effect.map(Sink.EventSinkV2, (actual) => ({
+          ...actual,
+          latestSequence: () => Effect.succeed(42),
+        })),
+      ).pipe(Layer.provide(intakeReaders)),
     );
     const bridge = yield* Bridge.QueueCompatibility.pipe(
       Effect.provide(Bridge.layer.pipe(Layer.provide(services))),

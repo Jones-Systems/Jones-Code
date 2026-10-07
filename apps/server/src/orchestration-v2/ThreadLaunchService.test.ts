@@ -1,14 +1,42 @@
+import * as GitManager from "../git/GitManager.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+import {
+  readIssuedGitFetchTerminalFailure,
+  type IssuedGitFetchTerminalFailure,
+} from "../vcs/GitVcsDriverCore.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
+import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
+import * as ProviderInstanceRegistryLive from "../provider/Layers/ProviderInstanceRegistryLive.ts";
+import * as PortScanner from "../preview/PortScanner.ts";
+import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import { terminalOwnerObservationLive } from "./ResourceCleanupService.ts";
+import type { ReplayDelegatedPreparationOwners } from "./testkit/ProviderReplayHarness.ts";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as Sink from "effect/Sink";
 import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
-// @effect-diagnostics nodeBuiltinImport:off - synthetic material claims need lstat device/inode; no real Git or setup executes.
+// @effect-diagnostics nodeBuiltinImport:off - synthetic material claims need lstat device/inode; the retry fixture uses scope-owned real Git.
 import * as NodeFS from "node:fs";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import type * as PtyAdapter from "../terminal/PtyAdapter.ts";
+import * as PtyAdapter from "../terminal/PtyAdapter.ts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Fiber from "effect/Fiber";
 import * as EventSink from "./EventSink.ts";
+import { makeCommitTransaction } from "./CommitTransaction.ts";
+import type { OrdinaryCheckoutLifetime } from "./OrdinaryCheckoutStore.ts";
+import {
+  ordinaryCheckoutAdmissionRefV1,
+  ordinaryCheckoutLeaseIdentityV1,
+} from "./OrdinaryCheckoutOwnership.ts";
+import * as SqlError from "effect/unstable/sql/SqlError";
 import { makeLegacyPreflight } from "./LegacyBootstrapPreflight.ts";
 import * as EventStore from "./EventStore.ts";
 import {
@@ -22,6 +50,8 @@ import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { nativeWorktreePath } from "../vcs/worktreePath.ts";
 import * as ServerConfig from "../config.ts";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
@@ -57,6 +87,9 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Random from "effect/Random";
+import { randomUuidV4 } from "./RandomUuid.ts";
+import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
@@ -123,12 +156,23 @@ const adapter = {
 } as ProviderAdapterV2Shape;
 
 interface HarnessOptions {
+  readonly afterPreparedOutcome?: (
+    input: Parameters<OrdinaryCheckoutLifetime["recordPreparedOutcome"]>[0],
+  ) => Effect.Effect<void>;
+  readonly afterDispatch?: (
+    command: Parameters<ThreadManagement.ThreadManagementService["Service"]["dispatch"]>[0],
+  ) => Effect.Effect<void>;
   readonly physicalFixture?: boolean;
   readonly worktreesDir?: string;
   readonly resolveCommit?: GitWorkflow.GitWorkflowService["Service"]["resolveCommit"];
   readonly privateDUnavailable?: boolean;
   readonly terminalOwner?: Layer.Layer<TerminalManager.TerminalManager>;
   readonly workspaceRoot?: string;
+  readonly otherWorkspaceRoot?: string;
+  readonly legacyPreflightGit?: Pick<
+    GitWorkflow.GitWorkflowService["Service"],
+    "remoteBranchExists" | "resolveRemoteTrackingCommit"
+  >;
   readonly projectScripts?: ReadonlyArray<ProjectScript>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
@@ -146,12 +190,16 @@ interface HarnessOptions {
   readonly providers?: ReadonlyArray<ServerProvider>;
 }
 
-function makeHarness(options: HarnessOptions = {}) {
+function makeDefaultHarness(options: HarnessOptions = {}) {
   const boundProject = {
     ...project,
     workspaceRoot: options.workspaceRoot ?? project.workspaceRoot,
     scripts: options.projectScripts ?? project.scripts,
   };
+  const boundOtherProject =
+    options.otherWorkspaceRoot === undefined
+      ? otherProject
+      : { ...otherProject, workspaceRoot: options.otherWorkspaceRoot };
   const database = SqlitePersistenceMemory;
   const branchesByPath = new Map<string, string>();
   const fixtureExists = (path: string) =>
@@ -191,13 +239,14 @@ function makeHarness(options: HarnessOptions = {}) {
       databaseLayer: database,
       runEffectWorker: false,
       checkoutFixture: {
-        projects: [options.physicalFixture === true ? boundProject : project, otherProject].map(
-          (value) => ({
-            projectId: value.id,
-            title: value.title,
-            workspaceRoot: value.workspaceRoot,
-          }),
-        ),
+        projects: [
+          options.physicalFixture === true ? boundProject : project,
+          boundOtherProject,
+        ].map((value) => ({
+          projectId: value.id,
+          title: value.title,
+          workspaceRoot: value.workspaceRoot,
+        })),
         // The native Git and project capabilities in this harness are synthetic.
         // Real filesystem checkout/alias observations have separate admission tests.
         resolvePath: (value) => (options.physicalFixture === true ? undefined : value),
@@ -226,6 +275,17 @@ function makeHarness(options: HarnessOptions = {}) {
             ({ dispatchLegacyGuardRejectionDelete: _private, ...ordinary }) => ordinary,
           ),
         ).pipe(Layer.provide(threadManagementBase));
+  const observedThreadManagement =
+    options.afterDispatch === undefined
+      ? threadManagement
+      : Layer.effect(
+          ThreadManagement.ThreadManagementService,
+          Effect.map(ThreadManagement.ThreadManagementService, (actual) => ({
+            ...actual,
+            dispatch: (command) =>
+              actual.dispatch(command).pipe(Effect.tap(() => options.afterDispatch!(command))),
+          })),
+        ).pipe(Layer.provide(threadManagement));
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
   const outbox = EffectOutbox.layer.pipe(Layer.provide(database));
   const createWorktree = vi.fn(
@@ -281,7 +341,7 @@ function makeHarness(options: HarnessOptions = {}) {
           id === projectId
             ? Option.some(boundProject)
             : id === otherProjectId
-              ? Option.some(otherProject)
+              ? Option.some(boundOtherProject)
               : Option.none(),
         ),
       getByWorkspaceRoot: () => Effect.succeed(Option.some(boundProject)),
@@ -321,10 +381,16 @@ function makeHarness(options: HarnessOptions = {}) {
         options.resolveRemoteTrackingCommitIfExists ??
         (() => Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" })),
       remoteExists: options.remoteExists ?? (() => Effect.succeed(true)),
-      remoteBranchExists: () => Effect.die("The origin base must use a single commit lookup"),
-      removeWorktree,
-      resolveRemoteTrackingCommit: () =>
-        Effect.die("The origin base must use a single commit lookup"),
+      remoteBranchExists:
+        options.legacyPreflightGit?.remoteBranchExists ??
+        (() => Effect.die("The origin base must use a single commit lookup")),
+      removeWorktree: (input) =>
+        removeWorktree(input).pipe(
+          Effect.tap(() => Effect.sync(() => branchesByPath.delete(input.path))),
+        ),
+      resolveRemoteTrackingCommit:
+        options.legacyPreflightGit?.resolveRemoteTrackingCommit ??
+        (() => Effect.die("The origin base must use a single commit lookup")),
     }),
     Layer.succeed(ProjectSetupScriptRunner.ProjectSetupScriptRunner, {
       runForThread: runSetup,
@@ -341,11 +407,27 @@ function makeHarness(options: HarnessOptions = {}) {
         folderForThread: () => Effect.succeed(Option.none()),
       }),
   );
+  const producerEventSink =
+    options.afterPreparedOutcome === undefined
+      ? Layer.empty
+      : Layer.effect(
+          EventSink.EventSinkV2,
+          Effect.map(EventSink.EventSinkV2, (actual) => ({
+            ...actual,
+            ordinaryCheckoutLifetime: {
+              ...actual.ordinaryCheckoutLifetime!,
+              recordPreparedOutcome: (input) =>
+                actual
+                  .ordinaryCheckoutLifetime!.recordPreparedOutcome(input)
+                  .pipe(Effect.tap(() => options.afterPreparedOutcome?.(input) ?? Effect.void)),
+            },
+          })),
+        ).pipe(Layer.provide(orchestrator));
   const launch = ThreadLaunch.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         externalServices,
-        threadManagement,
+        observedThreadManagement,
         receipts,
         IdAllocator.layer,
         orchestrator,
@@ -353,6 +435,7 @@ function makeHarness(options: HarnessOptions = {}) {
         fixtureConfig,
         outbox,
         EventStore.layer.pipe(Layer.provide(database)),
+        producerEventSink,
       ),
     ),
   );
@@ -378,7 +461,7 @@ function makeHarness(options: HarnessOptions = {}) {
       ),
   });
   const titleRegeneration = ThreadTitleRegeneration.layer.pipe(
-    Layer.provide(Layer.mergeAll(threadManagement, projectedProjects, externalServices)),
+    Layer.provide(Layer.mergeAll(observedThreadManagement, projectedProjects, externalServices)),
   );
   return {
     layer: Layer.mergeAll(
@@ -386,7 +469,7 @@ function makeHarness(options: HarnessOptions = {}) {
       receipts,
       EventStore.layer.pipe(Layer.provide(database)),
       orchestrator,
-      threadManagement,
+      observedThreadManagement,
       titleRegeneration,
       outbox,
       database,
@@ -399,6 +482,1030 @@ function makeHarness(options: HarnessOptions = {}) {
     generateThreadTitle,
     runSetup,
   };
+}
+
+// Task-only source to be embedded in the declared test candidate. Not installed.
+interface RealRetryAudit {
+  factories: number;
+  finalized: number;
+  controls: string[];
+  acquisitions: Array<{
+    sql: SqlClient.SqlClient;
+    sink: EventSink.EventSinkV2["Service"];
+    management: ThreadManagement.ThreadManagementService["Service"];
+    projects: ProjectService.ProjectService["Service"];
+    terminals: TerminalManager.TerminalManager["Service"];
+    receipts: CommandReceiptStore.CommandReceiptStoreV2["Service"];
+    outbox: EffectOutbox.EffectOutboxV2["Service"];
+    config: ServerConfig.ServerConfig["Service"];
+  }>;
+  launchers: ThreadLaunch.ThreadLaunchService["Service"][];
+  fetchFailures: Array<{
+    request: IssuedGitFetchTerminalFailure["request"];
+    terminal: IssuedGitFetchTerminalFailure;
+    parentHead: string;
+    remoteTrackingHead: string;
+  }>;
+  unsupportedFetchFailures: number;
+  observationFailures: string[];
+  ownedLockRemoved: boolean;
+}
+
+const acquireRealRetryFixture = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const paths = yield* Path.Path;
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-original-retry-" });
+  const canonicalRoot = yield* fs.realPath(root);
+  const workspaceRoot = paths.join(canonicalRoot, "project");
+  const upstream = paths.join(canonicalRoot, "upstream");
+  const origin = paths.join(canonicalRoot, "origin.git");
+  const worktreesDir = paths.join(canonicalRoot, "worktrees");
+  const process = yield* VcsProcess.make.pipe(Effect.provide(ProcessRunner.layer));
+  const git = (cwd: string, args: ReadonlyArray<string>) =>
+    process
+      .run({
+        operation: "ThreadLaunch.originalRetryFixture",
+        command: "git",
+        cwd,
+        args,
+      })
+      .pipe(Effect.map((result) => result.stdout.trim()));
+  yield* fs.makeDirectory(worktreesDir);
+  yield* git(canonicalRoot, ["init", "--bare", "--initial-branch=main", origin]);
+  yield* git(canonicalRoot, ["init", "--initial-branch=main", upstream]);
+  yield* fs.writeFileString(paths.join(upstream, "initial.txt"), "original parent\n");
+  yield* git(upstream, ["add", "initial.txt"]);
+  yield* git(upstream, [
+    "-c",
+    "user.name=Original Retry Fixture",
+    "-c",
+    "user.email=original-retry@example.invalid",
+    "commit",
+    "-m",
+    "original parent",
+  ]);
+  yield* git(upstream, ["remote", "add", "origin", origin]);
+  yield* git(upstream, ["push", "origin", "main"]);
+  yield* git(canonicalRoot, ["clone", "--no-hardlinks", origin, workspaceRoot]);
+  const parentHead = yield* git(workspaceRoot, ["rev-parse", "HEAD"]);
+  const originalTrackingHead = yield* git(workspaceRoot, ["rev-parse", "refs/remotes/origin/main"]);
+  if (parentHead !== originalTrackingHead)
+    return yield* Effect.die(
+      "The original fixture clone did not capture its actual parent commit.",
+    );
+  yield* fs.writeFileString(paths.join(upstream, "upstream.txt"), "new upstream commit\n");
+  yield* git(upstream, ["add", "upstream.txt"]);
+  yield* git(upstream, [
+    "-c",
+    "user.name=Original Retry Fixture",
+    "-c",
+    "user.email=original-retry@example.invalid",
+    "commit",
+    "-m",
+    "new upstream commit",
+  ]);
+  const upstreamHead = yield* git(upstream, ["rev-parse", "HEAD"]);
+  yield* git(upstream, ["push", "origin", "main"]);
+  if (upstreamHead === parentHead)
+    return yield* Effect.die("The real fixture upstream has no distinct new commit.");
+  const uuid = yield* randomUuidV4.pipe(Random.withSeed(originalRetryFixtureSeed));
+  const branch = buildTemporaryWorktreeBranchName(() => uuid.replaceAll("-", ""));
+  const expectedWorktreePath = nativeWorktreePath({ worktreesDir, cwd: workspaceRoot, branch });
+  // Structural parents only. The planned child remains absent before the real add.
+  yield* fs.makeDirectory(paths.dirname(expectedWorktreePath), { recursive: true });
+  if (yield* fs.exists(expectedWorktreePath))
+    return yield* Effect.die("The independent original fixture child is already present.");
+  const rawLockPath = yield* git(workspaceRoot, [
+    "rev-parse",
+    "--git-path",
+    "refs/remotes/origin/main.lock",
+  ]);
+  const lockPath = paths.resolve(workspaceRoot, rawLockPath);
+  const gitDirectory = yield* fs.realPath(paths.join(workspaceRoot, ".git"));
+  const relativeLock = paths.relative(gitDirectory, lockPath);
+  if (relativeLock !== paths.join("refs", "remotes", "origin", "main.lock"))
+    return yield* Effect.die("The original ref lock is outside the owned clone.");
+  const lockContent = "owned original-retry ref lock\n";
+  yield* fs.writeFileString(lockPath, lockContent, { flag: "wx" });
+  const audit: RealRetryAudit = {
+    factories: 0,
+    finalized: 0,
+    controls: [],
+    acquisitions: [],
+    launchers: [],
+    fetchFailures: [],
+    unsupportedFetchFailures: 0,
+    observationFailures: [],
+    ownedLockRemoved: false,
+  };
+  const removeOwnedLock = Effect.gen(function* () {
+    if (audit.ownedLockRemoved) return;
+    if ((yield* fs.readFileString(lockPath)) !== lockContent)
+      return yield* Effect.die("The exact original fixture ref lock changed ownership.");
+    yield* fs.remove(lockPath);
+    audit.ownedLockRemoved = true;
+  });
+  return {
+    fs,
+    paths,
+    workspaceRoot,
+    worktreesDir,
+    expectedWorktreePath,
+    uuid,
+    branch,
+    parentHead,
+    originalTrackingHead,
+    upstreamHead,
+    lockPath,
+    git,
+    removeOwnedLock,
+    audit,
+  };
+});
+type RealRetryFixture = Effect.Success<typeof acquireRealRetryFixture>;
+
+interface OriginalRetryPreparationObservation {
+  readonly observedThreadId?: Parameters<
+    WorktreeSetupTracker.WorktreeSetupTracker["Service"]["begin"]
+  >[0]["threadId"];
+  readonly ready: Deferred.Deferred<Fiber.Fiber<unknown, unknown>>;
+  trackerAcquisitions: number;
+  beginInvocations: number;
+  beginEvaluations: number;
+  beginTerminals: number;
+  actualTracker: WorktreeSetupTracker.WorktreeSetupTracker["Service"] | undefined;
+  forwardedTracker: WorktreeSetupTracker.WorktreeSetupTracker["Service"] | undefined;
+  capture:
+    | {
+        readonly input: Parameters<
+          WorktreeSetupTracker.WorktreeSetupTracker["Service"]["begin"]
+        >[0];
+        readonly executingFiber: Fiber.Fiber<unknown, unknown>;
+        readonly originalBeginEffect: Effect.Effect<void>;
+      }
+    | undefined;
+  beginExit: Exit.Exit<void> | undefined;
+  fiberExit: Exit.Exit<unknown, unknown> | undefined;
+  readonly retryReady: Deferred.Deferred<Fiber.Fiber<unknown, unknown>>;
+  retryEntryPhase: "not_entered" | "before_retryPreparation";
+  retryAwaitState:
+    | "handle_unobserved"
+    | "awaiting_handle"
+    | "awaiting_fiber_exit"
+    | "fiber_exit_observed";
+  retryCapture: OriginalRetryPreparationObservation["capture"];
+  retryBeginExit: Exit.Exit<void> | undefined;
+  retryFiberExit: Exit.Exit<unknown, unknown> | undefined;
+}
+
+type RetainedRetrySlot = Effect.Success<
+  ReturnType<OrdinaryCheckoutLifetime["readOriginalPreparedRetry"]>
+>;
+type RetainedRetryQuery = Parameters<OrdinaryCheckoutLifetime["readOriginalPreparedRetry"]>[0];
+type OriginalRetryRecord = {
+  readonly ref: Parameters<OrdinaryCheckoutLifetime["recordPreparedOutcome"]>[0]["ref"];
+  readonly outcome: Parameters<
+    OrdinaryCheckoutLifetime["recordPreparedOutcome"]
+  >[0]["actualProducerOutcome"];
+  readonly associationOrdinal: number;
+  readonly query: RetainedRetryQuery;
+  readonly admission: NonNullable<
+    Effect.Success<ReturnType<OrdinaryCheckoutLifetime["readAdmissionForRun"]>>
+  >;
+  readonly history: Effect.Success<ReturnType<OrdinaryCheckoutLifetime["readExecutionHistory"]>>;
+};
+type RetrySlotFacts = {
+  readonly paths: ReadonlyArray<object>;
+  readonly history: ReadonlyArray<object>;
+};
+interface RetrySlotTransactionProbe {
+  readonly mode: "commit" | "rollback";
+  acquisitions: number;
+  invocations: number;
+  evaluations: number;
+  beforeRefusal: boolean;
+  afterSlot: RetainedRetrySlot | undefined;
+  afterSlotQuery: RetainedRetryQuery | undefined;
+  readInvocations: Array<{
+    readonly input: RetainedRetryQuery;
+    slot: RetainedRetrySlot | undefined;
+  }>;
+  readSuccesses: Array<{
+    readonly input: RetainedRetryQuery;
+    readonly slot: RetainedRetrySlot;
+  }>;
+  originalRecord: OriginalRetryRecord | undefined;
+  publicationPhase: "not_entered" | "entered" | "completed";
+  publicationRecord: OriginalRetryRecord | undefined;
+  rollbackFactsEqual: boolean;
+  rollbackCause: Cause.Cause<unknown> | undefined;
+  rollbackObservation:
+    | {
+        readonly operationId: string;
+        readonly baseline: RetrySlotFacts | undefined;
+        readonly exit: Exit.Exit<RetrySlotFacts, SqlError.SqlError>;
+      }
+    | undefined;
+  serving:
+    | {
+        readonly sql: SqlClient.SqlClient;
+        readonly transactionService: SqlClient.SqlClient["transactionService"];
+        readonly sink: EventSink.EventSinkV2["Service"];
+        readonly facade: EventSink.EventSinkV2["Service"];
+        readonly lifetime: OrdinaryCheckoutLifetime;
+        readonly originalReader: OrdinaryCheckoutLifetime["readOriginalPreparedRetry"];
+        readonly forwardedReader: OrdinaryCheckoutLifetime["readOriginalPreparedRetry"];
+        readonly enclosing: Effect.Success<ReturnType<typeof makeCommitTransaction>>;
+      }
+    | undefined;
+}
+
+type RetainedReaderVariant =
+  | "messageId"
+  | "projectId"
+  | "targetSource.worktreePath"
+  | "branch"
+  | "multiple released operations";
+interface RetainedReaderProbe {
+  readonly variant: RetainedReaderVariant;
+  readonly preparation: OriginalRetryPreparationObservation;
+  invocations: number;
+  negativeReads: number;
+  mutations: number;
+  refusal:
+    | Effect.Error<ReturnType<OrdinaryCheckoutLifetime["readOriginalPreparedRetry"]>>
+    | undefined;
+  changedQuery: RetainedRetryQuery | undefined;
+  authenticQuery: RetainedRetryQuery | undefined;
+  originalSlot: RetainedRetrySlot | undefined;
+  rollback: RetainedReaderRollback | undefined;
+  rollbackCause: Cause.Cause<unknown> | undefined;
+  restoredFacts: boolean;
+}
+class RetainedReaderRollback extends Schema.TaggedError<RetainedReaderRollback>()(
+  "RetainedReaderRollback",
+  { operationId: Schema.String },
+) {}
+
+function observeRetainedReaderVariant(
+  probe: RetainedReaderProbe,
+  transactionProbe: RetrySlotTransactionProbe,
+  original: OrdinaryCheckoutLifetime,
+  input: RetainedRetryQuery,
+  actual: ReturnType<OrdinaryCheckoutLifetime["readOriginalPreparedRetry"]>,
+  sql: SqlClient.SqlClient,
+  enclosing: Effect.Success<ReturnType<typeof makeCommitTransaction>>,
+): ReturnType<OrdinaryCheckoutLifetime["readOriginalPreparedRetry"]> {
+  probe.invocations++;
+  if (probe.invocations !== 1) return actual;
+  return Effect.gen(function* () {
+    const record = transactionProbe.originalRecord;
+    if (record === undefined || probe.preparation.fiberExit === undefined)
+      return yield* Effect.die("The authentic original producer has not ended.");
+    assert.equal(transactionProbe.publicationPhase, "completed");
+    assert.strictEqual(transactionProbe.publicationRecord, record);
+    assert.isTrue(transactionProbe.beforeRefusal);
+    assert.deepEqual(input, record.query);
+    const operationId = record.ref.originalUse.operationId;
+    const readFacts = () =>
+      Effect.gen(function* () {
+        const rows = yield* sql`
+        SELECT operation_id, canonical_path, kind, subject_json, state, started_at,
+               outcome_json, recorded_at, updated_at
+        FROM orchestration_v2_worktree_path_admissions
+        WHERE kind = 'native_operation'
+          AND json_extract(subject_json, '$.use.admission.admissionId') = ${record.admission.admissionId}
+        ORDER BY operation_id`;
+        const history =
+          yield* sql`SELECT * FROM orchestration_v2_ordinary_checkout_execution_associations WHERE operation_id = ${operationId} ORDER BY ordinal`;
+        const leases =
+          yield* sql`SELECT * FROM worktree_ownership_leases WHERE resource_path = ${record.admission.capture.lease.resourcePath}`;
+        const runs =
+          yield* sql`SELECT * FROM orchestration_v2_projection_runs WHERE run_id = ${input.runId}`;
+        const links =
+          yield* sql`SELECT link.*, effect.status FROM orchestration_v2_ordinary_checkout_effect_links link JOIN orchestration_v2_effect_outbox effect ON effect.effect_id = link.effect_id WHERE link.admission_id = ${record.admission.admissionId} ORDER BY link.effect_id`;
+        return { rows, history, leases, runs, links };
+      });
+    const baseline = yield* readFacts();
+    assert.lengthOf(baseline.rows, 1);
+    assert.equal(baseline.rows[0]?.operation_id, operationId);
+    assert.equal(baseline.rows[0]?.state, "released");
+    assert.isString(baseline.rows[0]?.outcome_json);
+    const admission = yield* original.readAdmissionForRun({
+      threadId: input.threadId,
+      runId: input.runId,
+    });
+    assert.deepEqual(admission, record.admission);
+    const history = yield* original.readExecutionHistory(record.ref.originalUse);
+    assert.deepEqual(history, record.history);
+    assert.equal(history.participants[0]?.state, "retired");
+    assert.deepEqual(history.participants[0]?.ref, record.ref);
+    assert.lengthOf(baseline.leases, 1);
+    assert.equal(baseline.leases[0]?.owner_thread_id, input.threadId);
+    assert.equal(baseline.leases[0]?.lease_id, record.ref.originalUse.lease.leaseId);
+    assert.equal(baseline.leases[0]?.branch, input.branch);
+    assert.isAbove(
+      Number(baseline.leases[0]?.expires_at_ms),
+      DateTime.toEpochMillis(yield* DateTime.now),
+    );
+    const currentRun =
+      yield* sql`SELECT json_extract(payload_json, '$.status') AS status, json_extract(payload_json, '$.activeAttemptId') AS attempt, json_extract(payload_json, '$.rootNodeId') AS node, json_extract(payload_json, '$.userMessageId') AS message FROM orchestration_v2_projection_runs WHERE run_id = ${input.runId}`;
+    assert.lengthOf(currentRun, 1);
+    assert.equal(currentRun[0]?.status, "preparing");
+    assert.equal(currentRun[0]?.attempt, record.admission.run?.runAttemptId);
+    assert.equal(currentRun[0]?.node, record.admission.run?.nodeId);
+    assert.equal(currentRun[0]?.message, input.messageId);
+    assert.isFalse(
+      baseline.links.some((row) => row.status === "pending" || row.status === "running"),
+    );
+    probe.authenticQuery = input;
+    const requireHistoryRefusal = (
+      result: Result.Result<
+        RetainedRetrySlot,
+        Effect.Error<ReturnType<OrdinaryCheckoutLifetime["readOriginalPreparedRetry"]>>
+      >,
+    ) => {
+      if (Result.isSuccess(result))
+        throw new Error("The altered original retry query/history was accepted.");
+      assert.equal(result.failure._tag, "OrdinaryCheckoutHistoryError");
+      assert.equal(
+        result.failure.message,
+        "Retry has no retained, completed original preparation outcome.",
+      );
+      probe.refusal = result.failure;
+    };
+    if (probe.variant !== "multiple released operations") {
+      let changed: RetainedRetryQuery;
+      switch (probe.variant) {
+        case "messageId":
+          changed = { ...input, messageId: MessageId.make("message:reader-negative:unrelated") };
+          break;
+        case "projectId":
+          changed = { ...input, projectId: ProjectId.make("project:reader-negative:unrelated") };
+          break;
+        case "targetSource.worktreePath":
+          changed = {
+            ...input,
+            targetSource: {
+              ...input.targetSource,
+              worktreePath: `${input.canonicalCheckoutPath}/reader-negative-unowned`,
+            },
+          };
+          break;
+        case "branch":
+          changed = { ...input, branch: `${input.branch}-reader-negative-unowned` };
+          break;
+      }
+      probe.changedQuery = changed;
+      probe.negativeReads++;
+      const negative = original.readOriginalPreparedRetry(changed);
+      requireHistoryRefusal(yield* negative.pipe(Effect.result));
+      assert.deepEqual(yield* readFacts(), baseline);
+      probe.restoredFacts = true;
+      const slot = yield* actual;
+      probe.originalSlot = slot;
+      return slot;
+    }
+    const slot = yield* actual;
+    probe.originalSlot = slot;
+    const copiedOperationId = `${operationId}:fixture-owned-invalid-copy`;
+    const absent =
+      yield* sql`SELECT operation_id FROM orchestration_v2_worktree_path_admissions WHERE operation_id = ${copiedOperationId}`;
+    assert.lengthOf(absent, 0);
+    const rollback = yield* enclosing
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
+        INSERT INTO orchestration_v2_worktree_path_admissions
+          (operation_id, canonical_path, kind, subject_json, state, started_at,
+           outcome_json, recorded_at, updated_at)
+        SELECT ${copiedOperationId}, canonical_path, kind, subject_json, state,
+               started_at, outcome_json, recorded_at, updated_at
+        FROM orchestration_v2_worktree_path_admissions
+        WHERE operation_id = ${operationId} AND state = 'released' AND kind = 'native_operation'
+          AND json_extract(subject_json, '$.use.admission.admissionId') = ${record.admission.admissionId}`;
+          probe.mutations++;
+          const changedFacts = yield* readFacts();
+          assert.lengthOf(changedFacts.rows, 2);
+          assert.deepEqual(changedFacts.history, baseline.history);
+          assert.deepEqual(changedFacts.leases, baseline.leases);
+          assert.deepEqual(changedFacts.runs, baseline.runs);
+          assert.deepEqual(changedFacts.links, baseline.links);
+          probe.negativeReads++;
+          const negative = original.readOriginalPreparedRetry(input);
+          requireHistoryRefusal(yield* negative.pipe(Effect.result));
+          return yield* new RetainedReaderRollback({ operationId: copiedOperationId });
+        }),
+      )
+      .pipe(
+        Effect.onError((cause) =>
+          Effect.sync(() => {
+            probe.rollbackCause = cause;
+          }),
+        ),
+        Effect.catchTag("RetainedReaderRollback", (error) => Effect.succeed(error)),
+      );
+    assert.equal(rollback.operationId, copiedOperationId);
+    assert.isDefined(probe.rollbackCause);
+    probe.rollback = rollback;
+    assert.deepEqual(yield* readFacts(), baseline);
+    assert.lengthOf(
+      yield* sql`SELECT operation_id FROM orchestration_v2_worktree_path_admissions WHERE operation_id = ${copiedOperationId}`,
+      0,
+    );
+    probe.restoredFacts = true;
+    return slot;
+  });
+}
+
+function makeRealRetryHarness(
+  fixture: RealRetryFixture,
+  originalPreparation?: OriginalRetryPreparationObservation,
+  retrySlotProbe?: RetrySlotTransactionProbe,
+  retainedReaderProbe?: RetainedReaderProbe,
+) {
+  const createWorktree = vi.fn<GitWorkflow.GitWorkflowService["Service"]["createWorktree"]>(() =>
+    Effect.die("The actual retry createWorktree has not been acquired."),
+  );
+  const removeWorktree = vi.fn<GitWorkflow.GitWorkflowService["Service"]["removeWorktree"]>(() =>
+    Effect.die("The actual retry removeWorktree has not been acquired."),
+  );
+  const renameBranch = vi.fn<GitWorkflow.GitWorkflowService["Service"]["renameBranch"]>(() =>
+    Effect.die("The actual retry renameBranch has not been acquired."),
+  );
+  const runSetup = vi.fn<
+    ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
+  >(() => Effect.die("The actual retry setup runner has not been acquired."));
+  const generateBranchName = vi.fn<TextGeneration.TextGeneration["Service"]["generateBranchName"]>(
+    () => Effect.die("The actual retry text generation has not been acquired."),
+  );
+  const generateThreadTitle = vi.fn<
+    TextGeneration.TextGeneration["Service"]["generateThreadTitle"]
+  >(() => Effect.die("The actual retry text generation has not been acquired."));
+  const providerRegistryLayer = makeProviderRegistryLayer();
+  const factory = (owners: ReplayDelegatedPreparationOwners) => {
+    fixture.audit.factories++;
+    const unexpectedControl = (operation: string) =>
+      Effect.sync(() => {
+        fixture.audit.controls.push(operation);
+      }).pipe(
+        Effect.andThen(Effect.die(new Error(`Unexpected retry virtual control: ${operation}`))),
+      );
+    const base = Layer.mergeAll(
+      owners.persistenceLayer,
+      owners.legacyImporterLayer,
+      owners.managementLayer,
+      owners.configLayer,
+      owners.settingsLayer,
+      owners.platformLayer,
+      ThreadCommandExecutor.layer,
+      providerRegistryLayer,
+    );
+    const vcsProcess = VcsProcess.layer.pipe(Layer.provide(owners.platformLayer));
+    const drivers = Layer.merge(GitVcsDriver.layer, VcsDriverRegistry.layer).pipe(
+      Layer.provide(vcsProcess),
+      Layer.provide(base),
+    );
+    const sourceControl = Layer.effect(
+      SourceControlProviderRegistry.SourceControlProviderRegistry,
+      SourceControlProviderRegistry.makeWithProviders([]),
+    ).pipe(Layer.provide(Layer.merge(drivers, vcsProcess)), Layer.provide(base));
+    const repositoryService = SourceControlRepositoryService.layer.pipe(
+      Layer.provide(Layer.merge(drivers, sourceControl)),
+      Layer.provide(base),
+    );
+    const clones = ProjectCloneTracker.layer.pipe(Layer.provide(repositoryService));
+    // A real, scope-owned empty instance registry. No provider factory or host auth
+    // is installed. Actual generation routes report their genuine unavailable error.
+    const instances = ProviderInstanceRegistryLive.ProviderInstanceRegistryMutableLayer<never>({
+      drivers: [],
+      configMap: {},
+    });
+    const textGenerationBase = TextGeneration.layer.pipe(
+      Layer.provide(Layer.merge(instances, sourceControl)),
+    );
+    const textGeneration = Layer.effect(
+      TextGeneration.TextGeneration,
+      Effect.gen(function* () {
+        const actual = yield* TextGeneration.TextGeneration;
+        generateBranchName.mockImplementation(actual.generateBranchName);
+        generateThreadTitle.mockImplementation(actual.generateThreadTitle);
+        return TextGeneration.TextGeneration.of({
+          ...actual,
+          generateBranchName,
+          generateThreadTitle,
+        });
+      }),
+    ).pipe(Layer.provide(textGenerationBase));
+    const common = Layer.mergeAll(base, clones, textGeneration);
+    const workspace = WorkspacePaths.layer.pipe(Layer.provide(owners.platformLayer));
+    const metadata = ProjectEnrichmentService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          RepositoryIdentityResolver.layer,
+          ProjectFaviconResolver.layer.pipe(
+            Layer.provide(Layer.merge(workspace, T3ProjectFileLoader.layer)),
+          ),
+        ),
+      ),
+      Layer.provide(owners.platformLayer),
+    );
+    const projects = ProjectService.layer.pipe(
+      Layer.provide(Layer.merge(workspace, metadata)),
+      Layer.provide(common),
+    );
+    const terminals = TerminalManager.layer.pipe(
+      Layer.provide(terminalOwnerObservationLive.pipe(Layer.provide(owners.eventSinkLayer))),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(PtyAdapter.PtyAdapter, { spawn: () => unexpectedControl("spawn") }),
+          Layer.mock(NativeTelemetryClient.NativeTelemetryClient)({
+            processTable: Effect.succeed([]),
+          }),
+          Layer.mock(PortScanner.PortDiscovery)({
+            registerTerminalProcesses: () => unexpectedControl("registerTerminalProcesses"),
+            unregisterTerminal: () => unexpectedControl("unregisterTerminal"),
+          }),
+          ProcessRunner.layer,
+        ),
+      ),
+      Layer.provide(common),
+    );
+    const setupBase = ProjectSetupScriptRunner.layer.pipe(
+      Layer.provide(Layer.merge(projects, terminals)),
+      Layer.provide(common),
+    );
+    const setup = Layer.effect(
+      ProjectSetupScriptRunner.ProjectSetupScriptRunner,
+      Effect.gen(function* () {
+        const actual = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
+        runSetup.mockImplementation(actual.runForThread);
+        return ProjectSetupScriptRunner.ProjectSetupScriptRunner.of({
+          ...actual,
+          runForThread: runSetup,
+        });
+      }),
+    ).pipe(Layer.provide(setupBase));
+    const manager = GitManager.layer.pipe(
+      Layer.provide(Layer.mergeAll(drivers, sourceControl, setup)),
+      Layer.provide(common),
+    );
+    const workflowBase = Layer.effect(GitWorkflow.GitWorkflowService, GitWorkflow.make).pipe(
+      Layer.provide(Layer.merge(drivers, manager)),
+    );
+    const workflow = Layer.effect(
+      GitWorkflow.GitWorkflowService,
+      Effect.gen(function* () {
+        const actual = yield* GitWorkflow.GitWorkflowService;
+        createWorktree.mockImplementation(actual.createWorktree);
+        removeWorktree.mockImplementation(actual.removeWorktree);
+        renameBranch.mockImplementation(actual.renameBranch);
+        return GitWorkflow.GitWorkflowService.of({
+          ...actual,
+          createWorktree,
+          removeWorktree,
+          renameBranch,
+          fetchRemote: (input) =>
+            actual.fetchRemote(input).pipe(
+              Effect.onError((cause) =>
+                Effect.gen(function* () {
+                  const terminal = readIssuedGitFetchTerminalFailure(Cause.squash(cause), input);
+                  if (terminal === null) {
+                    fixture.audit.unsupportedFetchFailures++;
+                    return; // The original Cause still propagates; no witness or success.
+                  }
+                  const parentHead = yield* fixture.git(input.cwd, ["rev-parse", "HEAD"]);
+                  const remoteTrackingHead = yield* fixture.git(input.cwd, [
+                    "rev-parse",
+                    "refs/remotes/origin/main",
+                  ]);
+                  fixture.audit.fetchFailures.push({
+                    request: input,
+                    terminal,
+                    parentHead,
+                    remoteTrackingHead,
+                  });
+                  // Only the exact fixture lock is removed, after the retained actual
+                  // child/scope terminal. Other ref changes remain honest readback.
+                  yield* fixture.removeOwnedLock;
+                }).pipe(
+                  Effect.catchCause((observationCause) =>
+                    Effect.sync(() => {
+                      fixture.audit.unsupportedFetchFailures++;
+                      fixture.audit.observationFailures.push(
+                        String(Cause.squash(observationCause)).slice(0, 512),
+                      );
+                    }),
+                  ),
+                ),
+              ),
+            ),
+        });
+      }),
+    ).pipe(Layer.provide(workflowBase));
+    const folders = ManagedProjectFolders.layer.pipe(
+      Layer.provide(Layer.mergeAll(projects, workflow, drivers)),
+      Layer.provide(common),
+    );
+    const tracker =
+      originalPreparation === undefined
+        ? WorktreeSetupTracker.layer
+        : Layer.effect(
+            WorktreeSetupTracker.WorktreeSetupTracker,
+            Effect.gen(function* () {
+              const actual = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+              originalPreparation.trackerAcquisitions++;
+              originalPreparation.actualTracker = actual;
+              const forwarded = WorktreeSetupTracker.WorktreeSetupTracker.of({
+                ...actual,
+                begin: (input) => {
+                  const originalBeginEffect = actual.begin(input);
+                  if (
+                    input.threadId !==
+                    (originalPreparation.observedThreadId ?? ThreadId.make("thread:launch:retry"))
+                  )
+                    return originalBeginEffect;
+                  originalPreparation.beginInvocations++;
+                  return Effect.onExit(
+                    Effect.gen(function* () {
+                      originalPreparation.beginEvaluations++;
+                      const executingFiber = yield* Effect.fiber;
+                      if (
+                        originalPreparation.capture === undefined &&
+                        input.fiber !== null &&
+                        input.fiber === executingFiber
+                      ) {
+                        originalPreparation.capture = {
+                          input,
+                          executingFiber,
+                          originalBeginEffect,
+                        };
+                        yield* Deferred.succeed(originalPreparation.ready, input.fiber);
+                      }
+                      if (
+                        originalPreparation.retryCapture === undefined &&
+                        originalPreparation.retryEntryPhase === "before_retryPreparation" &&
+                        originalPreparation.fiberExit !== undefined &&
+                        originalPreparation.capture !== undefined &&
+                        input.fiber !== null &&
+                        input.fiber === executingFiber &&
+                        executingFiber !== originalPreparation.capture.executingFiber
+                      ) {
+                        originalPreparation.retryCapture = {
+                          input,
+                          executingFiber,
+                          originalBeginEffect,
+                        };
+                        yield* Deferred.succeed(originalPreparation.retryReady, input.fiber);
+                      }
+                      return yield* originalBeginEffect;
+                    }),
+                    (exit) =>
+                      Effect.sync(() => {
+                        originalPreparation.beginTerminals++;
+                        if (
+                          originalPreparation.capture?.originalBeginEffect === originalBeginEffect
+                        )
+                          originalPreparation.beginExit = exit;
+                        if (
+                          originalPreparation.retryCapture?.originalBeginEffect ===
+                          originalBeginEffect
+                        )
+                          originalPreparation.retryBeginExit = exit;
+                      }),
+                  );
+                },
+              });
+              originalPreparation.forwardedTracker = forwarded;
+              return forwarded;
+            }),
+          ).pipe(Layer.provide(WorktreeSetupTracker.layer));
+    const observedSink =
+      retrySlotProbe === undefined
+        ? Layer.empty
+        : Layer.effect(
+            EventSink.EventSinkV2,
+            Effect.gen(function* () {
+              const original = owners.eventSink.ordinaryCheckoutLifetime;
+              if (original === undefined)
+                return yield* Effect.die("The serving retry lifetime is unavailable.");
+              const sql = yield* SqlClient.SqlClient;
+              if (sql !== owners.sql)
+                return yield* Effect.die("The outer retry transaction changed SQL ownership.");
+              const enclosing = yield* makeCommitTransaction();
+              retrySlotProbe.acquisitions++;
+              const readFacts = (operationId: string) =>
+                Effect.gen(function* () {
+                  const paths =
+                    yield* sql`SELECT * FROM orchestration_v2_worktree_path_admissions WHERE operation_id = ${operationId}`;
+                  const history =
+                    yield* sql`SELECT * FROM orchestration_v2_ordinary_checkout_execution_associations WHERE operation_id = ${operationId} ORDER BY ordinal`;
+                  return { paths, history };
+                });
+              const recordPreparedOutcome: OrdinaryCheckoutLifetime["recordPreparedOutcome"] = (
+                input,
+              ) => {
+                const actual = original.recordPreparedOutcome(input);
+                if (
+                  input.ref.originalUse.operationId !== "command:launch:retry:ordinary-preparation"
+                )
+                  return actual;
+                retrySlotProbe.invocations++;
+                let previous: Effect.Success<ReturnType<typeof readFacts>> | undefined;
+                const wrapped = enclosing.withTransaction(
+                  Effect.gen(function* () {
+                    retrySlotProbe.evaluations++;
+                    previous = yield* readFacts(input.ref.originalUse.operationId);
+                    const result = yield* actual;
+                    const source = input.ref.executor;
+                    if (
+                      source.kind !== "actual_prepared_producer" ||
+                      source.source.kind !== "prepared_run"
+                    )
+                      return yield* Effect.die(
+                        "The actual qualified retry producer source is unavailable.",
+                      );
+                    const run = source.source.preparation;
+                    const admission = yield* original.readAdmissionForRun({
+                      threadId: input.ref.originalUse.lease.ownerThreadId,
+                      runId: run.runId,
+                    });
+                    if (admission === null || admission.run === null)
+                      return yield* Effect.die(
+                        "The authentic original retry admission is unavailable.",
+                      );
+                    assert.equal(admission.admissionId, source.source.admission.admissionId);
+                    assert.deepEqual(
+                      ordinaryCheckoutAdmissionRefV1(admission),
+                      source.source.admission,
+                    );
+                    assert.equal(
+                      input.ref.originalUse.lease.ownerThreadId,
+                      admission.capture.threadId,
+                    );
+                    assert.deepEqual(
+                      ordinaryCheckoutLeaseIdentityV1(input.ref.originalUse.lease),
+                      ordinaryCheckoutLeaseIdentityV1(admission.capture.lease),
+                    );
+                    assert.deepEqual(source.source, input.ref.originalUse.source);
+                    assert.deepEqual(admission.run, source.source.preparation);
+                    const outcome = input.actualProducerOutcome;
+                    assert.equal(outcome.kind, "prepared_failed");
+                    assert.equal(outcome.observation.kind, "prepared_precreation_failure_observed");
+                    const query = {
+                      threadId: admission.capture.threadId,
+                      projectId: admission.capture.projectId,
+                      runId: admission.run.runId,
+                      messageId: admission.run.messageId,
+                      canonicalProjectRoot: admission.capture.canonicalProjectRoot,
+                      canonicalCheckoutPath: admission.capture.canonicalCheckoutPath,
+                      branch: fixture.branch,
+                      targetSource: outcome.observation.targetSource,
+                    };
+                    const facts = yield* readFacts(input.ref.originalUse.operationId);
+                    assert.equal(facts.paths.length, 1);
+                    assert.equal(facts.paths[0]?.state, "released");
+                    assert.isString(facts.paths[0]?.outcome_json);
+                    const history = yield* original.readExecutionHistory(input.ref.originalUse);
+                    assert.equal(history.latestOrdinal, result.ordinal);
+                    assert.equal(history.participants.length, 1);
+                    assert.equal(history.participants[0]?.state, "retired");
+                    assert.deepEqual(history.participants[0]?.ref, input.ref);
+                    assert.equal(history.facts[history.latestOrdinal]?.eventKind, "retire");
+                    const leases =
+                      yield* sql`SELECT * FROM worktree_ownership_leases WHERE resource_path = ${admission.capture.lease.resourcePath}`;
+                    assert.equal(leases.length, 1);
+                    assert.equal(leases[0]?.owner_thread_id, admission.capture.threadId);
+                    assert.equal(leases[0]?.lease_id, admission.capture.lease.leaseId);
+                    assert.equal(leases[0]?.branch, fixture.branch);
+                    assert.isAbove(
+                      Number(leases[0]?.expires_at_ms),
+                      DateTime.toEpochMillis(yield* DateTime.now),
+                    );
+                    const runs =
+                      yield* sql`SELECT json_extract(payload_json, '$.status') AS status, json_extract(payload_json, '$.activeAttemptId') AS attempt, json_extract(payload_json, '$.rootNodeId') AS node, json_extract(payload_json, '$.userMessageId') AS message FROM orchestration_v2_projection_runs WHERE run_id = ${admission.run.runId}`;
+                    assert.equal(runs.length, 1);
+                    assert.equal(runs[0]?.status, "preparing");
+                    assert.equal(runs[0]?.attempt, admission.run.runAttemptId);
+                    assert.equal(runs[0]?.node, admission.run.nodeId);
+                    assert.equal(runs[0]?.message, admission.run.messageId);
+                    const pending =
+                      yield* sql`SELECT effect.effect_id FROM orchestration_v2_ordinary_checkout_effect_links link JOIN orchestration_v2_effect_outbox effect ON effect.effect_id = link.effect_id WHERE link.admission_id = ${admission.admissionId} AND effect.status IN ('pending', 'running')`;
+                    assert.equal(pending.length, 0);
+                    const refusal = yield* original
+                      .readOriginalPreparedRetry(query)
+                      .pipe(Effect.result);
+                    if (Result.isSuccess(refusal))
+                      return yield* Effect.die(
+                        "The original completion became visible before its enclosing commit.",
+                      );
+                    assert.equal(refusal.failure._tag, "OrdinaryCheckoutHistoryError");
+                    assert.equal(
+                      refusal.failure.message,
+                      "Retry has no retained, completed original preparation outcome.",
+                    );
+                    retrySlotProbe.beforeRefusal = true;
+                    if (retrySlotProbe.mode === "rollback") {
+                      // A genuine duplicate primary key causes a typed SQL rollback, never an accepted replacement row.
+                      yield* sql`INSERT INTO orchestration_v2_worktree_path_admissions SELECT * FROM orchestration_v2_worktree_path_admissions WHERE operation_id = ${input.ref.originalUse.operationId}`;
+                      return yield* Effect.die(
+                        "The authentic duplicate-key rollback unexpectedly succeeded.",
+                      );
+                    }
+                    const originalRecord = {
+                      ref: input.ref,
+                      outcome: input.actualProducerOutcome,
+                      associationOrdinal: result.ordinal,
+                      query,
+                      admission,
+                      history,
+                    };
+                    retrySlotProbe.originalRecord = originalRecord;
+                    yield* enclosing.afterCommit(
+                      Effect.sync(() => {
+                        retrySlotProbe.publicationPhase = "entered";
+                        retrySlotProbe.publicationRecord = originalRecord;
+                        retrySlotProbe.publicationPhase = "completed";
+                      }),
+                    );
+                    return result;
+                  }),
+                );
+                return wrapped.pipe(
+                  Effect.onError((cause) =>
+                    Effect.gen(function* () {
+                      if (retrySlotProbe.mode !== "rollback") return;
+                      retrySlotProbe.rollbackCause = cause;
+                      const exit = yield* readFacts(input.ref.originalUse.operationId).pipe(
+                        Effect.exit,
+                      );
+                      retrySlotProbe.rollbackObservation = {
+                        operationId: input.ref.originalUse.operationId,
+                        baseline: previous,
+                        exit,
+                      };
+                    }),
+                  ),
+                );
+              };
+              const originalReader = original.readOriginalPreparedRetry;
+              const forwardedReader: OrdinaryCheckoutLifetime["readOriginalPreparedRetry"] =
+                retrySlotProbe.mode === "rollback"
+                  ? originalReader
+                  : (input) => {
+                      const actual = originalReader(input);
+                      const observation: RetrySlotTransactionProbe["readInvocations"][number] = {
+                        input,
+                        slot: undefined,
+                      };
+                      retrySlotProbe.readInvocations.push(observation);
+                      const tested =
+                        retainedReaderProbe === undefined
+                          ? actual
+                          : observeRetainedReaderVariant(
+                              retainedReaderProbe,
+                              retrySlotProbe,
+                              original,
+                              input,
+                              actual,
+                              sql,
+                              enclosing,
+                            );
+                      return tested.pipe(
+                        Effect.tap((slot) =>
+                          Effect.sync(() => {
+                            observation.slot = slot;
+                            retrySlotProbe.readSuccesses.push({ input, slot });
+                            retrySlotProbe.afterSlotQuery = input;
+                            retrySlotProbe.afterSlot = slot;
+                          }),
+                        ),
+                      );
+                    };
+              const facade = EventSink.EventSinkV2.of({
+                ...owners.eventSink,
+                ordinaryCheckoutLifetime: {
+                  ...original,
+                  recordPreparedOutcome,
+                  readOriginalPreparedRetry: forwardedReader,
+                },
+              });
+              retrySlotProbe.serving = {
+                sql,
+                transactionService: sql.transactionService,
+                sink: owners.eventSink,
+                facade,
+                lifetime: original,
+                originalReader,
+                forwardedReader,
+                enclosing,
+              };
+              return facade;
+            }),
+          ).pipe(Layer.provide(common));
+    const physical = Layer.mergeAll(
+      observedSink,
+      projects,
+      terminals,
+      setup,
+      workflow,
+      folders,
+      tracker,
+      clones,
+      textGeneration,
+      providerRegistryLayer,
+    );
+    const capture = Layer.effectDiscard(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sink = yield* EventSink.EventSinkV2;
+        const management = yield* ThreadManagement.ThreadManagementService;
+        if (sql !== owners.sql || sink !== owners.eventSink || management !== owners.management)
+          return yield* Effect.die("The real retry fixture crossed its original owner graph.");
+        fixture.audit.acquisitions.push({
+          sql,
+          sink,
+          management,
+          projects: yield* ProjectService.ProjectService,
+          terminals: yield* TerminalManager.TerminalManager,
+          receipts: yield* CommandReceiptStore.CommandReceiptStoreV2,
+          outbox: yield* EffectOutbox.EffectOutboxV2,
+          config: yield* ServerConfig.ServerConfig,
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            fixture.audit.finalized++;
+          }),
+        );
+      }),
+    ).pipe(Layer.provide(Layer.merge(physical, common)));
+    return Layer.merge(physical, capture);
+  };
+  const runtime = makeOrchestratorV2ReplayLayerWithRegistry(
+    { name: "original-real-retry" },
+    ProviderAdapterRegistry.makeLayer([adapter]),
+    {
+      databaseLayer: SqlitePersistenceMemory,
+      runEffectWorker: false,
+      checkoutFixture: {
+        projects: [{ projectId, title: project.title, workspaceRoot: fixture.workspaceRoot }],
+        worktreesDir: fixture.worktreesDir,
+        resolvePath: () => undefined,
+      },
+      delegatedPreparation: factory,
+    },
+  );
+  const exposeCaptured = Layer.unwrap(
+    Effect.gen(function* () {
+      const launcher = yield* ThreadLaunch.ThreadLaunchService;
+      const captured = fixture.audit.acquisitions[0];
+      if (
+        captured === undefined ||
+        fixture.audit.acquisitions.length !== 1 ||
+        fixture.audit.factories !== 1 ||
+        (yield* ThreadManagement.ThreadManagementService) !== captured.management ||
+        (yield* EventSink.EventSinkV2) !== captured.sink
+      )
+        return yield* Effect.die(
+          "The original retry requires exactly one actual captured owner graph.",
+        );
+      fixture.audit.launchers.push(launcher);
+      return Layer.mergeAll(
+        Layer.succeed(ProjectService.ProjectService, captured.projects),
+        Layer.succeed(ServerConfig.ServerConfig, captured.config),
+        Layer.succeed(EffectOutbox.EffectOutboxV2, captured.outbox),
+        Layer.succeed(SqlClient.SqlClient, captured.sql),
+      );
+    }),
+  ).pipe(Layer.provide(runtime));
+  return {
+    layer: Layer.merge(runtime, exposeCaptured),
+    createWorktree,
+    removeWorktree,
+    renameBranch,
+    runSetup,
+    generateBranchName,
+    generateThreadTitle,
+    audit: fixture.audit,
+  };
+}
+
+function makeHarness(options: {
+  readonly realPreparation: RealRetryFixture;
+  readonly originalPreparation?: OriginalRetryPreparationObservation;
+}): ReturnType<typeof makeRealRetryHarness>;
+function makeHarness(options?: HarnessOptions): ReturnType<typeof makeDefaultHarness>;
+function makeHarness(
+  options:
+    | HarnessOptions
+    | {
+        readonly realPreparation: RealRetryFixture;
+        readonly originalPreparation?: OriginalRetryPreparationObservation;
+      } = {},
+) {
+  return "realPreparation" in options
+    ? makeRealRetryHarness(options.realPreparation, options.originalPreparation)
+    : makeDefaultHarness(options);
 }
 
 function launchInput(input: {
@@ -1432,22 +2539,16 @@ it.effect("provisions independent launches concurrently instead of behind a glob
             launchInput({
               command: "command:launch:concurrent-a",
               thread: "thread:launch:concurrent-a",
-              workspace: {
-                type: "existing_worktree",
-                worktreePath: "/repo-worktrees/concurrent-a",
-              },
               message: "First",
+              workspace: { type: "worktree", baseRef: "main", branch: "concurrent-a" },
             }),
           ),
           launches.launch(
             launchInput({
               command: "command:launch:concurrent-b",
               thread: "thread:launch:concurrent-b",
-              workspace: {
-                type: "existing_worktree",
-                worktreePath: "/repo-worktrees/concurrent-b",
-              },
               message: "Second",
+              workspace: { type: "worktree", baseRef: "main", branch: "concurrent-b" },
             }),
           ),
         ],
@@ -1668,7 +2769,14 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
       );
       const projection = yield* threads.getThreadProjection(launched.threadId);
       assert.equal(projection.runs[0]?.status, "starting");
-      assert.equal(projection.checkpointScopes[0]?.cwd, launched.projection.thread.worktreePath);
+      assert.equal(
+        projection.checkpointScopes[0]?.cwd,
+        nativeWorktreePath({
+          worktreesDir: "/repo-worktrees",
+          cwd: project.workspaceRoot,
+          branch: "feature",
+        }),
+      );
       assert.equal(
         projection.turnItems.find((item) => item.type === "command_execution")?.status,
         "completed",
@@ -1693,14 +2801,26 @@ it.effect(
       yield* Effect.gen(function* () {
         const launches = yield* ThreadLaunch.ThreadLaunchService;
         const threads = yield* ThreadManagement.ThreadManagementService;
-        const launched = yield* launches.launch(
-          launchInput({
-            command: "command:launch:queued-during-preparation",
-            thread: "thread:launch:queued-during-preparation",
-            message: "Prepare the workspace",
-            workspace: { type: "worktree", baseRef: "main" },
-          }),
+        const launchSeed = "jones-queued-preparation-final-workspace-v1";
+        const plannedUuid = yield* randomUuidV4.pipe(Random.withSeed(launchSeed));
+        const plannedTemporaryBranch = buildTemporaryWorktreeBranchName(() =>
+          plannedUuid.replaceAll("-", ""),
         );
+        const plannedWorktreePath = nativeWorktreePath({
+          worktreesDir: "/repo-worktrees",
+          cwd: project.workspaceRoot,
+          branch: plannedTemporaryBranch,
+        });
+        const launched = yield* launches
+          .launch(
+            launchInput({
+              command: "command:launch:queued-during-preparation",
+              thread: "thread:launch:queued-during-preparation",
+              message: "Prepare the workspace",
+              workspace: { type: "worktree", baseRef: "main" },
+            }),
+          )
+          .pipe(Random.withSeed(launchSeed));
         yield* Deferred.await(setupEntered);
 
         const followUp = yield* threads.sendToThread({
@@ -1743,7 +2863,7 @@ it.effect(
         assert.equal(
           projection.checkpointScopes.find((scope) => scope.id === rootNode?.checkpointScopeId)
             ?.cwd,
-          launched.projection.thread.worktreePath,
+          plannedWorktreePath,
         );
       }).pipe(Effect.provide(harness.layer));
     }),
@@ -2172,15 +3292,49 @@ it.effect("falls back when the source control writer is unavailable", () =>
 it.effect("runs a Scratch thread launched at the root in its own folder", () =>
   Effect.gen(function* () {
     // Only `projectId` stands in for the Scratch project here.
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const disposableRoot = yield* fs.makeTempDirectoryScoped({ prefix: "launch-scratch-" });
+    const root = yield* fs.realPath(disposableRoot);
+    const workspaceRoot = path.join(root, "project");
+    const otherWorkspaceRoot = path.join(root, "other-project");
+    const scratchRoot = path.join(root, "scratch");
+    const worktreesDir = path.join(root, "worktrees");
+    for (const directory of [workspaceRoot, otherWorkspaceRoot, scratchRoot, worktreesDir])
+      yield* fs.makeDirectory(directory);
+    const firstScratchFolder = path.join(scratchRoot, "folder-1");
     const claimed: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
+    const setupEntered = yield* Deferred.make<void>();
     const harness = makeHarness({
+      physicalFixture: true,
+      runSetup: () =>
+        Deferred.succeed(setupEntered, undefined).pipe(Effect.as({ status: "no-script" as const })),
+      workspaceRoot,
+      otherWorkspaceRoot,
+      worktreesDir,
       managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-        namedProjectsRoot: "/projects",
+        namedProjectsRoot: path.join(root, "projects"),
         folderForThread: (input) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             if (input.projectId !== projectId) return Option.none();
             claimed.push({ threadId: input.threadId, text: input.text });
-            return Option.some(`/scratch/folder-${claimed.length}`);
+            const folder = path.join(scratchRoot, `folder-${claimed.length}`);
+            yield* fs
+              .makeDirectory(folder)
+              .pipe(
+                Effect.mapError(
+                  (cause) => new ManagedProjectFolders.ScratchFolderError({ folder, cause }),
+                ),
+              );
+            return Option.some(
+              yield* fs
+                .realPath(folder)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new ManagedProjectFolders.ScratchFolderError({ folder, cause }),
+                  ),
+                ),
+            );
           }),
       }),
     });
@@ -2194,9 +3348,10 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
       });
       const launched = yield* launches.launch(input);
       assert.deepEqual(claimed, [{ threadId: launched.threadId, text: "Convert these PNGs" }]);
-      assert.equal(launched.projection.thread.worktreePath, "/scratch/folder-1");
-      yield* waitUntil(() => Effect.sync(() => harness.runSetup.mock.calls.length === 1));
-      assert.equal(harness.runSetup.mock.calls[0]?.[0]?.worktreePath, "/scratch/folder-1");
+      assert.equal(launched.projection.thread.worktreePath, firstScratchFolder);
+      yield* Deferred.await(setupEntered);
+      assert.equal(harness.runSetup.mock.calls.length, 1);
+      assert.equal(harness.runSetup.mock.calls[0]?.[0]?.worktreePath, firstScratchFolder);
       assert.equal(harness.createWorktree.mock.calls.length, 0);
 
       // A retry replays the first attempt and claims no second folder.
@@ -2205,7 +3360,7 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
       assert.lengthOf(claimed, 1);
       assert.equal(
         (yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath,
-        "/scratch/folder-1",
+        firstScratchFolder,
       );
 
       const other = yield* launches.launch({
@@ -2219,7 +3374,92 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
       assert.lengthOf(claimed, 1);
       assert.isNull(other.projection.thread.worktreePath);
     }).pipe(Effect.provide(harness.layer));
-  }),
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("refuses a retried Scratch root launch whose initial message changed", () =>
+  Effect.gen(function* () {
+    // Only `projectId` stands in for the Scratch project here.
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const disposableRoot = yield* fs.makeTempDirectoryScoped({ prefix: "launch-scratch-" });
+    const root = yield* fs.realPath(disposableRoot);
+    const workspaceRoot = path.join(root, "project");
+    const otherWorkspaceRoot = path.join(root, "other-project");
+    const scratchRoot = path.join(root, "scratch");
+    const worktreesDir = path.join(root, "worktrees");
+    for (const directory of [workspaceRoot, otherWorkspaceRoot, scratchRoot, worktreesDir])
+      yield* fs.makeDirectory(directory);
+    const firstScratchFolder = path.join(scratchRoot, "folder-1");
+    const claimed: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
+    const setupEntered = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      physicalFixture: true,
+      runSetup: () =>
+        Deferred.succeed(setupEntered, undefined).pipe(Effect.as({ status: "no-script" as const })),
+      workspaceRoot,
+      otherWorkspaceRoot,
+      worktreesDir,
+      managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: path.join(root, "projects"),
+        folderForThread: (input) =>
+          Effect.gen(function* () {
+            if (input.projectId !== projectId) return Option.none();
+            claimed.push({ threadId: input.threadId, text: input.text });
+            const folder = path.join(scratchRoot, `folder-${claimed.length}`);
+            yield* fs
+              .makeDirectory(folder)
+              .pipe(
+                Effect.mapError(
+                  (cause) => new ManagedProjectFolders.ScratchFolderError({ folder, cause }),
+                ),
+              );
+            return Option.some(
+              yield* fs
+                .realPath(folder)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new ManagedProjectFolders.ScratchFolderError({ folder, cause }),
+                  ),
+                ),
+            );
+          }),
+      }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = launchInput({
+        command: "command:launch:scratch",
+        thread: "thread:launch:scratch",
+        message: "Convert these PNGs",
+      });
+      const launched = yield* launches.launch(input);
+      assert.deepEqual(claimed, [{ threadId: launched.threadId, text: "Convert these PNGs" }]);
+      assert.equal(launched.projection.thread.worktreePath, firstScratchFolder);
+      yield* Deferred.await(setupEntered);
+      assert.equal(harness.runSetup.mock.calls.length, 1);
+      assert.equal(harness.runSetup.mock.calls[0]?.[0]?.worktreePath, firstScratchFolder);
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+
+      if (input.initialMessage === undefined) assert.fail("The initial message is required.");
+      const retried = yield* launches
+        .launch({
+          ...input,
+          initialMessage: { ...input.initialMessage, text: "Convert these SVGs" },
+        })
+        .pipe(Effect.result);
+      assert.equal(retried._tag, "Failure");
+      if (retried._tag === "Failure") {
+        assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(retried.failure));
+        assert.equal(retried.failure.operation, "dispatch-message");
+        let cause: unknown = retried.failure.cause;
+        while (typeof cause === "object" && cause !== null && "cause" in cause) cause = cause.cause;
+        assert.equal(cause, "Replay has another permanent original checkout command.");
+      }
+      assert.lengthOf(claimed, 1);
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("names the worktree itself when the client provides no branch", () =>
@@ -2252,13 +3492,113 @@ it.effect("names the worktree itself when the client provides no branch", () =>
 
 it.effect("renames a temporary t3code/<hash> branch off the provisioning critical path", () =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const disposableRoot = yield* fs.makeTempDirectoryScoped({ prefix: "launch-temp-rename-" });
+    const workspaceRoot = yield* fs.realPath(disposableRoot);
+    const worktreesDir = path.join(workspaceRoot, "worktrees");
+    const expectedWorktreePath = nativeWorktreePath({
+      worktreesDir,
+      cwd: workspaceRoot,
+      branch: "t3code/abcd1234",
+    });
+    yield* fs.makeDirectory(path.dirname(expectedWorktreePath), { recursive: true });
+    const renameInputs: Array<
+      Parameters<GitWorkflow.GitWorkflowService["Service"]["renameBranch"]>[0]
+    > = [];
+    const renameGuards: Array<Effect.Effect<void, Error>> = [];
+    let creationGuardCompletions = 0;
+    let renameGuardCompletions = 0;
     const branchNameStarted = yield* Deferred.make<void>();
     const allowBranchName = yield* Deferred.make<void>();
     const harness = makeHarness({
-      createWorktree: (input) =>
-        Effect.succeed({
-          worktree: { path: "/repo-worktrees/temp", refName: input.newRefName, headSha: "abc" },
-        } as never),
+      physicalFixture: true,
+      workspaceRoot,
+      worktreesDir,
+      createWorktree: (input, options) =>
+        Effect.gen(function* () {
+          assert.equal(input.path, expectedWorktreePath);
+          assert.isFalse(
+            yield* fs.exists(expectedWorktreePath).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new GitCommandError({
+                    operation: "GitVcsDriver.createWorktree",
+                    command: "git worktree add",
+                    cwd: input.cwd,
+                    detail: "The scoped checkout absence could not be observed.",
+                    cause,
+                  }),
+              ),
+            ),
+          );
+          if (options?.revalidateMutation === undefined)
+            return yield* Effect.fail(
+              new GitCommandError({
+                operation: "GitVcsDriver.createWorktree.revalidateOriginalActor",
+                command: "git worktree add",
+                cwd: input.cwd,
+                detail: "The original creation actor guard is unavailable.",
+              }),
+            );
+          yield* options.revalidateMutation.pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitCommandError({
+                  operation: "GitVcsDriver.createWorktree.revalidateOriginalActor",
+                  command: "git worktree add",
+                  cwd: input.cwd,
+                  detail: "The original creation actor no longer authorizes another mutation.",
+                  cause,
+                }),
+            ),
+          );
+          creationGuardCompletions += 1;
+          yield* fs.makeDirectory(expectedWorktreePath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitCommandError({
+                  operation: "GitVcsDriver.createWorktree",
+                  command: "git worktree add",
+                  cwd: input.cwd,
+                  detail: "The scoped synthetic checkout material could not be created.",
+                  cause,
+                }),
+            ),
+          );
+          return {
+            worktree: { path: input.path, refName: input.newRefName, headSha: "abc" },
+          } as never;
+        }),
+      renameBranch: (input) =>
+        Effect.gen(function* () {
+          const guard = input.revalidateMutation;
+          if (guard === undefined)
+            return yield* Effect.fail(
+              new GitCommandError({
+                operation: "GitVcsDriver.renameBranch.revalidateOriginalActor",
+                command: "git branch rename",
+                cwd: input.cwd,
+                detail: "The original rename actor guard is unavailable.",
+              }),
+            );
+          renameInputs.push(input);
+          renameGuards.push(guard);
+          yield* guard.pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitCommandError({
+                  operation: "GitVcsDriver.renameBranch.revalidateOriginalActor",
+                  command: "git branch rename",
+                  cwd: input.cwd,
+                  detail: "The original rename actor no longer authorizes mutation or success.",
+                  cause,
+                }),
+            ),
+          );
+          renameGuardCompletions += 1;
+          return { branch: input.newBranch };
+        }),
       generateBranchName: () =>
         Deferred.succeed(branchNameStarted, undefined).pipe(
           Effect.andThen(Deferred.await(allowBranchName)),
@@ -2293,13 +3633,23 @@ it.effect("renames a temporary t3code/<hash> branch off the provisioning critica
           .getThreadProjection(launched.threadId)
           .pipe(Effect.map((projection) => projection.thread.branch === "generated-branch")),
       );
+      const originalRenameGuard = renameGuards[0];
+      if (originalRenameGuard === undefined)
+        return yield* Effect.die("The original captured rename guard is unavailable.");
       assert.deepEqual(harness.renameBranch.mock.calls[0]?.[0], {
-        cwd: "/repo-worktrees/temp",
+        cwd: expectedWorktreePath,
         oldBranch: "t3code/abcd1234",
         newBranch: "generated-branch",
+        revalidateMutation: originalRenameGuard,
       });
+      assert.equal(creationGuardCompletions, 1);
+      assert.equal(renameGuardCompletions, 1);
+      assert.lengthOf(renameGuards, 1);
+      assert.strictEqual(renameInputs[0], harness.renameBranch.mock.calls[0]?.[0]);
+      assert.strictEqual(renameInputs[0]?.revalidateMutation, renameGuards[0]);
+      assert.equal(yield* fs.realPath(expectedWorktreePath), expectedWorktreePath);
     }).pipe(Effect.provide(harness.layer));
-  }),
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("keeps an explicit branch name instead of generating one", () =>
@@ -2327,7 +3677,7 @@ it.effect("keeps the temporary branch when branch generation fails", () =>
     const harness = makeHarness({
       createWorktree: (input) =>
         Effect.succeed({
-          worktree: { path: "/repo-worktrees/temp", refName: input.newRefName, headSha: "abc" },
+          worktree: { path: input.path, refName: input.newRefName, headSha: "abc" },
         } as never),
       generateBranchName: () => Effect.die("branch generation is down"),
     });
@@ -2360,7 +3710,39 @@ it.effect("keeps the temporary branch when branch generation fails", () =>
 
 it.effect("renames a temporary branch on an existing worktree to a generated name", () =>
   Effect.gen(function* () {
-    const harness = makeHarness();
+    type OriginalRenameInput = Parameters<NonNullable<HarnessOptions["renameBranch"]>>[0];
+    const renameInputs: Array<OriginalRenameInput> = [];
+    const renameGuards: Array<NonNullable<OriginalRenameInput["revalidateMutation"]>> = [];
+    let renameGuardCompletions = 0;
+    const harness = makeHarness({
+      renameBranch: (input) =>
+        Effect.gen(function* () {
+          const guard = input.revalidateMutation;
+          if (guard === undefined)
+            return yield* new GitCommandError({
+              operation: "GitVcsDriver.renameBranch.revalidateOriginalActor",
+              command: "git branch rename",
+              cwd: input.cwd,
+              detail: "The original rename actor guard is unavailable.",
+            });
+          renameInputs.push(input);
+          renameGuards.push(guard);
+          yield* guard.pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitCommandError({
+                  operation: "GitVcsDriver.renameBranch.revalidateOriginalActor",
+                  command: "git branch rename",
+                  cwd: input.cwd,
+                  detail: "The original rename actor no longer authorizes mutation or success.",
+                  cause,
+                }),
+            ),
+          );
+          renameGuardCompletions += 1;
+          return { branch: input.newBranch };
+        }),
+    });
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
@@ -2381,11 +3763,19 @@ it.effect("renames a temporary branch on an existing worktree to a generated nam
           .getThreadProjection(launched.threadId)
           .pipe(Effect.map((projection) => projection.thread.branch === "generated-branch")),
       );
+      const originalRenameGuard = renameGuards[0];
+      if (originalRenameGuard === undefined)
+        return yield* Effect.die("The original captured rename guard is unavailable.");
       assert.deepEqual(harness.renameBranch.mock.calls[0]?.[0], {
         cwd: "/repo-worktrees/t3code-abcd1234",
         oldBranch: "t3code/abcd1234",
         newBranch: "generated-branch",
+        revalidateMutation: originalRenameGuard,
       });
+      assert.lengthOf(renameGuards, 1);
+      assert.equal(renameGuardCompletions, 1);
+      assert.strictEqual(renameInputs[0], harness.renameBranch.mock.calls[0]?.[0]);
+      assert.strictEqual(renameInputs[0]?.revalidateMutation, originalRenameGuard);
     }).pipe(Effect.provide(harness.layer));
   }),
 );
@@ -2422,22 +3812,51 @@ it.effect("accepts the first message while its automatic worktree base is still 
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
       const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-      const launched = yield* launches.launch(
-        launchInput({
-          command: "command:automatic-base-loading",
-          thread: "thread:automatic-base-loading",
-          message: "Start while branches load",
-          workspace: { type: "worktree", branch: "feature" },
-        }),
-      );
+      const input = launchInput({
+        command: "command:automatic-base-loading",
+        thread: "thread:automatic-base-loading",
+        message: "Start while branches load",
+        workspace: { type: "worktree", branch: "feature" },
+      });
+      const launched = yield* launches.launch(input);
       assert.equal(launched.projection.messages[0]?.text, "Start while branches load");
       assert.equal(launched.projection.runs[0]?.status, "preparing");
       yield* Deferred.await(refsEntered);
+      assert.isNull((yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath);
+      const sql = yield* SqlClient.SqlClient;
+      const admissions = yield* sql<{
+        readonly canonical_path: string;
+        readonly resource_path: string;
+      }>`
+        SELECT json_extract(admission_json, '$.capture.canonicalCheckoutPath') AS canonical_path,
+          lease.resource_path
+        FROM orchestration_v2_ordinary_checkout_admissions admission
+        JOIN worktree_ownership_leases lease
+          ON lease.resource_path = json_extract(admission_json, '$.capture.canonicalCheckoutPath')
+        WHERE admission.command_id = ${`${input.commandId}:initial-message`}
+          AND lease.owner_thread_id = ${launched.threadId}`;
+      const plannedPath = nativeWorktreePath({
+        worktreesDir: "/repo-worktrees",
+        cwd: project.workspaceRoot,
+        branch: "feature",
+      });
+      assert.equal(admissions.length, 1);
+      assert.equal(admissions[0]?.canonical_path, plannedPath);
+      assert.equal(admissions[0]?.resource_path, plannedPath);
+      const replay = yield* launches.launch(input);
+      assert.isTrue(replay.resumed);
+      assert.equal(replay.threadId, launched.threadId);
+      assert.isNull(replay.projection.thread.worktreePath);
       assert.equal(harness.createWorktree.mock.calls.length, 0);
       assert.isNull((yield* tracker.get(launched.threadId))?.baseRef);
       yield* Deferred.succeed(allowRefs, undefined);
       yield* awaitStartingRun(threads, launched.threadId);
       assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "develop");
+      assert.equal(harness.createWorktree.mock.calls[0]?.[0].path, plannedPath);
+      assert.equal(
+        (yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath,
+        plannedPath,
+      );
       assert.equal((yield* tracker.get(launched.threadId))?.baseRef, "develop");
       assert.equal((yield* threads.getThreadProjection(launched.threadId)).messages.length, 1);
     }).pipe(Effect.provide(harness.layer));
@@ -2742,7 +4161,7 @@ it.effect("shows the fetch diagnosis when preparing a worktree from origin fails
     const projection = yield* threads.getThreadProjection(launched.threadId);
     assert.equal(projection.messages[0]?.text, "Start from origin");
     assert.equal(projection.runs[0]?.status, "failed");
-    assert.equal(projection.thread.worktreePath, null);
+    assert.isNull(projection.thread.worktreePath);
     assert.equal(
       projection.turnItems.find((item) => item.type === "command_execution")?.status,
       "failed",
@@ -2756,131 +4175,974 @@ it.effect("shows the fetch diagnosis when preparing a worktree from origin fails
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("retries a failed workspace preparation on the same run", () => {
-  let fetchFailures = 1;
-  const harness = makeHarness({
-    fetchRemote: () =>
-      fetchFailures-- > 0
-        ? Effect.fail(
-            new GitCommandError({
-              operation: "GitVcsDriver.fetchRemote",
-              command: "git",
-              cwd: project.workspaceRoot,
-              detail: "Git could not update a local reference.",
-              exitCode: 1,
+const originalRetryFixtureSeed = "jones-original-launch-retry-physical-v1";
+const planOriginalRetryFixtureChild = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const config = yield* ServerConfig.ServerConfig;
+  const projects = yield* ProjectService.ProjectService;
+  const originalProject = Option.getOrNull(yield* projects.getById(projectId));
+  if (originalProject === null)
+    return yield* Effect.die("The original retry fixture project is unavailable.");
+  const canonicalProjectRoot = yield* fs.realPath(originalProject.workspaceRoot);
+  const worktreesDir = yield* fs.realPath(config.worktreesDir);
+  if (canonicalProjectRoot !== originalProject.workspaceRoot)
+    return yield* Effect.die("The independently scoped retry project is not canonical.");
+  // A separate seed instance evaluates only the original pure UUID program.
+  // Expected identity uses fixture inputs, never accepted target/projection.
+  const uuid = yield* randomUuidV4.pipe(Random.withSeed(originalRetryFixtureSeed));
+  const branch = buildTemporaryWorktreeBranchName(() => uuid.replaceAll("-", ""));
+  return {
+    uuid,
+    branch,
+    canonicalProjectRoot,
+    worktreesDir,
+    expectedWorktreePath: nativeWorktreePath({
+      worktreesDir,
+      cwd: originalProject.workspaceRoot,
+      branch,
+    }),
+  };
+});
+
+const acquireRetryRegressionObservation = Effect.gen(function* () {
+  const observation: OriginalRetryPreparationObservation = {
+    ready: yield* Deferred.make<Fiber.Fiber<unknown, unknown>>(),
+    trackerAcquisitions: 0,
+    beginInvocations: 0,
+    beginEvaluations: 0,
+    beginTerminals: 0,
+    actualTracker: undefined,
+    forwardedTracker: undefined,
+    capture: undefined,
+    beginExit: undefined,
+    fiberExit: undefined,
+    retryReady: yield* Deferred.make<Fiber.Fiber<unknown, unknown>>(),
+    retryEntryPhase: "not_entered",
+    retryAwaitState: "handle_unobserved",
+    retryCapture: undefined,
+    retryBeginExit: undefined,
+    retryFiberExit: undefined,
+  };
+  return observation;
+});
+
+it.effect.each(["commit", "rollback"] as const)(
+  "authentic original retry completion respects its enclosing %s transaction",
+  (mode) =>
+    Effect.gen(function* () {
+      const realFixture = yield* acquireRealRetryFixture;
+      const observation = yield* acquireRetryRegressionObservation;
+      const probe: RetrySlotTransactionProbe = {
+        mode,
+        acquisitions: 0,
+        invocations: 0,
+        evaluations: 0,
+        beforeRefusal: false,
+        afterSlot: undefined,
+        afterSlotQuery: undefined,
+        readInvocations: [],
+        readSuccesses: [],
+        originalRecord: undefined,
+        publicationPhase: "not_entered",
+        publicationRecord: undefined,
+        rollbackFactsEqual: false,
+        rollbackCause: undefined,
+        rollbackObservation: undefined,
+        serving: undefined,
+      };
+      const harness = makeRealRetryHarness(realFixture, observation, probe);
+      return yield* Effect.gen(function* () {
+        const expected = yield* planOriginalRetryFixtureChild;
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const launched = yield* launches
+          .launch(
+            launchInput({
+              command: "command:launch:retry",
+              thread: "thread:launch:retry",
+              message: "Retry me",
+              workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
             }),
           )
-        : Effect.void,
-  });
-  return Effect.gen(function* () {
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
-    const threads = yield* ThreadManagement.ThreadManagementService;
-    const launched = yield* launches.launch(
-      launchInput({
-        command: "command:launch:retry",
-        thread: "thread:launch:retry",
-        message: "Retry me",
-        workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
-      }),
-    );
-    yield* waitUntil(() =>
-      threads
-        .getThreadProjection(launched.threadId)
-        .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
-    );
-    const failed = yield* threads.getThreadProjection(launched.threadId);
-    const runId = failed.runs[0]!.id;
-    assert.equal(
-      failed.turnItems.find((item) => item.type === "error")?.failure.code,
-      ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-    );
+          .pipe(Random.withSeed(originalRetryFixtureSeed));
+        const fiber = yield* Deferred.await(observation.ready);
+        observation.fiberExit = yield* Fiber.await(fiber);
+        yield* waitUntil(() =>
+          threads
+            .getThreadProjection(launched.threadId)
+            .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
+        );
+        assert.equal(probe.acquisitions, 1);
+        assert.equal(probe.invocations, 1);
+        assert.equal(probe.evaluations, 1);
+        assert.isTrue(probe.beforeRefusal);
+        const serving = probe.serving;
+        if (serving === undefined)
+          return yield* Effect.die("The transaction probe owner capture is unavailable.");
+        assert.strictEqual(serving.sql, realFixture.audit.acquisitions[0]?.sql);
+        assert.strictEqual(serving.sink, realFixture.audit.acquisitions[0]?.sink);
+        assert.strictEqual(serving.lifetime, serving.sink.ordinaryCheckoutLifetime);
+        assert.notStrictEqual(serving.facade, serving.sink);
+        assert.notStrictEqual(serving.facade.ordinaryCheckoutLifetime, serving.lifetime);
+        if (mode === "commit") {
+          assert.strictEqual(serving.originalReader, serving.lifetime.readOriginalPreparedRetry);
+          assert.strictEqual(
+            serving.forwardedReader,
+            serving.facade.ordinaryCheckoutLifetime?.readOriginalPreparedRetry,
+          );
+          assert.notStrictEqual(serving.forwardedReader, serving.originalReader);
+        } else {
+          assert.strictEqual(
+            serving.facade.ordinaryCheckoutLifetime?.readOriginalPreparedRetry,
+            serving.lifetime.readOriginalPreparedRetry,
+          );
+        }
+        assert.strictEqual(
+          serving.facade.ordinaryCheckoutLifetime?.revalidateExecution,
+          serving.lifetime.revalidateExecution,
+        );
+        assert.strictEqual(serving.facade.readByCommandId, serving.sink.readByCommandId);
+        assert.strictEqual(serving.transactionService, serving.sql.transactionService);
+        assert.equal(realFixture.audit.factories, 1);
+        assert.equal(realFixture.audit.acquisitions.length, 1);
+        assert.equal(realFixture.audit.launchers.length, 1);
+        assert.equal(realFixture.audit.fetchFailures.length, 1);
+        assert.equal(realFixture.audit.unsupportedFetchFailures, 0);
+        assert.deepEqual(realFixture.audit.observationFailures, []);
+        assert.deepEqual(realFixture.audit.controls, []);
+        assert.equal(harness.createWorktree.mock.calls.length, 0);
+        assert.equal(harness.runSetup.mock.calls.length, 0);
+        assert.isFalse(yield* realFixture.fs.exists(expected.expectedWorktreePath));
+        assert.equal(
+          yield* realFixture.git(realFixture.workspaceRoot, ["rev-parse", "HEAD"]),
+          realFixture.parentHead,
+        );
+        if (mode === "commit") {
+          assert.isDefined(observation.fiberExit);
+          assert.strictEqual(observation.capture?.executingFiber, fiber);
+          assert.equal(probe.publicationPhase, "completed");
+          const originalRecord = probe.originalRecord;
+          if (originalRecord === undefined)
+            return yield* Effect.die("The original committed preparation identity is unavailable.");
+          assert.strictEqual(probe.publicationRecord, originalRecord);
+          assert.isTrue(probe.beforeRefusal);
+          const failed = yield* threads.getThreadProjection(launched.threadId);
+          const retry = {
+            commandId: CommandId.make("command:launch:retry:1"),
+            threadId: launched.threadId,
+            runId: failed.runs[0]!.id,
+          };
+          observation.retryEntryPhase = "before_retryPreparation";
+          yield* launches.retryPreparation(retry);
+          observation.retryAwaitState = "awaiting_handle";
+          const retryFiber = yield* Deferred.await(observation.retryReady);
+          assert.notStrictEqual(retryFiber, fiber);
+          assert.strictEqual(observation.retryCapture?.executingFiber, retryFiber);
+          observation.retryAwaitState = "awaiting_fiber_exit";
+          observation.retryFiberExit = yield* Fiber.await(retryFiber);
+          observation.retryAwaitState = "fiber_exit_observed";
+          assert.lengthOf(probe.readInvocations, 2);
+          assert.lengthOf(probe.readSuccesses, 2);
+          const firstInvocation = probe.readInvocations[0];
+          const secondInvocation = probe.readInvocations[1];
+          const firstSuccess = probe.readSuccesses[0];
+          const secondSuccess = probe.readSuccesses[1];
+          if (
+            firstInvocation === undefined ||
+            secondInvocation === undefined ||
+            firstSuccess === undefined ||
+            secondSuccess === undefined
+          )
+            return yield* Effect.die("Both original retry reads and successes are required.");
+          assert.strictEqual(firstInvocation.input, secondInvocation.input);
+          assert.strictEqual(firstSuccess.input, firstInvocation.input);
+          assert.strictEqual(secondSuccess.input, secondInvocation.input);
+          assert.deepEqual(firstInvocation.input, originalRecord.query);
+          assert.deepEqual(secondInvocation.input, originalRecord.query);
+          assert.deepEqual(firstInvocation.input.targetSource, originalRecord.query.targetSource);
+          assert.deepEqual(secondInvocation.input.targetSource, originalRecord.query.targetSource);
+          assert.strictEqual(firstInvocation.slot, firstSuccess.slot);
+          assert.strictEqual(secondInvocation.slot, secondSuccess.slot);
+          assert.strictEqual(firstSuccess.slot, secondSuccess.slot);
+          assert.strictEqual(firstSuccess.slot.ref, secondSuccess.slot.ref);
+          for (const successfulRead of probe.readSuccesses) {
+            assert.deepEqual(successfulRead.slot.ref, originalRecord.ref);
+            assert.equal(
+              successfulRead.slot.ref.originalUse.operationId,
+              originalRecord.ref.originalUse.operationId,
+            );
+            assert.deepEqual(successfulRead.slot.ref.originalUse, originalRecord.ref.originalUse);
+            assert.deepEqual(successfulRead.slot.ref.executor, originalRecord.ref.executor);
+            assert.deepEqual(
+              successfulRead.slot.ref.originalUse.admission,
+              ordinaryCheckoutAdmissionRefV1(originalRecord.admission),
+            );
+            assert.deepEqual(
+              ordinaryCheckoutLeaseIdentityV1(successfulRead.slot.ref.originalUse.lease),
+              ordinaryCheckoutLeaseIdentityV1(originalRecord.admission.capture.lease),
+            );
+            assert.deepEqual(successfulRead.slot.ref, originalRecord.history.participants[0]?.ref);
+            assert.deepEqual(
+              successfulRead.slot.ref,
+              originalRecord.history.facts[originalRecord.history.latestOrdinal]?.ref,
+            );
+            assert.strictEqual(successfulRead.slot.outcome, originalRecord.outcome);
+            assert.equal(successfulRead.slot.associationOrdinal, originalRecord.associationOrdinal);
+          }
+          assert.strictEqual(probe.afterSlotQuery, firstInvocation.input);
+          assert.strictEqual(probe.afterSlotQuery, secondInvocation.input);
+          assert.strictEqual(probe.afterSlot, firstSuccess.slot);
+          assert.strictEqual(probe.afterSlot, secondSuccess.slot);
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          yield* waitUntil(() =>
+            outbox
+              .listByCommandId(CommandId.make("command:launch:retry:1:release"))
+              .pipe(Effect.map((effects) => effects.length === 1)),
+          );
+          const retried = yield* threads.getThreadProjection(launched.threadId);
+          assert.equal(retried.runs.length, 1);
+          assert.equal(retried.runs[0]?.status, "starting");
+          assert.equal(retried.thread.worktreePath, expected.expectedWorktreePath);
+          assert.equal(harness.createWorktree.mock.calls.length, 1);
+          assert.isTrue(yield* realFixture.fs.exists(expected.expectedWorktreePath));
+          assert.deepEqual(realFixture.audit.controls, []);
+          assert.isFalse(probe.rollbackFactsEqual);
+        } else {
+          assert.isUndefined(probe.afterSlot);
+          const rollbackObservation = probe.rollbackObservation;
+          if (
+            rollbackObservation === undefined ||
+            rollbackObservation.baseline === undefined ||
+            probe.rollbackCause === undefined
+          )
+            return yield* Effect.die("The authentic original rollback observation is unavailable.");
+          assert.equal(
+            rollbackObservation.operationId,
+            "command:launch:retry:ordinary-preparation",
+          );
+          if (Exit.isFailure(rollbackObservation.exit))
+            return yield* Effect.failCause(rollbackObservation.exit.cause);
+          assert.deepEqual(rollbackObservation.exit.value, rollbackObservation.baseline);
+          probe.rollbackFactsEqual = true;
+          assert.isTrue(probe.rollbackFactsEqual);
+          const rollbackError = Cause.findError(probe.rollbackCause);
+          if (Result.isFailure(rollbackError) || !SqlError.isSqlError(rollbackError.success))
+            return yield* Effect.die("The original enclosing rollback has no typed SQL cause.");
+          assert.equal(rollbackError.success.reason._tag, "ConstraintError");
+        }
+      }).pipe(Effect.provide(harness.layer));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
-    const retry = {
-      commandId: CommandId.make("command:launch:retry:1"),
-      threadId: launched.threadId,
-      runId,
+function runAuthenticRetainedReaderRegression(variant: RetainedReaderVariant) {
+  return Effect.gen(function* () {
+    const realFixture = yield* acquireRealRetryFixture;
+    const observation = yield* acquireRetryRegressionObservation;
+    const probe: RetrySlotTransactionProbe = {
+      mode: "commit",
+      acquisitions: 0,
+      invocations: 0,
+      evaluations: 0,
+      beforeRefusal: false,
+      afterSlot: undefined,
+      afterSlotQuery: undefined,
+      readInvocations: [],
+      readSuccesses: [],
+      originalRecord: undefined,
+      publicationPhase: "not_entered",
+      publicationRecord: undefined,
+      rollbackFactsEqual: false,
+      rollbackCause: undefined,
+      rollbackObservation: undefined,
+      serving: undefined,
     };
-    yield* launches.retryPreparation(retry);
-    yield* waitUntil(() =>
-      outbox
-        .listByCommandId(CommandId.make("command:launch:retry:1:release"))
-        .pipe(Effect.map((effects) => effects.length === 1)),
-    );
-    const retried = yield* threads.getThreadProjection(launched.threadId);
-    assert.equal(retried.runs.length, 1);
-    assert.equal(retried.runs[0]?.status, "starting");
-    assert.equal(retried.thread.worktreePath, "/repo-worktrees/feature");
-    assert.equal(retried.turnItems.find((item) => item.type === "error")?.status, "cancelled");
-    assert.equal(
-      retried.turnItems.find((item) => item.type === "command_execution")?.status,
-      "completed",
-    );
-    assert.equal(harness.createWorktree.mock.calls.length, 1);
+    const readerProbe: RetainedReaderProbe = {
+      variant,
+      preparation: observation,
+      invocations: 0,
+      negativeReads: 0,
+      mutations: 0,
+      refusal: undefined,
+      changedQuery: undefined,
+      authenticQuery: undefined,
+      originalSlot: undefined,
+      rollback: undefined,
+      rollbackCause: undefined,
+      restoredFacts: false,
+    };
+    const harness = makeRealRetryHarness(realFixture, observation, probe, readerProbe);
+    return yield* Effect.gen(function* () {
+      const expected = yield* planOriginalRetryFixtureChild;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches
+        .launch(
+          launchInput({
+            command: "command:launch:retry",
+            thread: "thread:launch:retry",
+            message: "Retry me",
+            workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+          }),
+        )
+        .pipe(Random.withSeed(originalRetryFixtureSeed));
+      const fiber = yield* Deferred.await(observation.ready);
+      observation.fiberExit = yield* Fiber.await(fiber);
+      yield* waitUntil(() =>
+        threads
+          .getThreadProjection(launched.threadId)
+          .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
+      );
+      assert.equal(probe.acquisitions, 1);
+      assert.equal(probe.invocations, 1);
+      assert.equal(probe.evaluations, 1);
+      assert.isTrue(probe.beforeRefusal);
+      const serving = probe.serving;
+      const record = probe.originalRecord;
+      if (serving === undefined || record === undefined)
+        return yield* Effect.die("The authentic original reader foundation is unavailable.");
+      assert.strictEqual(serving.sql, realFixture.audit.acquisitions[0]?.sql);
+      assert.strictEqual(serving.sink, realFixture.audit.acquisitions[0]?.sink);
+      assert.strictEqual(serving.lifetime, serving.sink.ordinaryCheckoutLifetime);
+      assert.strictEqual(serving.originalReader, serving.lifetime.readOriginalPreparedRetry);
+      assert.notStrictEqual(serving.facade, serving.sink);
+      assert.notStrictEqual(serving.forwardedReader, serving.originalReader);
+      assert.strictEqual(
+        serving.forwardedReader,
+        serving.facade.ordinaryCheckoutLifetime?.readOriginalPreparedRetry,
+      );
+      assert.strictEqual(
+        serving.facade.ordinaryCheckoutLifetime?.revalidateExecution,
+        serving.lifetime.revalidateExecution,
+      );
+      assert.strictEqual(serving.transactionService, serving.sql.transactionService);
+      assert.equal(probe.publicationPhase, "completed");
+      assert.strictEqual(probe.publicationRecord, record);
+      assert.strictEqual(observation.capture?.executingFiber, fiber);
+      assert.equal(realFixture.audit.factories, 1);
+      assert.lengthOf(realFixture.audit.acquisitions, 1);
+      assert.lengthOf(realFixture.audit.launchers, 1);
+      assert.lengthOf(realFixture.audit.fetchFailures, 1);
+      assert.equal(realFixture.audit.unsupportedFetchFailures, 0);
+      assert.deepEqual(realFixture.audit.observationFailures, []);
+      assert.deepEqual(realFixture.audit.controls, []);
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+      assert.equal(harness.runSetup.mock.calls.length, 0);
+      assert.isFalse(yield* realFixture.fs.exists(expected.expectedWorktreePath));
+      assert.equal(
+        yield* realFixture.git(realFixture.workspaceRoot, ["rev-parse", "HEAD"]),
+        realFixture.parentHead,
+      );
+      const failed = yield* threads.getThreadProjection(launched.threadId);
+      observation.retryEntryPhase = "before_retryPreparation";
+      yield* launches.retryPreparation({
+        commandId: CommandId.make("command:launch:retry:1"),
+        threadId: launched.threadId,
+        runId: failed.runs[0]!.id,
+      });
+      const retryFiber = yield* Deferred.await(observation.retryReady);
+      assert.notStrictEqual(retryFiber, fiber);
+      assert.strictEqual(observation.retryCapture?.executingFiber, retryFiber);
+      observation.retryFiberExit = yield* Fiber.await(retryFiber);
+      assert.equal(readerProbe.invocations, 2);
+      assert.equal(readerProbe.negativeReads, 1);
+      assert.isDefined(readerProbe.refusal);
+      assert.isTrue(readerProbe.restoredFacts);
+      assert.equal(readerProbe.mutations, variant === "multiple released operations" ? 1 : 0);
+      if (variant === "multiple released operations") {
+        assert.isUndefined(readerProbe.changedQuery);
+        assert.isDefined(readerProbe.rollback);
+      } else {
+        const changed = readerProbe.changedQuery;
+        if (changed === undefined)
+          return yield* Effect.die("The single altered query is unavailable.");
+        const expectedQuery =
+          variant === "messageId"
+            ? { ...record.query, messageId: changed.messageId }
+            : variant === "projectId"
+              ? { ...record.query, projectId: changed.projectId }
+              : variant === "branch"
+                ? { ...record.query, branch: changed.branch }
+                : {
+                    ...record.query,
+                    targetSource: {
+                      ...record.query.targetSource,
+                      worktreePath: changed.targetSource.worktreePath,
+                    },
+                  };
+        assert.deepEqual(changed, expectedQuery);
+        assert.notDeepEqual(changed, record.query);
+      }
+      assert.lengthOf(probe.readInvocations, 2);
+      assert.lengthOf(probe.readSuccesses, 2);
+      const first = probe.readSuccesses[0];
+      const second = probe.readSuccesses[1];
+      if (first === undefined || second === undefined)
+        return yield* Effect.die("Both genuine retry reader results are required.");
+      assert.strictEqual(first.input, second.input);
+      assert.strictEqual(readerProbe.authenticQuery, first.input);
+      assert.deepEqual(first.input, record.query);
+      assert.deepEqual(second.input, record.query);
+      assert.strictEqual(first.slot, second.slot);
+      assert.strictEqual(first.slot, readerProbe.originalSlot);
+      assert.strictEqual(first.slot.ref, second.slot.ref);
+      assert.deepEqual(first.slot.ref, record.ref);
+      assert.deepEqual(
+        first.slot.ref.originalUse.admission,
+        ordinaryCheckoutAdmissionRefV1(record.admission),
+      );
+      assert.deepEqual(first.slot.ref.originalUse, record.ref.originalUse);
+      assert.deepEqual(first.slot.ref.executor, record.ref.executor);
+      assert.deepEqual(
+        ordinaryCheckoutLeaseIdentityV1(first.slot.ref.originalUse.lease),
+        ordinaryCheckoutLeaseIdentityV1(record.admission.capture.lease),
+      );
+      assert.deepEqual(first.slot.ref, record.history.participants[0]?.ref);
+      assert.strictEqual(first.slot.outcome, record.outcome);
+      assert.strictEqual(second.slot.outcome, record.outcome);
+      assert.equal(first.slot.associationOrdinal, record.associationOrdinal);
+      assert.equal(second.slot.associationOrdinal, record.associationOrdinal);
+      assert.strictEqual(probe.afterSlot, first.slot);
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      yield* waitUntil(() =>
+        outbox
+          .listByCommandId(CommandId.make("command:launch:retry:1:release"))
+          .pipe(Effect.map((effects) => effects.length === 1)),
+      );
+      const retried = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(retried.runs.length, 1);
+      assert.equal(retried.runs[0]?.status, "starting");
+      assert.equal(retried.thread.worktreePath, expected.expectedWorktreePath);
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      assert.isTrue(yield* realFixture.fs.exists(expected.expectedWorktreePath));
+      assert.deepEqual(realFixture.audit.controls, []);
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+}
 
-    // The run left preparation, so a second retry has nothing to do.
-    const rejected = yield* launches
-      .retryPreparation({ ...retry, commandId: CommandId.make("command:launch:retry:2") })
-      .pipe(Effect.flip);
-    assert.equal(rejected._tag, "OrchestratorDispatchError");
-  }).pipe(Effect.provide(harness.layer));
-});
+it.effect("authentic retained retry reader refuses an unrelated messageId", () =>
+  runAuthenticRetainedReaderRegression("messageId"),
+);
+it.effect("authentic retained retry reader refuses an unrelated projectId", () =>
+  runAuthenticRetainedReaderRegression("projectId"),
+);
+it.effect("authentic retained retry reader refuses an unrelated targetSource.worktreePath", () =>
+  runAuthenticRetainedReaderRegression("targetSource.worktreePath"),
+);
+it.effect("authentic retained retry reader refuses an unrelated branch", () =>
+  runAuthenticRetainedReaderRegression("branch"),
+);
+it.effect("authentic retained retry reader refuses multiple released native operation rows", () =>
+  runAuthenticRetainedReaderRegression("multiple released operations"),
+);
 
-it.effect("retains the explicit setup opt-out when a failed bootstrap is retried", () => {
-  let fetchFailures = 1;
-  const harness = makeHarness({
-    fetchRemote: () =>
-      fetchFailures-- > 0
-        ? Effect.fail(
-            new GitCommandError({
-              operation: "GitVcsDriver.fetchRemote",
-              command: "git",
-              cwd: project.workspaceRoot,
-              detail: "Local reference failure",
-              exitCode: 1,
+it.effect("retries a failed workspace preparation on the same run", () =>
+  Effect.gen(function* () {
+    const realFixture = yield* acquireRealRetryFixture;
+    const originalPreparation: OriginalRetryPreparationObservation = {
+      ready: yield* Deferred.make<Fiber.Fiber<unknown, unknown>>(),
+      trackerAcquisitions: 0,
+      beginInvocations: 0,
+      beginEvaluations: 0,
+      beginTerminals: 0,
+      actualTracker: undefined,
+      forwardedTracker: undefined,
+      capture: undefined,
+      beginExit: undefined,
+      fiberExit: undefined,
+      retryReady: yield* Deferred.make<Fiber.Fiber<unknown, unknown>>(),
+      retryEntryPhase: "not_entered",
+      retryAwaitState: "handle_unobserved",
+      retryCapture: undefined,
+      retryBeginExit: undefined,
+      retryFiberExit: undefined,
+    };
+    const harness = makeHarness({ realPreparation: realFixture, originalPreparation });
+    return yield* Effect.gen(function* () {
+      const fixture = yield* planOriginalRetryFixtureChild;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches
+        .launch(
+          launchInput({
+            command: "command:launch:retry",
+            thread: "thread:launch:retry",
+            message: "Retry me",
+            workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+          }),
+        )
+        .pipe(Random.withSeed(originalRetryFixtureSeed));
+      const originalPreparationFiber = yield* Deferred.await(originalPreparation.ready);
+      originalPreparation.fiberExit = yield* Fiber.await(originalPreparationFiber);
+      yield* waitUntil(() =>
+        threads
+          .getThreadProjection(launched.threadId)
+          .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
+      );
+      const failed = yield* threads.getThreadProjection(launched.threadId);
+      const runId = failed.runs[0]!.id;
+      assert.equal(
+        failed.turnItems.find((item) => item.type === "error")?.failure.code,
+        ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+      );
+
+      const retry = {
+        commandId: CommandId.make("command:launch:retry:1"),
+        threadId: launched.threadId,
+        runId,
+      };
+      originalPreparation.retryEntryPhase = "before_retryPreparation";
+      yield* launches.retryPreparation(retry);
+      originalPreparation.retryAwaitState = "awaiting_handle";
+      const retryPreparationFiber = yield* Deferred.await(originalPreparation.retryReady);
+      originalPreparation.retryAwaitState = "awaiting_fiber_exit";
+      originalPreparation.retryFiberExit = yield* Fiber.await(retryPreparationFiber);
+      originalPreparation.retryAwaitState = "fiber_exit_observed";
+      yield* waitUntil(() =>
+        outbox
+          .listByCommandId(CommandId.make("command:launch:retry:1:release"))
+          .pipe(Effect.map((effects) => effects.length === 1)),
+      );
+      const retried = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(retried.runs.length, 1);
+      assert.equal(retried.runs[0]?.status, "starting");
+      assert.equal(retried.thread.worktreePath, fixture.expectedWorktreePath);
+      assert.equal(retried.turnItems.find((item) => item.type === "error")?.status, "cancelled");
+      assert.equal(
+        retried.turnItems.find((item) => item.type === "command_execution")?.status,
+        "completed",
+      );
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+
+      // The run left preparation, so a second retry has nothing to do.
+      const rejected = yield* launches
+        .retryPreparation({ ...retry, commandId: CommandId.make("command:launch:retry:2") })
+        .pipe(Effect.flip);
+      assert.equal(rejected._tag, "OrchestratorDispatchError");
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("retains the explicit setup opt-out when a failed bootstrap is retried", () =>
+  Effect.gen(function* () {
+    const realFixture = yield* acquireRealRetryFixture;
+    const originalPreparation: OriginalRetryPreparationObservation = {
+      ...(yield* acquireRetryRegressionObservation),
+      observedThreadId: ThreadId.make("thread:launch:retry-no-setup"),
+    };
+    const harness = makeHarness({ realPreparation: realFixture, originalPreparation });
+    return yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const launched = yield* launches
+        .launch({
+          ...launchInput({
+            command: "command:launch:retry-no-setup",
+            thread: "thread:launch:retry-no-setup",
+            message: "Retry without setup",
+            workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+          }),
+          runSetupScript: false,
+        })
+        .pipe(Random.withSeed(originalRetryFixtureSeed));
+      const originalPreparationFiber = yield* Deferred.await(originalPreparation.ready);
+      originalPreparation.fiberExit = yield* Fiber.await(originalPreparationFiber);
+      yield* waitUntil(() =>
+        threads
+          .getThreadProjection(launched.threadId)
+          .pipe(Effect.map((p) => p.runs[0]?.status === "failed")),
+      );
+      const failed = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(failed.runs[0]?.workspaceRunSetupScript, false);
+      const commandId = CommandId.make("command:launch:retry-no-setup:retry");
+      originalPreparation.retryEntryPhase = "before_retryPreparation";
+      yield* launches.retryPreparation({
+        commandId,
+        threadId: launched.threadId,
+        runId: failed.runs[0]!.id,
+      });
+      originalPreparation.retryAwaitState = "awaiting_handle";
+      const retryPreparationFiber = yield* Deferred.await(originalPreparation.retryReady);
+      originalPreparation.retryAwaitState = "awaiting_fiber_exit";
+      originalPreparation.retryFiberExit = yield* Fiber.await(retryPreparationFiber);
+      originalPreparation.retryAwaitState = "fiber_exit_observed";
+      yield* waitUntil(() =>
+        outbox
+          .listByCommandId(CommandId.make(`${commandId}:release`))
+          .pipe(Effect.map((effects) => effects.length === 1)),
+      );
+      assert.equal(harness.runSetup.mock.calls.length, 0);
+      assert.equal(
+        (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
+        "starting",
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("joins the original failed producer before reusing its created checkout", () =>
+  Effect.gen(function* () {
+    const failedPublished = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+    const allowProducerEnd = yield* Deferred.make<void>();
+    let setupFailures = 1;
+    const failures: string[] = [];
+    let originalOutcome:
+      | Parameters<OrdinaryCheckoutLifetime["recordPreparedOutcome"]>[0]
+      | undefined;
+    const harness = makeHarness({
+      afterPreparedOutcome: (input) =>
+        Effect.sync(() => {
+          originalOutcome = input;
+        }),
+      runSetup: () =>
+        setupFailures-- > 0
+          ? Effect.fail(new Error("setup failed") as never)
+          : Effect.succeed({ status: "no-script" as const }),
+      afterDispatch: (command) =>
+        Effect.gen(function* () {
+          if (command.type !== "prepared-run.fail") return;
+          failures.push(command.failure.message);
+          if (command.commandId !== "command:producer-join:fail") return;
+          yield* Deferred.succeed(failedPublished, yield* Effect.fiber);
+          yield* Deferred.await(allowProducerEnd);
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:producer-join",
+          thread: "thread:producer-join",
+          message: "Retry after the original producer ends",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      );
+      const producer = yield* Deferred.await(failedPublished);
+      assert.isUndefined(producer.pollUnsafe());
+      assert.isDefined(originalOutcome);
+      const physical = originalOutcome!.actualProducerOutcome.observation;
+      assert.equal(physical.kind, "prepared_failure_observed");
+      assert.strictEqual(ThreadLaunch.readIssuedOrdinaryPreparedPhysicalResult(physical), physical);
+      assert.isNull(ThreadLaunch.readIssuedRetiredPreparedFailureResult(physical));
+      const failed = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(failed.runs[0]?.status, "failed");
+      const runId = failed.runs[0]!.id;
+      const retry = {
+        commandId: CommandId.make("command:producer-join:retry"),
+        threadId: launched.threadId,
+        runId,
+      };
+      yield* threads.dispatch({ type: "prepared-run.retry", ...retry });
+      const lifetime = sink.ordinaryCheckoutLifetime!;
+      const admission = (yield* lifetime.readAdmissionForRun({
+        threadId: launched.threadId,
+        runId,
+      }))!;
+      const query = {
+        threadId: launched.threadId,
+        projectId,
+        runId,
+        messageId: admission.run!.messageId,
+        canonicalProjectRoot: admission.capture.canonicalProjectRoot,
+        canonicalCheckoutPath: admission.capture.canonicalCheckoutPath,
+        branch: failed.thread.branch!,
+        targetSource: {
+          projectWorkspaceRoot: project.workspaceRoot,
+          worktreePath: failed.thread.worktreePath,
+        },
+      };
+      const beforeRetirement = yield* lifetime.readOriginalPreparedRetry(query).pipe(Effect.flip);
+      assert.equal(
+        beforeRetirement.message,
+        "Retry has no retained, completed original preparation outcome.",
+      );
+      const retryFiber = yield* launches.retryPreparation(retry).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      assert.isUndefined(retryFiber.pollUnsafe());
+      assert.equal((yield* sql`SELECT 1 AS available`)[0]?.available, 1);
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      yield* Deferred.succeed(allowProducerEnd, undefined);
+      const producerExit = yield* Fiber.await(producer);
+      assert.isTrue(Exit.isSuccess(producerExit));
+      assert.strictEqual(
+        ThreadLaunch.readIssuedRetiredPreparedFailureResult(physical),
+        physical,
+        "actual issued result after original producer end",
+      );
+      assert.isNull(ThreadLaunch.readIssuedRetiredPreparedFailureResult({ ...physical }));
+      assert.isNull(
+        ThreadLaunch.readIssuedRetiredPreparedFailureResult(
+          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
+            yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(physical),
+          ),
+        ),
+      );
+      yield* Fiber.join(retryFiber);
+      const settled = yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.commandId === "command:producer-join:retry:release" ||
+            stored.commandId === "command:producer-join:retry:fail",
+        ),
+        Stream.runHead,
+      );
+      assert.equal(
+        Option.getOrNull(settled)?.commandId,
+        "command:producer-join:retry:release",
+        failures.join("; "),
+      );
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      assert.equal(harness.renameBranch.mock.calls.length, 1);
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(allowProducerEnd, undefined)),
+      Effect.provide(harness.layer),
+    );
+  }),
+);
+
+it.effect("a producer retirement timeout refuses retry without interrupting the producer", () =>
+  Effect.gen(function* () {
+    const failedPublished = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+    const retryDispatched = yield* Deferred.make<void>();
+    const allowProducerEnd = yield* Deferred.make<void>();
+    const retryRefused = yield* Deferred.make<string>();
+    const harness = makeHarness({
+      runSetup: () => Effect.fail(new Error("setup failed") as never),
+      afterDispatch: (command) =>
+        Effect.gen(function* () {
+          if (command.type === "prepared-run.retry") {
+            yield* Deferred.succeed(retryDispatched, undefined);
+            return;
+          }
+          if (command.type !== "prepared-run.fail") return;
+          if (command.commandId === "command:producer-timeout:retry:fail") {
+            yield* Deferred.succeed(retryRefused, command.failure.message);
+            return;
+          }
+          if (command.commandId !== "command:producer-timeout:fail") return;
+          yield* Deferred.succeed(failedPublished, yield* Effect.fiber);
+          yield* Deferred.await(allowProducerEnd);
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:producer-timeout",
+          thread: "thread:producer-timeout",
+          message: "Keep the original producer",
+          workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+        }),
+      );
+      const producer = yield* Deferred.await(failedPublished);
+      const retry = yield* launches
+        .retryPreparation({
+          commandId: CommandId.make("command:producer-timeout:retry"),
+          threadId: launched.threadId,
+          runId: launched.projection.runs[0]!.id,
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(retryDispatched);
+      yield* TestClock.adjust("5 seconds");
+      assert.include(
+        yield* Deferred.await(retryRefused),
+        "The original preparation producer has not retired.",
+      );
+      yield* Fiber.join(retry);
+      assert.isUndefined(producer.pollUnsafe());
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      assert.equal(harness.runSetup.mock.calls.length, 1);
+      assert.equal(
+        (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
+        "failed",
+      );
+      yield* Deferred.succeed(allowProducerEnd, undefined);
+      assert.isTrue(Exit.isSuccess(yield* Fiber.await(producer)));
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(allowProducerEnd, undefined)),
+      Effect.provide(harness.layer),
+    );
+  }),
+);
+
+it.effect("the original failed producer refuses to await itself during retry", () =>
+  Effect.gen(function* () {
+    const selfRetryDone = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+    const retryRefused = yield* Deferred.make<string>();
+    let launches: ThreadLaunch.ThreadLaunchService["Service"] | undefined;
+    const harness = makeHarness({
+      runSetup: () => Effect.fail(new Error("setup failed") as never),
+      afterDispatch: (command) =>
+        Effect.gen(function* () {
+          if (command.type !== "prepared-run.fail") return;
+          if (command.commandId === "command:producer-self:retry:fail") {
+            yield* Deferred.succeed(retryRefused, command.failure.message);
+            return;
+          }
+          if (command.commandId !== "command:producer-self:fail") return;
+          yield* launches!
+            .retryPreparation({
+              commandId: CommandId.make("command:producer-self:retry"),
+              threadId: command.threadId,
+              runId: command.runId,
+            })
+            .pipe(Effect.orDie);
+          yield* Deferred.succeed(selfRetryDone, yield* Effect.fiber);
+        }),
+    });
+    yield* Effect.gen(function* () {
+      launches = yield* ThreadLaunch.ThreadLaunchService;
+      yield* launches.launch(
+        launchInput({
+          command: "command:producer-self",
+          thread: "thread:producer-self",
+          message: "No self wait",
+          workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+        }),
+      );
+      assert.include(
+        yield* Deferred.await(retryRefused),
+        "The original preparation producer cannot await itself.",
+      );
+      const producer = yield* Deferred.await(selfRetryDone);
+      assert.isTrue(Exit.isSuccess(yield* Fiber.await(producer)));
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      assert.equal(harness.runSetup.mock.calls.length, 1);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect.each(["wrong birth", "live owner", "wrong manager"] as const)(
+  "a created-worktree retry refuses a fresh %s observation",
+  (variant) =>
+    Effect.gen(function* () {
+      const failedPublished = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+      const retryRefused = yield* Deferred.make<string>();
+      let captures = 0;
+      const harness = makeHarness({
+        runSetup: () => Effect.fail(new Error("setup failed") as never),
+        terminalOwner: Layer.mock(TerminalManager.TerminalManager)({
+          close: () => Effect.void,
+          captureOwnedTargets: ({ threadId, ownerBirth }) =>
+            Effect.sync(() => {
+              captures++;
+              const changed = captures > 1;
+              return {
+                managerId:
+                  changed && variant === "wrong manager" ? "foreign-manager" : "original-manager",
+                threadId,
+                ownerBirth:
+                  changed && variant === "wrong birth"
+                    ? { ...ownerBirth, sequence: ownerBirth.sequence + 1 }
+                    : ownerBirth,
+                status: "captured" as const,
+                managedTargetsOnly: true as const,
+                targets:
+                  changed && variant === "live owner"
+                    ? [{ threadId, ownerBirth, terminalId: "live", handleId: "live-handle" }]
+                    : [],
+              };
             }),
-          )
-        : Effect.void,
-    runSetup: () => Effect.die("Setup must stay opted out"),
-  });
-  return Effect.gen(function* () {
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const threads = yield* ThreadManagement.ThreadManagementService;
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
-    const launched = yield* launches.launch({
-      ...launchInput({
-        command: "command:launch:retry-no-setup",
-        thread: "thread:launch:retry-no-setup",
-        message: "Retry without setup",
-        workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+        }),
+        afterDispatch: (command) =>
+          Effect.gen(function* () {
+            if (command.type !== "prepared-run.fail") return;
+            if (command.commandId === `command:owner-recheck:${variant}:fail`)
+              yield* Deferred.succeed(failedPublished, yield* Effect.fiber);
+            if (command.commandId === `command:owner-recheck:${variant}:retry:fail`)
+              yield* Deferred.succeed(retryRefused, command.failure.message);
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const launched = yield* launches.launch(
+          launchInput({
+            command: `command:owner-recheck:${variant}`,
+            thread: `thread:owner-recheck:${variant}`,
+            message: "Recheck the original owner",
+            workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+          }),
+        );
+        const producer = yield* Deferred.await(failedPublished);
+        assert.isTrue(Exit.isSuccess(yield* Fiber.await(producer)));
+        assert.equal(captures, 1);
+        yield* launches.retryPreparation({
+          commandId: CommandId.make(`command:owner-recheck:${variant}:retry`),
+          threadId: launched.threadId,
+          runId: launched.projection.runs[0]!.id,
+        });
+        assert.include(
+          yield* Deferred.await(retryRefused),
+          "The original created checkout or managed owner changed before retry.",
+        );
+        assert.equal(captures, 2);
+        assert.equal(harness.createWorktree.mock.calls.length, 1);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+        assert.equal(
+          (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
+          "failed",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect("a wrong captured owner birth cannot issue a created failure outcome", () =>
+  Effect.gen(function* () {
+    const failedPublished = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+    let issued = 0;
+    const harness = makeHarness({
+      runSetup: () => Effect.fail(new Error("setup failed") as never),
+      afterPreparedOutcome: () =>
+        Effect.sync(() => {
+          issued++;
+        }),
+      terminalOwner: Layer.mock(TerminalManager.TerminalManager)({
+        close: () => Effect.void,
+        captureOwnedTargets: ({ threadId, ownerBirth }) =>
+          Effect.succeed({
+            managerId: "original-manager",
+            threadId,
+            ownerBirth: { ...ownerBirth, sequence: ownerBirth.sequence + 1 },
+            status: "captured" as const,
+            managedTargetsOnly: true as const,
+            targets: [],
+          }),
       }),
-      runSetupScript: false,
+      afterDispatch: (command) =>
+        command.type === "prepared-run.fail"
+          ? Effect.fiber.pipe(
+              Effect.flatMap((producer) => Deferred.succeed(failedPublished, producer)),
+              Effect.asVoid,
+            )
+          : Effect.void,
     });
-    yield* waitUntil(() =>
-      threads
-        .getThreadProjection(launched.threadId)
-        .pipe(Effect.map((p) => p.runs[0]?.status === "failed")),
-    );
-    const failed = yield* threads.getThreadProjection(launched.threadId);
-    assert.equal(failed.runs[0]?.workspaceRunSetupScript, false);
-    const commandId = CommandId.make("command:launch:retry-no-setup:retry");
-    yield* launches.retryPreparation({
-      commandId,
-      threadId: launched.threadId,
-      runId: failed.runs[0]!.id,
-    });
-    yield* waitUntil(() =>
-      outbox
-        .listByCommandId(CommandId.make(`${commandId}:release`))
-        .pipe(Effect.map((effects) => effects.length === 1)),
-    );
-    assert.equal(harness.runSetup.mock.calls.length, 0);
-    assert.equal(
-      (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
-      "starting",
-    );
-  }).pipe(Effect.provide(harness.layer));
-});
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const sql = yield* SqlClient.SqlClient;
+      yield* launches.launch(
+        launchInput({
+          command: "command:owner-birth-issue",
+          thread: "thread:owner-birth-issue",
+          message: "Require original birth",
+          workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+        }),
+      );
+      const producer = yield* Deferred.await(failedPublished);
+      assert.isTrue(Exit.isSuccess(yield* Fiber.await(producer)));
+      assert.equal(issued, 0);
+      assert.equal(
+        (yield* sql`SELECT state FROM orchestration_v2_worktree_path_admissions`)[0]?.state,
+        "unknown",
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
 
 it.effect("a retry reuses a recorded worktree without undoing its branch rename", () => {
   let setupFailures = 1;
@@ -2895,14 +5157,26 @@ it.effect("a retry reuses a recorded worktree without undoing its branch rename"
     const outbox = yield* EffectOutbox.EffectOutboxV2;
     const threads = yield* ThreadManagement.ThreadManagementService;
     const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-    const launched = yield* launches.launch(
-      launchInput({
-        command: "command:launch:reuse",
-        thread: "thread:launch:reuse",
-        message: "Reuse the worktree",
-        workspace: { type: "worktree", baseRef: "main" },
-      }),
+    const launchSeed = "jones-recorded-worktree-reuse-explicit-base-v1";
+    const plannedUuid = yield* randomUuidV4.pipe(Random.withSeed(launchSeed));
+    const plannedTemporaryBranch = buildTemporaryWorktreeBranchName(() =>
+      plannedUuid.replaceAll("-", ""),
     );
+    const plannedWorktreePath = nativeWorktreePath({
+      worktreesDir: "/repo-worktrees",
+      cwd: project.workspaceRoot,
+      branch: plannedTemporaryBranch,
+    });
+    const launched = yield* launches
+      .launch(
+        launchInput({
+          command: "command:launch:reuse",
+          thread: "thread:launch:reuse",
+          message: "Reuse the worktree",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      )
+      .pipe(Random.withSeed(launchSeed));
     yield* waitUntil(() =>
       threads
         .getThreadProjection(launched.threadId)
@@ -2915,7 +5189,7 @@ it.effect("a retry reuses a recorded worktree without undoing its branch rename"
         ),
     );
     const failed = yield* threads.getThreadProjection(launched.threadId);
-    assert.equal(failed.thread.worktreePath, "/repo-worktrees/feature");
+    assert.equal(failed.thread.worktreePath, plannedWorktreePath);
 
     yield* launches.retryPreparation({
       commandId: CommandId.make("command:launch:reuse:retry"),
@@ -2933,7 +5207,7 @@ it.effect("a retry reuses a recorded worktree without undoing its branch rename"
     assert.equal(harness.createWorktree.mock.calls.length, 1);
     assert.equal(harness.renameBranch.mock.calls.length, 1);
     assert.equal(retried.thread.branch, "generated-branch");
-    assert.equal(retried.thread.worktreePath, "/repo-worktrees/feature");
+    assert.equal(retried.thread.worktreePath, plannedWorktreePath);
     // Clients see the retry's setup, not the failed one it replaced.
     const snapshot = yield* tracker.get(launched.threadId);
     assert.equal(snapshot?.phase, "done");
@@ -2945,6 +5219,52 @@ it.effect("a retry reuses a recorded worktree without undoing its branch rename"
 });
 
 it.effect("removes a worktree that failed before the thread recorded it", () => {
+  const harness = makeHarness({
+    // A checkout that dies after claiming its directory.
+    createWorktree: (input, options) =>
+      (options?.progress?.onWorktreeClaimed?.(input.path!) ?? Effect.void).pipe(
+        Effect.andThen(Effect.fail(new Error("checkout failed") as never)),
+      ),
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launchSeed = "jones-partial-unrecorded-checkout-v1";
+    const plannedUuid = yield* randomUuidV4.pipe(Random.withSeed(launchSeed));
+    const plannedBranch = buildTemporaryWorktreeBranchName(() => plannedUuid.replaceAll("-", ""));
+    const plannedWorktreePath = nativeWorktreePath({
+      worktreesDir: "/repo-worktrees",
+      cwd: project.workspaceRoot,
+      branch: plannedBranch,
+    });
+    const launched = yield* launches
+      .launch(
+        launchInput({
+          command: "command:launch:partial-worktree",
+          thread: "thread:launch:partial-worktree",
+          message: "Partial checkout",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+      )
+      .pipe(Random.withSeed(launchSeed));
+    yield* waitUntil(() =>
+      threads
+        .getThreadProjection(launched.threadId)
+        .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
+    );
+    assert.equal(harness.createWorktree.mock.calls.length, 1);
+    assert.equal(harness.createWorktree.mock.calls[0]![0].path, plannedWorktreePath);
+    const projection = yield* threads.getThreadProjection(launched.threadId);
+    // Unrecorded, so a retry would create a second checkout beside it.
+    assert.equal(projection.thread.worktreePath, null);
+    assert.deepEqual(
+      harness.removeWorktree.mock.calls.map(([input]) => input.path),
+      [plannedWorktreePath],
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("does not remove an alternate claimed checkout outside the planned target", () => {
   const harness = makeHarness({
     // A checkout that dies after claiming its directory.
     createWorktree: (_input, options) =>
@@ -2973,7 +5293,7 @@ it.effect("removes a worktree that failed before the thread recorded it", () => 
     assert.equal(projection.thread.worktreePath, null);
     assert.deepEqual(
       harness.removeWorktree.mock.calls.map(([input]) => input.path),
-      ["/repo-worktrees/partial"],
+      [],
     );
   }).pipe(Effect.provide(harness.layer));
 });
@@ -3330,12 +5650,15 @@ it.effect("schedules an accepted preparing message exactly once across concurren
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
-      const input = launchInput({
-        command: "command:launch:accepted-before-fork",
-        thread: "thread:launch:accepted-before-fork",
-        message: "Resume preparation",
-      });
       const messageId = MessageId.make("message:launch:accepted-before-fork");
+      const input = {
+        ...launchInput({
+          command: "command:launch:accepted-before-fork",
+          thread: "thread:launch:accepted-before-fork",
+          message: "Resume preparation",
+        }),
+        initialMessage: { messageId, text: "Resume preparation", attachments: [] },
+      };
 
       yield* threads.dispatch({
         type: "thread.create",
@@ -3359,7 +5682,7 @@ it.effect("schedules an accepted preparing message exactly once across concurren
         text: "Resume preparation",
         attachments: [],
         modelSelection: input.modelSelection,
-        dispatchMode: { type: "defer_start" },
+        dispatchMode: { type: "defer_start", workspaceStrategy: { type: "root" } },
         createdBy: input.createdBy,
         creationSource: input.creationSource,
       });
@@ -3674,11 +5997,63 @@ it.effect("cancels tracked setup before provider work is released", () =>
   }),
 );
 
+it.effect("cancellation retains a checkout whose managed setup target is still live", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      terminalOwner: Layer.mock(TerminalManager.TerminalManager)({
+        close: () => Effect.void,
+        captureOwnedTargets: ({ threadId, ownerBirth }) =>
+          Effect.succeed({
+            managerId: "synthetic-terminal-manager",
+            threadId,
+            ownerBirth,
+            status: "captured" as const,
+            managedTargetsOnly: true as const,
+            targets: [{ threadId, ownerBirth, terminalId: "live", handleId: "live-handle" }],
+          }),
+      }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launchSeed = "jones-cancel-live-managed-setup-v1";
+      const plannedUuid = yield* randomUuidV4.pipe(Random.withSeed(launchSeed));
+      const plannedBranch = buildTemporaryWorktreeBranchName(() => plannedUuid.replaceAll("-", ""));
+      const plannedWorktreePath = nativeWorktreePath({
+        worktreesDir: "/repo-worktrees",
+        cwd: project.workspaceRoot,
+        branch: plannedBranch,
+      });
+      const launched = yield* launches
+        .launch(
+          launchInput({
+            command: "launch:cancel-live-managed",
+            thread: "thread:cancel-live-managed",
+            message: "Start",
+            workspace: { type: "worktree", baseRef: "main" },
+          }),
+        )
+        .pipe(Random.withSeed(launchSeed));
+      yield* Deferred.await(entered);
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      assert.equal(harness.createWorktree.mock.calls[0]![0].path, plannedWorktreePath);
+      assert.isTrue(yield* tracker.cancel(launched.threadId));
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.deepEqual(harness.removeWorktree.mock.calls, []);
+      assert.equal(projection.thread.worktreePath, plannedWorktreePath);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect.each([0, 1])("releases an async setup before its completion with exit %s", (exitCode) =>
   Effect.gen(function* () {
     const completion = yield* Deferred.make<{ exitCode: number | null; durationMs: number }>();
     const harness = makeHarness({
-      runSetup: () =>
+      runSetup: (setupInput) =>
         Effect.succeed({
           status: "started" as const,
           async: true,
@@ -3686,7 +6061,7 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
           scriptName: "Setup",
           scriptCommand: "vp install",
           terminalId: "setup",
-          cwd: "/repo-worktrees/feature",
+          cwd: setupInput.worktreePath,
           completion: Deferred.await(completion),
         }),
     });
@@ -3758,14 +6133,26 @@ it.effect(
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const threads = yield* ThreadManagement.ThreadManagementService;
       const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-      const launched = yield* launches.launch(
-        launchInput({
-          command: "command:launch:reuse",
-          thread: "thread:launch:reuse",
-          message: "Reuse the worktree",
-          workspace: { type: "worktree" },
-        }),
+      const launchSeed = "jones-recorded-worktree-reuse-automatic-base-v1";
+      const plannedUuid = yield* randomUuidV4.pipe(Random.withSeed(launchSeed));
+      const plannedTemporaryBranch = buildTemporaryWorktreeBranchName(() =>
+        plannedUuid.replaceAll("-", ""),
       );
+      const plannedWorktreePath = nativeWorktreePath({
+        worktreesDir: "/repo-worktrees",
+        cwd: project.workspaceRoot,
+        branch: plannedTemporaryBranch,
+      });
+      const launched = yield* launches
+        .launch(
+          launchInput({
+            command: "command:launch:reuse",
+            thread: "thread:launch:reuse",
+            message: "Reuse the worktree",
+            workspace: { type: "worktree" },
+          }),
+        )
+        .pipe(Random.withSeed(launchSeed));
       yield* waitUntil(() =>
         threads
           .getThreadProjection(launched.threadId)
@@ -3778,7 +6165,7 @@ it.effect(
           ),
       );
       const failed = yield* threads.getThreadProjection(launched.threadId);
-      assert.equal(failed.thread.worktreePath, "/repo-worktrees/feature");
+      assert.equal(failed.thread.worktreePath, plannedWorktreePath);
 
       yield* launches.retryPreparation({
         commandId: CommandId.make("command:launch:reuse:retry"),
@@ -3796,7 +6183,7 @@ it.effect(
       assert.equal(harness.createWorktree.mock.calls.length, 1);
       assert.equal(harness.renameBranch.mock.calls.length, 1);
       assert.equal(retried.thread.branch, "generated-branch");
-      assert.equal(retried.thread.worktreePath, "/repo-worktrees/feature");
+      assert.equal(retried.thread.worktreePath, plannedWorktreePath);
       // Clients see the retry's setup, not the failed one it replaced.
       const snapshot = yield* tracker.get(launched.threadId);
       assert.equal(snapshot?.phase, "done");
@@ -3814,6 +6201,11 @@ it.effect.each([
   { caseName: "the origin remote is missing", hasOrigin: false },
   { caseName: "the base branch exists only locally", hasOrigin: true },
 ])("uses the local V2 worktree base when $caseName", ({ hasOrigin }) => {
+  const expectedWorktreePath = nativeWorktreePath({
+    worktreesDir: "/repo-worktrees",
+    cwd: project.workspaceRoot,
+    branch: "feature/router",
+  });
   const fetchRemote = vi.fn(() => Effect.void);
   const remoteLookup = vi.fn(() => Effect.succeed(null));
   const harness = makeHarness({
@@ -3848,7 +6240,7 @@ it.effect.each([
     assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, "main");
     assert.equal(
       (yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath,
-      "/repo-worktrees/feature",
+      expectedWorktreePath,
     );
   }).pipe(Effect.provide(harness.layer));
 });
@@ -4017,7 +6409,29 @@ it.effect(
         assert.equal(stored[0]!.event.type, "legacy-bootstrap.preflight-intent");
       }).pipe(Effect.orDie),
     );
-    const h = makeHarness({ fetchRemote: fetch });
+    const h = makeHarness({
+      fetchRemote: fetch,
+      legacyPreflightGit: {
+        remoteBranchExists: (input) =>
+          Effect.sync(() => {
+            assert.deepEqual(input, {
+              cwd: binding.fetch.cwd,
+              refName: binding.fetch.baseRef,
+              remoteName: "origin",
+            });
+            return true;
+          }),
+        resolveRemoteTrackingCommit: (input) =>
+          Effect.sync(() => {
+            assert.deepEqual(input, {
+              cwd: binding.fetch.cwd,
+              refName: binding.fetch.baseRef,
+              fallbackRemoteName: "origin",
+            });
+            return { commitSha: "remote-main-sha", remoteRefName: "origin/main" };
+          }),
+      },
+    });
     return Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       actualStore = yield* EventStore.EventStoreV2;

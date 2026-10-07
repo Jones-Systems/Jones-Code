@@ -28,10 +28,31 @@ import {
 } from "./Orchestrator.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { dispatchCommand } from "./ThreadMessageIntake.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as IntakeEventStore from "./EventStore.ts";
+import * as IntakeProjectionStore from "./ProjectionStore.ts";
+import * as IntakeCommandReceipts from "./CommandReceiptStore.ts";
+import * as IntakeEffectOutbox from "./EffectOutbox.ts";
+import * as IntakeProjectStore from "./ProjectStore.ts";
+import * as IntakeTurnItemPositions from "./TurnItemPositionStore.ts";
+import * as IntakeEventSink from "./EventSink.ts";
+
+const intakeReaderStores = Layer.mergeAll(
+  IntakeEventStore.layer,
+  IntakeProjectionStore.layer,
+  IntakeCommandReceipts.layer,
+  IntakeEffectOutbox.layer,
+  IntakeProjectStore.layer,
+  IntakeTurnItemPositions.layer,
+);
+const intakeReaders = Layer.mergeAll(
+  intakeReaderStores,
+  IntakeEventSink.layerFromStores.pipe(Layer.provide(intakeReaderStores)),
+).pipe(Layer.provideMerge(SqlitePersistenceMemory));
 
 const intakeTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-question-intake-",
-}).pipe(Layer.provideMerge(NodeServices.layer));
+}).pipe(Layer.provideMerge(NodeServices.layer), Layer.provideMerge(intakeReaders));
 
 const failingDispatch = (captured: OrchestrationV2ServerCommand[]) =>
   Layer.mock(ThreadManagementService.ThreadManagementService)({

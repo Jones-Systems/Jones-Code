@@ -62,6 +62,7 @@ import * as WsPullRequestSyncReactor from "../orchestration-v2/PullRequestSyncRe
 import * as WsDeviceService from "../device/DeviceService.ts";
 import * as WsOrchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as WsUsageService from "../usage/UsageService.ts";
+import * as WsTokenAccountingService from "../tokenAccounting/TokenAccountingService.ts";
 import * as WsUsageLimitSources from "../usage/UsageLimitSources.ts";
 import * as WsProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as WsWorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -522,6 +523,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsDeviceService.DeviceService)({}),
     Layer.mock(WsOrchestrator.OrchestratorV2)({ dispatch: denyRpcWork }),
     Layer.mock(WsUsageService.UsageService)({}),
+    WsTokenAccountingService.layer,
     Layer.mock(WsUsageLimitSources.UsageLimitSources)({}),
     Layer.mock(WsProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
     Layer.mock(WsWorktreeSetupTracker.WorktreeSetupTracker)({}),
@@ -582,10 +584,11 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.succeed(HostProcessEnvironment, {}),
     Layer.succeed(HostProcessPlatform, "linux"),
   );
-  const dependencies = Layer.mergeAll(auth, deniedRpcOwners).pipe(
-    Layer.provideMerge(config),
-    Layer.provideMerge(NodeServices.layer),
-  );
+  const dependencies = Layer.mergeAll(
+    auth,
+    deniedRpcOwners,
+    Receipts.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+  ).pipe(Layer.provideMerge(config), Layer.provideMerge(NodeServices.layer));
   const routes = websocketRpcRouteLayer.pipe(Layer.provideMerge(dependencies));
   const http = HttpRouter.toWebHandler(routes, { disableLogger: true });
   try {
@@ -1378,6 +1381,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             dispatch: () => Effect.die("No native command fallback"),
           }),
           Layer.mock(WsUsageService.UsageService)({}),
+          WsTokenAccountingService.layer,
           Layer.mock(WsUsageLimitSources.UsageLimitSources)({}),
           Layer.mock(WsProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
           Layer.mock(WsWorktreeSetupTracker.WorktreeSetupTracker)({}),
@@ -1448,10 +1452,12 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.succeed(HostProcessPlatform, "linux"),
         );
 
-        const dependencies = Layer.mergeAll(auth, rpcOwners, receivingOwners).pipe(
-          Layer.provideMerge(config),
-          Layer.provideMerge(NodeServices.layer),
-        );
+        const dependencies = Layer.mergeAll(
+          auth,
+          rpcOwners,
+          Receipts.layer.pipe(Layer.provide(receivingDatabase)),
+          receivingOwners,
+        ).pipe(Layer.provideMerge(config), Layer.provideMerge(NodeServices.layer));
         yield* Effect.gen(function* () {
           const owner = yield* WsEnvironmentAuth.EnvironmentAuth;
           const issued = yield* owner.issueSession({

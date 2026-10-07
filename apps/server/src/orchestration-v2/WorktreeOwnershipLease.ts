@@ -10,7 +10,6 @@ import { readApplicationThreadBirth } from "./ApplicationThreadBirth.ts";
 import { ordinaryApplicationIncarnationV1 } from "./OrdinaryCheckoutOwnership.ts";
 
 export const WORKTREE_OWNERSHIP_LEASE_DURATION_MS = 5 * 60 * 1_000;
-export const WORKTREE_OWNERSHIP_LEASE_RENEW_INTERVAL_MS = 60 * 1_000;
 
 export const WorktreeOwnershipLease = Schema.Struct({
   resourcePath: TrimmedNonEmptyString,

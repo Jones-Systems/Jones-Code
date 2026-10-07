@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import {
   NativeStartTransferReceiptV1,
@@ -118,6 +119,55 @@ class OrdinaryCheckoutCommandEvidenceError extends Schema.TaggedError<OrdinaryCh
   { commandId: Schema.String, reason: Schema.Literal("unknown_evidence") },
 ) {}
 
+interface RetainedOriginalPreparedRetrySlot {
+  readonly ref: Ordinary.OrdinaryCheckoutExecutionRefV1;
+  readonly outcome: Extract<
+    OrdinaryCheckoutExecutorOutcomeV1,
+    { readonly kind: "prepared_failed" }
+  >;
+  readonly outcomeBytes: string;
+  readonly completionBytes: string;
+  readonly associationOrdinal: number;
+}
+
+interface OrdinaryOriginalPreparedRetryInput {
+  readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly runId: RunId;
+  readonly messageId: Ordinary.OrdinaryAcceptedRunV1["messageId"];
+  readonly canonicalProjectRoot: string;
+  readonly canonicalCheckoutPath: string;
+  readonly branch: string;
+  readonly targetSource: OrdinaryCheckoutCommitCapture["source"];
+}
+
+type OrdinaryOriginalPreparedRetryResult = RetainedOriginalPreparedRetrySlot;
+type OrdinaryOriginalPreparedRetryCommitError = Effect.Error<
+  Effect.Success<ReturnType<typeof makeCommitTransaction>>["requireOwned"]
+>;
+type OrdinaryOriginalPreparedRetryError =
+  | OrdinaryCheckoutHistoryError
+  | OrdinaryCheckoutRecordError
+  | OrdinaryCheckoutEvidenceWriteError
+  | Ordinary.OrdinaryCheckoutOwnershipError
+  | WorktreeOwnershipConflictError
+  | Schema.SchemaError
+  | SqlError
+  | CommandReceiptStore.CommandReceiptStoreV2Error
+  | EventStore.EventStoreV2Error
+  | ProjectionStore.ProjectionStoreV2Error
+  | EffectOutbox.EffectOutboxError
+  | NativeCreationRepositoryError
+  | OrdinaryOriginalPreparedRetryCommitError;
+type OrdinaryOriginalPreparedRetryContext = never;
+type OrdinaryOriginalPreparedRetryReader = (
+  input: OrdinaryOriginalPreparedRetryInput,
+) => Effect.Effect<
+  OrdinaryOriginalPreparedRetryResult,
+  OrdinaryOriginalPreparedRetryError,
+  OrdinaryOriginalPreparedRetryContext
+>;
+
 const admissionJson = Schema.fromJsonString(Ordinary.OrdinaryCheckoutAdmissionV1);
 const decodeAdmission = Schema.decodeUnknownEffect(admissionJson);
 const encodeAdmission = Schema.encodeEffect(admissionJson);
@@ -206,6 +256,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
     const nativeCreationRepository = yield* NativeExecutionRepository.make;
     const nativeRuntimeEvidence = yield* makeNativeProviderRuntimeEvidence(transactions);
     const ordinaryRetryObservations = new Map<string, StartRetryBeforeOpenObservationV1>();
+    const retainedPreparedRetryCompletions = new Map<string, RetainedOriginalPreparedRetrySlot>();
     const outbox = yield* EffectOutbox.EffectOutboxV2;
     const readUnresolvedDeletionCleanupHolds =
       options?.readUnresolvedDeletionCleanupHolds ?? outbox.listHeldByThreadId;
@@ -491,6 +542,86 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
       return current;
     });
 
+    const matchesUnpublishedPreparedLaunch = Effect.fnUntraced(function* (
+      input: OrdinaryCheckoutCommitCapture,
+    ) {
+      const { capture, source } = input;
+      if (
+        source.worktreePath === null ||
+        source.worktreePath !== capture.canonicalCheckoutPath ||
+        capture.canonicalCheckoutPath === capture.canonicalProjectRoot ||
+        capture.branch === null ||
+        capture.origin.kind !== "command"
+      )
+        return false;
+      const command = yield* Schema.decodeUnknownEffect(Schema.toType(OrchestrationV2Command))({
+        ...capture.canonicalCommand,
+        ...(typeof capture.canonicalCommand.createdAt === "string"
+          ? {
+              createdAt: yield* Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString)(
+                capture.canonicalCommand.createdAt,
+              ),
+            }
+          : {}),
+      });
+      let preparationCommandId: CommandId;
+      if (
+        command.type === "message.dispatch" &&
+        command.dispatchMode.type === "defer_start" &&
+        command.dispatchMode.workspaceStrategy?.type === "worktree" &&
+        command.commandId.endsWith(":initial-message") &&
+        (command.dispatchMode.workspaceStrategy.branch === undefined ||
+          command.dispatchMode.workspaceStrategy.branch === capture.branch)
+      )
+        preparationCommandId = CommandId.make(
+          command.commandId.slice(0, -":initial-message".length),
+        );
+      else if (
+        (command.type === "thread.create" ||
+          (command.type === "thread.metadata.update" && command.expectedEmpty === true)) &&
+        command.worktreePath === null &&
+        command.branch === capture.branch
+      )
+        preparationCommandId = command.commandId;
+      else return false;
+      const receipt = Option.getOrNull(yield* commandReceipts.getByCommandId(preparationCommandId));
+      const events = yield* eventStore
+        .readByCommandId({ commandId: preparationCommandId })
+        .pipe(Stream.runCollect);
+      const prepared = events.filter(
+        (stored) =>
+          (stored.event.type === "thread.created" ||
+            stored.event.type === "thread.metadata-updated") &&
+          stored.event.threadId === capture.threadId,
+      );
+      const event = prepared[0];
+      if (
+        receipt?.status !== "accepted" ||
+        receipt.threadId !== capture.threadId ||
+        !["thread.create", "thread.metadata.update"].includes(receipt.commandType) ||
+        prepared.length !== 1 ||
+        event === undefined ||
+        (event.event.type !== "thread.created" && event.event.type !== "thread.metadata-updated") ||
+        event.event.payload.projectId !== capture.projectId ||
+        event.event.payload.branch !== capture.branch ||
+        event.event.payload.worktreePath !== null ||
+        event.commandId !== preparationCommandId ||
+        event.sequence > receipt.resultSequence ||
+        (event.event.type === "thread.created" &&
+          (event.event.id !== capture.applicationBirth.eventId ||
+            event.sequence !== capture.applicationBirth.sequence))
+      )
+        return false;
+      // Null is valid only before this accepted launch publishes or changes its target.
+      const changed = yield* sql`SELECT event_id FROM orchestration_events
+      WHERE application_event_version = 2 AND aggregate_kind = 'thread'
+        AND stream_id = ${capture.threadId} AND sequence > ${event.sequence}
+        AND event_type = 'thread.metadata-updated'
+        AND (json_extract(payload_json, '$.worktreePath') IS NOT NULL
+          OR json_extract(payload_json, '$.branch') IS NOT ${capture.branch})`;
+      return changed.length === 0;
+    });
+
     const current = Effect.fn("OrdinaryCheckoutStore.current")(function* (
       input: OrdinaryCheckoutCommitCapture,
     ) {
@@ -520,7 +651,8 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
         target === undefined ||
         target.project_id !== capture.projectId ||
         target.workspace_root !== input.source.projectWorkspaceRoot ||
-        target.worktree_path !== input.source.worktreePath ||
+        (target.worktree_path !== input.source.worktreePath &&
+          !(target.worktree_path === null && (yield* matchesUnpublishedPreparedLaunch(input)))) ||
         target.branch !== lease?.branch ||
         lease === null ||
         canonicalJson(Ordinary.ordinaryCheckoutLeaseIdentityV1(lease)) !==
@@ -1407,7 +1539,9 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
                 prepared.event.type === "thread.metadata-updated") &&
               prepared.event.payload.projectId === contract.capture.projectId &&
               prepared.event.payload.branch === contract.capture.branch &&
-              prepared.event.payload.worktreePath === contract.source.worktreePath
+              (prepared.event.payload.worktreePath === contract.source.worktreePath ||
+                (prepared.event.payload.worktreePath === null &&
+                  (yield* matchesUnpublishedPreparedLaunch(contract))))
             )
           )
             return yield* failure(
@@ -3108,7 +3242,14 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
         (outcome.kind === "prepared_completed"
           ? outcome.observation.setup.status === "completed" &&
             outcome.observation.setup.cwd !== observation.checkoutPath
-          : outcome.observation.readback.cwd !== observation.checkoutPath ||
+          : (outcome.observation.kind === "prepared_precreation_failure_observed"
+              ? outcome.observation.readback.cwd !== admission.capture.canonicalProjectRoot ||
+                !outcome.observation.readback.isRepo ||
+                outcome.observation.plannedChildPath !== observation.checkoutPath ||
+                outcome.observation.targetState !== "absent" ||
+                outcome.observation.worktree !== null ||
+                outcome.observation.parentHeadBefore !== outcome.observation.parentHeadAfter
+              : outcome.observation.readback.cwd !== observation.checkoutPath) ||
             canonicalJson(outcome.observation.setup.ownerBirth) !==
               canonicalJson(admission.capture.applicationBirth))
       )
@@ -3922,9 +4063,19 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
                   !failedRunStillPreparing
                 : preparedRun !== null || executor.source.kind !== "prepared_launch") ||
               finalState === undefined ||
-              finalState.cwd !== admission.capture.canonicalCheckoutPath ||
-              (!unspecifiedRoot && (!finalState.isRepo || finalState.refName !== currentBranch)) ||
-              (!finalState.isRepo && finalState.refName !== null)
+              (outcome.kind === "prepared_failed" &&
+              outcome.observation.kind === "prepared_precreation_failure_observed"
+                ? finalState.cwd !== admission.capture.canonicalProjectRoot ||
+                  !finalState.isRepo ||
+                  outcome.observation.plannedChildPath !==
+                    admission.capture.canonicalCheckoutPath ||
+                  outcome.observation.targetState !== "absent" ||
+                  outcome.observation.parentHeadBefore !== outcome.observation.parentHeadAfter ||
+                  outcome.observation.worktree !== null
+                : finalState.cwd !== admission.capture.canonicalCheckoutPath ||
+                  (!unspecifiedRoot &&
+                    (!finalState.isRepo || finalState.refName !== currentBranch)) ||
+                  (!finalState.isRepo && finalState.refName !== null))
             )
               return yield* failure(
                 admission.capture,
@@ -4029,7 +4180,9 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
             issued?.kind !==
             (outcome.kind === "prepared_completed"
               ? "prepared_setup_completed"
-              : "prepared_failure_observed")
+              : outcome.observation.kind === "prepared_precreation_failure_observed"
+                ? "prepared_precreation_failure_observed"
+                : "prepared_failure_observed")
           )
             return yield* failure(
               admission.capture,
@@ -4062,16 +4215,201 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
           );
           const updated = yield* readOrdinaryCheckoutExecutionAssociationsEffect(ref.originalUse);
           const retirement = updated.facts[updated.latestOrdinal]!;
-          if (input.completeOriginalUse === true)
+          if (input.completeOriginalUse === true) {
             yield* completePreparedUse({
               originalUse: ref.originalUse,
               expectedAssociationOrdinal: retirement.ordinal,
               completionEvidence: { ref, actualProducerOutcome: input.actualProducerOutcome },
             });
+            if (input.actualProducerOutcome.kind === "prepared_failed") {
+              const outcome = input.actualProducerOutcome;
+              const completionEvidence = yield* Schema.encodeEffect(
+                OrdinaryCheckoutCompletionEvidenceV1,
+              )({ ref, actualProducerOutcome: outcome });
+              const slot: RetainedOriginalPreparedRetrySlot = Object.freeze({
+                ref,
+                outcome,
+                outcomeBytes: canonicalJson(
+                  yield* Schema.encodeEffect(OrdinaryCheckoutExecutorOutcomeV1)(outcome),
+                ),
+                completionBytes: canonicalJson({
+                  version: 1,
+                  schema: "t3.ordinary-checkout-completed/v1",
+                  operationId: ref.originalUse.operationId,
+                  associationOrdinal: retirement.ordinal,
+                  completionEvidence,
+                }),
+                associationOrdinal: retirement.ordinal,
+              });
+              yield* transactions.afterCommit(
+                Effect.sync(() => {
+                  if (!retainedPreparedRetryCompletions.has(ref.originalUse.operationId))
+                    retainedPreparedRetryCompletions.set(ref.originalUse.operationId, slot);
+                }),
+              );
+            }
+          }
           return retirement;
         }),
       );
     });
+    const readOriginalPreparedRetry: OrdinaryOriginalPreparedRetryReader = Effect.fnUntraced(
+      function* (
+        input: OrdinaryOriginalPreparedRetryInput,
+      ): Effect.fn.Return<
+        OrdinaryOriginalPreparedRetryResult,
+        OrdinaryOriginalPreparedRetryError,
+        OrdinaryOriginalPreparedRetryContext
+      > {
+        return yield* transactions.withTransaction(
+          Effect.gen(function* (): Effect.fn.Return<
+            OrdinaryOriginalPreparedRetryResult,
+            OrdinaryOriginalPreparedRetryError,
+            OrdinaryOriginalPreparedRetryContext
+          > {
+            const unavailable = () =>
+              new OrdinaryCheckoutHistoryError({
+                message: "Retry has no retained, completed original preparation outcome.",
+              });
+            const admission = yield* readOrdinaryCheckoutAdmissionForRunEffect(input);
+            if (
+              admission === null ||
+              admission.run === null ||
+              admission.capture.projectId !== input.projectId ||
+              admission.run.messageId !== input.messageId ||
+              admission.capture.canonicalProjectRoot !== input.canonicalProjectRoot ||
+              admission.capture.canonicalCheckoutPath !== input.canonicalCheckoutPath
+            )
+              return yield* unavailable();
+            // This reader recognizes only the original source-store completion. It
+            // cannot adopt copied serialized history or a handle from another store.
+            const rows = yield* sql<{
+              readonly operation_id: string;
+              readonly outcome_json: string | null;
+            }>`
+          SELECT operation_id, outcome_json FROM orchestration_v2_worktree_path_admissions
+          WHERE kind = 'native_operation'
+            AND json_extract(subject_json, '$.use.admission.admissionId') = ${admission.admissionId}`;
+            if (rows.length !== 1) return yield* unavailable();
+            const row = rows[0]!;
+            const slot = retainedPreparedRetryCompletions.get(row.operation_id);
+            if (
+              slot === undefined ||
+              slot.ref.originalUse.operationId !== row.operation_id ||
+              row.outcome_json !== slot.completionBytes ||
+              canonicalJson(slot.ref.originalUse.admission) !==
+                canonicalJson(Ordinary.ordinaryCheckoutAdmissionRefV1(admission)) ||
+              slot.ref.executor.kind !== "actual_prepared_producer" ||
+              slot.ref.executor.source.kind !== "prepared_run" ||
+              canonicalJson(slot.ref.executor.source.preparation) !==
+                canonicalJson(admission.run) ||
+              canonicalJson(slot.ref.executor.source.admission) !==
+                canonicalJson(Ordinary.ordinaryCheckoutAdmissionRefV1(admission)) ||
+              canonicalJson(
+                yield* Schema.encodeEffect(OrdinaryCheckoutExecutorOutcomeV1)(slot.outcome),
+              ) !== slot.outcomeBytes
+            )
+              return yield* unavailable();
+            const record = yield* exactUse(slot.ref.originalUse);
+            if (
+              record.state !== "released" ||
+              canonicalJson(record.subject.source) !== canonicalJson(input.targetSource)
+            )
+              return yield* unavailable();
+            const history = yield* readOrdinaryCheckoutExecutionAssociationsEffect(
+              slot.ref.originalUse,
+            );
+            const last = history.facts[history.latestOrdinal];
+            if (
+              history.latestOrdinal !== slot.associationOrdinal ||
+              history.participants.length !== 1 ||
+              history.participants.some(
+                (p) =>
+                  p.state !== "retired" ||
+                  ordinaryExecutionBytes(p.ref) !== ordinaryExecutionBytes(slot.ref),
+              ) ||
+              last?.eventKind !== "retire" ||
+              ordinaryExecutionBytes(last.ref) !== ordinaryExecutionBytes(slot.ref) ||
+              last.evidence.schema !== "t3.ordinary-checkout-execution-outcome/v1" ||
+              canonicalJson(
+                yield* Schema.encodeEffect(OrdinaryCheckoutExecutorOutcomeV1)(
+                  last.evidence.actualProducerOutcome,
+                ),
+              ) !== slot.outcomeBytes
+            )
+              return yield* unavailable();
+            const {
+              readIssuedRetiredPreparedFailureResult,
+              readIssuedRetiredPreparedPrecreationResult,
+            } = yield* Effect.promise(() => import("./ThreadLaunchService.ts"));
+            const physical = slot.outcome.observation;
+            const issued =
+              physical.kind === "prepared_precreation_failure_observed"
+                ? readIssuedRetiredPreparedPrecreationResult(physical)
+                : readIssuedRetiredPreparedFailureResult(physical);
+            if (issued !== physical) return yield* unavailable();
+            yield* validateCapture(admission.capture, record.subject.source, {
+              operationId: slot.ref.originalUse.operationId,
+              requireLiveLease: false,
+            });
+            const lease = yield* resolveOrdinaryCheckoutLease(admission.capture.lease);
+            if (
+              lease.branch !== input.branch ||
+              lease.expiresAtMs <= DateTime.toEpochMillis(yield* DateTime.now)
+            )
+              return yield* unavailable();
+            const local = yield* projectionStore.getThreadRecords(input.threadId, [
+              "runs",
+              "messages",
+            ]);
+            const run = local.runs.find((r) => r.id === input.runId);
+            if (
+              run?.status !== "preparing" ||
+              run.userMessageId !== input.messageId ||
+              run.activeAttemptId !== admission.run.runAttemptId ||
+              run.rootNodeId !== admission.run.nodeId ||
+              !local.messages.some((m) => m.id === input.messageId)
+            )
+              return yield* unavailable();
+            const unfinished = yield* sql`SELECT effect.effect_id
+          FROM orchestration_v2_ordinary_checkout_effect_links link
+          JOIN orchestration_v2_effect_outbox effect ON effect.effect_id = link.effect_id
+          WHERE link.admission_id = ${admission.admissionId}
+            AND effect.status IN ('pending', 'running') LIMIT 1`;
+            if (
+              unfinished.length !== 0 ||
+              (yield* readUnresolvedDeletionCleanupHolds(input.threadId)).length !== 0
+            )
+              return yield* unavailable();
+            if (physical.kind === "prepared_precreation_failure_observed") {
+              if (
+                physical.targetState !== "absent" ||
+                physical.worktree !== null ||
+                physical.plannedChildPath !== input.canonicalCheckoutPath ||
+                physical.checkoutPath !== input.canonicalCheckoutPath ||
+                physical.readback.cwd !== input.canonicalProjectRoot ||
+                !physical.readback.isRepo ||
+                physical.parentHeadBefore !== physical.parentHeadAfter ||
+                physical.branch !== input.branch ||
+                physical.setup.status !== "no_managed_process" ||
+                physical.setup.targetCount !== 0
+              )
+                return yield* unavailable();
+            } else if (
+              physical.kind !== "prepared_failure_observed" ||
+              physical.worktree === null ||
+              physical.worktree.path !== input.canonicalCheckoutPath ||
+              physical.readback.cwd !== input.canonicalCheckoutPath ||
+              !physical.readback.isRepo ||
+              physical.readback.refName !== input.branch
+            )
+              return yield* unavailable();
+            return slot;
+          }),
+        );
+      },
+    );
+
     const captureJoinedCommand = Effect.fnUntraced(function* (input: {
       readonly command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.release" }>;
       readonly originalUse: Ordinary.OrdinaryCheckoutUseV1;
@@ -5369,6 +5707,7 @@ export const makeOrdinaryCheckoutStore = Effect.fn("makeOrdinaryCheckoutStore")(
       validatePreparedOutcome: validateOrdinaryPreparedOutcome,
       joinClaim: joinOrdinaryCheckoutClaim,
       recordPreparedOutcome,
+      readOriginalPreparedRetry,
       captureJoinedCommand,
       transitionPreparedBranch: (input: Parameters<typeof transitionOrdinaryPreparedBranch>[0]) =>
         transactions.withTransaction(transitionOrdinaryPreparedBranch(input)),
@@ -5395,6 +5734,7 @@ export type OrdinaryCheckoutLifetime = Pick<
   | "renewExecution"
   | "retainExecutionUnknown"
   | "recordPreparedOutcome"
+  | "readOriginalPreparedRetry"
   | "joinClaim"
   | "captureJoinedCommand"
   | "transitionPreparedBranch"

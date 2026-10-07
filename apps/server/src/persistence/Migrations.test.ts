@@ -90,59 +90,57 @@ const futureEntries = [
   ] as const,
 ];
 
-it.effect(
-  "runs upstream 1–56 and the original Jones prefix and registered rebuild migrations once on a fresh V2 database",
-  () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      assert.deepStrictEqual(yield* runMigrations(), migrationManifest);
-      assert.deepStrictEqual(
-        yield* sql`SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`,
-        names,
-      );
-      assert.deepStrictEqual(
-        yield* sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
-        migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
-      );
-      assert.ok(
-        (yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_thread_sessions)`).some(
-          ({ name }) => name === "runtime_identity_json",
-        ),
-      );
-      assert.deepStrictEqual(
-        yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (
+it.effect("runs upstream 1–56 and all six exact Jones effects once on a fresh V2 database", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    assert.deepStrictEqual(yield* runMigrations(), migrationManifest);
+    assert.deepStrictEqual(
+      yield* sql`SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`,
+      names,
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
+      migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
+    );
+    assert.ok(
+      (yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_thread_sessions)`).some(
+        ({ name }) => name === "runtime_identity_json",
+      ),
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (
       'worktree_ownership_leases', 'native_creation_intents', 'native_creation_reserved_command_identities',
       'workstreams_native_attempts', 'workstreams_native_enrollments'
     ) ORDER BY name`,
-        [
-          { name: "native_creation_intents" },
-          { name: "native_creation_reserved_command_identities" },
-          { name: "workstreams_native_attempts" },
-          { name: "workstreams_native_enrollments" },
-          { name: "worktree_ownership_leases" },
-        ],
-      );
-      const ledger = yield* readLedger;
-      const schema = yield* readSchema;
-      assert.deepStrictEqual(yield* runMigrations(), []);
-      assert.deepStrictEqual(yield* readLedger, ledger);
-      assert.deepStrictEqual(yield* readSchema, schema);
-      yield* sql`INSERT INTO workstreams_native_attempts VALUES (
+      [
+        { name: "native_creation_intents" },
+        { name: "native_creation_reserved_command_identities" },
+        { name: "workstreams_native_attempts" },
+        { name: "workstreams_native_enrollments" },
+        { name: "worktree_ownership_leases" },
+      ],
+    );
+    const ledger = yield* readLedger;
+    const schema = yield* readSchema;
+    assert.deepStrictEqual(yield* runMigrations(), []);
+    assert.deepStrictEqual(yield* readLedger, ledger);
+    assert.deepStrictEqual(yield* readSchema, schema);
+    yield* sql`INSERT INTO workstreams_native_attempts VALUES (
       'owner', 'principal', 'command', '{}', ${"a".repeat(64)}, ${"b".repeat(64)}, '{}', 'native', 'created', NULL
     )`;
-      yield* sql`UPDATE workstreams_native_attempts SET dispatch_started_at = 'started'`;
-      assert.ok(
-        Exit.isFailure(
-          yield* Effect.exit(
-            sql`UPDATE workstreams_native_attempts SET dispatch_started_at = 'again'`,
-          ),
+    yield* sql`UPDATE workstreams_native_attempts SET dispatch_started_at = 'started'`;
+    assert.ok(
+      Exit.isFailure(
+        yield* Effect.exit(
+          sql`UPDATE workstreams_native_attempts SET dispatch_started_at = 'again'`,
         ),
-      );
-      yield* sql`INSERT INTO native_creation_automation_enrollments VALUES ('session', 'enrolled')`;
-      assert.ok(
-        Exit.isFailure(yield* Effect.exit(sql`DELETE FROM native_creation_automation_enrollments`)),
-      );
-    }).pipe(Effect.provide(memory)),
+      ),
+    );
+    yield* sql`INSERT INTO native_creation_automation_enrollments VALUES ('session', 'enrolled')`;
+    assert.ok(
+      Exit.isFailure(yield* Effect.exit(sql`DELETE FROM native_creation_automation_enrollments`)),
+    );
+  }).pipe(Effect.provide(memory)),
 );
 
 it.effect.each([0, 1, 2, 3, 4, 5, 6])(

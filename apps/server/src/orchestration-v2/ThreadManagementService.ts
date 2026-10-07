@@ -798,6 +798,8 @@ const legacyV1ThreadImporterNoopLayer = Layer.succeed(
   }),
 );
 
+export const privateLegacyImporterLayer = LegacyV1ThreadImporter.layer;
+
 export const layer: Layer.Layer<ThreadManagementService, never, Orchestrator.OrchestratorV2> =
   Layer.effect(ThreadManagementService, make).pipe(Layer.provide(legacyV1ThreadImporterNoopLayer));
 

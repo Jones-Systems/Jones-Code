@@ -18,7 +18,6 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../../provider/Services/ProviderInstanceRegistry.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
 import * as ThreadLaunchService from "../ThreadLaunchService.ts";
-import * as LegacyV1ThreadImporter from "../legacy/LegacyV1ThreadImporter.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -197,7 +196,7 @@ export interface ReplayDelegatedPreparationOwners {
     ReplayDatabaseError
   >;
   readonly legacyImporterLayer: Layer.Layer<
-    LegacyV1ThreadImporter.LegacyV1ThreadImporter,
+    Layer.Success<typeof ThreadManagementService.privateLegacyImporterLayer>,
     ReplayDatabaseError
   >;
   readonly managementLayer: Layer.Layer<ThreadManagementService.ThreadManagementService>;
@@ -209,7 +208,7 @@ export interface ReplayDelegatedPreparationOwners {
 type ReplayDelegatedPreparationOwnedServices =
   | Layer.Success<ReplayDelegatedPreparationOwners["persistenceLayer"]>
   | ThreadManagementService.ThreadManagementService
-  | LegacyV1ThreadImporter.LegacyV1ThreadImporter
+  | Layer.Success<typeof ThreadManagementService.privateLegacyImporterLayer>
   | ServerConfig.ServerConfig
   | ServerSettings.ServerSettingsService
   | Layer.Success<typeof NodeServices.layer>;
@@ -867,7 +866,9 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
       ),
     ),
   );
-  const legacyImporterProvided = LegacyV1ThreadImporter.layer.pipe(Layer.provide(persistenceLayer));
+  const legacyImporterProvided = ThreadManagementService.privateLegacyImporterLayer.pipe(
+    Layer.provide(persistenceLayer),
+  );
   const threadManagementProvided =
     options.delegatedPreparation === undefined
       ? Layer.unwrap(

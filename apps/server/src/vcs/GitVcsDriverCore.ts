@@ -836,12 +836,140 @@ const collectOutput = Effect.fnUntraced(function* (
   };
 });
 
+type OriginalFetchRequest = Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0];
+type OriginalExecuteRequest = Parameters<GitVcsDriver.GitVcsDriver["Service"]["execute"]>[0];
+type OriginalGitChild = Effect.Success<
+  ReturnType<ChildProcessSpawner.ChildProcessSpawner["Service"]["spawn"]>
+>;
+interface ScopedGitTerminal {
+  readonly command: OriginalExecuteRequest;
+  readonly child: OriginalGitChild;
+  readonly result: GitVcsDriver.ExecuteGitResult;
+}
+export interface IssuedGitFetchTerminalFailure {
+  readonly request: OriginalFetchRequest;
+  readonly command: OriginalExecuteRequest;
+  readonly child: OriginalGitChild;
+  readonly result: GitVcsDriver.ExecuteGitResult;
+  readonly error: GitCommandError;
+}
+const issuedGitFetchTerminalFailures = new WeakMap<
+  object,
+  {
+    readonly original: IssuedGitFetchTerminalFailure;
+    readonly requestFields: readonly [string, string, string | undefined];
+    readonly commandFields: readonly [string, string, readonly string[]];
+    readonly resultFields: readonly [number | null, string, string, boolean, boolean];
+    readonly errorFields: readonly [
+      string,
+      string,
+      string,
+      string,
+      number | undefined,
+      number | undefined,
+      number | undefined,
+    ];
+  }
+>();
+
+export function readIssuedGitFetchTerminalFailure(
+  value: unknown,
+  request: OriginalFetchRequest,
+): IssuedGitFetchTerminalFailure | null {
+  if (value === null || typeof value !== "object") return null;
+  const retained = issuedGitFetchTerminalFailures.get(value);
+  if (retained === undefined) return null;
+  try {
+    const original = retained.original;
+    const [cwd, remoteName, refName] = retained.requestFields;
+    const [operation, commandCwd, args] = retained.commandFields;
+    const [exitCode, stdout, stderr, stdoutTruncated, stderrTruncated] = retained.resultFields;
+    const [errorOperation, command, errorCwd, detail, errorExitCode, stdoutLength, stderrLength] =
+      retained.errorFields;
+    if (
+      original.error !== value ||
+      original.request !== request ||
+      request.cwd !== cwd ||
+      request.remoteName !== remoteName ||
+      request.refName !== refName ||
+      original.command.operation !== operation ||
+      original.command.cwd !== commandCwd ||
+      original.command.args.length !== args.length ||
+      original.command.args.some((arg, index) => arg !== args[index]) ||
+      original.result.exitCode !== exitCode ||
+      original.result.stdout !== stdout ||
+      original.result.stderr !== stderr ||
+      original.result.stdoutTruncated !== stdoutTruncated ||
+      original.result.stderrTruncated !== stderrTruncated ||
+      original.error.operation !== errorOperation ||
+      original.error.command !== command ||
+      original.error.cwd !== errorCwd ||
+      original.error.detail !== detail ||
+      original.error.exitCode !== errorExitCode ||
+      original.error.stdoutLength !== stdoutLength ||
+      original.error.stderrLength !== stderrLength
+    )
+      return null;
+    return original;
+  } catch {
+    return null;
+  }
+}
+
 export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const { worktreesDir } = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
+  const pendingScopedGitTerminals = new WeakMap<GitVcsDriver.ExecuteGitResult, ScopedGitTerminal>();
+  const finalizedScopedGitTerminals = new WeakMap<
+    GitVcsDriver.ExecuteGitResult,
+    ScopedGitTerminal
+  >();
+  const retainOriginalFetchFailure = (
+    request: OriginalFetchRequest,
+    result: GitVcsDriver.ExecuteGitResult,
+    error: GitCommandError,
+  ): GitCommandError => {
+    const terminal = finalizedScopedGitTerminals.get(result);
+    if (
+      terminal === undefined ||
+      terminal.result !== result ||
+      terminal.command.operation !== "GitVcsDriver.fetchRemote" ||
+      terminal.command.cwd !== request.cwd ||
+      terminal.command.args[0] !== "fetch" ||
+      result.exitCode === null ||
+      !Number.isSafeInteger(result.exitCode) ||
+      result.exitCode === 0 ||
+      result.stdoutTruncated ||
+      result.stderrTruncated
+    )
+      return error;
+    const original = { request, command: terminal.command, child: terminal.child, result, error };
+    issuedGitFetchTerminalFailures.set(error, {
+      original,
+      requestFields: [request.cwd, request.remoteName, request.refName],
+      commandFields: [terminal.command.operation, terminal.command.cwd, [...terminal.command.args]],
+      resultFields: [
+        result.exitCode,
+        result.stdout,
+        result.stderr,
+        result.stdoutTruncated,
+        result.stderrTruncated,
+      ],
+      errorFields: [
+        error.operation,
+        error.command,
+        error.cwd,
+        error.detail,
+        error.exitCode,
+        error.stdoutLength,
+        error.stderrLength,
+      ],
+    });
+    return error;
+  };
 
   const executeRaw: GitVcsDriver.GitVcsDriver["Service"]["execute"] = Effect.fnUntraced(
     function* (input) {
@@ -943,16 +1071,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           });
         }
 
-        return {
+        const result = {
           exitCode,
           stdout: stdout.text,
           stderr: stderr.text,
           stdoutTruncated: stdout.truncated,
           stderrTruncated: stderr.truncated,
         } satisfies GitVcsDriver.ExecuteGitResult;
+        if (commandInput.operation === "GitVcsDriver.fetchRemote")
+          pendingScopedGitTerminals.set(result, { command: commandInput, child, result });
+        return result;
       });
 
-      const execution = runGitCommand().pipe(Effect.scoped);
+      const execution = runGitCommand().pipe(
+        Effect.scoped,
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            const original = pendingScopedGitTerminals.get(result);
+            if (original !== undefined) {
+              finalizedScopedGitTerminals.set(result, original);
+              pendingScopedGitTerminals.delete(result);
+            }
+          }),
+        ),
+      );
       if (timeoutMs === null) {
         return yield* execution;
       }
@@ -3853,17 +3995,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           result.exitCode === 0
             ? Effect.void
             : Effect.fail(
-                new GitCommandError({
-                  ...gitCommandContext({
-                    operation: "GitVcsDriver.fetchRemote",
-                    cwd: input.cwd,
-                    args,
+                retainOriginalFetchFailure(
+                  input,
+                  result,
+                  new GitCommandError({
+                    ...gitCommandContext({
+                      operation: "GitVcsDriver.fetchRemote",
+                      cwd: input.cwd,
+                      args,
+                    }),
+                    detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
+                    ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+                    stdoutLength: result.stdout.length,
+                    stderrLength: result.stderr.length,
                   }),
-                  detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
-                  ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-                  stdoutLength: result.stdout.length,
-                  stderrLength: result.stderr.length,
-                }),
+                ),
               ),
         ),
       );
@@ -3891,17 +4037,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ) {
         return yield* fetchAll.pipe(Effect.asVoid);
       }
-      return yield* new GitCommandError({
-        ...gitCommandContext({
-          operation: "GitVcsDriver.fetchRemote",
-          cwd: input.cwd,
-          args: scopedArgs,
+      return yield* retainOriginalFetchFailure(
+        input,
+        result,
+        new GitCommandError({
+          ...gitCommandContext({
+            operation: "GitVcsDriver.fetchRemote",
+            cwd: input.cwd,
+            args: scopedArgs,
+          }),
+          detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
+          ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+          stdoutLength: result.stdout.length,
+          stderrLength: result.stderr.length,
         }),
-        detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
-        ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-        stdoutLength: result.stdout.length,
-        stderrLength: result.stderr.length,
-      });
+      );
     },
   );
 

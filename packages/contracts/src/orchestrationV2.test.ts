@@ -1299,6 +1299,30 @@ describe("limit recovery choice updates", () => {
   });
 });
 
+describe("queued tool delivery command compatibility", () => {
+  it("preserves absent, false and true eligibility without a decode default", () => {
+    const command = {
+      type: "message.dispatch",
+      commandId: "queue-compat",
+      threadId: "thread",
+      messageId: "message",
+      createdBy: "user",
+      creationSource: "web",
+      text: "Queue",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+    };
+    expect(decodeOrchestrationV2Command(command)).not.toHaveProperty("queuedToolBoundaryEligible");
+    for (const value of [false, true])
+      expect(
+        decodeOrchestrationV2Command({ ...command, queuedToolBoundaryEligible: value }),
+      ).toHaveProperty("queuedToolBoundaryEligible", value);
+    expect(() =>
+      decodeOrchestrationV2Command({ ...command, queuedToolBoundaryEligible: 1 }),
+    ).toThrow();
+  });
+});
+
 describe("worktree launch base", () => {
   const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchWorkspaceStrategy);
 
