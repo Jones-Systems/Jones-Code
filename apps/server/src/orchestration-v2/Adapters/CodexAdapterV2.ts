@@ -1,3 +1,4 @@
+import * as NativeProvider from "../../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import * as BackgroundLiveness from "../../jones/provider/observations/ProviderSessionBackgroundLiveness.ts";
 import type * as RuntimeObservation from "../../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
@@ -1654,11 +1655,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
   return ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
+    nativeCreationExecution: true,
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: (input) =>
       Effect.gen(function* () {
         const scope = yield* Scope.Scope;
+        const nativeCreationGuard = input.nativeCreationGuard;
+        if (nativeCreationGuard !== undefined && input.runtimeLifecycle === undefined)
+          return yield* toProtocolError(
+            "Native creation requires the receiving runtime binding owner.",
+          );
+        yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+          threadId: input.threadId,
+          cwd: input.runtimePolicy.cwd,
+        });
+
         const reserveGeneration = (threadId: ThreadId) =>
           input.runtimeLifecycle?.reserve(threadId) ??
           idAllocator.allocate.event({ threadId, providerSessionId: input.providerSessionId }).pipe(
@@ -1670,6 +1682,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         const openProducer = (threadId: ThreadId, runtimePolicy: ProviderAdapterV2RuntimePolicy) =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
+              yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                threadId,
+                cwd: runtimePolicy.cwd,
+              });
               const generation = yield* reserveGeneration(threadId);
               const producerScope = yield* Scope.make();
               const opened = yield* restore(
@@ -1678,6 +1694,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     adapterOptions.resolveRuntime === undefined
                       ? undefined
                       : yield* adapterOptions.resolveRuntime;
+                  yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                    threadId,
+                    cwd: runtimePolicy.cwd,
+                  });
                   const actualClient = yield* clientFactory.open({
                     instanceId: adapterOptions.instanceId,
                     threadId,
@@ -1812,6 +1832,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             return;
           }
 
+          yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+            threadId: input.threadId,
+            cwd: input.runtimePolicy.cwd,
+          });
           yield* client.request("initialize", {
             // Codex uses the client name as the request originator, so sessions
             // identify themselves exactly like the provider probe.
@@ -6085,7 +6109,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 "Codex continuation does not match the current session and native binding.",
               );
             }
+            if (request.input.nativeCreationGuard !== undefined && retryOrdinal !== 0)
+              return yield* toProtocolError("Native creation cannot replay a provider start.");
+            yield* NativeProvider.revalidateNativeProviderGuard(request.input.nativeCreationGuard, {
+              threadId: request.input.threadId,
+              cwd: request.input.runtimePolicy.cwd,
+              runtimeGeneration: currentProducer.generation,
+            });
             yield* request.input.revalidateStartAdmission ?? Effect.void;
+            if (!currentCapacityBinding(request))
+              return yield* toProtocolError("Native physical binding changed before send.");
             request.startDispatched = true;
             const started = yield* client
               .request(
@@ -6107,6 +6140,21 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 "Codex start acknowledgement no longer matches the current request.",
               );
             }
+            yield* NativeProvider.acknowledgeNativeProviderGuard(
+              request.input.nativeCreationGuard,
+              {
+                threadId: request.input.threadId,
+                runId: request.input.runId,
+                providerInstanceId: adapterOptions.instanceId,
+                attemptId: request.input.attemptId,
+                providerThread: request.input.providerThread,
+                runtimeGeneration: currentProducer.generation,
+              },
+            );
+            if (!currentCapacityBinding(request))
+              return yield* toProtocolError(
+                "Native physical binding changed after acknowledgement.",
+              );
             const context = yield* registerRootTurn({
               turnInput: {
                 ...request.input,
@@ -6514,7 +6562,17 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               return false;
             }),
           ensureThread: (threadInput) =>
-            ensureInitialized.pipe(
+            NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+              threadId: threadInput.threadId,
+              cwd: threadInput.runtimePolicy.cwd,
+            }).pipe(
+              Effect.andThen(ensureInitialized),
+              Effect.andThen(
+                NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                  threadId: threadInput.threadId,
+                  cwd: threadInput.runtimePolicy.cwd,
+                }),
+              ),
               Effect.andThen(
                 client.request(
                   "thread/start",
@@ -6560,6 +6618,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             ),
           resumeThread: (threadInput) =>
             Effect.gen(function* () {
+              if (NativeProvider.isNativeProviderGuardActive(nativeCreationGuard))
+                return yield* toProtocolError(
+                  "Native creation cannot resume or replace a conversation.",
+                );
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
               if (
                 threadInput.providerThread.driver !== CODEX_PROVIDER ||
@@ -6673,6 +6735,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             ),
           injectHistory: (input) =>
             Effect.gen(function* () {
+              yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                threadId: input.providerThread.appThreadId,
+                runtimeGeneration: currentProducer.generation,
+              });
               const threadId = yield* getNativeThreadId(input.providerThread);
               return yield* client
                 .request("thread/inject_items", {
@@ -6765,7 +6831,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   earlyErrors: new Map(),
                   earlyCompletions: new Map(),
                   earlyStarts: new Map(),
-                  recoveryEnabled: true,
+                  recoveryEnabled: turnInput.nativeCreationGuard === undefined,
                   logicalTerminalEmitted: false,
                   nativeContexts: [],
                   startDispatched: false,

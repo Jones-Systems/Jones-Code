@@ -1,3 +1,4 @@
+import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -541,6 +542,7 @@ export type RunExecutionServiceV2Error = typeof RunExecutionServiceV2Error.Type;
  * SERVICE DEFINITION
  */
 export interface RunExecutionServiceV2StartRootRunInput {
+  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly commandId: CommandId;
   readonly appThread: OrchestrationV2AppThread;
   readonly providerSessionId: ProviderSessionId;
@@ -1459,6 +1461,9 @@ export const layer: Layer.Layer<
           // a long time between browser-tool calls.
           yield* McpSessionRegistry.touchActiveMcpThread(input.run.threadId);
           const turnInput = {
+            ...(input.nativeCreationGuard === undefined
+              ? {}
+              : { nativeCreationGuard: input.nativeCreationGuard }),
             appThread: input.appThread,
             threadId: input.run.threadId,
             runId: input.run.id,
@@ -1540,6 +1545,17 @@ export const layer: Layer.Layer<
                       runId: input.run.id,
                       cause: { start: cause, write: writeCause },
                     }),
+                ),
+                Effect.andThen(
+                  input.nativeCreationGuard === undefined
+                    ? Effect.void
+                    : Effect.fail(
+                        new RunExecutionStartError({
+                          commandId: input.commandId,
+                          runId: input.run.id,
+                          cause,
+                        }),
+                      ),
                 ),
               ),
             ),
