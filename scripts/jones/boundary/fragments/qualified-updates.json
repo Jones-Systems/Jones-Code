@@ -2,6 +2,14 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
+    "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+    "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts",
+    "apps/desktop/src/jones/updates/jonesActivation.ts",
+    "apps/desktop/src/jones/updates/jonesMacStaging.test.ts",
+    "apps/desktop/src/jones/updates/jonesMacStaging.ts",
+    "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+    "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
+    "apps/desktop/src/jones/updates/jonesNativePreparation.ts",
     "packages/shared/src/jones/jonesActions.ts",
     "packages/shared/src/jones/jonesActions.test.ts",
     "apps/server/src/jones/cloud/qualifiedArchive.test.ts",
@@ -23,14 +31,45 @@
     "apps/server/src/jones/updates/trialGate.ts"
   ],
   "hookPaths": [
+    "apps/desktop/src/ipc/methods/updates.ts",
+    "apps/desktop/src/preload.ts",
+    "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
+    "apps/desktop/src/updates/DesktopRemoteUpdates.ts",
+    "apps/desktop/src/updates/DesktopUpdates.ts",
+    "apps/desktop/src/updates/updateChannels.test.ts",
+    "apps/desktop/src/updates/updateChannels.ts",
+    "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.ts",
     "packages/contracts/package.json",
-    "packages/shared/package.json"
+    "packages/contracts/src/ipc.test.ts",
+    "packages/contracts/src/resourceTelemetry.ts",
+    "packages/shared/package.json",
+    "scripts/build-desktop-artifact.ts"
   ],
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/updates/jonesMacStaging.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativePreparation.ts"
+    },
+    {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/updates/build-provenance.ts"
     }
   ]
 }

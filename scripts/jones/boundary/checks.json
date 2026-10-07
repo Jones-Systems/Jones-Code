@@ -263,10 +263,21 @@
         "apps/server/src/jones/updates/JonesUpdater.test.ts",
         "apps/server/src/jones/updates/qualification.test.ts",
         "apps/server/src/jones/updates/stagedSelection.test.ts",
-        "apps/server/src/jones/updates/trialGate.test.ts"
+        "apps/server/src/jones/updates/trialGate.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "apps/desktop/src/jones/updates/jonesMacStaging.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "scripts/jones/updates/build-provenance.test.ts",
+        "apps/desktop/src/updates/DesktopUpdates.test.ts",
+        "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
+        "apps/desktop/src/updates/updateChannels.test.ts",
+        "packages/contracts/src/ipc.test.ts",
+        "packages/contracts/src/resourceTelemetry.test.ts",
+        "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts",
+        "scripts/build-desktop-artifact.test.ts"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts"
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts"
       ]
     }
   ]

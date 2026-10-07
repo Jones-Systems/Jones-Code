@@ -24,6 +24,10 @@ import serverPackageJson from "../apps/server/package.json" with { type: "json" 
 
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
+  decodeJonesDesktopBuildMetadata,
+  type JonesBuildSource,
+} from "./jones/updates/build-provenance.ts";
+import {
   BRAND_ASSET_PATHS,
   resolveWebAssetBrandForChannel,
   type WebAssetBrand,
@@ -926,6 +930,8 @@ interface StagePackageJson {
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
+  readonly jonesSource?: JonesBuildSource;
+  readonly startupGateProtocol?: 1;
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -3696,6 +3702,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
+    ...(yield* decodeJonesDesktopBuildMetadata({
+      ...("jonesSource" in desktopPackageJson ? { jonesSource: desktopPackageJson.jonesSource } : {}),
+      ...("startupGateProtocol" in desktopPackageJson
+        ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
+        : {}),
+    })),
     private: true,
     packageManager: rootPackageJson.packageManager,
     description: "T3 Code desktop build",
