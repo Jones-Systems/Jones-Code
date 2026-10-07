@@ -1,6 +1,7 @@
 import * as Crypto from "node:crypto";
 import * as FS from "node:fs";
 import * as Path from "node:path";
+import * as Util from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -107,6 +108,13 @@ export interface CurrentFixtureCapture {
     };
   };
   readonly tables: Readonly<Record<string, { readonly status: "present"; readonly count: number }>>;
+  readonly commandReceipts: {
+    readonly total: number;
+    readonly project: number;
+    readonly thread: number;
+    readonly replayed: number;
+    readonly invalidEventLinks: number;
+  };
   readonly ledgers: Readonly<
     Record<string, readonly { readonly id: number; readonly name: string }[]>
   >;
@@ -147,6 +155,7 @@ const tableNames = [
   "orchestration_events",
   "orchestration_v2_events",
   "orchestration_v2_command_receipts",
+  "orchestration_command_receipts",
   "orchestration_v2_projection_threads",
   "orchestration_v2_projection_runs",
   "orchestration_v2_projection_messages",
@@ -231,7 +240,12 @@ export async function produceCurrentFixture<A>(
   let open = true;
   const run: CurrentFixtureContext["run"] = (effect) => {
     if (!open) return Promise.reject(new Error("fixture context closed"));
-    const promise = runtime.runPromise(effect, { signal });
+    // Effect can finish synchronous work before checking RunOptions.signal.
+    if (signal.aborted) return Promise.reject(signal.reason);
+    const promise = runtime.runPromise(effect, { signal }).then((value) => {
+      signal.throwIfAborted();
+      return value;
+    });
     pending.add(promise);
     void promise.then(
       () => pending.delete(promise),
@@ -267,6 +281,7 @@ export async function produceCurrentFixture<A>(
     observations.push({ phase, pragmas: observed });
   };
   let capture: Omit<CurrentFixtureCapture, "profile"> | undefined;
+  let replayedCommands = 0;
   try {
     await Effect.runPromise(
       initializeV2Database(paths.dbPath).pipe(Effect.provide(NodeServices.layer)),
@@ -280,7 +295,7 @@ export async function produceCurrentFixture<A>(
         const projectId = ProjectId.make("fixture-project");
         const providerInstanceId = ProviderInstanceId.make("codex");
         const modelSelection = { instanceId: providerInstanceId, model: "synthetic-model" };
-        yield* sink.commitProjectCommand({
+        const projectInput: Parameters<typeof sink.commitProjectCommand>[0] = {
           commandId: CommandId.make("fixture-project-command"),
           projectId,
           commandType: "project.create",
@@ -305,10 +320,33 @@ export async function produceCurrentFixture<A>(
               updatedAt: "2026-10-02T12:00:00.000Z",
             },
           },
+        };
+        const projectCommit = yield* sink.commitProjectCommand(projectInput);
+        const projectReplay = yield* sink.commitProjectCommand(projectInput);
+        if (
+          !projectCommit.committed ||
+          projectReplay.committed ||
+          !Util.isDeepStrictEqual(projectCommit.receipt, projectReplay.receipt)
+        )
+          throw new Error("project fixture command receipt or idempotent replay differs");
+        replayedCommands++;
+        const commitThread = Effect.fn("currentFixtures.commitThread")(function* (
+          input: Parameters<typeof sink.commitCommand>[0],
+        ) {
+          const committed = yield* sink.commitCommand(input);
+          const replay = yield* sink.commitCommand(input);
+          if (
+            !committed.committed ||
+            replay.committed ||
+            !Util.isDeepStrictEqual(committed.receipt, replay.receipt) ||
+            !Util.isDeepStrictEqual(committed.storedEvents, replay.storedEvents)
+          )
+            throw new Error("thread fixture command receipt or idempotent replay differs");
+          replayedCommands++;
         });
         for (let thread = 0; thread < recipe.threads; thread++) {
           const threadId = ThreadId.make(`fixture-thread-${thread}`);
-          yield* sink.commitCommand({
+          yield* commitThread({
             commandId: CommandId.make(`fixture-create-${thread}`),
             threadId,
             commandType: "thread.create",
@@ -354,7 +392,7 @@ export async function produceCurrentFixture<A>(
             const runId = RunId.make(`fixture-run-${thread}-${turn}`);
             const nodeId = NodeId.make(`fixture-node-${thread}-${turn}`);
             const userMessageId = MessageId.make(`fixture-user-${thread}-${turn}`);
-            yield* sink.commitCommand({
+            yield* commitThread({
               commandId: CommandId.make(`fixture-turn-${thread}-${turn}`),
               threadId,
               commandType: "thread.turn.start",
@@ -424,6 +462,7 @@ export async function produceCurrentFixture<A>(
     await observe("after-seed");
     await observe("before-callback");
     result.value = await use(Object.freeze({ owner, paths, databaseSource: source, recipe, run }));
+    signal.throwIfAborted();
     await observe("after-callback");
     const tables: Record<string, { status: "present"; count: number }> = {};
     for (const table of tableNames)
@@ -431,6 +470,43 @@ export async function produceCurrentFixture<A>(
         status: "present",
         count: Number((await query(`SELECT count(*) AS count FROM ${table}`))[0]?.count),
       };
+    const receiptKinds = await query(
+      "SELECT aggregate_kind, count(*) AS count FROM orchestration_command_receipts GROUP BY aggregate_kind",
+    );
+    const threadReceipts = Number(
+      receiptKinds.find((row) => row.aggregate_kind === "thread")?.count ?? 0,
+    );
+    const projectReceipts = Number(
+      receiptKinds.find((row) => row.aggregate_kind === "project")?.count ?? 0,
+    );
+    const invalidEventLinks = Number(
+      (
+        await query(`
+      SELECT count(*) AS count FROM orchestration_command_receipts AS receipt
+      LEFT JOIN orchestration_events AS event ON event.sequence = receipt.result_sequence
+      WHERE receipt.status != 'accepted' OR receipt.error IS NOT NULL OR
+        event.sequence IS NULL OR event.command_id IS NOT receipt.command_id OR
+        event.aggregate_kind != receipt.aggregate_kind OR event.stream_id != receipt.aggregate_id OR
+        receipt.result_sequence != (SELECT max(sequence) FROM orchestration_events WHERE command_id = receipt.command_id)
+    `)
+      )[0]?.count,
+    );
+    const expectedThreadReceipts = recipe.threads * (recipe.historyTurns + 1);
+    const commandReceipts = {
+      total: Number(tables.orchestration_command_receipts?.count),
+      project: projectReceipts,
+      thread: threadReceipts,
+      replayed: replayedCommands,
+      invalidEventLinks,
+    };
+    if (
+      commandReceipts.total !== expectedThreadReceipts + 1 ||
+      projectReceipts !== 1 ||
+      threadReceipts !== expectedThreadReceipts ||
+      replayedCommands !== expectedThreadReceipts + 1 ||
+      invalidEventLinks !== 0
+    )
+      throw new Error("shared fixture command receipts, replay count or event links differ");
     const ledgers: Record<string, { id: number; name: string }[]> = {};
     for (const table of ["effect_sql_migrations", "jones_sql_migrations"])
       ledgers[table] = (
@@ -455,6 +531,7 @@ export async function produceCurrentFixture<A>(
       recipe,
       runtime: runtimeObservation,
       tables,
+      commandReceipts,
       ledgers,
       integrity: { results: integrity, ok: true },
       foreignKeys: { violations: 0, sha256: hash(foreignKeys) },
@@ -511,6 +588,7 @@ export async function produceCurrentFixture<A>(
             sidecars,
           };
         }
+        options.signal?.throwIfAborted();
         assertCurrentDatabaseSource(source);
         const custody = await sealSyntheticFixture(owner, {
           databaseRelativePath: permit.relativePath,

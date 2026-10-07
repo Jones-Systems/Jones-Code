@@ -104,7 +104,16 @@ describe("receiving V2 synthetic fixtures", () => {
         Assert.equal(result.capture?.tables.orchestration_v2_projection_threads?.count, 2);
         Assert.equal(result.capture?.tables.orchestration_v2_projection_runs?.count, 6);
         Assert.equal(result.capture?.tables.orchestration_v2_projection_messages?.count, 12);
-        Assert.equal(result.capture?.tables.orchestration_v2_command_receipts?.count, 8);
+        // Receiving V2 commands use the shared application receipt table.
+        Assert.equal(result.capture?.tables.orchestration_v2_command_receipts?.count, 0);
+        Assert.equal(result.capture?.tables.orchestration_command_receipts?.count, 9);
+        Assert.deepEqual(result.capture?.commandReceipts, {
+          total: 9,
+          project: 1,
+          thread: 8,
+          replayed: 9,
+          invalidEventLinks: 0,
+        });
         Assert.equal(result.capture?.tables.orchestration_events?.count, 21);
         Assert.equal(result.capture?.ledgers.jones_sql_migrations?.length, 6);
         Assert.equal(result.capture?.integrity.ok, true);
@@ -192,6 +201,56 @@ describe("receiving V2 synthetic fixtures", () => {
       observe(result);
       Assert.ok(result.error);
       Assert.equal(result.closeKnown, true);
+    });
+  });
+  it("abort interrupts an active effect and waits for its finalizer before closing", async () => {
+    await invocation(async (options, observe) => {
+      const cancellation = new AbortController();
+      let effectStarted = false;
+      let effectFinalized = false;
+      let admittedAfterAbort = false;
+      const result = await produceCurrentFixture(
+        { ...options, signal: cancellation.signal },
+        async (context) => {
+          let acknowledgeStarted: () => void = () => {};
+          const started = new Promise<void>((resolve) => {
+            acknowledgeStarted = resolve;
+          });
+          const pending = context.run(
+            Effect.sync(() => {
+              effectStarted = true;
+              acknowledgeStarted();
+            }).pipe(
+              Effect.andThen(Effect.never),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  effectFinalized = true;
+                }),
+              ),
+            ),
+          );
+          void pending.catch(() => {});
+          await started;
+          const reason = new Error("synthetic fixture cancellation");
+          cancellation.abort(reason);
+          await Assert.rejects(
+            context.run(
+              Effect.sync(() => {
+                admittedAfterAbort = true;
+              }),
+            ),
+            reason,
+          );
+          await pending;
+        },
+      );
+      observe(result);
+      Assert.ok(result.error);
+      Assert.equal(effectStarted, true);
+      Assert.equal(effectFinalized, true);
+      Assert.equal(admittedAfterAbort, false);
+      Assert.equal(result.closeKnown, true);
+      Assert.equal(result.receipt, undefined);
     });
   });
   it("raw consumer report retains its known closed fixture", async () => {
