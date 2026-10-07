@@ -42,8 +42,10 @@ separately.
 - Never start a development server against live `~/.t3/userdata`, open that
   state read-write, or clean it up. Reading or copying private state requires
   exact authorization; its presence on this machine is not permission.
-- Browser and computer use require the user's authorization for that
-  verification. Existing authorization carries forward within its scope.
+- M Jones grants standing browser and computer-use permission for behavioral
+  testing of owner-built local apps, including Jones Code and T3 Code. Do not
+  ask again per task; follow [local app testing permission](docs/operations/contributor-guidance.md#local-app-testing-permission)
+  for isolated test state and protected-effect boundaries.
 - Keep `VITE_HTTP_URL` and `VITE_WS_URL` unset for browser development.
   The dev runner owns desktop's loopback configuration.
 - Do not commit implementation plans, research notes, or agent scratch.
@@ -66,16 +68,12 @@ separately.
   [glossary](docs/internals/glossary.md). A runtime test receipt is distinct
   from a durable command receipt.
 - For provider identity or launch/recovery changes, read
-  [provider runtime identity](docs/internals/provider-runtime-identity.md).
+  [provider constraints](docs/internals/providers.md).
   Requested configuration is not observed identity; absent evidence stays
   unknown or unavailable.
 - For connection, retry, authentication renewal, subscription, or cache changes,
   read [connection runtime](docs/internals/connection-runtime.md). Preserve one
   transport retry owner and distinguish transport health from data freshness.
-- For checkout ownership or native mutation lifecycle changes, read
-  [worktree ownership leases](docs/internals/worktree-ownership-leases.md).
-  Lease expiry does not authorize takeover or prove a process stopped.
-  Leases do not fence external filesystem writers.
 - Before adding server code, read
   [Effect services](docs/internals/effect-services.md). Keep capabilities in
   domain services and transports thin. Use `.repos/effect-smol/LLMS.md` for

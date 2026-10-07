@@ -1,28 +1,11 @@
+import { ProviderInstanceId } from "./providerInstance.ts";
+import { MessageId } from "./baseSchemas.ts";
+import { CommandId } from "./baseSchemas.ts";
 import {
-  JonesUpdateState,
-  JonesUpdateDownloadInput,
-  JonesUpdateInstallInput,
-} from "./jonesUpdates.ts";
-import {
-  VoiceReviewRecentList,
-  VoiceReviewDiagnostics,
-  VoiceReviewDraft,
-  VoiceReviewDraftList,
-  VoiceReviewMutationResult,
-  VoiceReviewErrors,
-  VoiceReviewRevisionPayload,
-  VoiceReviewEditSavePayload,
-  VoiceReviewEditCancelPayload,
-} from "./voiceReview.ts";
-import {
-  ThreadRegistryComposedSnapshot,
-  ThreadRegistryWorkstreams,
-  ThreadRegistryEvents,
-  ThreadRegistryAssociationPayload,
-  ThreadRegistryLabelPayload,
-  ThreadRegistryMutationReceipt,
-} from "./threadRegistry.ts";
-import { HostStatusSnapshot } from "./hostStatus.ts";
+  ProviderQueueInventory,
+  ProviderQueueRefreshResult,
+  OrchestrationCommandObservation,
+} from "./providerQueue.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -30,7 +13,6 @@ import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware";
-import * as HttpApiSchema from "effect/unstable/httpapi/HttpApiSchema";
 import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
@@ -59,8 +41,6 @@ import {
   DpopFailureReason,
   AuthSessionId,
   ThreadId,
-  CommandId,
-  MessageId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import {
@@ -71,22 +51,11 @@ import {
 } from "./orchestrationV2.ts";
 import { Project, ProjectMutation, ProjectSnapshot } from "./project.ts";
 import {
-  NativeCommandObservationV2,
-  OrchestrationCommandObservation,
-  ThreadTurnStartCommand,
-} from "./orchestrationNative.ts";
-import {
   PullRequestDiffInput,
   PullRequestDiffResult,
   PullRequestOperationError,
   PullRequestUnavailableError,
 } from "./pullRequest.ts";
-import {
-  CONVERSATION_LIBRARY_PATH,
-  LibraryErrorCodeSchema,
-  LibraryReplySchema,
-  LibraryRequestSchema,
-} from "./conversationLibrary.ts";
 import {
   RelayCloudEnvironmentHealthRequest,
   RelayCloudMintCredentialRequest,
@@ -97,6 +66,12 @@ import {
   RelayLinkProofRequest,
 } from "./relay.ts";
 
+import { makeJonesHttpGroups } from "./jones/environmentHttpGroups.ts";
+export {
+  EnvironmentConversationLibraryErrorSchema,
+  EnvironmentConversationLibraryErrorCode,
+  type EnvironmentConversationLibraryError,
+} from "./jones/environmentHttpGroups.ts";
 import {
   T3WorkstreamCommandPollParams,
   T3WorkstreamCommandRequest,
@@ -114,16 +89,6 @@ import {
   WorkstreamReceipt,
 } from "./workstreams.ts";
 import { T3PlacementLoadRequest, T3PlacementResult } from "./workstreamPlacements.ts";
-import {
-  WorkstreamsNativeContextResponse,
-  WorkstreamsNativeAttestationRequest,
-  WorkstreamsNativeAttestationResponse,
-  WorkstreamsNativeSettlementRequest,
-  WorkstreamsNativeSettlementResponse,
-} from "./workstreamsNativeProvider.ts";
-import { WorkstreamsRegistrationContextResponse } from "./workstreamsRegistrationContext.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
-import { ProviderQueueInventory, ProviderQueueRefreshResult } from "./providerQueue.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -144,10 +109,9 @@ export const EnvironmentRequestInvalidReason = Schema.Literals([
   "invalid_scope",
   "scope_not_granted",
   "invalid_command",
-  "dispatch_guard_rejected",
-  "dispatch_guard_bootstrap_unsupported",
-  "observation_unsupported",
   "invalid_history_cursor",
+  "dispatch_guard_bootstrap_unsupported",
+  "dispatch_guard_rejected",
 ]);
 export type EnvironmentRequestInvalidReason = typeof EnvironmentRequestInvalidReason.Type;
 
@@ -179,6 +143,8 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "orchestration_thread_snapshot_failed",
   "orchestration_thread_bounded_snapshot_failed",
   "orchestration_thread_history_failed",
+  "orchestration_dispatch_failed",
+  "orchestration_command_observation_failed",
   "internal_error",
 ]);
 export type EnvironmentInternalErrorReason = typeof EnvironmentInternalErrorReason.Type;
@@ -419,6 +385,11 @@ const EnvironmentWorkstreamSnapshotErrors = [
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
+const EnvironmentWorkstreamCommandErrors = [
+  EnvironmentRequestInvalidError,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
 const EnvironmentWorkstreamPagedSnapshotErrors = [
   ...EnvironmentWorkstreamSnapshotErrors,
   EnvironmentHttpConflictError,
@@ -428,83 +399,11 @@ const EnvironmentOrchestrationThreadSnapshotErrors = [
   EnvironmentResourceNotFoundError,
   EnvironmentInternalError,
 ] as const;
-const EnvironmentOrchestrationDispatchErrors = [
-  EnvironmentRequestInvalidError,
-  EnvironmentScopeRequiredError,
-  EnvironmentInternalError,
-] as const;
 const EnvironmentProjectMutationErrors = [
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
-
-const EnvironmentConversationLibraryInvalidError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("invalid"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(400));
-
-const EnvironmentConversationLibraryForbiddenError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("forbidden"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(403));
-
-const EnvironmentConversationLibraryNotFoundError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("not-found"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(404));
-
-const EnvironmentConversationLibraryConflictError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("conflict"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(409));
-
-const EnvironmentConversationLibraryTooLargeError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("too-large"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(413));
-
-const EnvironmentConversationLibraryStorageError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("storage"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(500));
-
-const EnvironmentConversationLibraryUnsupportedError = Schema.Struct({
-  kind: Schema.Literal("error"),
-  code: Schema.Literal("unsupported"),
-  message: Schema.String,
-  traceId: TrimmedNonEmptyString,
-}).pipe(HttpApiSchema.status(501));
-
-const EnvironmentConversationLibraryErrorSchemas = [
-  EnvironmentConversationLibraryInvalidError,
-  EnvironmentConversationLibraryForbiddenError,
-  EnvironmentConversationLibraryNotFoundError,
-  EnvironmentConversationLibraryConflictError,
-  EnvironmentConversationLibraryTooLargeError,
-  EnvironmentConversationLibraryStorageError,
-  EnvironmentConversationLibraryUnsupportedError,
-] as const;
-
-export const EnvironmentConversationLibraryErrorSchema = Schema.Union(
-  EnvironmentConversationLibraryErrorSchemas,
-);
-export type EnvironmentConversationLibraryError =
-  typeof EnvironmentConversationLibraryErrorSchema.Type;
-
-export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
 
 export interface EnvironmentSessionPrincipalShape {
   readonly sessionId: AuthSessionId;
@@ -666,6 +565,13 @@ const EnvironmentOrchestrationThreadHistoryQuery = Schema.Struct({
   cursor: TrimmedNonEmptyString,
 });
 
+const EnvironmentOrchestrationThreadHistoryErrors = [
+  EnvironmentRequestInvalidError,
+  EnvironmentScopeRequiredError,
+  EnvironmentResourceNotFoundError,
+  EnvironmentInternalError,
+] as const;
+
 export const ProviderGoalStateObservation = Schema.Struct({
   schema: Schema.Literal("t3.provider-goal-state/v1"),
   threadId: ThreadId,
@@ -690,22 +596,34 @@ export const ProviderGoalStateObservation = Schema.Struct({
 });
 export type ProviderGoalStateObservation = typeof ProviderGoalStateObservation.Type;
 
-const EnvironmentOrchestrationThreadHistoryErrors = [
-  EnvironmentRequestInvalidError,
-  EnvironmentScopeRequiredError,
-  EnvironmentResourceNotFoundError,
-  EnvironmentInternalError,
-] as const;
-
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
   .add(
-    HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
-      headers: OptionalBearerHeaders,
-      payload: ThreadTurnStartCommand,
-      success: Schema.Never,
-      error: [...EnvironmentOrchestrationDispatchErrors, EnvironmentAuthInvalidError],
-    }).middleware(EnvironmentAuthenticatedAuth),
+    HttpApiEndpoint.get(
+      "commandObservation",
+      "/api/orchestration/threads/:threadId/commands/:commandId",
+      {
+        headers: OptionalBearerHeaders,
+        params: Schema.Struct({ threadId: ThreadId, commandId: CommandId }),
+        query: { messageId: MessageId },
+        success: OrchestrationCommandObservation,
+        error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
   )
+  .add(
+    HttpApiEndpoint.get(
+      "providerGoalState",
+      "/api/orchestration/threads/:threadId/provider-goal-state",
+      {
+        headers: OptionalBearerHeaders,
+        params: EnvironmentOrchestrationThreadSnapshotParams,
+        query: { expectedInstanceId: ProviderInstanceId },
+        success: ProviderGoalStateObservation,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+
   .add(
     HttpApiEndpoint.get("shellSnapshot", "/api/orchestration/shell", {
       headers: OrchestrationProtocolHeaders,
@@ -720,45 +638,6 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       success: OrchestrationV2ThreadDetailSnapshot,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get(
-      "commandObservation",
-      "/api/orchestration/threads/:threadId/commands/:commandId",
-      {
-        headers: OptionalBearerHeaders,
-        params: Schema.Struct({ threadId: ThreadId, commandId: CommandId }),
-        payload: { messageId: MessageId },
-        success: OrchestrationCommandObservation,
-        error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
-      },
-    ).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get(
-      "commandObservationV2",
-      "/api/orchestration/v2/threads/:threadId/commands/:commandId",
-      {
-        headers: OptionalBearerHeaders,
-        params: Schema.Struct({ threadId: ThreadId, commandId: CommandId }),
-        payload: { messageId: MessageId },
-        success: NativeCommandObservationV2,
-        error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
-      },
-    ).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get(
-      "providerGoalState",
-      "/api/orchestration/threads/:threadId/provider-goal-state",
-      {
-        headers: OptionalBearerHeaders,
-        params: EnvironmentOrchestrationThreadSnapshotParams,
-        payload: { expectedInstanceId: ProviderInstanceId },
-        success: ProviderGoalStateObservation,
-        error: EnvironmentOrchestrationThreadSnapshotErrors,
-      },
-    ).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
     HttpApiEndpoint.get("threadBoundedSnapshot", "/api/orchestration/threads/:threadId/bounded", {
@@ -811,14 +690,20 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
-class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
-  .add(
-    HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
-      headers: OptionalBearerHeaders,
-      success: WorkstreamsRegistrationContextResponse,
-      error: [...EnvironmentWorkstreamSnapshotErrors, EnvironmentHttpBadRequestError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
+const {
+  EnvironmentVoiceReviewHttpApi,
+  EnvironmentHostStatusHttpApi,
+  EnvironmentWorkQueueMetadataHttpApi: WorkQueueMetadataHttpApi,
+  EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
+  EnvironmentWorkstreamAppearanceHttpApi,
+} = makeJonesHttpGroups({
+  OptionalBearerHeaders,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+});
+
+class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpApi
   .add(
     HttpApiEndpoint.post("threadPlacements", "/api/workstreams/thread-placements", {
       headers: OptionalBearerHeaders,
@@ -908,40 +793,7 @@ class EnvironmentWorkstreamsHttpApi extends HttpApiGroup.make("workstreams")
       headers: OptionalBearerHeaders,
       payload: T3WorkstreamCommandRequest,
       success: WorkstreamReceipt,
-      error: EnvironmentOrchestrationDispatchErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  ) {}
-
-class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
-  .add(
-    HttpApiEndpoint.get("context", "/api/workstreams/native/v1/context", {
-      headers: OptionalBearerHeaders,
-      success: WorkstreamsNativeContextResponse,
-      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("attestations", "/api/workstreams/native/v1/attestations", {
-      headers: OptionalBearerHeaders,
-      payload: WorkstreamsNativeAttestationRequest,
-      success: WorkstreamsNativeAttestationResponse,
-      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("settlements", "/api/workstreams/native/v1/settlements", {
-      headers: OptionalBearerHeaders,
-      payload: WorkstreamsNativeSettlementRequest,
-      success: WorkstreamsNativeSettlementResponse,
-      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("settlementLookup", "/api/workstreams/native/v1/settlements/lookup", {
-      headers: OptionalBearerHeaders,
-      payload: WorkstreamsNativeSettlementRequest,
-      success: WorkstreamsNativeSettlementResponse,
-      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpBadRequestError],
+      error: EnvironmentWorkstreamCommandErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
@@ -1006,224 +858,16 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
-class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
-  .add(
-    HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
-      headers: OptionalBearerHeaders,
-      payload: JonesUpdateInstallInput,
-      success: JonesUpdateState,
-      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("state", "/api/jones-updates", {
-      query: Schema.Struct({ after: Schema.optionalKey(Schema.NumberFromString) }),
-      headers: OptionalBearerHeaders,
-      success: Schema.NullOr(JonesUpdateState),
-      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("check", "/api/jones-updates/check", {
-      headers: OptionalBearerHeaders,
-      success: JonesUpdateState,
-      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("download", "/api/jones-updates/download", {
-      headers: OptionalBearerHeaders,
-      payload: JonesUpdateDownloadInput,
-      success: JonesUpdateState,
-      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("install", "/api/jones-updates/install", {
-      headers: OptionalBearerHeaders,
-      payload: JonesUpdateInstallInput,
-      success: JonesUpdateState,
-      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
-    }).middleware(EnvironmentAuthenticatedAuth),
-  ) {}
-
-class EnvironmentHostStatusHttpApi extends HttpApiGroup.make("hostStatus").add(
-  HttpApiEndpoint.get("snapshot", "/api/host-status", {
+export class EnvironmentQueueDispatchHttpApi extends HttpApiGroup.make("queueDispatch").add(
+  HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
     headers: OptionalBearerHeaders,
-    success: HostStatusSnapshot,
-    error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    payload: Schema.Unknown,
+    success: Schema.Struct({
+      sequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+    }),
+    error: [...EnvironmentOrchestrationThreadSnapshotErrors, EnvironmentRequestInvalidError],
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
-
-export class EnvironmentConversationLibraryHttpApi extends HttpApiGroup.make(
-  "conversationLibrary",
-).add(
-  HttpApiEndpoint.post("conversationLibrary", CONVERSATION_LIBRARY_PATH, {
-    headers: OptionalBearerHeaders,
-    payload: LibraryRequestSchema,
-    success: LibraryReplySchema,
-    error: [...EnvironmentConversationLibraryErrorSchemas, EnvironmentScopeRequiredError],
-  }).middleware(EnvironmentAuthenticatedAuth),
-) {}
-
-const VoiceReviewParams = Schema.Struct({
-  id: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
-});
-const VoiceReviewHeaders = OptionalBearerHeaders;
-const VoiceReviewPageLimit = Schema.optional(
-  Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
-);
-class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
-  .add(
-    HttpApiEndpoint.get("recent", "/api/voice-review/recent", {
-      headers: VoiceReviewHeaders,
-      query: { limit: VoiceReviewPageLimit },
-      success: VoiceReviewRecentList,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("registrySnapshot", "/api/voice-review/registry/snapshot", {
-      headers: VoiceReviewHeaders,
-      query: {
-        limit: VoiceReviewPageLimit,
-        cursor: Schema.optional(Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(4096))),
-      },
-      success: ThreadRegistryComposedSnapshot,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("registryWorkstreams", "/api/voice-review/registry/workstreams", {
-      headers: VoiceReviewHeaders,
-      success: ThreadRegistryWorkstreams,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("registryEvents", "/api/voice-review/registry/events", {
-      headers: VoiceReviewHeaders,
-      query: {
-        limit: VoiceReviewPageLimit,
-        after: Schema.optional(
-          Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-        ),
-      },
-      success: ThreadRegistryEvents,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("correctAssociation", "/api/voice-review/registry/associations", {
-      headers: VoiceReviewHeaders,
-      payload: ThreadRegistryAssociationPayload,
-      success: ThreadRegistryMutationReceipt,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("correctLabel", "/api/voice-review/registry/labels", {
-      headers: VoiceReviewHeaders,
-      payload: ThreadRegistryLabelPayload,
-      success: ThreadRegistryMutationReceipt,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("diagnostics", "/api/voice-review/drafts/:id/diagnostics", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      success: VoiceReviewDiagnostics,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("list", "/api/voice-review/drafts", {
-      headers: VoiceReviewHeaders,
-      query: {
-        scope: Schema.optional(Schema.Literals(["pending", "recent"])),
-        limit: Schema.optional(
-          Schema.FiniteFromString.check(
-            Schema.isInt(),
-            Schema.isBetween({ minimum: 1, maximum: 200 }),
-          ),
-        ),
-      },
-      success: VoiceReviewDraftList,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("get", "/api/voice-review/drafts/:id", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      success: VoiceReviewDraft,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("pause", "/api/voice-review/drafts/:id/pause", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      payload: VoiceReviewRevisionPayload,
-      success: VoiceReviewMutationResult,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("play", "/api/voice-review/drafts/:id/play", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      payload: VoiceReviewRevisionPayload,
-      success: VoiceReviewMutationResult,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("editBegin", "/api/voice-review/drafts/:id/edit-begin", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      payload: VoiceReviewRevisionPayload,
-      success: VoiceReviewMutationResult,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("editSave", "/api/voice-review/drafts/:id/edit-save", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      payload: VoiceReviewEditSavePayload,
-      success: VoiceReviewMutationResult,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("editCancel", "/api/voice-review/drafts/:id/edit-cancel", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      payload: VoiceReviewEditCancelPayload,
-      success: VoiceReviewMutationResult,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("sendNow", "/api/voice-review/drafts/:id/send-now", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      payload: VoiceReviewRevisionPayload,
-      success: VoiceReviewMutationResult,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("delete", "/api/voice-review/drafts/:id/delete", {
-      headers: VoiceReviewHeaders,
-      params: VoiceReviewParams,
-      payload: VoiceReviewRevisionPayload,
-      success: VoiceReviewMutationResult,
-      error: VoiceReviewErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  ) {}
 
 export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
   .add(
@@ -1250,17 +894,21 @@ export class ProviderQueueHttpApi extends HttpApiGroup.make("providerQueue")
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHttpApi {}
+
+export class EnvironmentWorkQueueMetadataHttpApi extends WorkQueueMetadataHttpApi {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
-  .add(EnvironmentHostStatusHttpApi)
-  .add(EnvironmentJonesUpdatesHttpApi)
-  .add(EnvironmentVoiceReviewHttpApi)
   .add(ProviderQueueHttpApi)
+  .add(EnvironmentQueueDispatchHttpApi)
+  .add(EnvironmentVoiceReviewHttpApi)
+  .add(EnvironmentHostStatusHttpApi)
+  .add(EnvironmentWorkQueueMetadataHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentWorkstreamsHttpApi)
-  .add(EnvironmentWorkstreamsNativeHttpApi)
+  .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentConversationLibraryHttpApi)
-  .add(EnvironmentProjectsHttpApi) {}
+  .add(EnvironmentConversationLibraryHttpApi) {}

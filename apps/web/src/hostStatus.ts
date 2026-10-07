@@ -25,6 +25,16 @@ export function fetchHostStatus(signal: AbortSignal): Promise<HostStatusSnapshot
 
 const HOST_STATUS_MAX_AGE_MS = 30_000;
 
+function utilizationHealth(percent: number) {
+  return percent > 90
+    ? "critical"
+    : percent > 75
+      ? "elevated"
+      : percent >= 50
+        ? "warning"
+        : "healthy";
+}
+
 function freshHostStatus(host: HostStatus, now: number): HostStatus {
   if (host.status === "unavailable") return host;
   const age = now - Date.parse(host.sampledAt);
@@ -44,18 +54,37 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
           invalid_response: "Invalid host status response",
           stale: "Host status sample is stale",
         }[host.reason];
-    return { cpu: "—", ram: "—", health: "unavailable", detail: reason } as const;
+    return {
+      cpu: "—",
+      ram: "—",
+      cpuHealth: "unavailable",
+      ramHealth: "unavailable",
+      health: "unavailable",
+      detail: reason,
+    } as const;
   }
+  const cpuHealth = utilizationHealth(host.cpuUsagePercent);
+  const cpu = `${Math.round(host.cpuUsagePercent)}%`;
+  const availableMemoryBytes = host.availableMemoryBytes;
+  const ramHealth =
+    availableMemoryBytes === undefined
+      ? "unavailable"
+      : utilizationHealth(100 * (1 - availableMemoryBytes / host.totalMemoryBytes));
+  const ram =
+    availableMemoryBytes === undefined ? "—" : String(Math.round(availableMemoryBytes / 1024 ** 3));
   const health =
-    host.cpuUsagePercent >= 95 ? "critical" : host.cpuUsagePercent >= 80 ? "warning" : "healthy";
-  const format = (value: number) => value.toFixed(1).replace(/\.0$/, "");
-  const cpu = `${format(host.cpuUsagePercent)}%`;
-  const ram = `${format(host.occupiedMemoryBytes / 1024 ** 3)}/${format(host.totalMemoryBytes / 1024 ** 3)} GiB`;
+    availableMemoryBytes === undefined
+      ? cpuHealth
+      : utilizationHealth(
+          Math.max(host.cpuUsagePercent, 100 * (1 - availableMemoryBytes / host.totalMemoryBytes)),
+        );
   return {
     health,
+    cpuHealth,
+    ramHealth,
     cpu,
     ram,
-    detail: `CPU ${cpu}. Occupied RAM ${ram}; includes reclaimable cache, not memory pressure. Color reflects CPU utilization only.`,
+    detail: `CPU ${cpu} of total cores. Available RAM ${ram === "—" ? "unavailable" : `${ram} GiB (collector estimate, including reclaimable memory)`}. Colors reflect CPU and RAM utilization.`,
   } as const;
 }
 

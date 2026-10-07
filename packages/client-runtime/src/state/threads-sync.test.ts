@@ -3,8 +3,6 @@ import {
   EventId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
-  ProviderDriverKind,
-  ProviderSessionId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2ThreadDetailSnapshot,
@@ -38,11 +36,7 @@ import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "../rpc/session.ts";
-import {
-  v2Projection,
-  v2ProviderCapabilities,
-  v2ThreadId,
-} from "./orchestrationV2TestFixtures.ts";
+import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
@@ -116,7 +110,6 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly resumeCache?: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]>;
   readonly loadCached?: Effect.Effect<Option.Option<OrchestrationV2ThreadDetailSnapshot>>;
   readonly saveThread?: Persistence.EnvironmentCacheStore["Service"]["saveThread"];
-  readonly onSubscribe?: (afterSequence: number | undefined) => Effect.Effect<void>;
   readonly historyPaging?: "enabled" | "no-http" | "no-controller";
   readonly historyHttpClient?: HttpClient.HttpClient;
 }) {
@@ -154,7 +147,6 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
             Ref.set(lastRequestCompletionMarker, input.requestCompletionMarker === true),
           ),
           Effect.andThen(Ref.set(lastAcceptBoundedSnapshot, input.acceptBoundedSnapshot)),
-          Effect.andThen(options?.onSubscribe?.(input.afterSequence) ?? Effect.void),
           Effect.as(streamFrom(inputs)),
         ),
       ),
@@ -323,8 +315,9 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 };
 
 describe("EnvironmentThreads", () => {
-  for (const source of ["disk", "HTTP"] as const) {
-    it.effect(`does not rewrite an unchanged ${source} snapshot on navigation or warm return`, () =>
+  it.effect.each(["disk", "HTTP"] as const)(
+    "does not rewrite an unchanged %s snapshot on navigation or warm return",
+    (source) =>
       Effect.gen(function* () {
         const resumeCache: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]> = {
           snapshot: undefined,
@@ -358,8 +351,7 @@ describe("EnvironmentThreads", () => {
         );
         expect(yield* Ref.get(nextSaved)).toEqual([]);
       }),
-    );
-  }
+  );
 
   it.effect("persists a complete bounded HTTP window only once", () =>
     Effect.gen(function* () {
@@ -1020,8 +1012,9 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  for (const cacheKind of ["disk", "retained"] as const) {
-    it.effect(`retains paging support through a complete bounded ${cacheKind} cache`, () =>
+  it.effect.each(["disk", "retained"] as const)(
+    "retains paging support through a complete bounded %s cache",
+    (cacheKind) =>
       Effect.gen(function* () {
         const resumeCache: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]> = {
           snapshot: undefined,
@@ -1079,11 +1072,11 @@ describe("EnvironmentThreads", () => {
         expect(yield* Ref.get(warm.lastSubscribeAfterSequence)).toBe(5);
         expect(yield* Ref.get(warm.lastAcceptBoundedSnapshot)).toBe(true);
       }),
-    );
-  }
+  );
 
-  for (const historyPaging of ["no-http", "no-controller"] as const) {
-    it.effect(`does not negotiate bounded fallbacks with ${historyPaging}`, () =>
+  it.effect.each(["no-http", "no-controller"] as const)(
+    "does not negotiate bounded fallbacks with %s",
+    (historyPaging) =>
       Effect.gen(function* () {
         for (const source of ["cache", "http"] as const) {
           const history = {
@@ -1113,8 +1106,7 @@ describe("EnvironmentThreads", () => {
           expect(yield* Ref.get(harness.lastAcceptBoundedSnapshot)).toBeUndefined();
         }
       }),
-    );
-  }
+  );
 
   it.effect("socket snapshot clears progressive history meta left from a bounded window", () =>
     Effect.gen(function* () {
@@ -1836,119 +1828,6 @@ describe("EnvironmentThreads", () => {
       }
       expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE + 4);
-    }),
-  );
-
-  it.effect("resumes after detach acceptance without changing attached state on replay or warm return", () =>
-    Effect.gen(function* () {
-      const acceptedSequence = CACHED_SNAPSHOT_SEQUENCE + 1;
-      const occurredAt = DateTime.makeUnsafe("2026-06-20T01:00:00.000Z");
-      const session = {
-        id: ProviderSessionId.make("session-detach-acceptance"),
-        providerInstanceId: BASE_PROJECTION.thread.providerInstanceId,
-        driver: ProviderDriverKind.make("codex"),
-        status: "running" as const,
-        cwd: "/workspace/project",
-        model: BASE_PROJECTION.thread.modelSelection.model,
-        capabilities: v2ProviderCapabilities,
-        createdAt: BASE_PROJECTION.updatedAt,
-        updatedAt: BASE_PROJECTION.updatedAt,
-        lastError: null,
-      };
-      const attached: OrchestrationV2ThreadProjection = {
-        ...BASE_PROJECTION,
-        thread: {
-          ...BASE_PROJECTION.thread,
-          pinnedAt: BASE_PROJECTION.updatedAt,
-          pinOrderKey: "a1",
-          snoozedAt: BASE_PROJECTION.updatedAt,
-          snoozedUntil: DateTime.makeUnsafe("2026-06-21T00:00:00.000Z"),
-        },
-        providerSessions: [
-          session,
-          { ...session, id: ProviderSessionId.make("session-detach-sibling") },
-        ],
-      };
-      const resumeCache: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]> = {
-        snapshot: undefined,
-        owner: undefined,
-      };
-      const reconnected = yield* Deferred.make<void>();
-      const scope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
-        Scope.close(scope, Exit.void),
-      );
-      const harness = yield* makeHarness({
-        cached: attached,
-        completionMarker: true,
-        resumeCache,
-        onSubscribe: (sequence) =>
-          sequence === acceptedSequence
-            ? Deferred.succeed(reconnected, undefined).pipe(Effect.asVoid)
-            : Effect.void,
-      }).pipe(Effect.provideService(Scope.Scope, scope));
-      expect(Option.getOrThrow((yield* SubscriptionRef.get(harness.threadState)).data)).toBe(attached);
-      const acceptance: OrchestrationV2ThreadStreamItem = {
-        kind: "event",
-        sequence: acceptedSequence,
-        event: {
-          id: EventId.make("event-detach-acceptance"),
-          type: "provider-session.detach-requested",
-          threadId: THREAD_ID,
-          occurredAt,
-          payload: { providerSessionId: session.id, reason: "User requested stop" },
-        },
-      };
-      yield* Queue.offerAll(harness.inputs, [
-        acceptance,
-        acceptance,
-        {
-          kind: "event",
-          sequence: CACHED_SNAPSHOT_SEQUENCE,
-          event: {
-            id: EventId.make("event-replayed-detach"),
-            type: "provider-session.detached",
-            threadId: THREAD_ID,
-            occurredAt,
-            payload: { providerSessionId: session.id, detachedAt: occurredAt },
-          },
-        },
-        synchronized(),
-      ]);
-      const live = yield* awaitThreadState(harness.observed, (value) => value.status === "live");
-      expect(Option.getOrThrow(live.data)).toBe(attached);
-      expect(Option.getOrThrow(live.data)).toEqual(attached);
-      expect(Option.isNone(live.error)).toBe(true);
-
-      yield* harness.replaceSession;
-      yield* Deferred.await(reconnected);
-      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(acceptedSequence);
-      yield* Queue.offerAll(harness.inputs, [acceptance, synchronized()]);
-      const replayed = yield* awaitThreadState(
-        harness.observed,
-        (value) => value.status === "live",
-      );
-      expect(Option.getOrThrow(replayed.data)).toBe(attached);
-      expect(replayed.history).toEqual(live.history);
-      yield* Scope.close(scope, Exit.void);
-      expect(resumeCache.snapshot?.sequence).toBe(acceptedSequence);
-      expect(Option.getOrThrow(resumeCache.snapshot!.state.data)).toBe(attached);
-
-      const warmSubscribed = yield* Deferred.make<void>();
-      const resumed = yield* makeHarness({
-        completionMarker: true,
-        resumeCache,
-        onSubscribe: (sequence) =>
-          sequence === acceptedSequence
-            ? Deferred.succeed(warmSubscribed, undefined).pipe(Effect.asVoid)
-            : Effect.void,
-      });
-      yield* Deferred.await(warmSubscribed);
-      yield* Queue.offer(resumed.inputs, synchronized());
-      const warm = yield* awaitThreadState(resumed.observed, (value) => value.status === "live");
-      expect(yield* Ref.get(resumed.lastSubscribeAfterSequence)).toBe(acceptedSequence);
-      expect(Option.getOrThrow(warm.data)).toBe(attached);
-      expect(warm.history).toEqual(live.history);
-      expect(yield* Ref.get(resumed.loaderCalls)).toBe(0);
     }),
   );
 

@@ -225,8 +225,8 @@ describe("AcpRegistryAdapterV2", () => {
           }),
         })
         .pipe(Effect.scoped);
-      // Closing the session stops the agent, which writes its replay status in
-      // the same tick as its last answer. The script must be consumed exactly.
+      // Each validated answer publishes its replay checkpoint before becoming
+      // visible, so closing immediately still permits exact script accounting.
       yield* makeAcpReplayCompletenessAssertion(fileSystem, statusPath, transcript);
     });
 

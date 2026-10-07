@@ -54,14 +54,17 @@ import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import {
+  getComposerDraftSnapshot,
+  composerDraftsAtom,
+  setComposerDraftText,
   composerContextImportsAtom,
   countComposerDraftAttachmentsAfterSelection,
 } from "../../state/use-composer-drafts";
+import { appAtomRegistry } from "../../state/atom-registry";
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject, useThreadShells } from "../../state/entities";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import type { MobileImportedContinuationPresentation } from "./importedContinuationDelivery";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
@@ -152,6 +155,7 @@ export interface ThreadComposerProps {
    */
   readonly threadSyncPhase?: "loading" | "syncing" | null;
   readonly selectedThread: EnvironmentThreadShell;
+  readonly reportedModelSelection?: ModelSelection | null;
   readonly hasCompactableConversation: boolean;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
@@ -186,12 +190,6 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
-  readonly importedContinuation?: {
-    readonly presentation: MobileImportedContinuationPresentation;
-    readonly queued: boolean;
-    readonly onStart: () => Promise<void>;
-    readonly onObserve: () => Promise<void>;
-  } | null;
   /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
   /**
@@ -260,8 +258,8 @@ const FOLLOW_UP_ACTION_LABEL = {
 } as const;
 
 const FOLLOW_UP_ACTION_SUBTITLE = {
-  queue: "Run after the current turn",
-  steer: "Interrupt what the agent is doing",
+  queue: "Send after tools finish, or next turn",
+  steer: "Send into the current turn now",
   restart: "Start the turn over with this message",
 } as const;
 
@@ -511,10 +509,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       usageLimitsOffered && props.draftAttachments.length === 0 ? openUsageLimits : undefined,
   });
   const voiceInput = useVoiceInputController({
-    ownerKey: composerOwnerKey,
-    draftMessage: props.draftMessage,
+    ownerKey: composerDraftKey,
+    label: props.selectedThread.title || "Untitled thread",
+    readDraftMessage: () => getComposerDraftSnapshot(composerDraftKey).text,
+    subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
     selection: composerMenu.selection,
-    onChangeDraftMessage: props.onChangeDraftMessage,
+    onChangeDraftMessage: (text) => setComposerDraftText(composerDraftKey, text),
     onChangeSelection: composerMenu.onSelectionChange,
   });
   const voicePresentation = resolveVoiceComposerPresentation(
@@ -544,7 +544,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     !contextImports[composerDraftKey] &&
     !voiceInput.blocksSubmission &&
     sendBlockedReason === null &&
-    props.importedContinuation?.presentation.blocksOrdinarySend !== true &&
     !modelUnavailable;
 
   // Keep the feed inset aligned with the card or compact dictation strip.
@@ -596,8 +595,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [onEditorFocusChange, onExpandedChange, settingsSheetPresentation.keepsComposerExpanded]);
   const handleSend = useCallback(
     async (followUp?: ActiveTurnComposerAction) => {
-      if (voiceInput.blocksSubmission || pendingPastedTextAttachmentCountRef.current > 0 ||
-        props.importedContinuation?.presentation.blocksOrdinarySend === true) return;
+      if (voiceInput.blocksSubmission || pendingPastedTextAttachmentCountRef.current > 0) return;
       // Typed out in full rather than picked from the menu. Attachments mean the
       // user is sending a prompt, so those go through as usual.
       if (
@@ -641,11 +639,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       props.selectedThread.id,
       props.selectedThread.title,
       voiceInput.blocksSubmission,
-      props.importedContinuation?.presentation.blocksOrdinarySend,
     ],
   );
 
   // ── Model menu ───────────────────────────────────────────
+  // A session that hands the conversation to another provider lets the picker
+  // offer the whole catalog; one that can't stays on its own instance.
+  const lockedProviderInstanceId = props.canSwitchProvider
+    ? undefined
+    : currentModelSelection.instanceId;
   const configuredDefaultModelSelection = useMemo(
     () =>
       props.serverConfig?.settings
@@ -657,17 +659,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         : null,
     [props.serverConfig?.settings, props.selectedThread.projectId, project],
   );
-  // A session that hands the conversation to another provider lets the picker
-  // offer the whole catalog; one that can't stays on its own instance.
-  const lockedProviderInstanceId = props.canSwitchProvider
-    ? undefined
-    : currentModelSelection.instanceId;
   const modelOptions = useMemo(
     () =>
-      buildModelOptions(props.serverConfig, currentModelSelection, {
-        providerInstanceId: lockedProviderInstanceId,
-        defaultModelSelection: configuredDefaultModelSelection,
-      }),
+      buildModelOptions(
+        props.serverConfig,
+        currentModelSelection,
+        lockedProviderInstanceId,
+        configuredDefaultModelSelection,
+      ),
     [
       props.serverConfig,
       currentModelSelection,
@@ -698,6 +697,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       providerInstanceId: currentModelSelection.instanceId,
       providerGroups: threadProviderGroups,
       selectedModel: currentModelSelection,
+      reportedModelSelection: props.reportedModelSelection,
       onSelectModel: (option) =>
         props.onUpdateModelSelection(withRememberedModelOptions(option.selection)),
       optionDescriptors: providerOptionDescriptors,
@@ -714,6 +714,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }),
     [
       currentModelSelection,
+      props.reportedModelSelection,
       currentRuntimeMode,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
@@ -831,35 +832,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Pressable>
         ) : null}
 
-        {props.importedContinuation?.presentation.notice ? (
-          <View className="px-3 py-2 gap-2">
-            <Text accessibilityLiveRegion="polite" className="text-xs text-foreground">
-              {props.importedContinuation.presentation.notice}
-            </Text>
-            {props.importedContinuation.presentation.canStart ? (
-              <>
-                {props.importedContinuation.queued ? (
-                  <Text className="text-xs text-muted-foreground">This starts the saved queued message. Your unsaved edits stay in the composer.</Text>
-                ) : null}
-                <Pressable accessibilityRole="button"
-                  accessibilityLabel={props.importedContinuation.presentation.isSaveRetry ? "Save and start existing request" : "Start with imported history"}
-                  disabled={voiceInput.blocksSubmission}
-                  className="rounded-lg bg-primary px-3 py-2"
-                  onPress={() => { void props.importedContinuation?.onStart(); }}>
-                  <Text className="text-sm text-primary-foreground">
-                    {props.importedContinuation.presentation.isSaveRetry ? "Save and start existing request" : "Start with imported history"}
-                  </Text>
-                </Pressable>
-              </>
-            ) : null}
-            {props.importedContinuation.presentation.canObserve ? (
-              <Pressable accessibilityRole="button" className="rounded-lg px-3 py-2"
-                onPress={() => { void props.importedContinuation?.onObserve(); }}>
-                <Text className="text-sm text-foreground">Check existing request</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
         <ComposerSurface
           style={
             isExpanded

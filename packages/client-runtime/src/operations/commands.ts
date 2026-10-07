@@ -12,18 +12,7 @@ import {
   type MessageId,
   type ModelSelection,
   type OrchestrationV2Command,
-  type OrchestrationV2ClientCommand,
   type OrchestrationV2CreationSource,
-  type OrchestrationV2ImportedHistoryDelivery,
-  type OrchestrationV2ObserveImportedHistoryStartInput,
-  type OrchestrationV2ReviewImportedHistoryStartInput,
-  type OrchestrationV2StartWithImportedHistoryCommand,
-  type OrchestrationV2StopCurrentThreadRuntimeInput,
-  type OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
-  type OrchestrationV2ObserveThreadDeletionCleanupInput,
-  type OrchestrationV2ThreadDeletionWorktreeRemoval,
-  type OrchestrationV2GetThreadRuntimeObservationInput,
-  type OrchestrationV2GetOperatingCountsInput,
   type PlanId,
   type ProjectId,
   type ProjectIconOverride,
@@ -93,9 +82,7 @@ export interface ThreadCommandInput extends CommandMetadata {
   readonly threadId: ThreadId;
 }
 
-export interface DeleteThreadInput extends ThreadCommandInput {
-  readonly worktreeRemoval?: OrchestrationV2ThreadDeletionWorktreeRemoval;
-}
+export type DeleteThreadInput = ThreadCommandInput;
 export type ArchiveThreadInput = ThreadCommandInput;
 export type UnarchiveThreadInput = ThreadCommandInput;
 export type SettleThreadInput = ThreadCommandInput;
@@ -197,21 +184,6 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly dispatchMode?: "auto" | "queue" | "steer" | "restart" | "start";
 }
 
-export type PrepareImportedContinuationInput = {
-  readonly threadId: ThreadId;
-  readonly delivery:
-    | Extract<OrchestrationV2ImportedHistoryDelivery, { readonly type: "queued_run" }>
-    | (Omit<
-        Extract<OrchestrationV2ImportedHistoryDelivery, { readonly type: "message" }>,
-        "attachments"
-      > & { readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment> });
-};
-
-export type DeliverImportedContinuationInput = Omit<
-  OrchestrationV2StartWithImportedHistoryCommand,
-  "type"
->;
-
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly runId?: RunId;
   /** Temporary caller compatibility while UI naming moves from turns to runs. */
@@ -269,6 +241,10 @@ export interface CancelQueuedRunInput extends ThreadCommandInput {
   readonly runId: RunId;
 }
 
+export interface RetryWorkspacePreparationInput extends ThreadCommandInput {
+  readonly runId: RunId;
+}
+
 export interface EditQueuedRunInput extends ThreadCommandInput {
   readonly runId: RunId;
   readonly text: string;
@@ -293,7 +269,7 @@ const allocateCommandId = Effect.fn("EnvironmentCommands.allocateCommandId")(fun
   return CommandId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
 });
 
-const dispatch = (command: OrchestrationV2ClientCommand) =>
+const dispatch = (command: OrchestrationV2Command) =>
   request(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
 
 const getProjection = (threadId: ThreadId) =>
@@ -333,54 +309,6 @@ const persistAttachments = Effect.fn("EnvironmentCommands.persistAttachments")(f
     return persisted === undefined ? [] : [persisted];
   });
 });
-
-export const prepareImportedContinuation = Effect.fn(
-  "EnvironmentCommands.prepareImportedContinuation",
-)(function* (input: PrepareImportedContinuationInput) {
-  if (input.delivery.type === "queued_run") {
-    return {
-      threadId: input.threadId,
-      delivery: input.delivery,
-    } satisfies OrchestrationV2ReviewImportedHistoryStartInput;
-  }
-  const delivery = input.delivery;
-  const attachments = yield* persistAttachments(
-    input.threadId,
-    delivery.messageId,
-    delivery.attachments,
-  );
-  const context = remapComposerContextAttachments(
-    delivery.context,
-    delivery.attachments,
-    attachments,
-  );
-  return {
-    threadId: input.threadId,
-    delivery: { ...delivery, attachments, ...(context === undefined ? {} : { context }) },
-  } satisfies OrchestrationV2ReviewImportedHistoryStartInput;
-});
-
-export const reviewImportedHistoryStart = Effect.fn(
-  "EnvironmentCommands.reviewImportedHistoryStart",
-)((input: OrchestrationV2ReviewImportedHistoryStartInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart, input),
-);
-
-// Callers retain this command ID and prepared delivery when observing a lost response.
-export const deliverImportedContinuation = Effect.fn(
-  "EnvironmentCommands.deliverImportedContinuation",
-)((input: DeliverImportedContinuationInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory, {
-    ...input,
-    type: "thread.imported-history.start",
-  }),
-);
-
-export const observeImportedHistoryStart = Effect.fn(
-  "EnvironmentCommands.observeImportedHistoryStart",
-)((input: OrchestrationV2ObserveImportedHistoryStartInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart, input),
-);
 
 const mutateProject = Effect.fn("EnvironmentCommands.mutateProject")(function* (
   mutation:
@@ -502,13 +430,7 @@ function simpleThreadCommand(
 export const deleteThread = Effect.fn("EnvironmentCommands.deleteThread")(function* (
   input: DeleteThreadInput,
 ) {
-  const commandId = yield* allocateCommandId(input);
-  return yield* dispatch({
-    type: "thread.delete",
-    commandId,
-    threadId: input.threadId,
-    ...(input.worktreeRemoval === undefined ? {} : { worktreeRemoval: input.worktreeRemoval }),
-  });
+  return yield* simpleThreadCommand("thread.delete", input);
 });
 
 export const archiveThread = Effect.fn("EnvironmentCommands.archiveThread")(function* (
@@ -812,7 +734,13 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     });
   }
 
-  const serverResolvesCommandContext = yield* supportsServerResolvedCommandContext();
+  const capabilities = (yield* getInitialServerConfig()).environment.capabilities;
+  const serverResolvesCommandContext = capabilities.serverResolvedCommandContext === true;
+  const creationSource = input.creationSource ?? "web";
+  const queuedToolBoundaryEligible =
+    (creationSource === "web" || creationSource === "mobile") &&
+    (requestedMode === "queue" || requestedMode === "auto") &&
+    capabilities.queuedToolBoundaryDelivery === true;
   const projection = serverResolvesCommandContext ? null : yield* getProjection(input.threadId);
   const activeRun = projection?.runs.findLast(
     (run) =>
@@ -872,6 +800,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       ? { deliveryIntent: requestedMode }
       : {}),
     dispatchMode,
+    ...(queuedToolBoundaryEligible ? { queuedToolBoundaryEligible: true } : {}),
   });
 });
 
@@ -998,34 +927,6 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
   },
 );
 
-export const stopCurrentThreadRuntime = Effect.fn("EnvironmentCommands.stopCurrentThreadRuntime")(
-  (input: OrchestrationV2StopCurrentThreadRuntimeInput) =>
-    request(ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime, input),
-);
-
-export const observeCurrentThreadRuntimeStop = Effect.fn(
-  "EnvironmentCommands.observeCurrentThreadRuntimeStop",
-)((input: OrchestrationV2ObserveCurrentThreadRuntimeStopInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop, input),
-);
-
-export const observeThreadDeletionCleanup = Effect.fn(
-  "EnvironmentCommands.observeThreadDeletionCleanup",
-)((input: OrchestrationV2ObserveThreadDeletionCleanupInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup, input),
-);
-
-export const getThreadRuntimeObservation = Effect.fn(
-  "EnvironmentCommands.getThreadRuntimeObservation",
-)((input: OrchestrationV2GetThreadRuntimeObservationInput) =>
-  request(ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation, input),
-);
-
-export const getOperatingCounts = Effect.fn("EnvironmentCommands.getOperatingCounts")(
-  (input: OrchestrationV2GetOperatingCountsInput) =>
-    request(ORCHESTRATION_V2_WS_METHODS.getOperatingCounts, input),
-);
-
 export const stopThreadSession = Effect.fn("EnvironmentCommands.stopThreadSession")(function* (
   input: StopThreadSessionInput,
 ) {
@@ -1118,6 +1019,17 @@ export const cancelQueuedRun = Effect.fn("EnvironmentCommands.cancelQueuedRun")(
   });
 });
 
+export const retryWorkspacePreparation = Effect.fn("EnvironmentCommands.retryWorkspacePreparation")(
+  function* (input: RetryWorkspacePreparationInput) {
+    return yield* dispatch({
+      type: "prepared-run.retry",
+      commandId: yield* allocateCommandId(input),
+      threadId: input.threadId,
+      runId: input.runId,
+    });
+  },
+);
+
 export const editQueuedRun = Effect.fn("EnvironmentCommands.editQueuedRun")(function* (
   input: EditQueuedRunInput,
 ) {
@@ -1159,6 +1071,20 @@ export const linkThreadPullRequest = Effect.fn("EnvironmentCommands.linkThreadPu
     return yield* dispatch({
       ...input,
       type: "thread.pull-request.link",
+      commandId: yield* allocateCommandId(input),
+    });
+  },
+);
+export type WatchThreadPullRequestInput = Omit<
+  Extract<OrchestrationV2Command, { type: "thread.pull-request.watch" }>,
+  "type" | "commandId"
+> &
+  CommandMetadata;
+export const watchThreadPullRequest = Effect.fn("EnvironmentCommands.watchThreadPullRequest")(
+  function* (input: WatchThreadPullRequestInput) {
+    return yield* dispatch({
+      ...input,
+      type: "thread.pull-request.watch",
       commandId: yield* allocateCommandId(input),
     });
   },

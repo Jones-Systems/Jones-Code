@@ -1,6 +1,3 @@
-import { sortActiveThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
-import { applyPendingThreadOrder, type PendingThreadOrder } from "../threads/threadOrder";
-import { mobilePrimaryGroupMap } from "../../lib/threadOrderScope";
 import { nativeWorkstreamThreadKey } from "@t3tools/client-runtime/state/workstreams";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ThreadListV2ListItem, ThreadListV2ThreadListItem } from "../threads/threadListV2";
@@ -10,6 +7,7 @@ export interface MobileWorkstreamGroup {
   readonly key: string;
   readonly name: string;
   readonly color: string;
+  readonly borderColor?: string;
   readonly threadKeys: ReadonlySet<string>;
 }
 
@@ -20,7 +18,6 @@ export interface MobileWorkstreamProjection {
   readonly secondaryLabelsByKey: ReadonlyMap<string, readonly string[]>;
   readonly selectedThreadKey?: string | null;
   readonly searching?: boolean;
-  readonly pendingOrder?: PendingThreadOrder | null;
 }
 
 export function projectMobileWorkstreamList(
@@ -31,34 +28,44 @@ export function projectMobileWorkstreamList(
   const active: ThreadListV2ThreadListItem[] = [];
   const pinned: ThreadListV2ListItem[] = [];
   const tail: ThreadListV2ListItem[] = [];
-  const groupForKey = mobilePrimaryGroupMap(projection.groups);
+  let nativeShelf = false;
   for (const item of items) {
-    if (item.type === "v2-thread" && item.item.variant === "card" && !item.item.snoozed) {
-      const key = nativeWorkstreamThreadKey(item.item.thread.environmentId, item.item.thread.id);
-      if (item.item.pinned && !groupForKey.has(key)) pinned.push(item);
+    if (
+      item.type === "v2-working-shelf" ||
+      item.type === "v2-snoozed-shelf" ||
+      item.type === "v2-settled-shelf"
+    )
+      nativeShelf = true;
+    if (
+      !nativeShelf &&
+      item.type === "v2-thread" &&
+      item.item.variant === "card" &&
+      !item.item.snoozed
+    ) {
+      if (item.item.pinned) pinned.push(item);
       else active.push(item);
     } else tail.push(item);
+  }
+  const groupForKey = new Map<string, MobileWorkstreamGroup | null>();
+  for (const group of projection.groups) {
+    for (const key of group.threadKeys) {
+      groupForKey.set(key, groupForKey.has(key) ? null : group);
+    }
   }
   const buckets = new Map<string, ThreadListV2ThreadListItem[]>();
   const unassigned: ThreadListV2ThreadListItem[] = [];
   for (const item of active) {
     const key = nativeWorkstreamThreadKey(item.item.thread.environmentId, item.item.thread.id);
-    const groupKey = groupForKey.get(key);
-    if (groupKey === undefined) unassigned.push(item);
+    const group = groupForKey.get(key);
+    if (!group) unassigned.push(item);
     else {
-      const bucket = buckets.get(groupKey) ?? [];
+      const bucket = buckets.get(group.key) ?? [];
       bucket.push(item);
-      buckets.set(groupKey, bucket);
+      buckets.set(group.key, bucket);
     }
   }
   const result: ThreadListV2ListItem[] = [...pinned];
   const append = (group: MobileWorkstreamGroup, rows: readonly ThreadListV2ThreadListItem[]) => {
-    const byThread = new Map(rows.map((row) => [row.item.thread, row]));
-    rows = applyPendingThreadOrder(
-      sortActiveThreadsByOrderKey(rows.map((row) => row.item.thread)),
-      "active",
-      projection.pendingOrder,
-    ).map((thread) => byThread.get(thread)!);
     if (rows.length === 0) return;
     const expanded = projection.searching === true || !projection.collapsedKeys.has(group.key);
     result.push({
@@ -67,6 +74,7 @@ export function projectMobileWorkstreamList(
       groupKey: group.key,
       name: group.name,
       color: group.color,
+      ...(group.borderColor ? { borderColor: group.borderColor } : {}),
       count: rows.length,
       expanded,
     });
@@ -117,34 +125,20 @@ export function mobileWorkstreamMoveDestination(
   thread: EnvironmentThreadShell,
   direction: ThreadMoveDestination,
 ): ThreadMoveDestination | null {
-  if (typeof direction !== "string") return direction;
+  if (typeof direction !== "string" || thread.pinnedAt != null) return direction;
   const index = items.findIndex(
     (item) =>
       item.type === "v2-thread" &&
       item.item.thread.environmentId === thread.environmentId &&
       item.item.thread.id === thread.id,
   );
-  const neighborIndex = index + (direction === "up" ? -1 : 1);
-  const neighbor = items[neighborIndex];
-  const groupAt = (at: number) => {
-    for (let cursor = at; cursor >= 0; cursor -= 1) {
-      const item = items[cursor];
-      if (item?.type === "v2-workstream") return item;
-      if (item?.type !== "v2-thread" || item.item.variant !== "card" || item.item.snoozed)
-        return null;
-    }
-    return null;
-  };
-  const group = groupAt(index);
-  const neighborGroup = groupAt(neighborIndex);
+  const neighbor = items[index + (direction === "up" ? -1 : 1)];
   if (
     index < 0 ||
     neighbor?.type !== "v2-thread" ||
+    neighbor.item.pinned ||
     neighbor.item.variant !== "card" ||
-    neighbor.item.snoozed ||
-    group?.groupKey !== neighborGroup?.groupKey ||
-    group?.expanded === false ||
-    (group === null && neighbor.item.pinned !== (thread.pinnedAt != null))
+    neighbor.item.snoozed
   )
     return null;
   return {

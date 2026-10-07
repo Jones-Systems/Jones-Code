@@ -7,10 +7,6 @@ import {
   WS_METHODS,
   type EnvironmentId,
   type OrchestrationV2ShellSnapshot,
-  type OrchestrationV2ObserveImportedHistoryStartInput,
-  type OrchestrationV2ReviewImportedHistoryStartInput,
-  type OrchestrationV2StopCurrentThreadRuntimeInput,
-  type OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
 } from "@t3tools/contracts";
 
 import { createOptimisticThreadLifecycle } from "./threadLifecycle.ts";
@@ -23,10 +19,9 @@ import {
 } from "./runtime.ts";
 import {
   type ThreadCommandInput,
-  type DeliverImportedContinuationInput,
-  type PrepareImportedContinuationInput,
   type ArchiveThreadInput,
   type CancelQueuedRunInput,
+  type RetryWorkspacePreparationInput,
   type CreateThreadInput,
   type DeleteThreadInput,
   type EditQueuedRunInput,
@@ -54,17 +49,12 @@ import {
   type UnarchiveThreadInput,
   type UnlinkThreadPullRequestInput,
   type UnpinThreadInput,
+  type WatchThreadPullRequestInput,
   type UnsettleThreadInput,
   type UnsnoozeThreadInput,
   type UpdateThreadMetadataInput,
   type VisitThreadInput,
   archiveThread,
-  deliverImportedContinuation,
-  prepareImportedContinuation,
-  reviewImportedHistoryStart,
-  observeImportedHistoryStart,
-  stopCurrentThreadRuntime,
-  observeCurrentThreadRuntimeStop,
   cancelQueuedRun,
   createThread,
   deleteThread,
@@ -76,6 +66,7 @@ import {
   promoteQueuedRun,
   reorderQueuedRun,
   resumeThreadQueue,
+  retryWorkspacePreparation,
   linkThreadPullRequest,
   respondToThreadApproval,
   respondToThreadUserInput,
@@ -98,6 +89,7 @@ import {
   unsnoozeThread,
   updateThreadMetadata,
   visitThread,
+  watchThreadPullRequest,
 } from "../operations/commands.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -108,8 +100,6 @@ export type LoadEarlierThreadHistoryInput = {
 };
 
 export type {
-  DeliverImportedContinuationInput,
-  PrepareImportedContinuationInput,
   ArchiveThreadInput,
   CancelQueuedRunInput,
   CreateThreadInput,
@@ -144,6 +134,7 @@ export type {
   UnsnoozeThreadInput,
   UpdateThreadMetadataInput,
   VisitThreadInput,
+  WatchThreadPullRequestInput,
 } from "../operations/commands.ts";
 
 export function createThreadEnvironmentAtoms<R, E>(
@@ -265,6 +256,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    watchPullRequest: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:watch-pull-request",
+      execute: (input: WatchThreadPullRequestInput) => watchThreadPullRequest(input),
+      scheduler,
+      concurrency,
+    }),
     setRuntimeMode: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:set-runtime-mode",
       execute: (input: SetThreadRuntimeModeInput) => setThreadRuntimeMode(input),
@@ -280,32 +277,6 @@ export function createThreadEnvironmentAtoms<R, E>(
     startTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:start-turn",
       execute: (input: StartThreadTurnInput) => startThreadTurn(input),
-      scheduler,
-      concurrency,
-    }),
-    prepareImportedContinuation: createEnvironmentCommand(runtime, {
-      label: "environment-data:commands:thread:prepare-imported-continuation",
-      execute: (input: PrepareImportedContinuationInput) => prepareImportedContinuation(input),
-      scheduler,
-      concurrency,
-    }),
-    reviewImportedHistoryStart: createEnvironmentCommand(runtime, {
-      label: "environment-data:commands:thread:review-imported-history-start",
-      execute: (input: OrchestrationV2ReviewImportedHistoryStartInput) =>
-        reviewImportedHistoryStart(input),
-      scheduler,
-      concurrency,
-    }),
-    deliverImportedContinuation: createEnvironmentCommand(runtime, {
-      label: "environment-data:commands:thread:deliver-imported-continuation",
-      execute: (input: DeliverImportedContinuationInput) => deliverImportedContinuation(input),
-      scheduler,
-      concurrency,
-    }),
-    observeImportedHistoryStart: createEnvironmentCommand(runtime, {
-      label: "environment-data:commands:thread:observe-imported-history-start",
-      execute: (input: OrchestrationV2ObserveImportedHistoryStartInput) =>
-        observeImportedHistoryStart(input),
       scheduler,
       concurrency,
     }),
@@ -342,19 +313,6 @@ export function createThreadEnvironmentAtoms<R, E>(
     stopSession: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:stop-session",
       execute: (input: StopThreadSessionInput) => stopThreadSession(input),
-      scheduler,
-      concurrency,
-    }),
-    stopCurrentThreadRuntime: createEnvironmentCommand(runtime, {
-      label: "environment-data:commands:thread:stop-current-runtime",
-      execute: (input: OrchestrationV2StopCurrentThreadRuntimeInput) => stopCurrentThreadRuntime(input),
-      scheduler,
-      concurrency,
-    }),
-    observeCurrentThreadRuntimeStop: createEnvironmentCommand(runtime, {
-      label: "environment-data:commands:thread:observe-current-runtime-stop",
-      execute: (input: OrchestrationV2ObserveCurrentThreadRuntimeStopInput) =>
-        observeCurrentThreadRuntimeStop(input),
       scheduler,
       concurrency,
     }),
@@ -398,6 +356,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     cancelQueuedRun: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:cancel-queued-run",
       execute: (input: CancelQueuedRunInput) => cancelQueuedRun(input),
+      scheduler,
+      concurrency,
+    }),
+    retryWorkspacePreparation: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:retry-workspace-preparation",
+      execute: (input: RetryWorkspacePreparationInput) => retryWorkspacePreparation(input),
       scheduler,
       concurrency,
     }),

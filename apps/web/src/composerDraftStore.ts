@@ -7,10 +7,6 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   EnvironmentId,
-  CommandId,
-  MessageId,
-  RunId,
-  OrchestrationV2CurrentThreadRuntimeTarget,
   ModelSelection,
   ProjectId,
   ProviderInstanceId,
@@ -235,64 +231,7 @@ const PersistedTerminalContextDraft = Schema.Struct({
 });
 type PersistedTerminalContextDraft = typeof PersistedTerminalContextDraft.Type;
 
-const ImportedContinuationPointer = Schema.Struct({
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  commandId: CommandId,
-  target: Schema.Union([
-    Schema.Struct({ type: Schema.Literal("message"), messageId: MessageId }),
-    Schema.Struct({ type: Schema.Literal("queued_run"), runId: RunId, messageId: MessageId }),
-  ]),
-});
-export type ImportedContinuationPointer = typeof ImportedContinuationPointer.Type;
-const isImportedContinuationPointer = Schema.is(ImportedContinuationPointer);
-
-const CurrentRuntimeStopPointer = Schema.Struct({
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  commandId: CommandId,
-  target: OrchestrationV2CurrentThreadRuntimeTarget,
-}).check(Schema.makeFilter((pointer) => pointer.target.binding.threadId === pointer.threadId));
-export type CurrentRuntimeStopPointer = typeof CurrentRuntimeStopPointer.Type;
-const isCurrentRuntimeStopPointer = Schema.is(CurrentRuntimeStopPointer);
-
-function sameCurrentRuntimeStopPointer(
-  a: CurrentRuntimeStopPointer,
-  b: CurrentRuntimeStopPointer,
-): boolean {
-  return (
-    a.environmentId === b.environmentId &&
-    a.threadId === b.threadId &&
-    a.commandId === b.commandId &&
-    a.target.driver === b.target.driver &&
-    a.target.evidenceRevision === b.target.evidenceRevision &&
-    a.target.binding.threadId === b.target.binding.threadId &&
-    a.target.binding.providerThreadId === b.target.binding.providerThreadId &&
-    a.target.binding.providerSessionId === b.target.binding.providerSessionId &&
-    a.target.binding.instanceId === b.target.binding.instanceId &&
-    a.target.binding.runtimeGeneration === b.target.binding.runtimeGeneration &&
-    a.target.binding.nativeThreadId === b.target.binding.nativeThreadId
-  );
-}
-
-function sameImportedContinuationPointer(
-  a: ImportedContinuationPointer,
-  b: ImportedContinuationPointer,
-): boolean {
-  return (
-    a.environmentId === b.environmentId &&
-    a.threadId === b.threadId &&
-    a.commandId === b.commandId &&
-    a.target.type === b.target.type &&
-    a.target.messageId === b.target.messageId &&
-    (a.target.type !== "queued_run" ||
-      (b.target.type === "queued_run" && a.target.runId === b.target.runId))
-  );
-}
-
 const PersistedComposerThreadDraftState = Schema.Struct({
-  currentRuntimeStop: Schema.optionalKey(CurrentRuntimeStopPointer),
-  importedContinuation: Schema.optionalKey(ImportedContinuationPointer),
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
   files: Schema.optionalKey(Schema.Array(PersistedComposerDraftFileAttachment)),
@@ -446,10 +385,6 @@ export type ComposerContextInsertionHandler = (
 const contextInsertionHandlers = new Map<string, ComposerContextInsertionHandler>();
 
 export interface ComposerThreadDraftState {
-  /** Exact stop correlation survives reload; it grants no runtime or queue authority. */
-  currentRuntimeStop?: CurrentRuntimeStopPointer;
-  /** Correlation only: observing this command never authorizes another delivery. */
-  importedContinuation?: ImportedContinuationPointer;
   prompt: string;
   images: ComposerImageAttachment[];
   files: ComposerFileAttachment[];
@@ -1045,8 +980,6 @@ function normalizeTerminalContextsForThread(
 
 function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
   return (
-    draft.importedContinuation === undefined &&
-    draft.currentRuntimeStop === undefined &&
     draft.prompt.length === 0 &&
     draft.images.length === 0 &&
     draft.files.length === 0 &&
@@ -1600,7 +1533,7 @@ function normalizeComposerTarget(
   return target;
 }
 
-function resolveComposerDraftKey(
+export function resolveComposerDraftKey(
   state: ComposerThreadLookupState,
   target: ComposerThreadTarget,
 ): string | null {
@@ -2176,9 +2109,7 @@ function normalizePersistedDraftsByThreadId(
       threadContexts.length === 0 &&
       !hasModelData &&
       !runtimeMode &&
-      !interactionMode &&
-      !isImportedContinuationPointer(draftCandidate.importedContinuation) &&
-      !isCurrentRuntimeStopPointer(draftCandidate.currentRuntimeStop)
+      !interactionMode
     ) {
       continue;
     }
@@ -2195,24 +2126,6 @@ function normalizePersistedDraftsByThreadId(
                 : threadKeyOrId;
             })();
     nextDraftsByThreadKey[normalizedThreadKey] = {
-      ...(isCurrentRuntimeStopPointer(draftCandidate.currentRuntimeStop) &&
-      scopedThreadKey(
-        scopeThreadRef(
-          draftCandidate.currentRuntimeStop.environmentId,
-          draftCandidate.currentRuntimeStop.threadId,
-        ),
-      ) === normalizedThreadKey
-        ? { currentRuntimeStop: draftCandidate.currentRuntimeStop }
-        : {}),
-      ...(isImportedContinuationPointer(draftCandidate.importedContinuation) &&
-      scopedThreadKey(
-        scopeThreadRef(
-          draftCandidate.importedContinuation.environmentId,
-          draftCandidate.importedContinuation.threadId,
-        ),
-      ) === normalizedThreadKey
-        ? { importedContinuation: draftCandidate.importedContinuation }
-        : {}),
       prompt,
       attachments,
       ...(files.length > 0 ? { files } : {}),
@@ -2331,15 +2244,11 @@ export function partializeComposerDraftStoreState(
       draft.threadContexts.length === 0 &&
       !hasModelData &&
       draft.runtimeMode === null &&
-      draft.interactionMode === null &&
-      draft.importedContinuation === undefined &&
-      draft.currentRuntimeStop === undefined
+      draft.interactionMode === null
     ) {
       continue;
     }
     const persistedDraft: DeepMutable<PersistedComposerThreadDraftState> = {
-      ...(draft.currentRuntimeStop ? { currentRuntimeStop: draft.currentRuntimeStop } : {}),
-      ...(draft.importedContinuation ? { importedContinuation: draft.importedContinuation } : {}),
       prompt: draft.prompt,
       attachments: draft.persistedAttachments,
       ...(draft.files.length > 0
@@ -2653,12 +2562,6 @@ function toHydratedThreadDraft(
 
   return {
     // Files predating inline references get a chip appended; images stay shelf-only.
-    ...(persistedDraft.currentRuntimeStop
-      ? { currentRuntimeStop: persistedDraft.currentRuntimeStop }
-      : {}),
-    ...(persistedDraft.importedContinuation
-      ? { importedContinuation: persistedDraft.importedContinuation }
-      : {}),
     prompt: ensureInlineContextReferences(persistedDraft.prompt, [
       ...(persistedDraft.reviewComments ?? []).map(reviewCommentContextReference),
       ...(persistedDraft.previewAnnotations ?? []).map(previewAnnotationContextReference),
@@ -4608,107 +4511,6 @@ export function clearComposerDraftsEnvironment(environmentId: EnvironmentId): vo
         ),
       ),
     };
-  });
-  composerDebouncedStorage.flush();
-}
-
-export function reserveImportedContinuationPointer(pointer: ImportedContinuationPointer): void {
-  if (!isImportedContinuationPointer(pointer) || typeof localStorage === "undefined") {
-    throw new Error("Durable draft storage is unavailable. The request was not sent.");
-  }
-  const threadRef = scopeThreadRef(pointer.environmentId, pointer.threadId);
-  const threadKey = scopedThreadKey(threadRef);
-  const existing = useComposerDraftStore.getState().getComposerDraft(threadRef);
-  if (existing?.currentRuntimeStop)
-    throw new Error("Check the saved runtime stop before starting another delivery.");
-  if (
-    existing?.importedContinuation &&
-    !sameImportedContinuationPointer(existing.importedContinuation, pointer)
-  ) {
-    throw new Error("Check the previous imported-history operation before sending another.");
-  }
-  useComposerDraftStore.setState((state) => ({
-    draftsByThreadKey: {
-      ...state.draftsByThreadKey,
-      [threadKey]: {
-        ...(state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft()),
-        importedContinuation: pointer,
-      },
-    },
-  }));
-  composerDebouncedStorage.flush();
-  const raw = composerDebouncedStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
-  if (typeof raw !== "string")
-    throw new Error("The operation could not be read back. The request was not sent.");
-  const saved = JSON.parse(raw) as StorageValue<PersistedComposerDraftStoreState> | null;
-  const readback = saved?.state.draftsByThreadKey[threadKey]?.importedContinuation;
-  if (
-    !isImportedContinuationPointer(readback) ||
-    !sameImportedContinuationPointer(readback, pointer)
-  ) {
-    throw new Error("The operation could not be saved. The request was not sent.");
-  }
-}
-
-export function clearImportedContinuationPointer(pointer: ImportedContinuationPointer): void {
-  const threadKey = scopedThreadKey(scopeThreadRef(pointer.environmentId, pointer.threadId));
-  useComposerDraftStore.setState((state) => {
-    const draft = state.draftsByThreadKey[threadKey];
-    if (
-      !draft?.importedContinuation ||
-      !sameImportedContinuationPointer(draft.importedContinuation, pointer)
-    )
-      return state;
-    const { importedContinuation: _completed, ...remaining } = draft;
-    return { draftsByThreadKey: { ...state.draftsByThreadKey, [threadKey]: remaining } };
-  });
-  composerDebouncedStorage.flush();
-}
-
-export function reserveCurrentRuntimeStopPointer(pointer: CurrentRuntimeStopPointer): void {
-  if (!isCurrentRuntimeStopPointer(pointer) || typeof localStorage === "undefined") {
-    throw new Error("Durable draft storage is unavailable. The stop request was not sent.");
-  }
-  const threadRef = scopeThreadRef(pointer.environmentId, pointer.threadId);
-  const threadKey = scopedThreadKey(threadRef);
-  const existing = useComposerDraftStore.getState().getComposerDraft(threadRef);
-  if (
-    existing?.currentRuntimeStop &&
-    !sameCurrentRuntimeStopPointer(existing.currentRuntimeStop, pointer)
-  ) {
-    throw new Error("Check the previous runtime stop before starting another operation.");
-  }
-  useComposerDraftStore.setState((state) => ({
-    draftsByThreadKey: {
-      ...state.draftsByThreadKey,
-      [threadKey]: {
-        ...(state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft()),
-        currentRuntimeStop: pointer,
-      },
-    },
-  }));
-  composerDebouncedStorage.flush();
-  const raw = composerDebouncedStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
-  if (typeof raw !== "string")
-    throw new Error("The stop operation could not be read back. The request was not sent.");
-  const saved = JSON.parse(raw) as StorageValue<PersistedComposerDraftStoreState> | null;
-  const readback = saved?.state.draftsByThreadKey[threadKey]?.currentRuntimeStop;
-  if (!isCurrentRuntimeStopPointer(readback) || !sameCurrentRuntimeStopPointer(readback, pointer)) {
-    throw new Error("The stop operation could not be saved. The request was not sent.");
-  }
-}
-
-export function clearCurrentRuntimeStopPointer(pointer: CurrentRuntimeStopPointer): void {
-  const threadKey = scopedThreadKey(scopeThreadRef(pointer.environmentId, pointer.threadId));
-  useComposerDraftStore.setState((state) => {
-    const draft = state.draftsByThreadKey[threadKey];
-    if (
-      !draft?.currentRuntimeStop ||
-      !sameCurrentRuntimeStopPointer(draft.currentRuntimeStop, pointer)
-    )
-      return state;
-    const { currentRuntimeStop: _completed, ...remaining } = draft;
-    return { draftsByThreadKey: { ...state.draftsByThreadKey, [threadKey]: remaining } };
   });
   composerDebouncedStorage.flush();
 }

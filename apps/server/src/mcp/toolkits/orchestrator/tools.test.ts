@@ -4,11 +4,24 @@ import { Tool } from "effect/unstable/ai";
 import {
   CreateThreadsTool,
   DelegateTaskTool,
+  OrchestratorToolkit,
   ScheduleTaskTool,
   ThreadUpdateTool,
 } from "./tools.ts";
 
 describe("orchestrator MCP tool guidance", () => {
+  it("discovers self settlement with a required replay key and no target selector", () => {
+    const tool = OrchestratorToolkit.tools["t3_thread_settle"];
+    assert.isDefined(tool);
+    const schema = Tool.getJsonSchema(tool) as {
+      readonly properties?: Readonly<Record<string, unknown>>;
+      readonly required?: ReadonlyArray<string>;
+    };
+    assert.deepEqual(Object.keys(schema.properties ?? {}), ["clientRequestId"]);
+    assert.include(schema.required ?? [], "clientRequestId");
+    assert.include(tool.description ?? "", "checkpoint");
+  });
+
   it("directs subagent requests to delegation instead of ordinary threads", () => {
     assert.include(DelegateTaskTool.description ?? "", "child agent/subagent");
     assert.include(DelegateTaskTool.description ?? "", "cross-provider");
@@ -17,6 +30,16 @@ describe("orchestrator MCP tool guidance", () => {
     assert.include(DelegateTaskTool.description ?? "", "waitTimedOut");
     assert.include(DelegateTaskTool.description ?? "", "does not cancel the child");
     assert.include(DelegateTaskTool.description ?? "", "keep that taskId");
+    assert.include(DelegateTaskTool.description ?? "", "call delegate_task again");
+    assert.include(DelegateTaskTool.description ?? "", "childThreadId is backing storage");
+    assert.include(
+      OrchestratorToolkit.tools.t3_thread_send.description ?? "",
+      "Do not use a delegated task's childThreadId to start another review round",
+    );
+    assert.include(
+      OrchestratorToolkit.tools.task_cancel.description ?? "",
+      "without interrupting later child-thread runs",
+    );
   });
 
   it("documents wait timeout as a parent budget, not a child failure", () => {

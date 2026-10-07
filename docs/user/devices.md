@@ -111,25 +111,6 @@ installation, and connectivity to development servers such as Metro separately.
 A simulator on another machine cannot reach Metro through your environment's
 localhost without forwarding or another reachable address.
 
-## Direct desktop connection
-
-For an SSH device host near your desktop, edit the host in **Settings →
-Integrations → Devices → Device hosts** and enter a **Direct desktop SSH
-target**. Enter an SSH alias or hostname; the desktop resolves it using
-its SSH configuration and keys. Leave the field empty to keep streaming
-through the environment server. The desktop must already trust the host and
-be able to connect without a password prompt.
-
-With compatible desktop and environment versions, the panel automatically
-prefers a direct connection after authenticating it. Its connection label
-shows the selected route. If that connection fails, the panel reconnects
-through the environment server and reports the reason. Pending touches and
-keys are discarded during the switch; repeat the gesture once connected.
-
-The selected environment keeps running your agents and managing devices.
-The direct connection carries the screen and live gestures. Web, mobile, and
-older desktop clients continue through the environment server.
-
 ## Device tool updates
 
 The connected T3 server manages the device hub and agent tools on its own machine and configured SSH hosts. Required versions install automatically the next time those tools are used. Settings → Integrations → Check device tool versions reads installed versions without installing tools or starting devices.

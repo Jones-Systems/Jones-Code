@@ -696,6 +696,18 @@ describe("orchestrator MCP toolkit", () => {
             const invoke = (name: string, args: Record<string, unknown>) =>
               invokeAs(invocation, name, args);
 
+            const deniedSettlement = yield* invoke("t3_thread_settle", {
+              clientRequestId: "wrong-credential",
+            });
+            expect(deniedSettlement.structuredContent).toMatchObject({
+              _tag: "OrchestratorMcpFailure",
+              code: "orchestration_error",
+              message: expect.stringContaining("thread.metadata.update"),
+            });
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).thread.selfSettlement,
+            ).toBeUndefined();
+
             const pinned = yield* invoke("t3_thread_organize", { action: "pin" });
             expect(pinned.structuredContent).toHaveProperty("sequence");
             expect((yield* orchestrator.getThreadShell(parentThreadId))?.pinnedAt).not.toBeNull();
@@ -1650,6 +1662,14 @@ describe("orchestrator MCP toolkit", () => {
             expect(completedTaskCancel).toEqual({
               taskId: delegated.taskId,
               status: "completed",
+            });
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+                (task) => task.id === delegated.taskId,
+              ),
+            ).toMatchObject({
+              result: delegatedResult,
+              completionDelivery: { state: "disposed" },
             });
             expect(
               (yield* orchestrator.getThreadProjection(delegated.childThreadId)).runs.find(

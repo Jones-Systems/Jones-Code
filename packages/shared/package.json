@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/workMode": {
+      "types": "./src/jones/workMode.ts",
+      "import": "./src/jones/workMode.ts"
+    },
+    "./conversationLibrary": {
+      "types": "./src/conversationLibrary.ts",
+      "import": "./src/conversationLibrary.ts"
+    },
     "./orchestrationV2ThreadError": {
       "types": "./src/orchestrationV2ThreadError.ts",
       "import": "./src/orchestrationV2ThreadError.ts"
@@ -195,6 +203,10 @@
       "types": "./src/connectAuth.ts",
       "import": "./src/connectAuth.ts"
     },
+    "./symlink": {
+      "types": "./src/symlink.ts",
+      "import": "./src/symlink.ts"
+    },
     "./path": {
       "types": "./src/path.ts",
       "import": "./src/path.ts"
@@ -363,10 +375,6 @@
       "types": "./src/dateTime.ts",
       "import": "./src/dateTime.ts"
     },
-    "./conversationLibrary": {
-      "types": "./src/conversationLibrary.ts",
-      "import": "./src/conversationLibrary.ts"
-    },
     "./cliRelease": {
       "types": "./src/cliRelease.ts",
       "import": "./src/cliRelease.ts"
@@ -386,10 +394,6 @@
     "./codexAuthHandoff": {
       "types": "./src/codexAuthHandoff.ts",
       "import": "./src/codexAuthHandoff.ts"
-    },
-    "./jonesActions": {
-      "types": "./src/jonesActions.ts",
-      "import": "./src/jonesActions.ts"
     }
   },
   "scripts": {

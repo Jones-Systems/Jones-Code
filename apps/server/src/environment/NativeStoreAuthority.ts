@@ -85,7 +85,6 @@ export const make = Effect.fn("NativeStoreAuthority.make")(function* () {
       config.baseDir,
       SERVICE_LAUNCHER_PROTOCOL,
       context.childVersion,
-      config.dbPath,
     );
   };
 

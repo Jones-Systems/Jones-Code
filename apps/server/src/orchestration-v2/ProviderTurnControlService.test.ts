@@ -227,6 +227,7 @@ it.effect(
           getTimelinePage: () => Effect.die("Unused timeline read"),
           getMessageCount: () => Effect.die("unused message count"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
+          getTurnItem: () => Effect.die("unused turn item read"),
           getThreadRecords: () => Effect.die("unused record read"),
           getRuntimeRequest: () => Effect.die("unused getRuntimeRequest"),
           getRunningTurnContext: () => Effect.die("unused getRunningTurnContext"),
@@ -251,6 +252,8 @@ it.effect(
           getCheckpointCaptureContext: () => Effect.die("not used"),
           getRunMessage: () => Effect.die("not used"),
           canStartQueuedRun: () => Effect.die("not used"),
+          hasQueuedToolBoundaryWork: () => Effect.die("unused tool boundary preflight"),
+          getQueuedToolBoundaryContext: () => Effect.die("unused tool boundary context"),
           getRecoveryThreadIds: () => Effect.die("unused getRecoveryThreadIds"),
           getUnreadableThreadIds: () => Effect.die("unused getUnreadableThreadIds"),
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
@@ -260,6 +263,7 @@ it.effect(
       const sessionManagerLayer = Layer.succeed(
         ProviderSessionManager.ProviderSessionManagerV2,
         ProviderSessionManager.ProviderSessionManagerV2.of({
+          isMcpCallerAttached: () => Effect.succeed(false),
           shutdown: Effect.void,
           open: () => Effect.die("unused open"),
           get: (providerSessionId) =>

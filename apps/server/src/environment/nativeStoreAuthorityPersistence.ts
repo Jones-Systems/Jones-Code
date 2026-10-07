@@ -6,10 +6,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import {
-  validateNativeStoreAuthorityDatabasePath,
-  validateNativeStoreAuthorityPath,
-} from "./nativeStoreAuthorityPath.ts";
+import { validateNativeStoreAuthorityPath } from "./nativeStoreAuthorityPath.ts";
 import { parseServiceState, SERVICE_RESTART_PENDING_FILE } from "../cloud/serviceProtocol.ts";
 
 const NATIVE_STORE_AUTHORITY_RECORD_VERSION = "t3-native-store-authority/1.0.0" as const;
@@ -109,23 +106,6 @@ const readEnvironmentIdForBaseDir = (baseDir: string): string => {
 const persistenceError = (code: NativeStoreAuthorityErrorCode, message: string, cause?: unknown) =>
   new NativeStoreAuthorityPersistenceError(code, message, cause);
 
-// The v1 record belongs to the qualified userdata/state.sqlite store. A copied
-// V2 store or a different path cannot inherit its namespace and generation.
-export const requireNativeStoreAuthoritySelectedStoreForBaseDir = (
-  baseDir: string,
-  databasePath: string,
-): void => {
-  try {
-    validateNativeStoreAuthorityDatabasePath(baseDir, databasePath);
-  } catch (cause) {
-    throw persistenceError(
-      "source_unavailable",
-      "Selected database requires separate native store qualification.",
-      cause,
-    );
-  }
-};
-
 const isErrno = (cause: unknown, code: string): boolean =>
   cause instanceof Error && "code" in cause && cause.code === code;
 
@@ -144,7 +124,7 @@ const verifyOwner = (stat: NodeFS.Stats, path: string): void => {
   }
 };
 
-const verifyAuthorityDirectory = (authorityStateDir: string, createIfMissing = true): void => {
+const verifyAuthorityDirectory = (authorityStateDir: string): void => {
   if (!NodePath.isAbsolute(authorityStateDir)) {
     throw persistenceError("source_unavailable", "Native authority directory must be absolute.");
   }
@@ -158,9 +138,6 @@ const verifyAuthorityDirectory = (authorityStateDir: string, createIfMissing = t
         "Native authority directory is unavailable.",
         cause,
       );
-    }
-    if (!createIfMissing) {
-      throw persistenceError("missing", "Native authority directory is missing.");
     }
     try {
       NodeFS.mkdirSync(authorityStateDir, { recursive: true, mode: 0o700 });
@@ -258,39 +235,14 @@ export const decodeNativeStoreAuthorityState = (value: unknown): NativeStoreAuth
   };
 };
 
-const readStateUnlocked = (
-  authorityStateDir: string,
-  createIfMissing = true,
-): NativeStoreAuthorityState => {
+const readStateUnlocked = (authorityStateDir: string): NativeStoreAuthorityState => {
   const { statePath } = nativeStoreAuthorityPaths(authorityStateDir);
-  verifyAuthorityDirectory(authorityStateDir, createIfMissing);
+  verifyAuthorityDirectory(authorityStateDir);
   verifyRegularPrivateFile(statePath, "missing");
   let fd: number | undefined;
   try {
     fd = NodeFS.openSync(statePath, NodeFS.constants.O_RDONLY | NOFOLLOW);
-    if (!createIfMissing) {
-      const stat = NodeFS.fstatSync(fd);
-      verifyOwner(stat, statePath);
-      if (!stat.isFile() || mode(stat) !== 0o600 || stat.size > 8192) {
-        throw persistenceError(
-          "corrupt",
-          "Existing native authority state is not a bounded private file.",
-        );
-      }
-    }
-    let raw: string;
-    if (createIfMissing) {
-      raw = NodeFS.readFileSync(fd, "utf8");
-    } else {
-      const bytes = Buffer.alloc(8193);
-      const count = NodeFS.readSync(fd, bytes, 0, bytes.length, 0);
-      if (count > 8192)
-        throw persistenceError(
-          "corrupt",
-          "Existing native authority state exceeds its byte bound.",
-        );
-      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, count));
-    }
+    const raw = NodeFS.readFileSync(fd, "utf8");
     return decodeNativeStoreAuthorityState(JSON.parse(raw) as unknown);
   } catch (cause) {
     if (cause instanceof NativeStoreAuthorityPersistenceError) throw cause;
@@ -299,11 +251,6 @@ const readStateUnlocked = (
     if (fd !== undefined) NodeFS.closeSync(fd);
   }
 };
-
-// Standalone enrollment preflight must not create the authority directory or its writer lock.
-export const readExistingNativeStoreAuthorityState = (
-  authorityStateDir: string,
-): NativeStoreAuthorityState => readStateUnlocked(authorityStateDir, false);
 
 const hasNativeStoreAuthorityState = (authorityStateDir: string): boolean => {
   try {
@@ -325,11 +272,9 @@ const hasNativeStoreAuthorityState = (authorityStateDir: string): boolean => {
  */
 export const fenceNativeStoreAuthorityForBaseDir = (
   baseDir: string,
-  databasePath: string,
 ): NativeStoreAuthorityState | null => {
   const authorityStateDir = nativeStoreAuthorityStateDirForBaseDir(baseDir);
   if (!hasNativeStoreAuthorityState(authorityStateDir)) return null;
-  requireNativeStoreAuthoritySelectedStoreForBaseDir(baseDir, databasePath);
   return fenceNativeStoreAuthority(authorityStateDir, readEnvironmentIdForBaseDir(baseDir));
 };
 
@@ -337,14 +282,8 @@ export const fenceNativeStoreAuthorityForBaseDir = (
 export const initializeNativeStoreAuthorityForBaseDir = (
   baseDir: string,
   requiredLauncherProtocol: number,
-  databasePath: string,
 ): NativeStoreAuthorityState => {
-  requireNativeStoreAuthorityLauncherProtocolForBaseDir(
-    baseDir,
-    requiredLauncherProtocol,
-    undefined,
-    databasePath,
-  );
+  requireNativeStoreAuthorityLauncherProtocolForBaseDir(baseDir, requiredLauncherProtocol);
   const state = initializeNativeStoreAuthority(
     nativeStoreAuthorityStateDirForBaseDir(baseDir),
     readEnvironmentIdForBaseDir(baseDir),
@@ -361,10 +300,8 @@ export const initializeNativeStoreAuthorityForBaseDir = (
 export const requireNativeStoreAuthorityLauncherProtocolForBaseDir = (
   baseDir: string,
   requiredLauncherProtocol: number,
-  runningVersion: string | undefined,
-  databasePath: string,
+  runningVersion?: string,
 ): void => {
-  requireNativeStoreAuthoritySelectedStoreForBaseDir(baseDir, databasePath);
   const statePath = NodePath.join(baseDir, "runtime", "service-state.json");
   let fd: number | undefined;
   try {
@@ -414,7 +351,6 @@ export const advanceNativeStoreAuthorityForBaseDir = (
 ): NativeStoreAuthorityState | null => {
   const authorityStateDir = nativeStoreAuthorityStateDirForBaseDir(baseDir);
   if (!hasNativeStoreAuthorityState(authorityStateDir)) return null;
-  requireNativeStoreAuthoritySelectedStoreForBaseDir(baseDir, databasePath);
   return advanceNativeStoreAuthority(
     authorityStateDir,
     readEnvironmentIdForBaseDir(baseDir),

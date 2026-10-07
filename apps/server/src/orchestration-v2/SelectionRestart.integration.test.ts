@@ -22,6 +22,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -37,6 +38,8 @@ import {
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "./testkit/ReplayFixtureWorkspace.ts";
+
+const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex-restart-test");
@@ -537,176 +540,174 @@ it.live("restarts selection as a new attempt and retries after old-session clean
   ),
 );
 
-for (const deadStatus of ["stopped", "error"] as const) {
-  it.live(
-    `restarts the live session on a model change when a newer ${deadStatus} session record exists`,
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const name = `selection-restart-dead-${deadStatus}`;
-          const cwd = yield* checkpointWorkspace(name);
-          const threadId = ThreadId.make(`thread:${name}`);
-          const state = yield* Ref.make<RestartAdapterState>({
-            activeTurn: null,
-            opened: [],
-            started: [],
-            closedSessionCount: 0,
-            // The dead record is seeded directly, so the adapter's one-shot
-            // simulated replacement-open failure is skipped.
-            failedReplacementOpen: true,
-          });
-          const registry = ProviderAdapterRegistry.makeSingleLayer(
-            makeRestartAdapter(state, exclusiveCapabilities),
-          );
+it.live.each(["stopped", "error"] as const)(
+  "restarts the live session on a model change when a newer %s session record exists",
+  (deadStatus) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = `selection-restart-dead-${deadStatus}`;
+        const cwd = yield* checkpointWorkspace(name);
+        const threadId = ThreadId.make(`thread:${name}`);
+        const state = yield* Ref.make<RestartAdapterState>({
+          activeTurn: null,
+          opened: [],
+          started: [],
+          closedSessionCount: 0,
+          // The dead record is seeded directly, so the adapter's one-shot
+          // simulated replacement-open failure is skipped.
+          failedReplacementOpen: true,
+        });
+        const registry = ProviderAdapterRegistry.makeSingleLayer(
+          makeRestartAdapter(state, exclusiveCapabilities),
+        );
 
-          const result = yield* Effect.gen(function* () {
-            const orchestrator = yield* Orchestrator.OrchestratorV2;
-            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-            const eventSink = yield* EventSink.EventSinkV2;
-            const dispatch = (step: string, modelSelection: ModelSelection) =>
-              Effect.gen(function* () {
-                const terminal = yield* orchestrator.streamDomainEvents.pipe(
-                  Stream.filter(
-                    (event) => event.type === "run.updated" && event.payload.status === "completed",
-                  ),
-                  Stream.take(1),
-                  Stream.runDrain,
-                  Effect.forkScoped,
-                );
-                yield* orchestrator.dispatch({
-                  type: "message.dispatch",
-                  createdBy: "user",
-                  creationSource: "web",
-                  commandId: CommandId.make(`${name}:${step}`),
-                  threadId,
-                  messageId: MessageId.make(`${name}:${step}`),
-                  text: step,
-                  attachments: [],
-                  modelSelection,
-                  dispatchMode: { type: "start_immediately" },
-                });
-                yield* worker.drain();
-                yield* Fiber.join(terminal);
-                yield* worker.drain();
-                return yield* orchestrator.getThreadProjection(threadId);
+        const result = yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const eventSink = yield* EventSink.EventSinkV2;
+          const dispatch = (step: string, modelSelection: ModelSelection) =>
+            Effect.gen(function* () {
+              const terminal = yield* orchestrator.streamDomainEvents.pipe(
+                Stream.filter(
+                  (event) => event.type === "run.updated" && event.payload.status === "completed",
+                ),
+                Stream.take(1),
+                Stream.runDrain,
+                Effect.forkScoped,
+              );
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make(`${name}:${step}`),
+                threadId,
+                messageId: MessageId.make(`${name}:${step}`),
+                text: step,
+                attachments: [],
+                modelSelection,
+                dispatchMode: { type: "start_immediately" },
               });
-            yield* orchestrator.dispatch({
-              type: "thread.create",
-              createdBy: "user",
-              creationSource: "web",
-              commandId: CommandId.make(`${name}:create`),
-              threadId,
-              projectId: ProjectId.make(`project:${name}`),
-              title: name,
-              modelSelection: seedSelection,
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              branch: null,
-              worktreePath: cwd,
+              yield* worker.drain();
+              yield* Fiber.join(terminal);
+              yield* worker.drain();
+              return yield* orchestrator.getThreadProjection(threadId);
             });
-            const first = yield* dispatch("first", seedSelection);
-            const liveSession = first.providerSessions.find(
-              (session) => session.status !== "stopped" && session.status !== "error",
-            );
-            assert.isDefined(liveSession);
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make(`${name}:create`),
+            threadId,
+            projectId: ProjectId.make(`project:${name}`),
+            title: name,
+            modelSelection: seedSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+          });
+          const first = yield* dispatch("first", seedSelection);
+          const liveSession = first.providerSessions.find(
+            (session) => session.status !== "stopped" && session.status !== "error",
+          );
+          assert.isDefined(liveSession);
 
-            // Dead session records stay bound in the projection until
-            // detachment. A stale stopped/error record written after the
-            // live session attached must not hide it.
-            const deadAt = yield* DateTime.now;
-            const deadSession: OrchestrationV2ProviderSession = {
-              id: ProviderSessionId.make(`session:${name}:dead`),
-              driver,
-              providerInstanceId,
-              status: "ready",
-              cwd,
-              model: seedSelection.model,
-              capabilities: exclusiveCapabilities,
-              createdAt: deadAt,
-              updatedAt: deadAt,
-              lastError: null,
-            };
-            yield* eventSink.write({
-              events: [
-                {
-                  id: EventId.make(`event:${name}:dead-attached`),
-                  type: "provider-session.attached",
-                  threadId,
-                  driver,
-                  providerInstanceId,
-                  occurredAt: deadAt,
-                  payload: deadSession,
+          // Dead session records stay bound in the projection until
+          // detachment. A stale stopped/error record written after the
+          // live session attached must not hide it.
+          const deadAt = yield* DateTime.now;
+          const deadSession: OrchestrationV2ProviderSession = {
+            id: ProviderSessionId.make(`session:${name}:dead`),
+            driver,
+            providerInstanceId,
+            status: "ready",
+            cwd,
+            model: seedSelection.model,
+            capabilities: exclusiveCapabilities,
+            createdAt: deadAt,
+            updatedAt: deadAt,
+            lastError: null,
+          };
+          yield* eventSink.write({
+            events: [
+              {
+                id: EventId.make(`event:${name}:dead-attached`),
+                type: "provider-session.attached",
+                threadId,
+                driver,
+                providerInstanceId,
+                occurredAt: deadAt,
+                payload: deadSession,
+              },
+              {
+                id: EventId.make(`event:${name}:dead-updated`),
+                type: "provider-session.updated",
+                threadId,
+                driver,
+                providerInstanceId,
+                occurredAt: deadAt,
+                payload: {
+                  ...deadSession,
+                  status: deadStatus,
+                  updatedAt: deadAt,
+                  lastError: deadStatus === "error" ? "Simulated session failure." : null,
                 },
-                {
-                  id: EventId.make(`event:${name}:dead-updated`),
-                  type: "provider-session.updated",
-                  threadId,
-                  driver,
-                  providerInstanceId,
-                  occurredAt: deadAt,
-                  payload: {
-                    ...deadSession,
-                    status: deadStatus,
-                    updatedAt: deadAt,
-                    lastError: deadStatus === "error" ? "Simulated session failure." : null,
-                  },
-                },
-              ],
-            });
+              },
+            ],
+          });
 
-            const switchCommandId = CommandId.make(`${name}:switch`);
-            yield* orchestrator.dispatch({
-              type: "thread.model-selection.set",
-              commandId: switchCommandId,
-              threadId,
-              modelSelection: replacementSelection,
-            });
-            yield* worker.drain();
-            const storedSwitchEvents = yield* eventSink
-              .readByCommandId({ commandId: switchCommandId })
-              .pipe(Stream.runCollect);
-            const detachedSessionIds = [...storedSwitchEvents].flatMap((stored) =>
-              stored.event.type === "provider-session.detached"
-                ? [stored.event.payload.providerSessionId]
-                : [],
-            );
+          const switchCommandId = CommandId.make(`${name}:switch`);
+          yield* orchestrator.dispatch({
+            type: "thread.model-selection.set",
+            commandId: switchCommandId,
+            threadId,
+            modelSelection: replacementSelection,
+          });
+          yield* worker.drain();
+          const storedSwitchEvents = yield* eventSink
+            .readByCommandId({ commandId: switchCommandId })
+            .pipe(Stream.runCollect);
+          const detachedSessionIds = [...storedSwitchEvents].flatMap((stored) =>
+            stored.event.type === "provider-session.detached"
+              ? [stored.event.payload.providerSessionId]
+              : [],
+          );
 
-            const second = yield* dispatch("second", replacementSelection);
-            return {
-              projection: second,
-              captured: yield* Ref.get(state),
-              liveSessionId: liveSession.id,
-              detachedSessionIds,
-            };
-          }).pipe(Effect.provide(makeOrchestratorV2ReplayLayerWithRegistry({ name }, registry)));
+          const second = yield* dispatch("second", replacementSelection);
+          return {
+            projection: second,
+            captured: yield* Ref.get(state),
+            liveSessionId: liveSession.id,
+            detachedSessionIds,
+          };
+        }).pipe(Effect.provide(makeOrchestratorV2ReplayLayerWithRegistry({ name }, registry)));
 
-          const { projection, captured } = result;
-          assert.lengthOf(projection.runs, 2);
-          assert.equal(projection.runs[1]?.modelSelection.model, replacementSelection.model);
-          // The exact released session is the older live one, never the newer
-          // dead record.
-          assert.deepEqual(result.detachedSessionIds, [result.liveSessionId]);
-          assert.equal(captured.closedSessionCount, 1);
-          assert.deepEqual(
-            captured.opened.map((open) => open.model),
-            [seedSelection.model, replacementSelection.model],
-          );
-          assert.deepEqual(
-            captured.started.map((turn) => turn.model),
-            [seedSelection.model, replacementSelection.model],
-          );
-          const servingSession = projection.providerSessions.find(
-            (session) =>
-              session.id ===
-              projection.providerThreads.find(
-                (providerThread) => providerThread.id === projection.thread.activeProviderThreadId,
-              )?.providerSessionId,
-          );
-          assert.equal(servingSession?.model, replacementSelection.model);
-        }),
-      ),
-  );
-}
+        const { projection, captured } = result;
+        assert.lengthOf(projection.runs, 2);
+        assert.equal(projection.runs[1]?.modelSelection.model, replacementSelection.model);
+        // The exact released session is the older live one, never the newer
+        // dead record.
+        assert.deepEqual(result.detachedSessionIds, [result.liveSessionId]);
+        assert.equal(captured.closedSessionCount, 1);
+        assert.deepEqual(
+          captured.opened.map((open) => open.model),
+          [seedSelection.model, replacementSelection.model],
+        );
+        assert.deepEqual(
+          captured.started.map((turn) => turn.model),
+          [seedSelection.model, replacementSelection.model],
+        );
+        const servingSession = projection.providerSessions.find(
+          (session) =>
+            session.id ===
+            projection.providerThreads.find(
+              (providerThread) => providerThread.id === projection.thread.activeProviderThreadId,
+            )?.providerSessionId,
+        );
+        assert.equal(servingSession?.model, replacementSelection.model);
+      }),
+    ),
+);
 
 it.live("detaches the old provider session after an active provider handoff", () =>
   Effect.scoped(
@@ -822,177 +823,260 @@ it.live("detaches the old provider session after an active provider handoff", ()
   ),
 );
 
-for (const mode of ["active", "idle", "selection-command", "pooled", "separate-home"] as const) {
-  it.live(`preserves native history only for compatible account switches (${mode})`, () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const name = `shared-home-${mode}`;
-        const cwd = yield* checkpointWorkspace(name);
-        const threadId = ThreadId.make(`thread:${name}`);
-        const targetId = ProviderInstanceId.make("codex-shadow-account");
-        const state = yield* Ref.make<RestartAdapterState>({
-          activeTurn: null,
-          opened: [],
-          started: [],
-          closedSessionCount: 0,
-          failedReplacementOpen: true,
+it.live.each([
+  "active",
+  "idle",
+  "selection-command",
+  "pooled",
+  "separate-home",
+  "missing-active",
+  "missing-idle",
+  "missing-binding",
+  "missing-picker",
+] as const)("preserves native history only for compatible account switches (%s)", (mode) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const name = `shared-home-${mode}`;
+      const active = mode === "active" || mode === "missing-active";
+      const cwd = yield* checkpointWorkspace(name);
+      const threadId = ThreadId.make(`thread:${name}`);
+      const targetId = ProviderInstanceId.make("codex-shadow-account");
+      const state = yield* Ref.make<RestartAdapterState>({
+        activeTurn: null,
+        opened: [],
+        started: [],
+        closedSessionCount: 0,
+        failedReplacementOpen: true,
+      });
+      const resumes: Array<{
+        instanceId: ProviderInstanceId;
+        nativeId: string | null | undefined;
+      }> = [];
+      const messages: string[] = [];
+      const capabilities = mode === "pooled" ? pooledCapabilities : exclusiveCapabilities;
+      const adapters = [providerInstanceId, targetId].map((instanceId) => {
+        const base = makeRestartAdapter(state, capabilities, instanceId);
+        return {
+          ...base,
+          openSession: (input) =>
+            base.openSession(input).pipe(
+              Effect.map((session) => ({
+                ...session,
+                resumeThread: (input) =>
+                  Effect.gen(function* () {
+                    resumes.push({
+                      instanceId,
+                      nativeId: input.providerThread.nativeThreadRef?.nativeId,
+                    });
+                    return yield* session.resumeThread(input);
+                  }),
+                startTurn: (input) =>
+                  Effect.gen(function* () {
+                    messages.push(input.message.text);
+                    yield* session.startTurn(input);
+                  }),
+              })),
+            ),
+        } satisfies ProviderAdapterV2Shape;
+      });
+      const registry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
+        get: (instanceId) =>
+          Effect.succeed(adapters.find((adapter) => adapter.instanceId === instanceId)!),
+        list: () => Effect.succeed([providerInstanceId, targetId]),
+        getMetadata: (instanceId) =>
+          Effect.succeed({
+            driver,
+            continuationKey:
+              mode === "separate-home" ? `codex:home:/${instanceId}` : "codex:home:/shared",
+            enabled: true,
+            capabilities,
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const selection = {
+          ...initialSelection,
+          model: active ? initialSelection.model : "complete",
+        };
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${name}:create`),
+          threadId,
+          projectId: ProjectId.make(`project:${name}`),
+          title: name,
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
         });
-        const resumes: Array<{
-          instanceId: ProviderInstanceId;
-          nativeId: string | null | undefined;
-        }> = [];
-        const messages: string[] = [];
-        const capabilities = mode === "pooled" ? pooledCapabilities : exclusiveCapabilities;
-        const adapters = [providerInstanceId, targetId].map((instanceId) => {
-          const base = makeRestartAdapter(state, capabilities, instanceId);
-          return {
-            ...base,
-            openSession: (input) =>
-              base.openSession(input).pipe(
-                Effect.map((session) => ({
-                  ...session,
-                  resumeThread: (input) =>
-                    Effect.gen(function* () {
-                      resumes.push({
-                        instanceId,
-                        nativeId: input.providerThread.nativeThreadRef?.nativeId,
-                      });
-                      return yield* session.resumeThread(input);
-                    }),
-                  startTurn: (input) =>
-                    Effect.gen(function* () {
-                      messages.push(input.message.text);
-                      yield* session.startTurn(input);
-                    }),
-                })),
+        const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
+          Effect.gen(function* () {
+            const terminal = yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter((event) =>
+                active && step === "first"
+                  ? event.type === "provider-turn.updated" && event.payload.status === "running"
+                  : event.type === "run.updated" && event.payload.status === "completed",
               ),
-          } satisfies ProviderAdapterV2Shape;
-        });
-        const registry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
-          get: (instanceId) =>
-            Effect.succeed(adapters.find((adapter) => adapter.instanceId === instanceId)!),
-          list: () => Effect.succeed([providerInstanceId, targetId]),
-          getMetadata: (instanceId) =>
-            Effect.succeed({
-              driver,
-              continuationKey:
-                mode === "separate-home" ? `codex:home:/${instanceId}` : "codex:home:/shared",
-              enabled: true,
-              capabilities,
-            }),
-        });
-        yield* Effect.gen(function* () {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-          const selection = {
-            ...initialSelection,
-            model: mode === "active" ? initialSelection.model : "complete",
-          };
-          yield* orchestrator.dispatch({
-            type: "thread.create",
-            commandId: CommandId.make(`${name}:create`),
-            threadId,
-            projectId: ProjectId.make(`project:${name}`),
-            title: name,
-            modelSelection: selection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: cwd,
-            createdBy: "user",
-            creationSource: "web",
-          });
-          const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
-            Effect.gen(function* () {
-              const terminal = yield* orchestrator.streamDomainEvents.pipe(
-                Stream.filter((event) =>
-                  mode === "active" && step === "first"
-                    ? event.type === "provider-turn.updated" && event.payload.status === "running"
-                    : event.type === "run.updated" && event.payload.status === "completed",
-                ),
-                Stream.take(1),
-                Stream.runDrain,
-                Effect.forkScoped,
-              );
-              yield* orchestrator.dispatch({
-                type: "message.dispatch",
-                commandId: CommandId.make(`${name}:${step}`),
-                threadId,
-                messageId: MessageId.make(`${name}:${step}`),
-                text: step,
-                attachments: [],
-                modelSelection,
-                dispatchMode:
-                  targetRunId === undefined
-                    ? { type: "start_immediately" }
-                    : { type: "restart_active", targetRunId },
-                createdBy: "user",
-                creationSource: "web",
-              });
-              yield* worker.drain();
-              yield* Fiber.join(terminal);
-              yield* worker.drain();
-              return yield* orchestrator.getThreadProjection(threadId);
-            });
-          const first = yield* dispatch("first", selection);
-          const originalThread = first.providerThreads.find(
-            (thread) => thread.id === first.thread.activeProviderThreadId,
-          )!;
-          const targetSelection = { instanceId: targetId, model: "complete" };
-          if (mode === "selection-command") {
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
             yield* orchestrator.dispatch({
-              type: "provider.switch",
-              commandId: CommandId.make(`${name}:switch`),
+              type: "message.dispatch",
+              commandId: CommandId.make(`${name}:${step}`),
               threadId,
-              modelSelection: targetSelection,
+              messageId: MessageId.make(`${name}:${step}`),
+              text: step,
+              attachments: [],
+              modelSelection,
+              dispatchMode:
+                targetRunId === undefined
+                  ? { type: "start_immediately" }
+                  : { type: "restart_active", targetRunId },
+              createdBy: "user",
+              creationSource: "web",
             });
             yield* worker.drain();
+            yield* Fiber.join(terminal);
+            yield* worker.drain();
+            return yield* orchestrator.getThreadProjection(threadId);
+          });
+        const first = yield* dispatch("first", selection);
+        const originalThread = first.providerThreads.find(
+          (thread) => thread.id === first.thread.activeProviderThreadId,
+        )!;
+        const targetSelection = { instanceId: targetId, model: "complete" };
+        if (
+          mode === "separate-home" ||
+          mode === "missing-active" ||
+          mode === "missing-idle" ||
+          mode === "missing-binding" ||
+          mode === "missing-picker"
+        ) {
+          if (mode !== "separate-home") {
+            const eventSink = yield* EventSink.EventSinkV2;
+            yield* eventSink.write({
+              events:
+                mode === "missing-binding"
+                  ? [
+                      {
+                        id: EventId.make(`${name}:missing-binding`),
+                        type: "thread.metadata-updated",
+                        threadId,
+                        driver,
+                        providerInstanceId,
+                        occurredAt: yield* DateTime.now,
+                        payload: { ...first.thread, activeProviderThreadId: null },
+                      },
+                    ]
+                  : [
+                      {
+                        id: EventId.make(`${name}:missing-cursor`),
+                        type: "provider-thread.updated",
+                        threadId,
+                        driver,
+                        providerInstanceId,
+                        occurredAt: yield* DateTime.now,
+                        payload: { ...originalThread, nativeThreadRef: null },
+                      },
+                    ],
+            });
           }
-          const second = yield* dispatch(
-            "second",
-            targetSelection,
-            mode === "active" ? first.runs[0]!.id : undefined,
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          const beforeState = yield* Ref.get(state);
+          const command =
+            mode === "missing-picker"
+              ? {
+                  type: "provider.switch" as const,
+                  commandId: CommandId.make(`${name}:rejected-switch`),
+                  threadId,
+                  modelSelection: targetSelection,
+                }
+              : {
+                  type: "message.dispatch" as const,
+                  commandId: CommandId.make(`${name}:rejected-switch`),
+                  threadId,
+                  messageId: MessageId.make(`${name}:rejected-switch`),
+                  text: "second",
+                  attachments: [],
+                  modelSelection: targetSelection,
+                  dispatchMode: active
+                    ? { type: "restart_active" as const, targetRunId: first.runs[0]!.id }
+                    : { type: "start_immediately" as const },
+                  createdBy: "user" as const,
+                  creationSource: "web" as const,
+                };
+          const error = yield* orchestrator.dispatch(command).pipe(Effect.flip);
+          assert.equal(error._tag, "OrchestratorDispatchError");
+          assert.include(yield* encodeUnknownJson(error), "Cannot switch Codex accounts");
+          yield* worker.drain();
+          const rejectedAgain = yield* orchestrator.dispatch(command).pipe(Effect.flip);
+          assert.equal(rejectedAgain._tag, "OrchestratorCommandPreviouslyRejectedError");
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          const afterState = yield* Ref.get(state);
+          assert.deepEqual(after.thread.modelSelection, before.thread.modelSelection);
+          assert.deepEqual(after.providerThreads, before.providerThreads);
+          assert.deepEqual(after.providerSessions, before.providerSessions);
+          assert.lengthOf(after.runs, before.runs.length);
+          assert.lengthOf(after.attempts, before.attempts.length);
+          assert.isEmpty(after.contextHandoffs);
+          assert.isEmpty(after.contextTransfers);
+          assert.deepEqual(afterState.opened, beforeState.opened);
+          assert.deepEqual(afterState.started, beforeState.started);
+          assert.equal(afterState.closedSessionCount, beforeState.closedSessionCount);
+          assert.deepEqual(messages, ["first"]);
+          assert.isEmpty(resumes);
+          return;
+        }
+        if (mode === "selection-command") {
+          yield* orchestrator.dispatch({
+            type: "provider.switch",
+            commandId: CommandId.make(`${name}:switch`),
+            threadId,
+            modelSelection: targetSelection,
+          });
+          yield* worker.drain();
+        }
+        const second = yield* dispatch(
+          "second",
+          targetSelection,
+          active ? first.runs[0]!.id : undefined,
+        );
+        const targetThread = second.providerThreads.find(
+          (thread) => thread.id === second.thread.activeProviderThreadId,
+        )!;
+        assert.equal(targetThread.id, originalThread.id);
+        assert.deepEqual(targetThread.nativeThreadRef, originalThread.nativeThreadRef);
+        assert.equal(targetThread.providerInstanceId, targetId);
+        assert.notEqual(targetThread.providerSessionId, originalThread.providerSessionId);
+        assert.isEmpty(second.contextHandoffs);
+        assert.isEmpty(second.contextTransfers);
+        assert.deepEqual(resumes, [
+          { instanceId: targetId, nativeId: originalThread.nativeThreadRef?.nativeId },
+        ]);
+        assert.deepEqual(messages, ["first", "second"]);
+        assert.equal((yield* Ref.get(state)).closedSessionCount, mode === "pooled" ? 0 : 1);
+        if (mode === "pooled") {
+          assert.isFalse(
+            second.providerSessions.some(
+              (session) => session.id === originalThread.providerSessionId,
+            ),
           );
-          const targetThread = second.providerThreads.find(
-            (thread) => thread.id === second.thread.activeProviderThreadId,
-          )!;
-          if (mode === "separate-home") {
-            assert.notEqual(targetThread.id, originalThread.id);
-            assert.lengthOf(second.contextHandoffs, 1);
-            assert.lengthOf(second.contextTransfers, 1);
-            assert.isEmpty(resumes);
-            assert.notEqual(messages[1], "second");
-            return;
-          }
-          assert.equal(targetThread.id, originalThread.id);
-          assert.deepEqual(targetThread.nativeThreadRef, originalThread.nativeThreadRef);
-          assert.equal(targetThread.providerInstanceId, targetId);
-          assert.notEqual(targetThread.providerSessionId, originalThread.providerSessionId);
-          assert.isEmpty(second.contextHandoffs);
-          assert.isEmpty(second.contextTransfers);
-          assert.deepEqual(resumes, [
-            { instanceId: targetId, nativeId: originalThread.nativeThreadRef?.nativeId },
-          ]);
-          assert.deepEqual(messages, ["first", "second"]);
-          assert.equal((yield* Ref.get(state)).closedSessionCount, mode === "pooled" ? 0 : 1);
-          if (mode === "pooled") {
-            assert.isFalse(
-              second.providerSessions.some(
-                (session) => session.id === originalThread.providerSessionId,
-              ),
-            );
-          }
-          const third = yield* dispatch("third", { ...selection, model: "complete" });
-          const returnedThread = third.providerThreads.find(
-            (thread) => thread.id === third.thread.activeProviderThreadId,
-          )!;
-          assert.equal(returnedThread.id, originalThread.id);
-          assert.deepEqual(returnedThread.nativeThreadRef, originalThread.nativeThreadRef);
-          assert.equal(returnedThread.providerInstanceId, providerInstanceId);
-          assert.isEmpty(third.contextHandoffs);
-          assert.deepEqual(messages, ["first", "second", "third"]);
-        }).pipe(Effect.provide(makeOrchestratorV2ReplayLayerWithRegistry({ name }, registry)));
-      }),
-    ),
-  );
-}
+        }
+        const third = yield* dispatch("third", { ...selection, model: "complete" });
+        const returnedThread = third.providerThreads.find(
+          (thread) => thread.id === third.thread.activeProviderThreadId,
+        )!;
+        assert.equal(returnedThread.id, originalThread.id);
+        assert.deepEqual(returnedThread.nativeThreadRef, originalThread.nativeThreadRef);
+        assert.equal(returnedThread.providerInstanceId, providerInstanceId);
+        assert.isEmpty(third.contextHandoffs);
+        assert.deepEqual(messages, ["first", "second", "third"]);
+      }).pipe(Effect.provide(makeOrchestratorV2ReplayLayerWithRegistry({ name }, registry)));
+    }),
+  ),
+);

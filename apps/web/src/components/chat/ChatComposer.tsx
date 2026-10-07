@@ -1586,6 +1586,7 @@ export interface ChatComposerProps {
   providerCatalogKnown: boolean;
   activeProjectDefaultModelSelection: ModelSelection | null | undefined;
   activeThreadModelSelection: ModelSelection | null | undefined;
+  reportedModelSelection?: ModelSelection | null;
 
   // Context window
   activeContextWindow: ContextWindowSnapshot | null;
@@ -1736,6 +1737,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     providerCatalogKnown,
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
+    reportedModelSelection,
     activeContextWindow,
     compactThreadUnavailable,
     compactDisabled,
@@ -1766,8 +1768,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPageScrollKeyUp,
     onPageScrollRelease,
     onCompactContext,
-    onSend,
     onSteerNextQueuedMessage,
+    onSend,
     onResume,
     onInterrupt,
     onImplementPlanInNewThread,
@@ -2902,6 +2904,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
+    reportedModelSelection,
     prompt,
     onPromptChange: setPromptFromTraits,
     planModeEnabled: settings.planModeEnabled,
@@ -2916,12 +2919,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
+    reportedModelSelection,
     prompt,
     onPromptChange: setPromptFromTraits,
     planModeEnabled: settings.planModeEnabled,
     isComposerOwned: true,
   } satisfies Parameters<typeof renderProviderTraitsPicker>[0];
   const providerTraitsPicker = renderProviderTraitsPicker(providerTraitsPickerInput);
+  const [inlineRestingControlsHost, setInlineRestingControlsHost] = useState<HTMLDivElement | null>(
+    null,
+  );
   const effectiveTraitsOptions = useMemo(
     () =>
       getComposerEffectiveTraitsOptions({
@@ -2944,9 +2951,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerModelOptions,
       settings.planModeEnabled,
     ],
-  );
-  const [inlineRestingControlsHost, setInlineRestingControlsHost] = useState<HTMLDivElement | null>(
-    null,
   );
   const {
     controlsRef: restingComposerControlsRef,
@@ -4419,8 +4423,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       key === "Enter" &&
       handleComposerEnter({
         event,
-        submissionIntent,
         intent: {
+          keybindings,
           isMobileViewport,
           isDraftThread: routeKind === "draft",
           isRunning: phase === "running",
@@ -4428,22 +4432,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           prompt: promptRef.current,
         },
         hasDraftContext:
-          composerDraftHasUserContent({ ...composerDraft, prompt: "" }) ||
           composerImagesRef.current.length > 0 ||
           composerFilesRef.current.length > 0 ||
           composerTerminalContextsRef.current.length > 0 ||
           composerPreviewAnnotations.length > 0 ||
           composerReviewComments.length > 0 ||
+          composerThreadContexts.length > 0 ||
           (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0 ||
           pendingDraftWork.has(attachmentTargetKey),
         queueActionDisabled:
-          isEditingQueuedMessage ||
           noProviderAvailable ||
           isSendDisabled ||
           isSendBusy ||
           isConnecting ||
-          isRevertingCheckpoint ||
+          isRevertingCheckpoint === true ||
           projectSelectionRequired ||
+          environmentUnavailable !== null ||
+          isEditingQueuedMessage ||
           activePendingApproval !== null ||
           pendingUserInputs.length > 0 ||
           showPlanFollowUpPrompt,
@@ -4462,7 +4467,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ) {
       return true;
     }
-    if (key !== "Enter" && submissionIntent) {
+    if (submissionIntent) {
       submitComposer(
         undefined,
         resolveComposerDispatchMode({

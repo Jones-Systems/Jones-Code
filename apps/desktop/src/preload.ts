@@ -139,10 +139,6 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ),
   disconnectSshEnvironment: (target) =>
     ipcRenderer.invoke(IpcChannels.DISCONNECT_SSH_ENVIRONMENT_CHANNEL, target),
-  openDeviceMediaTunnel: (input) =>
-    ipcRenderer.invoke(IpcChannels.OPEN_DEVICE_MEDIA_TUNNEL_CHANNEL, input),
-  closeDeviceMediaTunnel: (id) =>
-    ipcRenderer.invoke(IpcChannels.CLOSE_DEVICE_MEDIA_TUNNEL_CHANNEL, id),
   fetchSshEnvironmentDescriptor: (httpBaseUrl) =>
     ipcRenderer.invoke(IpcChannels.FETCH_SSH_ENVIRONMENT_DESCRIPTOR_CHANNEL, { httpBaseUrl }),
   bootstrapSshBearerSession: (httpBaseUrl, credential) =>
@@ -260,8 +256,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.UPDATE_SET_CHANNEL_CHANNEL, channel),
   checkForUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_CHECK_CHANNEL),
   downloadUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL),
-  installUpdate: (stagedHandle) =>
-    ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, stagedHandle),
+  installUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL),
   onUpdateState: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
       if (typeof state !== "object" || state === null) return;

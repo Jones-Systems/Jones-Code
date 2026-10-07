@@ -1,5 +1,4 @@
 import * as Schema from "effect/Schema";
-import { JonesUpdateState } from "./jonesUpdates.ts";
 
 import {
   PreviewAutomationClickInput,
@@ -279,7 +278,6 @@ export interface DesktopRuntimeInfo {
 }
 
 export interface DesktopUpdateState {
-  jones?: JonesUpdateState;
   enabled: boolean;
   status: DesktopUpdateStatus;
   channel: DesktopUpdateChannel;
@@ -311,7 +309,6 @@ export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
 });
 
 export const DesktopUpdateStateSchema = Schema.Struct({
-  jones: Schema.optionalKey(JonesUpdateState),
   enabled: Schema.Boolean,
   status: DesktopUpdateStatusSchema,
   channel: DesktopUpdateChannelSchema,
@@ -451,20 +448,6 @@ export const DesktopSshEnvironmentEnsureResultSchema = Schema.Union([
   DesktopSshEnvironmentBootstrapSchema,
   DesktopSshPasswordPromptCancelledResultSchema,
 ]);
-
-export const DesktopDeviceMediaTunnelInputSchema = Schema.Struct({
-  target: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$/)),
-  gatewayPort: Schema.Int.check(Schema.isBetween({ minimum: 1024, maximum: 65535 })),
-  owner: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
-  generation: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
-});
-export type DesktopDeviceMediaTunnelInput = typeof DesktopDeviceMediaTunnelInputSchema.Type;
-
-export const DesktopDeviceMediaTunnelSchema = Schema.Struct({
-  id: Schema.String,
-  httpBase: Schema.String,
-});
-export type DesktopDeviceMediaTunnel = typeof DesktopDeviceMediaTunnelSchema.Type;
 
 export const DesktopSshHttpBaseUrlInputSchema = Schema.Struct({
   httpBaseUrl: Schema.String,
@@ -1194,11 +1177,6 @@ export interface DesktopBridge {
     options?: { issuePairingToken?: boolean },
   ) => Promise<DesktopSshEnvironmentBootstrap>;
   disconnectSshEnvironment: (target: DesktopSshEnvironmentTarget) => Promise<void>;
-  openDeviceMediaTunnel?: (
-    input: DesktopDeviceMediaTunnelInput,
-  ) => Promise<DesktopDeviceMediaTunnel>;
-  closeDeviceMediaTunnel?: (id: string) => Promise<void>;
-
   fetchSshEnvironmentDescriptor: (httpBaseUrl: string) => Promise<ExecutionEnvironmentDescriptor>;
   bootstrapSshBearerSession: (
     httpBaseUrl: string,
@@ -1267,7 +1245,7 @@ export interface DesktopBridge {
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
-  installUpdate: (stagedHandle?: string) => Promise<DesktopUpdateActionResult>;
+  installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /** Present when the desktop shell accepts `t3 app` activation requests. */
   appActivation?: {

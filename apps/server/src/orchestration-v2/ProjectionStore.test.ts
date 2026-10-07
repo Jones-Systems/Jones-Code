@@ -1,6 +1,5 @@
 import { assert, it, vi } from "@effect/vitest";
 import {
-  type ChatAttachment,
   EnvironmentId,
   EventId,
   CommandId,
@@ -9,9 +8,7 @@ import {
   CheckpointScopeId,
   MessageId,
   type ModelSelection,
-  type OrchestrationV2AppThread,
-  type OrchestrationV2DomainEvent,
-  type RuntimeIdentityAttestation,
+  type OrchestrationV2ProviderThread,
   NodeId,
   ProjectId,
   ProviderDriverKind,
@@ -28,6 +25,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
@@ -35,10 +33,6 @@ import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import {
-  projectDomainEventForWire,
-  projectThreadProjectionForWire,
-} from "./WireProjection.ts";
 import {
   buildBoundedThreadProjection,
   decodeThreadHistoryCursor,
@@ -57,219 +51,6 @@ const modelSelection = {
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = modelSelection.instanceId;
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-
-const metadataAndRuntimeIdentityRoundtrip = Effect.gen(function* () {
-  const store = yield* ProjectionStore.ProjectionStoreV2;
-  const now = DateTime.makeUnsafe("2026-10-02T12:00:00.000Z");
-  const later = DateTime.add(now, { minutes: 1 });
-  const threadId = ThreadId.make("thread:metadata-identity-roundtrip");
-  const runId = RunId.make("run:metadata-identity-roundtrip");
-  const thread = {
-    id: threadId,
-    projectId: ProjectId.make("project:metadata-identity-roundtrip"),
-    title: "Preserved metadata",
-    providerInstanceId,
-    modelSelection,
-    createdBy: "user",
-    creationSource: "web",
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    branch: "feature/preserved",
-    worktreePath: "/synthetic/worktree",
-    activeProviderThreadId: null,
-    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-    forkedFrom: null,
-    createdAt: now,
-    updatedAt: now,
-    archivedAt: null,
-    settledOverride: null,
-    settledAt: null,
-    unsettledAt: now,
-    snoozedUntil: later,
-    snoozedAt: now,
-    limitRecovery: { runId, resetAt: DateTime.formatIso(later), autoResume: true, snooze: false },
-    pinnedAt: now,
-    autoSettleDisabledAt: now,
-    pinOrderKey: "a1",
-    activeOrderKey: "a2",
-    lastVisitedAt: now,
-    titleRegeneration: { requestId: CommandId.make("command:preserved-title"), startedAt: now },
-    deletedAt: null,
-  } satisfies OrchestrationV2AppThread;
-  yield* store.apply({
-    id: EventId.make("event:metadata-identity:created"),
-    type: "thread.created",
-    threadId,
-    occurredAt: now,
-    payload: thread,
-  });
-  for (const type of ["thread.settled", "thread.unsettled"] as const) {
-    const payload = {
-      ...thread,
-      settledOverride: type === "thread.settled" ? "settled" as const : "active" as const,
-      settledAt: type === "thread.settled" ? later : null,
-      unsettledAt: type === "thread.unsettled" ? later : now,
-      updatedAt: later,
-    };
-    const event = {
-      id: EventId.make(`event:metadata-identity:${type}`),
-      type,
-      threadId,
-      runId,
-      driver,
-      providerInstanceId,
-      occurredAt: later,
-      payload,
-    } satisfies OrchestrationV2DomainEvent;
-    assert.strictEqual(projectDomainEventForWire(event), event);
-    yield* store.apply(event);
-    assert.deepEqual(yield* store.getThread(threadId), payload);
-    const projection = yield* store.getThreadProjection(threadId);
-    assert.deepEqual(projectThreadProjectionForWire(projection).thread, payload);
-    const shell = yield* store.getThreadShell(threadId);
-    assert(shell !== null);
-    for (const key of [
-      "settledOverride", "settledAt", "unsettledAt", "snoozedUntil", "snoozedAt",
-      "limitRecovery", "pinnedAt", "autoSettleDisabledAt", "pinOrderKey", "activeOrderKey",
-      "lastVisitedAt", "titleRegeneration", "branch", "worktreePath",
-    ] as const) {
-      assert.deepEqual(shell[key], payload[key]);
-    }
-  }
-  const session = {
-    id: ProviderSessionId.make("session:metadata-identity-roundtrip"),
-    driver,
-    providerInstanceId,
-    status: "stopped" as const,
-    cwd: "/synthetic/worktree",
-    model: "gpt-5.4",
-    capabilities: CodexProviderCapabilitiesV2,
-    createdAt: now,
-    updatedAt: later,
-    lastError: null,
-  };
-  const runtimeIdentity = {
-    runtimeGeneration: "synthetic-provider-reported-generation",
-    requested: {
-      providerInstanceId,
-      providerDriver: "codex",
-      model: "gpt-5.4",
-      serviceTier: null,
-    },
-    observed: {
-      backend: { status: "observed", value: "codex", sourceEvent: "synthetic-source-event" },
-      model: { status: "unknown" },
-      account: { status: "unavailable", reason: "provider does not attest account" },
-      serviceTier: { status: "unknown" },
-    },
-  } satisfies RuntimeIdentityAttestation;
-  yield* store.apply({
-    id: EventId.make("event:metadata-identity:attached"),
-    type: "provider-session.attached",
-    threadId,
-    occurredAt: later,
-    payload: session,
-  });
-  const identities = [
-    undefined,
-    { requested: runtimeIdentity.requested, observed: runtimeIdentity.observed },
-    runtimeIdentity,
-    undefined,
-  ];
-  for (const [index, identity] of identities.entries()) {
-    const payload = { ...session, ...(identity === undefined ? {} : { runtimeIdentity: identity }) };
-    const event = {
-      id: EventId.make(`event:metadata-identity:session:${index}`),
-      type: "provider-session.updated",
-      threadId,
-      driver,
-      providerInstanceId,
-      occurredAt: later,
-      payload,
-    } satisfies OrchestrationV2DomainEvent;
-    yield* store.apply(event);
-    const records = yield* store.getThreadRecords(threadId, ["providerSessions"]);
-    assert.deepEqual(records.providerSessions, [payload]);
-    const projection = yield* store.getThreadProjection(threadId);
-    assert.deepEqual(projectThreadProjectionForWire(projection).providerSessions, [payload]);
-    assert.strictEqual(projectDomainEventForWire(event), event);
-    if (identity === undefined) {
-      assert.equal(Object.hasOwn(records.providerSessions[0]!, "runtimeIdentity"), false);
-    } else if (!Object.hasOwn(identity, "runtimeGeneration")) {
-      assert.equal(
-        Object.hasOwn(records.providerSessions[0]!.runtimeIdentity!, "runtimeGeneration"),
-        false,
-      );
-    }
-  }
-});
-
-it.effect("preserves metadata and optional runtime identity in memory and on wire", () =>
-  metadataAndRuntimeIdentityRoundtrip.pipe(Effect.provide(ProjectionStore.layerMemory)),
-);
-
-const detachRequestPreservesProjection = Effect.gen(function* () {
-  yield* metadataAndRuntimeIdentityRoundtrip;
-  const store = yield* ProjectionStore.ProjectionStoreV2;
-  const threadId = ThreadId.make("thread:metadata-identity-roundtrip");
-  const siblingId = ThreadId.make("thread:detach-request-sibling");
-  const original = yield* store.getThreadProjection(threadId);
-  const session = { ...original.providerSessions[0]!, status: "running" as const };
-  yield* store.apply({
-    id: EventId.make("event:detach-request:running-session"),
-    type: "provider-session.updated",
-    threadId,
-    driver,
-    providerInstanceId,
-    occurredAt: original.thread.updatedAt,
-    payload: session,
-  });
-  yield* store.apply({
-    id: EventId.make("event:detach-request:sibling"),
-    type: "thread.created",
-    threadId: siblingId,
-    occurredAt: original.thread.updatedAt,
-    payload: { ...original.thread, id: siblingId,
-      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: siblingId } },
-  });
-  yield* store.apply({
-    id: EventId.make("event:detach-request:sibling-binding"),
-    type: "provider-session.attached",
-    threadId: siblingId,
-    driver,
-    providerInstanceId,
-    occurredAt: original.thread.updatedAt,
-    payload: session,
-  });
-  const before = yield* Effect.forEach([threadId, siblingId], (id) => store.getThreadProjection(id));
-  const shellsBefore = yield* Effect.forEach([threadId, siblingId], (id) => store.getThreadShell(id));
-  const event = {
-    id: EventId.make("event:detach-request:stop-intent"),
-    type: "provider-session.detach-requested",
-    threadId,
-    driver,
-    providerInstanceId,
-    occurredAt: DateTime.add(original.thread.updatedAt, { hours: 1 }),
-    payload: { providerSessionId: session.id, reason: "owner requested stop" },
-  } satisfies OrchestrationV2DomainEvent;
-  assert.strictEqual(ProjectionStore.applyToProjection(before[0]!, event), before[0]);
-  assert.strictEqual(projectDomainEventForWire(event), event);
-  yield* store.apply(event);
-  assert.deepEqual(
-    yield* Effect.forEach([threadId, siblingId], (id) => store.getThreadProjection(id)),
-    before,
-  );
-  assert.deepEqual(
-    yield* Effect.forEach([threadId, siblingId], (id) => store.getThreadShell(id)),
-    shellsBefore,
-  );
-  assert.deepEqual((yield* store.getThreadProjection(threadId)).providerSessions, [session]);
-  assert.deepEqual((yield* store.getThreadProjection(siblingId)).providerSessions, [session]);
-});
-
-it.effect("detach requests preserve memory projections and shared session bindings", () =>
-  detachRequestPreservesProjection.pipe(Effect.provide(ProjectionStore.layerMemory)),
-);
 
 const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate")(function* (
   suffix: string,
@@ -549,187 +330,49 @@ it.effect("memory recovery selection includes unfinished items from missing runs
   }).pipe(Effect.provide(ProjectionStore.layerMemory)),
 );
 
-const retainedAttachmentVisibility = Effect.gen(function* () {
+const selfSettlementRecoveryRoundtrip = Effect.gen(function* () {
   const store = yield* ProjectionStore.ProjectionStoreV2;
-  const threadId = yield* addRolledBackRecoveryCandidate("retained-attachment-paths");
-  const projection = yield* store.getThreadProjection(threadId);
-  const hiddenRun = projection.runs[0]!;
-  const now = projection.thread.createdAt;
-  assert.deepEqual(yield* store.getThreadRetainedAttachmentPaths(threadId), {
-    status: "complete", relativePaths: [],
-  });
-  assert.deepEqual(yield* store.getThreadRetainedAttachmentPaths(ThreadId.make("thread:missing-attachments")), {
-    status: "unavailable", reason: "projection_unavailable",
-  });
-  const image = { type: "image", id: "retained-image", name: "picture.JPG", mimeType: "image/png", sizeBytes: 10 } as const;
-  const file = { type: "file", id: "retained-file", name: "notes.TXT", mimeType: "text/plain", sizeBytes: 10 } as const;
-  const reserved = { ...file, id: "retained-reserved", name: "archive.part" };
-  const noExtension = { ...file, id: "retained-no-extension", name: "README" };
-  const hidden = { ...file, id: "hidden-rollback" };
-  const cancelled = { ...file, id: "hidden-queued" };
-  const currentRun = { ...hiddenRun, id: RunId.make("run:retained-current"), ordinal: 3, status: "completed" as const };
-  yield* store.apply({
-    id: EventId.make("event:retained-current"), type: "run.created", threadId,
-    runId: currentRun.id, occurredAt: now, payload: currentRun,
-  });
-  const cancelledRun = { ...hiddenRun, id: RunId.make("run:retained-cancelled"), ordinal: 2, status: "cancelled" as const };
-  yield* store.apply({
-    id: EventId.make("event:retained-cancelled"), type: "run.created", threadId,
-    runId: cancelledRun.id, occurredAt: now, payload: cancelledRun,
-  });
-  for (const [suffix, runId, attachments] of [
-    ["current", currentRun.id, [image, file]],
-    ["rolled-back", hiddenRun.id, [hidden]],
-    ["cancelled", cancelledRun.id, [cancelled]],
-  ] as const) {
-    const messageId = MessageId.make(`message:retained-${suffix}`);
-    yield* store.apply({
-      id: EventId.make(`event:retained-message-${suffix}`), type: "message.updated", threadId,
-      occurredAt: now, payload: {
-        id: messageId, threadId, runId, nodeId: null, role: "user", text: suffix,
-        attachments, streaming: false, createdBy: "user", creationSource: "web", createdAt: now, updatedAt: now,
-      },
-    });
-    yield* store.apply({
-      id: EventId.make(`event:retained-item-${suffix}`), type: "turn-item.updated", threadId,
-      occurredAt: now, payload: {
-        id: TurnItemId.make(`item:retained-${suffix}`), threadId, runId, nodeId: null,
-        providerThreadId: null, providerTurnId: null, nativeItemRef: null, parentItemId: null,
-        ordinal: suffix === "current" ? 2 : suffix === "rolled-back" ? 3 : 4,
-        status: "completed", title: suffix, startedAt: now, completedAt: now, updatedAt: now,
-        type: "user_message", messageId, text: suffix, attachments, createdBy: "user", creationSource: "web",
-        inputIntent: suffix === "cancelled" ? "queued_turn" : "turn_start",
-      },
-    });
-  }
-  const answerItem = {
-    id: TurnItemId.make("item:retained-answer"), threadId, runId: currentRun.id, nodeId: null,
-    providerThreadId: null, providerTurnId: null, nativeItemRef: null, parentItemId: null,
-    ordinal: 5, status: "completed" as const, title: "Answer", startedAt: now, completedAt: now, updatedAt: now,
-    type: "user_input_request" as const, requestId: RuntimeRequestId.make("request:retained-answer"), questions: [],
-    questionAnswer: {
-      requestId: "request:retained-answer", answers: { first: "yes", second: "see files" },
-      attachmentsByQuestionId: { first: [image, reserved], second: [file, noExtension] },
-    },
+  const threadId = yield* addRolledBackRecoveryCandidate("self-settlement-recovery");
+  const thread = yield* store.getThread(threadId);
+  const now = yield* DateTime.now;
+  const intent = {
+    mcpCredentialId: "synthetic-credential",
+    commandId: CommandId.make("synthetic-settlement-request"),
+    runId: RunId.make("synthetic-requesting-run"),
+    providerSessionId: ProviderSessionId.make("synthetic-session"),
+    providerInstanceId,
   };
+  assert.notInclude(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
+  for (const type of ["thread.metadata-updated", "thread.settled", "thread.unsettled"] as const) {
+    yield* store.apply({
+      id: EventId.make(`self-settlement-recovery:${type}`),
+      type,
+      threadId,
+      occurredAt: now,
+      payload: { ...thread, selfSettlement: intent, updatedAt: now },
+    });
+    assert.deepEqual((yield* store.getThreadProjection(threadId)).thread.selfSettlement, intent);
+    assert.include(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
+  }
   yield* store.apply({
-    id: EventId.make("event:retained-answer"), type: "turn-item.updated", threadId, occurredAt: now, payload: answerItem,
+    id: EventId.make("self-settlement-recovery:cancel"),
+    type: "thread.metadata-updated",
+    threadId,
+    occurredAt: now,
+    payload: { ...thread, selfSettlement: null, updatedAt: now },
   });
-  yield* store.apply({
-    id: EventId.make("event:retained-hidden-answer"), type: "turn-item.updated", threadId, occurredAt: now,
-    payload: { ...answerItem, id: TurnItemId.make("item:retained-hidden-answer"), ordinal: 6, runId: hiddenRun.id,
-      questionAnswer: { requestId: "request:retained-answer", answers: {}, attachmentsByQuestionId: { first: [hidden] } } },
-  });
-  yield* store.apply({
-    id: EventId.make("event:retained-pending-question"), type: "turn-item.updated", threadId, occurredAt: now,
-    payload: { ...answerItem, id: TurnItemId.make("item:retained-pending-question"), ordinal: 7, status: "pending",
-      questionAnswer: undefined },
-  });
-  const assistantMessageId = MessageId.make("message:retained-assistant");
-  const assistantFile = { ...file, id: "retained-assistant-file" };
-  yield* store.apply({
-    id: EventId.make("event:retained-assistant-message"), type: "message.updated", threadId, occurredAt: now,
-    payload: { id: assistantMessageId, threadId, runId: currentRun.id, nodeId: null, role: "assistant",
-      text: "File result", attachments: [assistantFile], streaming: false,
-      createdBy: "agent", creationSource: "provider", createdAt: now, updatedAt: now },
-  });
-  yield* store.apply({
-    id: EventId.make("event:retained-assistant-item"), type: "turn-item.updated", threadId, occurredAt: now,
-    payload: { id: TurnItemId.make("item:retained-assistant"), threadId, runId: currentRun.id, nodeId: null,
-      providerThreadId: null, providerTurnId: null, nativeItemRef: null, parentItemId: null,
-      ordinal: 8, status: "completed", title: "File result", startedAt: now, completedAt: now, updatedAt: now,
-      type: "assistant_message", messageId: assistantMessageId, text: "File result", streaming: false },
-  });
-  const before = yield* store.getThreadProjection(threadId);
-  assert.deepEqual(yield* store.getThreadRetainedAttachmentPaths(threadId), {
-    status: "complete", relativePaths: ["retained-assistant-file.txt", "retained-file.txt", "retained-image.png", "retained-no-extension.bin", "retained-reserved.bin"],
-  });
-  assert.deepEqual(yield* store.getThreadProjection(threadId), before);
-  const childId = ThreadId.make("thread:retained-attachment-fork");
-  yield* store.apply({
-    id: EventId.make("event:retained-attachment-fork"), type: "thread.created", threadId: childId, occurredAt: now,
-    payload: { ...projection.thread, id: childId, forkedFrom: { type: "run", threadId, runId: currentRun.id } },
-  });
-  assert.deepEqual(yield* store.getThreadRetainedAttachmentPaths(childId), {
-    status: "complete", relativePaths: ["retained-assistant-file.txt", "retained-file.txt", "retained-image.png", "retained-no-extension.bin", "retained-reserved.bin"],
-  });
+  assert.isNull((yield* store.getThread(threadId)).selfSettlement);
+  assert.notInclude(yield* store.getRecoveryThreadIds("self-settlement"), threadId);
 });
 
-const retainedUnknownAttachment = Effect.gen(function* () {
-  const store = yield* ProjectionStore.ProjectionStoreV2;
-  const threadId = yield* addRolledBackRecoveryCandidate("unknown-retained-attachment");
-  const now = (yield* store.getThread(threadId)).createdAt;
-  const attachment = { type: "future-audio", id: "retained-future", name: "audio.wav", mimeType: "audio/wav", sizeBytes: 10 } satisfies ChatAttachment;
-  yield* store.apply({
-    id: EventId.make("event:retained-future-message"), type: "message.updated", threadId, occurredAt: now,
-    payload: { id: MessageId.make("message:retained-future"), threadId, runId: null, nodeId: null, role: "user",
-      text: "Future attachment", attachments: [attachment], streaming: false, createdBy: "user", creationSource: "web", createdAt: now, updatedAt: now },
-  });
-  assert.deepEqual(yield* store.getThreadRetainedAttachmentPaths(threadId), {
-    status: "unavailable", reason: "attachment_path_unavailable",
-  });
-});
-
-const importedRetainedAttachmentsUnavailable = Effect.gen(function* () {
-  const store = yield* ProjectionStore.ProjectionStoreV2;
-  const threadId = yield* addRolledBackRecoveryCandidate("imported-retained-attachments");
-  const projection = yield* store.getThreadProjection(threadId);
-  yield* store.apply({
-    id: EventId.make("event:imported-retained-thread"), type: "thread.metadata-updated", threadId,
-    occurredAt: projection.thread.updatedAt, payload: { ...projection.thread, historyOrigin: "v1_import" },
-  });
-  assert.deepEqual(yield* store.getThreadRetainedAttachmentPaths(threadId), {
-    status: "unavailable", reason: "imported_answer_representation_unavailable",
-  });
-  const childId = ThreadId.make("thread:imported-retained-fork");
-  yield* store.apply({
-    id: EventId.make("event:imported-retained-fork"), type: "thread.created", threadId: childId,
-    occurredAt: projection.thread.createdAt,
-    payload: { ...projection.thread, id: childId, forkedFrom: { type: "run", threadId, runId: projection.runs[0]!.id } },
-  });
-  assert.deepEqual(yield* store.getThreadRetainedAttachmentPaths(childId), {
-    status: "unavailable", reason: "imported_answer_representation_unavailable",
-  });
-});
-
-it.effect("memory retains visible message and answer attachment paths under rollback visibility", () =>
-  retainedAttachmentVisibility.pipe(Effect.provide(ProjectionStore.layerMemory)),
-);
-it.effect("memory holds prune when a visible attachment type is unknown", () =>
-  retainedUnknownAttachment.pipe(Effect.provide(ProjectionStore.layerMemory)),
-);
-it.effect("memory holds imported answer history and its forks without claiming an empty keep-set", () =>
-  importedRetainedAttachmentsUnavailable.pipe(Effect.provide(ProjectionStore.layerMemory)),
+it.effect("memory projection retains self-settlement intent until cancellation", () =>
+  selfSettlementRecoveryRoundtrip.pipe(Effect.provide(ProjectionStore.layerMemory)),
 );
 
 it.layer(TestLayer)("ProjectionStoreV2", (it) => {
-  it.effect("retains visible message and answer attachment paths under rollback visibility", () => retainedAttachmentVisibility);
-  it.effect("holds prune when persisted answer attachments cannot be decoded", () =>
-    Effect.gen(function* () {
-      const store = yield* ProjectionStore.ProjectionStoreV2;
-      const sql = yield* SqlClient.SqlClient;
-      const threadId = yield* addRolledBackRecoveryCandidate("malformed-retained-answer");
-      const projection = yield* store.getThreadProjection(threadId);
-      const item = projection.turnItems[0]!;
-      const malformed = { ...item, runId: null, type: "user_input_request", requestId: "request:malformed-answer",
-        questions: [], questionAnswer: { requestId: "request:malformed-answer", answers: {}, attachmentsByQuestionId: { first: null } } };
-      yield* sql`UPDATE orchestration_v2_projection_turn_items SET payload_json = ${encodeUnknownJsonString({
-        ...malformed, startedAt: DateTime.formatIso(projection.thread.createdAt),
-        completedAt: DateTime.formatIso(projection.thread.createdAt), updatedAt: DateTime.formatIso(projection.thread.createdAt),
-      })} WHERE thread_id = ${threadId} AND turn_item_id = ${item.id}`;
-      assert.deepEqual(yield* store.getThreadRetainedAttachmentPaths(threadId), {
-        status: "unavailable", reason: "projection_unavailable",
-      });
-    }),
-  );
-  it.effect("holds prune when a visible attachment type is unknown", () => retainedUnknownAttachment);
-  it.effect("holds imported answer history and its forks without claiming an empty keep-set", () => importedRetainedAttachmentsUnavailable);
-
-  it.effect("detach requests preserve SQL projections and shared session bindings", () =>
-    detachRequestPreservesProjection,
-  );
-  it.effect("roundtrips metadata and optional runtime identity through SQL projections", () =>
-    metadataAndRuntimeIdentityRoundtrip,
+  it.effect(
+    "retains self-settlement intent until cancellation",
+    () => selfSettlementRecoveryRoundtrip,
   );
   it.effect(
     "keeps restart-cancelled work through a stale run.updated",
@@ -1361,6 +1004,14 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
       assert.strictEqual(older.projection.turnItems[0]?.ordinal, 850);
       assert.strictEqual(older.projection.turnItems.at(-1)?.ordinal, 925);
 
+      // A single item reads back with its full output, scoped to its thread.
+      const itemId = TurnItemId.make("turn-item:bounded-sql-history:925");
+      const stored = yield* projectionStore.getTurnItem({ threadId, itemId });
+      assert.strictEqual(stored?.type === "command_execution" ? stored.output : undefined, "ok");
+      assert.isNull(
+        yield* projectionStore.getTurnItem({ threadId: ThreadId.make("thread:other"), itemId }),
+      );
+
       const sqlPageLimit = THREAD_HISTORY_PAGE_POLICY.maxItems + 2;
       const initialSnapshot = yield* projectionStore.getThreadSnapshotWindow(threadId, {
         rowLimit: sqlPageLimit,
@@ -1778,6 +1429,36 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         interruptSnapshot.projection.visibleTurnItems.some(
           (row) => row.sourceItemId === interruptResultId,
         ),
+      );
+
+      yield* sql`
+        UPDATE orchestration_v2_projection_turn_items
+        SET payload_json = json_set(payload_json, '$.createdBy', 'agent')
+        WHERE thread_id = ${threadId} AND type = 'user_message'
+      `;
+      const agentPromptId = TurnItemId.make("turn-item:bounded-sql-history:interrupt-filler:1281");
+      yield* sql`
+        UPDATE orchestration_v2_projection_turn_items
+        SET type = 'user_message',
+          payload_json = json_set(payload_json,
+            '$.type', 'user_message', '$.inputIntent', 'turn_start',
+            '$.createdBy', 'agent', '$.creationSource', 'provider',
+            '$.messageId', 'message:bounded-sql-history:agent-prompt',
+            '$.text', 'Continue the child task', '$.attachments', json('[]'))
+        WHERE turn_item_id = ${agentPromptId}
+      `;
+      const agentWindow = yield* projectionStore.getThreadSnapshotWindow(threadId, {
+        rowLimit: sqlPageLimit,
+        userTurnLimit: THREAD_HISTORY_PAGE_POLICY.maxUserTurns,
+      });
+      assert.lengthOf(
+        agentWindow.projection.visibleTurnItems.filter(
+          (row) => row.item.type !== "run_interrupt_request",
+        ),
+        sqlPageLimit,
+      );
+      assert.isTrue(
+        agentWindow.projection.visibleTurnItems.some((row) => row.sourceItemId === agentPromptId),
       );
     }),
   );
@@ -2384,6 +2065,37 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         assert.isNull(onlyHeldShell.latestRunId);
         assert.equal(onlyHeldShell.status, "idle");
       }
+
+      // A wake run counts from the start of the work it continues.
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-shell-interruptible:wake"),
+        type: "run.updated",
+        threadId,
+        runId,
+        nodeId: rootNodeId,
+        driver,
+        occurredAt: later,
+        payload: {
+          ...run,
+          status: "running",
+          requestedAt: later,
+          startedAt: later,
+          workStartedAt: now,
+        },
+      });
+      const wakeProjection = yield* projectionStore.getThreadProjection(threadId);
+      const wakeSqlShell = (yield* projectionStore.getShellSnapshot()).threads.find(
+        (row) => row.id === threadId,
+      )!;
+      for (const wakeShell of [
+        wakeSqlShell,
+        ProjectionStore.threadShellFromProjection(wakeProjection),
+      ]) {
+        assert.equal(
+          wakeShell.activityRunStartedAt && DateTime.toEpochMillis(wakeShell.activityRunStartedAt),
+          DateTime.toEpochMillis(now),
+        );
+      }
     }),
   );
 
@@ -2647,8 +2359,33 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         },
       });
       yield* assertSummary("Plan limit reached.", "usage_limit");
+      // A restart continuation ran ahead of the held queue and ended before the
+      // resumed failed run: the failure is still the latest executed run.
+      const aheadRunId = RunId.make("run:limit-shell:ran-ahead");
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:ran-ahead"),
+        type: "run.created",
+        threadId,
+        runId: aheadRunId,
+        nodeId: NodeId.make("node:limit-shell:ran-ahead"),
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...original,
+          id: aheadRunId,
+          ordinal: original.ordinal + 3,
+          rootNodeId: NodeId.make("node:limit-shell:ran-ahead"),
+          userMessageId: MessageId.make("message:limit-shell:ran-ahead"),
+          status: "completed",
+          startedAt: DateTime.subtract(now, { minutes: 10 }),
+          completedAt: DateTime.subtract(now, { minutes: 5 }),
+        },
+      });
+      yield* assertSummary("Plan limit reached.", "usage_limit");
       const sql = yield* SqlClient.SqlClient;
       // The rest of this case treats the failed run as the latest run.
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${aheadRunId}`;
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${queuedRunId}`;
       yield* assertSummary("Plan limit reached.", "usage_limit");
       yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = ${cancelledRunId}`;
@@ -4743,6 +4480,408 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         released && projectThreadAwarenessV2({ environmentId, project, thread: released });
       assert.equal(state?.phase, "completed");
       assert.equal(state?.updatedAt, DateTime.formatIso(releasedAt));
+
+      // A later provider must not hide this owner's roster from restart recovery.
+      yield* store.apply({
+        id: EventId.make("event:held-completion:monitor-restarted"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: releasedAt,
+        payload: { ...providerThread, updatedAt: releasedAt },
+      });
+      const newerRunId = RunId.make("run:held-completion:new-provider");
+      yield* store.apply({
+        id: EventId.make("event:held-completion:new-provider"),
+        type: "run.created",
+        threadId,
+        runId: newerRunId,
+        occurredAt: releasedAt,
+        payload: {
+          ...(yield* store.getThreadProjection(threadId)).runs[0]!,
+          id: newerRunId,
+          ordinal: 2,
+          providerThreadId: ProviderThreadId.make("provider-thread:held-completion:new-provider"),
+          requestedAt: releasedAt,
+          startedAt: releasedAt,
+          completedAt: releasedAt,
+        },
+      });
+      assert.deepEqual(
+        (yield* store.getRuntimeRecoveryProjection(threadId)).runs.map((run) => run.id),
+        [runId, newerRunId],
+      );
     }),
   );
 });
+
+it.effect(
+  "preserves attributed provider outcomes through SQL checkpoint projections and shell snapshots",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const startedAt = DateTime.makeUnsafe("2026-09-01T12:00:00Z");
+      const completedAt = DateTime.makeUnsafe("2026-09-01T12:00:05Z");
+      const capturedAt = DateTime.makeUnsafe("2026-09-01T12:05:00Z");
+      const threadId = ThreadId.make("thread:checkpoint-settlement");
+      const runId = RunId.make("run:checkpoint-settlement");
+      const attemptId = RunAttemptId.make("attempt:checkpoint-settlement");
+      const rootNodeId = NodeId.make("node:checkpoint-settlement");
+      const providerThreadId = ProviderThreadId.make("provider-thread:checkpoint-settlement");
+      const providerTurnId = ProviderTurnId.make("provider-turn:checkpoint-settlement");
+      yield* store.apply({
+        id: EventId.make("event:checkpoint-settlement:thread"),
+        type: "thread.created",
+        threadId,
+        occurredAt: startedAt,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project:checkpoint-settlement"),
+          title: "Synthetic checkpoint settlement",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: startedAt,
+          updatedAt: startedAt,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      const run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make("message:checkpoint-settlement"),
+        rootNodeId,
+        activeAttemptId: attemptId,
+        status: "running" as const,
+        requestedAt: startedAt,
+        startedAt,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* store.apply({
+        id: EventId.make("event:checkpoint-settlement:run"),
+        type: "run.created",
+        threadId,
+        runId,
+        occurredAt: startedAt,
+        payload: run,
+      });
+      for (const status of ["completed", "interrupted", "failed", "cancelled"] as const) {
+        const settlement = { runAttemptId: attemptId, providerTurnId, status, completedAt };
+        const attempt = {
+          id: attemptId,
+          runId,
+          attemptOrdinal: 1,
+          rootNodeId,
+          providerInstanceId,
+          providerThreadId,
+          providerTurnId,
+          reason: "initial" as const,
+          status,
+          startedAt,
+          completedAt,
+          providerSettlement: settlement,
+        };
+        yield* store.apply({
+          id: EventId.make(`event:checkpoint-settlement:attempt:${status}`),
+          type: "run-attempt.updated",
+          threadId,
+          runId,
+          occurredAt: completedAt,
+          payload: attempt,
+        });
+        yield* store.apply({
+          id: EventId.make(`event:checkpoint-settlement:run:${status}`),
+          type: "run.updated",
+          threadId,
+          runId,
+          occurredAt: completedAt,
+          payload: {
+            ...run,
+            status: status === "completed" ? "waiting" : status,
+            completedAt: status === "completed" ? null : completedAt,
+          },
+        });
+        for (const checkpointStatus of ["ready", "error", "missing"] as const) {
+          yield* store.apply({
+            id: EventId.make(`event:checkpoint-settlement:${status}:${checkpointStatus}`),
+            type: "checkpoint.captured",
+            threadId,
+            runId,
+            occurredAt: capturedAt,
+            payload: {
+              id: CheckpointId.make("checkpoint:settlement"),
+              threadId,
+              runId,
+              nodeId: rootNodeId,
+              scopeId: CheckpointScopeId.make("scope:settlement"),
+              parentCheckpointId: null,
+              ordinalWithinScope: 1,
+              appRunOrdinal: 1,
+              ref: CheckpointRef.make("refs/t3/checkpoint-context/settlement"),
+              status: checkpointStatus,
+              files: [],
+              capturedAt,
+            },
+          });
+          const records = yield* store.getThreadRecords(threadId, ["runs", "attempts"]);
+          assert.deepEqual(records.attempts[0]?.providerSettlement, settlement);
+          assert.equal(records.runs[0]?.status, status === "completed" ? "waiting" : status);
+          assert.deepEqual(
+            (yield* store.getThreadShell(threadId))?.latestRunProviderSettlement,
+            settlement,
+          );
+          assert.deepEqual(
+            (yield* store.getShellSnapshot()).threads[0]?.latestRunProviderSettlement,
+            settlement,
+          );
+        }
+      }
+    }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect.each([
+  { backend: "SQL", recorded: false },
+  { backend: "SQL", recorded: true },
+  { backend: "memory", recorded: false },
+  { backend: "memory", recorded: true },
+])(
+  "preserves selected runtime identity and historical absence across $backend full/detail/shell projections: $recorded",
+  ({ backend, recorded }) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate(`identity-${backend}-${recorded}`);
+      const now = yield* DateTime.now;
+      const sessionId = ProviderSessionId.make("shared-codex-session");
+      const makeOwner = (suffix: string, model: string): OrchestrationV2ProviderThread => ({
+        id: ProviderThreadId.make(`identity-owner-${suffix}`),
+        driver,
+        providerInstanceId,
+        providerSessionId: sessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: { driver, nativeId: `native-${suffix}`, strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        ...(recorded
+          ? {
+              runtimeIdentity: {
+                runtimeGeneration: "shared-process",
+                evidenceRevision: 2,
+                requested: {
+                  providerInstanceId,
+                  providerDriver: driver,
+                  model: `requested-${model}`,
+                  serviceTier: null,
+                },
+                observed: {
+                  backend: {
+                    status: "observed",
+                    value: "native-backend",
+                    sourceEvent: "codex.thread/open",
+                  },
+                  model: { status: "observed", value: model, sourceEvent: "codex.thread/open" },
+                  account: { status: "unavailable", reason: "Not bound." },
+                  serviceTier: { status: "unavailable", reason: "Not reported." },
+                },
+              },
+            }
+          : {}),
+      });
+      const selected = makeOwner("selected", "native-selected");
+      const sibling = makeOwner("sibling", "native-sibling");
+      yield* store.apply({
+        id: EventId.make("identity-sibling"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: sibling,
+      });
+      yield* store.apply({
+        id: EventId.make("identity-selected"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: selected,
+      });
+      const full = yield* store.getThreadProjection(threadId);
+      const detail = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 50 });
+      assert.deepEqual(
+        full.providerThreads.find((row) => row.id === selected.id)?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        detail.projection.providerThreads.find((row) => row.id === selected.id)?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getThreadProviderContext(threadId, providerInstanceId)).providerThreads.find(
+          (row) => row.id === selected.id,
+        )?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getRuntimeRecoveryProjection(threadId)).providerThreads.find(
+          (row) => row.id === selected.id,
+        )?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getThreadShell(threadId))?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getShellSnapshot()).threads.find((row) => row.id === threadId)
+          ?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      assert.deepEqual(
+        (yield* store.getShellSnapshot({ unsettledOnly: true })).threads.find(
+          (row) => row.id === threadId,
+        )?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      if (backend === "SQL") {
+        const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+        if (Option.isNone(sql))
+          return yield* Effect.die(new Error("SQL fixture requires SqlClient"));
+        const reopened = yield* Effect.service(ProjectionStore.ProjectionStoreV2).pipe(
+          Effect.provide(Layer.fresh(ProjectionStore.layer)),
+          Effect.provideService(SqlClient.SqlClient, sql.value),
+        );
+        assert.deepEqual(
+          (yield* reopened.getThreadRecords(threadId, ["providerThreads"])).providerThreads.find(
+            (row) => row.id === selected.id,
+          )?.runtimeIdentity,
+          selected.runtimeIdentity,
+        );
+        assert.deepEqual(
+          (yield* reopened.getThreadShell(threadId))?.runtimeIdentity,
+          selected.runtimeIdentity,
+        );
+      }
+      const app = yield* store.getThread(threadId);
+      yield* store.apply({
+        id: EventId.make("identity-archive"),
+        type: "thread.archived",
+        threadId,
+        occurredAt: now,
+        payload: { ...app, archivedAt: now },
+      });
+      assert.deepEqual(
+        (yield* store.getShellSnapshot({ location: "archive" })).archivedThreads.find(
+          (row) => row.id === threadId,
+        )?.runtimeIdentity,
+        selected.runtimeIdentity,
+      );
+      yield* store.apply({
+        id: EventId.make("identity-foreign-owner"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...selected, appThreadId: ThreadId.make("foreign-app") },
+      });
+      assert.isUndefined(
+        (yield* store.getThreadShell(threadId))?.runtimeIdentity,
+        "a foreign row must not supply the app thread's identity",
+      );
+    }).pipe(Effect.provide(backend === "SQL" ? TestLayer : ProjectionStore.layerMemory)),
+);
+
+it.effect.each([
+  { backend: "memory", eligibility: true },
+  { backend: "memory", eligibility: false },
+  { backend: "memory", eligibility: undefined },
+  { backend: "sql", eligibility: true },
+  { backend: "sql", eligibility: false },
+  { backend: "sql", eligibility: undefined },
+] as const)(
+  "keeps $backend queue eligibility $eligibility Boolean through stale snapshots",
+  ({ backend, eligibility }) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate(
+        `queue-policy-${backend}-${eligibility}`,
+      );
+      const stale = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      yield* store.apply({
+        id: EventId.make(`queue-policy-birth-${backend}-${eligibility}`),
+        type: "run.created",
+        threadId,
+        runId: stale.id,
+        occurredAt: now,
+        payload: {
+          ...stale,
+          ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+        },
+      });
+      yield* store.apply({
+        id: EventId.make(`queue-policy-update-${backend}-${eligibility}`),
+        type: "run.updated",
+        threadId,
+        runId: stale.id,
+        occurredAt: now,
+        payload: { ...stale, status: "completed", completedAt: now },
+      });
+      const persisted = (yield* store.getThreadProjection(threadId)).runs[0]!;
+      assert.strictEqual(persisted.queuedToolBoundaryEligible, eligibility);
+      const thread = (yield* store.getThreadProjection(threadId)).thread;
+      const replay = Effect.gen(function* () {
+        const memory = yield* ProjectionStore.ProjectionStoreV2;
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: thread,
+        });
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-birth"),
+          type: "run.created",
+          threadId,
+          runId: stale.id,
+          occurredAt: now,
+          payload: {
+            ...stale,
+            ...(eligibility === undefined ? {} : { queuedToolBoundaryEligible: eligibility }),
+          },
+        });
+        yield* memory.apply({
+          id: EventId.make("queue-policy-replay-update"),
+          type: "run.updated",
+          threadId,
+          runId: stale.id,
+          occurredAt: now,
+          payload: stale,
+        });
+        assert.strictEqual(
+          (yield* memory.getThreadProjection(threadId)).runs[0]!.queuedToolBoundaryEligible,
+          eligibility,
+        );
+      });
+      yield* replay.pipe(Effect.provide(ProjectionStore.layerMemory));
+    }).pipe(Effect.provide(backend === "memory" ? ProjectionStore.layerMemory : TestLayer)),
+);

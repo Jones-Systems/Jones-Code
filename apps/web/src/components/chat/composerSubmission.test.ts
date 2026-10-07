@@ -11,6 +11,12 @@ import {
 } from "@t3tools/shared/assistantCitations";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import {
+  DEFAULT_RESOLVED_KEYBINDINGS,
+  compileResolvedKeybindingsConfig,
+  mergeWithDefaultKeybindings,
+} from "@t3tools/shared/keybindings";
+
 import { handleComposerEnter, submitComposerDraft } from "./composerSubmission";
 
 const assistantCitation = {
@@ -294,6 +300,7 @@ describe("submitComposerDraft", () => {
 });
 
 const bareEnter = {
+  key: "Enter",
   shiftKey: false,
   altKey: false,
   metaKey: false,
@@ -303,12 +310,21 @@ const bareEnter = {
   repeat: false,
 };
 
+const enterIntent = {
+  keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+  platform: "Linux",
+  isMobileViewport: false,
+  isDraftThread: false,
+  isRunning: true,
+  prompt: "",
+};
+
 function enterScenario(overrides: Partial<Parameters<typeof handleComposerEnter>[0]> = {}) {
   const onSubmit = vi.fn();
   const onSteerNextQueuedMessage = vi.fn(() => true);
   const options = {
     event: bareEnter,
-    intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "" },
+    intent: enterIntent,
     hasDraftContext: false,
     queueActionDisabled: false,
     onSubmit,
@@ -319,25 +335,6 @@ function enterScenario(overrides: Partial<Parameters<typeof handleComposerEnter>
 }
 
 describe("composer Enter actions", () => {
-  it("honors the current keybinding's non-submission result for a typed draft", () => {
-    const result = enterScenario({
-      intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "Draft" },
-      submissionIntent: null,
-    });
-    expect(result.handled).toBe(false);
-    expect(result.onSubmit).not.toHaveBeenCalled();
-    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
-  });
-
-  it("does not submit a typed draft on a repeating Enter", () => {
-    const result = enterScenario({
-      event: { ...bareEnter, repeat: true },
-      intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "Draft" },
-    });
-    expect(result.handled).toBe(false);
-    expect(result.onSubmit).not.toHaveBeenCalled();
-  });
-
   it("uses the queue action instead of submitting an empty draft", () => {
     const result = enterScenario();
     expect(result.handled).toBe(true);
@@ -359,7 +356,7 @@ describe("composer Enter actions", () => {
 
   it.each(["hello", " ", "\n"])("retains the draft send path for %j", (prompt) => {
     const result = enterScenario({
-      intent: { isMobileViewport: false, isDraftThread: false, prompt },
+      intent: { ...enterIntent, prompt },
     });
     expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
     expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
@@ -392,8 +389,7 @@ describe("composer Enter actions", () => {
 
   it("allows bare queue Enter without changing the configured draft shortcut", () => {
     const intent = {
-      isMobileViewport: false,
-      isDraftThread: false,
+      ...enterIntent,
       sendShortcut: "mod-enter" as const,
       prompt: "",
     };
@@ -403,6 +399,67 @@ describe("composer Enter actions", () => {
     expect(draft.handled).toBe(false);
     expect(draft.onSubmit).not.toHaveBeenCalled();
   });
+});
 
+describe("composer Enter with V2 submission routes", () => {
+  it.each([
+    [false, true, false, "alternate"],
+    [true, false, false, "background"],
+    [true, false, true, "background"],
+    [false, false, true, "background"],
+  ] as const)(
+    "keeps modified Enter for draft=%s running=%s alt=%s",
+    (isDraftThread, isRunning, altKey, expected) => {
+      const result = enterScenario({
+        event: { ...bareEnter, ctrlKey: true, altKey },
+        intent: { ...enterIntent, isDraftThread, isRunning },
+      });
+      expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+      expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith(expected);
+    },
+  );
 
+  it("honors a remapped Enter action without replacing the newer send routes", () => {
+    const keybindings = mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig([
+        {
+          key: "alt+enter",
+          command: "composer.sendAlternate",
+          when: "composerFocus && turnRunning",
+        },
+      ]),
+    );
+    const result = enterScenario({
+      event: { ...bareEnter, altKey: true },
+      intent: { ...enterIntent, keybindings, prompt: "draft" },
+    });
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("alternate");
+  });
+
+  it("preserves a background send remapped to bare Enter", () => {
+    const keybindings = mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig([
+        {
+          key: "enter",
+          command: "composer.sendBackground",
+          when: "composerFocus && draftThreadRoute",
+        },
+      ]),
+    );
+    const result = enterScenario({
+      intent: { ...enterIntent, keybindings, isDraftThread: true },
+    });
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("background");
+  });
+
+  it("leaves mobile Enter on its existing newline path", () => {
+    const result = enterScenario({
+      intent: { ...enterIntent, isMobileViewport: true },
+    });
+    expect(result.handled).toBe(false);
+    expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();
+    expect(result.onSubmit).not.toHaveBeenCalled();
+  });
 });

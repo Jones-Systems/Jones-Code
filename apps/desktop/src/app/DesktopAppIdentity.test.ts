@@ -113,6 +113,7 @@ const withIdentity = <A, E, R>(
     readonly legacyPathExists?: boolean;
     readonly legacyPathProbeError?: PlatformError.PlatformError;
     readonly packageJson?: string;
+    readonly readPackageJson?: () => Effect.Effect<string, PlatformError.PlatformError>;
     readonly pngIconPath?: Option.Option<string>;
   } = {},
 ) => {
@@ -134,8 +135,10 @@ const withIdentity = <A, E, R>(
                 : Effect.succeed(
                     input.legacyPathExists === true && /T3 Code \((Alpha|Dev)\)/.test(path),
                   ),
-            readFileString: () =>
-              Effect.succeed(input.packageJson ?? '{"t3codeCommitHash":"abcdef1234567890"}'),
+            readFileString:
+              input.readPackageJson ??
+              (() =>
+                Effect.succeed(input.packageJson ?? '{"t3codeCommitHash":"abcdef1234567890"}')),
           }),
         ),
         Layer.provideMerge(makeAssetsLayer(input.pngIconPath ?? Option.none())),
@@ -147,26 +150,6 @@ const withIdentity = <A, E, R>(
 };
 
 describe("DesktopAppIdentity", () => {
-  it.effect("uses an explicit client profile independently of the server home", () =>
-    withIdentity(
-      Effect.gen(function* () {
-        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        assert.equal(yield* identity.resolveUserDataPath, "/isolated/client-profile");
-        assert.equal(environment.baseDir, "/isolated/server-home");
-      }),
-      {
-        legacyPathExists: true,
-        environment: {
-          env: {
-            T3CODE_HOME: "/isolated/server-home",
-            T3CODE_DESKTOP_USER_DATA_DIR: "/isolated/client-profile",
-          },
-        },
-      },
-    ),
-  );
-
   it.effect("keeps a process runtime identity with only the full embedded commit", () =>
     withIdentity(
       Effect.gen(function* () {
@@ -201,6 +184,49 @@ describe("DesktopAppIdentity", () => {
     ),
   );
 
+  it.effect("uses an explicit client profile independently of the server home", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        assert.equal(yield* identity.resolveUserDataPath, "/isolated/client-profile");
+        assert.equal(environment.baseDir, "/isolated/server-home");
+      }),
+      {
+        legacyPathExists: true,
+        environment: {
+          env: {
+            T3CODE_HOME: "/isolated/server-home",
+            T3CODE_DESKTOP_USER_DATA_DIR: " /isolated/other/../client-profile ",
+          },
+        },
+      },
+    ),
+  );
+
+  it.effect("never probes the legacy profile for an explicit development profile", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        assert.equal(yield* identity.resolveUserDataPath, "/isolated/client-profile");
+      }),
+      {
+        legacyPathProbeError: PlatformError.systemError({
+          _tag: "PermissionDenied",
+          module: "FileSystem",
+          method: "exists",
+          pathOrDescriptor: "/legacy",
+          description: "must not read legacy profile",
+        }),
+        environment: {
+          env: {
+            VITE_DEV_SERVER_URL: "http://localhost:5173",
+            T3CODE_DESKTOP_USER_DATA_DIR: "/isolated/client-profile",
+          },
+        },
+      },
+    ),
+  );
   it.effect("isolates the V2 profile even when the legacy V1 profile exists", () =>
     withIdentity(
       Effect.gen(function* () {
@@ -315,3 +341,63 @@ describe("DesktopAppIdentity", () => {
     );
   });
 });
+
+it.effect.each(["{}", '{"t3codeCommitHash":42}', "{broken", '{"t3codeCommitHash":"z"}'])(
+  "reports no runtime commit for invalid or missing metadata: %s",
+  (packageJson) =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        assert.equal((yield* identity.previewAutomationRuntimeIdentity).buildCommit, null);
+      }),
+      { packageJson },
+    ),
+);
+
+it.effect("caches the embedded descriptor independently from the About override", () => {
+  let reads = 0;
+  const calls: ElectronAppCalls = { setAboutPanelOptions: [], setDockIcon: [], setName: [] };
+  return withIdentity(
+    Effect.gen(function* () {
+      const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+      const first = yield* identity.previewAutomationRuntimeIdentity;
+      const second = yield* identity.previewAutomationRuntimeIdentity;
+      assert.strictEqual(second, first);
+      assert.equal(reads, 1);
+      yield* identity.configure;
+      assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
+      assert.equal(first.buildCommit, "a".repeat(40));
+      assert.equal(reads, 1);
+    }),
+    {
+      calls,
+      environment: { env: { T3CODE_COMMIT_HASH: "0123456789abcdef" } },
+      readPackageJson: () =>
+        Effect.sync(() => {
+          reads += 1;
+          return `{"t3codeCommitHash":"${(reads === 1 ? "A" : "B").repeat(40)}"}`;
+        }),
+    },
+  );
+});
+
+it.effect("reports no runtime commit when package metadata is unreadable", () =>
+  withIdentity(
+    Effect.gen(function* () {
+      const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+      assert.equal((yield* identity.previewAutomationRuntimeIdentity).buildCommit, null);
+    }),
+    {
+      readPackageJson: () =>
+        Effect.fail(
+          PlatformError.systemError({
+            _tag: "PermissionDenied",
+            module: "FileSystem",
+            method: "readFileString",
+            pathOrDescriptor: "/synthetic/package.json",
+            description: "synthetic denied read",
+          }),
+        ),
+    },
+  ),
+);

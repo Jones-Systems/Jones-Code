@@ -63,3 +63,34 @@ describe("pending timeline messages", () => {
     expect(appendPendingThreadMessages([], [delivered], [queued])).toEqual([]);
   });
 });
+
+it("hides pending plain sentinel messages while retaining near misses and context", () => {
+  const sentinel = { ...pending("warm"), text: "@@@@@" };
+  expect(appendPendingThreadMessages([], [], [sentinel])).toEqual([]);
+  for (const text of ["@@@@", "@@@@@ extra", " @@@@@", "@@@@@\n"]) {
+    expect(appendPendingThreadMessages([], [], [{ ...sentinel, text }])).toHaveLength(1);
+  }
+  expect(
+    appendPendingThreadMessages(
+      [],
+      [],
+      [
+        {
+          ...sentinel,
+          context: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                kind: "mention",
+                contextId: ComposerContextId.make("file"),
+                label: "file",
+                path: "file",
+              },
+            ],
+          },
+        },
+      ],
+    ),
+  ).toHaveLength(1);
+});

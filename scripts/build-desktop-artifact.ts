@@ -21,7 +21,6 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
-import { jonesNativeHelperSource } from "../apps/desktop/src/updates/jonesNativeHelperSource.ts";
 
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
@@ -35,7 +34,6 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
-import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
@@ -825,7 +823,7 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
   return { stdout, stderr, exitCode } as const;
 });
 
-const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
+export const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
   const result = yield* spawnAndCollectOutput(
     ChildProcess.make("git", ["rev-parse", "HEAD"], {
       cwd: repoRoot,
@@ -923,24 +921,11 @@ interface ResolvedBuildOptions {
   readonly wslRuntime: string | undefined;
 }
 
-const decodeJonesBuildSource = Schema.decodeUnknownEffect(
-  Schema.Struct({
-    repository: Schema.Literal("Jones-Systems/Jones-Code"),
-    sha: Schema.String,
-    tree: Schema.String,
-  }),
-);
-
 interface StagePackageJson {
   readonly name: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
-  readonly jonesSource?: {
-    readonly repository: "Jones-Systems/Jones-Code";
-    readonly sha: string;
-    readonly tree: string;
-  };
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -981,7 +966,6 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!apps/desktop/prod-resources/windows-server/**/*",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
-  "!apps/desktop/prod-resources/jones-update-helper.py",
   "!apps/desktop/gnome-extension",
   "!apps/desktop/gnome-extension/**/*",
 ] as const;
@@ -1088,16 +1072,6 @@ export const WSL_RUNTIME_EXTRA_RESOURCES = [
   WSL_RUNTIME_ARCHIVE_EXTRA_RESOURCE,
   WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE,
 ] as const;
-export const JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE = {
-  from: "apps/desktop/prod-resources/jones-update-helper.py",
-  to: "jones-update-helper.py",
-} as const;
-
-const bundlesJonesNativeHelper = (
-  platform: typeof BuildPlatform.Type,
-  version: string,
-  signed: boolean,
-) => platform === "mac" && !signed && /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(version);
 export const DESKTOP_EXTRA_RESOURCES = [
   {
     from: "apps/desktop/prod-resources/cursor-sdk",
@@ -2595,9 +2569,12 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
 ) {
   const env = yield* Config.all({
     updateRepository: Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
+    githubRepository: Config.String("GITHUB_REPOSITORY").pipe(Config.option),
   });
   const rawRepo = (
-    Option.getOrUndefined(env.updateRepository)?.trim() || CLI_RELEASE_REPOSITORY
+    Option.getOrUndefined(env.updateRepository)?.trim() ||
+    Option.getOrUndefined(env.githubRepository)?.trim() ||
+    ""
   ).trim();
   if (!rawRepo) return undefined;
 
@@ -2618,7 +2595,7 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
 }
 
 // Pull request builds (`-pr.<n>.`) and the maintainers' preview train
-// (`-preview.<date>.<run>`) are downloaded by hand and never through an
+// (`-preview.<date>.<run>[.<attempt>]`) are downloaded by hand and never through an
 // updater. Building them without a publish config means electron-builder
 // emits no `latest*.yml`/`nightly*.yml` manifests or blockmaps for them and
 // the app ships without `app-update.yml`, so neither a stable nor a nightly
@@ -2712,9 +2689,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       : {}),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,
-      ...(bundlesJonesNativeHelper(platform, version, signed)
-        ? [JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE]
-        : []),
       ...(platform === "linux" ? LINUX_CAPTURE_EXTRA_RESOURCES : []),
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
@@ -2933,7 +2907,9 @@ export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function
     try: () =>
       createPackageWithOptions(input.sourceDir, input.asarPath, {
         dot: true,
-        unpack: WINDOWS_NATIVE_ASAR_UNPACK_GLOB,
+        // ASAR matches absolute filenames with matchBase; slash-free patterns
+        // match native basenames even beneath hidden ancestor directories.
+        unpack: "{*.node,*.dll,*.exe,*.so,*.so.*,*.dylib}",
         // glob 13 (via @electron/asar 4) matches `ignore` relative to `cwd`,
         // not against the absolute paths it crawls, so anchor it at the source.
         globOptions: {
@@ -3603,11 +3579,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* Effect.log("[desktop-artifact] Staging release app...");
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
-  if (bundlesJonesNativeHelper(options.platform, appVersion, options.signed)) {
-    const helperSource = path.join(stageAppDir, JONES_MAC_UPDATE_HELPER_EXTRA_RESOURCE.from);
-    yield* fs.makeDirectory(path.dirname(helperSource), { recursive: true });
-    yield* fs.writeFileString(helperSource, jonesNativeHelperSource, { flag: "wx", mode: 0o700 });
-  }
   if (options.platform === "linux") {
     const extensionDir = path.join(stageAppDir, "apps/desktop/gnome-extension");
     yield* fs.makeDirectory(extensionDir, { recursive: true });
@@ -3725,11 +3696,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
-    ...("jonesSource" in desktopPackageJson
-      ? {
-          jonesSource: yield* decodeJonesBuildSource(desktopPackageJson.jonesSource),
-        }
-      : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
     description: "T3 Code desktop build",

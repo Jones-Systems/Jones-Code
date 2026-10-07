@@ -1,3 +1,10 @@
+import {
+  type LegacyGuardRejectionDeleteCommand,
+  type LegacyFailureDeleteCommand,
+  type RecordedServerCommand as OrchestrationV2ServerCommand,
+  type RecordedRun as OrchestrationV2Run,
+  type RecordedThreadProjection as OrchestrationV2ThreadProjection,
+} from "./RecordedTypes.ts";
 import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
@@ -10,18 +17,17 @@ import {
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
-  type OrchestrationV2ServerCommand,
+  type OrchestrationV2GetTurnItemResult,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
-  type OrchestrationV2Run,
   type OrchestrationV2ThreadShellSnapshot,
-  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   ProjectId,
   RunId,
   type ScheduledTaskId,
   ThreadId,
+  type TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -32,6 +38,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as Orchestrator from "./Orchestrator.ts";
+import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 
 export type ThreadManagementSendMode = "auto" | "queue" | "steer" | "restart";
@@ -268,37 +275,29 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
+  readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
-  readonly dispatchNativeWorkstreamSettlement: Orchestrator.OrchestratorV2["Service"]["dispatchNativeWorkstreamSettlement"];
-  readonly observeNativeWorkstreamSettlementBinding: Orchestrator.OrchestratorV2["Service"]["observeNativeWorkstreamSettlementBinding"];
-  readonly dispatchGuarded: Orchestrator.OrchestratorV2["Service"]["dispatchGuarded"];
-  readonly dispatchRestartContinuation: Orchestrator.OrchestratorV2["Service"]["dispatchRestartContinuation"];
-  readonly dispatchNativeCreationStage: Orchestrator.OrchestratorV2["Service"]["dispatchNativeCreationStage"];
-  readonly dispatchNativeCreationRecovery: Orchestrator.OrchestratorV2["Service"]["dispatchNativeCreationRecovery"];
-  readonly reviewImportedHistoryStart: (input: Parameters<Orchestrator.OrchestratorV2["Service"]["reviewImportedHistoryStart"]>[0]) => ReturnType<Orchestrator.OrchestratorV2["Service"]["reviewImportedHistoryStart"]>;
-  readonly observeImportedHistoryStart: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
-  readonly observeCurrentThreadRuntimeStop: Orchestrator.OrchestratorV2["Service"]["observeCurrentThreadRuntimeStop"];
-  readonly observeThreadDeletionCleanup: Orchestrator.OrchestratorV2["Service"]["observeThreadDeletionCleanup"];
-  readonly stopCurrentThreadRuntime: Orchestrator.OrchestratorV2["Service"]["stopCurrentThreadRuntime"];
-  readonly startWithImportedHistory: (command: Parameters<Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"]>[0]) => ReturnType<Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"]>;
-  readonly observeCommand: Orchestrator.OrchestratorV2["Service"]["observeCommand"];
-  readonly observeLegacyCommand: Orchestrator.OrchestratorV2["Service"]["observeLegacyCommand"];
-  readonly readCurrentThreadRuntimeAttachment: Orchestrator.OrchestratorV2["Service"]["readCurrentThreadRuntimeAttachment"];
-  readonly observeCurrentThreadRuntime: Orchestrator.OrchestratorV2["Service"]["observeCurrentThreadRuntime"];
-  readonly getOperatingCounts: Orchestrator.OrchestratorV2["Service"]["getOperatingCounts"];
-  readonly acquireWorktreeOwnership: Orchestrator.OrchestratorV2["Service"]["acquireWorktreeOwnership"];
-  readonly acquireOrdinaryWorktreeOwnership: Orchestrator.OrchestratorV2["Service"]["acquireOrdinaryWorktreeOwnership"];
-  readonly releaseWorktreeOwnership: Orchestrator.OrchestratorV2["Service"]["releaseWorktreeOwnership"];
-  readonly getThreadOwnershipIncarnation: Orchestrator.OrchestratorV2["Service"]["getThreadOwnershipIncarnation"];
-  readonly getOrdinaryThreadOwnershipIncarnation: Orchestrator.OrchestratorV2["Service"]["getOrdinaryThreadOwnershipIncarnation"];
-  readonly listWorktreeOwnershipLeases: Orchestrator.OrchestratorV2["Service"]["listWorktreeOwnershipLeases"];
+  readonly dispatchLegacyFailureDelete?: (
+    command: LegacyFailureDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyGuardRejectionDelete?: (
+    command: LegacyGuardRejectionDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
+  /**
+   * One turn item with the input and output the thread stream withholds,
+   * bounded for the wire. Clients fetch it when a tool row is expanded.
+   */
+  readonly getTurnItem: (input: {
+    readonly threadId: ThreadId;
+    readonly itemId: TurnItemId;
+  }) => Effect.Effect<OrchestrationV2GetTurnItemResult, Orchestrator.OrchestratorV2Error>;
   readonly getThreadRecords: Orchestrator.OrchestratorV2["Service"]["getThreadRecords"];
   readonly getThreadProjection: (
     threadId: ThreadId,
@@ -336,6 +335,8 @@ export interface ThreadManagementServiceShape {
     input: ThreadManagementInterruptInput,
   ) => Effect.Effect<ThreadManagementInterruptResult, ThreadManagementFailure>;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
+  readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
+  readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
   readonly streamStoredEvents: Orchestrator.OrchestratorV2["Service"]["streamStoredEvents"];
   readonly streamStoredEventsFrom: Orchestrator.OrchestratorV2["Service"]["streamStoredEventsFrom"];
   readonly streamDomainEvents: Orchestrator.OrchestratorV2["Service"]["streamDomainEvents"];
@@ -466,7 +467,7 @@ const make = Effect.gen(function* () {
     );
 
   const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
-    orchestrator.dispatch(command, ensureCommandTranscripts(command));
+    ensureCommandTranscripts(command).pipe(Effect.andThen(orchestrator.dispatch(command)));
 
   const getProjectThread: ThreadManagementServiceShape["getProjectThread"] = (input) =>
     getThreadProjection(input.threadId).pipe(
@@ -732,31 +733,19 @@ const make = Effect.gen(function* () {
     });
 
   return ThreadManagementService.of({
+    requestSelfSettlement: orchestrator.requestSelfSettlement,
     ensureLegacyTranscript,
     dispatch,
-    dispatchNativeWorkstreamSettlement: orchestrator.dispatchNativeWorkstreamSettlement,
-    observeNativeWorkstreamSettlementBinding: orchestrator.observeNativeWorkstreamSettlementBinding,
-    dispatchGuarded: orchestrator.dispatchGuarded,
-    dispatchRestartContinuation: orchestrator.dispatchRestartContinuation,
-    dispatchNativeCreationStage: orchestrator.dispatchNativeCreationStage,
-    dispatchNativeCreationRecovery: orchestrator.dispatchNativeCreationRecovery,
-    reviewImportedHistoryStart: (input) => orchestrator.reviewImportedHistoryStart(input, legacyImporter.readTranscriptSnapshotEvidence(input.threadId)),
-    observeImportedHistoryStart: orchestrator.observeImportedHistoryStart,
-    observeCurrentThreadRuntimeStop: orchestrator.observeCurrentThreadRuntimeStop,
-    observeThreadDeletionCleanup: orchestrator.observeThreadDeletionCleanup,
-    stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime,
-    startWithImportedHistory: (command) => orchestrator.startWithImportedHistory(command, legacyImporter.readTranscriptSnapshotEvidence(command.threadId)),
-    observeCommand: orchestrator.observeCommand,
-    observeLegacyCommand: orchestrator.observeLegacyCommand,
-    readCurrentThreadRuntimeAttachment: orchestrator.readCurrentThreadRuntimeAttachment,
-    observeCurrentThreadRuntime: orchestrator.observeCurrentThreadRuntime,
-    getOperatingCounts: orchestrator.getOperatingCounts,
-    acquireWorktreeOwnership: orchestrator.acquireWorktreeOwnership,
-    acquireOrdinaryWorktreeOwnership: orchestrator.acquireOrdinaryWorktreeOwnership,
-    releaseWorktreeOwnership: orchestrator.releaseWorktreeOwnership,
-    getThreadOwnershipIncarnation: orchestrator.getThreadOwnershipIncarnation,
-    getOrdinaryThreadOwnershipIncarnation: orchestrator.getOrdinaryThreadOwnershipIncarnation,
-    listWorktreeOwnershipLeases: orchestrator.listWorktreeOwnershipLeases,
+    ...(orchestrator.dispatchLegacyFailureDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete,
+        }),
+    ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete,
+        }),
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getTimelinePage(threadId, options)),
@@ -764,6 +753,11 @@ const make = Effect.gen(function* () {
     getMessageCount: (threadId) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getMessageCount(threadId)),
+      ),
+    getTurnItem: (input) =>
+      ensureProjectionTranscript(input.threadId).pipe(
+        Effect.andThen(orchestrator.getTurnItem(input)),
+        Effect.map((item) => ({ item: item === null ? null : projectTurnItemForDetail(item) })),
       ),
     getThreadRecords: (threadId, fields, filter) =>
       ensureProjectionTranscript(threadId).pipe(
@@ -782,6 +776,8 @@ const make = Effect.gen(function* () {
     waitForThread,
     interruptThread,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
+    recoverDelegatedTask: orchestrator.recoverDelegatedTask,
+    delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
     streamStoredEvents: orchestrator.streamStoredEvents,
     streamStoredEventsFrom: orchestrator.streamStoredEventsFrom,
     streamDomainEvents: orchestrator.streamDomainEvents,
@@ -793,7 +789,6 @@ const legacyV1ThreadImporterNoopLayer = Layer.succeed(
   LegacyV1ThreadImporter.LegacyV1ThreadImporter.of({
     pendingThreadCount: Effect.succeed(0),
     reconcileShells: Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
-    readTranscriptSnapshotEvidence: () => Effect.succeed(null),
     ensureTranscript: () => Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
     importPendingTranscripts: Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
   }),

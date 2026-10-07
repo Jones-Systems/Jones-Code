@@ -16,6 +16,7 @@ export const HostStatus = Schema.Union([
     logicalCpuCount: PositiveInt,
     // Occupied is total minus free, including reclaimable memory.
     occupiedMemoryBytes: NonNegativeInt,
+    availableMemoryBytes: Schema.optional(NonNegativeInt),
     totalMemoryBytes: PositiveInt,
     sampledAt: IsoDateTime,
   }),

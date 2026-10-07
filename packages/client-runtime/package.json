@@ -7,6 +7,14 @@
       "types": "./src/voiceReview/fixtures.ts",
       "default": "./src/voiceReview/fixtures.ts"
     },
+    "./conversations": {
+      "types": "./src/conversations/index.ts",
+      "default": "./src/conversations/index.ts"
+    },
+    "./voice-review": {
+      "types": "./src/voice-review.ts",
+      "default": "./src/voice-review.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"
@@ -223,6 +231,10 @@
       "types": "./src/state/server.ts",
       "default": "./src/state/server.ts"
     },
+    "./state/outdatedServerUpdate": {
+      "types": "./src/state/outdatedServerUpdate.ts",
+      "default": "./src/state/outdatedServerUpdate.ts"
+    },
     "./state/session": {
       "types": "./src/state/session.ts",
       "default": "./src/state/session.ts"
@@ -255,9 +267,17 @@
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
     },
+    "./state/workstreams": {
+      "types": "./src/state/workstreams/index.ts",
+      "default": "./src/state/workstreams/index.ts"
+    },
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"
+    },
+    "./state/thread-inbox": {
+      "types": "./src/state/threadInbox.ts",
+      "default": "./src/state/threadInbox.ts"
     },
     "./state/thread-relationships": {
       "types": "./src/state/threadRelationships.ts",
@@ -266,10 +286,6 @@
     "./state/thread-checkpoints": {
       "types": "./src/state/threadCheckpoints.ts",
       "default": "./src/state/threadCheckpoints.ts"
-    },
-    "./state/thread-continuation": {
-      "types": "./src/state/threadContinuation.ts",
-      "default": "./src/state/threadContinuation.ts"
     },
     "./state/thread-execution": {
       "types": "./src/state/threadExecution.ts",
@@ -310,6 +326,10 @@
     "./work-log/user-input": {
       "types": "./src/work-log/userInput.ts",
       "default": "./src/work-log/userInput.ts"
+    },
+    "./work-log/item-detail": {
+      "types": "./src/work-log/itemDetail.ts",
+      "default": "./src/work-log/itemDetail.ts"
     },
     "./work-log/presentation": {
       "types": "./src/work-log/presentation.ts",
@@ -367,25 +387,9 @@
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
     },
-    "./state/jonesUpdates": {
-      "types": "./src/state/jonesUpdates.ts",
-      "default": "./src/state/jonesUpdates.ts"
-    },
-    "./conversations": {
-      "types": "./src/conversations/index.ts",
-      "default": "./src/conversations/index.ts"
-    },
-    "./state/environmentHttpAuth": {
-      "types": "./src/state/environmentHttpAuth.ts",
-      "default": "./src/state/environmentHttpAuth.ts"
-    },
-    "./state/workstreams": {
-      "types": "./src/state/workstreams/index.ts",
-      "default": "./src/state/workstreams/index.ts"
-    },
-    "./voice-review": {
-      "types": "./src/voice-review.ts",
-      "default": "./src/voice-review.ts"
+    "./work-queue-metadata": {
+      "types": "./src/jones/workQueueMetadata.ts",
+      "default": "./src/jones/workQueueMetadata.ts"
     }
   },
   "scripts": {

@@ -1,3 +1,33 @@
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import * as Sink from "effect/Sink";
+import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
+import * as EventStore from "./EventStore.ts";
+import { awaitThreadCreationCleanup } from "./ThreadDeletion.ts";
+import { makeProviderFailure } from "./ProviderFailure.ts";
+import {
+  legacyBootstrapCreateCommandId,
+  legacyBootstrapBirth,
+  legacyPreparationGeneration,
+  legacyPreparationEffectId,
+  canonicalLegacyPayload,
+  legacyPayloadHash,
+  transitionLegacyPreparation,
+} from "./LegacyBootstrap.ts";
+import {
+  LegacyNoTerminalControl,
+  LegacyOwnedTerminalControl,
+  type LegacyPreparation,
+  type LegacyPreparationUpdate,
+  type LegacyGuardRejectionDeleteCommand,
+} from "./RecordedTypes.ts";
+import { makeCommandObservationQuery } from "./CommandObservation.ts";
+import {
+  OrchestrationCommandObservation,
+  type OrchestrationV2Command,
+  type ThreadTurnDispatchGuard,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -14,17 +44,25 @@ import {
   NodeId,
   RuntimeRequestId,
   TurnItemId,
+  TurnId,
   type ModelSelection,
   type OrchestrationV2Run,
   ProjectId,
+  type PullRequestDetail,
+  type PullRequestComment,
+  PullRequestOperationError,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
+  PlanId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Context from "effect/Context";
+import * as FileSystem from "effect/FileSystem";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -39,7 +77,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ServerConfig from "../config.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../persistence/Layers/Sqlite.ts";
 import * as OrchestrationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -50,14 +91,21 @@ import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import type * as PtyAdapter from "../terminal/PtyAdapter.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { ROLLBACK_FAILED_MESSAGE } from "./CheckpointRollbackService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
+import * as PullRequestWatchReactor from "./PullRequestWatchReactor.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import type { ProviderAdapterV2SessionRuntime, ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -212,6 +260,7 @@ const TestLayer = Layer.mergeAll(
   OrchestrationV2LayerLive,
   OrchestrationV2EventSinkLayerLive,
   ProjectStore.layer,
+  ProjectionStore.layer,
   EffectOutbox.layer,
   ThreadCommandExecutor.layer,
 ).pipe(
@@ -2148,6 +2197,397 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("starts, records, and stops a pull request watch", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const threadId = ThreadId.make("runtime-pull-request-watch");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("pr-watch-create"),
+        threadId,
+        projectId: ProjectId.make("pr-watch-project"),
+        title: "Watch",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const key = { host: "github.com", repository: "pingdotgg/t3code", number: 7 };
+      const url = "https://github.com/pingdotgg/t3code/pull/7";
+      const watchOf = Effect.map(
+        orchestrator.getThreadShell(threadId),
+        (thread) => thread?.pullRequests?.[0]?.watch,
+      );
+
+      // Watching an unlinked pull request links it in the same command.
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make("pr-watch-start"),
+        threadId,
+        ...key,
+        watching: true,
+        link: { url, source: "agent" },
+      });
+      assert.equal(
+        (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.source,
+        "agent",
+      );
+      const started = yield* watchOf;
+      assert.isDefined(started);
+      if (started === undefined) return;
+
+      // A legacy client re-linking the same pull request keeps its watch.
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("pr-watch-legacy-relink"),
+        threadId,
+        linkedPullRequest: { projectId: ProjectId.make("pr-watch-project"), ...key, url },
+      });
+      assert.deepEqual(yield* watchOf, started);
+
+      const recorded = { ...started, headSha: "abc123", failedChecks: ["lint"], wakes: 1 };
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request-watch.sync",
+        commandId: CommandId.make("pr-watch-record"),
+        threadId,
+        ...key,
+        startedAt: started.startedAt,
+        watch: recorded,
+      });
+      assert.deepEqual(yield* watchOf, recorded);
+      assert.isTrue((yield* maintenance.rebuild).valid);
+      assert.deepEqual(yield* watchOf, recorded);
+
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make("pr-watch-stop"),
+        threadId,
+        ...key,
+        watching: false,
+      });
+      // A wake read before the stop must neither wake the agent nor bring the watch back.
+      const late = yield* orchestrator
+        .dispatch({
+          type: "thread.pull-request-watch.sync",
+          commandId: CommandId.make("pr-watch-late-record"),
+          threadId,
+          ...key,
+          startedAt: started.startedAt,
+          watch: { ...recorded, wakes: 2 },
+          wake: {
+            messageId: MessageId.make("pr-watch-late-wake"),
+            text: "Update",
+            notification: { source: { kind: "monitor" }, outcome: "updated", summary: "#7" },
+          },
+        })
+        .pipe(Effect.flip);
+      assert.equal(late._tag, "OrchestratorDispatchError");
+      assert.isUndefined(yield* watchOf);
+      const { messages } = yield* orchestrator.getThreadRecords(threadId, ["messages"]);
+      assert.deepEqual(messages, []);
+    }),
+  );
+
+  it.effect("ends a watch it cannot read, and tells the agent", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-pull-request-watch-unreadable");
+      const projectId = ProjectId.make("pr-watch-unreadable-project");
+      yield* seedProject({
+        projectId,
+        title: "Watch unreadable",
+        workspaceRoot: "/workspace/watch-unreadable",
+        defaultModelSelection: null,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("pr-watch-unreadable-create"),
+        threadId,
+        projectId,
+        title: "Watch unreadable",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make("pr-watch-unreadable-start"),
+        threadId,
+        host: "github.com",
+        repository: "pingdotgg/t3code",
+        number: 8,
+        watching: true,
+        link: { url: "https://github.com/pingdotgg/t3code/pull/8", source: "agent" },
+      });
+      const reactor = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: () => Effect.die("host unreachable"),
+              activity: () => Effect.die("host unreachable"),
+            }),
+          ),
+        ),
+      );
+      for (let pass = 0; pass < 15; pass += 1) yield* reactor.sweep;
+
+      const thread = yield* orchestrator.getThreadShell(threadId);
+      assert.isUndefined(thread?.pullRequests?.[0]?.watch);
+      const { messages } = yield* orchestrator.getThreadRecords(threadId, ["messages"]);
+      assert.deepEqual(
+        messages.flatMap((message) => message.notification?.summary ?? []),
+        ["#8: stopped watching, could not read it"],
+      );
+    }),
+  );
+
+  it.effect.each([
+    "single page",
+    "paginated",
+    "page failure",
+    "repeated cursor",
+    "missing comments",
+    "thread list truncated",
+  ])("wakes a watched thread once: %s", (mode) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make(`runtime-pull-request-watch-wake-${mode}`);
+      const projectId = ProjectId.make(`pr-watch-wake-project-${mode}`);
+      yield* seedProject({
+        projectId,
+        title: "Watch wake",
+        workspaceRoot: "/workspace/watch",
+        defaultModelSelection: null,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`pr-watch-wake-create-${mode}`),
+        threadId,
+        projectId,
+        title: "Watch wake",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const key = { host: "github.com", repository: "pingdotgg/t3code", number: 7 };
+      const url = "https://github.com/pingdotgg/t3code/pull/7";
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.link",
+        commandId: CommandId.make(`pr-watch-wake-link-${mode}`),
+        threadId,
+        ...key,
+        url,
+        source: "agent",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make(`pr-watch-wake-start-${mode}`),
+        threadId,
+        ...key,
+        watching: true,
+      });
+
+      const at = "2026-10-02T12:00:00.000Z";
+      const detail: PullRequestDetail = {
+        provider: "github",
+        capabilities: {
+          diff: true,
+          comment: true,
+          actions: [],
+          mergeMethods: [],
+          search: false,
+          review: { inlineComment: false, reply: false, resolve: false, verdicts: [] },
+          reviewers: { request: false, listCandidates: false },
+        },
+        viewerPermissions: {
+          actions: [],
+          comment: true,
+          resolve: true,
+          verdicts: [],
+          requestReviewers: false,
+        },
+        projectId,
+        projectTitle: "Watch wake",
+        workspaceRoot: "/workspace/watch",
+        repository: key.repository,
+        number: key.number,
+        title: "Watched pull request",
+        body: "",
+        url,
+        author: { login: "agent-user", name: null, avatarUrl: null },
+        state: "open",
+        isDraft: false,
+        mergeability: "mergeable",
+        additions: 1,
+        deletions: 0,
+        changedFiles: 1,
+        headBranch: "feature",
+        headSha: "abc1234def",
+        baseBranch: "main",
+        createdAt: at,
+        updatedAt: at,
+        mergedAt: null,
+        closedAt: null,
+        reviewers: [],
+        labels: [],
+        checks: [{ name: "lint", status: "failure", description: null, url: null }],
+        mergeCapabilities: { merge: true, squash: true, rebase: true },
+        viewer: "agent-user",
+      };
+      const initialWatch = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watch;
+      assert.isDefined(initialWatch);
+      const remark: PullRequestComment = {
+        id: "review-1",
+        kind: "review-comment",
+        author: { login: "reviewer", name: null, avatarUrl: null },
+        body: "One more thing.",
+        createdAt: "2999-01-01T00:00:03.000Z",
+        url: null,
+        path: "src/index.ts",
+        reviewState: null,
+      };
+      const firstTen = Array.from({ length: 10 }, (_, index) => ({
+        ...remark,
+        id: `old-${index}`,
+        createdAt: "1900-01-01T00:00:00.000Z",
+      }));
+      const eleventh = {
+        ...remark,
+        id: "reply-11",
+        body: "Eleventh reply.",
+        createdAt: "2999-01-01T00:00:01.000Z",
+      };
+      const twelfth = {
+        ...remark,
+        id: "reply-12",
+        body: "Twelfth reply.",
+        createdAt: "2999-01-01T00:00:02.000Z",
+      };
+      const incomplete = mode !== "single page" && mode !== "paginated";
+      let recovering = false;
+      let pagesRead = 0;
+      const reactor = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: () => Effect.succeed(detail),
+              activity: () =>
+                Effect.succeed({
+                  comments:
+                    mode === "single page"
+                      ? [remark]
+                      : [...firstTen, { ...remark, kind: "issue-comment" }],
+                  commentCount: mode === "single page" ? 1 : 13,
+                  commentsTruncated: mode !== "single page",
+                  reviewThreadsTruncated: mode === "thread list truncated" && !recovering,
+                  reviewThreads:
+                    mode === "single page"
+                      ? []
+                      : [
+                          {
+                            id: "review-thread",
+                            path: "src/index.ts",
+                            line: 1,
+                            side: "right",
+                            isResolved: false,
+                            isOutdated: false,
+                            comments: firstTen,
+                            commentCount: 12,
+                            nextCommentsCursor: "after-10",
+                          },
+                        ],
+                  commits: [],
+                }),
+              threadComments: (input) => {
+                pagesRead += 1;
+                assert.equal(input.threadId, "review-thread");
+                if (input.cursor === "after-10") {
+                  return Effect.succeed({ comments: [eleventh], nextCursor: "after-11" });
+                }
+                assert.equal(input.cursor, "after-11");
+                if (!recovering && mode === "page failure") {
+                  return Effect.fail(
+                    new PullRequestOperationError({
+                      operation: "threadComments",
+                      detail: "Page unavailable",
+                    }),
+                  );
+                }
+                if (!recovering && mode === "repeated cursor") {
+                  return Effect.succeed({ comments: [eleventh], nextCursor: "after-11" });
+                }
+                if (!recovering && mode === "missing comments") {
+                  return Effect.succeed({ comments: [], nextCursor: null });
+                }
+                // Overlapping pages must not report the same reply twice.
+                return Effect.succeed({ comments: [eleventh, twelfth], nextCursor: null });
+              },
+            }),
+          ),
+        ),
+      );
+      if (incomplete) {
+        yield* reactor.sweep;
+        const held = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watch;
+        assert.equal(held?.remarksThrough, initialWatch?.remarksThrough);
+        assert.deepEqual(held?.remarkIds, initialWatch?.remarkIds);
+        assert.deepEqual(held?.failedChecks, ["lint"]);
+        const { messages } = yield* orchestrator.getThreadRecords(threadId, ["messages"]);
+        assert.deepEqual(
+          messages.map((message) => message.notification?.summary),
+          ["#7: checks failed"],
+        );
+        // Keep the two notifications ordered independently of their random message IDs.
+        yield* TestClock.adjust("1 millis");
+        recovering = true;
+      }
+      yield* reactor.sweep;
+      // A thread whose count has not moved is not paged again.
+      const pagesBefore = pagesRead;
+      yield* reactor.sweep;
+      assert.equal(pagesRead, pagesBefore);
+
+      const { messages } = yield* orchestrator.getThreadRecords(threadId, ["messages"]);
+      assert.deepEqual(
+        messages.flatMap((message) =>
+          message.notification === undefined ? [] : [message.notification.summary],
+        ),
+        incomplete
+          ? ["#7: checks failed", "#7: new comments"]
+          : ["#7: checks failed, new comments"],
+      );
+      if (mode !== "single page") {
+        const wake = messages.at(-1);
+        assert.include(wake?.text ?? "", "3 new comments");
+        assert.include(wake?.text ?? "", "Eleventh reply.");
+        assert.include(wake?.text ?? "", "Twelfth reply.");
+      }
+      const watch = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watch;
+      assert.equal(watch?.remarksThrough, remark.createdAt);
+      assert.deepEqual(watch?.remarkIds, [remark.id]);
+      assert.deepEqual(
+        { headSha: watch?.headSha, failedChecks: watch?.failedChecks, wakes: watch?.wakes },
+        { headSha: "abc1234def", failedChecks: ["lint"], wakes: incomplete ? 1 : 0 },
+      );
+    }),
+  );
+
   it.effect("persists rejected command receipts across retries", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -2599,210 +3039,324 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  for (const automatic of [false, true]) {
-    it.effect(
-      `promotes only one queued run after each terminal run (notification: ${automatic})`,
-      () =>
-        Effect.gen(function* () {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          const eventSink = yield* EventSink.EventSinkV2;
-          const threadId = ThreadId.make(`runtime-layer-serialized-queue-thread-${automatic}`);
+  it.effect.each([false, true])(
+    "promotes only one queued run after each terminal run (notification: %s)",
+    (automatic) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const threadId = ThreadId.make(`runtime-layer-serialized-queue-thread-${automatic}`);
 
-          yield* orchestrator.dispatch({
-            type: "thread.create",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make(`runtime-layer-serialized-queue-create-${automatic}`),
-            threadId,
-            projectId: ProjectId.make(`runtime-layer-serialized-queue-project-${automatic}`),
-            title: "Serialized queue",
-            modelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: process.cwd(),
-          });
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make(`runtime-layer-serialized-queue-active-${automatic}`),
-            threadId,
-            messageId: MessageId.make(`runtime-layer-serialized-queue-active-${automatic}`),
-            text: "Active",
-            attachments: [],
-            modelSelection,
-            dispatchMode: { type: "start_immediately" },
-          });
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
-            createdBy: automatic ? "agent" : "user",
-            creationSource: automatic ? "provider" : "web",
-            ...(automatic
-              ? {
-                  notification: {
-                    source: { kind: "monitor" as const },
-                    outcome: "updated" as const,
-                    summary: "Monitor updated",
-                    detail: "Build is green",
-                  },
-                }
-              : {}),
-            commandId: CommandId.make(`runtime-layer-serialized-queue-first-${automatic}`),
-            threadId,
-            messageId: MessageId.make(`runtime-layer-serialized-queue-first-${automatic}`),
-            text: "First queued",
-            attachments: [],
-            modelSelection,
-            dispatchMode: { type: "queue_after_active" },
-          });
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make(`runtime-layer-serialized-queue-second-${automatic}`),
-            threadId,
-            messageId: MessageId.make(`runtime-layer-serialized-queue-second-${automatic}`),
-            text: "Second queued",
-            attachments: [],
-            modelSelection,
-            dispatchMode: { type: "queue_after_active" },
-          });
-
-          const before = yield* orchestrator.getThreadProjection(threadId);
-          const activeRun = before.runs.find((run) => run.status === "starting");
-          const queuedRuns = before.runs
-            .filter((run) => run.status === "queued")
-            .toSorted((left, right) => left.ordinal - right.ordinal);
-          const firstQueuedRun = queuedRuns[0];
-          const secondQueuedRun = queuedRuns[1];
-          assert.isDefined(activeRun);
-          assert.isDefined(firstQueuedRun);
-          assert.isDefined(secondQueuedRun);
-          assert.isFalse(
-            before.turnItems.some(
-              (item) =>
-                item.type === "user_message" &&
-                (item.messageId === firstQueuedRun.userMessageId ||
-                  item.messageId === secondQueuedRun.userMessageId),
-            ),
-            "queued messages must not exist as turn items before dispatch",
-          );
-
-          const promotedRunIds = yield* Queue.unbounded<RunId>();
-          const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
-          yield* eventSink.stream({ threadId, afterSequence }).pipe(
-            Stream.runForEach((stored) =>
-              stored.event.type === "run.updated" && stored.event.payload.status === "starting"
-                ? Queue.offer(promotedRunIds, stored.event.payload.id)
-                : Effect.void,
-            ),
-            Effect.forkScoped,
-          );
-          yield* Effect.yieldNow;
-
-          const activeCompletedAt = yield* DateTime.now;
-          yield* eventSink.write({
-            events: [
-              {
-                id: EventId.make(`runtime-layer-serialized-queue-active-completed-${automatic}`),
-                type: "run.updated",
-                threadId,
-                runId: activeRun.id,
-                ...(activeRun.rootNodeId === null ? {} : { nodeId: activeRun.rootNodeId }),
-                providerInstanceId: activeRun.providerInstanceId,
-                occurredAt: activeCompletedAt,
-                payload: {
-                  ...activeRun,
-                  status: "completed",
-                  completedAt: activeCompletedAt,
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-layer-serialized-queue-create-${automatic}`),
+          threadId,
+          projectId: ProjectId.make(`runtime-layer-serialized-queue-project-${automatic}`),
+          title: "Serialized queue",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-layer-serialized-queue-active-${automatic}`),
+          threadId,
+          messageId: MessageId.make(`runtime-layer-serialized-queue-active-${automatic}`),
+          text: "Active",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: automatic ? "agent" : "user",
+          creationSource: automatic ? "provider" : "web",
+          ...(automatic
+            ? {
+                notification: {
+                  source: { kind: "monitor" as const },
+                  outcome: "updated" as const,
+                  summary: "Monitor updated",
+                  detail: "Build is green",
                 },
-              },
-            ],
-          });
+              }
+            : {}),
+          commandId: CommandId.make(`runtime-layer-serialized-queue-first-${automatic}`),
+          threadId,
+          messageId: MessageId.make(`runtime-layer-serialized-queue-first-${automatic}`),
+          text: "First queued",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "queue_after_active" },
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`runtime-layer-serialized-queue-second-${automatic}`),
+          threadId,
+          messageId: MessageId.make(`runtime-layer-serialized-queue-second-${automatic}`),
+          text: "Second queued",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "queue_after_active" },
+        });
 
-          assert.equal(yield* Queue.take(promotedRunIds), firstQueuedRun.id);
-          const afterFirstPromotion = yield* orchestrator.getThreadProjection(threadId);
-          assert.equal(
-            afterFirstPromotion.runs.find((run) => run.id === firstQueuedRun.id)?.status,
-            "starting",
-          );
-          assert.equal(
-            afterFirstPromotion.runs.find((run) => run.id === secondQueuedRun.id)?.status,
-            "queued",
-          );
-          const promotedMessageItem = afterFirstPromotion.turnItems.find(
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const activeRun = before.runs.find((run) => run.status === "starting");
+        const queuedRuns = before.runs
+          .filter((run) => run.status === "queued")
+          .toSorted((left, right) => left.ordinal - right.ordinal);
+        const firstQueuedRun = queuedRuns[0];
+        const secondQueuedRun = queuedRuns[1];
+        assert.isDefined(activeRun);
+        assert.isDefined(firstQueuedRun);
+        assert.isDefined(secondQueuedRun);
+        assert.isFalse(
+          before.turnItems.some(
             (item) =>
-              item.runId === firstQueuedRun.id &&
-              (item.type === "user_message" || item.type === "notification"),
-          );
-          assert.isDefined(promotedMessageItem);
-          if (automatic) {
-            assert.equal(promotedMessageItem.type, "notification");
-            assert.equal(
-              afterFirstPromotion.messages.find(
-                (message) => message.id === firstQueuedRun.userMessageId,
-              )?.text,
-              "First queued",
-            );
-            assert.equal(
-              afterFirstPromotion.messages.find(
-                (message) => message.id === firstQueuedRun.userMessageId,
-              )?.notification?.summary,
-              "Monitor updated",
-            );
-            assert.isFalse(
-              afterFirstPromotion.turnItems.some(
-                (item) =>
-                  item.type === "user_message" && item.messageId === firstQueuedRun.userMessageId,
-              ),
-            );
-          } else {
-            assert.equal(promotedMessageItem.type, "user_message");
-          }
-          assert.isTrue(
-            promotedMessageItem.startedAt !== null &&
-              DateTime.toEpochMillis(promotedMessageItem.startedAt) >=
-                DateTime.toEpochMillis(activeCompletedAt),
-          );
+              item.type === "user_message" &&
+              (item.messageId === firstQueuedRun.userMessageId ||
+                item.messageId === secondQueuedRun.userMessageId),
+          ),
+          "queued messages must not exist as turn items before dispatch",
+        );
 
-          const promotedFirst = afterFirstPromotion.runs.find(
-            (run) => run.id === firstQueuedRun.id,
+        const promotedRunIds = yield* Queue.unbounded<RunId>();
+        const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+        yield* eventSink.stream({ threadId, afterSequence }).pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "starting"
+              ? Queue.offer(promotedRunIds, stored.event.payload.id)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+
+        const activeCompletedAt = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`runtime-layer-serialized-queue-active-completed-${automatic}`),
+              type: "run.updated",
+              threadId,
+              runId: activeRun.id,
+              ...(activeRun.rootNodeId === null ? {} : { nodeId: activeRun.rootNodeId }),
+              providerInstanceId: activeRun.providerInstanceId,
+              occurredAt: activeCompletedAt,
+              payload: {
+                ...activeRun,
+                status: "completed",
+                completedAt: activeCompletedAt,
+              },
+            },
+          ],
+        });
+
+        assert.equal(yield* Queue.take(promotedRunIds), firstQueuedRun.id);
+        const afterFirstPromotion = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(
+          afterFirstPromotion.runs.find((run) => run.id === firstQueuedRun.id)?.status,
+          "starting",
+        );
+        assert.equal(
+          afterFirstPromotion.runs.find((run) => run.id === secondQueuedRun.id)?.status,
+          "queued",
+        );
+        const promotedMessageItem = afterFirstPromotion.turnItems.find(
+          (item) =>
+            item.runId === firstQueuedRun.id &&
+            (item.type === "user_message" || item.type === "notification"),
+        );
+        assert.isDefined(promotedMessageItem);
+        if (automatic) {
+          assert.equal(promotedMessageItem.type, "notification");
+          assert.equal(
+            afterFirstPromotion.messages.find(
+              (message) => message.id === firstQueuedRun.userMessageId,
+            )?.text,
+            "First queued",
           );
-          assert.isDefined(promotedFirst);
-          const firstCompletedAt = yield* DateTime.now;
+          assert.equal(
+            afterFirstPromotion.messages.find(
+              (message) => message.id === firstQueuedRun.userMessageId,
+            )?.notification?.summary,
+            "Monitor updated",
+          );
+          assert.isFalse(
+            afterFirstPromotion.turnItems.some(
+              (item) =>
+                item.type === "user_message" && item.messageId === firstQueuedRun.userMessageId,
+            ),
+          );
+        } else {
+          assert.equal(promotedMessageItem.type, "user_message");
+        }
+        assert.isTrue(
+          promotedMessageItem.startedAt !== null &&
+            DateTime.toEpochMillis(promotedMessageItem.startedAt) >=
+              DateTime.toEpochMillis(activeCompletedAt),
+        );
+
+        const promotedFirst = afterFirstPromotion.runs.find((run) => run.id === firstQueuedRun.id);
+        assert.isDefined(promotedFirst);
+        const firstCompletedAt = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`runtime-layer-serialized-queue-first-completed-${automatic}`),
+              type: "run.updated",
+              threadId,
+              runId: promotedFirst.id,
+              ...(promotedFirst.rootNodeId === null ? {} : { nodeId: promotedFirst.rootNodeId }),
+              providerInstanceId: promotedFirst.providerInstanceId,
+              occurredAt: firstCompletedAt,
+              payload: {
+                ...promotedFirst,
+                status: "completed",
+                completedAt: firstCompletedAt,
+              },
+            },
+          ],
+        });
+
+        assert.equal(yield* Queue.take(promotedRunIds), secondQueuedRun.id);
+        const afterSecondPromotion = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(
+          afterSecondPromotion.runs.find((run) => run.id === firstQueuedRun.id)?.status,
+          "completed",
+        );
+        assert.equal(
+          afterSecondPromotion.runs.find((run) => run.id === secondQueuedRun.id)?.status,
+          "starting",
+        );
+      }),
+  );
+
+  it.effect("starts a wake's work clock from the run that ran before it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("runtime-layer-wake-work-start-thread");
+      const messageId = (key: string) => MessageId.make(`runtime-layer-wake-work-start-${key}`);
+
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-wake-work-start-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-layer-wake-work-start-project"),
+        title: "Wake work start",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const dispatch = (key: string, wake: boolean) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: wake ? "agent" : "user",
+          creationSource: wake ? "provider" : "web",
+          ...(wake
+            ? {
+                notification: {
+                  source: { kind: "background_task" as const },
+                  outcome: "updated" as const,
+                  summary: "Background activity updated",
+                },
+              }
+            : {}),
+          commandId: CommandId.make(`runtime-layer-wake-work-start-${key}`),
+          threadId,
+          messageId: messageId(key),
+          text: key,
+          attachments: [],
+          modelSelection,
+          dispatchMode:
+            key === "prompt" ? { type: "start_immediately" } : { type: "queue_after_active" },
+        });
+      const runFor = (key: string) =>
+        Effect.map(orchestrator.getThreadProjection(threadId), ({ runs }) => {
+          const run = runs.find((candidate) => candidate.userMessageId === messageId(key));
+          assert.isDefined(run);
+          return run;
+        });
+      yield* dispatch("prompt", false);
+      yield* dispatch("queued", false);
+      yield* dispatch("early-wake", true);
+      // The early wake now runs ahead of the older queued prompt, as a
+      // delegated result does when it jumps the queue.
+      yield* orchestrator.dispatch({
+        type: "queued-run.reorder",
+        commandId: CommandId.make("runtime-layer-wake-work-start-reorder"),
+        threadId,
+        runId: (yield* runFor("queued")).id,
+        beforeRunId: null,
+      });
+      yield* dispatch("late-wake", true);
+      // A queued wake has no clock yet: what runs before it is still unknown.
+      assert.isUndefined((yield* runFor("early-wake")).workStartedAt);
+
+      const startedRunIds = yield* Queue.unbounded<RunId>();
+      const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+      yield* eventSink.stream({ threadId, afterSequence }).pipe(
+        Stream.runForEach((stored) =>
+          stored.event.type === "run.updated" && stored.event.payload.status === "starting"
+            ? Queue.offer(startedRunIds, stored.event.payload.id)
+            : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+
+      const now = yield* DateTime.now;
+      // Runs start and settle the way the provider would report them.
+      const settle = (key: string, startedAt: DateTime.Utc) =>
+        Effect.gen(function* () {
+          const run = yield* runFor(key);
           yield* eventSink.write({
             events: [
               {
-                id: EventId.make(`runtime-layer-serialized-queue-first-completed-${automatic}`),
+                id: EventId.make(`runtime-layer-wake-work-start-${key}-completed`),
                 type: "run.updated",
                 threadId,
-                runId: promotedFirst.id,
-                ...(promotedFirst.rootNodeId === null ? {} : { nodeId: promotedFirst.rootNodeId }),
-                providerInstanceId: promotedFirst.providerInstanceId,
-                occurredAt: firstCompletedAt,
-                payload: {
-                  ...promotedFirst,
-                  status: "completed",
-                  completedAt: firstCompletedAt,
-                },
+                runId: run.id,
+                ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: startedAt,
+                payload: { ...run, status: "completed", startedAt, completedAt: startedAt },
               },
             ],
           });
+        });
+      const millis = (value: DateTime.Utc | undefined) =>
+        value === undefined ? undefined : DateTime.toEpochMillis(value);
 
-          assert.equal(yield* Queue.take(promotedRunIds), secondQueuedRun.id);
-          const afterSecondPromotion = yield* orchestrator.getThreadProjection(threadId);
-          assert.equal(
-            afterSecondPromotion.runs.find((run) => run.id === firstQueuedRun.id)?.status,
-            "completed",
-          );
-          assert.equal(
-            afterSecondPromotion.runs.find((run) => run.id === secondQueuedRun.id)?.status,
-            "starting",
-          );
-        }),
-    );
-  }
+      yield* settle("prompt", now);
+      assert.equal(yield* Queue.take(startedRunIds), (yield* runFor("early-wake")).id);
+      assert.equal(millis((yield* runFor("early-wake")).workStartedAt), millis(now));
+
+      yield* settle("early-wake", DateTime.add(now, { seconds: 1 }));
+      assert.equal(yield* Queue.take(startedRunIds), (yield* runFor("queued")).id);
+      assert.isUndefined((yield* runFor("queued")).workStartedAt);
+
+      // The queued prompt starts long after it was requested; the wake after it
+      // counts from that start, not from the request.
+      const queuedStartedAt = DateTime.add(now, { minutes: 10 });
+      yield* settle("queued", queuedStartedAt);
+      assert.equal(yield* Queue.take(startedRunIds), (yield* runFor("late-wake")).id);
+      assert.equal(millis((yield* runFor("late-wake")).workStartedAt), millis(queuedStartedAt));
+    }),
+  );
 
   it.effect.each(["usage_limit", "provider_error"] as const)(
     "handles a queued message after a %s failure",
@@ -2993,112 +3547,106 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  for (const trigger of ["startup", "shutdown"] as const) {
-    it.effect(
-      `preserves and holds queued messages across ${trigger} until explicitly resumed`,
-      () =>
-        Effect.gen(function* () {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
-          const threadId = ThreadId.make(`queue-hold-${trigger}`);
+  it.effect.each(["startup", "shutdown"] as const)(
+    "preserves and holds queued messages across %s until explicitly resumed",
+    (trigger) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+        const threadId = ThreadId.make(`queue-hold-${trigger}`);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Recover queue",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        for (const [index, text] of ["Active", "First queued", "Second queued"].entries()) {
           yield* orchestrator.dispatch({
-            type: "thread.create",
+            type: "message.dispatch",
             createdBy: "user",
             creationSource: "web",
-            commandId: CommandId.make(`${threadId}:create`),
+            commandId: CommandId.make(`${threadId}:message:${index}`),
             threadId,
-            projectId: ProjectId.make(`${threadId}:project`),
-            title: "Recover queue",
+            messageId: MessageId.make(`${threadId}:message:${index}`),
+            text,
+            attachments: [],
             modelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: process.cwd(),
+            dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
           });
-          for (const [index, text] of ["Active", "First queued", "Second queued"].entries()) {
-            yield* orchestrator.dispatch({
-              type: "message.dispatch",
-              createdBy: "user",
-              creationSource: "web",
-              commandId: CommandId.make(`${threadId}:message:${index}`),
-              threadId,
-              messageId: MessageId.make(`${threadId}:message:${index}`),
-              text,
-              attachments: [],
-              modelSelection,
-              dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
-            });
-          }
-          const before = yield* orchestrator.getThreadProjection(threadId);
-          const queued = before.runs.filter((run) => run.status === "queued");
-          assert.equal(queued.length, 2);
-          yield* recovery.reconcile(trigger);
-          // A second boot must preserve the hold, even when only queued work remains.
-          yield* recovery.reconcile("startup");
-          const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
-          assert.isTrue((yield* maintenance.rebuild).valid);
-          assert.equal(yield* orchestrator.resumeQueuedRuns, 0);
-          const held = yield* orchestrator.getThreadProjection(threadId);
+        }
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const queued = before.runs.filter((run) => run.status === "queued");
+        assert.equal(queued.length, 2);
+        yield* recovery.reconcile(trigger);
+        // A second boot must preserve the hold, even when only queued work remains.
+        yield* recovery.reconcile("startup");
+        const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+        assert.isTrue((yield* maintenance.rebuild).valid);
+        assert.equal(yield* orchestrator.resumeQueuedRuns, 0);
+        const held = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          held.runs.map((run) => run.status),
+          ["cancelled", "queued", "queued"],
+        );
+        for (const run of queued) {
           assert.deepEqual(
-            held.runs.map((run) => run.status),
-            ["cancelled", "queued", "queued"],
+            held.runs.find((row) => row.id === run.id),
+            { ...run, queueHeld: true },
           );
-          for (const run of queued) {
-            assert.deepEqual(
-              held.runs.find((row) => row.id === run.id),
-              { ...run, queueHeld: true },
-            );
-            assert.deepEqual(
-              held.messages.find((row) => row.id === run.userMessageId),
-              before.messages.find((row) => row.id === run.userMessageId),
-            );
-            assert.equal(
-              held.attempts.find((row) => row.id === run.activeAttemptId)?.status,
-              "pending",
-            );
-            assert.equal(held.nodes.find((row) => row.id === run.rootNodeId)?.status, "pending");
-          }
-          // Editing and reordering are allowed without releasing the hold.
-          const first = queued[0]!;
-          const second = queued[1]!;
-          yield* orchestrator.dispatch({
-            type: "queued-run.edit",
-            commandId: CommandId.make(`${threadId}:edit`),
-            threadId,
-            runId: second.id,
-            text: "Edited second message",
-          });
-          yield* orchestrator.dispatch({
-            type: "queued-run.reorder",
-            commandId: CommandId.make(`${threadId}:reorder`),
-            threadId,
-            runId: second.id,
-            beforeRunId: first.id,
-          });
-          assert.equal(yield* orchestrator.resumeQueuedRuns, 0);
-          const resume = {
-            type: "queue.resume" as const,
-            commandId: CommandId.make(`${threadId}:resume`),
-            threadId,
-          };
-          yield* orchestrator.dispatch(resume);
-          yield* orchestrator.dispatch(resume);
-          const resumed = yield* orchestrator.getThreadProjection(threadId);
-          assert.equal(resumed.runs.find((run) => run.id === second.id)?.status, "starting");
-          assert.equal(resumed.runs.find((run) => run.id === first.id)?.status, "queued");
-          assert.isFalse(resumed.runs.some((run) => run.status === "queued" && run.queueHeld));
-          assert.equal(
-            resumed.messages.find((row) => row.id === second.userMessageId)?.text,
-            "Edited second message",
+          assert.deepEqual(
+            held.messages.find((row) => row.id === run.userMessageId),
+            before.messages.find((row) => row.id === run.userMessageId),
           );
           assert.equal(
-            resumed.runs.length,
-            3,
-            "resume retries must not duplicate messages or runs",
+            held.attempts.find((row) => row.id === run.activeAttemptId)?.status,
+            "pending",
           );
-        }),
-    );
-  }
+          assert.equal(held.nodes.find((row) => row.id === run.rootNodeId)?.status, "pending");
+        }
+        // Editing and reordering are allowed without releasing the hold.
+        const first = queued[0]!;
+        const second = queued[1]!;
+        yield* orchestrator.dispatch({
+          type: "queued-run.edit",
+          commandId: CommandId.make(`${threadId}:edit`),
+          threadId,
+          runId: second.id,
+          text: "Edited second message",
+        });
+        yield* orchestrator.dispatch({
+          type: "queued-run.reorder",
+          commandId: CommandId.make(`${threadId}:reorder`),
+          threadId,
+          runId: second.id,
+          beforeRunId: first.id,
+        });
+        assert.equal(yield* orchestrator.resumeQueuedRuns, 0);
+        const resume = {
+          type: "queue.resume" as const,
+          commandId: CommandId.make(`${threadId}:resume`),
+          threadId,
+        };
+        yield* orchestrator.dispatch(resume);
+        yield* orchestrator.dispatch(resume);
+        const resumed = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(resumed.runs.find((run) => run.id === second.id)?.status, "starting");
+        assert.equal(resumed.runs.find((run) => run.id === first.id)?.status, "queued");
+        assert.isFalse(resumed.runs.some((run) => run.status === "queued" && run.queueHeld));
+        assert.equal(
+          resumed.messages.find((row) => row.id === second.userMessageId)?.text,
+          "Edited second message",
+        );
+        assert.equal(resumed.runs.length, 3, "resume retries must not duplicate messages or runs");
+      }),
+  );
 
   it.effect("edits and removes queued runs", () =>
     Effect.gen(function* () {
@@ -4245,6 +4793,2335 @@ it.layer(TestLayer)("usage-limit recovery", (it) => {
         assert.equal(resumed.runs[1]?.status, "starting");
         assert.isFalse(resumed.runs[1]?.queueHeld);
       }
+    }),
+  );
+});
+
+class LegacyGuardPty implements PtyAdapter.PtyProcess {
+  readonly pid: number;
+  constructor(pid: number) {
+    this.pid = pid;
+  }
+  readonly writes: string[] = [];
+  readonly kills: (string | undefined)[] = [];
+  readonly exits = new Set<(event: PtyAdapter.PtyExitEvent) => void>();
+  write(data: string) {
+    this.writes.push(data);
+  }
+  resize() {}
+  kill(signal?: string) {
+    this.kills.push(signal);
+    for (const exit of this.exits) exit({ exitCode: 0, signal: 15 });
+  }
+  onData(_callback: (data: string) => void) {
+    return () => {};
+  }
+  onExit(callback: (event: PtyAdapter.PtyExitEvent) => void) {
+    this.exits.add(callback);
+    return () => {
+      this.exits.delete(callback);
+    };
+  }
+}
+class LegacyGuardTerminalFixture extends Context.Service<
+  LegacyGuardTerminalFixture,
+  {
+    readonly manager: TerminalManager.TerminalManager["Service"];
+    readonly baseDir: string;
+    readonly processes: LegacyGuardPty[];
+  }
+>()("t3/orchestration-v2/runtimeLayer.test/LegacyGuardTerminalFixture") {}
+const LegacyGuardTerminalFixtureLayer = Layer.effect(
+  LegacyGuardTerminalFixture,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-guard-owner-" });
+    const processes: LegacyGuardPty[] = [];
+    const manager = yield* TerminalManager.makeWithOptions({
+      logsDir: `${baseDir}/terminals`,
+      shellResolver: () => "/bin/sh",
+      env: {},
+      processKillGraceMs: 1,
+      processTable: Effect.succeed([]),
+      subprocessInspector: () =>
+        Effect.succeed({ hasRunningSubprocess: false, childCommand: null, processIds: [] }),
+      ptyAdapter: {
+        spawn: () =>
+          Effect.sync(() => {
+            const process = new LegacyGuardPty(91001 + processes.length);
+            processes.push(process);
+            return process;
+          }),
+      },
+    });
+    return { manager, baseDir, processes };
+  }),
+).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(PlatformTestLayer));
+const LegacyGuardTerminalOwnerLayer = Layer.effect(
+  TerminalManager.TerminalManager,
+  Effect.map(LegacyGuardTerminalFixture, (fixture) => fixture.manager),
+).pipe(Layer.provideMerge(LegacyGuardTerminalFixtureLayer));
+const LegacyGuardOwnerTestLayer = ThreadManagement.layer.pipe(
+  Layer.provideMerge(TestLayer),
+  Layer.provideMerge(LegacyGuardTerminalOwnerLayer),
+  Layer.provideMerge(SqlitePersistenceMemory),
+);
+const legacyGuardOwnerFixture = Effect.fn("legacyGuardOwnerFixture")(function* (
+  name: string,
+  mode: "started" | "no_script" | "opted_out" = "started",
+) {
+  const owner = yield* LegacyGuardTerminalFixture;
+  const engine = yield* Orchestrator.OrchestratorV2;
+  const management = yield* ThreadManagement.ThreadManagementService;
+  const sink = yield* EventSink.EventSinkV2;
+  const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+  const query = yield* makeCommandObservationQuery();
+  const threadId = ThreadId.make(`guard-owner:${name}`);
+  const projectId = ProjectId.make(`guard-owner-project:${name}`);
+  const releaseCommandId = CommandId.make(`guard-owner-C:${name}`);
+  const messageId = MessageId.make(`guard-owner-M:${name}`);
+  yield* seedProject({
+    projectId,
+    title: name,
+    workspaceRoot: owner.baseDir,
+    defaultModelSelection: modelSelection,
+    createdAt: "2026-10-01T00:00:00.000Z",
+  });
+  const observed = yield* query.observe({ threadId, commandId: releaseCommandId, messageId });
+  const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
+  const policy = {
+    version: 1 as const,
+    threadId,
+    projectId,
+    messageId,
+    createCommandId,
+    birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+    releaseCommandId,
+    payloadHash: `synthetic-owner:${name}`,
+    ownsNewThread: true,
+    dispatchGuard: {
+      observedSnapshotSequence: observed.snapshotSequence,
+      expectedModelSelection: modelSelection,
+      expectedSessionStatus: null,
+      expectedActiveTurnId: null,
+      expectedLatestTurnId: null,
+      requireIdle: true as const,
+    },
+  };
+  yield* engine.dispatch({
+    type: "thread.create",
+    commandId: createCommandId,
+    threadId,
+    projectId,
+    title: name,
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdBy: "user",
+    creationSource: "web",
+    legacyBootstrap: policy,
+  });
+  yield* engine.dispatch({
+    type: "message.dispatch",
+    commandId: policy.birthCommandId,
+    threadId,
+    messageId,
+    text: "Synthetic owner fixture",
+    attachments: [],
+    createdBy: "user",
+    creationSource: "web",
+    dispatchMode: {
+      type: "defer_start",
+      workspaceStrategy: { type: "root" },
+      ...(mode === "opted_out" ? { runSetupScript: false } : {}),
+    },
+    legacyBootstrap: policy,
+  });
+  const born = (yield* engine.getThreadProjection(threadId)).runs[0]!;
+  const receivingPolicy = { ...policy, runId: born.id };
+  const collect = (commandId: CommandId) =>
+    sink.readByCommandId({ commandId }).pipe(
+      Stream.runCollect,
+      Effect.map((events) => Array.from(events)),
+    );
+  const proof = legacyBootstrapBirth({
+    policy: receivingPolicy,
+    claimEvents: yield* collect(createCommandId),
+    birthEvents: yield* collect(policy.birthCommandId),
+  });
+  if (proof.type !== "valid") return yield* Effect.die("Missing authentic owner fixture birth");
+  const claim = yield* receipts.getByCommandId(createCommandId);
+  const birth = yield* receipts.getByCommandId(policy.birthCommandId);
+  if (Option.isNone(claim) || Option.isNone(birth))
+    return yield* Effect.die("Missing authentic owner fixture receipts");
+  const generation = legacyPreparationGeneration({
+    runId: born.id,
+    birthEventId: proof.birthEventId,
+    birthSequence: proof.sequence,
+  });
+  const preparation: LegacyPreparation = {
+    version: 1,
+    policy: receivingPolicy,
+    generation,
+    projectWorkspaceRoot: owner.baseDir,
+    commonDirectory: null,
+    claimEventId: proof.claimEventId,
+    claimSequence: proof.claimSequence,
+    claimReceiptSequence: claim.value.resultSequence,
+    birthEventId: proof.birthEventId,
+    birthSequence: proof.sequence,
+    birthReceiptSequence: birth.value.resultSequence,
+    setup: mode === "opted_out" ? { status: "opted_out" } : { status: "unresolved" },
+    steps: [],
+  };
+  const progress = (commandId: CommandId, update: LegacyPreparationUpdate) =>
+    engine
+      .dispatch({
+        type: "prepared-run.progress",
+        commandId,
+        threadId,
+        runId: born.id,
+        phase: "setup",
+        legacyPreparationUpdate: update,
+      })
+      .pipe(Effect.asVoid);
+  yield* progress(CommandId.make(`${createCommandId}:preparation:${generation}:initialize`), {
+    type: "initialize",
+    preparation,
+  });
+  if (mode !== "started") {
+    if (mode === "no_script")
+      yield* progress(CommandId.make(`${createCommandId}:preparation:${generation}:setup-policy`), {
+        type: "setup-policy",
+        setup: { status: "no_script" },
+      });
+    const noControl = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)({
+      version: 1,
+      type: "no_control",
+      policy: receivingPolicy,
+      runId: born.id,
+      threadId,
+      claimEventId: proof.claimEventId,
+      claimSequence: proof.claimSequence,
+      claimReceiptSequence: claim.value.resultSequence,
+      birthEventId: proof.birthEventId,
+      birthSequence: proof.sequence,
+      birthReceiptSequence: birth.value.resultSequence,
+      preparationGeneration: generation,
+      workspacePath: owner.baseDir,
+      projectWorkspaceRoot: owner.baseDir,
+    });
+    const command: LegacyGuardRejectionDeleteCommand = {
+      type: "legacy-bootstrap.guard-rejection-delete",
+      commandId: CommandId.make(`${createCommandId}:guard-rejection-delete`),
+      threadId,
+      runId: born.id,
+      legacyBootstrap: receivingPolicy,
+      legacyNoControl: noControl,
+    };
+    const dispatchD = management.dispatchLegacyGuardRejectionDelete;
+    if (dispatchD === undefined) return yield* Effect.die("Production private D route is missing");
+    return {
+      ...owner,
+      ownedProcess: undefined,
+      engine,
+      query,
+      receipts,
+      sink,
+      threadId,
+      policy: receivingPolicy,
+      binding: undefined,
+      command,
+      write: () => Effect.void,
+      reject: () =>
+        engine
+          .dispatch({
+            type: "prepared-run.release",
+            commandId: releaseCommandId,
+            threadId,
+            runId: born.id,
+            legacyBootstrap: receivingPolicy,
+          })
+          .pipe(Effect.flip),
+      dispatchD,
+    };
+  }
+  const terminalId = `legacy-setup:${generation}`;
+  const controlGeneration = legacyPayloadHash(
+    canonicalLegacyPayload({ preparationGeneration: generation, terminalId }),
+  );
+  const binding = yield* Schema.decodeUnknownEffect(LegacyOwnedTerminalControl)({
+    version: 1,
+    policy: receivingPolicy,
+    runId: born.id,
+    threadId,
+    claimEventId: proof.claimEventId,
+    claimSequence: proof.claimSequence,
+    claimReceiptSequence: claim.value.resultSequence,
+    birthEventId: proof.birthEventId,
+    birthSequence: proof.sequence,
+    birthReceiptSequence: birth.value.resultSequence,
+    preparationGeneration: generation,
+    terminalId,
+    generation: controlGeneration,
+  });
+  const step = (effect: LegacyPreparation["steps"][number]["effect"]) => {
+    const effectId = legacyPreparationEffectId({ generation, effect });
+    const commandId = CommandId.make(
+      `${createCommandId}:preparation:${generation}:${effectId}:intent`,
+    );
+    return {
+      effectId,
+      effect,
+      inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
+      intentCommandId: commandId,
+      intentEventId: EventId.make(`${commandId}:event`),
+      state: "intent" as const,
+    };
+  };
+  const outcome = (
+    intent: ReturnType<typeof step>,
+    evidence: NonNullable<LegacyPreparation["steps"][number]["evidence"]>,
+    state: "known_succeeded" | "known_started",
+  ) => {
+    const commandId = CommandId.make(
+      `${createCommandId}:preparation:${generation}:${intent.effectId}:outcome`,
+    );
+    return progress(commandId, {
+      type: "outcome",
+      step: {
+        ...intent,
+        state,
+        evidence,
+        outcomeCommandId: commandId,
+        outcomeEventId: EventId.make(`${commandId}:event`),
+      },
+    });
+  };
+  const commandLine = "synthetic bytes only\r";
+  let openIntent: ReturnType<typeof step> | undefined;
+  yield* owner.manager.open(
+    { threadId, terminalId, cwd: owner.baseDir, cols: 80, rows: 24 },
+    {
+      binding,
+      beforeSpawn: (plan) =>
+        Effect.gen(function* () {
+          const script = {
+            id: "synthetic-setup",
+            name: "Synthetic setup",
+            command: "synthetic bytes only",
+            async: true,
+            runOnWorktreeCreate: false,
+          };
+          const definition = {
+            ...script,
+            definitionHash: legacyPayloadHash(canonicalLegacyPayload(script)),
+            projectCwd: owner.baseDir,
+            cwd: plan.cwd,
+            terminalId,
+            generation: controlGeneration,
+            shell: plan.shell,
+            shellArgs: plan.shellArgs,
+            commandLine,
+            completionToken: null,
+            env: {
+              T3CODE_PROJECT_ROOT: owner.baseDir,
+              COLORTERM: "" as const,
+              NO_COLOR: "1" as const,
+              FORCE_COLOR: "0" as const,
+            },
+          };
+          yield* progress(
+            CommandId.make(`${createCommandId}:preparation:${generation}:setup-policy`),
+            { type: "setup-policy", setup: { status: "resolved", definition } },
+          );
+          openIntent = step({ kind: "setup.open", input: definition });
+          yield* progress(openIntent.intentCommandId, { type: "intent", step: openIntent });
+        }),
+      afterSpawn: (spawn) =>
+        openIntent === undefined
+          ? Effect.die("Spawn without owner intent")
+          : outcome(
+              openIntent,
+              {
+                type: "terminal_generation",
+                terminalId,
+                generation: controlGeneration,
+                shell: spawn.shell,
+                shellArgs: spawn.shellArgs,
+              },
+              "known_succeeded",
+            ),
+    },
+  );
+  const writeIntent = step({
+    kind: "setup.write",
+    input: {
+      terminalId,
+      generation: controlGeneration,
+      commandLine,
+      completionToken: null,
+      definitionHash: legacyPayloadHash(
+        canonicalLegacyPayload({
+          id: "synthetic-setup",
+          name: "Synthetic setup",
+          command: "synthetic bytes only",
+          async: true,
+          runOnWorktreeCreate: false,
+        }),
+      ),
+    },
+  });
+  const write = (before: Effect.Effect<void> = Effect.void) =>
+    owner.manager.write(
+      { threadId, terminalId, data: commandLine },
+      {
+        legacyOwnedControl: binding,
+        beforeWrite: () =>
+          progress(writeIntent.intentCommandId, { type: "intent", step: writeIntent }).pipe(
+            Effect.andThen(before),
+          ),
+        afterWrite: (status, inputCount) =>
+          status !== "accepted"
+            ? Effect.die("Synthetic PTY refused")
+            : outcome(
+                writeIntent,
+                { type: "terminal_write", terminalId, generation: controlGeneration, inputCount },
+                "known_started",
+              ),
+      },
+    );
+  const reject = () =>
+    engine
+      .dispatch({
+        type: "prepared-run.release",
+        commandId: releaseCommandId,
+        threadId,
+        runId: born.id,
+        legacyBootstrap: receivingPolicy,
+      })
+      .pipe(Effect.flip);
+  const command: LegacyGuardRejectionDeleteCommand = {
+    type: "legacy-bootstrap.guard-rejection-delete",
+    commandId: CommandId.make(`${createCommandId}:guard-rejection-delete`),
+    threadId,
+    runId: born.id,
+    legacyBootstrap: receivingPolicy,
+    legacyOwnedControl: binding,
+  };
+  const dispatchD = management.dispatchLegacyGuardRejectionDelete;
+  if (dispatchD === undefined) return yield* Effect.die("Production private D route is missing");
+  return {
+    ...owner,
+    ownedProcess: owner.processes.at(-1)!,
+    engine,
+    query,
+    receipts,
+    sink,
+    threadId,
+    policy: receivingPolicy,
+    binding,
+    command,
+    write,
+    reject,
+    dispatchD,
+  };
+});
+it.layer(LegacyGuardOwnerTestLayer, { excludeTestServices: true })(
+  "Legacy guard cleanup actual owner lock",
+  (it) => {
+    it.effect.each((["no_script", "opted_out"] as const).map((mode) => ({ mode })))(
+      "private no-control D persists authentic ordered proof for $mode without terminal effects",
+      ({ mode }) =>
+        Effect.gen(function* () {
+          const f = yield* legacyGuardOwnerFixture(`absence:${mode}`, mode);
+          const count = f.processes.length;
+          yield* f.reject();
+          const original = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!
+            .legacyReleaseDecision;
+          const result = yield* f.dispatchD(f.command);
+          const events = Array.from(
+            yield* f.sink
+              .readByCommandId({ commandId: f.command.commandId })
+              .pipe(Stream.runCollect),
+          );
+          assert.deepEqual(
+            events.map((stored) => stored.event.type),
+            ["run.updated", "thread.deleted"],
+          );
+          assert.equal(events[1]!.sequence, result.sequence);
+          assert.equal(events[0]!.sequence + 1, result.sequence);
+          const run = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!;
+          const publicReplay = Array.from(
+            yield* f.engine
+              .streamStoredEventsFrom({
+                threadId: f.threadId,
+                afterSequence: events[0]!.sequence - 1,
+              })
+              .pipe(Stream.take(2), Stream.runCollect),
+          );
+          assert.deepEqual(
+            publicReplay.map((stored) => stored.sequence),
+            events.map((stored) => stored.sequence),
+          );
+          assert.equal(publicReplay[0]!.event.type, "run.updated");
+          for (const stored of publicReplay)
+            assert.notProperty(stored.event.payload, "legacyReleaseDecision");
+          for (const stored of publicReplay)
+            assert.notProperty(stored.event.payload, "legacyPreparation");
+          assert.equal(run.legacyReleaseDecision?.deletion?.type, "no_control");
+          const { deletion, ...unchanged } = run.legacyReleaseDecision!;
+          assert.deepEqual(unchanged, original);
+          assert.equal(deletion?.evidenceEventId, events[0]!.event.id);
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          assert.isEmpty(
+            (yield* outbox.listByThreadId(f.threadId)).filter(
+              (effect) =>
+                effect.commandId === f.command.commandId &&
+                effect.request.type === "terminal.cleanup",
+            ),
+          );
+          assert.equal(f.processes.length, count);
+          assert.equal((yield* f.dispatchD(f.command)).sequence, result.sequence);
+          const store = yield* EventStore.EventStoreV2;
+          const history = Array.from(
+            yield* store.read({ threadId: f.threadId }).pipe(Stream.runCollect),
+          );
+          const memory = yield* Effect.gen(function* () {
+            return yield* ProjectionStore.ProjectionStoreV2;
+          }).pipe(Effect.provide(Layer.fresh(ProjectionStore.layerMemory)));
+          for (const stored of history) yield* memory.apply(stored.event);
+          assert.deepEqual(
+            (yield* memory.getThreadProjection(f.threadId)).runs[0]!.legacyReleaseDecision,
+            run.legacyReleaseDecision,
+          );
+          const { legacyReleaseDecision: _decision, ...publicRun } = run;
+          const stale = {
+            type: "run.updated" as const,
+            id: EventId.make(`${f.threadId}:stale-public`),
+            threadId: f.threadId,
+            runId: run.id,
+            occurredAt: yield* DateTime.now,
+            payload: publicRun,
+          };
+          yield* memory.apply(stale);
+          yield* f.sink.write({ events: [stale] });
+          assert.deepEqual(
+            (yield* memory.getThreadProjection(f.threadId)).runs[0]!.legacyReleaseDecision,
+            run.legacyReleaseDecision,
+          );
+          assert.deepEqual(
+            (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!.legacyReleaseDecision,
+            run.legacyReleaseDecision,
+          );
+          const tampered = {
+            ...stale,
+            id: EventId.make(`${f.threadId}:tampered`),
+            payload: {
+              ...run,
+              legacyReleaseDecision: {
+                ...run.legacyReleaseDecision!,
+                deletion: { ...deletion!, workspacePath: `${deletion!.workspacePath}/replaced` },
+              },
+            },
+          };
+          assert.equal((yield* memory.apply(tampered).pipe(Effect.result))._tag, "Failure");
+          assert.equal(
+            (yield* f.sink.write({ events: [tampered] }).pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.deepEqual(
+            (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!.legacyReleaseDecision,
+            run.legacyReleaseDecision,
+          );
+          const sql = yield* SqlClient.SqlClient;
+          const dbPath = `${f.baseDir}/D-${mode}.sqlite`;
+          yield* sql`VACUUM INTO ${dbPath}`;
+          const reopenedLayers = ProjectionMaintenance.layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(EventStore.layer, ProjectionStore.layer, CommandReceiptStore.layer),
+            ),
+            Layer.provideMerge(makeSqlitePersistenceLive(dbPath)),
+            Layer.provide(PlatformTestLayer),
+          );
+          const readReopened = Effect.gen(function* () {
+            const projection = yield* ProjectionStore.ProjectionStoreV2;
+            const reopenedStore = yield* EventStore.EventStoreV2;
+            const reopenedReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+            assert.deepEqual(
+              (yield* projection.getThreadProjection(f.threadId)).runs[0]!.legacyReleaseDecision,
+              run.legacyReleaseDecision,
+            );
+            const raw = Array.from(
+              yield* reopenedStore
+                .readByCommandId({ commandId: f.command.commandId })
+                .pipe(Stream.runCollect),
+            );
+            assert.deepEqual(
+              raw.map((stored) => stored.event.type),
+              ["run.updated", "thread.deleted"],
+            );
+            const receipt = yield* reopenedReceipts.getByCommandId(f.command.commandId);
+            assert.isTrue(Option.isSome(receipt));
+            if (Option.isSome(receipt)) assert.equal(receipt.value.resultSequence, result.sequence);
+            const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+            assert.isTrue((yield* maintenance.rebuild).valid);
+            assert.deepEqual(
+              (yield* projection.getThreadProjection(f.threadId)).runs[0]!.legacyReleaseDecision,
+              run.legacyReleaseDecision,
+            );
+          });
+          yield* Effect.scoped(readReopened.pipe(Effect.provide(Layer.fresh(reopenedLayers))));
+          yield* Effect.scoped(readReopened.pipe(Effect.provide(Layer.fresh(reopenedLayers))));
+          const input = f.command.legacyNoControl!;
+          for (const changed of [
+            { ...input, workspacePath: `${input.workspacePath}/other` },
+            { ...input, preparationGeneration: "other" },
+            { ...input, birthEventId: EventId.make("other-birth") },
+            { ...input, policy: { ...input.policy, payloadHash: "other" } },
+          ]) {
+            assert.equal(
+              (yield* f
+                .dispatchD({
+                  type: f.command.type,
+                  commandId: f.command.commandId,
+                  threadId: f.threadId,
+                  runId: f.command.runId,
+                  legacyBootstrap: f.policy,
+                  legacyNoControl: changed,
+                })
+                .pipe(Effect.result))._tag,
+              "Failure",
+            );
+          }
+          const observed = yield* f.query.observe({
+            threadId: f.threadId,
+            commandId: f.policy.releaseCommandId,
+            messageId: f.policy.messageId,
+          });
+          assert.equal(observed.commandStatus, "rejected");
+          assert.isNull(observed.turn);
+        }),
+    );
+    it.effect(
+      "private no-control D refuses any actual control and never falls back from missing bound proof",
+      () =>
+        Effect.gen(function* () {
+          const f = yield* legacyGuardOwnerFixture("absence-refusal", "no_script");
+          yield* f.reject();
+          yield* f.manager.open({
+            threadId: f.threadId,
+            terminalId: "unrelated",
+            cwd: f.baseDir,
+            cols: 80,
+            rows: 24,
+          });
+          const process = f.processes.at(-1)!;
+          assert.equal((yield* f.dispatchD(f.command).pipe(Effect.result))._tag, "Failure");
+          assert.isTrue(Option.isNone(yield* f.receipts.getByCommandId(f.command.commandId)));
+          assert.isNull((yield* f.engine.getThreadProjection(f.threadId)).thread.deletedAt);
+          assert.deepEqual(process.kills, []);
+          assert.deepEqual(process.writes, []);
+        }),
+    );
+    it.effect(
+      "private no-control D precommit refusal leaves no receipt tombstone or projected deletion proof",
+      () =>
+        Effect.gen(function* () {
+          const f = yield* legacyGuardOwnerFixture("absence-precommit", "no_script");
+          yield* f.reject();
+          const commit = f.sink.commitCommand;
+          const spy = vi.spyOn(f.sink, "commitCommand").mockImplementation((input) =>
+            input.commandId === f.command.commandId
+              ? Effect.fail(
+                  new EventSink.EventSinkWriteError({
+                    eventCount: input.events.length,
+                    commandId: input.commandId,
+                    cause: "Synthetic precommit refusal",
+                  }),
+                )
+              : commit(input),
+          );
+          yield* Effect.gen(function* () {
+            assert.equal((yield* f.dispatchD(f.command).pipe(Effect.result))._tag, "Failure");
+            assert.isTrue(Option.isNone(yield* f.receipts.getByCommandId(f.command.commandId)));
+            assert.isEmpty(
+              Array.from(
+                yield* f.sink
+                  .readByCommandId({ commandId: f.command.commandId })
+                  .pipe(Stream.runCollect),
+              ),
+            );
+            const projection = yield* f.engine.getThreadProjection(f.threadId);
+            assert.isNull(projection.thread.deletedAt);
+            assert.isUndefined(projection.runs[0]!.legacyReleaseDecision?.deletion);
+          }).pipe(Effect.ensuring(Effect.sync(() => spy.mockRestore())));
+        }),
+    );
+    it.effect(
+      "private no-control D rolls back recorded proof receipt and tombstone together after projection refusal",
+      () =>
+        Effect.gen(function* () {
+          const f = yield* legacyGuardOwnerFixture("absence-atomic", "no_script");
+          yield* f.reject();
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`CREATE TEMP TRIGGER legacy_d_test_refusal BEFORE UPDATE ON orchestration_v2_projection_threads
+      WHEN NEW.deleted_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'synthetic D refusal'); END`;
+          yield* Effect.gen(function* () {
+            assert.equal((yield* f.dispatchD(f.command).pipe(Effect.result))._tag, "Failure");
+            assert.isTrue(Option.isNone(yield* f.receipts.getByCommandId(f.command.commandId)));
+            assert.isEmpty(
+              Array.from(
+                yield* f.sink
+                  .readByCommandId({ commandId: f.command.commandId })
+                  .pipe(Stream.runCollect),
+              ),
+            );
+            const projection = yield* f.engine.getThreadProjection(f.threadId);
+            assert.isNull(projection.thread.deletedAt);
+            assert.isUndefined(projection.runs[0]!.legacyReleaseDecision?.deletion);
+            const outbox = yield* EffectOutbox.EffectOutboxV2;
+            assert.isEmpty(
+              (yield* outbox.listByThreadId(f.threadId)).filter(
+                (effect) => effect.commandId === f.command.commandId,
+              ),
+            );
+          }).pipe(
+            Effect.ensuring(sql`DROP TRIGGER IF EXISTS legacy_d_test_refusal`.pipe(Effect.orDie)),
+          );
+          const result = yield* f.dispatchD(f.command);
+          assert.equal((yield* f.dispatchD(f.command)).sequence, result.sequence);
+        }),
+    );
+    it.effect(
+      "private D refuses replaced and unavailable physical controls before any tombstone or outbox",
+      () =>
+        Effect.gen(function* () {
+          const f = yield* legacyGuardOwnerFixture("replaced");
+          if (f.binding === undefined || f.ownedProcess === undefined)
+            return yield* Effect.die("Started owner fixture is unavailable");
+          yield* f.write();
+          yield* f.reject();
+          yield* f.manager.restart({
+            threadId: f.threadId,
+            terminalId: f.binding.terminalId,
+            cwd: f.baseDir,
+            cols: 80,
+            rows: 24,
+          });
+          const result = yield* f.dispatchD(f.command).pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          assert.isTrue(Option.isNone(yield* f.receipts.getByCommandId(f.command.commandId)));
+          assert.isNull((yield* f.engine.getThreadProjection(f.threadId)).thread.deletedAt);
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          assert.isEmpty(
+            (yield* outbox.listByThreadId(f.threadId)).filter(
+              (effect) => effect.commandId === f.command.commandId,
+            ),
+          );
+          const replacement = f.processes.at(-1)!;
+          assert.deepEqual(replacement.writes, []);
+          assert.deepEqual(replacement.kills, []);
+          const observed = yield* f.query.observe({
+            threadId: f.threadId,
+            commandId: f.policy.releaseCommandId,
+            messageId: f.policy.messageId,
+          });
+          assert.equal(observed.commandStatus, "rejected");
+          assert.isNull(observed.turn);
+        }),
+    );
+    it.effect(
+      "private D holds owner before executor while write journals and fences replacement through commit readback",
+      () =>
+        Effect.gen(function* () {
+          const f = yield* legacyGuardOwnerFixture("lock-order");
+          if (f.binding === undefined || f.ownedProcess === undefined)
+            return yield* Effect.die("Started owner fixture is unavailable");
+          const insideWrite = yield* Deferred.make<void>();
+          const finishWrite = yield* Deferred.make<void>();
+          const writeFiber = yield* f
+            .write(
+              Deferred.succeed(insideWrite, undefined).pipe(
+                Effect.andThen(Deferred.await(finishWrite)),
+              ),
+            )
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(insideWrite);
+          yield* f.reject();
+          const dRequested = yield* Deferred.make<void>();
+          const guard = f.manager.withLegacyOwnedControlGuard;
+          if (guard === undefined) return yield* Effect.die("Production control guard is missing");
+          const guardSpy = vi
+            .spyOn(f.manager, "withLegacyOwnedControlGuard")
+            .mockImplementation(
+              <A, E, R>(binding: LegacyOwnedTerminalControl, body: Effect.Effect<A, E, R>) =>
+                Deferred.succeed(dRequested, undefined).pipe(Effect.andThen(guard(binding, body))),
+            );
+          const dCommit = yield* Deferred.make<void>();
+          const finishD = yield* Deferred.make<void>();
+          const commit = f.sink.commitCommand;
+          const commitSpy = vi
+            .spyOn(f.sink, "commitCommand")
+            .mockImplementation((input) =>
+              input.commandId !== f.command.commandId
+                ? commit(input)
+                : Deferred.succeed(dCommit, undefined).pipe(
+                    Effect.andThen(Deferred.await(finishD)),
+                    Effect.andThen(commit(input)),
+                  ),
+            );
+          yield* Effect.gen(function* () {
+            const d = yield* f
+              .dispatchD(f.command)
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* Deferred.await(dRequested);
+            yield* Deferred.succeed(finishWrite, undefined);
+            yield* Fiber.join(writeFiber);
+            yield* Effect.raceFirst(
+              Deferred.await(dCommit),
+              Fiber.join(d).pipe(Effect.andThen(Effect.die("D did not reach authentic commit"))),
+            );
+            const replacementRequested = yield* Deferred.make<void>();
+            const replacement = yield* Deferred.succeed(replacementRequested, undefined).pipe(
+              Effect.andThen(
+                f.manager.restart({
+                  threadId: f.threadId,
+                  terminalId: f.binding.terminalId,
+                  cwd: f.baseDir,
+                  cols: 80,
+                  rows: 24,
+                }),
+              ),
+              Effect.forkChild({ startImmediately: true }),
+            );
+            yield* Deferred.await(replacementRequested);
+            yield* Effect.yieldNow;
+            assert.deepEqual(f.ownedProcess.writes, ["synthetic bytes only\r"]);
+            assert.deepEqual(f.ownedProcess.kills, []);
+            yield* Deferred.succeed(finishD, undefined);
+            const result = yield* Fiber.join(d);
+            assert.isNotNull((yield* f.engine.getThreadProjection(f.threadId)).thread.deletedAt);
+            const receipt = yield* f.receipts.getByCommandId(f.command.commandId);
+            assert.isTrue(Option.isSome(receipt));
+            if (Option.isSome(receipt)) assert.equal(receipt.value.resultSequence, result.sequence);
+            yield* Fiber.join(replacement);
+            assert.deepEqual(f.processes.at(-1)!.kills, []);
+            const replay = yield* f.dispatchD(f.command);
+            assert.equal(replay.sequence, result.sequence);
+            const outbox = yield* EffectOutbox.EffectOutboxV2;
+            const cleanup = (yield* outbox.listByThreadId(f.threadId)).filter(
+              (effect) =>
+                effect.commandId === f.command.commandId &&
+                effect.request.type === "terminal.cleanup",
+            );
+            assert.lengthOf(cleanup, 1);
+            if (cleanup[0]?.request.type === "terminal.cleanup")
+              assert.deepEqual(cleanup[0].request.legacyOwnedControl, f.binding);
+            const observed = yield* f.query.observe({
+              threadId: f.threadId,
+              commandId: f.policy.releaseCommandId,
+              messageId: f.policy.messageId,
+            });
+            assert.equal(observed.commandStatus, "rejected");
+            assert.isNull(observed.turn);
+          }).pipe(
+            Effect.ensuring(
+              Effect.all([
+                Deferred.succeed(finishWrite, undefined),
+                Deferred.succeed(finishD, undefined),
+                Effect.sync(() => {
+                  guardSpy.mockRestore();
+                  commitSpy.mockRestore();
+                }),
+              ]),
+            ),
+          );
+        }),
+    );
+  },
+);
+
+const QueueGuardTestLayer = TestLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory));
+const queueGuardFixture = Effect.fn("queueGuardFixture")(function* (name: string) {
+  const engine = yield* Orchestrator.OrchestratorV2;
+  const query = yield* makeCommandObservationQuery();
+  const threadId = ThreadId.make(`guard:${name}`);
+  yield* seedProject({
+    projectId: ProjectId.make(`guard:project:${name}`),
+    title: "Guard fixture",
+    workspaceRoot: "/repo",
+    defaultModelSelection: modelSelection,
+    createdAt: "2026-10-01T00:00:00.000Z",
+  });
+  yield* engine.dispatch({
+    type: "thread.create",
+    createdBy: "user",
+    creationSource: "web",
+    commandId: CommandId.make(`guard:create:${name}`),
+    threadId,
+    projectId: ProjectId.make(`guard:project:${name}`),
+    title: "Guard fixture",
+    modelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+  });
+  const commandId = CommandId.make(`guard:start:${name}`);
+  const messageId = MessageId.make(`guard:message:${name}`);
+  const observe = () => query.observe({ threadId, commandId, messageId });
+  const initial = yield* observe();
+  const guard: ThreadTurnDispatchGuard = {
+    observedSnapshotSequence: initial.snapshotSequence,
+    expectedModelSelection: modelSelection,
+    expectedSessionStatus: null,
+    expectedActiveTurnId: null,
+    expectedLatestTurnId: null,
+    requireIdle: true,
+  };
+  const command = {
+    type: "message.dispatch",
+    createdBy: "user",
+    creationSource: "web",
+    commandId,
+    threadId,
+    messageId,
+    text: "Bounded queue task",
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+    dispatchGuard: guard,
+  } satisfies OrchestrationV2Command;
+  return { engine, query, threadId, initial, observe, command };
+});
+it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observation", (it) => {
+  it.effect(
+    "legacy release refuses absent preparation evidence without creating a provider start",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* queueGuardFixture("legacy-release-missing-ledger");
+        const createCommandId = legacyBootstrapCreateCommandId(f.threadId, f.command.commandId);
+        const policy = {
+          version: 1 as const,
+          createCommandId,
+          birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+          releaseCommandId: f.command.commandId,
+          projectId: ProjectId.make("guard:project:legacy-release-missing-ledger"),
+          threadId: f.threadId,
+          messageId: f.command.messageId,
+          payloadHash: "missing-ledger",
+          ownsNewThread: false,
+        };
+        yield* f.engine.dispatch({
+          type: "thread.metadata.update",
+          commandId: createCommandId,
+          threadId: f.threadId,
+          expectedEmpty: true,
+          legacyBootstrap: policy,
+        });
+        yield* f.engine.dispatch({
+          ...f.command,
+          commandId: policy.birthCommandId,
+          dispatchGuard: undefined,
+          dispatchMode: { type: "defer_start", workspaceStrategy: { type: "root" } },
+          legacyBootstrap: policy,
+        });
+        const run = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!;
+        const result = yield* f.engine
+          .dispatch({
+            type: "prepared-run.release",
+            commandId: policy.releaseCommandId,
+            threadId: f.threadId,
+            runId: run.id,
+            legacyBootstrap: { ...policy, runId: run.id },
+          })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        assert.equal(
+          (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!.status,
+          "preparing",
+        );
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        assert.isEmpty(
+          (yield* outbox.listByThreadId(f.threadId)).filter(
+            (effect) => effect.request.type === "provider-turn.start",
+          ),
+        );
+        const observed = yield* f.observe();
+        assert.equal(observed.commandStatus, "rejected");
+        assert.isNull(observed.turn);
+      }),
+  );
+  it.effect(
+    "legacy preparation journal joins exact intents and refuses collisions or missing outcomes before another effect",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* queueGuardFixture("legacy-journal");
+        const createCommandId = legacyBootstrapCreateCommandId(f.threadId, f.command.commandId);
+        const policy = {
+          version: 1 as const,
+          createCommandId,
+          birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+          releaseCommandId: f.command.commandId,
+          projectId: ProjectId.make("guard:project:legacy-journal"),
+          threadId: f.threadId,
+          messageId: f.command.messageId,
+          payloadHash: "legacy-journal-payload",
+          ownsNewThread: false,
+        };
+        yield* f.engine.dispatch({
+          type: "thread.metadata.update",
+          commandId: createCommandId,
+          threadId: f.threadId,
+          expectedEmpty: true,
+          legacyBootstrap: policy,
+        });
+        yield* f.engine.dispatch({
+          ...f.command,
+          commandId: policy.birthCommandId,
+          dispatchGuard: undefined,
+          dispatchMode: {
+            type: "defer_start",
+            workspaceStrategy: { type: "worktree", baseRef: "main", branch: "legacy" },
+            runSetupScript: false,
+          },
+          legacyBootstrap: policy,
+        });
+        const run = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!;
+        const receivingPolicy = run.legacyBootstrap;
+        if (receivingPolicy === undefined) return yield* Effect.die("Missing native birth policy");
+        const sink = yield* EventSink.EventSinkV2;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const claimEvents = Array.from(
+          yield* sink.readByCommandId({ commandId: createCommandId }).pipe(Stream.runCollect),
+        );
+        const birthEvents = Array.from(
+          yield* sink.readByCommandId({ commandId: policy.birthCommandId }).pipe(Stream.runCollect),
+        );
+        const proof = legacyBootstrapBirth({ policy: receivingPolicy, claimEvents, birthEvents });
+        const claimReceipt = yield* receipts.getByCommandId(createCommandId);
+        const birthReceipt = yield* receipts.getByCommandId(policy.birthCommandId);
+        if (proof.type !== "valid" || Option.isNone(claimReceipt) || Option.isNone(birthReceipt))
+          return yield* Effect.die("Missing authenticated birth");
+        const generation = legacyPreparationGeneration({
+          runId: run.id,
+          birthEventId: proof.birthEventId,
+          birthSequence: proof.sequence,
+        });
+        const preparation: LegacyPreparation = {
+          version: 1,
+          policy: receivingPolicy,
+          generation,
+          claimEventId: proof.claimEventId,
+          claimSequence: proof.claimSequence,
+          claimReceiptSequence: claimReceipt.value.resultSequence,
+          birthEventId: proof.birthEventId,
+          birthSequence: proof.sequence,
+          birthReceiptSequence: birthReceipt.value.resultSequence,
+          projectWorkspaceRoot: "/repo",
+          commonDirectory: "/repo/.git",
+          setup: { status: "opted_out" },
+          steps: [],
+        };
+        yield* f.engine.dispatch({
+          type: "prepared-run.progress",
+          commandId: CommandId.make(`${createCommandId}:preparation:${generation}:initialize`),
+          threadId: f.threadId,
+          runId: run.id,
+          phase: "worktree",
+          legacyPreparationUpdate: { type: "initialize", preparation },
+        });
+        const effect = {
+          kind: "worktree.add" as const,
+          input: {
+            cwd: "/repo",
+            args: ["worktree", "add", "-b", "legacy", "/owned", "a".repeat(40)],
+            worktreePath: "/owned",
+            commonDirectory: "/repo/.git",
+            baseCommitOid: "a".repeat(40),
+            targetRef: "refs/heads/legacy",
+          },
+        };
+        const effectId = legacyPreparationEffectId({ generation, effect });
+        const stem = `${createCommandId}:preparation:${generation}:${effectId}`;
+        const step = {
+          effectId,
+          effect,
+          inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
+          intentCommandId: CommandId.make(`${stem}:intent`),
+          intentEventId: EventId.make(`${stem}:intent:event`),
+          state: "intent" as const,
+        };
+        const intent = {
+          type: "prepared-run.progress" as const,
+          commandId: step.intentCommandId,
+          threadId: f.threadId,
+          runId: run.id,
+          phase: "worktree" as const,
+          legacyPreparationUpdate: { type: "intent" as const, step },
+        };
+        const accepted = yield* f.engine.dispatch(intent);
+        assert.equal((yield* f.engine.dispatch(intent)).sequence, accepted.sequence);
+        const recorded = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!
+          .legacyPreparation;
+        assert.deepEqual(recorded?.steps, [step]);
+        const collision = yield* f.engine
+          .dispatch({
+            ...intent,
+            legacyPreparationUpdate: {
+              type: "intent",
+              step: {
+                ...step,
+                effect: { ...effect, input: { ...effect.input, targetRef: "refs/heads/another" } },
+              },
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(collision._tag, "OrchestratorDispatchError");
+        const laterEffect = { ...effect, kind: "worktree.submodules" as const };
+        const laterId = legacyPreparationEffectId({ generation, effect: laterEffect });
+        const laterStem = `${createCommandId}:preparation:${generation}:${laterId}`;
+        const missingOutcome = yield* f.engine
+          .dispatch({
+            ...intent,
+            commandId: CommandId.make(`${laterStem}:intent`),
+            legacyPreparationUpdate: {
+              type: "intent",
+              step: {
+                effectId: laterId,
+                effect: laterEffect,
+                inputHash: legacyPayloadHash(canonicalLegacyPayload(laterEffect)),
+                intentCommandId: CommandId.make(`${laterStem}:intent`),
+                intentEventId: EventId.make(`${laterStem}:intent:event`),
+                state: "intent",
+              },
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(missingOutcome._tag, "OrchestratorDispatchError");
+        assert.deepEqual(
+          (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!.legacyPreparation?.steps,
+          [step],
+        );
+        const outcomeId = CommandId.make(`${stem}:outcome`);
+        const invalidFailure = transitionLegacyPreparation({
+          current: recorded,
+          commandId: outcomeId,
+          update: {
+            type: "outcome",
+            step: {
+              ...step,
+              state: "known_completed_failure",
+              outcomeCommandId: outcomeId,
+              outcomeEventId: EventId.make(`${outcomeId}:event`),
+              evidence: {
+                type: "worktree_claim",
+                claim: {
+                  path: "/owned",
+                  realPath: "/owned",
+                  device: "1",
+                  inode: "2",
+                  parentRealPath: "/",
+                  gitDirectory: "/repo/.git/worktrees/owned",
+                  commonDirectory: "/repo/.git",
+                  registeredPath: "/owned",
+                  headRef: "refs/heads/legacy",
+                  headOid: "a".repeat(40),
+                },
+              },
+            },
+          },
+        });
+        assert.equal(invalidFailure.type, "rejected");
+        const outcome = {
+          ...intent,
+          commandId: outcomeId,
+          legacyPreparationUpdate: {
+            type: "outcome" as const,
+            step: {
+              ...step,
+              state: "unknown" as const,
+              outcomeCommandId: outcomeId,
+              outcomeEventId: EventId.make(`${outcomeId}:event`),
+              evidence: { type: "unknown" as const, reason: "outcome_lost" as const },
+            },
+          },
+        };
+        const unknownReceipt = yield* f.engine.dispatch(outcome);
+        assert.equal((yield* f.engine.dispatch(outcome)).sequence, unknownReceipt.sequence);
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("legacy-journal:stale-run"),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: run.id,
+              occurredAt: yield* DateTime.now,
+              payload: { ...run, legacyPreparation: recorded },
+            },
+          ],
+        });
+        assert.equal(
+          (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!.legacyPreparation?.steps[0]
+            ?.state,
+          "unknown",
+        );
+        const store = yield* EventStore.EventStoreV2;
+        const history = Array.from(
+          yield* store.read({ threadId: f.threadId }).pipe(Stream.runCollect),
+        );
+        const memory = yield* Effect.gen(function* () {
+          return yield* ProjectionStore.ProjectionStoreV2;
+        }).pipe(Effect.provide(Layer.fresh(ProjectionStore.layerMemory)));
+        for (const stored of history) yield* memory.apply(stored.event);
+        assert.equal(
+          (yield* memory.getThreadProjection(f.threadId)).runs[0]!.legacyPreparation?.steps[0]
+            ?.state,
+          "unknown",
+        );
+        const originalC = yield* f.observe();
+        assert.equal(originalC.commandStatus, "not_found");
+        assert.isNull(originalC.turn);
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        assert.isEmpty(
+          (yield* outbox.listByThreadId(f.threadId)).filter(
+            (pending) => pending.request.type === "provider-turn.start",
+          ),
+        );
+      }),
+  );
+  it.effect(
+    "correlates original bootstrap C only through its authentic birth and committed release",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* queueGuardFixture("legacy-release");
+        const createCommandId = legacyBootstrapCreateCommandId(f.threadId, f.command.commandId);
+        const birthCommandId = CommandId.make(`${createCommandId}:initial-message`);
+        const policy = {
+          version: 1 as const,
+          createCommandId,
+          birthCommandId,
+          releaseCommandId: f.command.commandId,
+          projectId: ProjectId.make("guard:project:legacy-release"),
+          threadId: f.threadId,
+          messageId: f.command.messageId,
+          payloadHash: "fixture-hash",
+          ownsNewThread: false,
+        };
+        const claim = {
+          type: "thread.metadata.update" as const,
+          commandId: createCommandId,
+          threadId: f.threadId,
+          expectedEmpty: true,
+          legacyBootstrap: policy,
+        };
+        yield* f.engine.dispatch(claim);
+        const birth = {
+          ...f.command,
+          commandId: birthCommandId,
+          dispatchGuard: undefined,
+          dispatchMode: {
+            type: "defer_start" as const,
+            workspaceStrategy: { type: "root" as const },
+          },
+          legacyBootstrap: policy,
+        };
+        yield* f.engine.dispatch(birth);
+        const preparing = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!;
+        const sink = yield* EventSink.EventSinkV2;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const receivingPolicy = preparing.legacyBootstrap;
+        if (receivingPolicy === undefined)
+          return yield* Effect.die("Missing receiving birth policy");
+        const proof = legacyBootstrapBirth({
+          policy: receivingPolicy,
+          claimEvents: Array.from(
+            yield* sink.readByCommandId({ commandId: createCommandId }).pipe(Stream.runCollect),
+          ),
+          birthEvents: Array.from(
+            yield* sink.readByCommandId({ commandId: birthCommandId }).pipe(Stream.runCollect),
+          ),
+        });
+        const claimReceipt = yield* receipts.getByCommandId(createCommandId);
+        const birthReceipt = yield* receipts.getByCommandId(birthCommandId);
+        if (proof.type !== "valid" || Option.isNone(claimReceipt) || Option.isNone(birthReceipt))
+          return yield* Effect.die("Missing authentic receiving claim/birth receipts");
+        const generation = legacyPreparationGeneration({
+          runId: preparing.id,
+          birthEventId: proof.birthEventId,
+          birthSequence: proof.sequence,
+        });
+        yield* f.engine.dispatch({
+          type: "prepared-run.progress",
+          commandId: CommandId.make(`${createCommandId}:preparation:${generation}:initialize`),
+          threadId: f.threadId,
+          runId: preparing.id,
+          phase: "setup",
+          legacyPreparationUpdate: {
+            type: "initialize",
+            preparation: {
+              version: 1,
+              policy: receivingPolicy,
+              generation,
+              claimEventId: proof.claimEventId,
+              claimSequence: proof.claimSequence,
+              claimReceiptSequence: claimReceipt.value.resultSequence,
+              birthEventId: proof.birthEventId,
+              birthSequence: proof.sequence,
+              birthReceiptSequence: birthReceipt.value.resultSequence,
+              projectWorkspaceRoot: "/repo",
+              commonDirectory: null,
+              setup: { status: "unresolved" },
+              steps: [],
+            },
+          },
+        });
+        yield* f.engine.dispatch({
+          type: "prepared-run.progress",
+          commandId: CommandId.make(`${createCommandId}:preparation:${generation}:setup-policy`),
+          threadId: f.threadId,
+          runId: preparing.id,
+          phase: "setup",
+          legacyPreparationUpdate: { type: "setup-policy", setup: { status: "no_script" } },
+        });
+        const before = yield* f.observe();
+        assert.equal(before.commandStatus, "not_found");
+        assert.equal(before.correlation, "missing");
+        assert.isNull(before.turn);
+        const release = {
+          type: "prepared-run.release" as const,
+          commandId: f.command.commandId,
+          threadId: f.threadId,
+          runId: preparing.id,
+          legacyBootstrap: { ...policy, runId: preparing.id },
+        };
+        const receipt = yield* f.engine.dispatch(release);
+        const released = yield* f.observe();
+        assert.equal(released.commandStatus, "accepted");
+        assert.equal(released.acceptedSequence, receipt.sequence);
+        assert.equal(released.correlation, "pending");
+        assert.equal(released.turn?.state, "pending");
+        assert.isNull(released.turn?.turnId);
+        assert.notProperty(
+          (yield* f.engine.getThreadProjection(f.threadId)).messages[0]!,
+          "queuedToolBoundaryEligible",
+        );
+      }),
+  );
+  it.effect(
+    "new legacy birth records truthful guard failure and rejected C before any deletion disposition",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* queueGuardFixture("legacy-new-guard-failure");
+        const threadId = ThreadId.make(`${f.threadId}:new`);
+        const createCommandId = legacyBootstrapCreateCommandId(threadId, f.command.commandId);
+        const policy = {
+          version: 1 as const,
+          createCommandId,
+          birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+          releaseCommandId: f.command.commandId,
+          projectId: ProjectId.make("guard:project:legacy-new-guard-failure"),
+          threadId,
+          messageId: f.command.messageId,
+          payloadHash: "new-guard-fixture",
+          ownsNewThread: true,
+          dispatchGuard: f.command.dispatchGuard,
+        };
+        yield* f.engine.dispatch({
+          type: "thread.create",
+          commandId: createCommandId,
+          threadId,
+          projectId: policy.projectId,
+          title: "New legacy shell",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+          legacyBootstrap: policy,
+        });
+        yield* f.engine.dispatch({
+          ...f.command,
+          threadId,
+          commandId: policy.birthCommandId,
+          dispatchGuard: undefined,
+          dispatchMode: { type: "defer_start", workspaceStrategy: { type: "root" } },
+          legacyBootstrap: policy,
+        });
+        const born = (yield* f.engine.getThreadProjection(threadId)).runs[0]!;
+        const rejected = yield* f.engine
+          .dispatch({
+            type: "prepared-run.release",
+            commandId: policy.releaseCommandId,
+            threadId,
+            runId: born.id,
+            legacyBootstrap: { ...policy, runId: born.id },
+          })
+          .pipe(Effect.flip);
+        assert.equal(rejected._tag, "OrchestratorDispatchError");
+        assert.equal((rejected.cause as { _tag: string })._tag, "DispatchGuardRejected");
+        const failed = yield* f.engine.getThreadProjection(threadId);
+        assert.equal(failed.runs[0]!.status, "failed");
+        assert.isNotNull(failed.runs[0]!.completedAt);
+        assert.equal(failed.attempts[0]!.status, "failed");
+        assert.equal(failed.nodes.find((node) => node.id === born.rootNodeId)?.status, "failed");
+        const preparationItem = failed.turnItems.find(
+          (item) => item.runId === born.id && item.type === "command_execution",
+        );
+        assert.equal(preparationItem?.status, "failed");
+        assert.equal(preparationItem?.title, "Dispatch guard rejected");
+        assert.notProperty(failed.runs[0]!, "legacyPreparationFailureKnown");
+        assert.isEmpty(failed.turnItems.filter((item) => item.type === "error"));
+        assert.isNull(failed.thread.deletedAt);
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const receipt = yield* receipts.getByCommandId(policy.releaseCommandId);
+        assert.isTrue(Option.isSome(receipt));
+        const sink = yield* EventSink.EventSinkV2;
+        const events = Array.from(
+          yield* sink
+            .readByCommandId({ commandId: policy.releaseCommandId })
+            .pipe(Stream.runCollect),
+        );
+        assert.deepEqual(
+          events.map((stored) => stored.event.type),
+          ["run-attempt.updated", "node.updated", "turn-item.updated", "run.updated"],
+        );
+        if (Option.isSome(receipt)) {
+          assert.equal(receipt.value.status, "rejected");
+          assert.equal(receipt.value.resultSequence, events.at(-1)?.sequence);
+        }
+        const observation = yield* f.query.observe({
+          threadId,
+          commandId: policy.releaseCommandId,
+          messageId: policy.messageId,
+        });
+        assert.equal(observation.commandStatus, "rejected");
+        assert.isNull(observation.turn);
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        assert.isEmpty(
+          (yield* outbox.listByThreadId(threadId)).filter(
+            (effect) => effect.request.type === "provider-turn.start",
+          ),
+        );
+      }),
+  );
+  it.effect(
+    "strict legacy final guard rejects its authentic preparing birth without claiming successful C or deleting the shell",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* queueGuardFixture("legacy-strict-final-guard");
+        const createCommandId = legacyBootstrapCreateCommandId(f.threadId, f.command.commandId);
+        const policy = {
+          version: 1 as const,
+          createCommandId,
+          birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+          releaseCommandId: f.command.commandId,
+          projectId: ProjectId.make("guard:project:legacy-strict-final-guard"),
+          threadId: f.threadId,
+          messageId: f.command.messageId,
+          payloadHash: "strict-guard-fixture",
+          ownsNewThread: false,
+          dispatchGuard: f.command.dispatchGuard,
+        };
+        yield* f.engine.dispatch({
+          type: "thread.metadata.update",
+          commandId: createCommandId,
+          threadId: f.threadId,
+          expectedEmpty: true,
+          legacyBootstrap: policy,
+        });
+        yield* f.engine.dispatch({
+          ...f.command,
+          commandId: policy.birthCommandId,
+          dispatchGuard: undefined,
+          dispatchMode: { type: "defer_start", workspaceStrategy: { type: "root" } },
+          legacyBootstrap: policy,
+        });
+        const preparing = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!;
+        const release = {
+          type: "prepared-run.release" as const,
+          commandId: f.command.commandId,
+          threadId: f.threadId,
+          runId: preparing.id,
+          legacyBootstrap: { ...policy, runId: preparing.id },
+        };
+        const rejected = yield* f.engine.dispatch(release).pipe(Effect.flip);
+        assert.equal(rejected._tag, "OrchestratorDispatchError");
+        assert.include(
+          (rejected.cause as { reason: string }).reason,
+          "target changed after observation",
+        );
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const receipt = yield* receipts.getByCommandId(f.command.commandId);
+        assert.isTrue(Option.isSome(receipt));
+        if (Option.isSome(receipt)) {
+          assert.equal(receipt.value.status, "rejected");
+          assert.equal(receipt.value.commandType, "prepared-run.release");
+        }
+        const observation = yield* f.observe();
+        assert.equal(observation.commandStatus, "rejected");
+        assert.isNull(observation.turn);
+        const retained = yield* f.engine.getThreadProjection(f.threadId);
+        assert.isNull(retained.thread.deletedAt);
+        assert.equal(retained.runs[0]!.status, "preparing");
+        const decision = retained.runs[0]!.legacyReleaseDecision;
+        assert.isDefined(decision);
+        assert.equal(decision?.status, "rejected");
+        assert.equal(decision?.policy.releaseCommandId, f.command.commandId);
+        const sink = yield* EventSink.EventSinkV2;
+        const rejectionEvents = Array.from(
+          yield* sink.readByCommandId({ commandId: f.command.commandId }).pipe(Stream.runCollect),
+        );
+        assert.equal(rejectionEvents.length, 1);
+        assert.equal(rejectionEvents[0]?.event.type, "run.updated");
+        assert.equal(rejectionEvents[0]?.event.id, decision?.evidenceEventId);
+        if (Option.isSome(receipt))
+          assert.equal(rejectionEvents[0]?.sequence, receipt.value.resultSequence);
+        assert.isAtLeast(decision!.observed.lastEventSequence, decision!.birthSequence);
+        assert.isNull(retained.runs[0]!.startedAt);
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        assert.isEmpty(
+          (yield* outbox.listByThreadId(f.threadId)).filter(
+            (effect) => effect.request.type === "provider-turn.start",
+          ),
+        );
+        const replay = yield* f.engine.dispatch(release).pipe(Effect.flip);
+        assert.equal(replay._tag, "OrchestratorCommandPreviouslyRejectedError");
+      }),
+  );
+  it.effect(
+    "same-thread recreation waits for exact durable deletion cleanup and the serialized create rejects an unfenced caller",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* queueGuardFixture("creation-fence");
+        const deletionId = CommandId.make("guard:creation-fence:delete");
+        yield* f.engine.dispatch({
+          type: "thread.delete",
+          commandId: deletionId,
+          threadId: f.threadId,
+        });
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const create = {
+          type: "thread.create" as const,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          commandId: CommandId.make("guard:creation-fence:recreate"),
+          threadId: f.threadId,
+          projectId: ProjectId.make("guard:project:creation-fence"),
+          title: "Recreated after cleanup",
+          modelSelection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          branch: null,
+          worktreePath: null,
+        };
+        const unsafe = yield* f.engine
+          .dispatch({ ...create, commandId: CommandId.make("guard:creation-fence:unfenced") })
+          .pipe(Effect.flip);
+        assert.equal(unsafe._tag, "OrchestratorDispatchError");
+        assert.include(String(unsafe.cause), "recreation is fenced");
+        const recreation = yield* awaitThreadCreationCleanup(outbox, f.threadId).pipe(
+          Effect.andThen(f.engine.dispatch(create)),
+          Effect.forkChild,
+        );
+        assert.isUndefined(recreation.pollUnsafe());
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(create.commandId)));
+        assert.isNotNull((yield* f.engine.getThreadProjection(f.threadId)).thread.deletedAt);
+        const cleanup = yield* outbox.claimNext({
+          workerId: "creation-fence-worker",
+          leaseDurationMs: 30_000,
+        });
+        assert.isTrue(Option.isSome(cleanup));
+        if (Option.isSome(cleanup)) {
+          assert.equal(cleanup.value.commandId, deletionId);
+          assert.equal(cleanup.value.request.type, "terminal.cleanup");
+          yield* outbox.succeed({ effectId: cleanup.value.id, workerId: "creation-fence-worker" });
+        }
+        const created = yield* Fiber.join(recreation);
+        assert.isTrue(
+          created.storedEvents.some((stored) => stored.event.type === "thread.created"),
+        );
+        assert.isNull((yield* f.engine.getThreadProjection(f.threadId)).thread.deletedAt);
+        assert.equal((yield* f.engine.getThreadProjection(f.threadId)).thread.title, create.title);
+      }),
+  );
+  it.effect.each(
+    (["deleted", "unknown", "delete-persistence-failed"] as const).map((outcome) => ({
+      outcome,
+      name: `legacy bootstrap ${outcome === "deleted" ? "known failure tombstones only its proven shell" : outcome === "unknown" ? "unknown failure retains its shell" : "delete persistence failure retains the durable failed shell without disposition"}`,
+    })),
+  )("$name", ({ outcome }) =>
+    Effect.gen(function* () {
+      const known = outcome !== "unknown";
+      const deleted = outcome === "deleted";
+      const name = `legacy-failure-${outcome}`;
+      const f = yield* queueGuardFixture(name);
+      const owner = yield* LegacyGuardTerminalFixture;
+      const fs = yield* FileSystem.FileSystem;
+      const commonDirectory = `${owner.baseDir}/.git`;
+      const worktreePath = `${owner.baseDir}/owned-worktree`;
+      yield* fs.makeDirectory(commonDirectory);
+      yield* moveProject(
+        ProjectId.make(`guard:project:${name}`),
+        owner.baseDir,
+        "2026-10-05T00:00:00.000Z",
+      );
+      const threadId = ThreadId.make(`bootstrap:${name}`);
+      const createCommandId = legacyBootstrapCreateCommandId(threadId, f.command.commandId);
+      const policy = {
+        version: 1 as const,
+        createCommandId,
+        birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+        releaseCommandId: f.command.commandId,
+        projectId: ProjectId.make(`guard:project:${name}`),
+        threadId,
+        messageId: f.command.messageId,
+        payloadHash: "fixture-hash",
+        ownsNewThread: true,
+      };
+      yield* f.engine.dispatch({
+        type: "thread.create",
+        commandId: createCommandId,
+        threadId,
+        projectId: policy.projectId,
+        title: "Bootstrap fixture",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+        legacyBootstrap: policy,
+      });
+      yield* f.engine.dispatch({
+        ...f.command,
+        threadId,
+        commandId: policy.birthCommandId,
+        dispatchGuard: undefined,
+        dispatchMode: {
+          type: "defer_start",
+          workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: false },
+          runSetupScript: false,
+        },
+        legacyBootstrap: policy,
+      });
+      const run = (yield* f.engine.getThreadProjection(threadId)).runs[0]!;
+      const sink = yield* EventSink.EventSinkV2;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const collect = (commandId: CommandId) =>
+        sink.readByCommandId({ commandId }).pipe(
+          Stream.runCollect,
+          Effect.map((events) => Array.from(events)),
+        );
+      const receivingPolicy = { ...policy, runId: run.id };
+      const proof = legacyBootstrapBirth({
+        policy: receivingPolicy,
+        claimEvents: yield* collect(createCommandId),
+        birthEvents: yield* collect(policy.birthCommandId),
+      });
+      const claim = yield* receipts.getByCommandId(createCommandId);
+      const ownedBirthReceipt = yield* receipts.getByCommandId(policy.birthCommandId);
+      if (proof.type !== "valid" || Option.isNone(claim) || Option.isNone(ownedBirthReceipt))
+        return yield* Effect.die("Actual registered claim/birth proof missing");
+      const generation = legacyPreparationGeneration({
+        runId: run.id,
+        birthEventId: proof.birthEventId,
+        birthSequence: proof.sequence,
+      });
+      let preparation: LegacyPreparation = {
+        version: 1,
+        policy: receivingPolicy,
+        claimEventId: proof.claimEventId,
+        claimSequence: proof.claimSequence,
+        claimReceiptSequence: claim.value.resultSequence,
+        birthEventId: proof.birthEventId,
+        birthSequence: proof.sequence,
+        birthReceiptSequence: ownedBirthReceipt.value.resultSequence,
+        generation,
+        projectWorkspaceRoot: owner.baseDir,
+        commonDirectory,
+        setup: { status: "opted_out" },
+        steps: [],
+      };
+      const progress = (commandId: CommandId, update: LegacyPreparationUpdate) =>
+        Effect.gen(function* () {
+          const result = yield* f.engine.dispatch({
+            type: "prepared-run.progress",
+            commandId,
+            threadId,
+            runId: run.id,
+            phase: "worktree",
+            legacyPreparationUpdate: update,
+          });
+          const recorded = (yield* collect(commandId))[0];
+          const receipt = yield* receipts.getByCommandId(commandId);
+          if (
+            recorded?.event.type !== "run.updated" ||
+            recorded.sequence !== result.sequence ||
+            Option.isNone(receipt) ||
+            receipt.value.status !== "accepted" ||
+            recorded.event.payload.legacyPreparation === undefined
+          )
+            return yield* Effect.die("Actual owner journal acceptance/readback missing");
+          preparation = recorded.event.payload.legacyPreparation;
+        });
+      yield* progress(CommandId.make(`${createCommandId}:preparation:${generation}:initialize`), {
+        type: "initialize",
+        preparation,
+      });
+      let intent: LegacyPreparation["steps"][number] | undefined;
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          if (!ChildProcess.isStandardCommand(command))
+            return yield* Effect.die("Unexpected synthetic pipeline");
+          const args = [...command.args];
+          if (args.includes("add")) {
+            yield* fs.makeDirectory(worktreePath);
+            yield* fs.writeFileString(`${worktreePath}/partial`, "unknown entered material");
+          }
+          const stdout = args.includes("--git-common-dir")
+            ? `${commonDirectory}\n`
+            : args.includes("rev-parse")
+              ? `${"9".repeat(40)}\n`
+              : "";
+          return ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(1),
+            exitCode: Effect.succeed(
+              ChildProcessSpawner.ExitCode(
+                args.includes("add") || args.includes("--get-regexp") ? 1 : 0,
+              ),
+            ),
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            unref: Effect.succeed(Effect.void),
+            stdin: Sink.drain,
+            stdout: Stream.encodeText(Stream.make(stdout)),
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+          });
+        }),
+      );
+      const driver = yield* makeGitVcsDriverCore().pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provide(ServerConfigLayer),
+      );
+      yield* driver
+        .createWorktree(
+          {
+            cwd: owner.baseDir,
+            refName: "main",
+            newRefName: known ? "invalid?" : "valid",
+            path: worktreePath,
+          },
+          {
+            legacyPreparation: {
+              beforeEffect: (planned) =>
+                Effect.gen(function* () {
+                  const { kind, ...input } = planned;
+                  const effect = { kind, input };
+                  const effectId = legacyPreparationEffectId({ generation, effect });
+                  const commandId = CommandId.make(
+                    `${createCommandId}:preparation:${generation}:${effectId}:intent`,
+                  );
+                  intent = {
+                    effect,
+                    effectId,
+                    inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
+                    intentCommandId: commandId,
+                    intentEventId: EventId.make(`${commandId}:event`),
+                    state: "intent",
+                  };
+                  yield* progress(commandId, { type: "intent", step: intent });
+                }),
+              neverInvoked: (planned, reason) =>
+                Effect.gen(function* () {
+                  if (intent === undefined) return yield* Effect.die("Missing actual owner intent");
+                  const { kind, ...input } = planned;
+                  if (
+                    canonicalLegacyPayload(intent.effect) !==
+                    canonicalLegacyPayload({ kind, input })
+                  )
+                    return yield* Effect.die("Owner effect input changed");
+                  const commandId = CommandId.make(
+                    `${createCommandId}:preparation:${generation}:${intent.effectId}:outcome`,
+                  );
+                  yield* progress(commandId, {
+                    type: "outcome",
+                    step: {
+                      ...intent,
+                      state: "known_no_effect_failure",
+                      outcomeCommandId: commandId,
+                      outcomeEventId: EventId.make(`${commandId}:event`),
+                      evidence: { type: "never_invoked", owner: "git", reason },
+                    },
+                  });
+                }),
+              afterEffect: () =>
+                Effect.gen(function* () {
+                  if (intent === undefined || known)
+                    return yield* Effect.die("Unexpected executing owner outcome");
+                  const commandId = CommandId.make(
+                    `${createCommandId}:preparation:${generation}:${intent.effectId}:outcome`,
+                  );
+                  yield* progress(commandId, {
+                    type: "outcome",
+                    step: {
+                      ...intent,
+                      state: "unknown",
+                      outcomeCommandId: commandId,
+                      outcomeEventId: EventId.make(`${commandId}:event`),
+                      evidence: { type: "unknown", reason: "partial_material" },
+                    },
+                  });
+                }),
+            },
+          },
+        )
+        .pipe(Effect.result);
+      yield* f.engine.dispatch({
+        type: "prepared-run.fail",
+        commandId: CommandId.make(`${createCommandId}:fail`),
+        threadId,
+        runId: run.id,
+        legacyPreparationFailureKnown: known,
+        failure: makeProviderFailure({
+          cause: "worktree exploded",
+          message: "worktree exploded",
+          class: "validation_error",
+          retryable: false,
+        }),
+      });
+      const deletion = {
+        type: "legacy-bootstrap.failure-delete" as const,
+        commandId: CommandId.make(`${createCommandId}:failure-delete`),
+        threadId,
+        runId: run.id,
+        legacyBootstrap: { ...policy, runId: run.id },
+        legacyNoControl: yield* Schema.decodeEffect(LegacyNoTerminalControl)({
+          version: 1,
+          type: "no_control",
+          policy: receivingPolicy,
+          threadId,
+          runId: run.id,
+          claimEventId: proof.claimEventId,
+          claimSequence: proof.claimSequence,
+          claimReceiptSequence: claim.value.resultSequence,
+          birthEventId: proof.birthEventId,
+          birthSequence: proof.sequence,
+          birthReceiptSequence: ownedBirthReceipt.value.resultSequence,
+          preparationGeneration: generation,
+          workspacePath: owner.baseDir,
+          projectWorkspaceRoot: owner.baseDir,
+        }),
+      };
+      const commit = sink.commitCommand;
+      const failedCommit =
+        outcome === "delete-persistence-failed"
+          ? vi.spyOn(sink, "commitCommand").mockImplementation((input) =>
+              input.commandId === deletion.commandId
+                ? Effect.fail(
+                    new EventSink.EventSinkWriteError({
+                      eventCount: input.events.length,
+                      commandId: input.commandId,
+                      cause: "delete persistence failed",
+                    }),
+                  )
+                : commit(input),
+            )
+          : undefined;
+      if (deleted) {
+        const deleted = yield* f.engine.dispatchLegacyFailureDelete!(deletion);
+        assert.isTrue(deleted.storedEvents.some(({ event }) => event.type === "thread.deleted"));
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const receipt = yield* receipts.getByCommandId(deletion.commandId);
+        assert.isTrue(Option.isSome(receipt));
+        if (Option.isSome(receipt)) assert.equal(receipt.value.resultSequence, deleted.sequence);
+        const replayed = yield* f.engine.dispatchLegacyFailureDelete!(deletion);
+        assert.equal(replayed.sequence, deleted.sequence);
+      } else {
+        const rejected = yield* f.engine.dispatchLegacyFailureDelete!(deletion).pipe(
+          Effect.flip,
+          Effect.ensuring(Effect.sync(() => failedCommit?.mockRestore())),
+        );
+        assert.equal(rejected._tag, "OrchestratorDispatchError");
+        assert.isNull((yield* f.engine.getThreadProjection(threadId)).thread.deletedAt);
+      }
+      const observed = yield* f.query.observe({
+        threadId,
+        commandId: policy.releaseCommandId,
+        messageId: policy.messageId,
+      });
+      assert.equal(observed.commandStatus, "not_found");
+      assert.equal(observed.correlation, "missing");
+      assert.isNull(observed.turn);
+      assert.equal(observed.target === null, deleted);
+      const events = yield* EventSink.EventSinkV2;
+      const birth = yield* events
+        .readByCommandId({ commandId: policy.birthCommandId })
+        .pipe(Stream.runCollect);
+      assert.isTrue(Array.from(birth).some(({ event }) => event.type === "run.created"));
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      assert.isFalse(
+        (yield* outbox.listByThreadId(threadId)).some(
+          ({ request }) => request.type === "provider-turn.start",
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(LegacyGuardOwnerTestLayer).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+  );
+  it.effect("blocks durable attention flags and live background work", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("attention");
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const nodeId = NodeId.make("guard:attention:node");
+      yield* f.engine.dispatch({
+        ...f.command,
+        commandId: CommandId.make("guard:attention:root"),
+        messageId: MessageId.make("guard:attention:root"),
+        dispatchGuard: undefined,
+      });
+      const projection = yield* f.engine.getThreadProjection(f.threadId);
+      const completedRun = projection.runs[0]!;
+      const providerThreadId = ProviderThreadId.make("guard:attention:provider-thread");
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("guard:attention:root-completed"),
+            type: "run.updated",
+            threadId: f.threadId,
+            runId: completedRun.id,
+            occurredAt: now,
+            payload: { ...completedRun, status: "completed", startedAt: now, completedAt: now },
+          },
+          ...(["approval", "user_input"] as const).map((kind) => ({
+            id: EventId.make(`guard:attention:${kind}`),
+            type: "runtime-request.updated" as const,
+            threadId: f.threadId,
+            occurredAt: now,
+            payload: {
+              id: RuntimeRequestId.make(`guard:attention:${kind}`),
+              nodeId,
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: kind === "approval" ? ("command" as const) : ("user_input" as const),
+              status: "pending" as const,
+              responseCapability: { type: "not_resumable" as const, reason: "fixture" },
+              createdAt: now,
+              resolvedAt: null,
+            },
+          })),
+          {
+            id: EventId.make("guard:attention:plan"),
+            type: "plan.updated",
+            threadId: f.threadId,
+            occurredAt: now,
+            payload: {
+              id: PlanId.make("guard:attention:plan"),
+              threadId: f.threadId,
+              runId: null,
+              nodeId,
+              status: "active",
+              kind: "proposed_plan",
+              markdown: "Review this plan",
+            },
+          },
+          {
+            id: EventId.make("guard:attention:thread-binding"),
+            type: "thread.metadata-updated",
+            threadId: f.threadId,
+            occurredAt: now,
+            payload: { ...projection.thread, activeProviderThreadId: providerThreadId },
+          },
+          {
+            id: EventId.make("guard:attention:roster"),
+            type: "provider-thread.updated",
+            threadId: f.threadId,
+            occurredAt: now,
+            payload: {
+              id: providerThreadId,
+              driver: ProviderDriverKind.make("codex"),
+              providerInstanceId: modelSelection.instanceId,
+              providerSessionId: null,
+              appThreadId: f.threadId,
+              ownerNodeId: null,
+              nativeThreadRef: null,
+              nativeConversationHeadRef: null,
+              status: "active",
+              firstRunOrdinal: null,
+              lastRunOrdinal: null,
+              handoffIds: [],
+              forkedFrom: null,
+              pendingBackgroundTasks: [{ taskId: "live-task", kind: "background_task" }],
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+        ],
+      });
+      const current = yield* f.observe();
+      for (const blocker of [
+        "pending_approval",
+        "pending_user_input",
+        "actionable_plan",
+        "background_work",
+      ] as const)
+        assert.include(current.target!.blockers, blocker);
+      const before = current.snapshotSequence;
+      const rejected = yield* f.engine
+        .dispatch({
+          ...f.command,
+          dispatchGuard: {
+            ...f.command.dispatchGuard,
+            observedSnapshotSequence: before,
+            expectedLatestTurnId: current.target!.latestTurnId,
+          },
+        })
+        .pipe(Effect.flip);
+      assert.include((rejected.cause as { readonly reason: string }).reason, "pending_approval");
+      assert.equal((yield* f.observe()).snapshotSequence, before);
+    }),
+  );
+  it.effect.each(["starting", "running", "ready"] as const)(
+    "blocks a freshly observed %s session with active work",
+    (status) =>
+      Effect.gen(function* () {
+        const f = yield* queueGuardFixture(`session-${status}`);
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        if (status === "ready") {
+          yield* f.engine.dispatch({
+            ...f.command,
+            commandId: CommandId.make("guard:session-ready:running"),
+            messageId: MessageId.make("guard:session-ready:running"),
+            dispatchGuard: undefined,
+          });
+          const run = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("guard:session-ready:run"),
+                type: "run.updated",
+                threadId: f.threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: { ...run, status: "running", startedAt: now },
+              },
+            ],
+          });
+        }
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`guard:session-${status}:session`),
+              type: "provider-session.attached",
+              threadId: f.threadId,
+              occurredAt: now,
+              payload: {
+                id: ProviderSessionId.make(`guard:session-${status}`),
+                driver: ProviderDriverKind.make("codex"),
+                providerInstanceId: modelSelection.instanceId,
+                status,
+                cwd: "/repo",
+                model: modelSelection.model,
+                capabilities: CodexProviderCapabilitiesV2,
+                createdAt: now,
+                updatedAt: now,
+                lastError: null,
+              },
+            },
+          ],
+        });
+        const current = yield* f.observe();
+        const target = current.target!;
+        assert.include(
+          target.blockers,
+          status === "starting"
+            ? "session_starting"
+            : status === "running"
+              ? "session_running"
+              : "active_turn",
+        );
+        assert.equal(
+          (yield* f.engine
+            .dispatch({
+              ...f.command,
+              dispatchGuard: {
+                ...f.command.dispatchGuard,
+                observedSnapshotSequence: current.snapshotSequence,
+                expectedSessionStatus: target.sessionStatus,
+                expectedActiveTurnId: target.activeTurnId,
+                expectedLatestTurnId: target.latestTurnId,
+              },
+            })
+            .pipe(Effect.exit))._tag,
+          "Failure",
+        );
+        assert.equal((yield* f.observe()).snapshotSequence, current.snapshotSequence);
+      }),
+  );
+
+  it.effect("allows a new model on the observed instance and binds its accepted run", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("same-instance-model");
+      const desired = {
+        ...modelSelection,
+        model: "gpt-6.1-sol",
+        options: [{ id: "reasoningEffort", value: "medium" }],
+      };
+      yield* f.engine.dispatch({ ...f.command, modelSelection: desired });
+      assert.equal((yield* f.observe()).commandStatus, "accepted");
+      assert.deepEqual(
+        (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!.modelSelection,
+        desired,
+      );
+    }),
+  );
+  it.effect("requires command birth binding and detects ambiguous projected runs", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("ambiguous");
+      yield* f.engine.dispatch(f.command);
+      const missing = yield* f.query.observe({
+        threadId: f.threadId,
+        commandId: CommandId.make("guard:never-dispatched"),
+        messageId: f.command.messageId,
+      });
+      assert.equal(missing.commandStatus, "not_found");
+      assert.equal(missing.correlation, "missing");
+      assert.isNull(missing.turn);
+      const sql = yield* SqlClient.SqlClient;
+      const duplicate = RunId.make("guard:ambiguous:duplicate");
+      yield* sql`INSERT INTO orchestration_v2_projection_runs (run_id,thread_id,ordinal,provider,provider_instance_id,provider_thread_id,status,requested_at,completed_at,payload_json)
+      SELECT ${duplicate},thread_id,ordinal+1,provider,provider_instance_id,provider_thread_id,status,requested_at,completed_at,json_set(payload_json,'$.id',${duplicate},'$.ordinal',ordinal+1)
+      FROM orchestration_v2_projection_runs WHERE thread_id=${f.threadId}`;
+      const ambiguous = yield* f.observe();
+      assert.equal(ambiguous.correlation, "ambiguous");
+      assert.isNull(ambiguous.turn);
+    }),
+  );
+  it.effect("admits one of two commands sharing an observed idle state", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("race");
+      const results = yield* Effect.all(
+        [
+          f.engine.dispatch(f.command).pipe(Effect.exit),
+          f.engine
+            .dispatch({
+              ...f.command,
+              commandId: CommandId.make("guard:race:second"),
+              messageId: MessageId.make("guard:race:second-message"),
+            })
+            .pipe(Effect.exit),
+        ],
+        { concurrency: 2 },
+      );
+      assert.lengthOf(
+        results.filter((result) => result._tag === "Success"),
+        1,
+      );
+      assert.lengthOf(
+        results.filter((result) => result._tag === "Failure"),
+        1,
+      );
+    }),
+  );
+
+  it.effect("accepts once and replays a receipt before rechecking its busy guard", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("replay");
+      assert.equal(f.initial.commandStatus, "not_found");
+      assert.isTrue(f.initial.target?.idle);
+      const accepted = yield* f.engine.dispatch(f.command);
+      const pending = yield* f.observe();
+      assert.equal(pending.commandStatus, "accepted");
+      assert.equal(pending.acceptedSequence, accepted.sequence);
+      assert.equal(pending.correlation, "pending");
+      assert.equal(pending.turn?.state, "pending");
+      assert.isFalse(pending.target?.idle);
+      assert.deepEqual(yield* f.engine.dispatch(f.command), accepted);
+      yield* Schema.decodeUnknownEffect(OrchestrationCommandObservation)(pending);
+    }),
+  );
+  it.effect("rejects a stale target without events and preserves rejected replay", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("stale");
+      yield* f.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("guard:change"),
+        threadId: f.threadId,
+        runtimeMode: "approval-required",
+      });
+      const before = (yield* f.observe()).snapshotSequence;
+      assert.equal((yield* f.engine.dispatch(f.command).pipe(Effect.exit))._tag, "Failure");
+      const rejected = yield* f.observe();
+      assert.equal(rejected.snapshotSequence, before);
+      assert.equal(rejected.commandStatus, "rejected");
+      assert.isNull(rejected.acceptedSequence);
+      assert.equal(
+        (yield* f.engine.dispatch(f.command).pipe(Effect.flip))._tag,
+        "OrchestratorCommandPreviouslyRejectedError",
+      );
+    }),
+  );
+  it.effect("allows unrelated aggregate changes and rejects model-option mismatch", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("unrelated");
+      yield* queueGuardFixture("other");
+      yield* f.engine.dispatch(f.command);
+      const mismatch = yield* queueGuardFixture("options");
+      const result = yield* mismatch.engine
+        .dispatch({
+          ...mismatch.command,
+          dispatchGuard: {
+            ...mismatch.command.dispatchGuard,
+            expectedModelSelection: {
+              ...modelSelection,
+              options: [{ id: "reasoningEffort", value: "high" }],
+            },
+          },
+        })
+        .pipe(Effect.exit);
+      assert.equal(result._tag, "Failure");
+      assert.equal((yield* mismatch.observe()).snapshotSequence, mismatch.initial.snapshotSequence);
+    }),
+  );
+  it.effect("holds settled targets until explicit reopen", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("settled");
+      yield* f.engine.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("guard:settle"),
+        threadId: f.threadId,
+      });
+      const settled = yield* f.observe();
+      assert.include(settled.target?.blockers ?? [], "settled");
+      assert.equal(
+        (yield* f.engine
+          .dispatch({
+            ...f.command,
+            dispatchGuard: {
+              ...f.command.dispatchGuard,
+              observedSnapshotSequence: settled.snapshotSequence,
+            },
+          })
+          .pipe(Effect.exit))._tag,
+        "Failure",
+      );
+      yield* f.engine.dispatch({
+        type: "thread.unsettle",
+        reason: "user",
+        commandId: CommandId.make("guard:unsettle"),
+        threadId: f.threadId,
+      });
+      const reopened = yield* f.observe();
+      assert.isTrue(reopened.target?.idle);
+      yield* f.engine.dispatch({
+        ...f.command,
+        commandId: CommandId.make("guard:reopen:start"),
+        dispatchGuard: {
+          ...f.command.dispatchGuard,
+          observedSnapshotSequence: reopened.snapshotSequence,
+        },
+      });
+    }),
+  );
+  it.effect("rejects future observations and cross-instance selections without events", () =>
+    Effect.gen(function* () {
+      for (const reason of ["future", "instance"] as const) {
+        const f = yield* queueGuardFixture(reason);
+        const command =
+          reason === "future"
+            ? {
+                ...f.command,
+                dispatchGuard: {
+                  ...f.command.dispatchGuard,
+                  observedSnapshotSequence: f.initial.snapshotSequence + 1,
+                },
+              }
+            : {
+                ...f.command,
+                modelSelection: { ...modelSelection, instanceId: alternateInstanceId },
+              };
+        assert.equal((yield* f.engine.dispatch(command).pipe(Effect.exit))._tag, "Failure");
+        assert.equal((yield* f.observe()).snapshotSequence, f.initial.snapshotSequence);
+      }
+    }),
+  );
+  it.effect(
+    "correlates a historical run after later work and rejects cross-thread/message reuse",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* queueGuardFixture("historical");
+        yield* f.engine.dispatch(f.command);
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const run = (yield* f.engine.getThreadProjection(f.threadId)).runs[0]!;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("guard:historical:completed"),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+            },
+          ],
+        });
+        const current = yield* f.observe();
+        yield* f.engine.dispatch({
+          ...f.command,
+          commandId: CommandId.make("guard:historical:new"),
+          messageId: MessageId.make("guard:historical:new-message"),
+          dispatchGuard: {
+            ...f.command.dispatchGuard,
+            observedSnapshotSequence: current.snapshotSequence,
+            expectedLatestTurnId: current.target!.latestTurnId,
+          },
+        });
+        const historical = yield* f.observe();
+        assert.equal(historical.correlation, "exact");
+        assert.equal(historical.turn?.state, "completed");
+        assert.equal(historical.turn?.turnId, TurnId.make(run.id));
+        assert.equal(
+          (yield* f.query.observe({
+            threadId: f.threadId,
+            commandId: f.command.commandId,
+            messageId: MessageId.make("wrong-message"),
+          })).correlation,
+          "mismatched",
+        );
+        assert.equal(
+          (yield* f.query.observe({
+            threadId: ThreadId.make("wrong-thread"),
+            commandId: f.command.commandId,
+            messageId: f.command.messageId,
+          })).correlation,
+          "mismatched",
+        );
+      }),
+  );
+  it.effect("keeps an accepted receipt unresolved when its projected run is unavailable", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("missing-run");
+      yield* f.engine.dispatch(f.command);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE thread_id = ${f.threadId}`;
+      const observed = yield* f.observe();
+      assert.equal(observed.commandStatus, "accepted");
+      assert.equal(observed.correlation, "pending");
+      assert.isNull(observed.turn);
     }),
   );
 });

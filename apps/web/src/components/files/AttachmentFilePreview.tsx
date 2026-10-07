@@ -1,25 +1,16 @@
-import { ZoomableImage } from "~/components/chat/ZoomableImage";
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { readFilePreviewResponse } from "@t3tools/client-runtime/file-preview";
 import { filePreviewKind, FILE_TEXT_PREVIEW_MAX_BYTES } from "@t3tools/shared/filePreview";
-import {
-  CheckIcon,
-  ChevronRightIcon,
-  Code2,
-  CopyIcon,
-  DownloadIcon,
-  Eye,
-  Table2,
-  Trash2Icon,
-  WrapTextIcon,
-  XIcon,
-} from "lucide-react";
+import { ChevronRightIcon, DownloadIcon, Trash2Icon, WrapTextIcon, XIcon } from "lucide-react";
+import { Check, Code2, Copy, Eye, Table2 } from "lucide";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAssetUrlRefresh } from "~/assets/assetUrls";
 import ChatMarkdown from "~/components/ChatMarkdown";
+import { ZoomableImage } from "~/components/chat/ZoomableImage";
+import { MorphIcon } from "~/components/MorphIcon";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { toastManager } from "~/components/ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -252,7 +243,13 @@ export function AttachmentFilePreview(props: {
       <ReadOnlySourcePreview name={props.name} text={content.text} />
     )
   ) : kind === "pdf" || kind === "html" ? (
-    <BrowserDocumentFrame src={url} title={props.name} pdf={kind === "pdf"} />
+    <BrowserDocumentFrame
+      key={props.file ? revision : undefined}
+      src={url}
+      title={props.name}
+      pdf={kind === "pdf"}
+      onRetry={() => setRevision((value) => value + 1)}
+    />
   ) : kind === "audio" ? (
     <AudioPreview src={url} name={props.name} onError={() => setError("Unable to load audio.")} />
   ) : kind === "video" ? (
@@ -307,13 +304,10 @@ export function AttachmentFilePreview(props: {
             pressed={rendered}
             onPress={() => setRendered((value) => !value)}
           >
-            {rendered ? (
-              <Code2 className="size-3.5" />
-            ) : renderedMode === "table" ? (
-              <Table2 className="size-3.5" />
-            ) : (
-              <Eye className="size-3.5" />
-            )}
+            <MorphIcon
+              className="size-3.5"
+              icon={rendered ? Code2 : renderedMode === "table" ? Table2 : Eye}
+            />
           </FileSurfaceAction>
         ) : null}
         {showsRawText ? (
@@ -330,7 +324,7 @@ export function AttachmentFilePreview(props: {
             label={isCopied ? "Copied" : content.truncated ? "Copy preview" : "Copy contents"}
             onPress={() => copyToClipboard(content.text, undefined)}
           >
-            {isCopied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+            <MorphIcon className="size-3.5" icon={isCopied ? Check : Copy} />
           </FileSurfaceAction>
         ) : null}
         {url ? (

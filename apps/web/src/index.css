@@ -118,7 +118,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --workspace-titlebar-control-gap: 0.75rem;
   --workspace-titlebar-scroll-fade-height: 1.5rem;
   --chat-content-max-width: 46rem;
-  --thread-details-panel-width: 19.5rem;
+  --thread-details-panel-width: 17.5rem;
   /* The prompt on phones: iOS zooms into any input under 16px on focus. */
   --font-size-prompt-touch: max(var(--font-size-prompt, 1rem), 16px);
   /* Horizontal gutter shared by the page header and the chat column, clear of
@@ -2004,9 +2004,9 @@ code {
   border-bottom: 1px solid color-mix(in srgb, var(--contrast-border) 60%, transparent);
 }
 
-/* Size expanded tables to their content, capped by the conversation pane.
-   Center on the reading column even when the table grows beyond it. The row
-   remains the width boundary when side panels or the window resize. */
+/* Size top-level expanded tables to their content, capped by the conversation
+   pane. The row follows ChatCanvas's lane insets; surrounding text retains the
+   reading width, and nested tables stay inside their markdown parent. */
 [data-timeline-root] .chat-markdown > .chat-markdown-table-container[data-expanded="true"] {
   position: relative;
   left: 50%;

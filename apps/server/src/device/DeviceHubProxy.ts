@@ -3,8 +3,8 @@
  *
  * The hub binds loopback and is never reachable directly: serve-sim exposes a
  * shell-exec route and serve-emu's action routes are unauthenticated, so the
- * proxy and restricted direct gateway require an environment session with read
- * scope (operate scope for input and tuning). Reusing the T3
+ * only way to a device stream is through this route, which requires an
+ * environment session with read scope (operate scope for input and tuning). Reusing the T3
  * origin is also what makes remote connections work unchanged — Tailscale and
  * T3 Connect already carry `/api/*` and WebSocket upgrades for the app itself.
  *
@@ -18,8 +18,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
-import * as Layer from "effect/Layer";
 import {
   HttpClient,
   HttpClientRequest,
@@ -37,15 +35,47 @@ import {
   failEnvironmentScopeRequired,
 } from "../auth/http.ts";
 import * as DeviceService from "./DeviceService.ts";
-import { DeviceDirectAccessInput, DeviceDirectGrants } from "./DeviceDirectGrants.ts";
-import {
-  DEVICE_HUB_POLICY,
-  deviceHubRoutePolicy,
-  deviceHubForwardHeaders,
-  stripDeviceHubQuery,
-} from "./DeviceHubPolicy.ts";
 
-const decodeDirectAccess = Schema.decodeUnknownEffect(DeviceDirectAccessInput);
+const ALLOWED_PATHS: ReadonlyArray<RegExp> = [
+  /^\/api\/devices$/,
+  /^\/vendor\/serve-sim\/api$/,
+  /^\/vendor\/serve-sim\/api\/screenshot$/,
+  /^\/vendor\/serve-sim\/api\/event-log(\/events)?$/,
+  /^\/vendor\/serve-sim\/helper\/[^/]+\/(stream\.mjpeg|stream\.avcc|config|health|ax|foreground)$/,
+  /^\/vendor\/serve-sim\/helper\/[^/]+\/panel\/(1|3)\/stream\.avcc$/,
+  /^\/vendor\/serve-sim\/appstate$/,
+  /^\/vendor\/serve-emu\/api\/(devices|screenshot|stream-mode|stream-settings|accessibility|fold)$/,
+  /^\/vendor\/serve-emu\/health$/,
+];
+
+/** Read paths are GET-only; only these accept other methods (screenshot captures, stream tuning). */
+const MUTABLE_PATHS: ReadonlyArray<RegExp> = [
+  /^\/vendor\/serve-sim\/api\/screenshot$/,
+  /^\/vendor\/serve-emu\/api\/(screenshot|stream-mode|stream-settings)$/,
+  /^\/vendor\/serve-emu\/api\/fold$/,
+];
+
+const ALLOWED_WS_PATHS: ReadonlyArray<RegExp> = [
+  /^\/api\/devices\/ws$/,
+  /^\/vendor\/serve-sim\/helper\/ws$/,
+  /^\/vendor\/serve-emu\/ws$/,
+];
+
+/** Hop-by-hop and origin headers that must not cross the proxy. */
+const DROPPED_REQUEST_HEADERS = new Set([
+  "host",
+  "connection",
+  "upgrade",
+  "sec-websocket-key",
+  "sec-websocket-version",
+  "sec-websocket-extensions",
+  "sec-websocket-protocol",
+  "cookie",
+  "authorization",
+  "dpop",
+  "content-length",
+  "accept-encoding",
+]);
 
 const isWebSocketUpgrade = (request: HttpServerRequest.HttpServerRequest) =>
   request.headers.upgrade?.toLowerCase() === "websocket";
@@ -77,8 +107,18 @@ const authenticate = (requiredScope: AuthEnvironmentScope) =>
     if (!session.scopes.includes(requiredScope)) {
       return yield* failEnvironmentScopeRequired(requiredScope);
     }
-    return session;
   });
+
+const forwardHeaders = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (DROPPED_REQUEST_HEADERS.has(name) || value === undefined) continue;
+    headers[name] = value;
+  }
+  // serve-emu refuses mutations whose Origin differs from the request origin.
+  if (request.headers.origin !== undefined) headers.origin = origin;
+  return headers;
+};
 
 /**
  * Pipe a client WebSocket to the hub's with no framing changes. Frames are
@@ -123,9 +163,7 @@ const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
   const httpClient = HttpClient.withScope(yield* HttpClient.HttpClient);
   const method = request.method;
   const upstreamRequest = HttpClientRequest.make(method)(upstreamUrl).pipe(
-    HttpClientRequest.setHeaders(
-      deviceHubForwardHeaders(DEVICE_HUB_POLICY, request.headers, hubOrigin),
-    ),
+    HttpClientRequest.setHeaders(forwardHeaders(request, hubOrigin)),
     method === "GET" || method === "HEAD"
       ? (self) => self
       : HttpClientRequest.bodyStream(request.stream),
@@ -133,11 +171,7 @@ const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
   const response = yield* httpClient.execute(upstreamRequest);
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(response.headers)) {
-    if (
-      ["content-encoding", "transfer-encoding", "connection", "set-cookie", "location"].includes(
-        name,
-      )
-    ) {
+    if (name === "content-encoding" || name === "transfer-encoding" || name === "connection") {
       continue;
     }
     if (value !== undefined) headers[name] = value;
@@ -152,55 +186,27 @@ const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
 });
 
 const handler = Effect.gen(function* () {
-  const grants = yield* DeviceDirectGrants;
   const request = yield* HttpServerRequest.HttpServerRequest;
   const url = HttpServerRequest.toURL(request);
   if (Option.isNone(url)) {
     return HttpServerResponse.text("Bad Request", { status: 400 });
   }
   const hubPath = url.value.pathname.slice(DeviceService.DEVICE_HUB_ROUTE_PREFIX.length) || "/";
-  if (hubPath === "/direct-access") {
-    if (request.method !== "GET" || isWebSocketUpgrade(request))
-      return HttpServerResponse.empty({ status: 405 });
-    const session = yield* authenticate(AuthOrchestrationReadScope);
-    const input = yield* decodeDirectAccess(Object.fromEntries(url.value.searchParams)).pipe(
-      Effect.result,
-    );
-    if (
-      input._tag === "Failure" ||
-      ["hostId", "deviceId", "platform", "clientOrigin"].some(
-        (key) => url.value.searchParams.getAll(key).length !== 1,
-      )
-    )
-      return HttpServerResponse.empty({ status: 400 });
-    if (request.headers.origin && request.headers.origin !== input.success.clientOrigin)
-      return HttpServerResponse.empty({ status: 403 });
-    const devices = yield* DeviceService.DeviceService;
-    const ready = yield* devices.currentReadiness(input.success.hostId);
-    if (!ready?.directMedia) return HttpServerResponse.empty({ status: 204 });
-    const state = yield* devices.state;
-    if (
-      !state.devices.some(
-        (device) =>
-          device.hostId === input.success.hostId &&
-          device.id === input.success.deviceId &&
-          device.platform === input.success.platform,
-      )
-    )
-      return HttpServerResponse.empty({ status: 404 });
-    const access = yield* grants
-      .issue(input.success, ready.directMedia, session)
-      .pipe(Effect.catch((error) => failEnvironmentInternal("internal_error", error)));
-    return access
-      ? HttpServerResponse.jsonUnsafe(access, { headers: { "cache-control": "no-store" } })
-      : HttpServerResponse.empty({ status: 503 });
-  }
   const upgrade = isWebSocketUpgrade(request);
-  const policy = deviceHubRoutePolicy(DEVICE_HUB_POLICY, hubPath, request.method, upgrade);
-  if (typeof policy === "number") return HttpServerResponse.empty({ status: policy });
-  yield* authenticate(
-    policy === "operate" ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope,
+  const allowed = (upgrade ? ALLOWED_WS_PATHS : ALLOWED_PATHS).some((pattern) =>
+    pattern.test(hubPath),
   );
+  if (!allowed) {
+    return HttpServerResponse.text("Not Found", { status: 404 });
+  }
+  const readOnly = request.method === "GET" || request.method === "HEAD";
+  if (!upgrade && !readOnly && !MUTABLE_PATHS.some((pattern) => pattern.test(hubPath))) {
+    return HttpServerResponse.text("Method Not Allowed", { status: 405 });
+  }
+  const controlsDevice =
+    (upgrade && hubPath !== "/api/devices/ws") ||
+    (!readOnly && /\/api\/(stream-(mode|settings)|fold)$/.test(hubPath));
+  yield* authenticate(controlsDevice ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope);
   const devices = yield* DeviceService.DeviceService;
   const ready = yield* devices.currentReadiness(url.value.searchParams.get("hostId") ?? undefined);
   if (!ready) {
@@ -210,7 +216,11 @@ const handler = Effect.gen(function* () {
   // stream and socket URL itself, so nothing depends on the hub knowing the
   // T3 prefix.
   // The ticket authenticates here and must not travel on to the hub.
-  const upstreamPath = `${hubPath}${stripDeviceHubQuery(url.value.search)}`;
+  const upstreamSearch = new URLSearchParams(url.value.search);
+  upstreamSearch.delete("wsTicket");
+  upstreamSearch.delete("hostId");
+  const search = upstreamSearch.size > 0 ? `?${upstreamSearch.toString()}` : "";
+  const upstreamPath = `${hubPath}${search}`;
   if (upgrade) {
     return yield* proxyWebSocket(
       request,
@@ -220,6 +230,8 @@ const handler = Effect.gen(function* () {
   return yield* proxyHttp(request, `${ready.hub.origin}${upstreamPath}`, ready.hub.origin);
 });
 
-export const deviceHubProxyRouteLayer = Layer.unwrap(
-  Effect.sync(() => HttpRouter.add("*", `${DeviceService.DEVICE_HUB_ROUTE_PREFIX}/*`, handler)),
+export const deviceHubProxyRouteLayer = HttpRouter.add(
+  "*",
+  `${DeviceService.DEVICE_HUB_ROUTE_PREFIX}/*`,
+  handler,
 );

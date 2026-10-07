@@ -8,6 +8,8 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -143,6 +145,71 @@ function desktopSnapshot(sampledAtUnixMs: number): DesktopHostTelemetrySnapshot 
 }
 
 describe("ResourceTelemetry", () => {
+  it.effect(
+    "projects scoped provider ownership only into live samples and removes it after scope closure",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.adjust("1 second");
+          const sampledAtUnixMs = DateTime.toEpochMillis(yield* DateTime.now);
+          const sample = nativeSnapshot({
+            sequence: 1,
+            sampledAtUnixMs,
+            childCpuTimeMs: 100,
+            childWriteBytes: 1_000,
+          });
+          const samples = yield* Ref.make(sample);
+          const attribution = yield* ProcessAttribution.make();
+          const runtimeScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+            Scope.close(scope, Exit.void),
+          );
+          yield* attribution
+            .registerProviderRoot({ pid: 4_242, threadId: "thread-1", provider: "codex" })
+            .pipe(Effect.provideService(Scope.Scope, runtimeScope));
+          const telemetryLayer = ResourceTelemetry.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                NativeTelemetryClient.layerTest({
+                  sampleNow: Ref.get(samples).pipe(
+                    Effect.map((snapshot) => nativeGeneration(snapshot, 0)),
+                  ),
+                  readHistory: () => Effect.succeed([sample]),
+                }),
+                DesktopTelemetryReceiver.layerTest(),
+                Layer.succeed(ProcessAttribution.ProcessAttribution, attribution),
+                ResourceAttribution.layer,
+              ),
+            ),
+          );
+          yield* Effect.gen(function* () {
+            const telemetry = yield* ResourceTelemetry.ResourceTelemetry;
+            const live = yield* telemetry.refresh;
+            expect(live.processes.find((entry) => entry.identity.pid === 4_242)).toMatchObject({
+              category: "provider-root",
+              owner: { kind: "provider", threadId: "thread-1", provider: "codex" },
+            });
+            const history = yield* telemetry.readHistory({ windowMs: 1_000, bucketMs: 1_000 });
+            const historicalRoot = history.topProcesses.find(
+              (entry) => entry.identity.pid === 4_242,
+            );
+            expect(historicalRoot).toMatchObject({ category: "server-child" });
+            expect(historicalRoot).not.toHaveProperty("owner");
+
+            yield* Scope.close(runtimeScope, Exit.void);
+            yield* Ref.set(samples, {
+              ...sample,
+              sequence: 2,
+              sampledAtUnixMs: sampledAtUnixMs + 1,
+            });
+            const afterClose = yield* telemetry.refresh;
+            const root = afterClose.processes.find((entry) => entry.identity.pid === 4_242);
+            expect(root).toMatchObject({ category: "server-child" });
+            expect(root?.owner).toBeUndefined();
+          }).pipe(Effect.provide(telemetryLayer));
+        }),
+      ),
+  );
+
   it.effect("enables live native and Electron collection only while changes are retained", () =>
     Effect.gen(function* () {
       const sampledAtUnixMs = DateTime.toEpochMillis(yield* DateTime.now);

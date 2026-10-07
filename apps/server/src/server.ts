@@ -1,13 +1,14 @@
-import * as DeviceDirectGrants from "./device/DeviceDirectGrants.ts";
-import * as NativeCreationRepositoryLayer from "./persistence/Layers/NativeCreationRepository.ts";
-import { NativeCreationAuthorityUnavailable } from "./orchestration-v2/NativeCreationAuthority.ts";
-import * as AuthSessions from "./persistence/AuthSessions.ts";
+import * as JonesHttp from "./jones/http/registration.ts";
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
+import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
 import * as Semaphore from "effect/Semaphore";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
+import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -40,26 +41,13 @@ import {
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
-import * as ExternalLauncher from "./process/externalLauncher.ts";
-import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import {
   workstreamGatewayLayerLive,
-  workstreamRegistrationContextLayerLive,
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
-import {
-  nativeWorkstreamsHttpApiLayer,
-  nativeWorkstreamsRuntimeLayer,
-} from "./workstreams/runtimeIntegration/native.ts";
-import * as NativeStoreAuthority from "./environment/NativeStoreAuthority.ts";
-import { jonesUpdatesHttpApiLayer } from "./jonesUpdates/http.ts";
-import * as JonesUpdates from "./jonesUpdates/service.ts";
-import {
-  voiceReviewHttpApiLayerLive,
-  voiceReviewResponseHeadersLayer,
-} from "./voiceReview/http.ts";
-import { hostStatusHttpApiLayer } from "./hostStatus/http.ts";
+import * as ExternalLauncher from "./process/externalLauncher.ts";
+import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -100,6 +88,7 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import * as WorkMode from "./jones/workMode/WorkMode.ts";
 import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts";
 import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
@@ -172,11 +161,8 @@ import * as ProcessAttribution from "./resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
-import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
-import { makeRuntimeReader } from "./tokenAccounting/RuntimeReader.ts";
 import {
   OrchestrationEventInfrastructureLayerLive,
-  OrchestrationV2EventSinkLayerLive,
   OrchestrationV2ProductionLayerLive,
   ProjectServiceLayerLive,
   ProjectSetupScriptRunnerLayerLive,
@@ -193,8 +179,6 @@ import {
   makePersistedServerRuntimeState,
   persistServerRuntimeState,
 } from "./serverRuntimeState.ts";
-import { conversationLibraryHttpApiLayer } from "./conversations/http.ts";
-import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
 import { orchestrationHttpApiLayer } from "./orchestration-v2/http.ts";
 import { projectHttpApiLayer } from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
@@ -204,7 +188,7 @@ import * as ServerActivation from "./serverActivation.ts";
 
 // MCP handoff thread IDs include escaped provenance and can exceed find-my-way's
 // 100-character default for one path segment.
-export const HTTP_ROUTER_CONFIG = {
+const HTTP_ROUTER_CONFIG = {
   maxParamLength: 512,
 } as const;
 
@@ -290,15 +274,7 @@ const HttpServerLive = Layer.unwrap(
 
 const PlatformServicesLive = NodeServices.layer;
 
-const PersistenceLayerLive = Layer.empty.pipe(
-  Layer.provideMerge(
-    NativeCreationAuthorityUnavailable.pipe(
-      Layer.provide(AuthSessions.layer),
-      Layer.provideMerge(NativeCreationRepositoryLayer.layer),
-    ),
-  ),
-  Layer.provideMerge(SqlitePersistence.layerConfig),
-);
+const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
@@ -427,11 +403,6 @@ const CheckpointStoreLayerLive = CheckpointStore.layer.pipe(
 const PortScannerLayerLive = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
 const TerminalLayerLive = TerminalManager.layer.pipe(
-  Layer.provide(
-    ResourceCleanupService.terminalOwnerObservationLive.pipe(
-      Layer.provide(OrchestrationV2EventSinkLayerLive),
-    ),
-  ),
   Layer.provide(PtyAdapterLive),
   Layer.provide(PortScannerLayerLive),
   Layer.provide(NativeTelemetryLayerLive),
@@ -441,8 +412,6 @@ const PreviewLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PreviewManager.layer),
   Layer.provideMerge(PortScannerLayerLive),
 );
-
-const DeviceDirectGrantsLive = DeviceDirectGrants.layer;
 
 const DeviceLayerLive = DeviceService.layer.pipe(
   Layer.provide(ServerSettingsLayerLive),
@@ -490,7 +459,7 @@ const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
   Layer.provide(ProviderEventIngestor.analyticsLive),
   Layer.provide(CheckpointStoreLayerLive),
   Layer.provide(GitWorkflowLayerLive),
-  Layer.provide(ResourceCleanupService.live.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive))),
+  Layer.provide(ResourceCleanupService.live),
   Layer.provide(
     RunFinalizationService.observerLive.pipe(
       Layer.provide(ProjectionStoreV2.layer),
@@ -509,15 +478,11 @@ const OrchestrationApplicationLayerLive = CheckpointDiffQuery.layer.pipe(
 // inactivity and merged pull requests, then settles through the orchestrator
 // so every client sees the same shelf.
 const ThreadSettlementWorkerLive = Layer.effectDiscard(
-  ThreadSettlementService.make.pipe(
-    Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
-  ),
+  ThreadSettlementService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(PullRequestServiceLive), Layer.provide(ProjectionStoreV2.layer));
 
 const ThreadPullRequestWorkerLive = Layer.effectDiscard(
-  ThreadPullRequestService.make.pipe(
-    Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
-  ),
+  ThreadPullRequestService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(PullRequestServiceLive));
 
 const ProviderInstallationRefreshLive = Layer.effectDiscard(
@@ -547,27 +512,41 @@ const ProviderInstallationRefreshLive = Layer.effectDiscard(
           ),
         ),
       ),
-      ServerActivation.forkParked,
+      Effect.forkScoped,
     );
   }),
 );
 
 const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const workMode = yield* WorkMode.WorkMode;
+      yield* workMode.start;
+    }),
+  ).pipe(Layer.provide(WorkMode.layer), Layer.provide(ProjectionStoreV2.layer)),
   AgentAwarenessRelay.layer,
   ThreadSettlementWorkerLive,
-  Layer.effectDiscard(
-    StorageCleanup.make.pipe(
-      Effect.flatMap((service) => ServerActivation.forkParked(service.start())),
-    ),
-  ).pipe(Layer.provide(ProjectionStoreV2.layer)),
+  Layer.effectDiscard(StorageCleanup.make.pipe(Effect.flatMap((service) => service.start()))).pipe(
+    Layer.provide(ProjectionStoreV2.layer),
+  ),
   ThreadPullRequestWorkerLive,
   Layer.effectDiscard(
     Effect.gen(function* () {
       const service = yield* PullRequestSyncReactor.PullRequestSyncReactor;
-      yield* ServerActivation.forkParked(service.start());
+      yield* service.start();
     }),
   ).pipe(
     Layer.provideMerge(PullRequestSyncReactor.layer),
+    Layer.provide(PullRequestServiceLive),
+    Layer.provide(ProjectionStoreV2.layer),
+  ),
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const service = yield* PullRequestWatchReactor.PullRequestWatchReactor;
+      yield* service.start();
+    }),
+  ).pipe(
+    Layer.provide(PullRequestWatchReactor.layer),
     Layer.provide(PullRequestServiceLive),
     Layer.provide(ProjectionStoreV2.layer),
   ),
@@ -587,7 +566,6 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive, DeviceLayerLive)),
-  Layer.provideMerge(DeviceDirectGrantsLive),
   Layer.provideMerge(PersistenceLayerLive),
   // Both read a user-owned file out of the state directory and stream changes
   // to clients; neither depends on the other.
@@ -657,9 +635,7 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(ProcessAttributionLayerLive),
   Layer.provideMerge(UsageLayerLive),
-  Layer.provideMerge(
-    Layer.suspend(() => TokenAccountingService.layerWithReader(makeRuntimeReader(process.env))),
-  ),
+  Layer.provideMerge(JonesHttp.tokenAccountingLayer),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
@@ -676,22 +652,18 @@ const commandReadinessLayer = HttpRouter.middleware(
   { global: true },
 );
 
-export const makeRoutesLayer = Layer.mergeAll(
+const makeRoutesLayer = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
-      Layer.provide(conversationLibraryHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
+      Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
+      JonesHttp.provideConversationAndVoiceReview,
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
-      Layer.provide(nativeWorkstreamsHttpApiLayer),
-      Layer.provide(hostStatusHttpApiLayer),
-      Layer.provide(jonesUpdatesHttpApiLayer),
-      Layer.provide(
-        voiceReviewHttpApiLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer)),
-      ),
+      Layer.provide(JonesHttp.hostStatusHttpApiLayer),
       Layer.provide(projectHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
@@ -718,23 +690,11 @@ export const makeRoutesLayer = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
   Layer.provide(workstreamGatewayLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer))),
-  Layer.provide(
-    workstreamRegistrationContextLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer)),
-  ),
-  Layer.provide(
-    nativeWorkstreamsRuntimeLayer.pipe(
-      Layer.provide(
-        NativeStoreAuthority.layer.pipe(Layer.provide(ServerEnvironment.identityLayer)),
-      ),
-      Layer.provide(AuthSessions.layer),
-    ),
-  ),
   Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(JonesUpdates.layer.pipe(Layer.provide(DesktopTelemetryReceiverLayerLive))),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),
+  Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
   Layer.provide(workstreamResponseHeadersLayer),
-  Layer.provide(voiceReviewResponseHeadersLayer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),
 );

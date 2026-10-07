@@ -3,8 +3,15 @@ import { describe, expect, it } from "vite-plus/test";
 
 import capabilityFixture from "../test-fixtures/queue-dispatch-capability.json" with { type: "json" };
 import { ExecutionEnvironmentDescriptor, ORCHESTRATION_PROTOCOL_VERSION } from "./environment.ts";
-import { OrchestrationCommandObservation, ThreadTurnDispatchGuard } from "./orchestration.ts";
-import { QUEUE_DISPATCH_CAPABILITY, QueueDispatchCapability } from "./queueProtocol.ts";
+import {
+  OrchestrationCommandObservation,
+  ThreadTurnDispatchGuard,
+} from "./legacyOrchestrationCompatibility.ts";
+import {
+  LEGACY_ORCHESTRATION_PROTOCOL_VERSION,
+  QUEUE_DISPATCH_CAPABILITY,
+  QueueDispatchCapability,
+} from "./queueProtocol.ts";
 
 const decodeCapability = Schema.decodeUnknownSync(QueueDispatchCapability);
 const decodeDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
@@ -25,7 +32,9 @@ describe("queue dispatch capability", () => {
     const decoded = decodeCapability(capabilityFixture);
     expect(Schema.encodeSync(QueueDispatchCapability)(decoded)).toEqual(capabilityFixture);
     expect(QUEUE_DISPATCH_CAPABILITY).toEqual(capabilityFixture);
-    expect(decoded.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
+    expect(decoded.orchestrationProtocolVersion).toBe(LEGACY_ORCHESTRATION_PROTOCOL_VERSION);
+    expect(LEGACY_ORCHESTRATION_PROTOCOL_VERSION).toBe(1);
+    expect(ORCHESTRATION_PROTOCOL_VERSION).toBe(2);
     for (const serverVersion of ["0.0.44-preview.old-build", "0.0.0-preview.changed-build"]) {
       expect(decodeDescriptor({ ...descriptor, serverVersion }).capabilities.queueDispatch).toEqual(
         capabilityFixture,

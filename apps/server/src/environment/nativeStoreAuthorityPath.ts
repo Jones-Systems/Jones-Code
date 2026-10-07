@@ -40,19 +40,3 @@ export const validateNativeStoreAuthorityPath = (
     }
   }
 };
-
-export const validateNativeStoreAuthorityDatabasePath = (
-  baseDir: string,
-  databasePath: string,
-): void => {
-  const legacyPath = NodePath.join(NodePath.resolve(baseDir), "userdata", "state.sqlite");
-  if (
-    typeof databasePath !== "string" ||
-    !NodePath.isAbsolute(databasePath) ||
-    NodePath.resolve(databasePath) !== legacyPath ||
-    canonicalize(databasePath) !==
-      NodePath.join(canonicalize(baseDir), "userdata", "state.sqlite")
-  ) {
-    throw new Error("Selected database requires separate native store qualification.");
-  }
-};

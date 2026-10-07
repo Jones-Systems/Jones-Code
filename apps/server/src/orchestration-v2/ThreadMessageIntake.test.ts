@@ -375,55 +375,6 @@ it.effect("releases claimed copies when the command was already rejected", () =>
   }).pipe(Effect.provide(intakeTestLayer)),
 );
 
-it.effect(
-  "releases newly claimed message attachments when the target blocks foreign messages",
-  () =>
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
-      NodeFS.writeFileSync(
-        NodePath.join(config.attachmentsDir, `${pendingId}.png`),
-        new Uint8Array([1, 2, 3]),
-      );
-      const result = yield* dispatchCommand({
-        type: "message.dispatch",
-        commandId: CommandId.make("message-blocked"),
-        threadId: ThreadId.make("thread-rejected"),
-        senderThreadId: ThreadId.make("thread-sender"),
-        messageId: MessageId.make("message-blocked"),
-        text: "Foreign attachment",
-        attachments: [
-          { type: "image", id: pendingId, name: "screen.png", mimeType: "image/png", sizeBytes: 3 },
-        ],
-        createdBy: "agent",
-        creationSource: "mcp",
-        dispatchMode: { type: "start_immediately" },
-      }).pipe(
-        Effect.provide(
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            dispatch: (command) =>
-              Effect.fail(
-                new OrchestratorThreadMessagesBlockedError({
-                  commandId: command.commandId,
-                  threadId: ThreadId.make("thread-rejected"),
-                }),
-              ),
-          }),
-        ),
-        Effect.result,
-      );
-      expect(result._tag).toBe("Failure");
-      expect(
-        NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
-          entry.startsWith("thread-rejected-"),
-        ),
-      ).toEqual([]);
-      expect(NodeFS.existsSync(NodePath.join(config.attachmentsDir, `${pendingId}.png`))).toBe(
-        true,
-      );
-    }).pipe(Effect.provide(intakeTestLayer)),
-);
-
 it.effect("releases claimed copies when dispatch replays an earlier accepted response", () =>
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
@@ -814,4 +765,53 @@ it.effect("applies the image budget across all questions before dispatch", () =>
     if (result._tag === "Failure") expect(String(result.cause)).toContain("80 MiB");
     expect(captured).toEqual([]);
   }).pipe(Effect.provide(intakeTestLayer)),
+);
+
+it.effect(
+  "releases newly claimed message attachments when the target blocks foreign messages",
+  () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
+      NodeFS.writeFileSync(
+        NodePath.join(config.attachmentsDir, `${pendingId}.png`),
+        new Uint8Array([1, 2, 3]),
+      );
+      const result = yield* dispatchCommand({
+        type: "message.dispatch",
+        commandId: CommandId.make("message-blocked"),
+        threadId: ThreadId.make("thread-rejected"),
+        senderThreadId: ThreadId.make("thread-sender"),
+        messageId: MessageId.make("message-blocked"),
+        text: "Foreign attachment",
+        attachments: [
+          { type: "image", id: pendingId, name: "screen.png", mimeType: "image/png", sizeBytes: 3 },
+        ],
+        createdBy: "agent",
+        creationSource: "mcp",
+        dispatchMode: { type: "start_immediately" },
+      }).pipe(
+        Effect.provide(
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            dispatch: (command) =>
+              Effect.fail(
+                new OrchestratorThreadMessagesBlockedError({
+                  commandId: command.commandId,
+                  threadId: ThreadId.make("thread-rejected"),
+                }),
+              ),
+          }),
+        ),
+        Effect.result,
+      );
+      expect(result._tag).toBe("Failure");
+      expect(
+        NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
+          entry.startsWith("thread-rejected-"),
+        ),
+      ).toEqual([]);
+      expect(NodeFS.existsSync(NodePath.join(config.attachmentsDir, `${pendingId}.png`))).toBe(
+        true,
+      );
+    }).pipe(Effect.provide(intakeTestLayer)),
 );

@@ -55,10 +55,6 @@ const decodeReleases = Schema.decodeUnknownSync(Releases);
 /** Preserve the host's release channel and never offer a downgrade. */
 export async function findEnvironmentUpdate(currentVersion: string, signal: AbortSignal) {
   const channel = cliReleaseChannelOf(currentVersion);
-  if (channel === "preview")
-    throw new Error(
-      "Jones previews use qualified main builds. Use the separate Download and Install actions for this environment.",
-    );
   for (let page = 1; ; page++) {
     const response = await fetch(cliReleaseIndexPageUrl(page), { signal });
     if (!response.ok) throw new Error(`Could not check releases (${response.status}). Try again.`);

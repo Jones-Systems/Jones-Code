@@ -4,35 +4,28 @@ import { act, useState, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { OrchestrationV2ThreadRuntimeObservation, WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
+import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
-import { WorkstreamCreateForm, WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
+import { WorkstreamCreateForm } from "./WorkstreamSidebarSection";
 import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
 import { SidebarProvider } from "../ui/sidebar";
 import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
-import { resolveThreadOperatingState } from "@t3tools/client-runtime/state/thread-continuation";
-import { makeThreadFixture } from "../../test-fixtures";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ProviderSessionId, ProviderThreadId, ThreadId } from "@t3tools/contracts";
 import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
 
 let root: Root;
 let container: HTMLDivElement;
-const currentOwner = ProviderThreadId.make("native-current-owner");
-const threads: readonly EnvironmentThreadShell[] = [
-  makeThreadFixture({
-    environmentId: EnvironmentId.make(thread.environmentId), id: ThreadId.make(thread.id),
-    projectId: ProjectId.make(thread.projectId), title: "First native conversation",
-    activeProviderThreadId: currentOwner,
-  }),
-  makeThreadFixture({
-    environmentId: EnvironmentId.make(thread.environmentId), id: ThreadId.make("unassigned"),
-    projectId: ProjectId.make("another-repo"), title: "Unassigned native conversation",
-    activeProviderThreadId: currentOwner,
-  }),
-];
+const threads = [
+  { ...thread, title: "First native conversation" },
+  {
+    ...thread,
+    id: "unassigned",
+    title: "Unassigned native conversation",
+    projectId: "another-repo",
+  },
+] as unknown as readonly EnvironmentThreadShell[];
 const detail = {
   detail: {
     context: { owner_id: "owner", server_generation: 7, registry_version: 11 },
@@ -60,16 +53,6 @@ beforeEach(() => {
   controller = {
     data,
     placements,
-    references: { context: detail.detail.context, items: [reference], next_cursor: null },
-    registrationContext: null,
-    loadActionSnapshot: vi.fn(async () => ({
-      data: controller.data!,
-      references: controller.references!,
-      placements: controller.placements,
-      registrationContext: controller.registrationContext,
-    })),
-    observeCommand: vi.fn(),
-    retry: vi.fn(async () => {}),
     placementInventory: {
       coverage: "complete",
       identities: threads.map((item) => ({
@@ -101,12 +84,6 @@ afterEach(async () => {
 async function render(
   visibleThreads: readonly EnvironmentThreadShell[] = threads,
   summaryThreads: readonly EnvironmentThreadShell[] = visibleThreads,
-  movement: Partial<
-    Pick<
-      Parameters<typeof WorkstreamNativeSidebar>[0],
-      "captureDrag" | "reorderSelection" | "onVisibleGroupsChange" | "onMovementError"
-    >
-  > = {},
 ) {
   const group = (members: readonly EnvironmentThreadShell[]) =>
     groupNativeThreadsByWorkstream({
@@ -124,11 +101,9 @@ async function render(
   await act(async () =>
     root.render(
       <WorkstreamNativeSidebar
-        {...movement}
         controller={controller}
         grouping={group(visibleThreads)}
         summaryGrouping={group(summaryThreads)}
-        getOperatingState={fixtureOperatingState}
         renderThread={(item) => (
           <li>
             <button type="button">{item.title}</button>
@@ -174,132 +149,6 @@ function nativeRow(index: number) {
 }
 
 describe("native Workstream sidebar interactions", () => {
-  it("captures the selected group at HTML drag start and submits memberships in that stable order", async () => {
-    const second = threads[1]!;
-    controller = {
-      ...controller,
-      placements: {
-        ...placements,
-        items: [
-          ...placements.items,
-          {
-            ...placements.items[0]!,
-            native_thread_id: second.id,
-            membership_id: "second-member",
-            native_reference_id: "second-reference",
-          },
-        ],
-      },
-    };
-    const secondReference = {
-      ...reference,
-      native_reference_id: "second-reference",
-      identity: { ...reference.identity, native_id: second.id },
-      registration: {
-        ...reference.registration,
-        evidence: { ...reference.registration.evidence!, native_id: second.id },
-      },
-    };
-    let batchCompletion: Promise<unknown> | null = null;
-    controller = {
-      ...controller,
-      references: {
-        context: detail.detail.context,
-        items: [reference, secondReference],
-        next_cursor: null,
-      },
-      loadActionSnapshot: vi.fn(async () => {
-        const progressed = vi.mocked(controller.submit).mock.calls.length > 0;
-        return {
-          data: progressed
-            ? {
-                ...data,
-                binding: { ...data.binding, registryVersion: 12 },
-                items: data.items.map((item) => ({ ...item, version: 4 })),
-              }
-            : data,
-          references: {
-            context: { ...detail.detail.context, registry_version: progressed ? 12 : 11 },
-            items: [reference, secondReference],
-            next_cursor: null,
-          },
-          placements: {
-            ...controller.placements!,
-            context: { ...placements.context, registry_version: progressed ? 12 : 11 },
-          },
-          registrationContext: null,
-        };
-      }),
-      loadDetail: vi.fn(async () => ({
-        ...detail,
-        detail: {
-          ...detail.detail,
-          context: {
-            ...detail.detail.context,
-            registry_version: vi.mocked(controller.submit).mock.calls.length ? 12 : 11,
-          },
-        },
-        references: { ...detail.references, items: [reference, secondReference] },
-      })),
-      runBindingOperation: (operation) => {
-        const pending = operation(controller.submit);
-        batchCompletion = pending;
-        return pending;
-      },
-    };
-    const captureDrag = vi.fn(() => [second, threads[0]!]);
-    const submit = vi.mocked(controller.submit);
-    submit.mockResolvedValueOnce({
-      ...committed,
-      state: "committed",
-      registry_version: 12,
-      effects: {
-        workstream_versions: [
-          { workstream_id: "alpha", version: 4 },
-          { workstream_id: "beta", version: 4 },
-        ],
-      },
-    } as unknown as WorkstreamReceipt);
-    await render(threads, threads, { captureDrag });
-    await dragEvent(nativeRow(0), "dragstart");
-    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
-    await dragEvent(target, "drop");
-    expect(batchCompletion).not.toBeNull();
-    await act(async () => {
-      await batchCompletion;
-    });
-    expect(captureDrag).toHaveBeenCalledWith(threads[0]);
-    expect(submit).toHaveBeenCalledTimes(2);
-    expect(submit.mock.calls.map(([command]) => command.action)).toEqual([
-      expect.objectContaining({
-        operation: "move_primary",
-        source_membership_id: "second-member",
-        expected_source_version: 3,
-      }),
-      expect.objectContaining({
-        operation: "move_primary",
-        source_membership_id: "membership",
-        expected_source_version: 4,
-        expected_destination_version: 4,
-      }),
-    ]);
-    expect(reorder).not.toHaveBeenCalled();
-  });
-
-  it("reports the expanded group order and excludes collapsed member ranges", async () => {
-    const visible = vi.fn();
-    await render(threads, threads, { onVisibleGroupsChange: visible });
-    expect(visible).toHaveBeenLastCalledWith(["alpha", "beta", null]);
-    await clickLabel("Collapse alpha");
-    expect(visible).toHaveBeenLastCalledWith(["beta", null]);
-    expect(nativeRow(0)).toBeUndefined();
-    await clickLabel("Collapse Unassigned");
-    expect(visible).toHaveBeenLastCalledWith(["beta"]);
-    await clickLabel("Expand alpha");
-    expect(visible).toHaveBeenLastCalledWith(["alpha", "beta"]);
-    expect(nativeRow(0)).toBeDefined();
-  });
-
   it("drags the native row into another Workstream with compatible target feedback", async () => {
     await render();
     expect(container.querySelector('[aria-label="New Workstream name"]')).toBeNull();
@@ -326,9 +175,7 @@ describe("native Workstream sidebar interactions", () => {
   it("drops a native row on Unassigned to remove its primary membership", async () => {
     await render();
     await dragEvent(nativeRow(0), "dragstart");
-    const target = container
-      .querySelector('[aria-label="Collapse Unassigned"]')!
-      .closest('[data-thread-drop-header="__unassigned__"]')!.parentElement!;
+    const target = container.querySelector('[aria-label="Collapse Unassigned"]')!.parentElement!;
     await dragEvent(target, "dragover");
     expect(target.getAttribute("data-drop-target")).toBe("thread");
     await dragEvent(target, "drop");
@@ -346,22 +193,6 @@ describe("native Workstream sidebar interactions", () => {
   it("shows the insertion edge and reorders native rows without changing membership", async () => {
     controller = {
       ...controller,
-      references: {
-        context: detail.detail.context,
-        next_cursor: null,
-        items: [
-          reference,
-          {
-            ...reference,
-            native_reference_id: "reference-two",
-            identity: { ...reference.identity, native_id: "unassigned" },
-            registration: {
-              ...reference.registration,
-              evidence: { ...reference.registration.evidence!, native_id: "unassigned" },
-            },
-          },
-        ],
-      },
       placements: {
         ...placements,
         items: [
@@ -461,7 +292,7 @@ describe("native Workstream sidebar interactions", () => {
     expect(container.textContent).toContain("Thread assignments are unavailable");
     await clickLabel("Workstream actions for First native conversation");
     const assignment = [...document.querySelectorAll('[role="menuitem"]')].find(
-      (entry) => entry.textContent === "Re-verify reference and assign to beta",
+      (entry) => entry.textContent === "Assign to beta",
     );
     expect(assignment?.getAttribute("aria-disabled")).toBe("true");
     expect(controller.submit).not.toHaveBeenCalled();
@@ -691,14 +522,9 @@ describe("Workstream toolbar creation", () => {
         .click(),
     );
     await vi.waitFor(() =>
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-        "The effect is unknown",
-      ),
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe("Connection failed"),
     );
     expect(nameInput()?.value).toBe("Release prep");
-    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain(
-      "Connection failed",
-    );
   });
 
   it("blocks duplicate pending creates even after dismissal and respects loading and authority", async () => {
@@ -750,39 +576,31 @@ describe("Workstream toolbar creation", () => {
   });
 });
 
-const fixtureObservations = new WeakMap<EnvironmentThreadShell, OrchestrationV2ThreadRuntimeObservation>();
-
-function fixtureOperatingState(member: EnvironmentThreadShell) {
-  return resolveThreadOperatingState(member, fixtureObservations.get(member) ?? {
-    status: "unknown", reason: "No current runtime observation in this fixture.",
-  });
-}
-
 function statusThread(
   id: string,
   status: NonNullable<EnvironmentThreadShell["runtime"]>["status"] | null,
   changes: Partial<EnvironmentThreadShell> = {},
-  backgroundStatus: "working" | "monitoring" | "unknown" = "unknown",
 ): EnvironmentThreadShell {
-  const member: EnvironmentThreadShell = {
+  return {
     ...threads[0]!,
-    id: ThreadId.make(id),
+    id,
     title: id,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
-    runtime: status === null ? null : { ...threads[0]!.runtime!, status },
+    runtime:
+      status === null
+        ? null
+        : {
+            status,
+            activeRunId: null,
+            providerInstanceId: "synthetic-provider",
+            providerName: "Synthetic",
+            lastError: null,
+            lastErrorClass: null,
+            updatedAt: new Date(now).toISOString(),
+          },
     ...changes,
-  };
-  if (backgroundStatus !== "unknown") {
-    if (member.activeProviderThreadId === null) throw new Error("Current observation fixture needs its active owner.");
-    fixtureObservations.set(member, {
-      status: backgroundStatus, observedAt: new Date(now).toISOString(),
-      binding: { threadId: member.id, providerThreadId: member.activeProviderThreadId,
-        providerSessionId: ProviderSessionId.make(`current-session:${id}`),
-        instanceId: ProviderInstanceId.make("resident-account"), runtimeGeneration: "fixture-current-generation" },
-    });
-  }
-  return member;
+  } as EnvironmentThreadShell;
 }
 
 function primaryPlacementsFor(members: readonly EnvironmentThreadShell[]) {
@@ -796,54 +614,23 @@ function primaryPlacementsFor(members: readonly EnvironmentThreadShell[]) {
 }
 
 describe("Workstream live thread summaries", () => {
-  it("counts positive current background work even when the foreground run failed", () => {
-    const member = makeThreadFixture({ activeProviderThreadId: currentOwner });
-    const failed = { ...member, runtime: { ...member.runtime!, status: "failed" as const } };
-    const state = resolveThreadOperatingState(failed, {
-      status: "working", observedAt: "2026-10-03T03:01:13Z",
-      binding: { threadId: failed.id, providerThreadId: currentOwner,
-        providerSessionId: ProviderSessionId.make("failed-foreground-current-session"),
-        instanceId: ProviderInstanceId.make("current-active-account"), runtimeGeneration: "current-generation" },
-    });
-    expect(state).toMatchObject({ operating: true, workstreamRunning: true });
-    expect(summarizeWorkstreamThreadStatuses({ groups: [
-      { workstream: data.items[0]!, threads: [failed] },
-    ] }, () => state).get("alpha")).toEqual({ total: 1, running: 1, waiting: 0, failed: 1 });
-  });
-  it("counts current working independently from attention and never counts monitoring as Running", () => {
-    const owner = ProviderThreadId.make("workstream-owner");
-    const base = makeThreadFixture({ activeProviderThreadId: owner });
-    const approval = { ...base, id: "approval" as typeof base.id, hasPendingApprovals: true };
-    const monitoring = { ...base, id: "monitoring" as typeof base.id };
-    const unknown = { ...base, id: "unknown" as typeof base.id };
-    const state = (member: EnvironmentThreadShell) => resolveThreadOperatingState(member,
-      member === unknown ? { status: "unknown", reason: "unavailable" } : {
-        status: member === monitoring ? "monitoring" : "working", observedAt: "2026-10-03T02:32:29Z",
-        binding: { threadId: member.id, providerThreadId: owner,
-          providerSessionId: ProviderSessionId.make("current-session"),
-          instanceId: ProviderInstanceId.make("current-owner-account"), runtimeGeneration: "current-generation" },
-      });
-    expect(summarizeWorkstreamThreadStatuses({ groups: [
-      { workstream: data.items[0]!, threads: [approval, monitoring, unknown] },
-    ] }, state).get("alpha")).toEqual({ total: 3, running: 1, waiting: 1, failed: 0 });
-  });
   it("matches native row precedence for running, connecting, approval, input, failed and background states", () => {
     const members = [
       statusThread("running", "running"),
       statusThread("starting", "starting"),
-      statusThread("input", "waiting", { hasPendingUserInput: true }),
-      statusThread("approval", "waiting", { hasPendingApprovals: true }),
+      statusThread("input", "running", { hasPendingUserInput: true }),
+      statusThread("approval", "running", { hasPendingApprovals: true }),
       statusThread("failed", "failed"),
-      statusThread("background", "idle", {}, "working"),
-      statusThread("monitoring", "idle", {}, "monitoring"),
+      statusThread("background", "idle"),
+      statusThread("monitoring", "completed"),
       statusThread("unknown", null),
-      statusThread("ready", "idle"),
+      statusThread("ready", "completed"),
     ];
     expect(
       summarizeWorkstreamThreadStatuses({
         groups: [{ workstream: data.items[0]!, threads: members }],
-      }, fixtureOperatingState).get("alpha"),
-    ).toEqual({ total: 9, running: 3, waiting: 2, failed: 1 });
+      }).get("alpha"),
+    ).toEqual({ total: 9, running: 2, waiting: 2, failed: 1 });
     expect(
       summarizeWorkstreamThreadStatuses({
         groups: [
@@ -855,13 +642,13 @@ describe("Workstream live thread summaries", () => {
             ],
           },
         ],
-      }, fixtureOperatingState).get("alpha"),
+      }).get("alpha"),
     ).toEqual({ total: 2, running: 0, waiting: 2, failed: 0 });
   });
 
-  it("counts distinct environment/thread pairs and never invents a running state for unknown observations", () => {
+  it("counts distinct environment/thread pairs and never invents a running state for unknown sessions", () => {
     const running = statusThread("same", "running");
-    const remote = { ...running, environmentId: EnvironmentId.make("env:other") };
+    const remote = { ...running, environmentId: "env:other" } as EnvironmentThreadShell;
     expect(
       summarizeWorkstreamThreadStatuses({
         groups: [
@@ -870,7 +657,7 @@ describe("Workstream live thread summaries", () => {
             threads: [running, running, remote, statusThread("unknown", null)],
           },
         ],
-      }, fixtureOperatingState).get("alpha"),
+      }).get("alpha"),
     ).toEqual({ total: 3, running: 2, waiting: 0, failed: 0 });
     expect(summarizeWorkstreamThreadStatuses({ groups: [] }).size).toBe(0);
   });
@@ -878,7 +665,7 @@ describe("Workstream live thread summaries", () => {
   it("keeps all known primary members in collapsed counts and replaces input/running indicators with Failed", async () => {
     const members = [
       statusThread("running", "running"),
-      statusThread("waiting", "waiting", { hasPendingUserInput: true }),
+      statusThread("waiting", "running", { hasPendingUserInput: true }),
       statusThread("pinned", "idle", { pinnedAt: new Date(now).toISOString() }),
       statusThread("settled", "idle", { settledOverride: "settled" }),
       statusThread("snoozed", "idle", { snoozedAt: new Date(now).toISOString() }),
@@ -948,7 +735,7 @@ describe("Workstream live thread summaries", () => {
     expect(
       failedIndicators.querySelector('[aria-label="1 thread waiting for input or approval"]'),
     ).toBeNull();
-    const recoveredMembers = [statusThread("running", "idle"), ...members.slice(1)];
+    const recoveredMembers = [statusThread("running", "completed"), ...members.slice(1)];
     await render(recoveredMembers.slice(0, 2), recoveredMembers);
     expect(container.querySelector('[aria-label="1 failed thread"]')).toBeNull();
     expect(
@@ -970,23 +757,4 @@ describe("Workstream live thread summaries", () => {
     );
     expect(container.querySelector('[aria-label="1 running thread"]')).toBeNull();
   });
-});
-
-it("keeps parent visibility updates stable when collapsed state is unchanged", async () => {
-  let renders = 0;
-  function VisibilityHost() {
-    const [ids, setIds] = useState<readonly (string | null)[]>([]);
-    renders += 1;
-    if (renders > 5) throw new Error("Unchanged visibility recursively rendered its parent.");
-    return (
-      <>
-        <WorkstreamSidebarSection controller={controller} onVisibleGroupsChange={setIds} />
-        <output data-testid="visible-group-count">{ids.length}</output>
-      </>
-    );
-  }
-  await act(async () => root.render(<VisibilityHost />));
-  expect(container.querySelector('[data-testid="visible-group-count"]')?.textContent).toBe(
-    String(data.items.length + 1),
-  );
 });

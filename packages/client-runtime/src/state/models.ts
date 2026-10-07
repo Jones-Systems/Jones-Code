@@ -1,3 +1,4 @@
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import type {
   ThreadLinkedPullRequest,
@@ -5,6 +6,7 @@ import type {
   MessageId,
   OrchestrationProjectShell,
   OrchestrationV2RunStatus,
+  OrchestrationV2ProviderSettlement,
   OrchestrationV2ProviderFailureClass,
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadShell,
@@ -40,6 +42,9 @@ export interface ThreadRunSummary {
   readonly requestedAt: string | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  readonly providerSettlement?:
+    | (Omit<OrchestrationV2ProviderSettlement, "completedAt"> & { readonly completedAt: string })
+    | null;
   readonly assistantMessageId: MessageId | null;
   readonly sourcePlanRef?: {
     readonly threadId: ThreadId;
@@ -85,6 +90,7 @@ function threadRunStatusIsActive(status: ThreadRuntimeSummary["status"]): boolea
 }
 
 export interface EnvironmentThreadShell {
+  readonly runtimeIdentity?: OrchestrationV2ThreadShell["runtimeIdentity"];
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
   readonly projectId: ProjectId;
@@ -101,6 +107,8 @@ export interface EnvironmentThreadShell {
   readonly latestRun: ThreadRunSummary | null;
   readonly runtime: ThreadRuntimeSummary | null;
   readonly latestUserMessageAt: string | null;
+  /** The last message the user wrote. `undefined` means the server predates it. */
+  readonly latestUserAuthoredMessageAt?: string | null;
   readonly hasPendingApprovals: boolean;
   readonly hasPendingUserInput: boolean;
   readonly hasActionableProposedPlan: boolean;
@@ -159,15 +167,19 @@ function terminalRunStatus(status: OrchestrationV2RunStatus): boolean {
   );
 }
 
-// Park runtime at idle when the post-settlement background roster is nonempty
-// so #4415 waiting-presentation Waiting (session.idle) can consume CTM runtime.
+// Park runtime at idle when the post-settlement background roster holds the
+// run's completion, so #4415 waiting-presentation Waiting (session.idle) can
+// consume CTM runtime. Only work that wakes the agent holds it: commands it
+// left running, such as a dev server, present the run's own status (#14872).
 // The server suppresses the roster while an interruptible activity run exists,
 // so a remaining roster is stronger than checkpoint-oriented waiting.
 // latestRun keeps the latest run's status for history presentation.
 // A failed latest run outranks the roster, so the failure stays visible.
 function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary | null {
   if (thread.latestRunId === null && thread.activeProviderThreadId === null) return null;
-  const parkAtIdle = (thread.pendingBackgroundTasks?.length ?? 0) > 0 && thread.status !== "failed";
+  const parkAtIdle =
+    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
+    thread.status !== "failed";
   const status = parkAtIdle ? "idle" : (thread.activityRunStatus ?? thread.status);
   return {
     status,
@@ -211,6 +223,17 @@ export function presentThreadShell(
                 ? updatedAt
                 : null
               : nullableIso(thread.latestRunCompletedAt),
+          ...(thread.latestRunProviderSettlement === undefined
+            ? {}
+            : {
+                providerSettlement:
+                  thread.latestRunProviderSettlement === null
+                    ? null
+                    : {
+                        ...thread.latestRunProviderSettlement,
+                        completedAt: iso(thread.latestRunProviderSettlement.completedAt),
+                      },
+              }),
           assistantMessageId: null,
         } satisfies ThreadRunSummary);
   return {
@@ -233,9 +256,13 @@ export function presentThreadShell(
     lineage: thread.lineage,
     forkedFrom: thread.forkedFrom,
     activeProviderThreadId: thread.activeProviderThreadId,
+    ...(thread.runtimeIdentity === undefined ? {} : { runtimeIdentity: thread.runtimeIdentity }),
     latestRun,
     runtime: shellRuntime(thread),
     latestUserMessageAt: nullableIso(thread.latestUserMessageAt),
+    ...(thread.latestUserAuthoredMessageAt === undefined
+      ? {}
+      : { latestUserAuthoredMessageAt: nullableIso(thread.latestUserAuthoredMessageAt) }),
     hasPendingApprovals:
       thread.pendingRuntimeRequest !== null &&
       thread.pendingRuntimeRequest.kind !== "user_input" &&
@@ -296,7 +323,10 @@ export function resolveThreadProviderStack(
   return [...previous.slice(-(THREAD_PROVIDER_STACK_LIMIT - 1)), current];
 }
 
-/** Both shell and detail timers use the activity-owning run, never last activity. */
+/**
+ * Both shell and detail timers count from the activity-owning run's work
+ * start, never last activity. A wake keeps the start of the work it continues.
+ */
 export function resolveThreadWorkingStartedAt(input: {
   readonly latestRun: Pick<
     ThreadRunSummary,

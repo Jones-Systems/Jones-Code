@@ -10,20 +10,21 @@ import {
   workstreamBindingKey,
   resolveWorkstreamCompletionAuthority,
 } from "@t3tools/client-runtime/state/workstreams";
-import { useDroppable } from "@dnd-kit/core";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
+
+import { useWorkstreamAppearance } from "../../jones/workstreamAppearance/useWorkstreamAppearance";
+import { WorkstreamColorDialog } from "../../jones/workstreamAppearance/WorkstreamColorDialog";
+import { workstreamAppearanceBorder } from "@t3tools/client-runtime/state/workstreams";
 
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { canEditWorkstreams, workstreamTint } from "./nativeWorkstreamActions";
 
 import { runtime } from "../../lib/runtime";
-import { workstreamFailureMessage, type WorkstreamListView } from "../../state/workstreams";
-import { WorkstreamAddPrDialog } from "./WorkstreamAddPrDialog";
-import { refreshWorkstreamPr, workstreamPrObservationLabel } from "./workstreamReferenceActions";
+import type { WorkstreamListView } from "../../state/workstreams";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -42,9 +43,6 @@ export const workstreamCommandId = () =>
   );
 
 const bindingSuperseded = Symbol("binding superseded");
-// Stable inputs prevent unchanged collapse state from notifying the parent on every render.
-const collapsedWorkstreamIdsSchema = Schema.Array(Schema.String);
-const EMPTY_COLLAPSED_WORKSTREAM_IDS: readonly string[] = [];
 
 export function WorkstreamCreateForm({
   controller,
@@ -151,7 +149,7 @@ export function WorkstreamCreateForm({
         })()
           .catch((cause: unknown) => {
             if (sessionRef.current === startedSession && bindingRef.current === startedBinding)
-              setError(workstreamFailureMessage(cause));
+              setError(cause instanceof Error ? cause.message : "Workstream creation failed.");
           })
           .finally(() => {
             pendingRef.current = false;
@@ -187,7 +185,6 @@ export function WorkstreamCreateForm({
 export function WorkstreamSidebarSection(props: {
   readonly controller: WorkstreamListView;
   readonly threadStatusSummaries?: ReadonlyMap<string, WorkstreamThreadStatusSummary>;
-  readonly onVisibleGroupsChange?: ((ids: readonly (string | null)[]) => void) | undefined;
   readonly renderMembers?: (workstreamId: string | null) => ReactNode;
   readonly onThreadDragOver?: (event: DragEvent, workstreamId: string | null) => boolean;
   readonly threadDropTarget?: string | null | undefined;
@@ -199,9 +196,11 @@ export function WorkstreamSidebarSection(props: {
     props.controller;
   const [collapsed, setCollapsed] = useLocalStorage<readonly string[], readonly string[]>(
     `t3:workstreams:collapsed:${data?.binding.registryId ?? "none"}:${data?.binding.ownerId ?? "none"}`,
-    EMPTY_COLLAPSED_WORKSTREAM_IDS,
-    collapsedWorkstreamIdsSchema,
+    [],
+    Schema.Array(Schema.String),
   );
+  const appearance = useWorkstreamAppearance(data);
+  const [colorEditing, setColorEditing] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
@@ -209,9 +208,6 @@ export function WorkstreamSidebarSection(props: {
     null,
   );
   const [selected, setSelected] = useState<string | null>(null);
-  const [addPrOpen, setAddPrOpen] = useState(false);
-  const [prBusy, setPrBusy] = useState(false);
-  const prBusyRef = useRef(false);
   const [targetId, setTargetId] = useState("");
   const [declarationText, setDeclarationText] = useState("");
   const [receipt, setReceipt] = useState<WorkstreamReceipt | null>(null);
@@ -221,34 +217,20 @@ export function WorkstreamSidebarSection(props: {
   const detailRequest = useRef<AbortController | null>(null);
   const manualRefreshRequest = useRef<AbortController | null>(null);
   const items = useMemo(() => orderWorkstreamMetadata(data?.items ?? []), [data]);
-  useLayoutEffect(() => {
-    props.onVisibleGroupsChange?.([
-      ...items
-        .filter((item) => !collapsed.includes(item.workstreamId))
-        .map((item) => item.workstreamId),
-      ...(!collapsed.includes("__unassigned__") ? [null] : []),
-    ]);
-  }, [items, collapsed, props.onVisibleGroupsChange]);
   const bindingKey = data ? workstreamBindingKey(data.binding) : null;
   const bindingKeyRef = useRef(bindingKey);
-  const actionBindingKey = data
-    ? workstreamBindingKey({ ...data.binding, registryVersion: 0 })
-    : null;
-  const actionBindingRef = useRef(actionBindingKey);
-  actionBindingRef.current = actionBindingKey;
 
   useLayoutEffect(() => {
     bindingKeyRef.current = bindingKey;
     detailRequest.current?.abort();
     detailRequest.current = null;
-    if (!prBusyRef.current) {
-      manualRefreshRequest.current?.abort();
-      manualRefreshRequest.current = null;
-    }
+    manualRefreshRequest.current?.abort();
+    manualRefreshRequest.current = null;
     setDetail(null);
     setPullRequestStatus({});
     setReceipt(null);
     setEditing(null);
+    setColorEditing(null);
     setDragging(null);
     setGroupDropTarget(null);
     setCommandError(null);
@@ -258,23 +240,12 @@ export function WorkstreamSidebarSection(props: {
     return () => {
       detailRequest.current?.abort();
       detailRequest.current = null;
-      if (!prBusyRef.current) {
-        manualRefreshRequest.current?.abort();
-        manualRefreshRequest.current = null;
-      }
+      manualRefreshRequest.current?.abort();
+      manualRefreshRequest.current = null;
     };
   }, [bindingKey]);
-  useLayoutEffect(() => {
-    manualRefreshRequest.current?.abort();
-    manualRefreshRequest.current = null;
-    prBusyRef.current = false;
-    setPrBusy(false);
-    setAddPrOpen(false);
-    return () => manualRefreshRequest.current?.abort();
-  }, [actionBindingKey]);
   if (!data) return null;
-  const canWrite =
-    canEditWorkstreams(data) && !props.controller.loading && !props.threadActionBusy && !prBusy;
+  const canWrite = canEditWorkstreams(data) && !props.controller.loading && !props.threadActionBusy;
 
   const showDetail = (workstreamId: string) => {
     detailRequest.current?.abort();
@@ -296,9 +267,10 @@ export function WorkstreamSidebarSection(props: {
               if (controller.signal.aborted || bindingKeyRef.current !== startedBindingKey) return;
               setPullRequestStatus((current) => ({
                 ...current,
-                [reference.native_reference_id]: workstreamPrObservationLabel(
-                  result.latest_observation,
-                ),
+                [reference.native_reference_id]:
+                  result.latest_observation?.last_success?.state ??
+                  result.latest_observation?.outcome ??
+                  "not refreshed",
               }));
             },
             () => undefined,
@@ -335,7 +307,7 @@ export function WorkstreamSidebarSection(props: {
     const startedBindingKey = bindingKey;
     void run(action, undefined, startedBindingKey).catch((cause: unknown) => {
       if (cause === bindingSuperseded || bindingKeyRef.current !== startedBindingKey) return;
-      setCommandError(workstreamFailureMessage(cause));
+      setCommandError(cause instanceof Error ? cause.message : "Workstream command failed.");
     });
   };
   const update = (
@@ -392,7 +364,7 @@ export function WorkstreamSidebarSection(props: {
       })
       .catch((cause: unknown) => {
         if (cause === bindingSuperseded || bindingKeyRef.current !== startedBindingKey) return;
-        setCommandError(workstreamFailureMessage(cause));
+        setCommandError(cause instanceof Error ? cause.message : "Workstream reorder failed.");
       });
   };
 
@@ -418,38 +390,24 @@ export function WorkstreamSidebarSection(props: {
           {placementInventory.totalIdentities.toLocaleString()} identities selected).
         </p>
       ) : null}
-      {commandError ? (
-        <p role="alert" className="px-1 pb-1 text-xs text-destructive">
-          {commandError}{" "}
-          <button
-            type="button"
-            disabled={prBusy}
-            onClick={() => {
-              if (prBusyRef.current) return;
-              prBusyRef.current = true;
-              setPrBusy(true);
-              void props.controller
-                .retry()
-                .then(() => setCommandError(null))
-                .catch((cause: unknown) => setCommandError(workstreamFailureMessage(cause)))
-                .finally(() => {
-                  prBusyRef.current = false;
-                  setPrBusy(false);
-                });
-            }}
-          >
-            Retry
-          </button>
-        </p>
-      ) : null}
-      {prBusy ? (
-        <p role="status" className="px-1 text-xs text-muted-foreground">
-          Refreshing PR metadata…
-        </p>
+      {commandError ? <p className="px-1 pb-1 text-xs text-destructive">{commandError}</p> : null}
+      {colorEditing && appearance.writable && appearance.colors.has(colorEditing) ? (
+        <WorkstreamColorDialog
+          key={`${bindingKey}:${colorEditing}`}
+          name={items.find((item) => item.workstreamId === colorEditing)?.name ?? "Workstream"}
+          saved={appearance.colors.get(colorEditing)!}
+          generation={data.binding.serverGeneration}
+          createCommandId={workstreamCommandId}
+          save={appearance.save}
+          onClose={() => setColorEditing(null)}
+        />
       ) : null}
       <ul className="space-y-0.5">
         {items.map((item, index) => (
           <li
+            style={workstreamAppearanceBorder(
+              appearance.colors.get(item.workstreamId)?.border_color,
+            )}
             className={`relative rounded-md border-l-2 ${workstreamTint(item.workstreamId)} ${props.threadDropTarget === item.workstreamId ? "ring-2 ring-primary bg-primary/10" : ""}`}
             data-drop-target={props.threadDropTarget === item.workstreamId ? "thread" : undefined}
             key={item.workstreamId}
@@ -490,127 +448,126 @@ export function WorkstreamSidebarSection(props: {
                 className={`pointer-events-none absolute inset-x-0 z-20 h-0.5 bg-primary ${groupDropTarget.after ? "bottom-0" : "top-0"}`}
               />
             ) : null}
-            <WorkstreamThreadDropHeader
-              destination={item.workstreamId}
-              disabled={!props.renderMembers || !canWrite}
-            >
-              <div className="flex min-h-8 items-center gap-1 px-1">
-                {props.renderMembers ? (
-                  <button
-                    type="button"
-                    aria-label={`${collapsed.includes(item.workstreamId) ? "Expand" : "Collapse"} ${item.name}`}
-                    aria-expanded={!collapsed.includes(item.workstreamId)}
-                    onClick={() =>
-                      setCollapsed((values) =>
-                        values.includes(item.workstreamId)
-                          ? values.filter((id) => id !== item.workstreamId)
-                          : [...values, item.workstreamId],
-                      )
-                    }
-                    className="rounded p-1 focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <ChevronDownIcon
-                      aria-hidden
-                      className={`size-3.5 ${collapsed.includes(item.workstreamId) ? "-rotate-90" : ""}`}
-                    />
-                  </button>
-                ) : null}
-                {canWrite ? (
-                  <button
-                    type="button"
-                    draggable
-                    aria-label={`Drag Workstream ${item.name} to reorder`}
-                    className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
-                    onDragStart={(event) => {
-                      event.stopPropagation();
-                      if (!canWrite) {
-                        event.preventDefault();
-                        return;
-                      }
-                      event.dataTransfer.effectAllowed = "move";
-                      event.dataTransfer.setData(
-                        "application/x-t3-workstream-group",
-                        item.workstreamId,
-                      );
-                      setDragging(item.workstreamId);
-                    }}
-                    onDragEnd={(event) => {
-                      event.stopPropagation();
-                      setDragging(null);
-                      setGroupDropTarget(null);
-                    }}
-                  >
-                    <GripVerticalIcon aria-hidden className="size-3.5 shrink-0" />
-                  </button>
-                ) : null}
-                {canWrite && editing === item.workstreamId ? (
-                  <Input
-                    aria-label="Workstream name"
-                    autoFocus
-                    nativeInput
-                    onBlur={() => {
-                      const next = name.trim();
-                      if (next && next !== item.name) update(item, { name: next });
-                      setEditing(null);
-                    }}
-                    onChange={(event) => setName(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") event.currentTarget.blur();
-                      if (event.key === "Escape") setEditing(null);
-                    }}
-                    size="compact"
-                    value={name}
-                  />
-                ) : (
-                  <button
-                    className="min-w-0 flex-1 truncate px-1 text-left text-sm"
-                    onClick={() => showDetail(item.workstreamId)}
-                    type="button"
-                  >
-                    {item.name}
-                  </button>
-                )}
-                <WorkstreamHeaderStatus
-                  name={item.name}
-                  summary={
-                    props.threadStatusSummaries?.get(item.workstreamId) ??
-                    EMPTY_WORKSTREAM_THREAD_STATUS
+            <div className="flex min-h-8 items-center gap-1 px-1">
+              {props.renderMembers ? (
+                <button
+                  type="button"
+                  aria-label={`${collapsed.includes(item.workstreamId) ? "Expand" : "Collapse"} ${item.name}`}
+                  aria-expanded={!collapsed.includes(item.workstreamId)}
+                  onClick={() =>
+                    setCollapsed((values) =>
+                      values.includes(item.workstreamId)
+                        ? values.filter((id) => id !== item.workstreamId)
+                        : [...values, item.workstreamId],
+                    )
                   }
+                  className="rounded p-1 focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <ChevronDownIcon
+                    aria-hidden
+                    className={`size-3.5 ${collapsed.includes(item.workstreamId) ? "-rotate-90" : ""}`}
+                  />
+                </button>
+              ) : null}
+              {canWrite ? (
+                <button
+                  type="button"
+                  draggable
+                  aria-label={`Drag Workstream ${item.name} to reorder`}
+                  className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+                  onDragStart={(event) => {
+                    event.stopPropagation();
+                    if (!canWrite) {
+                      event.preventDefault();
+                      return;
+                    }
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(
+                      "application/x-t3-workstream-group",
+                      item.workstreamId,
+                    );
+                    setDragging(item.workstreamId);
+                  }}
+                  onDragEnd={(event) => {
+                    event.stopPropagation();
+                    setDragging(null);
+                    setGroupDropTarget(null);
+                  }}
+                >
+                  <GripVerticalIcon aria-hidden className="size-3.5 shrink-0" />
+                </button>
+              ) : null}
+              {canWrite && editing === item.workstreamId ? (
+                <Input
+                  aria-label="Workstream name"
+                  autoFocus
+                  nativeInput
+                  onBlur={() => {
+                    const next = name.trim();
+                    if (next && next !== item.name) update(item, { name: next });
+                    setEditing(null);
+                    setColorEditing(null);
+                  }}
+                  onChange={(event) => setName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                    if (event.key === "Escape") setEditing(null);
+                  }}
+                  size="compact"
+                  value={name}
                 />
-                {canWrite ? (
-                  <Menu>
-                    <MenuTrigger
-                      aria-label={`Actions for ${item.name}`}
-                      render={<Button size="icon-micro" variant="ghost-muted" />}
+              ) : (
+                <button
+                  className="min-w-0 flex-1 truncate px-1 text-left text-sm"
+                  onClick={() => showDetail(item.workstreamId)}
+                  type="button"
+                >
+                  {item.name}
+                </button>
+              )}
+              <WorkstreamHeaderStatus
+                name={item.name}
+                summary={
+                  props.threadStatusSummaries?.get(item.workstreamId) ??
+                  EMPTY_WORKSTREAM_THREAD_STATUS
+                }
+              />
+              {canWrite ? (
+                <Menu>
+                  <MenuTrigger
+                    aria-label={`Actions for ${item.name}`}
+                    render={<Button size="icon-micro" variant="ghost-muted" />}
+                  >
+                    <MoreHorizontalIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    {appearance.writable ? (
+                      <MenuItem onClick={() => setColorEditing(item.workstreamId)}>Color…</MenuItem>
+                    ) : null}
+                    <MenuItem
+                      onClick={() => {
+                        setName(item.name);
+                        setEditing(item.workstreamId);
+                      }}
                     >
-                      <MoreHorizontalIcon />
-                    </MenuTrigger>
-                    <MenuPopup align="end">
-                      <MenuItem
-                        onClick={() => {
-                          setName(item.name);
-                          setEditing(item.workstreamId);
-                        }}
-                      >
-                        Rename
-                      </MenuItem>
-                      <MenuItem
-                        disabled={index === 0}
-                        onClick={() => reorder(item.workstreamId, index - 1)}
-                      >
-                        <ChevronUpIcon /> Move up
-                      </MenuItem>
-                      <MenuItem
-                        disabled={index === items.length - 1}
-                        onClick={() => reorder(item.workstreamId, index + 1)}
-                      >
-                        <ChevronDownIcon /> Move down
-                      </MenuItem>
-                    </MenuPopup>
-                  </Menu>
-                ) : null}
-              </div>
-            </WorkstreamThreadDropHeader>
+                      Rename
+                    </MenuItem>
+                    <MenuItem
+                      disabled={index === 0}
+                      onClick={() => reorder(item.workstreamId, index - 1)}
+                    >
+                      <ChevronUpIcon /> Move up
+                    </MenuItem>
+                    <MenuItem
+                      disabled={index === items.length - 1}
+                      onClick={() => reorder(item.workstreamId, index + 1)}
+                    >
+                      <ChevronDownIcon /> Move down
+                    </MenuItem>
+                  </MenuPopup>
+                </Menu>
+              ) : null}
+            </div>
             {props.renderMembers && !collapsed.includes(item.workstreamId)
               ? props.renderMembers(item.workstreamId)
               : null}
@@ -630,27 +587,25 @@ export function WorkstreamSidebarSection(props: {
             props.onThreadDrop?.(event, null);
           }}
         >
-          <WorkstreamThreadDropHeader destination={null} disabled={!canWrite}>
-            <button
-              type="button"
-              className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} Unassigned`}
-              aria-expanded={!collapsed.includes("__unassigned__")}
-              onClick={() =>
-                setCollapsed((values) =>
-                  values.includes("__unassigned__")
-                    ? values.filter((id) => id !== "__unassigned__")
-                    : [...values, "__unassigned__"],
-                )
-              }
-            >
-              <ChevronDownIcon
-                aria-hidden
-                className={`size-3.5 ${collapsed.includes("__unassigned__") ? "-rotate-90" : ""}`}
-              />{" "}
-              Unassigned
-            </button>
-          </WorkstreamThreadDropHeader>
+          <button
+            type="button"
+            className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} Unassigned`}
+            aria-expanded={!collapsed.includes("__unassigned__")}
+            onClick={() =>
+              setCollapsed((values) =>
+                values.includes("__unassigned__")
+                  ? values.filter((id) => id !== "__unassigned__")
+                  : [...values, "__unassigned__"],
+              )
+            }
+          >
+            <ChevronDownIcon
+              aria-hidden
+              className={`size-3.5 ${collapsed.includes("__unassigned__") ? "-rotate-90" : ""}`}
+            />{" "}
+            Unassigned
+          </button>
           {!collapsed.includes("__unassigned__") ? props.renderMembers(null) : null}
         </div>
       ) : null}
@@ -675,11 +630,6 @@ export function WorkstreamSidebarSection(props: {
               )}
             </select>
           </div>
-          {canWrite ? (
-            <Button size="xs" variant="ghost" onClick={() => setAddPrOpen(true)}>
-              Add PR reference
-            </Button>
-          ) : null}
           {completionAuthority ? (
             <div
               aria-label="Workstream completion authority"
@@ -879,56 +829,63 @@ export function WorkstreamSidebarSection(props: {
                         <Button
                           size="xs"
                           variant="ghost"
-                          disabled={prBusy}
                           onClick={() => {
-                            if (prBusyRef.current) return;
-                            prBusyRef.current = true;
-                            setPrBusy(true);
-                            const abort = new AbortController();
-                            manualRefreshRequest.current = abort;
-                            const startedBinding = actionBindingKey;
-                            void refreshWorkstreamPr({
-                              controller: props.controller,
-                              workstreamId: workstream.workstream_id,
-                              membershipId: membership.membership_id,
-                              referenceId: reference.native_reference_id,
-                              commandId: workstreamCommandId,
-                              signal: abort.signal,
-                            })
-                              .then(async (observation) => {
-                                if (
-                                  abort.signal.aborted ||
-                                  actionBindingRef.current !== startedBinding
-                                )
-                                  return;
-                                setPullRequestStatus((current) => ({
-                                  ...current,
-                                  [reference.native_reference_id]:
-                                    workstreamPrObservationLabel(observation),
-                                }));
-                                const updated = await loadDetail(workstream.workstream_id, {
-                                  signal: abort.signal,
-                                });
-                                if (
-                                  !abort.signal.aborted &&
-                                  actionBindingRef.current === startedBinding
-                                )
-                                  setDetail(updated);
-                              })
+                            manualRefreshRequest.current?.abort();
+                            const controller = new AbortController();
+                            manualRefreshRequest.current = controller;
+                            const startedBindingKey = bindingKey;
+                            void (async () => {
+                              const value = await loadReference(reference.native_reference_id, {
+                                signal: controller.signal,
+                              });
+                              if (
+                                controller.signal.aborted ||
+                                bindingKeyRef.current !== startedBindingKey
+                              )
+                                return;
+                              if (!value.latest_observation) return;
+                              await run(
+                                {
+                                  operation: "refresh_linked_pr",
+                                  workstream_id: workstream.workstream_id,
+                                  expected_version: workstream.version,
+                                  membership_id: membership.membership_id,
+                                  expected_observation_version:
+                                    value.latest_observation.observation_version,
+                                },
+                                undefined,
+                                startedBindingKey,
+                              );
+                              const refreshed = await loadReference(reference.native_reference_id, {
+                                signal: controller.signal,
+                              });
+                              if (
+                                controller.signal.aborted ||
+                                bindingKeyRef.current !== startedBindingKey
+                              )
+                                return;
+                              setPullRequestStatus((current) => ({
+                                ...current,
+                                [reference.native_reference_id]:
+                                  refreshed.latest_observation?.last_success?.state ??
+                                  refreshed.latest_observation?.outcome ??
+                                  "unknown",
+                              }));
+                            })()
                               .catch((cause: unknown) => {
                                 if (
-                                  !abort.signal.aborted &&
-                                  actionBindingRef.current === startedBinding
+                                  cause === bindingSuperseded ||
+                                  controller.signal.aborted ||
+                                  bindingKeyRef.current !== startedBindingKey
                                 )
-                                  setCommandError(workstreamFailureMessage(cause));
+                                  return;
+                                setCommandError(
+                                  cause instanceof Error ? cause.message : "PR refresh failed.",
+                                );
                               })
                               .finally(() => {
-                                if (manualRefreshRequest.current === abort)
+                                if (manualRefreshRequest.current === controller)
                                   manualRefreshRequest.current = null;
-                                if (actionBindingRef.current === startedBinding) {
-                                  prBusyRef.current = false;
-                                  setPrBusy(false);
-                                }
                               });
                           }}
                         >
@@ -1052,16 +1009,6 @@ export function WorkstreamSidebarSection(props: {
           ) : null}
         </div>
       ) : null}
-      {selected ? (
-        <WorkstreamAddPrDialog
-          controller={props.controller}
-          workstreamId={selected}
-          open={addPrOpen}
-          onOpenChange={setAddPrOpen}
-          commandId={workstreamCommandId}
-          onLinked={() => showDetail(selected)}
-        />
-      ) : null}
     </section>
   );
 }
@@ -1110,26 +1057,5 @@ function WorkstreamHeaderStatus({
         {summary.running}/{summary.total}
       </span>
     </span>
-  );
-}
-
-function WorkstreamThreadDropHeader(props: {
-  readonly destination: string | null;
-  readonly disabled: boolean;
-  readonly children: ReactNode;
-}) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: `workstream-thread-destination:${props.destination ?? "__unassigned__"}`,
-    disabled: props.disabled,
-    data: { workstreamThreadDestination: props.destination },
-  });
-  return (
-    <div
-      ref={setNodeRef}
-      data-thread-drop-header={props.destination ?? "__unassigned__"}
-      className={isOver ? "rounded ring-2 ring-primary bg-primary/10" : undefined}
-    >
-      {props.children}
-    </div>
   );
 }

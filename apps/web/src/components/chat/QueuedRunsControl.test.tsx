@@ -1,15 +1,17 @@
-// @vitest-environment jsdom
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { act, createRef, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { create, type ReactTestRenderer } from "react-test-renderer";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   projection: null as unknown,
   workflow: null as unknown,
-  promote: vi.fn(),
+  promote: vi.fn(async (_input: unknown): Promise<void> => undefined),
 }));
 
-vi.mock("@t3tools/client-runtime/environment", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@t3tools/client-runtime/environment")>(),
+vi.mock("@t3tools/client-runtime/environment", () => ({
+  scopeThreadRef: () => ({}) as never,
 }));
 
 vi.mock("@t3tools/client-runtime/state/thread-workflows", () => ({
@@ -25,27 +27,37 @@ vi.mock("../../state/threads", () => ({
     cancelQueuedRun: Symbol("cancelQueuedRun"),
     promoteQueuedRun: Symbol("promoteQueuedRun"),
     reorderQueuedRun: Symbol("reorderQueuedRun"),
-    reviewImportedHistoryStart: Symbol("reviewImportedHistoryStart"),
-    deliverImportedContinuation: Symbol("deliverImportedContinuation"),
-    observeImportedHistoryStart: Symbol("observeImportedHistoryStart"),
   },
 }));
 
 vi.mock("../../state/use-atom-command", () => ({
-  useAtomCommand: (command: symbol) => command.description === "promoteQueuedRun" ? state.promote : unavailableCommand,
+  useAtomCommand: (command: symbol) =>
+    command.description === "promoteQueuedRun" ? state.promote : async () => undefined,
 }));
-
-const unavailableCommand = async () => ({ _tag: "Failure" });
 
 vi.mock("../../assets/assetUrls", () => ({
   useAssetUrls: (_environmentId: never, resources: ReadonlyArray<{ attachmentId: string }>) =>
     resources.map((resource) => `https://assets.test/${resource.attachmentId}`),
 }));
 
-import { act, createRef } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { handleComposerEnter } from "./composerSubmission";
+// Keep the control's queue and lock lifecycle while replacing DOM positioning and measurement.
+vi.mock("../ui/tooltip", () => ({
+  Tooltip: ({ children }: ComponentProps<"div">) => <>{children}</>,
+  TooltipTrigger: ({ render, children }: { render: ReactNode; children: ReactNode }) => (
+    <>
+      {render}
+      {children}
+    </>
+  ),
+  TooltipPopup: ({ children }: ComponentProps<"div">) => <>{children}</>,
+}));
+
+vi.mock("../ui/scroll-area", () => ({
+  ScrollArea: ({ children }: ComponentProps<"div">) => <div>{children}</div>,
+}));
+
 import { QueuedRunsControl, type QueuedRunsControlHandle } from "./QueuedRunsControl";
+import { handleComposerEnter } from "./composerSubmission";
 
 describe("QueuedRunsControl automatic completion delivery", () => {
   it("does not render a queue control when only hidden delivery remains", () => {
@@ -180,37 +192,37 @@ describe("QueuedRunsControl attachments and edit mode", () => {
   });
 });
 
-
-describe("QueuedRunsControl promotion actions", () => {
-  let root: Root;
-  let container: HTMLDivElement;
-  beforeEach(() => {
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-    state.projection = { projection: { messages: [] } };
-    state.promote.mockReset();
-  });
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-  });
-
-  function workflow(canPromoteToSteer = true) {
-    return {
-      activeRun: { id: "run:active" },
-      canPromoteToSteer,
-      canReorder: true,
-      queuedRuns: ["first", "second"].map((name) => ({
-        run: { id: `run:${name}`, userMessageId: `message:${name}` },
-        text: name,
-        attachments: [],
-      })),
+describe("QueuedRunsControl empty composer Enter", () => {
+  it("uses one queue item in order and shares the send lock with the arrow action", async () => {
+    const ref = createRef<QueuedRunsControlHandle>();
+    const onSubmit = vi.fn();
+    let finishSend: (() => void) | undefined;
+    state.promote.mockClear();
+    state.promote.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSend = resolve;
+        }),
+    );
+    const first = {
+      run: { id: "run:first", userMessageId: "message:first" },
+      text: "first",
+      attachments: [],
     };
-  }
-
-  async function mount(ref = createRef<QueuedRunsControlHandle>()) {
-    await act(async () => root.render(
+    const second = {
+      run: { id: "run:second", userMessageId: "message:second" },
+      text: "second",
+      attachments: [],
+    };
+    const workflow = {
+      activeRun: { id: "run:active" },
+      canPromoteToSteer: true,
+      canReorder: true,
+      queuedRuns: [second, first],
+    };
+    state.workflow = workflow;
+    state.projection = { projection: { messages: [] } };
+    const control = () => (
       <QueuedRunsControl
         ref={ref}
         environmentId={"environment:test" as never}
@@ -219,68 +231,95 @@ describe("QueuedRunsControl promotion actions", () => {
         editingRunId={null}
         onEditQueuedRun={() => undefined}
         onCancelEdit={() => undefined}
-      />,
-    ));
-    return ref;
-  }
-
-  it("promotes one server entry through empty Enter and shares the arrow's in-flight guard", async () => {
-    state.workflow = workflow();
-    let finish: () => void = () => undefined;
-    state.promote.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
-    const ref = await mount();
-    const enter = (repeat = false) => handleComposerEnter({
-      event: { shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, isComposing: false, keyCode: 13, repeat },
-      intent: { isMobileViewport: false, isDraftThread: false, isRunning: true, prompt: "" },
-      hasDraftContext: false,
-      queueActionDisabled: false,
-      onSteerNextQueuedMessage: () => ref.current?.steerNext(false) ?? false,
-      onSubmit: () => { throw new Error("An empty queued Enter must not submit a draft"); },
-    });
-    await act(async () => {
+      />
+    );
+    const enter = (repeat = false) =>
+      handleComposerEnter({
+        event: {
+          key: "Enter",
+          shiftKey: false,
+          altKey: false,
+          metaKey: false,
+          ctrlKey: false,
+          isComposing: false,
+          keyCode: 13,
+          repeat,
+        },
+        intent: {
+          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+          platform: "Linux",
+          isMobileViewport: false,
+          isDraftThread: false,
+          isRunning: true,
+          prompt: "",
+        },
+        hasDraftContext: false,
+        queueActionDisabled: false,
+        onSteerNextQueuedMessage: () => ref.current?.steerNext(false) ?? false,
+        onSubmit,
+      });
+    let renderer: ReactTestRenderer | undefined;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    try {
+      await act(async () => {
+        renderer = create(control());
+      });
+      const rowAction = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.children.includes("Steer"))!;
+      expect(rowAction).toBeDefined();
+      // Enter and a row click race before React can publish its busy state.
+      await act(async () => {
+        expect(enter()).toBe(true);
+        rowAction.props.onClick();
+        expect(enter()).toBe(true);
+      });
+      expect(state.promote).toHaveBeenCalledExactlyOnceWith({
+        environmentId: "environment:test",
+        input: { threadId: "thread:test", queuedRunId: "run:second", targetRunId: "run:active" },
+      });
+      expect(onSubmit).not.toHaveBeenCalled();
+      await act(async () => {
+        finishSend!();
+      });
+      state.workflow = { ...workflow, queuedRuns: [first] };
+      state.projection = { projection: { messages: [] } };
+      await act(async () => {
+        renderer!.update(control());
+      });
+      await act(async () => {
+        expect(enter(true)).toBe(true);
+      });
+      expect(state.promote).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        expect(enter()).toBe(true);
+      });
+      expect(state.promote).toHaveBeenLastCalledWith({
+        environmentId: "environment:test",
+        input: { threadId: "thread:test", queuedRunId: "run:first", targetRunId: "run:active" },
+      });
+      expect(state.promote).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        finishSend!();
+      });
+      state.workflow = { ...workflow, queuedRuns: [] };
+      state.projection = { projection: { messages: [] } };
+      await act(async () => {
+        renderer!.update(control());
+      });
       expect(enter()).toBe(true);
-      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Steer"));
-      expect(arrow).toBeDefined();
-      arrow!.click();
-      expect(enter()).toBe(true);
-    });
-    expect(state.promote).toHaveBeenCalledExactlyOnceWith({
-      environmentId: "environment:test",
-      input: { threadId: "thread:test", queuedRunId: "run:first", targetRunId: "run:active" },
-    });
-    await act(async () => {
-      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Steer"));
-      expect(arrow).toBeDefined();
-      arrow!.click();
-      expect(enter()).toBe(true);
-    });
-    expect(state.promote).toHaveBeenCalledTimes(1);
-    await act(async () => finish());
-    state.workflow = { ...workflow(), queuedRuns: workflow().queuedRuns.slice(1) };
-    // A server queue event replaces the immutable V2 projection that derives the workflow.
-    state.projection = { projection: { messages: [{ id: "message:first" }] } };
-    await mount(ref);
-    expect(container.textContent).not.toContain("first");
-    expect(container.textContent).toContain("second");
-    await act(async () => { expect(enter(true)).toBe(true); });
-    expect(state.promote).toHaveBeenCalledTimes(1);
-    await act(async () => {
-      expect(enter()).toBe(true);
-      const arrow = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Steer"));
-      expect(arrow).toBeDefined();
-      arrow!.click();
-    });
-    expect(state.promote).toHaveBeenCalledTimes(2);
-    expect(state.promote).toHaveBeenLastCalledWith({
-      environmentId: "environment:test",
-      input: { threadId: "thread:test", queuedRunId: "run:second", targetRunId: "run:active" },
-    });
-  });
-
-  it("declines a held server queue and preserves the draft path", async () => {
-    state.workflow = workflow(false);
-    const ref = await mount();
-    expect(ref.current?.steerNext(false)).toBe(false);
-    expect(state.promote).not.toHaveBeenCalled();
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
+      expect(state.promote).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => {
+        finishSend?.();
+        renderer?.unmount();
+      });
+      state.promote.mockReset();
+      state.promote.mockImplementation(async () => undefined);
+      state.projection = null;
+      state.workflow = null;
+      vi.unstubAllGlobals();
+    }
   });
 });

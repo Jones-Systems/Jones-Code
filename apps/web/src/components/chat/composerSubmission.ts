@@ -1,6 +1,5 @@
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
-import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 
 import {
   composerSubmissionIntentForKey,
@@ -58,21 +57,20 @@ export function submitComposerDraft(
 export function handleComposerEnter(options: {
   event: Pick<
     KeyboardEvent,
-    "shiftKey" | "altKey" | "metaKey" | "ctrlKey" | "isComposing" | "keyCode" | "repeat"
+    "key" | "shiftKey" | "altKey" | "metaKey" | "ctrlKey" | "isComposing" | "keyCode" | "repeat"
   >;
-  intent: Omit<
-    Parameters<typeof composerSubmissionIntentForKey>[0],
-    "event" | "keybindings" | "platform"
-  >;
-  submissionIntent?: ComposerSubmissionIntent | null;
+  intent: Omit<Parameters<typeof composerSubmissionIntentForKey>[0], "event">;
   hasDraftContext: boolean;
   queueActionDisabled: boolean;
   onSteerNextQueuedMessage: () => boolean;
   onSubmit: (intent: ComposerSubmissionIntent) => void;
 }): boolean {
   const { event } = options;
-  if (event.isComposing || event.keyCode === 229) return false;
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return false;
+  const intent = composerSubmissionIntentForKey({ ...options.intent, event });
   if (
+    (intent === null || intent === "foreground") &&
+    !options.intent.isMobileViewport &&
     !event.shiftKey &&
     !event.altKey &&
     !event.metaKey &&
@@ -81,19 +79,10 @@ export function handleComposerEnter(options: {
     !options.hasDraftContext &&
     !options.queueActionDisabled
   ) {
-    // Held Enter must not drain the queue after a completed promotion. The queue's
-    // promotion lock also covers an arrow click racing a fresh key press.
+    // Held Enter must not drain the queue after a completed send. The queue's
+    // existing steer lock also covers a row action racing a fresh key press.
     if (event.repeat || options.onSteerNextQueuedMessage()) return true;
   }
-  if (event.repeat || event.altKey) return false;
-  const intent =
-    options.submissionIntent === undefined
-      ? composerSubmissionIntentForKey({
-          ...options.intent,
-          event: { ...event, key: "Enter" },
-          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
-        })
-      : options.submissionIntent;
   if (!intent) return false;
   options.onSubmit(intent);
   return true;

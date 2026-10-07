@@ -168,6 +168,13 @@ export function summarizeT3ToolCalls(
         quantity(countEntities(threadIds), "thread"),
       );
       break;
+    case "thread-settle":
+      label = phrase(
+        "Requested settlement for",
+        "request settlement for",
+        quantity(countEntities(threadIds), "thread"),
+      );
+      break;
     case "task-status":
       label = phrase("Checked", "check", `task status ${times}`);
       break;
@@ -371,6 +378,16 @@ export function summarizeT3ToolCalls(
       break;
     case "unlink-pr":
       label = phrase("Unlinked", "unlink", quantity(selected.length, "pull request"));
+      break;
+    case "watch-pr":
+      label = phrase("Watching", "watch", quantity(selected.length, "pull request"));
+      break;
+    case "unwatch-pr":
+      label = phrase(
+        "Stopped watching",
+        "stop watching",
+        quantity(selected.length, "pull request"),
+      );
       break;
     case "list-prs":
       label = phrase(

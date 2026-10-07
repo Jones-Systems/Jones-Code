@@ -1,14 +1,13 @@
+import { makeCommandObservationQuery } from "./CommandObservation.ts";
+import { makeProviderGoalState } from "./ProviderGoalState.ts";
 import {
-  AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
-  EnvironmentAuthenticatedPrincipal,
   EnvironmentHttpApi,
   ThreadId,
   TurnItemId,
   type OrchestrationProjectShell,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -21,8 +20,6 @@ import {
   requireEnvironmentScope,
 } from "../auth/http.ts";
 import * as OrchestrationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
-import { NativeCreationRepository } from "../persistence/Services/NativeCreationRepository.ts";
-import { assertLegacyBootstrapAllowed } from "../auth/RpcAuthorization.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import {
   buildBoundedThreadProjection,
@@ -37,7 +34,6 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { buildActiveShellSnapshot } from "./ShellStream.ts";
 import { projectThreadProjectionForWire } from "./WireProjection.ts";
-import { readProviderGoalState } from "./providerGoalHttp.ts";
 
 function isThreadNotFound(error: unknown): boolean {
   return (
@@ -64,7 +60,7 @@ function selectHistoryPageFromCursorOrError(
 }
 
 /**
- * Serves orchestration snapshots and native observations over HTTP. Clients load the
+ * Serves orchestration V2 snapshots over HTTP so clients can load the
  * (potentially large) shell and thread projections off the socket; gzip
  * compressible and cacheable — and then resume the WebSocket subscription via
  * `afterSequence`.
@@ -74,11 +70,12 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   "orchestration",
   Effect.fnUntraced(function* (handlers) {
     const sql = yield* SqlClient.SqlClient;
+    const commandObservation = yield* makeCommandObservationQuery();
+    const readGoalState = yield* makeProviderGoalState();
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
-    const nativeCreationRepository = yield* Effect.serviceOption(NativeCreationRepository);
 
     const enrichProjectShells = Effect.fn("http.orchestration.enrichProjectShells")(
       (projects: ReadonlyArray<OrchestrationProjectShell>) =>
@@ -176,68 +173,27 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
 
     return handlers
       .handle(
-        "dispatch",
-        Effect.fn("environment.orchestration.dispatch")(function* (args) {
-          yield* annotateEnvironmentRequest(args.endpoint.name);
-          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-          if (args.payload.bootstrap !== undefined) {
-            const principal = yield* EnvironmentAuthenticatedPrincipal;
-            if (Option.isNone(nativeCreationRepository)) {
-              return yield* failEnvironmentInvalidRequest("invalid_command");
-            }
-            yield* assertLegacyBootstrapAllowed({
-              actorSessionId: principal.sessionId,
-              command: args.payload,
-              hasAutomationEnrollment: nativeCreationRepository.value.hasAutomationEnrollment,
-            }).pipe(Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")));
-          }
-          return yield* failEnvironmentInvalidRequest(
-            args.payload.bootstrap !== undefined && args.payload.dispatchGuard !== undefined
-              ? "dispatch_guard_bootstrap_unsupported"
-              : "invalid_command",
-          );
-        }),
-      )
-      .handle(
         "commandObservation",
-        Effect.fn("environment.orchestration.commandObservation")(function* (args) {
+        Effect.fn("orchestration.commandObservation")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* threadManagement.observeLegacyCommand({
-            ...args.params,
-            messageId: args.payload.messageId,
-          }).pipe(
-            Effect.catch((cause) =>
-              cause._tag === "CommandObservationUnsupportedError"
-                ? failEnvironmentInvalidRequest("observation_unsupported")
-                : failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
-            ),
-          );
-        }),
-      )
-      .handle(
-        "commandObservationV2",
-        Effect.fn("environment.orchestration.commandObservationV2")(function* (args) {
-          yield* annotateEnvironmentRequest(args.endpoint.name);
-          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* threadManagement.observeCommand({
-            ...args.params,
-            messageId: args.payload.messageId,
-          }).pipe(
-            Effect.catch((cause) =>
-              failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
-            ),
-          );
+          return yield* commandObservation
+            .observe({ ...args.params, messageId: args.query.messageId })
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_command_observation_failed", cause),
+              ),
+            );
         }),
       )
       .handle(
         "providerGoalState",
-        Effect.fn("environment.orchestration.providerGoalState")(function* (args) {
+        Effect.fn("orchestration.providerGoalState")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* readProviderGoalState({
-            threadId: args.params.threadId,
-            expectedInstanceId: args.payload.expectedInstanceId,
+          return yield* readGoalState({
+            ...args.params,
+            expectedInstanceId: args.query.expectedInstanceId,
           });
         }),
       )

@@ -129,6 +129,15 @@ jobs:
             !/.repos/
           sparse-checkout-cone-mode: false
 
+      # ACP process-tree live tests compile a small pthread fixture with `cc`
+      # and soft-skip when it is missing. Install build-essential so that path
+      # always runs in CI instead of silently no-oping.
+      - name: Install C toolchain for process-tree fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential
+          command -v cc
+
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
@@ -144,12 +153,6 @@ jobs:
 
       - name: Test nightly release checks
         run: node --test .github/scripts/check-nightly-release.test.cjs
-
-      - name: Install C toolchain for process-tree fixtures
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential
-          command -v cc
 
       - name: Install browser secret helper build libraries
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
@@ -188,8 +191,8 @@ jobs:
   # apps/server sets `fileParallelism: false`, so its test files run strictly
   # one at a time. Sharding spreads them over separate runners instead of
   # separate workers, so no two server test files ever share a machine and the
-  # isolation that flag buys is preserved exactly. The shards split files by
-  # recorded duration (apps/server/src/testUtils/weightedShardSequencer.ts).
+  # isolation that flag buys is preserved exactly. The shards
+  # split files by recorded duration (apps/server/src/testUtils/weightedShardSequencer.ts).
   test_server:
     name: Test Server ${{ matrix.shard }}
     runs-on: ubuntu-24.04
@@ -225,8 +228,7 @@ jobs:
 
       # integration/transferBudgetV2.integration.test.ts writes the report; exactly one shard
       # produces these files. Gating the upload on their presence keeps a
-      # single `thread-transfer-results` artifact per run, which is the name
-      # the transfer-report job resolves.
+      # single `thread-transfer-results` artifact per run for the transfer-report job.
       - name: Detect transfer budget report
         id: transfer_budget
         if: always()
@@ -261,7 +263,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Require transfer measurements
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@v8
         with:
           name: thread-transfer-results
           path: ${{ runner.temp }}/thread-transfer
@@ -298,8 +300,8 @@ jobs:
             cargo test --locked --manifest-path "native/$crate/Cargo.toml"
           done
 
-  # Gate macOS static analysis on the native sources it actually lints.
-  # Detection is API-only (no checkout) and fails open: if
+  # The static analysis below needs a macOS runner, so gate it on the native
+  # sources it actually lints. Detection is API-only (no checkout) and fails open: if
   # the diff cannot be resolved, the lint runs.
   mobile_native_changes:
     name: Mobile Native Changes
@@ -432,11 +434,11 @@ jobs:
       - name: Exercise release-only workflow steps
         run: node scripts/release-smoke.ts
 
-  # The aggregate `Check` fails when any
+  # Branch protection requires this job by its name, `Check`. It fails when any
   # other job fails, is cancelled, or is skipped without a reason, so splitting
-  # or resharding jobs retains one overall result. Add every new job to `needs`.
+  # or resharding jobs needs no ruleset change. Add every new job to `needs`.
   # `always()` rather than `!cancelled()`: a skipped job reports success to
-  # GitHub, so a cancelled run must still produce a failing check.
+  # branch protection, so a cancelled run must still produce a failing check.
   check:
     name: Check
     if: ${{ always() }}

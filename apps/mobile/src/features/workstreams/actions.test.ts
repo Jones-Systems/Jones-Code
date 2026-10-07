@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   canEditWorkstreams,
-  executeMobileShelfMove,
   moveNativeThreadOrder,
   planNativeMembership,
   workstreamTint,
@@ -140,59 +139,5 @@ describe("native member order and decoration", () => {
     expect(workstreamTint("alpha")).toBe(workstreamTint("alpha"));
     expect(workstreamTint("alpha")).toMatch(/dark:border-/);
     expect(workstreamTint("alpha")).toContain("-50/70");
-  });
-});
-
-describe("explicit mobile shelf move", () => {
-  it("waits for primary removal before native writes", async () => {
-    const events: string[] = [];
-    let commit: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
-      commit = resolve;
-    });
-    const move = executeMobileShelfMove({
-      removePrimary: async () => {
-        events.push("remove");
-        await committed;
-        events.push("committed");
-      },
-      moveNative: async () => {
-        events.push("native");
-        return true;
-      },
-    });
-    expect(events).toEqual(["remove"]);
-    commit!();
-    expect(await move).toBe(true);
-    expect(events).toEqual(["remove", "committed", "native"]);
-  });
-  it.each(["unknown", "partial", "rejected"])(
-    "stops native effects after %s removal",
-    async (state) => {
-      const nativeWrites: string[] = [];
-      await expect(
-        executeMobileShelfMove({
-          removePrimary: () => Promise.reject(new Error(state)),
-          moveNative: async () => {
-            nativeWrites.push("pin");
-            return true;
-          },
-        }),
-      ).rejects.toThrow(state);
-      expect(nativeWrites).toEqual([]);
-    },
-  );
-  it("removes membership of a pinned thread without changing its pin or active slot", () => {
-    const pinned = {
-      ...input.thread,
-      pinnedAt: "2026-09-30T10:00:00Z",
-      pinOrderKey: "bb",
-      activeOrderKey: "zz",
-    };
-    const before = structuredClone(pinned);
-    expect(planNativeMembership({ ...input, thread: pinned, destination: null })?.operation).toBe(
-      "remove_membership",
-    );
-    expect(pinned).toEqual(before);
   });
 });

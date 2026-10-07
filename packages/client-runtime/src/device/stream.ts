@@ -3,7 +3,7 @@
 
 /**
  * Framework-free client for expo-device-hub's per-device streams, reached
- * through an authenticated media route. One class handles both platforms because the hub
+ * through the T3 proxy. One class handles both platforms because the hub
  * vendors two servers with different wire formats:
  *
  * - iOS (serve-sim): video is an HTTP `stream.avcc` body of length-prefixed
@@ -88,7 +88,7 @@ export interface DeviceStreamEvents {
   readonly onDuoUnavailable?: (detail?: string) => void;
   readonly onStatus: (status: DeviceStreamStatus, detail?: string) => void;
   readonly onScreen: (screen: DeviceScreenSize) => void;
-  /** The media route rejected the credential; the owner should refresh access and reconnect. */
+  /** The proxy rejected the credential; the owner should refresh access and reconnect. */
   readonly onUnauthorized: () => void;
   /**
    * H.264 cannot be decoded here (no WebCodecs, or the simulator's profile is
@@ -427,7 +427,6 @@ export function createDeviceStreamClient(
   };
 
   const connecting = (detail?: string) => {
-    if (stopped) return;
     firstFrame = false;
     if (frameTimer === null) {
       frameTimer = setTimeout(
@@ -623,8 +622,8 @@ export function createDeviceStreamClient(
 
   const handleUnauthorized = () => {
     stop();
-    events.onUnauthorized();
     events.onInputConnected(false);
+    events.onUnauthorized();
   };
 
   // iOS video: fetch the AVCC body and demux into the decoder.
@@ -853,6 +852,10 @@ export function createDeviceStreamClient(
       duoControl.clear();
       rotationCursor = null;
       if (stopped) return;
+      events.onInputConnected(
+        false,
+        event.reason || (event.code === 1006 ? "input socket refused" : `closed ${event.code}`),
+      );
       // A rejected HTTP upgrade surfaces as 1006, including an expired stream ticket.
       if (
         event.code === 1008 ||
@@ -860,10 +863,6 @@ export function createDeviceStreamClient(
         (event.code === 1006 && access.query.wsTicket)
       )
         return handleUnauthorized();
-      events.onInputConnected(
-        false,
-        event.reason || (event.code === 1006 ? "input socket refused" : `closed ${event.code}`),
-      );
       scheduleRetry("input", () => void connectIosInput());
     };
     ws.onerror = () => ws.close();
@@ -926,13 +925,13 @@ export function createDeviceStreamClient(
       socket = null;
       closeDecoder();
       if (stopped) return;
+      events.onInputConnected(false, event.reason || `closed ${event.code}`);
       if (
         event.code === 1008 ||
         event.code === 4401 ||
         (event.code === 1006 && access.query.wsTicket)
       )
         return handleUnauthorized();
-      events.onInputConnected(false, event.reason || `closed ${event.code}`);
       configuring = false;
       connecting(event.reason || undefined);
       scheduleRetry("input", connectAndroid);

@@ -19,7 +19,6 @@ import {
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
-import { HostStatusIndicators } from "./HostStatusIndicators";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
 import { threadEnvironment } from "../../state/threads";
@@ -32,6 +31,7 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { cn } from "~/lib/utils";
+import { HostStatusIndicators } from "./HostStatusIndicators";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;

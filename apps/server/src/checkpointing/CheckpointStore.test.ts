@@ -126,34 +126,6 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
     );
   });
 
-  describe("captureCheckpoint", () => {
-    for (const state of ["clean", "dirty"] as const) {
-      it.effect(`refuses ${state} primary checkouts without writing checkpoint refs`, () =>
-        Effect.gen(function* () {
-          const checkpointStore = yield* CheckpointStore.CheckpointStore;
-          const cwd = yield* makeTmpDir(`checkpoint-store-primary-${state}-`);
-          yield* initRepoWithCommit(cwd);
-          if (state === "dirty") {
-            yield* writeTextFile(NodePath.join(cwd, "README.md"), "dirty primary checkout\n");
-          }
-          const checkpointRef = checkpointRefForThreadTurn(
-            ThreadId.make(`thread-primary-checkout-${state}`),
-            0,
-          );
-          const result = yield* checkpointStore
-            .captureCheckpoint({ cwd, checkpointRef })
-            .pipe(Effect.result);
-
-          expect(result).toMatchObject({
-            _tag: "Failure",
-            failure: { _tag: "VcsPrimaryCheckoutCheckpointError" },
-          });
-          expect(yield* checkpointStore.hasCheckpointRef({ cwd, checkpointRef })).toBe(false);
-        }),
-      );
-    }
-  });
-
   it.effect("detects a nested workspace without its own .git entry", () =>
     Effect.gen(function* () {
       const tmp = yield* makeTmpDir();
@@ -165,6 +137,46 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
       expect(yield* checkpointStore.isGitRepository(nested)).toBe(true);
     }),
   );
+  describe("captureCheckpoint", () => {
+    it.effect.each(["clean", "dirty"] as const)(
+      "refuses %s primary checkouts without writing checkpoint refs",
+      (state) =>
+        Effect.gen(function* () {
+          const checkpointStore = yield* CheckpointStore.CheckpointStore;
+          const cwd = yield* makeTmpDir(`checkpoint-store-primary-${state}-`);
+          yield* initRepoWithCommit(cwd);
+          if (state === "dirty") {
+            yield* writeTextFile(NodePath.join(cwd, "README.md"), "dirty primary checkout\n");
+          }
+          const checkpointRef = checkpointRefForThreadTurn(
+            ThreadId.make(`thread-primary-checkout-${state}`),
+            0,
+          );
+          const fileSystem = yield* FileSystem.FileSystem;
+          yield* git(cwd, ["checkout", "-b", "primary-safety-test"]);
+          const originalIndex = yield* fileSystem.readFile(NodePath.join(cwd, ".git", "index"));
+          const originalObjects = yield* git(cwd, ["count-objects", "-v"]);
+          const originalMetadata = yield* fileSystem.readDirectory(NodePath.join(cwd, ".git"));
+          const result = yield* checkpointStore
+            .captureCheckpoint({ cwd, checkpointRef })
+            .pipe(Effect.result);
+
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "VcsPrimaryCheckoutCheckpointError" },
+          });
+          expect(yield* checkpointStore.hasCheckpointRef({ cwd, checkpointRef })).toBe(false);
+          expect(yield* fileSystem.readFile(NodePath.join(cwd, ".git", "index"))).toEqual(
+            originalIndex,
+          );
+          expect(yield* git(cwd, ["count-objects", "-v"])).toBe(originalObjects);
+          expect(yield* fileSystem.readDirectory(NodePath.join(cwd, ".git"))).toEqual(
+            originalMetadata,
+          );
+        }),
+    );
+  });
+
   describe("diffCheckpoints", () => {
     it.effect("returns full oversized checkpoint diffs without truncation", () =>
       Effect.gen(function* () {

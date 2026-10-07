@@ -14,8 +14,6 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
-import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -27,12 +25,7 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as IdAllocator from "../IdAllocator.ts";
-import { readProviderEventOrigin } from "../ProviderEventOrigin.ts";
-import {
-  ProviderAdapterProtocolError,
-  ProviderAdapterV2RuntimePolicy,
-  type ProviderAdapterV2SessionRuntime,
-} from "../ProviderAdapter.ts";
+import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
 import {
   cursorMcpServers,
   cursorRuntimeAgentPolicy,
@@ -46,423 +39,13 @@ import { isCursorCancellationError, loggedCursorAgentOptions } from "./CursorAge
 const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 describe("CursorAdapterV2", () => {
-  it.effect("uses current creation authority at the factory and the cached native directory", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-native-authority-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-native-authority-thread");
-      const modelSelection = { instanceId, model: "composer-2.5" };
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: workspace,
-      });
-      let opens = 0;
-      let sends = 0;
-      const adapter = makeCursorAdapterV2({
-        instanceId, settings: yield* decodeCursorSettings({}),
-        environment: { HOME: workspace }, fileSystem, path,
-        idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-native-authority-config-" })),
-        ),
-        runner: {
-          assertComplete: Effect.void,
-          open: (input) => Effect.sync(() => {
-            opens++;
-            return {
-              agentId: input.agentId ?? "native-cursor-authority",
-              listMessages: Effect.succeed([]), close: Effect.void,
-              send: () => { sends++; return Effect.die("Unauthorized turn reached native send."); },
-            };
-          }),
-        },
-      });
-      const runtime = yield* adapter.openSession({
-        threadId, providerSessionId: ProviderSessionId.make("cursor-native-authority-session"),
-        modelSelection, runtimePolicy,
-      });
-      const creation = {
-        context: {} as never,
-        resources: { projectCwd: workspace, branch: "feature/native", worktreePath: workspace },
-      };
-      const rejected = yield* runtime.ensureThread({
-        threadId, modelSelection, runtimePolicy, nativeCreationExecution: creation,
-      }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
-      assert.isDefined(rejected);
-      assert.equal(opens, 0);
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      assert.equal(opens, 1);
-      const targetDirectory = path.join(workspace, "different-worktree");
-      const nativeOperation = {
-        operationId: "cursor-cached-directory", operation: "start_turn" as const,
-        instanceId, threadId, providerThreadId: providerThread.id,
-        providerSessionId: runtime.providerSessionId, runtimeGeneration: runtime.runtimeGeneration!,
-      };
-      const held = yield* runtime.startTurn({
-        nativeOperation,
-        nativeCreationExecution: { ...creation, resources: { ...creation.resources, worktreePath: targetDirectory } },
-        appThread: {} as never, threadId, runId: RunId.make("cursor-authority-run"),
-        runOrdinal: 1, providerTurnOrdinal: 1, attemptId: RunAttemptId.make("cursor-authority-attempt"),
-        rootNodeId: NodeId.make("cursor-authority-root"), providerThread,
-        message: {
-          messageId: MessageId.make("cursor-authority-message"), text: "hi", attachments: [],
-          createdBy: "user", creationSource: "web",
-        },
-        modelSelection, runtimePolicy: { ...runtimePolicy, cwd: targetDirectory },
-      }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
-      assert.isDefined(held);
-      if (held !== undefined) {
-        assert.equal(held._tag, "ProviderAdapterTurnStartError");
-        assert.include(String(held.cause), "actual runtime directory");
-        assert.deepEqual("nativeEffect" in held ? held.nativeEffect : undefined,
-          { ...nativeOperation, outcome: "unknown" });
-      }
-      assert.equal(opens, 1);
-      assert.equal(sends, 0);
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
-  );
-
-  it.effect("holds strict resume when native initialization and attachment cannot be separated", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-strict-resume-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-strict-resume-thread");
-      const modelSelection = { instanceId, model: "composer-2.5" };
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: workspace,
-      });
-      let opens = 0;
-      let closes = 0;
-      let gateCalls = 0;
-      const adapter = makeCursorAdapterV2({
-        instanceId,
-        settings: yield* decodeCursorSettings({}),
-        environment: { HOME: workspace },
-        fileSystem, path,
-        idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-strict-resume-config-" })),
-        ),
-        runner: {
-          assertComplete: Effect.void,
-          open: (input) => Effect.sync(() => {
-            opens++;
-            return {
-              agentId: input.agentId ?? "native-cursor-first",
-              listMessages: Effect.succeed([]),
-              close: Effect.sync(() => { closes++; }),
-              send: () => Effect.die("This fixture must not send a turn."),
-            };
-          }),
-        },
-      });
-      const runtime = yield* adapter.openSession({
-        threadId, providerSessionId: ProviderSessionId.make("cursor-strict-resume-session"),
-        modelSelection, runtimePolicy,
-      });
-      const first = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      const providerThread = {
-        ...first,
-        nativeThreadRef: { ...first.nativeThreadRef!, nativeId: "native-cursor-target" },
-      };
-      const nativeOperation = {
-        operationId: "cursor-strict-source-resume", operation: "resume_thread" as const,
-        instanceId, threadId, providerThreadId: providerThread.id,
-        providerSessionId: runtime.providerSessionId, runtimeGeneration: runtime.runtimeGeneration!,
-      };
-      const result = yield* runtime.resumeThread({
-        providerThread, nativeOperation,
-        beforeNativeResume: () => Effect.sync(() => { gateCalls++; }),
-      }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }));
-      assert.isDefined(result);
-      if (result !== undefined) {
-        assert.equal(result._tag, "ProviderAdapterResumeThreadError");
-        assert.include(String(result.cause), "source proof before native attachment");
-        assert.deepEqual("nativeEffect" in result ? result.nativeEffect : undefined,
-          { ...nativeOperation, outcome: "unknown" });
-      }
-      assert.equal(gateCalls, 0);
-      assert.equal(opens, 1);
-      assert.equal(closes, 0);
-      assert.equal(runtime.runtimeGeneration, nativeOperation.runtimeGeneration);
-      const ungated = yield* runtime.resumeThread({ providerThread });
-      assert.equal(ungated.nativeThreadRef?.nativeId, "native-cursor-target");
-      assert.equal(opens, 2);
-      assert.equal(closes, 1);
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
-  );
-
-  it.effect("changes runtime generation only when the native agent is replaced", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-generation-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-generation-thread");
-      const modelSelection = { instanceId, model: "composer-2.5" };
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        cwd: workspace,
-      });
-      let opens = 0;
-      const adapter = makeCursorAdapterV2({
-        instanceId,
-        settings: yield* decodeCursorSettings({}),
-        environment: { HOME: workspace },
-        fileSystem,
-        path,
-        idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-generation-config-" })),
-        ),
-        runner: {
-          assertComplete: Effect.void,
-          open: (input) => {
-            opens++;
-            return Effect.succeed({
-              agentId: input.agentId ?? "native-cursor-first",
-              listMessages: Effect.succeed([]),
-              close: Effect.void,
-              send: () => Effect.die("This observation test must not submit a turn."),
-            });
-          },
-        },
-      });
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("cursor-generation-session"),
-        modelSelection,
-        runtimePolicy,
-      });
-      const before = runtime.runtimeGeneration;
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      assert.isString(runtime.runtimeGeneration);
-      assert.notEqual(runtime.runtimeGeneration, before);
-      const first = runtime.runtimeGeneration;
-      yield* runtime.resumeThread({ providerThread });
-      assert.equal(runtime.runtimeGeneration, first);
-      assert.equal(opens, 1);
-      const binding = {
-        threadId,
-        providerThreadId: providerThread.id,
-        providerSessionId: runtime.providerSessionId,
-        instanceId,
-        runtimeGeneration: first!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
-      };
-      const observed = yield* runtime.observeThreadRuntime!(binding);
-      assert.equal(observed.status, "unknown");
-      assert.equal(opens, 1);
-      yield* runtime.resumeThread({
-        providerThread: {
-          ...providerThread,
-          nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native-cursor-second" },
-        },
-      });
-      assert.notEqual(runtime.runtimeGeneration, first);
-      const stale = yield* runtime.observeThreadRuntime!(binding);
-      assert.equal(stale.status, "unknown");
-      assert.equal(opens, 2);
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
-  );
-
-  it.effect("retains the pre-ACK agent owner through replacement and accepts fresh replacement output", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-origin-ack-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-origin-ack-thread");
-      const modelSelection = { instanceId, model: "composer-2.5" };
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: workspace,
-      });
-      const received = yield* Deferred.make<void>();
-      const acknowledged = yield* Deferred.make<void>();
-      let sends = 0;
-      const adapter = makeCursorAdapterV2({
-        instanceId, settings: yield* decodeCursorSettings({}), environment: { HOME: workspace },
-        fileSystem, path, idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-origin-ack-config-" })),
-        ),
-        runner: {
-          assertComplete: Effect.void,
-          open: (opened) => Effect.succeed({
-            agentId: opened.agentId ?? "native-cursor-origin-first",
-            listMessages: Effect.succeed([]), close: Effect.void,
-            send: (sent) => Effect.gen(function* () {
-              const ordinal = ++sends;
-              yield* sent.onDelta({ type: "text-delta", text: ordinal === 1 ? "Old owner output" : "Fresh owner output" });
-              if (ordinal === 1) {
-                yield* Deferred.succeed(received, undefined);
-                yield* Deferred.await(acknowledged);
-              }
-              return { runId: `cursor-origin-run-${ordinal}`, cancel: Effect.void,
-                wait: Effect.succeed({ status: "finished" as const }) };
-            }),
-          }),
-        },
-      });
-      const runtime = yield* adapter.openSession({
-        threadId, providerSessionId: ProviderSessionId.make("cursor-origin-ack-session"), modelSelection, runtimePolicy,
-      });
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      const oldGeneration = runtime.runtimeGeneration;
-      const turnInput = {
-        appThread: {} as never, threadId, providerThread, modelSelection, runtimePolicy,
-        runId: RunId.make("cursor-origin-old-run"), runOrdinal: 1, providerTurnOrdinal: 1,
-        attemptId: RunAttemptId.make("cursor-origin-old-attempt"), rootNodeId: NodeId.make("cursor-origin-old-root"),
-        message: { messageId: MessageId.make("cursor-origin-message"), text: "hi", attachments: [],
-          createdBy: "user" as const, creationSource: "web" as const },
-      };
-      const sending = yield* runtime.startTurn(turnInput).pipe(Effect.forkScoped);
-      yield* Deferred.await(received);
-      const replacement = yield* runtime.resumeThread({ providerThread: {
-        ...providerThread, nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native-cursor-origin-next" },
-      } });
-      const newGeneration = runtime.runtimeGeneration;
-      assert.notEqual(newGeneration, oldGeneration);
-      yield* Deferred.succeed(acknowledged, undefined);
-      yield* Fiber.join(sending);
-      const oldEvents = yield* runtime.events.pipe(
-        Stream.takeUntil((event) => event.type === "turn.terminal"), Stream.runCollect,
-      );
-      assert.isTrue(oldEvents.some((event) => event.type === "message.updated" && event.message.text === "Old owner output"));
-      for (const event of oldEvents) {
-        const origin = readProviderEventOrigin(event)!;
-        assert.isDefined(origin);
-        assert.equal(origin.producer.runtimeGeneration, oldGeneration);
-        assert.equal(origin.turn?.runId, turnInput.runId);
-        assert.equal(origin.turn?.binding.nativeThreadId, "native-cursor-origin-first");
-        assert.equal((yield* Effect.exit(origin.producer.revalidateCurrent))._tag, "Failure");
-      }
-      yield* runtime.startTurn({ ...turnInput, providerThread: replacement,
-        runId: RunId.make("cursor-origin-fresh-run"), attemptId: RunAttemptId.make("cursor-origin-fresh-attempt"),
-        providerTurnOrdinal: 2 });
-      const freshEvents = yield* runtime.events.pipe(
-        Stream.takeUntil((event) => event.type === "turn.terminal"), Stream.runCollect,
-      );
-      assert.isTrue(freshEvents.some((event) => event.type === "message.updated" && event.message.text === "Fresh owner output"));
-      for (const event of freshEvents) {
-        const origin = readProviderEventOrigin(event)!;
-        assert.isDefined(origin);
-        assert.equal(origin.producer.runtimeGeneration, newGeneration);
-        assert.equal(origin.turn?.runId, RunId.make("cursor-origin-fresh-run"));
-        yield* origin.producer.revalidateCurrent;
-      }
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
-  );
-
-  it.effect("awaits registration before native replacement and blocks replacement when registration fails", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-replacement-fence-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-replacement-fence-thread");
-      const modelSelection = { instanceId, model: "composer-2.5" };
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access", interactionMode: "default", cwd: workspace,
-      });
-      const order: string[] = [];
-      let opens = 0;
-      let closes = 0;
-      let rejectRegistration = false;
-      let runtime: ProviderAdapterV2SessionRuntime | undefined;
-      const adapter = makeCursorAdapterV2({
-        instanceId,
-        settings: yield* decodeCursorSettings({}),
-        environment: { HOME: workspace },
-        fileSystem,
-        path,
-        idAllocator: yield* IdAllocator.IdAllocatorV2,
-        serverConfig: yield* ServerConfig.ServerConfig.pipe(
-          Effect.provide(ServerConfig.layerTest(workspace, { prefix: "cursor-replacement-fence-config-" })),
-        ),
-        runner: {
-          assertComplete: Effect.void,
-          open: (input) => Effect.sync(() => {
-            opens++;
-            order.push("native_open");
-            return {
-              agentId: input.agentId ?? "native-cursor-registered",
-              listMessages: Effect.succeed([]),
-              close: Effect.sync(() => { closes++; }),
-              send: () => Effect.die("This replacement test must not submit a turn."),
-            };
-          }),
-        },
-      });
-      runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("cursor-replacement-fence-session"),
-        modelSelection,
-        runtimePolicy,
-        beforeRuntimeReplacement: (nextGeneration) => Effect.gen(function* () {
-          order.push("registration_started");
-          assert.equal(runtime?.runtimeGeneration, nextGeneration);
-          if (rejectRegistration) {
-            return yield* new ProviderAdapterProtocolError({
-              driver: "cursor", detail: "replacement registration failed",
-            });
-          }
-          yield* Effect.yieldNow;
-          order.push("registration_finished");
-        }),
-      });
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      assert.deepEqual(order, ["registration_started", "registration_finished", "native_open"]);
-      assert.equal(opens, 1);
-      yield* runtime.resumeThread({ providerThread });
-      assert.lengthOf(order, 3);
-      const oldGeneration = runtime.runtimeGeneration;
-      const nativeOperation = {
-        operationId: "cursor-replacement-registration-failure",
-        operation: "resume_thread" as const,
-        instanceId,
-        threadId,
-        providerSessionId: runtime.providerSessionId,
-        providerThreadId: providerThread.id,
-        runtimeGeneration: oldGeneration,
-      };
-      rejectRegistration = true;
-      const error = yield* runtime.resumeThread({
-        providerThread: {
-          ...providerThread,
-          nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native-cursor-replacement" },
-        },
-        nativeOperation,
-      }).pipe(Effect.flip);
-      assert.equal(error._tag, "ProviderAdapterResumeThreadError");
-      assert.deepEqual("nativeEffect" in error ? error.nativeEffect : undefined,
-        { ...nativeOperation, outcome: "unknown" });
-      assert.notEqual(runtime.runtimeGeneration, oldGeneration);
-      assert.equal(opens, 1);
-      assert.equal(closes, 0);
-      assert.deepEqual(order, ["registration_started", "registration_finished", "native_open", "registration_started"]);
-      const observation = yield* runtime.observeThreadRuntime!({
-        instanceId,
-        threadId,
-        providerSessionId: runtime.providerSessionId,
-        providerThreadId: providerThread.id,
-        runtimeGeneration: runtime.runtimeGeneration!,
-        nativeThreadId: providerThread.nativeThreadRef!.nativeId,
-      });
-      assert.equal(observation.status, "unknown");
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
-  );
-
-  for (const { status, model } of [
+  it.effect.each([
     { status: "finished", model: undefined },
     { status: "cancelled", model: "claude-opus-4-6" },
     { status: "error", model: "custom-fable" },
-  ] as const) {
-    it.effect(`settles missing task completions when the Cursor run is ${status}`, () =>
+  ] as const)(
+    "settles missing task completions when the Cursor run is $status",
+    ({ status, model }) =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -594,27 +177,6 @@ describe("CursorAdapterV2", () => {
           Stream.takeUntil((event) => event.type === "turn.terminal"),
           Stream.runCollect,
         );
-        const capturedGeneration = runtime.runtimeGeneration;
-        const origins = events.map((event) => readProviderEventOrigin(event));
-        assert.isAbove(origins.length, 0);
-        for (const origin of origins) {
-          assert.isDefined(origin);
-          assert.equal(origin?.producer.driver, "cursor");
-          assert.equal(origin?.producer.runtimeGeneration, capturedGeneration);
-          assert.equal(origin?.turn?.runId, RunId.make("cursor-lifecycle-run"));
-          assert.equal(origin?.turn?.attemptId, RunAttemptId.make("cursor-lifecycle-attempt"));
-          assert.equal(origin?.turn?.binding.nativeThreadId, "native-cursor-lifecycle");
-          assert.equal(origin?.producer.token, origins[0]?.producer.token);
-          yield* origin!.producer.revalidateCurrent;
-        }
-        yield* runtime.resumeThread({ providerThread: {
-          ...providerThread, nativeThreadRef: { ...providerThread.nativeThreadRef!, nativeId: "native-cursor-replacement" },
-        } });
-        assert.notEqual(runtime.runtimeGeneration, capturedGeneration);
-        for (const origin of origins) {
-          assert.equal((yield* Effect.exit(origin!.producer.revalidateCurrent))._tag, "Failure");
-          assert.equal(origin?.producer.runtimeGeneration, capturedGeneration);
-        }
         const rows = events.filter((event) => event.type === "subagent.updated");
         assert.equal(rows[0]?.subagent.status, "running");
         assert.equal(rows[0]?.subagent.model, model ?? null);
@@ -623,9 +185,13 @@ describe("CursorAdapterV2", () => {
           status === "finished" ? "idle" : status === "cancelled" ? "cancelled" : "failed",
         );
         assert.isNotNull(rows.at(-1)?.subagent.completedAt);
+        const terminal = events.find((event) => event.type === "turn.terminal");
+        assert.equal(terminal?.evidenceKind, "provider_result");
+        assert.equal(terminal?.providerTurn?.id, terminal?.providerTurnId);
+        assert.equal(terminal?.providerTurn?.status, terminal?.status);
+        assert.isNotNull(terminal?.providerTurn?.completedAt);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),
-    );
-  }
+  );
 
   it.effect("fails standalone SDK transport diagnostics and sends compaction as /compress", () =>
     Effect.gen(function* () {
@@ -747,6 +313,7 @@ describe("CursorAdapterV2", () => {
       if (Option.isSome(first)) {
         assert.equal(first.value.status, "failed");
         assert.equal(first.value.failure?.class, "transport_error");
+        assert.equal(first.value.evidenceKind, "local_failure");
       }
 
       assert.isDefined(runtime.compactThread);
@@ -867,6 +434,26 @@ describe("CursorAdapterV2", () => {
             type: "ls",
             args: { path: path.join(workspace, "missing") },
             result: { status: "error", error: "ENOENT" },
+          },
+        },
+        {
+          type: "tool-call-completed",
+          modelCallId: "native-model-call",
+          callId: "grep-failed",
+          toolCall: {
+            type: "grep",
+            args: { pattern: "TODO", path: "src" },
+            result: { status: "error", error: "search failed" },
+          },
+        },
+        {
+          type: "tool-call-completed",
+          modelCallId: "native-model-call",
+          callId: "glob-failed",
+          toolCall: {
+            type: "glob",
+            args: { globPattern: "*.ts" },
+            result: { status: "error", error: "search failed" },
           },
         },
         {
@@ -1087,7 +674,17 @@ describe("CursorAdapterV2", () => {
           {
             pattern: path.join(workspace, "missing"),
             status: "failed",
-            results: undefined,
+            results: [{ fileName: path.join(workspace, "missing"), preview: "ENOENT" }],
+          },
+          {
+            pattern: "TODO",
+            status: "failed",
+            results: [{ fileName: "src", preview: "search failed" }],
+          },
+          {
+            pattern: "*.ts",
+            status: "failed",
+            results: [{ fileName: ".", preview: "search failed" }],
           },
           {
             pattern: "src/a.ts, src/b.ts",
@@ -1106,7 +703,7 @@ describe("CursorAdapterV2", () => {
           {
             pattern: "src/a.ts",
             status: "failed",
-            results: undefined,
+            results: [{ fileName: "src/a.ts", preview: "lint failed" }],
           },
         ],
       );
@@ -1227,7 +824,6 @@ describe("CursorAdapterV2", () => {
       providerInstanceId: ProviderInstanceId.make("cursor"),
       endpoint: "http://127.0.0.1:43123/mcp",
       authorizationHeader: "Bearer secret-cursor-mcp-token",
-      capabilities: new Set<string>(["preview"]),
       browserToolsAvailable: true,
     });
 

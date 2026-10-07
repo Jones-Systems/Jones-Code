@@ -2,7 +2,6 @@ import * as Effect from "effect/Effect";
 
 import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./methods/providerAuth.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
-import { openDeviceMediaTunnel, closeDeviceMediaTunnel } from "./methods/deviceMedia.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import {
@@ -113,8 +112,6 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(resolveSshHost);
   yield* ipc.handle(ensureSshEnvironment);
   yield* ipc.handle(disconnectSshEnvironment);
-  yield* ipc.handle(openDeviceMediaTunnel);
-  yield* ipc.handle(closeDeviceMediaTunnel);
   yield* ipc.handle(fetchSshEnvironmentDescriptor);
   yield* ipc.handle(bootstrapSshBearerSession);
   yield* ipc.handle(fetchSshSessionState);

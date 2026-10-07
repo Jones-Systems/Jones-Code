@@ -5,7 +5,6 @@ import {
   EnvironmentHttpApi,
   EnvironmentInternalError,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
-  WORKSTREAMS_T3_PROVIDER_MAX_REQUEST_BYTES,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -28,19 +27,23 @@ import type { T3PlacementTrustProvider } from "../environment/NativePlacementTru
 import * as NativeStoreAuthority from "../environment/NativeStoreAuthority.ts";
 import { makeControlPlaneWorkstreamTransport } from "./ControlPlaneWorkstreamTransport.ts";
 import { WorkstreamGateway, make, type WorkstreamGatewayError } from "./WorkstreamGateway.ts";
-import { createRegistrationContextHandler } from "./registrationContext/http.ts";
-import {
-  WorkstreamsRegistrationContext,
-  makeWorkstreamsRegistrationContext,
-} from "./registrationContext/service.ts";
 
 export const WORKSTREAM_RESPONSE_HEADERS = {
   "cache-control": "private, no-store",
   "x-content-type-options": "nosniff",
 } as const;
 
+const workstreamHttpPath = (originalUrl: string): string | undefined => {
+  if (originalUrl.startsWith("/")) return originalUrl.split(/[?#]/, 1)[0];
+  try {
+    return new URL(originalUrl).pathname;
+  } catch {
+    return undefined;
+  }
+};
+
 export const isWorkstreamHttpTarget = (originalUrl: string): boolean => {
-  const path = originalUrl.split(/[?#]/, 1)[0];
+  const path = workstreamHttpPath(originalUrl);
   return path === "/api/workstreams" || path?.startsWith("/api/workstreams/") === true;
 };
 
@@ -52,22 +55,15 @@ export const withWorkstreamBodyLimit = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   request: { readonly originalUrl: string; readonly method: string },
 ): Effect.Effect<A, E, R> =>
-  request.originalUrl.split(/[?#]/, 1)[0]?.startsWith("/api/workstreams/native/v1/") === true
+  request.method === "POST" &&
+  workstreamHttpPath(request.originalUrl) === "/api/workstreams/thread-placements"
     ? effect.pipe(
         Effect.provideService(
           HttpIncomingMessage.MaxBodySize,
-          ByteSize.bytes(WORKSTREAMS_T3_PROVIDER_MAX_REQUEST_BYTES),
+          ByteSize.bytes(T3_PLACEMENT_MAX_REQUEST_BYTES),
         ),
       )
-    : request.method === "POST" &&
-        request.originalUrl.split(/[?#]/, 1)[0] === "/api/workstreams/thread-placements"
-      ? effect.pipe(
-          Effect.provideService(
-            HttpIncomingMessage.MaxBodySize,
-            ByteSize.bytes(T3_PLACEMENT_MAX_REQUEST_BYTES),
-          ),
-        )
-      : effect;
+    : effect;
 
 export const workstreamResponseHeadersLayer = HttpRouter.middleware(
   (httpEffect) =>
@@ -79,11 +75,11 @@ export const workstreamResponseHeadersLayer = HttpRouter.middleware(
   { global: true },
 );
 
-const configured = makeControlPlaneWorkstreamTransport();
 const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrustProvider) =>
   Layer.effect(
     WorkstreamGateway,
     Effect.gen(function* () {
+      const configured = makeControlPlaneWorkstreamTransport();
       const nativeAuthority =
         placementTrustProvider === undefined
           ? yield* NativeStoreAuthority.NativeStoreAuthority
@@ -101,13 +97,6 @@ const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrus
 export const workstreamGatewayLayerLive = makeWorkstreamGatewayLayerLive().pipe(
   Layer.provide(NativeStoreAuthority.layer),
 );
-export const workstreamRegistrationContextLayerLive = Layer.effect(
-  WorkstreamsRegistrationContext,
-  Effect.gen(function* () {
-    const authority = yield* NativeStoreAuthority.NativeStoreAuthority;
-    return makeWorkstreamsRegistrationContext({ ...configured.registrationContext, authority });
-  }),
-).pipe(Layer.provide(NativeStoreAuthority.layer));
 
 const internal = <A>(
   operation: string,
@@ -150,14 +139,26 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
   "workstreams",
   Effect.fnUntraced(function* (handlers) {
     const gateway = yield* WorkstreamGateway;
-    const registrationContext = yield* WorkstreamsRegistrationContext;
     const read = (name: string) =>
       Effect.gen(function* () {
         yield* annotateEnvironmentRequest(name);
         yield* requireEnvironmentScope(AuthOrchestrationReadScope);
       });
     return handlers
-      .handle("registrationContext", createRegistrationContextHandler(registrationContext))
+      .handle("appearanceRead", (args) =>
+        read(args.endpoint.name).pipe(
+          Effect.andThen(
+            internal("appearanceRead", gateway.readAppearance(args.payload.workstream_ids)),
+          ),
+        ),
+      )
+      .handle("appearanceSave", (args) =>
+        Effect.gen(function* () {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          return yield* internal("appearanceSave", gateway.saveAppearance(args.payload));
+        }),
+      )
       .handle("threadPlacements", (args) =>
         read(args.endpoint.name).pipe(
           Effect.andThen(internal("threadPlacements", gateway.readThreadPlacements(args.payload))),

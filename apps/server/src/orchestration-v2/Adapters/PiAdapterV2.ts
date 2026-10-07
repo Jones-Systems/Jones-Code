@@ -23,8 +23,6 @@
  * Terminal-only decoration such as status, widget, title, and editor-text
  * updates has no matching T3 surface and is ignored.
  */
-import * as NodeCrypto from "node:crypto";
-
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import {
@@ -73,8 +71,6 @@ import {
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import * as ProviderAdapter from "../ProviderAdapter.ts";
-import { stampProviderEvent, type ProviderEventProducerOrigin } from "../ProviderEventOrigin.ts";
-import type { ProviderAssistantOutputOwner } from "../ProviderEventIngestor.ts";
 import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriver,
@@ -386,7 +382,6 @@ export function makePiAdapterV2(
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: PI_PROVIDER,
-    declaredHandoffDelivery: ProviderAdapter.makeProviderDeclaredHandoffDelivery(PiProviderCapabilitiesV2),
     getCapabilities: () => Effect.succeed(PiProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("PiAdapterV2.openSession")(function* (
@@ -424,9 +419,6 @@ export function makePiAdapterV2(
         extensionPath,
         runtimeMode: input.runtimePolicy.runtimeMode,
       });
-      const runtimeGeneration = input.nativeOperation?.runtimeGeneration ?? NodeCrypto.randomUUID();
-      yield* (input.beforeRuntimeReplacement?.(runtimeGeneration) ?? Effect.void);
-      yield* ProviderAdapter.authorizeProviderNativeCreation(input.nativeCreationExecution, PI_PROVIDER, cwd);
       const connection: PiRpcConnection = yield* makePiRpcConnection({
         command: options.settings.binaryPath || "pi",
         args: launch.args,
@@ -531,23 +523,8 @@ export function makePiAdapterV2(
           ? { type: "compact" }
           : { type: "compact", customInstructions: command.customInstructions };
 
-      const producerOrigin: ProviderEventProducerOrigin = { token: connection, driver: PI_PROVIDER,
-        instanceId: options.instanceId, providerSessionId: input.providerSessionId, runtimeGeneration,
-        revalidateCurrent: Effect.void };
-      const turnOwners = new Map<string, ProviderAssistantOutputOwner>();
-      const nodeOwners = new Map<string, ProviderAssistantOutputOwner>();
-      const emit = (event: ProviderAdapter.ProviderAdapterV2Event) => Effect.gen(function* () {
-        const providerTurnId = event.type === "provider_turn.updated" ? event.providerTurn.id
-          : event.type === "turn.terminal" ? event.providerTurnId
-          : event.type === "node.updated" ? event.node.providerTurnId
-          : event.type === "turn_item.updated" ? event.turnItem.providerTurnId : undefined;
-        const owner = providerTurnId == null ? undefined : turnOwners.get(providerTurnId);
-        if (event.type === "node.updated" && owner !== undefined) nodeOwners.set(event.node.id, owner);
-        const turn = event.type === "message.updated" && event.message.nodeId !== null
-          ? nodeOwners.get(event.message.nodeId) : owner;
-        stampProviderEvent(event, { producer: producerOrigin, ...(turn === undefined ? {} : { turn }) });
-        yield* Queue.offer(events, event);
-      });
+      const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
+        Queue.offer(events, event).pipe(Effect.asVoid);
 
       const updateProviderSession = (
         status: OrchestrationV2ProviderSession["status"],
@@ -1011,6 +988,12 @@ export function makePiAdapterV2(
         if (toolName === "edit" || toolName === "write") {
           const fileName = recordString(args, "path") ?? recordString(args, "file_path");
           if (fileName !== undefined) {
+            // edit reports a unified patch in its result details; write only
+            // carries the new content in its args. A failed call keeps its error.
+            const diffStr =
+              recordString(recordField(resultRecord, "details"), "patch") ??
+              (isError && outputText.trim().length > 0 ? outputText : undefined);
+            const newStr = toolName === "write" ? recordString(args, "content") : undefined;
             yield* emit({
               type: "turn_item.updated",
               driver: PI_PROVIDER,
@@ -1019,6 +1002,8 @@ export function makePiAdapterV2(
                 title: toolName,
                 type: "file_change",
                 fileName,
+                ...(diffStr === undefined ? {} : { diffStr }),
+                ...(newStr === undefined ? {} : { newStr }),
               },
             });
             return;
@@ -1420,7 +1405,11 @@ export function makePiAdapterV2(
         };
       });
 
-      const finalizeTurn = Effect.fnUntraced(function* (state: PiThreadState, readUsage = true) {
+      const finalizeTurn = Effect.fnUntraced(function* (
+        state: PiThreadState,
+        readUsage = true,
+        evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "provider_result",
+      ) {
         const turn = state.activeTurn;
         if (turn === null) return;
         state.activeTurn = null;
@@ -1451,19 +1440,20 @@ export function makePiAdapterV2(
           ? yield* readTokenUsage(turn.latestCompactionAfterTokens, completedAt)
           : undefined;
         const failure = turn.interrupted ? null : turn.failure;
+        const settledProviderTurn: OrchestrationV2ProviderTurn = {
+          ...turn.providerTurn,
+          ...(treeRefs?.turnStartEntryId == null
+            ? {}
+            : { nativeTurnRef: providerRef(treeRefs.turnStartEntryId) }),
+          status: turn.interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
+          completedAt,
+          ...(tokenUsage === undefined ? {} : { tokenUsage }),
+        };
         yield* emit({
           type: "provider_turn.updated",
           driver: PI_PROVIDER,
           threadId: turn.turnInput.threadId,
-          providerTurn: {
-            ...turn.providerTurn,
-            ...(treeRefs?.turnStartEntryId == null
-              ? {}
-              : { nativeTurnRef: providerRef(treeRefs.turnStartEntryId) }),
-            status: turn.interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
-            completedAt,
-            ...(tokenUsage === undefined ? {} : { tokenUsage }),
-          },
+          providerTurn: settledProviderTurn,
         });
         yield* updateProviderThread(state, {
           status: "idle",
@@ -1500,6 +1490,11 @@ export function makePiAdapterV2(
           }
           yield* emit({
             type: "turn.terminal",
+            providerTurn: settledProviderTurn,
+            evidenceKind:
+              turn.interrupted && evidenceKind === "provider_result"
+                ? "attributed_abort"
+                : evidenceKind,
             driver: PI_PROVIDER,
             providerThreadId: state.providerThread.id,
             providerTurnId: turn.providerTurn.id,
@@ -1518,6 +1513,11 @@ export function makePiAdapterV2(
         } else {
           yield* emit({
             type: "turn.terminal",
+            providerTurn: settledProviderTurn,
+            evidenceKind:
+              turn.interrupted && evidenceKind === "provider_result"
+                ? "attributed_abort"
+                : evidenceKind,
             driver: PI_PROVIDER,
             providerThreadId: state.providerThread.id,
             providerTurnId: turn.providerTurn.id,
@@ -1917,7 +1917,7 @@ export function makePiAdapterV2(
             }
             if (probeFailed) {
               if (!settleAfterAgentActivity) {
-                if (state !== null) yield* finalizeTurn(state);
+                if (state !== null) yield* finalizeTurn(state, true, "local_failure");
                 return;
               }
               if (attempt < SETTLE_PROBE_MAX_ATTEMPTS) {
@@ -1968,7 +1968,11 @@ export function makePiAdapterV2(
                       message: "Pi process exited unexpectedly.",
                       class: "transport_error",
                     });
-                yield* finalizeTurn(state, false);
+                yield* finalizeTurn(
+                  state,
+                  false,
+                  interrupted ? "attributed_abort" : "local_failure",
+                );
               }
               if (unsolicitedActivityDetected) {
                 yield* updateProviderSession("error", PI_UNSOLICITED_ACTIVITY_ERROR);
@@ -2020,7 +2024,6 @@ export function makePiAdapterV2(
         const needsNewSession = resumeId == null && registrationAttempted;
         registrationAttempted = true;
         if (resumeId != null || needsNewSession) {
-          yield* ProviderAdapter.authorizeProviderNativeCreation(threadInput.nativeCreationExecution, PI_PROVIDER, cwd);
           lastNativeThreadId = resumeId ?? lastNativeThreadId;
           // Even a failed lifecycle operation can change Pi's native session.
           // Never leave the old app binding or model defaults usable afterward.
@@ -2127,16 +2130,12 @@ export function makePiAdapterV2(
         return providerThread;
       });
 
-      const applySelection = Effect.fnUntraced(function* (
-        modelSelection: ModelSelection,
-        nativeCreationExecution?: ProviderAdapter.ProviderAdapterV2OpenSessionInput["nativeCreationExecution"],
-      ) {
+      const applySelection = Effect.fnUntraced(function* (modelSelection: ModelSelection) {
         const thinking = getModelSelectionStringOptionValue(modelSelection, "thinking");
         if (modelSelection.model === PI_INHERIT_MODEL_SLUG) {
           // Returning to "Pi default" after an explicit pick has to replay the
           // captured baseline, otherwise Pi stays on the last model applied.
           if (appliedModel !== null && baselineModel !== null) {
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, PI_PROVIDER, cwd);
             const restoredModel = yield* request({ type: "set_model", ...baselineModel });
             contextWindow = rememberModelContextWindow(restoredModel);
             appliedModel = null;
@@ -2157,7 +2156,6 @@ export function makePiAdapterV2(
             baselineThinking !== null &&
             appliedThinking !== baselineThinking
           ) {
-            yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, PI_PROVIDER, cwd);
             yield* request({ type: "set_thinking_level", level: baselineThinking });
             appliedThinking = null;
           }
@@ -2168,7 +2166,6 @@ export function makePiAdapterV2(
               `Pi model '${modelSelection.model}' must use provider/model format`,
             );
           }
-          yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, PI_PROVIDER, cwd);
           const selectedModel = yield* request({
             type: "set_model",
             provider: parsed.provider,
@@ -2189,7 +2186,6 @@ export function makePiAdapterV2(
           thinking !== appliedThinking &&
           PI_THINKING_LEVELS.has(thinking)
         ) {
-          yield* ProviderAdapter.authorizeProviderNativeCreation(nativeCreationExecution, PI_PROVIDER, cwd);
           yield* request({ type: "set_thinking_level", level: thinking });
           appliedThinking = thinking;
         }
@@ -2233,52 +2229,6 @@ export function makePiAdapterV2(
       });
 
       const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
-        runtimeGeneration,
-        observeThreadRuntime: (binding) =>
-          Effect.gen(function* () {
-            const state = threadState;
-            if (
-              state === null ||
-              binding.instanceId !== options.instanceId ||
-              binding.providerSessionId !== input.providerSessionId ||
-              binding.runtimeGeneration !== runtimeGeneration ||
-              binding.providerThreadId !== state.providerThread.id ||
-              binding.threadId !== state.providerThread.appThreadId ||
-              binding.nativeThreadId !== state.providerThread.nativeThreadRef?.nativeId ||
-              stopRequested || unsolicitedActivityDetected ||
-              sessionEntity.status === "error" || sessionEntity.status === "stopped"
-            ) {
-              return { status: "unknown" as const, reason: "Pi runtime binding is not current." };
-            }
-            const data = yield* request({ type: "get_state" }, 2_000).pipe(
-              Effect.orElseSucceed(() => undefined),
-            );
-            const streaming = recordField(data, "isStreaming");
-            const compacting = recordField(data, "isCompacting");
-            const pending = recordNumber(data, "pendingMessageCount");
-            if (
-              threadState !== state || stopRequested || unsolicitedActivityDetected ||
-              ["error", "stopped"].includes(sessionEntity.status) ||
-              state.providerThread.id !== binding.providerThreadId ||
-              state.providerThread.appThreadId !== binding.threadId ||
-              state.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId ||
-              recordString(data, "sessionFile") !== binding.nativeThreadId ||
-              typeof streaming !== "boolean" || typeof compacting !== "boolean" ||
-              pending === undefined || !Number.isInteger(pending) || pending < 0
-            ) {
-              return { status: "unknown" as const, binding, reason: "Pi native activity probe is incomplete or stale." };
-            }
-            const status = streaming ? "working" as const : compacting || pending > 0 || pendingPrompts.size > 0
-              ? "busy" as const : "idle" as const;
-            const observedAt = DateTime.formatIso(yield* DateTime.now);
-            if (threadState !== state || stopRequested || unsolicitedActivityDetected ||
-              state.providerThread.id !== binding.providerThreadId ||
-              state.providerThread.appThreadId !== binding.threadId ||
-              state.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId) {
-              return { status: "unknown" as const, reason: "Pi runtime changed during observation." };
-            }
-            return { status, binding, observedAt };
-          }),
         instanceId: options.instanceId,
         driver: PI_PROVIDER,
         providerSessionId: input.providerSessionId,
@@ -2308,16 +2258,12 @@ export function makePiAdapterV2(
             ),
           ),
         resumeThread: (threadInput) =>
-          Effect.gen(function* () {
-            yield* (threadInput.beforeNativeResume?.(undefined) ?? Effect.void);
-            return yield* registerThread({
-              threadId:
-                threadInput.threadId ?? threadInput.providerThread.appThreadId ?? input.threadId,
-              modelSelection: threadInput.modelSelection ?? input.modelSelection,
-              runtimePolicy: threadInput.runtimePolicy ?? input.runtimePolicy,
-              existingProviderThread: threadInput.providerThread,
-              nativeCreationExecution: threadInput.nativeCreationExecution,
-            });
+          registerThread({
+            threadId:
+              threadInput.threadId ?? threadInput.providerThread.appThreadId ?? input.threadId,
+            modelSelection: threadInput.modelSelection ?? input.modelSelection,
+            runtimePolicy: threadInput.runtimePolicy ?? input.runtimePolicy,
+            existingProviderThread: threadInput.providerThread,
           }).pipe(
             Effect.mapError(
               (cause) =>
@@ -2342,7 +2288,6 @@ export function makePiAdapterV2(
             if (state === null) {
               return yield* protocolError("Pi session has no registered thread");
             }
-            yield* ProviderAdapter.authorizeProviderNativeCreation(turnInput.nativeCreationExecution, PI_PROVIDER, cwd);
             if (state.activeTurn !== null) {
               return yield* protocolError(
                 `Pi provider thread ${turnInput.providerThread.id} already has an active turn`,
@@ -2357,12 +2302,11 @@ export function makePiAdapterV2(
             // The orchestrator adopts a fork under its already-allocated row.
             // Future session updates must retain that authoritative identity.
             state.providerThread = turnInput.providerThread;
-            yield* applySelection(turnInput.modelSelection, turnInput.nativeCreationExecution);
+            yield* applySelection(turnInput.modelSelection);
             // Mirror the thread title into pi's session name so the session
-            // stays identifiable in pi's own /resume listing. Native naming
-            // failures are best effort; creation authority must still pass.
+            // stays identifiable in pi's own /resume listing. Best-effort:
+            // naming must never block a turn.
             if (turnInput.appThread.title !== appliedSessionName) {
-              yield* ProviderAdapter.authorizeProviderNativeCreation(turnInput.nativeCreationExecution, PI_PROVIDER, cwd);
               yield* request({
                 type: "set_session_name",
                 name: turnInput.appThread.title,
@@ -2430,7 +2374,6 @@ export function makePiAdapterV2(
             // project trust, login, and session-switch dialogs can be shown
             // and answered instead of deadlocking the caller.
             yield* Effect.gen(function* () {
-              yield* ProviderAdapter.authorizeProviderNativeCreation(turnInput.nativeCreationExecution, PI_PROVIDER, cwd);
               state.activeTurn = activeTurn;
               if (compactCommand !== null) {
                 yield* connection.send(compactRpcRecord(compactCommand));
@@ -2449,12 +2392,6 @@ export function makePiAdapterV2(
                   kind: "turn_start",
                 });
               }
-              const nativeThreadId = state.providerThread.nativeThreadRef?.nativeId;
-              if (nativeThreadId != null)
-                turnOwners.set(providerTurn.id, { runId: turnInput.runId, attemptId: turnInput.attemptId,
-                  providerTurnId: providerTurn.id, binding: { threadId: turnInput.threadId,
-                    providerThreadId: state.providerThread.id, providerSessionId: input.providerSessionId,
-                    instanceId: options.instanceId, runtimeGeneration, nativeThreadId } });
               yield* emit({
                 type: "provider_turn.updated",
                 driver: PI_PROVIDER,
@@ -2911,8 +2848,8 @@ export function makePiAdapterV2(
             ),
           ),
       };
-      return ProviderAdapter.withProviderNativeEffects(runtime);
-    }, (effect, input) => ProviderAdapter.withProviderNativeEffect(effect, input.nativeOperation)),
+      return runtime;
+    }),
   });
 }
 

@@ -1,7 +1,17 @@
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type ModelSelection,
+  type ServerProviderModel,
+  type ServerSettings as ServerSettingsValue,
+} from "@t3tools/contracts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import type { ProviderAdapterV2TurnInput } from "./ProviderAdapter.ts";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
+  ContextHandoffId,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -30,8 +40,9 @@ import * as ProviderAuthService from "../provider/Services/ProviderAuthService.t
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
+import { ProviderAdapterEventStreamError, ProviderRuntimeBindingError } from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
@@ -129,6 +140,8 @@ it("does not commit running state when inherited background routing cannot be re
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
+        Layer.mock(ServerSettings.ServerSettingsService)({}),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
       ),
     ),
@@ -154,6 +167,15 @@ it("does not commit running state when inherited background routing cannot be re
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly keepWarm?: boolean;
+  readonly liveKeepWarmSession?: boolean;
+  readonly effortProof?: {
+    readonly getSettings: Effect.Effect<ServerSettingsValue>;
+    readonly selection?: ModelSelection;
+    readonly beforeDispatch?: Effect.Effect<void>;
+    readonly duringHandoff?: Effect.Effect<void>;
+    readonly models: ReadonlyArray<ServerProviderModel>;
+  };
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -165,9 +187,12 @@ function makeLocalCommandHarness(input: {
    * fallback succeeds, then reading history for its handoff fails.
    */
   readonly historyReadFailureAfterFallback?: unknown;
+  readonly unknownResumeBinding?: boolean;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
+  /** Loads the thread and starts the run, then fails every later state read. */
+  readonly failReadsAfterRunning?: boolean;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -180,13 +205,15 @@ function makeLocalCommandHarness(input: {
   const oldInstanceId = ProviderInstanceId.make("antigravity-personal");
   const newInstanceId = ProviderInstanceId.make("codex-personal");
   const checkpointScopeId = CheckpointScopeId.make("scope-native-account-command");
-  const messageId = MessageId.make("message-native-account-command");
+  const messageId = MessageId.make(
+    input.keepWarm ? "work-mode:thread:generation" : "message-native-account-command",
+  );
   const run: OrchestrationV2ThreadProjection["runs"][number] = {
     id: runId,
     threadId,
     ordinal: 2,
     providerInstanceId: newInstanceId,
-    modelSelection: { instanceId: newInstanceId, model: "gpt-5.4" },
+    modelSelection: input.effortProof?.selection ?? { instanceId: newInstanceId, model: "gpt-5.4" },
     providerThreadId,
     userMessageId: messageId,
     rootNodeId,
@@ -233,6 +260,7 @@ function makeLocalCommandHarness(input: {
     thread: {
       id: threadId,
       activeProviderThreadId: providerThreadId,
+      projectId: ProjectId.make("effort-project"),
       branch: null,
       worktreePath: null,
     } as OrchestrationV2ThreadProjection["thread"],
@@ -310,7 +338,12 @@ function makeLocalCommandHarness(input: {
         id: MessageId.make(`previous-message-${index}`),
         text,
       })),
-      message,
+      {
+        ...message,
+        ...(input.keepWarm
+          ? { createdBy: "system" as const, creationSource: "server" as const }
+          : {}),
+      },
     ],
     checkpointScopes: [
       {
@@ -329,7 +362,26 @@ function makeLocalCommandHarness(input: {
     ],
     providerSessions: [],
     providerTurns: [],
-    contextHandoffs: [],
+    contextHandoffs:
+      input.effortProof?.duringHandoff === undefined
+        ? []
+        : [
+            {
+              id: ContextHandoffId.make("effort-handoff"),
+              threadId,
+              targetRunId: runId,
+              fromProviderThreadIds: [oldProviderThreadId],
+              toProviderThreadId: providerThreadId,
+              coveredRunOrdinals: { from: 1, to: 1 },
+              strategy: "full_thread_summary",
+              status: "ready",
+              summaryMessageId: null,
+              summaryText: "Prior synthetic account context",
+              createdByProviderInstanceId: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
     contextTransfers: [],
     turnItems: [],
     visibleTurnItems: [],
@@ -339,7 +391,7 @@ function makeLocalCommandHarness(input: {
     checkpoints: [],
     updatedAt: now,
   };
-  if ("historyReadFailureAfterFallback" in input) {
+  if ("historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true) {
     const nativeThreadRef = {
       driver: providerThread.driver,
       nativeId: "native-resume-thread",
@@ -382,38 +434,101 @@ function makeLocalCommandHarness(input: {
     driver: providerThread.driver,
     resumeThread: () =>
       Effect.fail(
-        new ProviderAdapterEventStreamError({
-          driver: providerThread.driver,
-          providerSessionId,
-          cause: "native thread is gone",
-        }),
+        input.unknownResumeBinding === true
+          ? new ProviderRuntimeBindingError({
+              driver: providerThread.driver,
+              detail: "Native launch succeeded but its binding is unknown.",
+            })
+          : new ProviderAdapterEventStreamError({
+              driver: providerThread.driver,
+              providerSessionId,
+              cause: "native thread is gone",
+            }),
       ),
-    ensureThread: () => Effect.succeed(providerThread),
+    ensureThread: vi.fn(() => Effect.succeed(providerThread)),
   };
-  const open = vi.fn(() =>
-    input.interruptOpen === true
-      ? Effect.interrupt
-      : "historyReadFailureAfterFallback" in input
-        ? Effect.succeed(resumeFallbackSession as never)
-        : "ensureThreadFailure" in input
-          ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
-          : "openFailure" in input
-            ? Effect.sync(() => {
-                if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-              }).pipe(
-                Effect.andThen(
-                  Effect.fail(
-                    new ProviderSessionManager.ProviderSessionOpenError({
-                      instanceId: newInstanceId,
-                      providerSessionId,
-                      cause: input.openFailure,
-                    }),
+  const dispatched: Array<ProviderAdapterV2TurnInput> = [];
+  const open = vi.fn(
+    (
+      _openInput: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["open"]>[0],
+    ) =>
+      input.interruptOpen === true
+        ? Effect.interrupt
+        : "historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true
+          ? Effect.succeed(resumeFallbackSession as never)
+          : "ensureThreadFailure" in input
+            ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
+            : "openFailure" in input
+              ? Effect.sync(() => {
+                  if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new ProviderSessionManager.ProviderSessionOpenError({
+                        instanceId: newInstanceId,
+                        providerSessionId,
+                        cause: input.openFailure,
+                      }),
+                    ),
                   ),
-                ),
-              )
-            : Effect.die("A local command must not open a native session."),
+                )
+              : input.failReadsAfterRunning === true || input.effortProof !== undefined
+                ? Effect.succeed({
+                    driver: providerThread.driver,
+                    providerSession: {
+                      id: providerSessionId,
+                      driver: providerThread.driver,
+                      providerInstanceId: newInstanceId,
+                      status: "ready",
+                      cwd: "/tmp/native-account-command",
+                      model: null,
+                      capabilities: CodexProviderCapabilitiesV2,
+                      createdAt: now,
+                      updatedAt: now,
+                      lastError: null,
+                    },
+                    ensureThread: () => Effect.succeed(providerThread),
+                    startTurn: (value: ProviderAdapterV2TurnInput) =>
+                      Effect.sync(() => {
+                        dispatched.push(value);
+                      }),
+                  } as never)
+                : Effect.die("A local command must not open a native session."),
   );
-  const startRootRun = vi.fn(() => Effect.die("A local command must not start a native turn."));
+  const startRootRun = vi.fn<
+    (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
+  >((startInput) =>
+    input.effortProof !== undefined
+      ? Effect.gen(function* () {
+          yield* input.effortProof!.beforeDispatch ?? Effect.void;
+          yield* startInput.session
+            .startTurn({
+              appThread: startInput.appThread,
+              threadId,
+              runId,
+              runOrdinal: startInput.run.ordinal,
+              providerTurnOrdinal: startInput.providerTurnOrdinal,
+              attemptId,
+              rootNodeId,
+              providerThread: startInput.providerThread,
+              message: startInput.message,
+              modelSelection: startInput.modelSelection,
+              runtimePolicy: startInput.runtimePolicy,
+            })
+            .pipe(Effect.orDie);
+        })
+      : input.failReadsAfterRunning === true
+        ? Effect.void
+        : Effect.die("A local command must not start a native turn."),
+  );
+  const failReadIfRunning = Effect.suspend(() =>
+    input.failReadsAfterRunning === true &&
+    projection.runs.find((candidate) => candidate.id === runId)?.status === "running"
+      ? Effect.fail(
+          new ProjectionStore.ProjectionStoreReadError({ threadId, cause: "database unavailable" }),
+        )
+      : Effect.void,
+  );
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
       ? Effect.succeed(true)
@@ -455,11 +570,14 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+        Layer.mock(EventSink.EventSinkV2)({
+          writeIfRunCurrent,
+          write: () => (input.effortProof?.duringHandoff ?? Effect.void).pipe(Effect.as([])),
+        }),
         IdAllocator.layer,
         FileSystem.layerNoop({}),
         Layer.mock(GitWorkflow.GitWorkflowService)({}),
-        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getTurnStartContext: () =>
             Effect.succeed({
@@ -471,7 +589,7 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getRuntimeRecoveryProjection: () =>
-            Effect.succeed({
+            Effect.as(failReadIfRunning, {
               ...projection,
               hasConversation: projection.messages.some(
                 (m) =>
@@ -480,16 +598,44 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getTurnStartHistory: () =>
-            Effect.fail(
-              new ProjectionStore.ProjectionStoreReadError({
-                threadId,
-                cause: input.historyReadFailureAfterFallback,
-              }),
+            input.effortProof === undefined
+              ? Effect.fail(
+                  new ProjectionStore.ProjectionStoreReadError({
+                    threadId,
+                    cause: input.historyReadFailureAfterFallback,
+                  }),
+                )
+              : Effect.succeed([]),
+        }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          open,
+          get: () =>
+            Effect.succeed(
+              input.liveKeepWarmSession
+                ? Option.some(resumeFallbackSession as never)
+                : Option.none(),
             ),
         }),
-        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
+
+        Layer.mock(ServerSettings.ServerSettingsService)({
+          getSettings: input.effortProof?.getSettings ?? Effect.succeed(DEFAULT_SERVER_SETTINGS),
+        }),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: (instanceId) =>
+            Effect.succeed({
+              instanceId,
+              driverKind: ProviderDriverKind.make("codex"),
+              snapshot: {
+                getSnapshot: Effect.succeed({
+                  instanceId,
+                  driver: ProviderDriverKind.make("codex"),
+                  models: input.effortProof?.models ?? [],
+                }),
+              },
+            } as never),
+        }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: () => Effect.succeed({} as never),
         }),
@@ -497,7 +643,11 @@ function makeLocalCommandHarness(input: {
     ),
   );
   return {
+    resumeFallbackSession,
+    dispatched,
+    interruptRun,
     open,
+    fallbackEnsure: resumeFallbackSession.ensureThread,
     writeIfRunCurrent,
     startRootRun,
     tryHandlePromptCommand,
@@ -703,6 +853,25 @@ effectIt.effect(
     }),
 );
 
+effectIt.effect("does not mistake a failed state read for a superseded run", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue", failReadsAfterRunning: true });
+
+    yield* harness.start;
+
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    const controls = harness.startRootRun.mock.calls[0]?.[0];
+    expect(controls).toBeDefined();
+    if (controls === undefined) return;
+    // "false" would skip the provider turn or the terminal write and leave the
+    // run active. A read failure must reach the caller instead.
+    const startCheck = yield* Effect.flip(controls.shouldStartProviderTurn!());
+    const finalizeCheck = yield* Effect.flip(controls.shouldFinalizeRun!());
+    expect(startCheck._tag).toBe("ProjectionStoreReadError");
+    expect(finalizeCheck._tag).toBe("ProjectionStoreReadError");
+  }),
+);
+
 effectIt.effect("does not overwrite a run interrupted while its thread loads", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
@@ -802,3 +971,188 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+effectIt.effect("keep-warm does not reopen an expired provider session", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "@@@@@", keepWarm: true });
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
+
+effectIt.effect("keep-warm does not replace a native conversation when resume fails", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "@@@@@",
+      keepWarm: true,
+      liveKeepWarmSession: true,
+      historyReadFailureAfterFallback: new Error("must not reach fallback history"),
+    });
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.resumeFallbackSession.ensureThread).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
+effectIt.effect(
+  "fails visibly without starting a fresh native conversation after an unknown resume binding",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue once",
+        unknownResumeBinding: true,
+      });
+      yield* harness.start;
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      const failure = harness.events.find(
+        (event) => event.type === "run.updated" && event.payload.status === "failed",
+      );
+      expect(failure).toBeDefined();
+    }),
+);
+
+const effortModels: ReadonlyArray<ServerProviderModel> = [
+  {
+    slug: "gpt-5.4",
+    name: "GPT",
+    isCustom: false,
+    capabilities: {
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          options: ["low", "medium", "high", "xhigh"].map((id) => ({ id, label: id })),
+          currentValue: "medium",
+        },
+      ],
+    },
+  },
+];
+
+effectIt.effect.each([
+  { model: "gpt-5.4", effort: "high", explicit: undefined, expected: "high" },
+  { model: "gpt-5.4", effort: "xhigh", explicit: "low", expected: undefined },
+  { model: "another-model", effort: "high", explicit: undefined, expected: undefined },
+  { model: "gpt-5.4", effort: "unsupported", explicit: undefined, expected: undefined },
+])("resolves dispatch-only defaults without replacing the persisted selection: %j", (row) =>
+  Effect.gen(function* () {
+    const selection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex-personal"),
+      model: "gpt-5.4",
+      ...(row.explicit === undefined
+        ? {}
+        : { options: [{ id: "reasoningEffort", value: row.explicit }] }),
+    };
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      effortProof: {
+        selection,
+        models: effortModels,
+        getSettings: Effect.succeed({
+          ...DEFAULT_SERVER_SETTINGS,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex-work"),
+            model: row.model,
+            options: [{ id: "reasoningEffort", value: row.effort }],
+          },
+        }),
+      },
+    });
+    yield* harness.start;
+    expect(harness.dispatched).toHaveLength(1);
+    expect(harness.dispatched[0]?.configuredReasoningEffort).toBe(row.expected);
+    expect(harness.dispatched[0]?.modelSelection).toEqual(selection);
+    expect(harness.open.mock.calls[0]?.[0].modelSelection).toEqual(selection);
+    expect(harness.projection().runs.at(-1)?.modelSelection).toEqual(selection);
+  }),
+);
+
+effectIt.effect("rechecks the attempt after reading current settings", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      effortProof: {
+        models: effortModels,
+        getSettings: Effect.sync(() => {
+          harness.interruptRun();
+          return DEFAULT_SERVER_SETTINGS;
+        }),
+      },
+    });
+    yield* harness.start;
+    expect(harness.dispatched).toHaveLength(0);
+    expect(harness.projection().runs.at(-1)?.status).toBe("interrupted");
+  }),
+);
+
+effectIt.effect("reads changed defaults after the actual handoff delivery awaits", () =>
+  Effect.gen(function* () {
+    let effort = "low";
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      effortProof: {
+        models: effortModels,
+        duringHandoff: Effect.gen(function* () {
+          yield* Effect.yieldNow;
+          effort = "xhigh";
+        }),
+        getSettings: Effect.sync(() => ({
+          ...DEFAULT_SERVER_SETTINGS,
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex-work"),
+            model: "gpt-5.4",
+            options: [{ id: "reasoningEffort", value: effort }],
+          },
+        })),
+      },
+    });
+    yield* harness.start;
+    expect(harness.dispatched[0]?.configuredReasoningEffort).toBe("xhigh");
+    expect(harness.dispatched[0]?.modelSelection.options).toBeUndefined();
+  }),
+);
+
+effectIt.effect(
+  "uses the project effort default before the environment default at actual delivery",
+  () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("codex-personal");
+      const model = "gpt-5.4";
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        effortProof: {
+          models: effortModels,
+          getSettings: Effect.succeed({
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [instanceId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+            },
+            defaultModelSelection: {
+              instanceId,
+              model,
+              options: [{ id: "reasoningEffort", value: "low" }],
+            },
+            projectSettingsOverrides: {
+              "effort-project": {
+                defaultModelSelection: {
+                  instanceId,
+                  model,
+                  options: [{ id: "reasoningEffort", value: "high" }],
+                },
+              },
+            },
+          }),
+        },
+      });
+      yield* harness.start;
+      expect(harness.dispatched[0]?.configuredReasoningEffort).toBe("high");
+      expect(harness.open.mock.calls[0]?.[0].modelSelection.options).toBeUndefined();
+      expect(harness.projection().runs.at(-1)?.modelSelection.options).toBeUndefined();
+    }),
+);

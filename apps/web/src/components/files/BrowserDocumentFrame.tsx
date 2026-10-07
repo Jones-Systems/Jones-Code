@@ -10,6 +10,7 @@ export function BrowserDocumentFrame(props: {
   readonly src: string;
   readonly title: string;
   readonly pdf: boolean;
+  readonly onRetry?: () => void | Promise<void>;
 }) {
   return props.pdf ? (
     <Suspense
@@ -19,7 +20,7 @@ export function BrowserDocumentFrame(props: {
         </div>
       }
     >
-      <PdfPreview key={props.src} src={props.src} title={props.title} />
+      <PdfPreview key={props.src} src={props.src} title={props.title} onRetry={props.onRetry} />
     </Suspense>
   ) : (
     <iframe

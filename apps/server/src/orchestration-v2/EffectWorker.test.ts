@@ -1,3 +1,10 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ResourceCleanupService from "./ResourceCleanupService.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import * as ServerConfig from "../config.ts";
+import { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
+import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
+import * as Schema from "effect/Schema";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -79,6 +86,8 @@ function restartEffect(
 function makeExecutorLayer(input: {
   readonly events: Ref.Ref<ReadonlyArray<string>>;
   readonly failFirstStart?: Ref.Ref<boolean>;
+  readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
+  readonly continueAfterRestart?: boolean;
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const dependencies = Layer.mergeAll(
@@ -98,6 +107,7 @@ function makeExecutorLayer(input: {
     Layer.succeed(
       ProviderSessionManager.ProviderSessionManagerV2,
       ProviderSessionManager.ProviderSessionManagerV2.of({
+        isMcpCallerAttached: () => Effect.succeed(false),
         shutdown: Effect.void,
         open: () => Effect.die("unused open"),
         get: () => Effect.succeed(Option.none()),
@@ -148,12 +158,114 @@ function makeExecutorLayer(input: {
     Layer.provide(
       Layer.mergeAll(
         dependencies,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-        ServerSettings.layerTest(),
+        Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
+        ServerSettings.layerTest(
+          input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},
+        ),
       ),
     ),
   );
 }
+
+function ownedCleanupBinding() {
+  const createCommandId = legacyBootstrapCreateCommandId(
+    threadId,
+    CommandId.make("owned-cleanup:C"),
+  );
+  return Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+    version: 1,
+    threadId,
+    runId,
+    terminalId: "legacy-owned-setup",
+    generation: "owned-cleanup:terminal-generation",
+    preparationGeneration: "owned-cleanup:birth-generation",
+    claimEventId: "owned-cleanup:claim",
+    claimSequence: 1,
+    claimReceiptSequence: 1,
+    birthEventId: "owned-cleanup:birth",
+    birthSequence: 2,
+    birthReceiptSequence: 2,
+    policy: {
+      version: 1,
+      createCommandId,
+      birthCommandId: `${createCommandId}:initial-message`,
+      releaseCommandId: "owned-cleanup:C",
+      projectId: "owned-cleanup:project",
+      threadId,
+      messageId: "owned-cleanup:M",
+      runId,
+      payloadHash: "owned-cleanup:hash",
+      ownsNewThread: true,
+    },
+  });
+}
+it.effect(
+  "routes legacy owned terminal cleanup unchanged through the actual executor and cleanup owner",
+  () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        input: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[0];
+        binding: LegacyOwnedTerminalControl | undefined;
+      }> = [];
+      const binding = ownedCleanupBinding();
+      const terminals = Layer.mock(TerminalManager.TerminalManager)({
+        close: (
+          input,
+          options: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[1] = {},
+        ) =>
+          Effect.sync(() => {
+            calls.push({ input, binding: options?.legacyOwnedControl });
+          }),
+      });
+      const cleanup = ResourceCleanupService.live.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            terminals,
+            ServerConfig.layerTest(process.cwd(), { prefix: "legacy-owned-cleanup-route-" }),
+          ),
+        ),
+      );
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layer = makeExecutorLayer({ events }).pipe(Layer.provide(cleanup));
+      const now = yield* DateTime.now;
+      const template = restartEffect(now, { type: "detach" });
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute({
+          ...template,
+          request: { type: "terminal.cleanup", legacyOwnedControl: binding },
+        });
+        assert.deepEqual(calls, [{ input: { threadId, deleteHistory: true }, binding }]);
+        yield* executor.execute({ ...template, request: { type: "terminal.cleanup" } });
+        assert.deepEqual(calls[1], {
+          input: { threadId, deleteHistory: true },
+          binding: undefined,
+        });
+        assert.deepEqual(yield* Ref.get(events), []);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+it.effect("bound legacy terminal cleanup refuses a default no-op owner", () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = makeExecutorLayer({ events });
+    const template = restartEffect(yield* DateTime.now, { type: "detach" });
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const bound = yield* executor
+        .execute({
+          ...template,
+          request: { type: "terminal.cleanup", legacyOwnedControl: ownedCleanupBinding() },
+        })
+        .pipe(Effect.result);
+      assert.equal(bound._tag, "Failure");
+      const native = yield* executor
+        .execute({ ...template, request: { type: "terminal.cleanup" } })
+        .pipe(Effect.result);
+      assert.equal(native._tag, "Success");
+    }).pipe(Effect.provide(layer));
+  }),
+);
 
 it("does not retry pure interrupt races where the turn is already gone", () => {
   assert.isTrue(
@@ -751,5 +863,48 @@ it.effect("safely retries after replacement cleanup succeeds and start fails", (
       "detach",
       "start",
     ]);
+  }),
+);
+
+it.effect("settles a delegated child once its restart continuation fails for good", () =>
+  Effect.gen(function* () {
+    const timestamp = DateTime.formatIso(yield* DateTime.now);
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const recovered = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+    const layer = makeExecutorLayer({
+      events,
+      continueAfterRestart: true,
+      threads: {
+        getThreadRecords: () => Effect.fail(new Error("provider instance removed") as never),
+        recoverDelegatedTask: (childThreadId) =>
+          Ref.update(recovered, (ids) => [...ids, childThreadId]),
+      },
+    });
+    const effect: EffectOutbox.OrchestrationEffectV2 = {
+      id: `effect:restart-continuation:${runId}`,
+      commandId: CommandId.make("command:restart-continuation-failure"),
+      threadId,
+      request: { type: "provider-runtime.continue", sourceRunId: runId },
+      status: "running",
+      attemptCount: 1,
+      availableAt: timestamp,
+      leaseOwner: "test-worker",
+      leaseExpiresAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      completedAt: null,
+      lastError: null,
+    };
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(executor.execute(effect, { willRetry: true }))),
+      );
+      assert.deepEqual(yield* Ref.get(recovered), []);
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(executor.execute(effect, { willRetry: false }))),
+      );
+      assert.deepEqual(yield* Ref.get(recovered), [threadId]);
+    }).pipe(Effect.provide(layer));
   }),
 );

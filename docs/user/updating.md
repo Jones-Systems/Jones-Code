@@ -21,21 +21,6 @@ interrupted, and threads without saved provider resume state need a new message.
 If you previously enabled continuation for updates, enable this setting once
 to allow recovery without a connected client.
 
-## Jones main builds
-
-Jones preview installations check periodically for fresh, qualified builds from
-Jones Code's main branch. In **Settings → Connections**, use the controls for
-the machine you want to update. On mobile, open that environment in Settings.
-**Download** verifies and stages the selected build while the current app or
-server continues running. **Install** activates that fixed downloaded build and
-restarts its host. A newer check does not change the build selected for Install.
-
-These builds come from GitHub Actions artifacts. If a build is still running,
-has expired, or GitHub access is unavailable, the controls explain the current
-state. A host that reports a required launcher bootstrap must be enrolled locally
-before installation. The Mac headless server uses the qualified Mac build;
-it preserves its own server home and does not use a desktop client profile.
-
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry
 every kind of runtime history forward. Read [Threads from older T3 Code versions](./thread-migration.md)
 before continuing an important older thread.

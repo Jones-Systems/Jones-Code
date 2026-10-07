@@ -1,3 +1,4 @@
+import { resolveComposerPickerModelSelection } from "./ChatView.logic";
 import { findRecordedWorktreeSetup, resolveVisibleWorktreeSetup } from "./ChatView.logic";
 import {
   recallCheckoutIsRepo,
@@ -627,6 +628,30 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         threadError: null,
       }),
     ).toBe(true);
+  });
+
+  it("holds a first send while the thread shell still reports a preparing run", () => {
+    // The draft had no run. The server thread's shell shows the new run before
+    // the detail projection behind `phase` loads.
+    const localDispatch = createLocalDispatchSnapshot(makeThread());
+    const preparingRun = {
+      ...completedTurn,
+      status: "preparing" as const,
+      startedAt: null,
+      completedAt: null,
+    };
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "disconnected",
+        latestRun: preparingRun,
+        runtime: { ...readySession, status: "preparing", activeRunId: preparingRun.runId },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(false);
   });
 
   it("waits for the matching running turn before acknowledging", () => {
@@ -2135,6 +2160,36 @@ describe("waitForRevertedMessage", () => {
     await vi.advanceTimersByTimeAsync(50);
     await settled;
     vi.useRealTimers();
+  });
+});
+
+describe("composer picker effort inheritance", () => {
+  const instanceId = ProviderInstanceId.make("codex-work");
+  const rememberedOptions = [
+    { id: "reasoningEffort", value: "high" },
+    { id: "serviceTier", value: "fast" },
+  ];
+  it("drops historical effort on a model switch and preserves other remembered options", () => {
+    expect(
+      resolveComposerPickerModelSelection({
+        instanceId,
+        model: "gpt-5.4",
+        rememberedOptions,
+        currentSelection: { instanceId, model: "gpt-6", options: rememberedOptions },
+      }).options,
+    ).toEqual([{ id: "serviceTier", value: "fast" }]);
+  });
+  it("keeps the same model's current explicit effort and leaves inherited effort absent", () => {
+    for (const options of [undefined, [{ id: "reasoningEffort", value: "low" }]]) {
+      expect(
+        resolveComposerPickerModelSelection({
+          instanceId,
+          model: "gpt-5.4",
+          rememberedOptions,
+          currentSelection: { instanceId, model: "gpt-5.4", ...(options ? { options } : {}) },
+        }).options,
+      ).toEqual([{ id: "serviceTier", value: "fast" }, ...(options ?? [])]);
+    }
   });
 });
 

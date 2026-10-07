@@ -10,14 +10,12 @@ import {
   createAttachmentId,
   createDeterministicAttachmentId,
   createPendingAttachmentId,
-  parseAttachmentIdFromRelativePath,
   parseAttachmentUuid,
   parseAttachmentFileExtension,
   planAttachmentClaim,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPathById,
   sweepStalePendingAttachments,
-  toSafeThreadAttachmentSegment,
 } from "./attachmentStore.ts";
 
 describe("attachmentStore", () => {
@@ -63,40 +61,6 @@ describe("attachmentStore", () => {
 
     expect(parseThreadSegmentFromAttachmentId(fooId)).toBe("foo");
     expect(parseThreadSegmentFromAttachmentId(fooBarId)).toBe("foo-bar");
-  });
-
-  it("parses stored attachment filenames for exact namespace matching", () => {
-    const uuid = "00000000-0000-4000-8000-000000000001";
-    for (const [filename, attachmentId, segment] of [
-      [`foo-${uuid}.png`, `foo-${uuid}`, "foo"],
-      [`foo-bar-${uuid}.jpeg`, `foo-bar-${uuid}`, "foo-bar"],
-      [`foo-${uuid}-pdf.pdf`, `foo-${uuid}-pdf`, "foo"],
-      [`FOO-BAR-${uuid}-ZIP.zip`, `FOO-BAR-${uuid}-ZIP`, "foo-bar"],
-    ] as const) {
-      const parsed = parseAttachmentIdFromRelativePath(filename);
-      expect(parsed).toBe(attachmentId);
-      expect(parsed && parseThreadSegmentFromAttachmentId(parsed)).toBe(segment);
-    }
-    expect(parseThreadSegmentFromAttachmentId(parseAttachmentIdFromRelativePath(`foo-bar-${uuid}.png`)!))
-      .not.toBe(toSafeThreadAttachmentSegment("foo"));
-  });
-
-  it("rejects unsafe filename paths and empty thread namespaces during namespace parsing", () => {
-    const uuid = "00000000-0000-4000-8000-000000000001";
-    const attachmentId = `foo-${uuid}`;
-    for (const filename of [
-      `../${attachmentId}.png`, `nested/${attachmentId}.png`, `nested\\${attachmentId}.png`,
-      `${attachmentId}.png.part`, `${attachmentId}\0.png`, attachmentId, ".png", "",
-    ]) {
-      expect(parseAttachmentIdFromRelativePath(filename)).toBeNull();
-    }
-    const malformedId = parseAttachmentIdFromRelativePath("foo-not-a-uuid.png");
-    expect(malformedId).toBe("foo-not-a-uuid");
-    expect(parseThreadSegmentFromAttachmentId(malformedId!)).toBeNull();
-    expect(toSafeThreadAttachmentSegment(" / . % __ --- ")).toBeNull();
-    expect(toSafeThreadAttachmentSegment("pending")).toBe("_pending");
-    expect(parseThreadSegmentFromAttachmentId(parseAttachmentIdFromRelativePath(`pending-${uuid}.png`)!))
-      .toBe("pending");
   });
 
   it("normalizes created thread segments to lowercase", () => {

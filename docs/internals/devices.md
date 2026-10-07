@@ -1,9 +1,8 @@
 # Devices
 
 The environment server owns simulators and emulators the way it owns
-terminals: discovery, lifecycle, and agent access remain environment-owned.
-Clients use the environment proxy by default; a configured desktop can take
-a separately authenticated direct media path to an SSH device host. This is what makes the
+terminals: discovery, streaming, and agent access all run there, and every
+client reaches them through the environment connection. This is what makes the
 Device panel work over Tailscale and T3 Connect, including when an SSH host runs the devices.
 
 ## Two external tools, one seam
@@ -28,7 +27,7 @@ also carries the host id; device ids alone are not unique across hosts.
 
 serve-sim has a shell-exec route whose token is readable from its own
 unauthenticated `/api`, and serve-emu's action routes have no auth at all. The
-hub binds loopback. The default route is the
+hub binds loopback and the only way in is the
 [proxy](../../apps/server/src/device/DeviceHubProxy.ts), which allowlists the
 stream, config, and screenshot routes and authenticates every request as an
 environment session. `<img>` and `WebSocket` cannot carry headers, so the proxy
@@ -61,7 +60,7 @@ a shim directory to the provider's PATH. The CLI installs on the environment
 server even when that server cannot run simulators. Hosts start on demand.
 
 That environment is fixed when the provider subprocess spawns, so
-[`prepareMcpSession`](../../apps/server/src/provider/Layers/ProviderService.ts)
+[`prepareMcpSession`](../../apps/server/src/orchestration-v2/ProviderSessionManager.ts)
 starts agent-device only when device support and agent access have both been
 enabled, the session has the `device` capability, and the machine can run at
 least one platform. Starting it later from `device_open` would leave the
@@ -85,26 +84,3 @@ Simulators encode H.264 High 5.1. Hardware decoders on some machines and all
 headless browsers reject that profile, and WebCodecs is secure-context only, so
 the viewer probes `isConfigSupported` and falls back to the MJPEG endpoint on
 iOS. Android has no MJPEG; there the panel reports that it cannot decode.
-
-## Direct desktop media
-
-A configured `directSshTarget` enables a separate loopback gateway on the
-SSH device host. The desktop opens its own scoped SSH forward to this gateway,
-never to the raw Hub. That transport does not provision a T3 environment or
-change the desktop client’s selected environment.
-
-A media grant binds the authenticated VPS session, selected host/device,
-gateway generation and client origin. The gateway uses the shared proxy
-route/method/scope policy, checks current VPS authorization through an SSH
-reverse loopback channel to a generation-owned validation-only listener before
-admitting requests, and revalidates live connections. That listener exposes no
-general environment API. General environment credentials and signing secrets stay on the
-VPS. Hub restart or reconnect replaces the gateway binding; stale generations
-are rejected. The route omits broad inventory, shell, dashboard and WebRTC
-access.
-
-The stream route owns its tunnel and in-flight gestures. A direct failure
-retires the old generation without replaying input and reconnects through the
-authenticated environment proxy. Older bridge versions, web and mobile keep
-the proxy route. Discovery, device actions, tools and agent access stay with
-the environment server.

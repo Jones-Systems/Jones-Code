@@ -1,62 +1,5 @@
-import { CommandId, type ContextMenuItem, type ScopedThreadRef, type ThreadId, type OrchestrationV2ThreadRuntimeAttachmentResult, type OrchestrationV2CurrentThreadRuntimeTarget, type OrchestrationV2StopCurrentThreadRuntimeInput, type OrchestrationV2StopCurrentThreadRuntimeResult } from "@t3tools/contracts";
+import type { OrchestrationV2ProviderSession, ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { captureCurrentThreadRuntimeStopTarget, resolveCurrentThreadRuntimeStop } from "@t3tools/client-runtime/state/thread-continuation";
-
-export function currentRuntimeStopMenuTarget(result: OrchestrationV2ThreadRuntimeAttachmentResult | null, threadId: ThreadId): OrchestrationV2CurrentThreadRuntimeTarget | null {
-  return result?.stopCapability?.version === 2 ? captureCurrentThreadRuntimeStopTarget(result, threadId) : null;
-}
-
-export function createCurrentRuntimeStopController(options: {
-  readonly read: (threadRef: ScopedThreadRef) => OrchestrationV2StopCurrentThreadRuntimeInput | null;
-  readonly reserve: (threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => void;
-  readonly clear: (threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => void;
-  readonly stop: (threadRef: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => Promise<OrchestrationV2StopCurrentThreadRuntimeResult>;
-  readonly observe: (threadRef: ScopedThreadRef, input: Pick<OrchestrationV2StopCurrentThreadRuntimeInput, "threadId" | "commandId">) => Promise<OrchestrationV2StopCurrentThreadRuntimeResult>;
-}) {
-  const inFlight = new Map<string, Promise<ReturnType<typeof resolveCurrentThreadRuntimeStop>>>();
-  const unsent = new Map<string, OrchestrationV2StopCurrentThreadRuntimeInput>();
-  return (threadRef: ScopedThreadRef, target: OrchestrationV2CurrentThreadRuntimeTarget) => {
-    const key = scopedThreadKey(threadRef);
-    const pending = inFlight.get(key);
-    if (pending) return pending;
-    const request = Promise.resolve().then(async () => {
-      const saved = options.read(threadRef);
-      const retrySave = unsent.get(key);
-      const knownUnsent = retrySave !== undefined && (saved === null || saved.commandId === retrySave.commandId);
-      const input = knownUnsent ? retrySave : saved ?? { commandId: CommandId.make(crypto.randomUUID()), threadId: threadRef.threadId, target };
-      if (input.threadId !== threadRef.threadId || input.target.binding.threadId !== threadRef.threadId) {
-        return { status: "unknown" as const, commandAccepted: false, queueFenceInstalled: false, reason: "The saved stop belongs to another thread." };
-      }
-      if (saved === null || knownUnsent) {
-        try {
-          options.reserve(threadRef, input);
-        } catch (error) {
-          // Only this live pre-RPC failure permits an explicit save retry of the same ID.
-          unsent.set(key, input);
-          throw error;
-        }
-      }
-      unsent.delete(key);
-      let result;
-      try {
-        result = saved === null || knownUnsent
-          ? await options.stop(threadRef, input)
-          : await options.observe(threadRef, { threadId: input.threadId, commandId: input.commandId });
-      } catch {
-        return { status: "unknown" as const, commandAccepted: false, queueFenceInstalled: false, reason: "The stop response is unavailable. Check the same operation's status." };
-      }
-      const outcome = resolveCurrentThreadRuntimeStop(result, input);
-      if (outcome.status === "stopped" || outcome.status === "rejected") {
-        try { options.clear(threadRef, input); }
-        catch { return { ...outcome, reason: "The stop result is confirmed, but its saved correlation could not be cleared." }; }
-      }
-      return outcome;
-    }).finally(() => { inFlight.delete(key); });
-    inFlight.set(key, request);
-    return request;
-  };
-}
 
 /**
  * Ids for the per-thread action menu. Snooze presets are dispatched as
@@ -69,9 +12,9 @@ export type ThreadActionMenuId =
   | "project-settings"
   | "pin"
   | "unpin"
+  | "stop-thread"
   | "settle"
   | "unsettle"
-  | "kill-thread"
   | "auto-settle"
   | "auto-settle:enabled"
   | "auto-settle:disabled"
@@ -87,6 +30,51 @@ export type ThreadActionMenuId =
   | "copy-thread-id"
   | "archive"
   | "delete";
+
+export type DraftActionMenuId =
+  | "copy"
+  | "copy-path"
+  | "copy-branch"
+  | "project-settings"
+  | "discard";
+
+/** Right-click menu for an unsent draft row in the sidebar. */
+export function buildDraftActionMenuItems(options: {
+  readonly hasPath: boolean;
+  readonly hasBranch: boolean;
+  readonly hasProject: boolean;
+}): ReadonlyArray<ContextMenuItem<DraftActionMenuId>> {
+  return [
+    {
+      id: "copy",
+      label: "Copy",
+      icon: "copy",
+      disabled: !options.hasPath && !options.hasBranch,
+      children: [
+        ...(options.hasPath ? [{ id: "copy-path" as const, label: "Path", icon: "folder" }] : []),
+        ...(options.hasBranch
+          ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
+          : []),
+      ],
+    },
+    ...(options.hasProject
+      ? [{ id: "project-settings" as const, label: "Project settings", icon: "settings" }]
+      : []),
+    {
+      id: "discard",
+      label: "Discard draft",
+      icon: "trash",
+      destructive: true,
+      separatorBefore: true,
+    },
+  ];
+}
+
+export function canStopThreadSession(
+  sessions: ReadonlyArray<Pick<OrchestrationV2ProviderSession, "status">> | null,
+): boolean {
+  return sessions?.some((session) => session.status !== "stopped") ?? false;
+}
 
 export interface ThreadActionMenuState {
   readonly branch: string | null;
@@ -156,8 +144,8 @@ export function buildThreadActionMenuItems(
         ]
       : []),
     {
-      id: "kill-thread",
-      label: "Kill Thread",
+      id: "stop-thread",
+      label: "Stop thread",
       icon: "square",
       disabled: !state.canStopSession,
     },

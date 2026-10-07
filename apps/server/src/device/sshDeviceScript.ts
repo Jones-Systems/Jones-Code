@@ -1,4 +1,3 @@
-import { directDeviceGatewaySource } from "./directDeviceGateway.ts";
 import { deviceToolMaintenanceScript } from "./deviceToolMaintenance.ts";
 import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
 
@@ -22,16 +21,13 @@ if [ -n "$JAVA_HOME" ]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
 /** Node runs this on the host. All paths it returns belong to that host. */
 export const remoteDeviceScript = (
   owner: string,
-  mode: "probe" | "start" | "agent-start" | "stop-agent" | "stop" | "stop-direct",
-  direct?: { readonly hostId: string; readonly generation: string },
+  mode: "probe" | "start" | "agent-start" | "stop-agent" | "stop",
 ) =>
   `
 const owner = ${JSON.stringify(owner)};
 const mode = ${JSON.stringify(mode)};
 const hubVersion = ${JSON.stringify(DEVICE_HUB_VERSION)};
 const agentVersion = ${JSON.stringify(AGENT_DEVICE_VERSION)};
-const direct = ${JSON.stringify(direct ?? null)};
-const gatewaySource = ${JSON.stringify(directDeviceGatewaySource)};
 ` +
   deviceToolMaintenanceScript +
   String.raw`
@@ -81,52 +77,7 @@ const stopHub = hub => {
     try { process.kill(hub.pid, 'SIGTERM'); } catch {}
   }
 };
-const readGateway = file => {
-  let value;
-  try { value = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-  if (!value || typeof value.owner !== 'string' || typeof value.generation !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(value.generation) ||
-      !Number.isSafeInteger(value.pid) || value.pid <= 0 || value.entryPath !== path.join(state, 'direct-gateway-' + value.generation + '.cjs')) throw Error('Unconfirmed direct gateway record.');
-  return value;
-};
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const stopGateway = async gateway => {
-  if (!gateway) return;
-  if (gateway.owner !== owner || typeof gateway.generation !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(gateway.generation) ||
-      !Number.isSafeInteger(gateway.pid) || gateway.pid <= 0 ||
-      gateway.entryPath !== path.join(state, 'direct-gateway-' + gateway.generation + '.cjs')) throw Error('Unconfirmed direct gateway identity.');
-  let source;
-  try { source = fs.readFileSync(gateway.entryPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (source !== undefined) {
-    const first = /^const config = (.+);/.exec(source)?.[1];
-    const captured = first ? JSON.parse(first) : null;
-    if (captured?.owner !== gateway.owner || captured?.generation !== gateway.generation) throw Error('Unconfirmed direct gateway script.');
-  }
-  const inspect = () => {
-    const result = run('ps', ['-p', String(gateway.pid), '-o', 'stat=', '-o', 'command=']);
-    if (result.error || (result.status !== 0 && result.status !== 1)) throw Error('Cannot inspect direct gateway PID.');
-    const output = (result.stdout || '').trim();
-    if (!output) return false;
-    const state = /^(\S+)\s+(.*)$/.exec(output);
-    if (!state) throw Error('Cannot parse direct gateway PID identity.');
-    if (state[1].startsWith('Z')) return false;
-    const command = state[2];
-    if (!source || !command.endsWith(' ' + gateway.entryPath)) throw Error('Direct gateway PID identity changed.');
-    return true;
-  };
-  if (inspect()) {
-    try { process.kill(gateway.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-    const deadline = Date.now() + 5000;
-    while (inspect()) { if (Date.now() >= deadline) throw Error('Direct gateway termination is unconfirmed.'); await sleep(25); }
-  }
-  const file = path.join(state, 'direct-gateway.json');
-  const current = readGateway(file);
-  if (current && (current.owner !== gateway.owner || current.generation !== gateway.generation || current.pid !== gateway.pid || current.entryPath !== gateway.entryPath)) return;
-  if (source !== undefined) {
-    if (fs.readFileSync(gateway.entryPath, 'utf8') !== source) throw Error('Direct gateway script changed during retirement.');
-    fs.unlinkSync(gateway.entryPath);
-  }
-  if (current) fs.unlinkSync(file);
-};
 const healthy = async (port, route) => { try { return (await fetch('http://127.0.0.1:' + port + route, { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; } };
 const port = () => new Promise((resolve, reject) => { const server = net.createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const value = server.address().port; server.close(() => resolve(value)); }); });
 async function acquireLock(lock, complete = () => false) {
@@ -201,20 +152,8 @@ async function install(name, version, entry) {
   const hubFile = path.join(state, 'hub.json');
   const daemonFile = path.join(state, 'daemon.json');
   const agentFile = path.join(state, 'agent.json');
-  const gatewayFile = path.join(state, 'direct-gateway.json');
-  if (mode === 'stop-direct') {
-    if (!direct) throw Error('Missing captured direct generation.');
-    const gateway = readGateway(gatewayFile);
-    if (gateway?.owner === owner && gateway.generation === direct.generation) await stopGateway(gateway);
-    else if (!gateway && fs.existsSync(path.join(state, 'direct-gateway-' + direct.generation + '.cjs'))) throw Error('Direct gateway startup effect is unconfirmed.');
-    return;
-  }
   if (mode === 'stop' || mode === 'stop-agent') {
     const hub = read(hubFile);
-    if (mode === 'stop') {
-      const gateway = readGateway(gatewayFile);
-      if (direct && gateway?.owner === owner && gateway.generation === direct.generation) await stopGateway(gateway);
-    }
     if (mode === 'stop' && hub && hub.owner === owner) {
       stopHub(hub);
       fs.rmSync(hubFile, { force: true });
@@ -253,39 +192,6 @@ async function install(name, version, entry) {
       if (attempt === 4) throw Error('Device hub exited before becoming ready. See ' + path.join(state, 'hub.log'));
     }
   }
-  let directResult = {};
-  const previousGateway = readGateway(gatewayFile);
-  if (direct) {
-    if (previousGateway && previousGateway.owner !== owner) throw Error('Direct gateway ownership mismatch.');
-    await stopGateway(previousGateway);
-    if (!/^[a-zA-Z0-9-]{1,128}$/.test(direct.generation)) throw Error('Invalid direct generation.');
-    const admissionPort = await port();
-    const entryPath = path.join(state, 'direct-gateway-' + direct.generation + '.cjs');
-    const config = { hostId: direct.hostId, owner, generation: direct.generation, hubPort: hub.port, hubEntry, admissionPort };
-    fs.writeFileSync(entryPath, 'const config = ' + JSON.stringify(config) + ';\n' + gatewaySource, { mode: 0o600 });
-    let log;
-    let captured;
-    try {
-      log = fs.openSync(path.join(state, 'direct-gateway.log'), 'a');
-      const child = spawn(process.execPath, [entryPath], { cwd: state, detached: true, stdio: ['ignore', log, log, 'ipc'] });
-      if (child.pid) { captured = { owner, generation: direct.generation, pid: child.pid, entryPath }; write(gatewayFile, captured); }
-      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-      const gatewayPort = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(Error('Direct gateway startup timed out.')), 10000);
-        const finish = (error, value) => { clearTimeout(timer); child.removeAllListeners('exit'); child.removeAllListeners('message'); child.removeAllListeners('error'); error ? reject(error) : resolve(value); };
-        child.once('message', message => Number.isInteger(message?.port) && message.port > 0 && message.port < 65536 ? finish(null, message.port) : finish(Error('Invalid direct gateway port.')));
-        child.once('exit', () => finish(Error('Direct gateway exited before becoming ready.')));
-        child.once('error', error => finish(error));
-      });
-      write(gatewayFile, { ...captured, port: gatewayPort, admissionPort });
-      child.unref();
-      directResult = { directMedia: { gatewayPort, admissionPort, generation: direct.generation } };
-    } catch (error) {
-      if (captured) await stopGateway(captured);
-      else fs.unlinkSync(entryPath);
-      throw error;
-    } finally { if (log !== undefined) fs.closeSync(log); }
-  }
   let agentResult = {};
   if (mode === 'agent-start') {
   const agentEntry = await install('agent-device', agentVersion, 'bin/agent-device.mjs');
@@ -311,7 +217,7 @@ async function install(name, version, entry) {
   const vendor = path.resolve(path.dirname(hubEntry), '../../vendor/serve-sim/dist');
   const optional = file => fs.existsSync(file) ? file : null;
   await pruneTools(path.join(root, 'tools'), [['expo-device-hub', hubVersion], ...(mode === 'agent-start' ? [['agent-device', agentVersion]] : [])], true).catch(() => {});
-  console.log(JSON.stringify({ nodePath: process.execPath, platforms, tools: versions(), hubPort: hub.port, ...agentResult, ...directResult,
+  console.log(JSON.stringify({ nodePath: process.execPath, platforms, tools: versions(), hubPort: hub.port, ...agentResult,
     helpers: { serveSimAxSettings: optional(path.join(vendor, 'simax/serve-sim-ax-settings')), serveSimCli: optional(path.join(vendor, 'serve-sim.js')) } }));
   } finally { releaseHost(); }
 })().catch(error => { console.error(error.message); process.exitCode = 1; });

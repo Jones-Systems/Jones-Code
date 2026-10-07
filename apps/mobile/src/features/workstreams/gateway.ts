@@ -1,11 +1,11 @@
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
-import { RemoteEnvironmentAuthorization } from "@t3tools/client-runtime/authorization";
 import { ManagedRelay } from "@t3tools/client-runtime/relay";
 import { makeEnvironmentHttpApiGroupClient } from "@t3tools/client-runtime/rpc";
 import {
   executeAuthenticatedEnvironmentHttpRequest,
+  RemoteEnvironmentAuthorization,
   type EnvironmentHttpAuthHeaders,
-} from "@t3tools/client-runtime/state/environmentHttpAuth";
+} from "@t3tools/client-runtime/authorization";
 import * as Effect from "effect/Effect";
 
 export type WorkstreamClient = Effect.Success<

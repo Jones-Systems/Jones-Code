@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { visitElements } from "../../test/reactElementTree";
 import { reactHookHarness as hooks } from "../../test/reactHookHarness";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
-import type { WorkstreamPrObservation, WorkstreamReferenceDetail } from "@t3tools/contracts";
 
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
@@ -25,6 +24,10 @@ vi.mock("react/compiler-runtime", async () => {
 
 vi.mock("../../hooks/useLocalStorage", () => ({
   useLocalStorage: (_key: string, initial: unknown) => hooks.useState(initial),
+}));
+
+vi.mock("../../jones/workstreamAppearance/useWorkstreamAppearance", () => ({
+  useWorkstreamAppearance: () => ({ writable: false, colors: new Map(), save: vi.fn() }),
 }));
 
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
@@ -111,28 +114,6 @@ const detailWithReference = {
   },
 } as unknown as WorkstreamDetailView;
 
-function observedReference(state: "open" | "merged" = "open"): WorkstreamReferenceDetail {
-  const latest_observation: typeof WorkstreamPrObservation.Type = {
-    native_reference_id: "reference-a",
-    observation_version: 1,
-    attempted_at: "2026-09-12T12:00:00Z",
-    outcome: "observed",
-    retry_after_seconds: null,
-    last_success: {
-      state,
-      draft: false,
-      observed_at: "2026-09-12T12:00:00Z",
-      provider_updated_at: null,
-    },
-    command_id: "observation-command",
-  };
-  return {
-    context: detailWithReference.detail.context,
-    reference: detailWithReference.references.items[0]!,
-    latest_observation,
-  };
-}
-
 const completedDetail = {
   ...detailWithReference,
   detail: {
@@ -213,11 +194,6 @@ describe("Workstream sidebar binding cancellation", () => {
       },
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -283,11 +259,6 @@ describe("Workstream sidebar binding cancellation", () => {
       },
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -349,11 +320,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data: writableData,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit,
       loadDetail,
@@ -435,11 +401,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data: readOnlyData,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -496,11 +457,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data: writableData,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -556,11 +512,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -610,11 +561,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -677,11 +623,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(),
       runBindingOperation: vi.fn(),
@@ -708,14 +649,16 @@ describe("Workstream sidebar binding cancellation", () => {
     };
     hooks.beginRender();
     WorkstreamSidebarSection({ controller });
-    resolveStaleReference(observedReference("merged"));
+    resolveStaleReference({
+      latest_observation: { last_success: { state: "STALE STATUS" } },
+    });
     await staleReference;
     await Promise.resolve();
-    expect(JSON.stringify(hooks.snapshot())).not.toContain("merged · current");
+    expect(JSON.stringify(hooks.snapshot())).not.toContain("STALE STATUS");
 
     hooks.beginRender();
     const afterStaleResolution = WorkstreamSidebarSection({ controller });
-    expect(containsText(afterStaleResolution, "merged · current")).toBe(false);
+    expect(containsText(afterStaleResolution, "STALE STATUS")).toBe(false);
 
     hooks.beginRender();
     const rebound = WorkstreamSidebarSection({ controller });
@@ -728,7 +671,7 @@ describe("Workstream sidebar binding cancellation", () => {
 
     hooks.beginRender();
     const current = WorkstreamSidebarSection({ controller });
-    expect(containsText(current, "merged · current")).toBe(false);
+    expect(containsText(current, "STALE STATUS")).toBe(false);
     expect(containsText(current, "loading")).toBe(true);
     expect(loadReference).toHaveBeenCalledTimes(2);
   });
@@ -738,18 +681,13 @@ describe("Workstream sidebar binding cancellation", () => {
     const pendingReference = new Promise((resolve) => {
       resolveReference = resolve;
     });
-    let referenceStarted!: () => void;
-    const manualReferenceStarted = new Promise<void>((resolve) => {
-      referenceStarted = resolve;
-    });
     const loadDetail = vi.fn(async () => detailWithReference);
     const loadReference = vi
       .fn()
-      .mockResolvedValueOnce(observedReference())
-      .mockImplementationOnce(() => {
-        referenceStarted();
-        return pendingReference;
-      });
+      .mockResolvedValueOnce({
+        latest_observation: { observation_version: 1, last_success: { state: "OPEN" } },
+      })
+      .mockImplementationOnce(() => pendingReference);
     const submit = vi.fn();
     let controller = {
       placementInventory: {
@@ -762,19 +700,9 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(async () => ({
-        data,
-        references: { context: detailWithReference.detail.context, items: [], next_cursor: null },
-        placements: null,
-        registrationContext: null,
-      })),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit,
-      runBindingOperation: (operation) => operation(submit),
+      runBindingOperation: vi.fn(),
       loadDetail,
       loadReference,
     } as WorkstreamListView;
@@ -799,7 +727,6 @@ describe("Workstream sidebar binding cancellation", () => {
     expect(refreshStatus).toBeDefined();
     const automaticSignal = loadReference.mock.calls[0]?.[1]?.signal;
     refreshStatus?.props.onClick();
-    await manualReferenceStarted;
     const signal = loadReference.mock.calls
       .map((call) => call[1]?.signal)
       .find((candidate) => candidate !== undefined && candidate !== automaticSignal);
@@ -817,14 +744,12 @@ describe("Workstream sidebar binding cancellation", () => {
     WorkstreamSidebarSection({ controller });
     expect(signal?.aborted).toBe(true);
 
-    resolveReference(observedReference());
+    resolveReference({
+      latest_observation: { observation_version: 1, last_success: { state: "OPEN" } },
+    });
     await pendingReference;
     await Promise.resolve();
-    await Promise.resolve();
     expect(submit).not.toHaveBeenCalled();
-    expect(controller.loadActionSnapshot).toHaveBeenCalledOnce();
-    expect(loadReference).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(hooks.snapshot())).not.toContain("observation-command");
   });
 
   it("does not commit command UI after its binding is replaced", async () => {
@@ -844,11 +769,6 @@ describe("Workstream sidebar binding cancellation", () => {
       data,
       error: null,
       loading: false,
-      references: null,
-      registrationContext: null,
-      loadActionSnapshot: vi.fn(),
-      observeCommand: vi.fn(),
-      retry: vi.fn(async () => {}),
       refresh: vi.fn(),
       submit: vi.fn(() => pendingSubmit),
       runBindingOperation: vi.fn(),

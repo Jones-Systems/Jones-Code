@@ -8,7 +8,6 @@ import {
   ProviderThreadId,
   RunId,
   ThreadId,
-  WorktreeOwnershipConflictError,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
@@ -16,7 +15,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -24,8 +22,6 @@ import * as Semaphore from "effect/Semaphore";
 import { parseTurnDiffFilesFromNumstat } from "../checkpointing/Diffs.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as IdAllocator from "./IdAllocator.ts";
-import * as EventSink from "./EventSink.ts";
-import * as OrdinaryCheckout from "./OrdinaryCheckoutOwnership.ts";
 
 const CHECKPOINT_REFS_PREFIX = "refs/t3/orchestration-v2/checkpoints";
 const ROOT_CHECKPOINT_SCOPE_NAME = "root";
@@ -107,14 +103,6 @@ export class CheckpointDeleteStaleRefsError extends Schema.TaggedError<Checkpoin
   }
 }
 
-export const OrdinaryCheckoutMutationError = Schema.Union([
-  OrdinaryCheckout.OrdinaryCheckoutOwnershipError,
-  WorktreeOwnershipConflictError,
-  EventSink.EventSinkV2Error,
-]);
-export type OrdinaryCheckoutMutationError = typeof OrdinaryCheckoutMutationError.Type;
-export const isOrdinaryCheckoutMutationError = Schema.is(OrdinaryCheckoutMutationError);
-
 export const CheckpointServiceV2Error = Schema.Union([
   CheckpointRootScopePrepareError,
   CheckpointScopeEnsureError,
@@ -122,7 +110,6 @@ export const CheckpointServiceV2Error = Schema.Union([
   CheckpointCaptureError,
   CheckpointRestoreError,
   CheckpointDeleteStaleRefsError,
-  OrdinaryCheckoutMutationError,
 ]);
 export type CheckpointServiceV2Error = typeof CheckpointServiceV2Error.Type;
 
@@ -142,7 +129,6 @@ export interface CheckpointServiceV2Shape {
   ) => Effect.Effect<OrchestrationV2CheckpointScope, CheckpointServiceV2Error>;
   readonly captureBaseline: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
-    readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
     readonly ordinalWithinScope: number;
   }) => Effect.Effect<void, CheckpointServiceV2Error>;
   readonly materializeBaselineCheckpoint: (input: {
@@ -151,7 +137,6 @@ export interface CheckpointServiceV2Shape {
   }) => Effect.Effect<OrchestrationV2Checkpoint, CheckpointServiceV2Error>;
   readonly capture: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
-    readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
     readonly runId: RunId | null;
     readonly nodeId: NodeId;
     readonly ordinalWithinScope: number;
@@ -160,12 +145,10 @@ export interface CheckpointServiceV2Shape {
   }) => Effect.Effect<OrchestrationV2Checkpoint, CheckpointServiceV2Error>;
   readonly restore: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
-    readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
     readonly checkpoint: OrchestrationV2Checkpoint;
   }) => Effect.Effect<void, CheckpointServiceV2Error>;
   readonly deleteStaleRefs: (input: {
     readonly scope: OrchestrationV2CheckpointScope;
-    readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
     readonly checkpoints: ReadonlyArray<OrchestrationV2Checkpoint>;
   }) => Effect.Effect<void, CheckpointServiceV2Error>;
 }
@@ -293,38 +276,6 @@ export const layer: Layer.Layer<
     const isGitCheckpointable = (cwd: string) =>
       checkpointStore.isGitRepository(cwd).pipe(Effect.orElseSucceed(() => false));
 
-    // Revalidate inside the workspace lock, after reads and immediately before Store mutation.
-    // The Store owns repository detection and its native driver calls; this is not an FS transaction.
-    const revalidateMutation = (input: {
-      readonly scope: OrchestrationV2CheckpointScope;
-      readonly ordinaryCheckoutUse?: OrdinaryCheckout.OrdinaryCheckoutUseV1;
-      readonly runId?: RunId | null;
-    }): Effect.Effect<void, OrdinaryCheckoutMutationError> => Effect.gen(function* () {
-      const use = input.ordinaryCheckoutUse;
-      if (use === undefined) return;
-      const failure = (reason: OrdinaryCheckout.OrdinaryCheckoutOwnershipError["reason"], message: string) =>
-        new OrdinaryCheckout.OrdinaryCheckoutOwnershipError({
-          reason, threadId: input.scope.threadId, path: input.scope.cwd, message,
-        });
-      if (use.lease.ownerThreadId !== input.scope.threadId || use.lease.resourcePath !== input.scope.cwd)
-        return yield* failure("target_changed", "Checkpoint scope differs from the captured checkout owner or path.");
-      const sink = yield* Effect.serviceOption(EventSink.EventSinkV2);
-      if (Option.isNone(sink))
-        return yield* failure("unavailable", "Checkpoint mutation has no durable checkout revalidation service.");
-      if (input.runId != null) {
-        const admission = yield* sink.value.readOrdinaryCheckoutAdmissionForRun({
-          threadId: input.scope.threadId, runId: input.runId,
-        });
-        if (admission === null)
-          return yield* failure("stale_admission", "Checkpoint run has no captured ordinary checkout admission.");
-        const reference = OrdinaryCheckout.ordinaryCheckoutAdmissionRefV1(admission);
-        if (reference.admissionId !== use.admission.admissionId ||
-            reference.admissionSha256 !== use.admission.admissionSha256)
-          return yield* failure("stale_admission", "Checkpoint run differs from the captured ordinary checkout admission.");
-      }
-      yield* sink.value.revalidateOrdinaryCheckoutUse(use);
-    });
-
     const ensureScope: CheckpointServiceV2Shape["ensureScope"] = (scope) => Effect.succeed(scope);
 
     const captureBaseline: CheckpointServiceV2Shape["captureBaseline"] = (input) =>
@@ -347,7 +298,6 @@ export const layer: Layer.Layer<
             return;
           }
 
-          yield* revalidateMutation(input);
           yield* checkpointStore.captureCheckpoint({
             cwd: input.scope.cwd,
             checkpointRef,
@@ -355,7 +305,7 @@ export const layer: Layer.Layer<
         }),
       ).pipe(
         Effect.mapError(
-          (cause) => isOrdinaryCheckoutMutationError(cause) ? cause :
+          (cause) =>
             new CheckpointBaselineCaptureError({
               scopeId: input.scope.id,
               ordinalWithinScope: input.ordinalWithinScope,
@@ -458,7 +408,6 @@ export const layer: Layer.Layer<
             });
           }
 
-          yield* revalidateMutation(input);
           const captured = yield* checkpointStore
             .captureCheckpoint({
               cwd: input.scope.cwd,
@@ -466,9 +415,8 @@ export const layer: Layer.Layer<
             })
             .pipe(
               Effect.as(true),
-              Effect.catch((cause) => isOrdinaryCheckoutMutationError(cause)
-                ? Effect.fail(cause)
-                : Effect.logWarning("orchestration V2 checkpoint capture failed", {
+              Effect.catch((cause) =>
+                Effect.logWarning("orchestration V2 checkpoint capture failed", {
                   scopeId: input.scope.id,
                   checkpointRef,
                   cause: String(cause),
@@ -551,7 +499,7 @@ export const layer: Layer.Layer<
         }),
       ).pipe(
         Effect.mapError(
-          (cause) => isOrdinaryCheckoutMutationError(cause) ? cause :
+          (cause) =>
             new CheckpointCaptureError({
               scopeId: input.scope.id,
               cause,
@@ -571,7 +519,6 @@ export const layer: Layer.Layer<
             });
           }
 
-          yield* revalidateMutation(input);
           const restored = yield* checkpointStore.restoreCheckpoint({
             cwd: input.scope.cwd,
             checkpointRef: input.checkpoint.ref,
@@ -587,7 +534,7 @@ export const layer: Layer.Layer<
         }),
       ).pipe(
         Effect.mapError((cause) =>
-          isCheckpointRestoreError(cause) || isOrdinaryCheckoutMutationError(cause)
+          isCheckpointRestoreError(cause)
             ? cause
             : new CheckpointRestoreError({
                 scopeId: input.scope.id,
@@ -600,13 +547,13 @@ export const layer: Layer.Layer<
     const deleteStaleRefs: CheckpointServiceV2Shape["deleteStaleRefs"] = (input) =>
       withWorkspaceLock(
         input.scope.cwd,
-        revalidateMutation(input).pipe(Effect.andThen(() => checkpointStore.deleteCheckpointRefs({
+        checkpointStore.deleteCheckpointRefs({
           cwd: input.scope.cwd,
           checkpointRefs: input.checkpoints.map((checkpoint) => checkpoint.ref),
-        }))),
+        }),
       ).pipe(
         Effect.mapError(
-          (cause) => isOrdinaryCheckoutMutationError(cause) ? cause :
+          (cause) =>
             new CheckpointDeleteStaleRefsError({
               scopeId: input.scope.id,
               checkpointIds: input.checkpoints.map((checkpoint) => checkpoint.id),

@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -6,6 +7,7 @@ import {
   ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
+  ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import {
   scheduledTaskDefaultModel,
@@ -15,6 +17,7 @@ import {
   hasScheduledTaskDraftChanges,
   scheduleDraftForTask,
   scheduleFromDraft,
+  scheduledTaskUpsertInputFromDraft,
 } from "./scheduledTaskDraft";
 
 describe("scheduleDraftForTask", () => {
@@ -320,5 +323,55 @@ describe("scheduled task model defaults", () => {
         null,
       ),
     ).toBeNull();
+  });
+});
+
+describe("scheduled-task form save and reopen", () => {
+  it.each([true, false])("keeps automatic base omitted with origin %s", (startFromOrigin) => {
+    const task: ScheduledTask = {
+      ...legacyTask,
+      workspaceStrategy: { type: "worktree", startFromOrigin },
+    };
+    const draft = editDraft(task);
+    const saved = Schema.decodeUnknownSync(ScheduledTaskUpsertInput)(
+      scheduledTaskUpsertInputFromDraft(draft),
+    );
+    expect(saved.workspaceStrategy).toEqual({ type: "worktree", startFromOrigin });
+    expect(saved.workspaceStrategy).not.toHaveProperty("baseRef");
+    expect(saved).toMatchObject({
+      id: task.id,
+      requireExisting: true,
+      title: task.title,
+      prompt: task.prompt,
+      projectId: task.projectId,
+      modelSelection: task.modelSelection,
+      schedule: task.schedule,
+      enabled: task.enabled,
+      threadId: task.threadId,
+      runtimeMode: task.runtimeMode,
+      interactionMode: task.interactionMode,
+      creationSource: task.creationSource,
+    });
+    const reopened = editDraft({ ...task, ...saved });
+    expect(reopened.baseRef).toBe("");
+    expect(reopened.startFromOrigin).toBe(startFromOrigin);
+    expect(hasScheduledTaskDraftChanges(draft, reopened)).toBe(false);
+  });
+
+  it.each([true, false])("trims an explicit base without changing origin %s", (startFromOrigin) => {
+    const draft = { ...editDraft(legacyTask), baseRef: " release/stable ", startFromOrigin };
+    const saved = Schema.decodeUnknownSync(ScheduledTaskUpsertInput)(
+      scheduledTaskUpsertInputFromDraft(draft),
+    );
+    expect(saved.workspaceStrategy).toEqual({
+      type: "worktree",
+      baseRef: "release/stable",
+      startFromOrigin,
+    });
+    const reopened = editDraft({ ...legacyTask, ...saved });
+    expect(reopened.baseRef).toBe("release/stable");
+    expect(reopened.startFromOrigin).toBe(startFromOrigin);
+    expect(reopened.prompt).toBe(legacyTask.prompt);
+    expect(reopened.modelSelection).toEqual(legacyTask.modelSelection);
   });
 });

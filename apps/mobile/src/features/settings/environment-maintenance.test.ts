@@ -134,22 +134,13 @@ describe("environment release checks", () => {
       .mockResolvedValueOnce(
         Response.json(Array.from({ length: 100 }, () => ({ tag_name: "v2.0.0" }))),
       )
-      .mockResolvedValueOnce(Response.json([{ tag_name: "v1.0.0-nightly.20260923.2" }]));
+      .mockResolvedValueOnce(Response.json([{ tag_name: "v1.0.0-preview.20260923.2" }]));
     vi.stubGlobal("fetch", fetchMock);
-    expect(await findEnvironmentUpdate("1.0.0-nightly.20260923.1", signal)).toBe(
-      "1.0.0-nightly.20260923.2",
+    expect(await findEnvironmentUpdate("1.0.0-preview.20260923.1", signal)).toBe(
+      "1.0.0-preview.20260923.2",
     );
     expect(fetchMock.mock.calls[1]?.[0]).toContain("page=2");
     expect(fetchMock.mock.calls[1]?.[1]).toEqual({ signal });
-  });
-
-  it("never queries upstream releases for a Jones preview", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    await expect(findEnvironmentUpdate("0.0.44-preview.20261002.100.2", signal)).rejects.toThrow(
-      "separate Download and Install",
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("reports failed checks instead of claiming the server is current", async () => {

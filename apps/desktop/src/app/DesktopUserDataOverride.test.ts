@@ -53,3 +53,58 @@ describe("desktop client profile override", () => {
     );
   });
 });
+
+describe("profile path validation and failure ordering", () => {
+  it.each([
+    { path: NodePath.posix, directory: "relative/profile" },
+    { path: NodePath.win32, directory: "C:relative-profile" },
+    { path: NodePath.posix, directory: "/profile\0invalid" },
+    { path: NodePath.win32, directory: "C:\\profile\0invalid" },
+  ])("rejects invalid profile $directory before effects", ({ path, directory }) => {
+    const effects: string[] = [];
+    assert.throws(() =>
+      configureDesktopUserDataOverride({
+        path,
+        directory,
+        createDirectory: () => effects.push("create"),
+        setPath: () => effects.push("bind"),
+      }),
+    );
+    assert.deepEqual(effects, []);
+  });
+
+  it("preserves native path case and handles Windows UNC paths", () => {
+    assert.equal(
+      resolveDesktopUserDataOverride("/Profiles/MixedCase", NodePath.posix),
+      "/Profiles/MixedCase",
+    );
+    assert.equal(
+      resolveDesktopUserDataOverride("C:\\Profiles\\MixedCase", NodePath.win32),
+      "C:\\Profiles\\MixedCase",
+    );
+    assert.equal(
+      resolveDesktopUserDataOverride("\\\\Host\\Share\\Profile", NodePath.win32),
+      "\\\\Host\\Share\\Profile",
+    );
+  });
+
+  it("does not bind storage if directory creation fails", () => {
+    const failure = new Error("synthetic mkdir failure");
+    const effects: string[] = [];
+    let caught: unknown;
+    try {
+      configureDesktopUserDataOverride({
+        directory: "/isolated/profile",
+        path: NodePath.posix,
+        createDirectory: () => {
+          throw failure;
+        },
+        setPath: () => effects.push("bind"),
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.strictEqual(caught, failure);
+    assert.deepEqual(effects, []);
+  });
+});

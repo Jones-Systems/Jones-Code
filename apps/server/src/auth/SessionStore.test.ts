@@ -1,8 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { AuthSessionId, EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -59,27 +58,6 @@ const relaySessionInput = {
   ttl: Duration.hours(1),
   client: { label: "Relay desktop", deviceType: "desktop" },
 } as const;
-
-const reservedNativeSession = (issuedAt: DateTime.Utc): AuthSessions.CreateAuthSessionInput => ({
-  sessionId: AuthSessionId.make("reserved-native-session-synthetic"),
-  subject: "workstreams-native:synthetic-enrollment",
-  method: "bearer-access-token",
-  scopes: [
-    "workstreams:native:context",
-    "workstreams:native:settlement",
-    "workstreams:native:reconciliation",
-  ],
-  client: {
-    label: "Workstreams native synthetic-enrollment",
-    deviceType: "bot",
-    ipAddress: null,
-    userAgent: null,
-    os: null,
-    browser: null,
-  },
-  issuedAt,
-  expiresAt: DateTime.add(issuedAt, { days: 30 }),
-});
 
 const makeDiskSessionStoreLayer = Effect.fn("makeDiskSessionStoreLayer")(function* (
   baseDir: string,
@@ -753,89 +731,3 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
     }).pipe(Effect.provide(Layer.mergeAll(makeSessionStoreLayer(), SqlitePersistenceMemory))),
   );
 });
-
-it.effect(
-  "reserved bearer materialization preserves the exact token and timestamps after a lost reply",
-  () =>
-    Effect.gen(function* () {
-      const store = yield* SessionStore.SessionStore;
-      const repository = yield* AuthSessions.AuthSessionRepository;
-      const expected = reservedNativeSession(yield* DateTime.now);
-      yield* repository.createIfAbsent(expected);
-      const first = yield* store.materializeReservedBearerSession(expected);
-      const second = yield* store.materializeReservedBearerSession(expected);
-      expect(second.token).toBe(first.token);
-      expect(first.expiresAt.epochMilliseconds).toBe(expected.expiresAt.epochMilliseconds);
-      expect((yield* store.verify(first.token)).sessionId).toBe(expected.sessionId);
-      expect((yield* repository.listActive({ now: expected.issuedAt })).length).toBe(1);
-    }).pipe(
-      Effect.provide(makeSessionStoreLayer().pipe(Layer.provideMerge(NodeServices.layer))),
-      Effect.scoped,
-    ),
-);
-
-it.effect(
-  "reserved bearer materialization never creates, widens, revives or changes a reserved record",
-  () =>
-    Effect.gen(function* () {
-      const store = yield* SessionStore.SessionStore;
-      const repository = yield* AuthSessions.AuthSessionRepository;
-      const expected = reservedNativeSession(yield* DateTime.now);
-      expect((yield* Effect.flip(store.materializeReservedBearerSession(expected)))._tag).toBe(
-        "SessionCredentialIssueError",
-      );
-      expect(Option.isNone(yield* repository.getById({ sessionId: expected.sessionId }))).toBe(
-        true,
-      );
-      yield* repository.createIfAbsent(expected);
-      for (const changed of [
-        { ...expected, subject: "other-subject" },
-        { ...expected, scopes: ["orchestration:read"] as const },
-        { ...expected, method: "browser-session-cookie" as const },
-        { ...expected, issuedAt: DateTime.add(expected.issuedAt, { milliseconds: 1 }) },
-        { ...expected, expiresAt: DateTime.add(expected.expiresAt, { milliseconds: 1 }) },
-        { ...expected, client: { ...expected.client, label: "other-label" } },
-        { ...expected, client: { ...expected.client, deviceType: "desktop" as const } },
-      ])
-        expect((yield* Effect.flip(store.materializeReservedBearerSession(changed)))._tag).toBe(
-          "SessionCredentialIssueError",
-        );
-      yield* TestClock.adjust(Duration.days(30));
-      expect((yield* Effect.flip(store.materializeReservedBearerSession(expected)))._tag).toBe(
-        "SessionCredentialIssueError",
-      );
-      yield* TestClock.setTime(expected.issuedAt.epochMilliseconds);
-      yield* repository.revoke({ sessionId: expected.sessionId, revokedAt: expected.issuedAt });
-      expect((yield* Effect.flip(store.materializeReservedBearerSession(expected)))._tag).toBe(
-        "SessionCredentialIssueError",
-      );
-    }).pipe(
-      Effect.provide(makeSessionStoreLayer().pipe(Layer.provideMerge(NodeServices.layer))),
-      Effect.scoped,
-    ),
-);
-
-it.effect(
-  "enrollment-only materializer requires an existing signing key and never generates one",
-  () =>
-    Effect.gen(function* () {
-      let generated = 0;
-      const secrets = ServerSecretStore.ServerSecretStore.of({
-        get: () => Effect.succeed(Option.none()),
-        set: () => Effect.void,
-        create: () => Effect.void,
-        getOrCreateRandom: () =>
-          Effect.sync(() => {
-            generated++;
-            return new Uint8Array(32);
-          }),
-        remove: () => Effect.void,
-      });
-      const result = yield* SessionStore.makeReservedBearerSessionMaterializer.pipe(
-        Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
-        Effect.result,
-      );
-      expect(result._tag).toBe("Failure");
-      expect(generated).toBe(0);
-    }).pipe(Effect.provide(AuthSessions.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)))),
-);

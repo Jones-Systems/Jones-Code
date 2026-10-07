@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -15,6 +15,7 @@ const engine = vi.hoisted(() => ({
     destroy: ReturnType<typeof vi.fn>;
     resolve: (document: object) => void;
     reject: (error: Error) => void;
+    onPassword: (() => void) | undefined;
   }[],
   failed: false,
   fitScale: 0.5,
@@ -32,7 +33,13 @@ vi.mock("pdfjs-dist", () => ({
       resolve = yes;
       reject = no;
     });
-    const task = { promise, resolve, reject, destroy: vi.fn().mockResolvedValue(undefined) };
+    const task = {
+      promise,
+      resolve,
+      reject,
+      destroy: vi.fn().mockResolvedValue(undefined),
+      onPassword: undefined as (() => void) | undefined,
+    };
     engine.tasks.push(task);
     if (engine.failed) reject(new Error("invalid PDF"));
     else resolve({ fixture: "PDF" });
@@ -301,6 +308,74 @@ describe("PDF zoom and lifetime", () => {
     expect(input().disabled).toBe(false);
     await act(() => viewer().bus.dispatch("pagerendered", { error: new Error("render failed") }));
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
+
+  it("renews authorization before the owning panel remounts a failed PDF", async () => {
+    engine.failed = true;
+    const renew = vi.fn().mockResolvedValue("/renewed.pdf");
+    function AuthorizedPreview() {
+      const [src, setSrc] = useState("/expired.pdf");
+      return (
+        <PdfPreview
+          key={src}
+          src={src}
+          title="Fixture"
+          onRetry={async () => setSrc(await renew())}
+        />
+      );
+    }
+    await act(() => root.render(<AuthorizedPreview />));
+    const oldTask = engine.tasks[0]!;
+    engine.failed = false;
+    await click(
+      Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Retry",
+      )!,
+    );
+    expect(renew).toHaveBeenCalledOnce();
+    expect(engine.loads.mock.calls.map(([options]) => options.url)).toEqual([
+      "/expired.pdf",
+      "/renewed.pdf",
+    ]);
+    expect(oldTask.destroy).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(input().value).toBe("100");
+  });
+
+  it("keeps the failure and external-open link when reauthorization fails without reloading", async () => {
+    engine.failed = true;
+    let reject!: (error: Error) => void;
+    const onRetry = vi.fn(
+      () =>
+        new Promise<void>((_, no) => {
+          reject = no;
+        }),
+    );
+    await act(() =>
+      root.render(<PdfPreview src="/expired.pdf" title="Fixture" onRetry={onRetry} />),
+    );
+    const retry = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    )!;
+    await click(retry);
+    expect(retry.disabled).toBe(true);
+    expect(engine.loads).toHaveBeenCalledOnce();
+    await act(() => reject(new Error("Reconnect to the environment and try again.")));
+    expect(retry.disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector("a")!.getAttribute("href")).toBe("/expired.pdf");
+    expect(engine.loads).toHaveBeenCalledOnce();
+  });
+
+  it("offers external open for a password-protected PDF", async () => {
+    await render();
+    await act(() => engine.tasks[0]!.onPassword!());
+    expect(input().disabled).toBe(true);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    const link = container.querySelector("a")!;
+    expect(link.getAttribute("href")).toBe("/fixture.pdf");
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toBe("noopener noreferrer");
   });
 
   it("routes PDF find and repeat searches through the engine", async () => {

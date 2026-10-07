@@ -1,5 +1,7 @@
 import {
   MessageId,
+  RunId,
+  CommandId,
   ContextHandoffId,
   ProviderThreadId,
   NodeId,
@@ -17,7 +19,11 @@ import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
-import { projectTurnItemForWire, projectDomainEventForWire } from "./WireProjection.ts";
+import {
+  projectTurnItemForWire,
+  projectTurnItemForDetail,
+  projectDomainEventForWire,
+} from "./WireProjection.ts";
 import { threadShellFromProjection } from "./ProjectionStore.ts";
 
 const decodeTurnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem);
@@ -45,6 +51,138 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it("omits server-only bootstrap run correlation from wire events while retaining the stored source", () => {
+    const now = base.updatedAt;
+    const policy = {
+      version: 1 as const,
+      createCommandId: CommandId.make("bootstrap:B"),
+      birthCommandId: CommandId.make("bootstrap:B:initial-message"),
+      releaseCommandId: CommandId.make("bootstrap:C"),
+      projectId: ProjectId.make("bootstrap:project"),
+      threadId: base.threadId,
+      messageId: MessageId.make("bootstrap:M"),
+      payloadHash: "fixture-hash",
+      ownsNewThread: true,
+    };
+    const runId = RunId.make("bootstrap:run");
+    const correlation = {
+      policy,
+      threadId: base.threadId,
+      runId,
+      claimEventId: EventId.make("bootstrap:claim"),
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: EventId.make("bootstrap:birth"),
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      preparationGeneration: "private-generation",
+      workspacePath: "/private-wire-workspace",
+      projectWorkspaceRoot: "/private-wire-workspace",
+    };
+    const deletion = {
+      ...correlation,
+      version: 1 as const,
+      type: "no_control" as const,
+      commandId: CommandId.make("bootstrap:D"),
+      evidenceEventId: EventId.make("bootstrap:D:event"),
+      control: { ...correlation, version: 1 as const, type: "no_control" as const },
+    };
+    const decision = {
+      version: 1 as const,
+      status: "rejected" as const,
+      policy,
+      claimEventId: correlation.claimEventId,
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: correlation.birthEventId,
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      evidenceEventId: EventId.make("bootstrap:C:event"),
+      guard: {
+        observedSnapshotSequence: 0,
+        expectedModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
+        expectedSessionStatus: null,
+        expectedActiveTurnId: null,
+        expectedLatestTurnId: null,
+        requireIdle: true as const,
+      },
+      reason: "Private original rejection",
+      observed: { snapshotSequence: 2, lastEventSequence: 2, target: null },
+      deletion,
+    };
+    const failureDecision = {
+      version: 1 as const,
+      status: "known_workspace_failure" as const,
+      policy,
+      claimEventId: correlation.claimEventId,
+      claimSequence: 1,
+      claimReceiptSequence: 1,
+      birthEventId: correlation.birthEventId,
+      birthSequence: 2,
+      birthReceiptSequence: 2,
+      preparationGeneration: correlation.preparationGeneration,
+      projectWorkspaceRoot: correlation.projectWorkspaceRoot,
+      workspacePath: correlation.workspacePath,
+      failedEffectId: "private-failed-effect",
+      failedInputHash: "private-effect-input-hash",
+      outcomeCommandId: CommandId.make("bootstrap:outcome"),
+      outcomeEventId: EventId.make("bootstrap:outcome:event"),
+      outcomeEventSequence: 3,
+      outcomeReceiptSequence: 3,
+      failureCommandId: CommandId.make("bootstrap:B:fail"),
+      evidenceEventId: EventId.make("bootstrap:failure:event"),
+    };
+    const run = {
+      id: runId,
+      threadId: base.threadId,
+      ordinal: 1,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
+      providerThreadId: null,
+      userMessageId: policy.messageId,
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "preparing" as const,
+      requestedAt: now,
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+      legacyBootstrap: policy,
+      legacyPreparationFailureKnown: true,
+      workspaceRunSetupScript: false,
+      legacyReleaseDecision: decision,
+      legacyPreparationFailureDecision: failureDecision,
+    };
+    const event = {
+      id: EventId.make("bootstrap:run-created"),
+      threadId: base.threadId,
+      occurredAt: now,
+      type: "run.created" as const,
+      payload: run,
+    };
+    const projected = projectDomainEventForWire(event);
+    expect(projected.payload).not.toHaveProperty("legacyBootstrap");
+    expect(projected.payload).not.toHaveProperty("legacyPreparationFailureKnown");
+    expect(projected.payload).not.toHaveProperty("workspaceRunSetupScript");
+    expect(projected.payload).not.toHaveProperty("legacyReleaseDecision");
+    expect(projected.payload).not.toHaveProperty("legacyPreparationFailureDecision");
+    expect(event.payload.legacyPreparationFailureDecision).toEqual(failureDecision);
+    expect(JSON.stringify(projected)).not.toContain(deletion.workspacePath);
+    expect(event.payload.legacyReleaseDecision).toEqual(decision);
+    expect(event.payload.legacyBootstrap).toEqual(policy);
+    expect(event.payload.legacyPreparationFailureKnown).toBe(true);
+    expect(event.payload.workspaceRunSetupScript).toBe(false);
+    const {
+      legacyBootstrap: _policy,
+      legacyPreparationFailureKnown: _known,
+      workspaceRunSetupScript: _setup,
+      legacyReleaseDecision: _decision,
+      legacyPreparationFailureDecision: _failureDecision,
+      ...publicRun
+    } = run;
+    expect(projected).toEqual({ ...event, payload: publicRun });
+  });
   it("keeps copied handoff transcripts out of activity items and live events", () => {
     const item = {
       ...base,
@@ -137,6 +275,7 @@ describe("orchestration V2 wire projection", () => {
         deletedAt: null,
       },
       runs: [],
+      attempts: [],
       runtimeRequests: [],
       messages: [
         {
@@ -173,7 +312,7 @@ describe("orchestration V2 wire projection", () => {
 
   it("omits even small dynamic tool results while retaining input", () => {
     const item = { ...base, output: { ok: true } } satisfies OrchestrationV2TurnItem;
-    expect(projectTurnItemForWire(item)).toEqual(base);
+    expect(projectTurnItemForWire(item)).toEqual({ ...base, outputOmitted: true });
     expect(item.output).toEqual({ ok: true });
   });
 
@@ -252,9 +391,23 @@ describe("orchestration V2 wire projection", () => {
       const projected = projectTurnItemForWire(item);
       expect(projected).not.toHaveProperty("output");
       expect(projected).toMatchObject({ input: "test", status: "completed" });
+      // Clients fetch withheld output on demand, so they need to know it exists.
+      expect(projected.type === "command_execution" ? projected.outputOmitted : null).toBe(
+        output ? true : undefined,
+      );
       expect(item.output).toBe(output);
     },
   );
+
+  it.each([
+    ["echo ok", "echo ok"],
+    ["a".repeat(262_143) + "😀", "a".repeat(262_143) + "\n… output truncated for transport"],
+  ])("bounds fetched command input without changing persistence, case %#", (input, expected) => {
+    const item = { ...base, type: "command_execution" as const, input, output: "ok" };
+    const projected = projectTurnItemForDetail(item);
+    expect(projected).toMatchObject({ input: expected, output: "ok" });
+    expect(item.input).toBe(input);
+  });
 
   it("keeps failure evidence without retaining command output", () => {
     const item = {
@@ -290,6 +443,14 @@ describe("orchestration V2 wire projection", () => {
     expect(projected).not.toHaveProperty("newStr");
     expect(projected).toMatchObject({ fileName: "src/main.ts", additions: 3, deletions: 1 });
     expect(item.diffStr).toBe("+new code");
+    // A failed edit keeps the provider's error so expanding the row can show it.
+    const failed = projectTurnItemForWire({
+      ...item,
+      status: "failed",
+      diffStr: "String to replace not found",
+    });
+    expect(failed).toMatchObject({ diffStr: "String to replace not found" });
+    expect(failed).not.toHaveProperty("newStr");
   });
 
   it("retains only result identities and failure metadata in live tool events", () => {

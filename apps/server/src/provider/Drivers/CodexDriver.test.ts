@@ -63,8 +63,8 @@ const testLayer = ServerConfig.layerTest(process.cwd(), {
   ),
   Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provideMerge(ModelManifest.layerTest),
-  Layer.provideMerge(ProcessAttribution.layer),
   Layer.provideMerge(ResetCreditCoordinator.layerTest),
+  Layer.provideMerge(ProcessAttribution.layer),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
       shouldRunScopeWork: () => Effect.succeed(false),

@@ -377,10 +377,4 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
 });
 
 export const ensurePinnedRuntimeInstalled = (input: PinnedRuntimeInstallInput) =>
-  input.version.includes("-preview.")
-    ? Effect.fail(
-        new PinnedRuntimeInstallError({
-          step: "requiring a qualified Jones Actions artifact for preview runtime staging",
-        }),
-      )
-    : pinnedRuntimeInstallLock.withPermit(installPinnedRuntime(input));
+  pinnedRuntimeInstallLock.withPermit(installPinnedRuntime(input));

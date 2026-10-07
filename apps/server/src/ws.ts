@@ -1,10 +1,8 @@
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import { QueueDispatchCommand } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import * as Context from "effect/Context";
-import { NativeCreationAuthority } from "./orchestration-v2/NativeCreationAuthority.ts";
-import { NativeCreationRepository } from "./persistence/Services/NativeCreationRepository.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
-import { validatePublicCommand } from "./orchestration-v2/CommandPolicy.ts";
 import * as NodeCrypto from "node:crypto";
 
 import * as DateTime from "effect/DateTime";
@@ -80,6 +78,8 @@ import {
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
   type ServerSelfUpdateProgressEvent,
+  type ServerConfig as ClientServerConfig,
+  type ServerConfigStreamEvent,
   type ServerLifecycleStreamEvent,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
@@ -89,25 +89,10 @@ import {
   PersistChatAttachmentsError,
   RpcClientId,
   EnvironmentAuthorizationError,
-  EnvironmentAuthenticatedPrincipal,
-  type OrchestrationV2GuardedDispatchInput,
-  type OrchestrationV2ReviewImportedHistoryStartInput,
-  type OrchestrationV2ObserveImportedHistoryStartInput,
-  type OrchestrationV2StartWithImportedHistoryCommand,
-  type OrchestrationV2ImportedHistoryReviewResult,
-  type OrchestrationV2ImportedHistoryStartReceipt,
-  type OrchestrationV2GetOperatingCountsInput,
-  type OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
-  type OrchestrationV2StopCurrentThreadRuntimeResult,
-  type OrchestrationV2StopCurrentThreadRuntimeInput,
-  type NativeBootstrapSubmission,
-  NativeCreationRejectionCode,
-  NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES,
   type ProjectId,
   type ProviderDriverKind,
   type ProviderInstanceId,
   ThreadId,
-  TerminalOwnershipError,
   type TerminalAttachStreamEvent,
   type TerminalError,
   type TerminalEvent,
@@ -167,6 +152,7 @@ import {
 } from "./orchestration-v2/threadHistoryPaging.ts";
 import {
   projectDomainEventForWire,
+  isPublicStoredOrchestrationEvent,
   projectThreadProjectionForWire,
 } from "./orchestration-v2/WireProjection.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -174,9 +160,9 @@ import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as OrchestrationEventStore from "./persistence/Services/OrchestrationEventStore.ts";
 import { userFacingDispatchErrorMessage } from "./orchestration-v2/UserFacingErrors.ts";
 import {
-  observeRpcEffect as instrumentRpcEffect,
-  observeRpcStream as instrumentRpcStream,
-  observeRpcStreamEffect as instrumentRpcStreamEffect,
+  observeRpcEffect,
+  observeRpcStream,
+  observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderInstanceRegistry from "./provider/Services/ProviderInstanceRegistry.ts";
@@ -224,7 +210,11 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import { requiredScopeForRpcMethod, requiredScopeForDeviceList, assertLegacyBootstrapAllowed } from "./auth/RpcAuthorization.ts";
+import {
+  requiredScopeForDeviceList,
+  rpcAuthorizationError,
+  rpcScopeAuthorizationLayer,
+} from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -280,6 +270,94 @@ export const resolveAvailableEditorsForConfig = <A, E, R>(
 const resolveFileManagerRevealKindForConfig = <E, R>(
   discovery: Effect.Effect<FileManagerRevealKind | undefined, E, R>,
 ) => resolveDiscoveryForConfig(discovery, () => undefined);
+
+type EditorDiscovery = Pick<
+  ExternalLauncher.ExternalLauncher["Service"],
+  "resolveAvailableEditors" | "resolveFileManagerRevealKind"
+>;
+
+// The config fields that follow from which editors are installed.
+const resolveEditorConfig = <E, R>(
+  availableEditors: ReadonlyArray<EditorId>,
+  revealKind: Effect.Effect<FileManagerRevealKind | undefined, E, R>,
+) =>
+  Effect.gen(function* () {
+    const fileManagerRevealKind = availableEditors.includes("file-manager")
+      ? yield* revealKind
+      : undefined;
+    return {
+      availableEditors,
+      ...(fileManagerRevealKind === undefined
+        ? {}
+        : {
+            shellRevealInFileManager: true,
+            shellRevealInFileManagerKind: fileManagerRevealKind,
+          }),
+    };
+  });
+
+/**
+ * Live config updates that follow a snapshot of `config`. A busy host can
+ * outlast the snapshot's discovery timeouts, which send no editors, or no
+ * reveal kind for the file manager. The scan keeps running, so once it lands
+ * this resends the config: clients replace theirs on any snapshot. The resent
+ * config is folded from the live updates already sent, so it cannot roll back
+ * a change that landed while the scan ran.
+ */
+export const withLateEditorConfig = <E, R>(
+  config: ClientServerConfig,
+  liveUpdates: Stream.Stream<ServerConfigStreamEvent, E, R>,
+  launcher: EditorDiscovery,
+) => {
+  const lateEditorConfig = Stream.fromEffect(launcher.resolveAvailableEditors()).pipe(
+    Stream.filter(
+      (editors) =>
+        editors.join() !== config.availableEditors.join() ||
+        (editors.includes("file-manager") && config.shellRevealInFileManagerKind === undefined),
+    ),
+    // Unbounded, unlike the snapshot: the reveal-kind probe is not shared, so
+    // a timeout here would cancel a probe that outlasts it every time.
+    Stream.mapEffect((editors) =>
+      resolveEditorConfig(editors, launcher.resolveFileManagerRevealKind()),
+    ),
+    Stream.filter(
+      (editorConfig) =>
+        editorConfig.availableEditors.join() !== config.availableEditors.join() ||
+        editorConfig.shellRevealInFileManagerKind !== config.shellRevealInFileManagerKind,
+    ),
+    Stream.map((editorConfig) => ({ type: "editorsResolved" as const, editorConfig })),
+  );
+
+  return Stream.merge(liveUpdates, lateEditorConfig).pipe(
+    Stream.mapAccum(
+      (): ClientServerConfig => config,
+      (current, event): readonly [ClientServerConfig, ReadonlyArray<ServerConfigStreamEvent>] => {
+        switch (event.type) {
+          case "editorsResolved": {
+            const {
+              availableEditors: _editors,
+              shellRevealInFileManager: _reveal,
+              shellRevealInFileManagerKind: _revealKind,
+              ...rest
+            } = current;
+            const next = { ...rest, ...event.editorConfig };
+            return [next, [{ version: 1, type: "snapshot", config: next }]];
+          }
+          case "keybindingsUpdated":
+            return [{ ...current, ...event.payload }, [event]];
+          case "providerStatuses":
+            return [{ ...current, providers: event.payload.providers }, [event]];
+          case "settingsUpdated":
+            return [{ ...current, settings: event.payload.settings }, [event]];
+          // Themes and usage-limit sources never ride in a snapshot; clients
+          // carry their projected values across one.
+          default:
+            return [current, [event]];
+        }
+      },
+    ),
+  );
+};
 
 function unexpectedCompatibilityError(error: never): never {
   throw new Error(`Unhandled compatibility error: ${String(error)}`);
@@ -538,211 +616,6 @@ export function shouldUseBoundedThreadSnapshot(input: {
   return input.acceptBoundedSnapshot === true;
 }
 
-export const nativeBootstrapRpcSerialization: RpcSerialization.RpcSerialization["Service"] = {
-  ...RpcSerialization.json,
-  makeUnsafe: () => {
-    const parser = RpcSerialization.json.makeUnsafe();
-    return {
-      encode: parser.encode,
-      decode: (data) => {
-        const requests = parser.decode(data);
-        const byteLength = typeof data === "string" ? new TextEncoder().encode(data).byteLength : data.byteLength;
-        if (byteLength > NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES && requests.some((request) =>
-          typeof request === "object" && request !== null && "_tag" in request && request._tag === "Request" &&
-          "tag" in request && (request.tag === "orchestration.dispatchBootstrap" ||
-            request.tag === ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap),
-        )) {
-          throw new RpcSerialization.MaxBufferSizeExceeded({ maxBufferSize: NATIVE_BOOTSTRAP_MAX_SUBMISSION_BYTES });
-        }
-        return requests;
-      },
-    };
-  },
-};
-
-const withVerifiedRpcPrincipal = <A, E>(
-  effect: Effect.Effect<A, E, EnvironmentAuthenticatedPrincipal>,
-  currentSession: EnvironmentAuth.AuthenticatedSession,
-) => effect.pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, {
-  sessionId: currentSession.sessionId,
-  subject: currentSession.subject,
-  method: currentSession.method,
-  scopes: new Set(currentSession.scopes),
-  ...(currentSession.proofKeyThumbprint === undefined ? {} : { proofKeyThumbprint: currentSession.proofKeyThumbprint }),
-  ...(currentSession.expiresAt === undefined ? {} : { expiresAt: currentSession.expiresAt }),
-}));
-
-type NativeBootstrapRpcContext = NativeCreationAuthority | NativeCreationRepository | ServerConfig.ServerConfig | FileSystem.FileSystem;
-
-export const dispatchNativeBootstrapRpc = (
-  submission: NativeBootstrapSubmission,
-  currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadLaunch: Pick<ThreadLaunchService.ThreadLaunchService["Service"], "dispatchNativeBootstrap">,
-  startup: Pick<ServerRuntimeStartup.ServerRuntimeStartup["Service"], "enqueueCommand">,
-  nativeContext: Context.Context<NativeBootstrapRpcContext>,
-  capabilityAvailable: Effect.Effect<boolean>,
-) => Effect.gen(function* () {
-  if (!(yield* capabilityAvailable)) return yield* new OrchestrationDispatchCommandError({
-    message: "Native bootstrap creation is not supported by this server",
-    creationRejectionCode: "unsupported_authority",
-  });
-  const authority = Context.get(nativeContext, NativeCreationAuthority);
-  if (!(yield* authority.isAutomationEnrolled(currentSession.sessionId))) return yield* new OrchestrationDispatchCommandError({
-    message: "Native session has no permanent automation enrollment",
-    creationRejectionCode: "stale_grant",
-  });
-  return yield* startup.enqueueCommand(withVerifiedRpcPrincipal(
-    Effect.suspend(() => threadLaunch.dispatchNativeBootstrap(submission, {
-      nativeCreationBootId: ServerRuntimeStartup.nativeCreationBootId,
-    })).pipe(Effect.provide(nativeContext)), currentSession,
-  ));
-}).pipe(Effect.mapError((cause) => {
-  if (Schema.is(OrchestrationDispatchCommandError)(cause)) return cause;
-  const code = typeof cause === "object" && cause !== null && "code" in cause && Schema.is(NativeCreationRejectionCode)(cause.code)
-    ? cause.code : undefined;
-  return new OrchestrationDispatchCommandError({
-    message: "Native bootstrap rejected",
-    ...(code === undefined ? {} : { creationRejectionCode: code }),
-  });
-}));
-
-export const stopCurrentThreadRuntimeRpc = (
-  input: OrchestrationV2StopCurrentThreadRuntimeInput,
-  currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "stopCurrentThreadRuntime">,
-  startup: Pick<ServerRuntimeStartup.ServerRuntimeStartup["Service"], "enqueueCommand">,
-) => Effect.suspend(() => startup.enqueueCommand(withVerifiedRpcPrincipal(
-  Effect.suspend(() => threadManagement.stopCurrentThreadRuntime(input)), currentSession,
-))).pipe(Effect.mapError((cause) => new OrchestrationV2DispatchCommandError({
-  commandId: input.commandId,
-  commandType: "provider-session.detach",
-  message: userFacingDispatchErrorMessage(cause) ?? "Failed to stop current thread runtime",
-  cause,
-})));
-
-export const dispatchGuardedRpcCommand = (
-  input: OrchestrationV2GuardedDispatchInput,
-  currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "dispatchGuarded">,
-  startup: Pick<ServerRuntimeStartup.ServerRuntimeStartup["Service"], "enqueueCommand">,
-) => Effect.suspend(() => startup.enqueueCommand(
-  withVerifiedRpcPrincipal(
-    Effect.suspend(() => threadManagement.dispatchGuarded(input.command, input.guard)),
-    currentSession,
-  ),
-));
-
-export const reviewImportedHistoryRpc = (
-  input: OrchestrationV2ReviewImportedHistoryStartInput,
-  currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "reviewImportedHistoryStart">,
-) => withVerifiedRpcPrincipal(
-  Effect.suspend(() => threadManagement.reviewImportedHistoryStart(input)), currentSession,
-).pipe(Effect.catch(() => Effect.succeed<OrchestrationV2ImportedHistoryReviewResult>({
-  version: 2,
-  threadId: input.threadId,
-  target: input.delivery.type === "queued_run"
-    ? { type: "queued_run", runId: input.delivery.runId, messageId: input.delivery.messageId }
-    : { type: "message", messageId: input.delivery.messageId },
-  capability: { startWithImportedHistory: false },
-  applicability: "unknown",
-  qualification: { type: "unknown", reason: "imported_history_observation_unavailable" },
-  restoredBinding: { type: "unknown", reason: "imported_history_observation_unavailable" },
-  nativeEffects: { type: "unknown", reason: "imported_history_observation_unavailable" },
-  transcriptEligibility: { type: "unknown", reason: "imported_history_observation_unavailable" },
-  reviewedBasis: null,
-})));
-
-export const startWithImportedHistoryRpc = (
-  command: OrchestrationV2StartWithImportedHistoryCommand,
-  currentSession: EnvironmentAuth.AuthenticatedSession,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "startWithImportedHistory">,
-  startup: Pick<ServerRuntimeStartup.ServerRuntimeStartup["Service"], "enqueueCommand">,
-) => Effect.suspend(() => startup.enqueueCommand(withVerifiedRpcPrincipal(
-  Effect.suspend(() => threadManagement.startWithImportedHistory(command)), currentSession,
-))).pipe(Effect.mapError((cause) => {
-  const detail = userFacingDispatchErrorMessage(cause);
-  return new OrchestrationV2DispatchCommandError({
-    commandId: command.commandId,
-    commandType: command.type,
-    message: detail ?? "Failed to start with imported history",
-    ...(detail === undefined ? {} : { detail }),
-    cause,
-  });
-}));
-
-export const observeImportedHistoryRpc = (
-  input: OrchestrationV2ObserveImportedHistoryStartInput,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "observeImportedHistoryStart">,
-) => Effect.suspend(() => threadManagement.observeImportedHistoryStart(input)).pipe(
-  Effect.catch(() => Effect.succeed<OrchestrationV2ImportedHistoryStartReceipt>({
-    version: 2,
-    commandId: input.commandId,
-    threadId: input.threadId,
-    target: null,
-    reviewedBasis: null,
-    intentStatus: "unknown",
-    receipt: null,
-    rejectionReason: "imported_history_observation_unavailable",
-    execution: {
-      status: "unknown", runId: null, providerThreadId: null, providerSessionId: null,
-      nativeThreadId: null, effectOutcome: null, error: "imported_history_observation_unavailable",
-    },
-  })),
-);
-
-export const observeCurrentThreadRuntimeStopRpc = (
-  input: OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "observeCurrentThreadRuntimeStop">,
-) => {
-  const unknown = (reason: string): OrchestrationV2StopCurrentThreadRuntimeResult => ({
-    version: 2,
-    threadId: input.threadId,
-    commandId: input.commandId,
-    target: null,
-    commandStatus: "unknown",
-    receipt: null,
-    queueFence: { status: "unknown", affectedRunIds: [] },
-    runtimeStop: { status: "unknown" },
-    reason,
-  });
-  return Effect.suspend(() => threadManagement.observeCurrentThreadRuntimeStop(input)).pipe(
-    Effect.map((result) => result.threadId !== input.threadId || result.commandId !== input.commandId ||
-      (result.target !== null && result.target.binding.threadId !== input.threadId)
-      ? unknown("current_runtime_stop_observation_unbound") : result),
-    Effect.catch(() => Effect.succeed(unknown("current_runtime_stop_observation_unavailable"))),
-  );
-};
-
-export const readThreadRuntimeObservation = (
-  threadId: ThreadId,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "observeCurrentThreadRuntime">,
-) => Effect.suspend(() => threadManagement.observeCurrentThreadRuntime(threadId)).pipe(
-  Effect.map((observation) => ({
-    threadId,
-    observation: observation.binding !== undefined && observation.binding.threadId !== threadId
-      ? { status: "unknown" as const, reason: "runtime_binding_changed" }
-      : observation,
-  })),
-);
-
-export const readOperatingCounts = (
-  input: OrchestrationV2GetOperatingCountsInput,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "getOperatingCounts">,
-) => Effect.suspend(() => threadManagement.getOperatingCounts(input));
-
-export const readThreadRuntimeAttachment = (
-  threadId: ThreadId,
-  threadManagement: Pick<ThreadManagementService.ThreadManagementService["Service"], "readCurrentThreadRuntimeAttachment">,
-) => Effect.suspend(() => threadManagement.readCurrentThreadRuntimeAttachment(threadId)).pipe(
-  Effect.map((attachment) => ({
-    threadId,
-    attachment: attachment.status === "attached" && attachment.binding.threadId !== threadId
-      ? { status: "unknown" as const, reason: "runtime_binding_changed", observedAt: attachment.observedAt }
-      : attachment,
-  })),
-);
-
 // Optional client identity announced on the /ws upgrade URL next to wsTicket.
 // Lenient by design: absent or malformed values degrade to {} so a connection
 // never fails over attribution metadata.
@@ -901,6 +774,7 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           afterSequence,
         })
         .pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.map((stored) => ({
             kind: "event" as const,
             sequence: stored.sequence,
@@ -923,9 +797,11 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           threadId: input.threadId,
           afterSequence,
           throughSequence,
+          publicOnly: true,
           limit: THREAD_RESUME_MAX_REPLAY_EVENTS + 1,
         })
         .pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.map((stored) => ({
             kind: "event" as const,
             sequence: stored.sequence,
@@ -1146,11 +1022,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             if ("aggregateKind" in stored) {
               return yield* projectItem(stored);
             }
-            const shell = yield* threadManagement.getThreadShell(stored.event.threadId).pipe(
-              Effect.catchTag("OrchestratorProjectionError", () =>
-                threadManagement.getThreadShell(stored.event.threadId),
-              ),
-            );
+            const shell = yield* threadManagement.getThreadShell(stored.event.threadId);
             return shellStreamItemFromThreadShell({ stored, shell });
           }),
         { concurrency: 8 },
@@ -1177,16 +1049,35 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     const enrichmentRefreshes = Stream.fromSubscription(enrichmentChanges).pipe(
       Stream.filter((change) => change.repositoryIdentityResolved),
       Stream.groupedWithin(64, Duration.millis(25)),
+      // Build the refresh from the identities the changes carry. Re-enriching
+      // every project here re-requested each expired root, whose resolution
+      // published again, so one expiry kept every subscriber reloading every
+      // project's metadata once a minute.
       Stream.mapEffect((changes) =>
-        applicationEvents.latestApplicationSequence.pipe(
-          Effect.flatMap(loadProjectMetadataSnapshot),
-          Effect.map(({ snapshot }) =>
-            shellStreamItemFromEnrichmentRefresh({
-              snapshot,
-              changes: Array.from(changes),
-            }),
-          ),
-        ),
+        Effect.gen(function* () {
+          const identities = new Map(
+            Array.from(changes, (change) => [
+              change.workspaceRoot,
+              change.enrichment.repositoryIdentity,
+            ]),
+          );
+          const snapshotSequence = yield* applicationEvents.latestApplicationSequence;
+          const changedProjects = (yield* projects.listShells()).flatMap((project) =>
+            identities.has(project.workspaceRoot)
+              ? [{ ...project, repositoryIdentity: identities.get(project.workspaceRoot) ?? null }]
+              : [],
+          );
+          return shellStreamItemFromEnrichmentRefresh({
+            snapshot: {
+              schemaVersion: ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION,
+              snapshotSequence,
+              projects: changedProjects,
+              threads: [],
+              archivedThreads: [],
+            } as OrchestrationV2ShellSnapshot,
+            changes: Array.from(changes),
+          });
+        }),
       ),
     );
 
@@ -1328,14 +1219,8 @@ const makeWsRpcLayer = (
             return Effect.void;
         }
       };
-      const nativeContext = yield* Effect.context<NativeBootstrapRpcContext>();
-      const nativeAuthority = yield* NativeCreationAuthority;
-      const ordinaryBootstrapGuard = (command: { readonly type: "thread.create" }) => assertLegacyBootstrapAllowed({
-        actorSessionId: currentSessionId,
-        command,
-        hasAutomationEnrollment: nativeAuthority.isAutomationEnrolled,
-      });
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
+      const queueCompatibility = yield* QueueCompatibility.QueueCompatibility;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -1360,6 +1245,7 @@ const makeWsRpcLayer = (
               Effect.orElseSucceed(() => null),
             );
       const usage = yield* UsageService.UsageService;
+      const tokenAccounting = yield* TokenAccountingService.TokenAccountingService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
@@ -1435,27 +1321,16 @@ const makeWsRpcLayer = (
       const hostResources = yield* HostResources.HostResources;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
-      const tokenAccounting = yield* TokenAccountingService.TokenAccountingService;
       const relayClient = yield* RelayClient.RelayClient;
-      const authorizationError = (requiredScope: AuthEnvironmentScope) =>
-        new EnvironmentAuthorizationError({
-          message: `The authenticated token is missing required scope: ${requiredScope}.`,
-          requiredScope,
-        });
+      // RpcScopeAuthorization checks each RPC's declared scope before its handler
+      // runs. This covers the one RPC whose scope depends on its input.
       const authorizeEffect = <A, E, R>(
         requiredScope: AuthEnvironmentScope,
         effect: Effect.Effect<A, E, R>,
       ): Effect.Effect<A, E | EnvironmentAuthorizationError, R> =>
         currentSession.scopes.includes(requiredScope)
           ? effect
-          : Effect.fail(authorizationError(requiredScope));
-      const authorizeStream = <A, E, R>(
-        requiredScope: AuthEnvironmentScope,
-        stream: Stream.Stream<A, E, R>,
-      ): Stream.Stream<A, E | EnvironmentAuthorizationError, R> =>
-        currentSession.scopes.includes(requiredScope)
-          ? stream
-          : Stream.fail(authorizationError(requiredScope));
+          : Effect.fail(rpcAuthorizationError(requiredScope));
 
       const acpRegistryProject = Effect.fn("ws.acpRegistry.project")(function* (
         projectId: ProjectId,
@@ -1778,40 +1653,6 @@ const makeWsRpcLayer = (
         yield* providerRegistry.refreshInstance(input.instanceId);
         return { disabled: true } as const;
       });
-      const observeRpcEffect = <A, E, R>(
-        method: string,
-        effect: Effect.Effect<A, E, R>,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcEffect(
-          method,
-          authorizeEffect(requiredScopeForRpcMethod(method), effect),
-          traceAttributes,
-        );
-      const observeRpcStream = <A, E, R>(
-        method: string,
-        stream: Stream.Stream<A, E, R>,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcStream(
-          method,
-          authorizeStream(requiredScopeForRpcMethod(method), stream),
-          traceAttributes,
-        );
-      const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectError, EffectContext>(
-        method: string,
-        effect: Effect.Effect<
-          Stream.Stream<A, StreamError, StreamContext>,
-          EffectError,
-          EffectContext
-        >,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcStreamEffect(
-          method,
-          authorizeEffect(requiredScopeForRpcMethod(method), effect),
-          traceAttributes,
-        );
       const loadAuthAccessSnapshot = () =>
         Effect.all({
           pairingLinks: serverAuth.listPairingLinks(),
@@ -1841,27 +1682,20 @@ const makeWsRpcLayer = (
           if (yield* tokenAccounting.isAvailable) capabilities.savedTokenAccounting = true;
           const auth = yield* serverAuth.getDescriptor();
           const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
-          const availableEditors: ReadonlyArray<EditorId> = yield* resolveAvailableEditorsForConfig(
-            externalLauncher.resolveAvailableEditors(),
+          const editorConfig = yield* resolveEditorConfig(
+            yield* resolveAvailableEditorsForConfig(externalLauncher.resolveAvailableEditors()),
+            resolveFileManagerRevealKindForConfig(externalLauncher.resolveFileManagerRevealKind()),
           );
-          const fileManagerRevealKind = availableEditors.includes("file-manager")
-            ? yield* resolveFileManagerRevealKindForConfig(
-                externalLauncher.resolveFileManagerRevealKind(),
-              )
-            : undefined;
 
           return {
-            environment: {
-              ...environment,
-              capabilities,
-            },
+            environment: { ...environment, capabilities },
             auth,
             cwd: config.cwd,
             keybindingsConfigPath: config.keybindingsConfigPath,
             keybindings: keybindingsConfig.keybindings,
             issues: keybindingsConfig.issues,
             providers,
-            availableEditors,
+            ...editorConfig,
             // Same discovery-with-timeout treatment as editors: a slow probe
             // must not stall server.getConfig, so it degrades to no targets.
             remoteOpenTargets: yield* resolveAvailableEditorsForConfig(
@@ -1883,12 +1717,6 @@ const makeWsRpcLayer = (
             },
             settings,
             shellResumeCompletionMarker: true,
-            ...(fileManagerRevealKind === undefined
-              ? {}
-              : {
-                  shellRevealInFileManager: true,
-                  shellRevealInFileManagerKind: fileManagerRevealKind,
-                }),
             threadResumeCompletionMarker: true,
             threadSnapshotPagination: true,
             ...Option.match(scratchWorkspaceRoot, {
@@ -1903,31 +1731,6 @@ const makeWsRpcLayer = (
         vcsStatusBroadcaster
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
-
-      const acquireTerminalOwnership = (input: {
-        readonly threadId: string;
-        readonly cwd?: string | undefined;
-        readonly worktreePath?: string | null | undefined;
-      }) => {
-        if (input.cwd === undefined) {
-          return Effect.fail(
-            new TerminalOwnershipError({
-              threadId: input.threadId,
-              cause: "terminal restart requires a checkout path",
-            }),
-          );
-        }
-        return threadManagement
-          .acquireWorktreeOwnership(ThreadId.make(input.threadId), input.cwd)
-          .pipe(
-            Effect.asVoid,
-            Effect.mapError((cause) =>
-              cause._tag === "WorktreeOwnershipConflictError"
-                ? cause
-                : new TerminalOwnershipError({ threadId: input.threadId, cause }),
-            ),
-          );
-      };
 
       const getOrchestrationV2ArchivedShellSnapshot = sql
         .withTransaction(
@@ -2000,157 +1803,97 @@ const makeWsRpcLayer = (
       });
 
       const handlers = ServerWsRpcGroup.of({
-        ["orchestration.dispatchBootstrap"]: (_input) =>
-          observeRpcEffect("orchestration.dispatchBootstrap", Effect.fail(new OrchestrationDispatchCommandError({
-            message: "Legacy bootstrap dispatch is unsupported; use orchestration.dispatchNativeBootstrap",
-            creationRejectionCode: "unsupported_authority",
-          })), { "rpc.aggregate": "orchestrationV2" }),
-        [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: (submission) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
-            dispatchNativeBootstrapRpc(submission, currentSession, threadLaunch, startup, nativeContext,
-              serverEnvironment.getDescriptor.pipe(Effect.map((environment) =>
-                environment.capabilities.nativeBootstrapCreation?.observationSchema === "t3.native-creation-observation/v2",
-              )),
-            ),
-            { "rpc.aggregate": "orchestrationV2" },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: (input) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
-            stopCurrentThreadRuntimeRpc(input, currentSession, threadManagement, startup),
-            { "rpc.aggregate": "orchestrationV2", "orchestration_v2.thread_id": input.threadId, "orchestration_v2.command_id": input.commandId },
-          ),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
-            validatePublicCommand(command).pipe(
-              Effect.andThen(command.type === "thread.create" ? ordinaryBootstrapGuard(command) : Effect.void),
-              Effect.andThen(
-                startup.enqueueCommand(
-                  ThreadMessageIntake.dispatchCommand(
-                    ThreadManagementService.withCreationProvenance(command, {
-                      createdBy: "user",
-                      creationSource: "creationSource" in command ? command.creationSource : "web",
+          Schema.is(QueueDispatchCommand)(command)
+            ? observeRpcEffect(
+                ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+                startup
+                  .enqueueCommand(queueCompatibility.dispatch(command, "legacy_websocket"))
+                  .pipe(
+                    Effect.mapError((error) => {
+                      const cause = error.cause;
+                      return Schema.is(OrchestrationDispatchCommandError)(cause)
+                        ? cause
+                        : new OrchestrationDispatchCommandError({
+                            message:
+                              Schema.is(QueueCompatibility.QueueCompatibilityError)(error) &&
+                              error.reason === "dispatch_guard_rejected"
+                                ? "Dispatch guard rejected."
+                                : "Failed to dispatch orchestration command.",
+                            cause,
+                          });
                     }),
-                  ).pipe(Effect.provide(intakeContext)),
-                ),
+                  ),
+                { "rpc.aggregate": "orchestration", "orchestration.command_id": command.commandId },
+              )
+            : observeRpcEffect(
+                ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+                startup
+                  .enqueueCommand(
+                    // A retry also restarts the preparation work the launch owns.
+                    (command.type === "prepared-run.retry"
+                      ? threadLaunch.retryPreparation(command)
+                      : ThreadMessageIntake.dispatchCommand(
+                          ThreadManagementService.withCreationProvenance(command, {
+                            createdBy: "user",
+                            creationSource:
+                              "creationSource" in command ? command.creationSource : "web",
+                          }),
+                        )
+                    ).pipe(Effect.provide(intakeContext)),
+                  )
+                  .pipe(
+                    Effect.tap(() => recordClientCommandAnalytics(command)),
+                    Effect.map((result) => ({ sequence: result.sequence })),
+                    Effect.mapError((cause) => {
+                      const detail = userFacingDispatchErrorMessage(cause);
+                      return new OrchestrationV2DispatchCommandError({
+                        commandId: command.commandId,
+                        commandType: command.type,
+                        message: detail ?? "Failed to dispatch orchestration V2 command",
+                        ...(detail === undefined ? {} : { detail }),
+                        cause,
+                      });
+                    }),
+                  ),
+                {
+                  "rpc.aggregate": "orchestrationV2",
+                  "orchestration_v2.command_id": command.commandId,
+                  "orchestration_v2.command_type": command.type,
+                  "orchestration_v2.thread_id":
+                    command.type === "thread.fork" || command.type === "thread.merge_back"
+                      ? command.targetThreadId
+                      : command.type === "delegated_task.request" ||
+                          command.type === "delegated_task.wake-policy" ||
+                          command.type === "delegated_task.completion-delivery.acknowledge" ||
+                          command.type === "delegated_task.completion-delivery.dispose" ||
+                          command.type === "thread.created.record"
+                        ? command.parentThreadId
+                        : command.threadId,
+                  ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                    : {}),
+                },
               ),
-              Effect.tap(() => recordClientCommandAnalytics(command)),
-              Effect.map((result) => ({ sequence: result.sequence })),
-              Effect.mapError((cause) => {
-                const detail = userFacingDispatchErrorMessage(cause);
-                return new OrchestrationV2DispatchCommandError({
-                  commandId: command.commandId,
-                  commandType: command.type,
-                  message: detail ?? "Failed to dispatch orchestration V2 command",
-                  ...(detail === undefined ? {} : { detail }),
-                  cause,
-                });
-              }),
-            ),
-            {
-              "rpc.aggregate": "orchestrationV2",
-              "orchestration_v2.command_id": command.commandId,
-              "orchestration_v2.command_type": command.type,
-              "orchestration_v2.thread_id":
-                command.type === "thread.fork" || command.type === "thread.merge_back"
-                  ? command.targetThreadId
-                  : command.type === "delegated_task.request" ||
-                      command.type === "delegated_task.wake-policy" ||
-                      command.type === "delegated_task.completion-delivery.acknowledge" ||
-                      command.type === "delegated_task.completion-delivery.dispose" ||
-                      command.type === "thread.created.record"
-                    ? command.parentThreadId
-                    : command.threadId,
-              ...(command.type === "thread.fork" || command.type === "thread.merge_back"
-                ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
-                : {}),
-            },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.dispatchGuarded]: (input) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.dispatchGuarded,
-            dispatchGuardedRpcCommand(input, currentSession, threadManagement, startup).pipe(
-              Effect.tap(() => recordClientCommandAnalytics(input.command)),
-              Effect.map((result) => ({ sequence: result.sequence })),
-              Effect.mapError((cause) => {
-                const detail = userFacingDispatchErrorMessage(cause);
-                return new OrchestrationV2DispatchCommandError({
-                  commandId: input.command.commandId,
-                  commandType: input.command.type,
-                  message: detail ?? "Failed to dispatch guarded orchestration V2 command",
-                  ...(detail === undefined ? {} : { detail }),
-                  cause,
-                });
-              }),
-            ),
-            {
-              "rpc.aggregate": "orchestrationV2",
-              "orchestration_v2.command_id": input.command.commandId,
-              "orchestration_v2.command_type": input.command.type,
-              "orchestration_v2.thread_id": input.command.threadId,
-            },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeAttachment]: (input) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeAttachment,
-            readThreadRuntimeAttachment(input.threadId, threadManagement),
-            { "rpc.aggregate": "orchestrationV2", "orchestration_v2.thread_id": input.threadId },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: (input) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
-            observeCurrentThreadRuntimeStopRpc(input, threadManagement),
-            {
-              "rpc.aggregate": "orchestrationV2",
-              "orchestration_v2.thread_id": input.threadId,
-              "orchestration_v2.command_id": input.commandId,
-            },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation]: (input) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation,
-            readThreadRuntimeObservation(input.threadId, threadManagement),
-            { "rpc.aggregate": "orchestrationV2", "orchestration_v2.thread_id": input.threadId },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.getOperatingCounts]: (input) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.getOperatingCounts,
-            readOperatingCounts(input, threadManagement).pipe(Effect.orDie),
-            { "rpc.aggregate": "orchestrationV2" },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart]: (input) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart,
-            reviewImportedHistoryRpc(input, currentSession, threadManagement),
-            { "rpc.aggregate": "orchestrationV2", "orchestration_v2.thread_id": input.threadId },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory]: (command) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory,
-            startWithImportedHistoryRpc(command, currentSession, threadManagement, startup),
-            {
-              "rpc.aggregate": "orchestrationV2",
-              "orchestration_v2.thread_id": command.threadId,
-              "orchestration_v2.command_id": command.commandId,
-              "orchestration_v2.command_type": command.type,
-            },
-          ),
-        [ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart]: (input) =>
-          observeRpcEffect(
-            ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart,
-            observeImportedHistoryRpc(input, threadManagement),
-            {
-              "rpc.aggregate": "orchestrationV2",
-              "orchestration_v2.thread_id": input.threadId,
-              "orchestration_v2.command_id": input.commandId,
-            },
-          ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.getWorkflowScript,
             readWorkflowScript({ scriptPath: input.scriptPath }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_V2_WS_METHODS.getTurnItem,
+            threadManagement.getTurnItem(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationV2GetThreadProjectionError({
+                    threadId: input.threadId,
+                    message: "Failed to load turn item",
+                    cause,
+                  }),
+              ),
+            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: (input) =>
@@ -2211,13 +1954,12 @@ const makeWsRpcLayer = (
                 rowLimit: THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
               })
               .pipe(
-                Effect.map((snapshot) =>
-                  projectThreadProjectionForWire(
+                Effect.map(
+                  (snapshot) =>
                     buildBoundedThreadProjection({
-                      projection: snapshot.projection,
+                      projection: projectThreadProjectionForWire(snapshot.projection),
                       snapshotSequence: snapshot.snapshotSequence,
                     }).projection,
-                  ),
                 ),
                 Effect.mapError(
                   (cause) =>
@@ -2236,7 +1978,7 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_V2_WS_METHODS.launchThread,
-            ordinaryBootstrapGuard({ type: "thread.create" }).pipe(Effect.andThen(startup
+            startup
               .enqueueCommand(
                 ThreadMessageIntake.launchThread({
                   commandId: input.commandId,
@@ -2270,7 +2012,7 @@ const makeWsRpcLayer = (
                   createdBy: "user",
                   creationSource: input.creationSource ?? "web",
                 }).pipe(Effect.provide(intakeContext)),
-              )))
+              )
               .pipe(
                 Effect.tap(() =>
                   analytics
@@ -2302,10 +2044,6 @@ const makeWsRpcLayer = (
                       projectId: input.projectId,
                       message: "Failed to launch thread",
                       cause,
-                    }),
-                  OrchestrationDispatchCommandError: (cause) =>
-                    new OrchestrationV2ThreadLaunchError({
-                      commandId: input.commandId, projectId: input.projectId, message: cause.message, cause,
                     }),
                   ServerRuntimeStartupError: (cause) =>
                     new OrchestrationV2ThreadLaunchError({
@@ -2997,6 +2735,10 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "cloud" },
           ),
+        [WS_METHODS.pullRequestsCiStatus]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsCiStatus, pullRequests.ciStatus(input), {
+            "rpc.aggregate": "pull-requests",
+          }),
         [WS_METHODS.pullRequestsList]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsList, pullRequests.list(input), {
             "rpc.aggregate": "pull-requests",
@@ -3705,23 +3447,15 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "review" },
           ),
         [WS_METHODS.terminalOpen]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.terminalOpen,
-            acquireTerminalOwnership(input).pipe(Effect.andThen(terminalManager.open(input))),
-            {
-              "rpc.aggregate": "terminal",
-            },
-          ),
+          observeRpcEffect(WS_METHODS.terminalOpen, terminalManager.open(input), {
+            "rpc.aggregate": "terminal",
+          }),
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
             Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
               Effect.acquireRelease(
-                (input.cwd !== undefined ? acquireTerminalOwnership(input) : Effect.void).pipe(
-                  Effect.andThen(
-                    terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
-                  ),
-                ),
+                terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
                 (unsubscribe) => Effect.sync(unsubscribe),
               ),
             ),
@@ -3740,13 +3474,9 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "terminal",
           }),
         [WS_METHODS.terminalRestart]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.terminalRestart,
-            acquireTerminalOwnership(input).pipe(Effect.andThen(terminalManager.restart(input))),
-            {
-              "rpc.aggregate": "terminal",
-            },
-          ),
+          observeRpcEffect(WS_METHODS.terminalRestart, terminalManager.restart(input), {
+            "rpc.aggregate": "terminal",
+          }),
         [WS_METHODS.terminalClose]: (input) =>
           observeRpcEffect(WS_METHODS.terminalClose, terminalManager.close(input), {
             "rpc.aggregate": "terminal",
@@ -4003,7 +3733,7 @@ const makeWsRpcLayer = (
 
               return Stream.concat(
                 rpcInitialItems([{ version: 1 as const, type: "snapshot" as const, config }]),
-                liveUpdates,
+                withLateEditorConfig(config, liveUpdates, externalLauncher),
               );
             }),
             { "rpc.aggregate": "server" },
@@ -4133,6 +3863,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
           yield* RpcServer.make(ServerWsRpcGroup, { disableTracing: true }).pipe(
             Effect.provideService(RpcServer.Protocol, withTerminalOutputWindow(protocol)),
+            Effect.provide(rpcScopeAuthorizationLayer(session.scopes)),
             Effect.forkScoped,
           );
           // @effect-diagnostics-next-line returnEffectInGen:off
@@ -4145,7 +3876,8 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
             ).pipe(
-              Layer.provideMerge(Layer.succeed(RpcSerialization.RpcSerialization, nativeBootstrapRpcSerialization)),
+              Layer.provide(QueueCompatibility.layer),
+              Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),

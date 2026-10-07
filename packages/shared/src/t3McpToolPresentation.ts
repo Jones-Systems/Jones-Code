@@ -21,6 +21,7 @@ export type T3McpToolSummaryAction =
   | "thread-send"
   | "thread-wait"
   | "thread-interrupt"
+  | "thread-settle"
   | "thread-configuration"
   | "thread-configure"
   | "thread-fork"
@@ -55,6 +56,8 @@ export type T3McpToolSummaryAction =
   | "link-pr"
   | "unlink-pr"
   | "list-prs"
+  | "watch-pr"
+  | "unwatch-pr"
   | "browser"
   | "device";
 
@@ -93,6 +96,16 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "list-prs",
     "pull-request",
   ),
+  watch_pull_request: tool(
+    ["Watch", "Watching", "Watching", "a pull request"],
+    "watch-pr",
+    "pull-request",
+  ),
+  unwatch_pull_request: tool(
+    ["Stop watching", "Stopping watching", "Stopped watching", "a pull request"],
+    "unwatch-pr",
+    "pull-request",
+  ),
   orchestrator_capabilities: tool(
     ["Get", "Getting", "Got", "orchestration capabilities"],
     "capabilities",
@@ -125,6 +138,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_thread_interrupt: tool(
     ["Interrupt", "Interrupting", "Requested an interrupt of", "a T3 thread"],
     "thread-interrupt",
+  ),
+  t3_thread_settle: tool(
+    ["Request settlement of", "Requesting settlement of", "Requested settlement of", "this thread"],
+    "thread-settle",
   ),
   t3_worktree_handoff: tool(
     ["Hand off", "Handing off", "Handed off", "thread to a git worktree"],

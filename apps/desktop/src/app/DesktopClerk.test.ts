@@ -56,8 +56,8 @@ const makeDesktopClerkLayer = (
     stateDir: "/tmp/t3-state",
     isDevelopment,
     appDataDirectory: "/tmp/app-data",
-    userDataDirectoryOverride,
     platform,
+    userDataDirectoryOverride,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
 
   const electronApp = {
@@ -154,30 +154,41 @@ describe("DesktopClerk", () => {
     },
   );
 
-  it("uses the isolated override synchronously before Clerk without inspecting default profiles", () => {
-    const events: string[] = [];
-    storageMock.mockReturnValue(storageAdapter);
-    createClerkBridgeMock.mockImplementation(() => {
-      events.push("createClerkBridge");
-      return { cleanup: vi.fn(), isPrimaryInstance: true };
-    });
-    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- A synchronous build proves the pre-ready bridge cannot yield.
-    Effect.runSync(
-      Effect.scoped(
-        Layer.build(
-          makeDesktopClerkLayer(
-            false,
-            events,
-            "win32",
-            FileSystem.layerNoop({ exists: () => Effect.die("override must bypass default profiles") }),
-            undefined,
-            Option.some(" /isolated/other/../profile "),
+  it.effect(
+    "binds an explicit profile before Clerk without inspecting or copying default Windows state",
+    () => {
+      const events: string[] = [];
+      storageMock.mockReturnValue(storageAdapter);
+      createClerkBridgeMock.mockImplementation(() => {
+        events.push("createClerkBridge");
+        return { cleanup: vi.fn(), isPrimaryInstance: true };
+      });
+      const noProfileAccess = FileSystem.layerNoop({
+        exists: () => Effect.die("must not inspect a default profile"),
+        readFileString: () => Effect.die("must not copy Windows Local State"),
+        makeDirectory: () => Effect.die("boot owns profile directory creation"),
+        writeFileString: () => Effect.die("must not migrate default profile state"),
+      });
+      return Effect.gen(function* () {
+        yield* Effect.scoped(
+          Layer.build(
+            makeDesktopClerkLayer(
+              false,
+              events,
+              "win32",
+              noProfileAccess,
+              undefined,
+              Option.some("/isolated/client-profile"),
+            ),
           ),
-        ),
-      ),
-    );
-    assert.deepEqual(events, ["setPath:userData:/isolated/profile", "createClerkBridge"]);
-  });
+        );
+        assert.deepEqual(events, [
+          "setPath:userData:/isolated/client-profile",
+          "createClerkBridge",
+        ]);
+      });
+    },
+  );
 
   it.effect("preserves bridge initialization failures", () => {
     const cause = new Error("bridge initialization failed");
@@ -330,8 +341,9 @@ it.effect(
   },
 );
 
-for (const entry of ["startup", "open-url"] as const) {
-  it.effect(`receives hosted web sign-in through the desktop ${entry} handler`, () =>
+it.effect.each(["startup", "open-url"] as const)(
+  "receives hosted web sign-in through the desktop %s handler",
+  (entry) =>
     Effect.gen(function* () {
       storageMock.mockReturnValue(storageAdapter);
       createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
@@ -409,5 +421,4 @@ for (const entry of ["startup", "open-url"] as const) {
         ),
       );
     }).pipe(Effect.scoped),
-  );
-}
+);

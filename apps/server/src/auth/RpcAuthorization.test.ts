@@ -1,24 +1,36 @@
 import {
   AuthOrchestrationOperateScope,
-  AuthSessionId,
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
   WS_METHODS,
-  ORCHESTRATION_V2_WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as RpcTest from "effect/unstable/rpc/RpcTest";
 
 import {
   RPC_REQUIRED_SCOPES,
-  assertLegacyBootstrapAllowed,
   requiredScopeForRpcMethod,
   requiredScopeForDeviceList,
+  rpcScopeAuthorizationLayer,
 } from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("reads CI status under exactly orchestration read permission", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.pullRequestsCiStatus)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
+  it("reads saved accounting under orchestration read permission", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverReadTokenAccounting)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
@@ -57,49 +69,6 @@ describe("RPC authorization scopes", () => {
     );
     expect(requiredScopeForRpcMethod(WS_METHODS.agentSessionsImport)).toBe(
       AuthOrchestrationOperateScope,
-    );
-  });
-
-  it("requires operate for guarded dispatch and read for runtime attachment", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.dispatchGuarded)).toBe(
-      AuthOrchestrationOperateScope,
-    );
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeAttachment)).toBe(
-      AuthOrchestrationReadScope,
-    );
-  });
-
-  it("keeps imported review and observation read scoped and explicit start operate scoped", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart)).toBe(AuthOrchestrationReadScope);
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart)).toBe(AuthOrchestrationReadScope);
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory)).toBe(AuthOrchestrationOperateScope);
-  });
-
-  it("reads current runtime observation and operating counts without mutation permission", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation)).toBe(AuthOrchestrationReadScope);
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.getOperatingCounts)).toBe(AuthOrchestrationReadScope);
-  });
-
-  it("observes a current runtime STOP receipt under read permission", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop)).toBe(AuthOrchestrationReadScope);
-  });
-
-  it("requires operate for both bootstrap RPCs and the exact current-runtime STOP mutation", () => {
-    for (const method of ["orchestration.dispatchBootstrap", ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
-      ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]) {
-      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
-    }
-  });
-
-  it("observes deletion cleanup under read permission without granting another mutation", () => {
-    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup)).toBe(
-      AuthOrchestrationReadScope,
-    );
-  });
-
-  it("reads saved accounting under orchestration read permission", () => {
-    expect(requiredScopeForRpcMethod(WS_METHODS.serverReadTokenAccounting)).toBe(
-      AuthOrchestrationReadScope,
     );
   });
 
@@ -164,34 +133,99 @@ it("requires operate permission for tool updates even alongside a read-only chec
   expect(requiredScopeForDeviceList({ updateTool: "hub" })).toBe(AuthOrchestrationOperateScope);
 });
 
-it.effect("checks the verified auth session's permanent enrollment before ordinary V2 creation", () =>
-  Effect.gen(function* () {
-    const actorSessionId = AuthSessionId.make("verified-ordinary-create-session");
-    let reads = 0;
-    const error = yield* assertLegacyBootstrapAllowed({
-      actorSessionId, command: { type: "thread.create" },
-      hasAutomationEnrollment: (received) => Effect.sync(() => {
-        expect(received).toBe(actorSessionId);
-        reads++;
-        return true;
-      }),
-    }).pipe(Effect.flip);
-    expect(reads).toBe(1);
-    expect(error.creationRejectionCode).toBe("stale_grant");
-  }),
-);
+describe("RPC scope middleware", () => {
+  const tested = [WS_METHODS.serverProbe, WS_METHODS.serverRetryResourceTelemetry] as const;
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+        !(tested as ReadonlyArray<string>).includes(tag),
+    ),
+  );
 
-it.effect("permits ordinary V2 creation only with a successful unenrolled lookup", () =>
-  Effect.gen(function* () {
-    const actorSessionId = AuthSessionId.make("verified-ordinary-create-session");
-    yield* assertLegacyBootstrapAllowed({
-      actorSessionId, command: { type: "thread.create" },
-      hasAutomationEnrollment: () => Effect.succeed(false),
-    });
-    const error = yield* assertLegacyBootstrapAllowed({
-      actorSessionId, command: { type: "thread.create" },
-      hasAutomationEnrollment: () => Effect.fail("enrollment lookup unavailable"),
-    }).pipe(Effect.flip);
-    expect(error.creationRejectionCode).toBe("unsupported_authority");
-  }),
-);
+  it.effect("checks each RPC's declared scope before its handler runs", () =>
+    Effect.gen(function* () {
+      const handled: Array<string> = [];
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.serverProbe, () => Effect.succeed({})),
+            group.toLayerHandler(WS_METHODS.serverRetryResourceTelemetry, () =>
+              Effect.sync(() => handled.push("retry")).pipe(Effect.andThen(Effect.never)),
+            ),
+            rpcScopeAuthorizationLayer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+
+      expect(yield* client[WS_METHODS.serverProbe]({})).toEqual({});
+      expect(
+        yield* client[WS_METHODS.serverRetryResourceTelemetry]({}).pipe(Effect.flip),
+      ).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredScope: AuthOrchestrationOperateScope,
+      });
+      expect(handled).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("CI status RPC authorization", () => {
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (
+        tag,
+      ): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof WS_METHODS.pullRequestsCiStatus> =>
+        tag !== WS_METHODS.pullRequestsCiStatus,
+    ),
+  );
+
+  it.effect("dispatches CI reads only with the declared read scope", () =>
+    Effect.gen(function* () {
+      const result = {
+        host: "github.com",
+        organization: "Jones-Systems",
+        accountId: "fixture-account",
+        observedAt: "2026-10-04T16:00:00Z",
+        repositories: [],
+        scopeTruncated: false,
+        jobs: { state: "available" as const, reasons: [], items: [] },
+        workflows: { state: "available" as const, reasons: [], items: [] },
+        runners: { state: "available" as const, reasons: [], items: [] },
+      };
+      for (const scopes of [
+        [],
+        [AuthOrchestrationOperateScope],
+        [AuthOrchestrationReadScope],
+      ] as const) {
+        let dispatched = 0;
+        const client = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.pullRequestsCiStatus, () =>
+                Effect.sync(() => {
+                  dispatched++;
+                  return result;
+                }),
+              ),
+              rpcScopeAuthorizationLayer(scopes),
+            ),
+          ),
+        );
+        const read = client[WS_METHODS.pullRequestsCiStatus]({
+          host: "github.com",
+          organization: "Jones-Systems",
+        });
+        if (scopes[0] === AuthOrchestrationReadScope) {
+          expect(yield* read).toEqual(result);
+          expect(dispatched).toBe(1);
+        } else {
+          expect(yield* read.pipe(Effect.flip)).toMatchObject({
+            _tag: "EnvironmentAuthorizationError",
+            requiredScope: AuthOrchestrationReadScope,
+          });
+          expect(dispatched).toBe(0);
+        }
+      }
+    }).pipe(Effect.scoped),
+  );
+});

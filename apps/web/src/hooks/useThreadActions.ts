@@ -4,34 +4,29 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import { createEnvironmentRpcQueryAtomFamily, settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
-import {
-  CommandId, EnvironmentId, ProjectId, ORCHESTRATION_V2_WS_METHODS,
-  OrchestrationV2ThreadDeletionWorktreeRemoval,
-  type OrchestrationV2ThreadDeletionCleanupObservation,
-  type ScopedThreadRef, ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
-import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useRouter } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 
 import { getFallbackThreadIdAfterDelete, pinOrderKeyBetween } from "../components/Sidebar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
+import { terminalEnvironment } from "../state/terminal";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentServerConfigsAtom } from "../state/server";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { threadEnvironment } from "../state/threads";
+import { vcsEnvironment } from "../state/vcs";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
 import { releaseComposerDraftUploads } from "../lib/composerDraftUploads";
 import { readLocalApi } from "../localApi";
-import { randomUUID } from "../lib/utils";
 import {
   readEnvironmentSupportsAutoSettleOptOut,
   readEnvironmentSupportsPinning,
@@ -54,190 +49,6 @@ import { useClientSettings } from "./useSettings";
 import * as ThreadUndo from "./threadUndo";
 import { showThreadUndoNotice } from "./showThreadUndoNotice";
 import { useAtomCommand } from "../state/use-atom-command";
-import { useAtomQueryRunner } from "../state/use-atom-query-runner";
-import { connectionAtomRuntime } from "../connection/runtime";
-import { environmentCatalog } from "../connection/catalog";
-import { getLocalStorageItem, setLocalStorageItem } from "./useLocalStorage";
-
-const deletionCleanupQuery = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
-  label: "thread-deletion-cleanup-observation",
-  tag: ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup,
-});
-const DeletionOperationSchema = Schema.Struct({
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  commandId: CommandId,
-  projectId: Schema.NullOr(ProjectId),
-  worktreeRemoval: Schema.NullOr(OrchestrationV2ThreadDeletionWorktreeRemoval),
-});
-export type ThreadDeletionOperation = typeof DeletionOperationSchema.Type;
-const deletionStoragePrefix = "t3code:thread-deletion-operation:";
-const volatileDeletionOperations = new Map<string, ThreadDeletionOperation>();
-const deletionInFlight = new Map<string, Promise<{ sequence: number }>>();
-
-function deletionOperationKey(ref: ScopedThreadRef): string {
-  return scopedThreadKey({ environmentId: ref.environmentId, threadId: ref.threadId });
-}
-
-function readSavedDeletion(ref: ScopedThreadRef): ThreadDeletionOperation | null {
-  if (typeof window === "undefined") throw new Error("Deletion tracking storage is unavailable.");
-  const saved = getLocalStorageItem(deletionStoragePrefix + deletionOperationKey(ref), DeletionOperationSchema);
-  const volatile = volatileDeletionOperations.get(deletionOperationKey(ref));
-  if (volatile !== undefined && saved !== null && JSON.stringify(volatile) !== JSON.stringify(saved)) {
-    throw new Error("The saved deletion no longer matches the original operation.");
-  }
-  return volatile ?? saved;
-}
-
-function saveDeletion(operation: ThreadDeletionOperation): void {
-  if (typeof window === "undefined") throw new Error("Deletion tracking storage is unavailable.");
-  setLocalStorageItem(deletionStoragePrefix + deletionOperationKey(operation), operation, DeletionOperationSchema);
-  const saved = readSavedDeletion(operation);
-  if (JSON.stringify(saved) !== JSON.stringify(operation)) throw new Error("Deletion tracking was not saved.");
-}
-
-function acceptedDeletionSequence(operation: ThreadDeletionOperation, observation: OrchestrationV2ThreadDeletionCleanupObservation): number | null {
-  if (observation.threadId !== operation.threadId || observation.commandId !== operation.commandId ||
-      (observation.worktree !== null && (operation.worktreeRemoval === null ||
-        observation.worktree.projectId !== operation.worktreeRemoval.projectId ||
-        observation.worktree.path !== operation.worktreeRemoval.path ||
-        observation.worktree.branch !== operation.worktreeRemoval.branch))) {
-    throw new Error("The deletion observation does not match the original operation.");
-  }
-  const receipt = observation.receipt;
-  const deletion = observation.deletion;
-  if (receipt === null || deletion === null || receipt.status !== "accepted" ||
-      receipt.commandId !== operation.commandId || receipt.threadId !== operation.threadId ||
-      receipt.commandType !== "thread.delete" || receipt.resultSequence !== deletion.resultSequence ||
-      deletion.sequence > deletion.resultSequence) return null;
-  return receipt.resultSequence;
-}
-
-export function createThreadDeletionController(options: {
-  readonly read: (ref: ScopedThreadRef) => ThreadDeletionOperation | null;
-  readonly save: (operation: ThreadDeletionOperation) => void;
-  readonly saveVolatile: (operation: ThreadDeletionOperation) => void;
-  readonly allocateCommandId: () => CommandId;
-  readonly delete: (operation: ThreadDeletionOperation) => Promise<{ sequence: number }>;
-  readonly observe: (operation: ThreadDeletionOperation) => Promise<OrchestrationV2ThreadDeletionCleanupObservation>;
-  readonly onUntracked: () => void;
-  readonly inFlight?: Map<string, Promise<{ sequence: number }>>;
-}) {
-  const inFlight = options.inFlight ?? new Map<string, Promise<{ sequence: number }>>();
-  const read = (ref: ScopedThreadRef) => {
-    const operation = options.read(ref);
-    if (operation !== null && (operation.environmentId !== ref.environmentId || operation.threadId !== ref.threadId)) {
-      throw new Error("The saved deletion belongs to another environment or thread.");
-    }
-    return operation === null ? null : Object.freeze({
-      ...operation,
-      worktreeRemoval: operation.worktreeRemoval === null ? null : Object.freeze({ ...operation.worktreeRemoval }),
-    });
-  };
-  const observe = async (ref: ScopedThreadRef) => {
-    const operation = read(ref);
-    if (operation === null) return null;
-    const observation = await options.observe(operation);
-    if (JSON.stringify(read(ref)) !== JSON.stringify(operation)) {
-      throw new Error("The saved deletion changed during observation.");
-    }
-    acceptedDeletionSequence(operation, observation);
-    return observation;
-  };
-  const reconcile = async (ref: ScopedThreadRef, expected?: ThreadDeletionOperation) => {
-    const operation = read(ref);
-    if (operation === null) throw new Error("The original deletion is unavailable; no new command was sent.");
-    if (expected !== undefined && JSON.stringify(operation) !== JSON.stringify(expected)) {
-      throw new Error("The saved deletion no longer matches the original command. No replacement was observed.");
-    }
-    const observation = await observe(ref);
-    const sequence = observation === null ? null : acceptedDeletionSequence(operation, observation);
-    if (sequence === null) throw new Error("Deletion is unconfirmed. The original command remains saved for observation.");
-    return { sequence };
-  };
-  return {
-    read,
-    observe,
-    request: (ref: ScopedThreadRef, input: {
-      projectId: ProjectId | null;
-      worktreeRemoval: OrchestrationV2ThreadDeletionWorktreeRemoval | null;
-    }) => {
-      const key = deletionOperationKey(ref);
-      const running = inFlight.get(key);
-      if (running !== undefined) return running;
-      const run = async () => {
-        if (read(ref) !== null) return reconcile(ref);
-        let operation: ThreadDeletionOperation = Object.freeze({
-          ...ref, commandId: options.allocateCommandId(), projectId: input.projectId,
-          worktreeRemoval: input.worktreeRemoval === null ? null : Object.freeze({ ...input.worktreeRemoval }),
-        });
-        try {
-          options.save(operation);
-        } catch (error) {
-          const saved = read(ref);
-          if (saved !== null && JSON.stringify(saved) !== JSON.stringify(operation)) throw error;
-          if (saved === null) {
-            // Failed tracking never starts an untrackable physical removal.
-            operation = Object.freeze({ ...operation, worktreeRemoval: null });
-            options.saveVolatile(operation);
-            options.onUntracked();
-          }
-        }
-        try {
-          const result = await options.delete(operation);
-          if (JSON.stringify(read(ref)) !== JSON.stringify(operation)) {
-            throw new Error("The saved deletion changed while the original command was being dispatched.");
-          }
-          return result;
-        } catch (error) {
-          try { return await reconcile(ref, operation); } catch { throw error; }
-        }
-      };
-      const pending = run().finally(() => { if (inFlight.get(key) === pending) inFlight.delete(key); });
-      inFlight.set(key, pending);
-      return pending;
-    },
-  };
-}
-
-function savedDeletionOperations(): ReadonlyArray<ThreadDeletionOperation> {
-  if (typeof window === "undefined") return [];
-  const operations = new Map(volatileDeletionOperations);
-  for (let index = 0; index < window.localStorage.length; index += 1) {
-    const key = window.localStorage.key(index);
-    if (key?.startsWith(deletionStoragePrefix)) {
-      const operation = getLocalStorageItem(key, DeletionOperationSchema);
-      if (operation !== null) operations.set(deletionOperationKey(operation), operation);
-    }
-  }
-  return [...operations.values()];
-}
-
-const deletionObservers = new Set<(ref: ScopedThreadRef) => Promise<unknown>>();
-const deletionConnectionSubscriptions = new Map<EnvironmentId, () => void>();
-function resumeDeletionObservations(): void {
-  const observe = deletionObservers.values().next().value;
-  if (observe === undefined) return;
-  let operations: ReadonlyArray<ThreadDeletionOperation>;
-  try { operations = savedDeletionOperations(); } catch { return; }
-  for (const operation of operations) {
-    if (deletionConnectionSubscriptions.has(operation.environmentId)) continue;
-    const atom = environmentCatalog.stateAtom(operation.environmentId);
-    let generation: number | null = null;
-    const connected = () => {
-      const state = AsyncResult.value(appAtomRegistry.get(atom));
-      if (Option.isNone(state) || state.value.phase !== "connected" || generation === state.value.generation) return;
-      generation = state.value.generation;
-      try {
-        for (const saved of savedDeletionOperations()) {
-          if (saved.environmentId === operation.environmentId) void deletionObservers.values().next().value?.(saved);
-        }
-      } catch { /* Unreadable saved operations cannot authorize a replacement dispatch. */ }
-    };
-    deletionConnectionSubscriptions.set(operation.environmentId, appAtomRegistry.subscribe(atom, connected));
-    connected();
-  }
-}
 
 export class ThreadArchiveBlockedError extends Schema.TaggedError<ThreadArchiveBlockedError>()(
   "ThreadArchiveBlockedError",
@@ -367,7 +178,7 @@ export async function requestThreadUnpinConfirmation(input: {
   );
 }
 
-/** Report navigation separately from server-owned deletion cleanup. */
+/** Report navigation separately so a completed deletion can still finish worktree cleanup. */
 export async function navigateAfterThreadDeletion(navigate: () => Promise<void>) {
   const result = await settlePromise(navigate);
   if (result._tag === "Failure") {
@@ -408,7 +219,32 @@ function useMarkThreadUnread() {
   );
 }
 
+/**
+ * Clears a thread's Woke marker by recording a visit at the wake time.
+ * Servers with visited tracking own the watermark (thread.visit keeps the
+ * later of the stored and supplied values, so this syncs to every device);
+ * older servers keep the browser-local watermark.
+ */
+export function useAcknowledgeThreadWoke() {
+  const visitThreadMutation = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const markThreadVisited = useUiStateStore((state) => state.markThreadVisited);
+  return useCallback(
+    (target: ScopedThreadRef, wokeAt: string) => {
+      if (readEnvironmentSupportsVisitedTracking(target.environmentId)) {
+        void visitThreadMutation({
+          environmentId: target.environmentId,
+          input: { threadId: target.threadId, visitedAt: wokeAt },
+        });
+        return;
+      }
+      markThreadVisited(scopedThreadKey(target), wokeAt);
+    },
+    [markThreadVisited, visitThreadMutation],
+  );
+}
+
 export function useThreadActions() {
+  const closeTerminal = useAtomCommand(terminalEnvironment.close);
   const archiveThreadMutation = useAtomCommand(threadEnvironment.archive, {
     reportFailure: false,
   });
@@ -418,81 +254,6 @@ export function useThreadActions() {
   const deleteThreadMutation = useAtomCommand(threadEnvironment.delete, {
     reportFailure: false,
   });
-  const readDeletionCleanup = useAtomQueryRunner(deletionCleanupQuery, { refresh: true, reportFailure: false });
-  const deletionController = useMemo(() => createThreadDeletionController({
-    read: readSavedDeletion,
-    save: saveDeletion,
-    saveVolatile: (operation) => volatileDeletionOperations.set(deletionOperationKey(operation), operation),
-    allocateCommandId: () => CommandId.make(randomUUID()),
-    inFlight: deletionInFlight,
-    delete: async (operation) => {
-      const result = await deleteThreadMutation({
-        environmentId: operation.environmentId,
-        input: {
-          threadId: operation.threadId, commandId: operation.commandId,
-          ...(operation.worktreeRemoval === null ? {} : { worktreeRemoval: operation.worktreeRemoval }),
-        },
-      });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      return result.value;
-    },
-    observe: async (operation) => {
-      const result = await readDeletionCleanup({
-        environmentId: operation.environmentId,
-        input: { threadId: operation.threadId, commandId: operation.commandId },
-      });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      return result.value;
-    },
-    onUntracked: () => toastManager.add(stackedThreadToast({
-      type: "info", title: "Worktree removal was not requested",
-      description: "Deletion tracking could not be saved. Only the thread will be deleted; recovery after closing this browser is unavailable.",
-    })),
-  }), [deleteThreadMutation, readDeletionCleanup]);
-  const observeThreadDeletionCleanup = useCallback(async (ref: ScopedThreadRef) => {
-    const result = await settlePromise(async () => {
-      const observation = await deletionController.observe(ref);
-      if (observation === null) return null;
-      const operation = deletionController.read(ref);
-      const accepted = operation !== null && acceptedDeletionSequence(operation, observation) !== null;
-      if (observation.worktree !== null || operation?.worktreeRemoval != null) {
-        const completed = accepted && operation?.worktreeRemoval != null && observation.worktree !== null &&
-          observation.state === "completed" && observation.currentLease === "absent" &&
-          observation.removalOutcome?.result === "succeeded" &&
-          (observation.removalOutcome.effect === "confirmed" || observation.removalOutcome.effect === "absent");
-        toastManager.add(stackedThreadToast({
-          type: "info",
-          title: completed ? "Thread worktree deleted" : accepted ? "Thread deleted; worktree cleanup pending" : "Deletion cleanup is unconfirmed",
-          description: completed ? "The server confirmed worktree removal and ownership release." :
-            observation.reason ?? "Worktree cleanup has not completed. The original deletion remains available for observation.",
-        }));
-      }
-      return observation;
-    });
-    if (result._tag === "Failure") {
-      toastManager.add(stackedThreadToast({
-        type: "info", title: "Deletion cleanup is unconfirmed",
-        description: "The original command remains saved. Cleanup could not be observed; no replacement deletion was sent.",
-      }));
-    }
-    return result;
-  }, [deletionController]);
-  useEffect(() => {
-    deletionObservers.add(observeThreadDeletionCleanup);
-    const first = deletionObservers.size === 1;
-    if (first && typeof window !== "undefined") {
-      resumeDeletionObservations();
-      window.addEventListener("storage", resumeDeletionObservations);
-    }
-    return () => {
-      deletionObservers.delete(observeThreadDeletionCleanup);
-      if (deletionObservers.size === 0) {
-        for (const unsubscribe of deletionConnectionSubscriptions.values()) unsubscribe();
-        deletionConnectionSubscriptions.clear();
-        if (typeof window !== "undefined") window.removeEventListener("storage", resumeDeletionObservations);
-      }
-    };
-  }, [observeThreadDeletionCleanup]);
   const settleThreadMutation = useAtomCommand(threadEnvironment.settle, {
     reportFailure: false,
   });
@@ -521,6 +282,13 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const markThreadUnread = useMarkThreadUnread();
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession);
+  const removeWorktree = useAtomCommand(vcsEnvironment.removeWorktree, {
+    reportFailure: false,
+  });
+  const refreshVcsStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
+    reportFailure: false,
+  });
   const sidebarThreadSortOrder = useClientSettings((settings) => settings.sidebarThreadSortOrder);
   const confirmThreadDelete = useClientSettings((settings) => settings.confirmThreadDelete);
   const confirmThreadUnpin = useClientSettings((settings) => settings.confirmThreadUnpin);
@@ -644,32 +412,13 @@ export function useThreadActions() {
 
   const deleteThread = useCallback(
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
-      const savedResult = await settlePromise(() => deletionController.read(target));
-      if (savedResult._tag === "Failure") return savedResult;
-      if (savedResult.value !== null) {
-        const result = await settlePromise(() => deletionController.request(target, savedResult.value!));
-        if (result._tag === "Success") {
-          releaseComposerDraftUploads(target);
-          clearComposerDraftForThread(target);
-          clearTerminalUiState(target);
-          if (savedResult.value.projectId !== null) clearProjectDraftThreadById(
-            scopeProjectRef(target.environmentId, savedResult.value.projectId), target,
-          );
-          refreshArchivedThreadsForEnvironment(target.environmentId);
-          const current = getCurrentRouteThreadRef();
-          if (current?.environmentId === target.environmentId && current.threadId === target.threadId) {
-            await navigateAfterThreadDeletion(() => router.navigate({ to: "/", replace: true }));
-          }
-        }
-        await observeThreadDeletionCleanup(target);
-        return result;
-      }
       const resolved = resolveThreadTarget(target);
       if (!resolved) {
         // Thread not in main store (e.g. archived thread) — dispatch delete directly.
-        const result = await settlePromise(() => deletionController.request(target, {
-          projectId: null, worktreeRemoval: null,
-        }));
+        const result = await deleteThreadMutation({
+          environmentId: target.environmentId,
+          input: { threadId: target.threadId },
+        });
         if (result._tag === "Success") {
           refreshArchivedThreadsForEnvironment(target.environmentId);
         }
@@ -737,6 +486,18 @@ export function useThreadActions() {
         shouldDeleteWorktree = confirmationResult.value;
       }
 
+      if (thread.runtime !== null) {
+        await stopThreadSession({
+          environmentId: threadRef.environmentId,
+          input: { threadId: threadRef.threadId },
+        });
+      }
+
+      await closeTerminal({
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, deleteHistory: true },
+      });
+
       const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
       const currentRouteThreadRef = getCurrentRouteThreadRef();
       const shouldNavigateToFallback =
@@ -748,15 +509,11 @@ export function useThreadActions() {
         deletedThreadIds,
         sortOrder: sidebarThreadSortOrder,
       });
-      const deleteResult = await settlePromise(() => deletionController.request(threadRef, {
-        projectId: thread.projectId,
-        worktreeRemoval: shouldDeleteWorktree && canDeleteWorktree && orphanedWorktreePath !== null
-          ? { projectId: thread.projectId, path: orphanedWorktreePath, branch: thread.branch, force: true }
-          : null,
-      }));
-      resumeDeletionObservations();
+      const deleteResult = await deleteThreadMutation({
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId },
+      });
       if (deleteResult._tag === "Failure") {
-        await observeThreadDeletionCleanup(threadRef);
         return deleteResult;
       }
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
@@ -789,19 +546,66 @@ export function useThreadActions() {
         return deleteResult;
       }
 
-      await observeThreadDeletionCleanup(threadRef);
+      const removeResult = await removeWorktree({
+        environmentId: threadRef.environmentId,
+        input: {
+          cwd: threadProject.workspaceRoot,
+          path: orphanedWorktreePath,
+          force: true,
+        },
+      });
+      const refreshResult =
+        removeResult._tag === "Success"
+          ? await refreshVcsStatus({
+              environmentId: threadRef.environmentId,
+              input: { cwd: threadProject.workspaceRoot },
+            })
+          : null;
+      const cleanupFailure =
+        removeResult._tag === "Failure"
+          ? removeResult
+          : refreshResult?._tag === "Failure"
+            ? refreshResult
+            : null;
+      if (cleanupFailure) {
+        const removalFailed = removeResult._tag === "Failure";
+        const error = squashAtomCommandFailure(cleanupFailure);
+        const message = error instanceof Error ? error.message : "An error occurred.";
+        console.error("Worktree cleanup failed after thread deletion", {
+          threadId: threadRef.threadId,
+          projectCwd: threadProject.workspaceRoot,
+          worktreePath: orphanedWorktreePath,
+          error,
+        });
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: removalFailed
+              ? "Failed to delete worktree"
+              : "Worktree deleted, but Git status refresh failed",
+            description: removalFailed
+              ? `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`
+              : message,
+          }),
+        );
+        // The thread was deleted. Cleanup has its own toast; returning its
+        // failure would make callers incorrectly report a thread deletion error.
+      }
       return deleteResult;
     },
     [
       clearComposerDraftForThread,
       clearProjectDraftThreadById,
       clearTerminalUiState,
-      deletionController,
-      observeThreadDeletionCleanup,
+      closeTerminal,
+      deleteThreadMutation,
       getCurrentRouteThreadRef,
+      refreshVcsStatus,
+      removeWorktree,
       router,
       resolveThreadTarget,
       sidebarThreadSortOrder,
+      stopThreadSession,
     ],
   );
 
@@ -1158,7 +962,6 @@ export function useThreadActions() {
       archiveThread,
       unarchiveThread,
       deleteThread,
-      observeThreadDeletionCleanup,
       confirmAndDeleteThread,
       settleThread,
       unsettleThread,
@@ -1177,7 +980,6 @@ export function useThreadActions() {
       confirmAndDeleteThread,
       confirmAndUnpinThread,
       deleteThread,
-      observeThreadDeletionCleanup,
       markThreadUnread,
       pinThread,
       reorderPinnedThread,

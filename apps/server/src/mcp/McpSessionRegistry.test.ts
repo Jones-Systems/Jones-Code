@@ -7,7 +7,6 @@ import * as NetAddress from "effect/unstable/net/NetAddress";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
-import type * as McpInvocationContext from "./McpInvocationContext.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
 const makeFakeHttpServer = (hostname: string, port = 43123) =>
@@ -50,7 +49,7 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
     const resolved = yield* registry.resolve(token);
     expect(resolved?.threadId).toBe(threadId);
     expect(resolved?.capabilities).toEqual(
-      new Set(["preview"]),
+      new Set(["preview", "orchestration", "worktree", "pull-requests"]),
     );
 
     yield* registry.revokeThread(threadId);
@@ -60,7 +59,7 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
   }),
 );
 
-it.effect("honors every explicit capability without amplifying the grant", () =>
+it.effect("always grants pull-requests and gates browser and device access independently", () =>
   Effect.gen(function* () {
     const registry = yield* makeRegistry(() => 1_000);
     const withPreview = yield* registry.issue({
@@ -78,29 +77,28 @@ it.effect("honors every explicit capability without amplifying the grant", () =>
       providerInstanceId: ProviderInstanceId.make("codex"),
       capabilities: new Set(["device"]),
     });
-    const withOrganization = yield* registry.issue({
-      threadId: ThreadId.make("thread-organization"),
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      capabilities: new Set(["organization"]),
-    });
-    const withSnapshot = yield* registry.issue({
-      threadId: ThreadId.make("thread-snapshot"),
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      capabilities: new Set(["decision-snapshot"]),
-    });
     const capabilitiesOf = (issued: typeof withPreview) =>
       registry
         .resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, ""))
         .pipe(Effect.map((scope) => [...(scope?.capabilities ?? [])].sort()));
 
-    expect(yield* capabilitiesOf(withPreview)).toEqual(["preview"]);
-    expect(yield* capabilitiesOf(withoutPreview)).toEqual([]);
-    expect(yield* capabilitiesOf(withDevice)).toEqual(["device"]);
-    expect(yield* capabilitiesOf(withOrganization)).toEqual(["organization"]);
-    expect(yield* capabilitiesOf(withSnapshot)).toEqual(["decision-snapshot"]);
-    expect(withPreview.config.browserToolsAvailable).toBe(true);
-    expect(withoutPreview.config.browserToolsAvailable).toBe(false);
-    expect(withDevice.config.browserToolsAvailable).toBe(false);
+    expect(yield* capabilitiesOf(withPreview)).toEqual([
+      "orchestration",
+      "preview",
+      "pull-requests",
+      "worktree",
+    ]);
+    expect(yield* capabilitiesOf(withoutPreview)).toEqual([
+      "orchestration",
+      "pull-requests",
+      "worktree",
+    ]);
+    expect(yield* capabilitiesOf(withDevice)).toEqual([
+      "device",
+      "orchestration",
+      "pull-requests",
+      "worktree",
+    ]);
   }),
 );
 
@@ -181,64 +179,4 @@ it.effect("does not keep credentials of other threads alive", () =>
 
     expect(yield* registry.resolve(token)).toBeUndefined();
   }),
-);
-
-it.effect("rejects a browser flag that contradicts the credential grant before issuing a token", () =>
-  Effect.gen(function* () {
-    const registry = yield* makeRegistry(() => 1_000);
-    for (const [browserToolsAvailable, capabilities] of [
-      [false, new Set<McpInvocationContext.McpCapability>(["preview"])],
-      [true, new Set<McpInvocationContext.McpCapability>()],
-    ] as const) {
-      const result = yield* registry.issue({
-        threadId: ThreadId.make("thread-contradiction"),
-        providerInstanceId: ProviderInstanceId.make("codex"),
-        browserToolsAvailable,
-        capabilities,
-      }).pipe(Effect.exit);
-      expect(result._tag).toBe("Failure");
-    }
-  }),
-);
-
-it.effect("grants orchestration and worktree only when explicitly requested", () =>
-  Effect.gen(function* () {
-    const registry = yield* makeRegistry(() => 1_000);
-    const issued = yield* registry.issue({
-      threadId: ThreadId.make("thread-ordinary"),
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      capabilities: new Set(["orchestration", "worktree", "pull-requests"]),
-    });
-    const resolved = yield* registry.resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, ""));
-    expect(resolved?.capabilities).toEqual(new Set(["orchestration", "worktree", "pull-requests"]));
-    expect(issued.config.browserToolsAvailable).toBe(false);
-  }),
-);
-
-it.effect("does not revoke an active credential for a contradictory replacement request", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const registry = yield* McpSessionRegistry.McpSessionRegistry;
-      const request = {
-        threadId: ThreadId.make("thread-active-grant"),
-        providerInstanceId: ProviderInstanceId.make("codex"),
-        capabilities: new Set<McpInvocationContext.McpCapability>(["orchestration"]),
-        browserToolsAvailable: false,
-      };
-      const issued = yield* McpSessionRegistry.issueActiveMcpCredential(request);
-      expect(issued).toBeDefined();
-      const rejected = yield* McpSessionRegistry.issueActiveMcpCredential({
-        ...request,
-        browserToolsAvailable: true,
-      }).pipe(Effect.exit);
-      expect(rejected._tag).toBe("Failure");
-      const token = issued!.config.authorizationHeader.replace(/^Bearer\s+/, "");
-      expect((yield* registry.resolve(token))?.providerSessionId).toBe(issued!.config.providerSessionId);
-    }).pipe(
-      Effect.provide(McpSessionRegistry.layer),
-      Effect.provideService(HttpServer.HttpServer, fakeHttpServer),
-      Effect.provideService(ServerEnvironment.ServerEnvironment, fakeEnvironment),
-      Effect.provide(NodeServices.layer),
-    ),
-  ),
 );

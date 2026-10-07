@@ -3,22 +3,7 @@ import type {
   NativeReference,
   T3WorkstreamListResult,
   WorkstreamCommand,
-  WorkstreamReceipt,
 } from "@t3tools/contracts";
-import { sortActiveThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
-import {
-  assertWorkstreamReadContext,
-  WorkstreamActionError,
-  workstreamFailureMessage,
-  type WorkstreamListView,
-} from "../../state/workstreams";
-import {
-  committedWorkstreamReceipt,
-  createSnapshotSequence,
-  exactThreadReferences,
-  qualifiedRegistrationSource,
-  threadReferenceState,
-} from "./workstreamReferenceActions";
 import {
   currentT3Placement,
   type LiveT3Placements,
@@ -27,7 +12,6 @@ import {
   attestedNativeThreadKey,
   nativeWorkstreamThreadKey,
   type WorkstreamThreadLike,
-  type NativeWorkstreamThreadGrouping,
 } from "./nativeThreadGrouping";
 
 export const canEditWorkstreams = (data: T3WorkstreamListResult | null): boolean =>
@@ -39,17 +23,6 @@ export const canEditWorkstreams = (data: T3WorkstreamListResult | null): boolean
 
 export { workstreamTint } from "@t3tools/client-runtime/state/workstreams";
 
-export type NativeMembershipAction = Extract<
-  WorkstreamCommand["action"],
-  {
-    readonly operation:
-      | "move_primary"
-      | "attach_primary"
-      | "reattach_primary"
-      | "remove_membership";
-  }
->;
-
 export function planNativeMembership(input: {
   readonly data: T3WorkstreamListResult;
   readonly placements: LiveT3Placements;
@@ -58,7 +31,7 @@ export function planNativeMembership(input: {
   readonly thread: WorkstreamThreadLike;
   readonly destination: string | null;
   readonly now: number;
-}): NativeMembershipAction | null {
+}): WorkstreamCommand["action"] | null {
   if (!canEditWorkstreams(input.data))
     throw new Error("Refresh Workstreams with write access before changing membership.");
   const context = input.placements.context;
@@ -157,287 +130,4 @@ export function moveNativeThreadOrder(
   const next = order.filter((key) => key !== movedId);
   next.splice(next.indexOf(neighborId) + (after ? 1 : 0), 0, movedId);
   return next;
-}
-
-export function captureDraggedThreadKeys(
-  initiator: string,
-  selected: ReadonlySet<string>,
-  rendered: readonly string[],
-): readonly string[] {
-  return selected.has(initiator) ? rendered.filter((key) => selected.has(key)) : [initiator];
-}
-
-export function moveNativeThreadBlock(
-  order: readonly string[],
-  moved: readonly string[],
-  neighbor: string | null,
-  after: boolean,
-): readonly string[] {
-  const selected = new Set(moved);
-  if (neighbor !== null && selected.has(neighbor)) return order;
-  const next = order.filter((key) => !selected.has(key));
-  const index = neighbor === null ? next.length : next.indexOf(neighbor);
-  if (index < 0) return order;
-  next.splice(index + (neighbor !== null && after ? 1 : 0), 0, ...moved);
-  return next;
-}
-
-export class ThreadMovementError extends Error {
-  constructor(
-    reason: string,
-    readonly completedKeys: readonly string[],
-    readonly stoppedKey: string,
-    readonly unprocessedKeys: readonly string[],
-    readonly commandId: string | null,
-    readonly preparedKeys: readonly string[] = [],
-    readonly stoppedTitle: string = stoppedKey,
-    readonly phase: "register" | "verify" | "reload" | "assign" = "assign",
-  ) {
-    super(
-      `${reason} Assigned ${completedKeys.length}. References prepared but not assigned ${preparedKeys.filter((key) => !completedKeys.includes(key)).length}. Stopped: ${stoppedTitle} (${phase}; ${commandId ?? "not submitted"}). Not processed ${unprocessedKeys.length}. Retry checks existing commands only.`,
-    );
-    this.name = "ThreadMovementError";
-  }
-}
-
-export async function submitNativeMembershipBatch(input: {
-  readonly data: T3WorkstreamListResult;
-  readonly steps: readonly { readonly key: string; readonly action: NativeMembershipAction }[];
-  readonly commandId: () => Promise<WorkstreamCommand["command_id"]>;
-  readonly submit: (command: WorkstreamCommand) => Promise<WorkstreamReceipt>;
-}): Promise<readonly string[]> {
-  let registryVersion = input.data.binding.registryVersion;
-  const versions = new Map(input.data.items.map((item) => [item.workstreamId, item.version]));
-  const completed: string[] = [];
-  for (const [index, step] of input.steps.entries()) {
-    let commandId: WorkstreamCommand["command_id"] | null = null;
-    try {
-      const action = step.action;
-      const versioned =
-        action.operation === "move_primary"
-          ? {
-              ...action,
-              expected_source_version:
-                versions.get(action.source_workstream_id) ?? action.expected_source_version,
-              expected_destination_version:
-                versions.get(action.destination_workstream_id) ??
-                action.expected_destination_version,
-            }
-          : action.operation === "attach_primary" ||
-              action.operation === "reattach_primary" ||
-              action.operation === "remove_membership"
-            ? {
-                ...action,
-                expected_version: versions.get(action.workstream_id) ?? action.expected_version,
-              }
-            : action;
-      commandId = await input.commandId();
-      const receipt = await input.submit({
-        command_id: commandId,
-        expected_server_generation: input.data.binding.serverGeneration,
-        expected_registry_version: registryVersion,
-        action: versioned,
-      });
-      if (receipt.state !== "committed") throw new Error(`Membership change ${receipt.state}`);
-      registryVersion = receipt.registry_version;
-      for (const version of receipt.effects.workstream_versions)
-        versions.set(version.workstream_id, version.version);
-      completed.push(step.key);
-    } catch (cause) {
-      throw new ThreadMovementError(
-        cause instanceof Error ? cause.message : "Membership effect unknown",
-        completed,
-        step.key,
-        input.steps.slice(index + 1).map((item) => item.key),
-        commandId,
-      );
-    }
-  }
-  return completed;
-}
-
-export interface NativeMembershipIntent {
-  readonly prepareReferences?: boolean;
-}
-
-export async function moveNativeMembershipThreads(input: {
-  readonly controller: WorkstreamListView;
-  readonly threads: readonly (WorkstreamThreadLike & { readonly title?: string })[];
-  readonly destination: string | null;
-  readonly commandId: () => Promise<WorkstreamCommand["command_id"]>;
-  readonly now: number;
-  readonly signal?: AbortSignal;
-  readonly intent?: NativeMembershipIntent;
-}): Promise<readonly string[]> {
-  input.signal?.throwIfAborted();
-  const { controller, threads, destination } = input;
-  if (!controller.data || !canEditWorkstreams(controller.data) || controller.loading)
-    throw new WorkstreamActionError("denied");
-  const inventory = new Set(
-    controller.placementInventory.identities.map((item) =>
-      nativeWorkstreamThreadKey(item.source_instance_id, item.native_thread_id),
-    ),
-  );
-  if (
-    threads.some(
-      (thread) => !inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id)),
-    )
-  )
-    throw new Error(
-      "A selected environment has no verified placement inventory. No threads were moved.",
-    );
-  return controller.runBindingOperation(async (submit) => {
-    const options = input.signal === undefined ? {} : { signal: input.signal };
-    const sequence = createSnapshotSequence(controller, options);
-    let snapshot = await sequence.load();
-    if (!snapshot.placements || snapshot.placements.readiness !== "ready")
-      throw new WorkstreamActionError("stale");
-    // Preflight every identity and required source before the first registration effect.
-    for (const thread of threads) {
-      const state = threadReferenceState(snapshot, thread, input.now);
-      if (state === "ambiguous") throw new WorkstreamActionError("ambiguous");
-      if (state !== "verified") {
-        if (!input.intent?.prepareReferences || destination === null)
-          throw new WorkstreamActionError("stale");
-        qualifiedRegistrationSource(snapshot, "t3", thread);
-      }
-    }
-    const completed: string[] = [];
-    const prepared = new Set<string>();
-    for (const [index, thread] of threads.entries()) {
-      const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
-      let attemptedCommandId: string | null = null;
-      let phase: ThreadMovementError["phase"] = "reload";
-      const send = async (action: WorkstreamCommand["action"]) => {
-        attemptedCommandId = await input.commandId();
-        input.signal?.throwIfAborted();
-        return sequence.accept(
-          await submit({
-            command_id: attemptedCommandId,
-            expected_server_generation: snapshot.data.binding.serverGeneration,
-            expected_registry_version: snapshot.data.binding.registryVersion,
-            action,
-          }),
-        );
-      };
-      try {
-        if (index > 0) snapshot = await sequence.load();
-        let state = threadReferenceState(snapshot, thread, input.now);
-        if (state === "ambiguous") throw new WorkstreamActionError("ambiguous");
-        if (state !== "verified") {
-          if (!input.intent?.prepareReferences || destination === null)
-            throw new WorkstreamActionError("stale");
-          const source = qualifiedRegistrationSource(snapshot, "t3", thread);
-          let reference = exactThreadReferences(snapshot, thread)[0];
-          if (!reference) {
-            phase = "register";
-            const receipt = await send({
-              operation: "register_reference",
-              identity: {
-                provider: "t3",
-                source_instance_id: source.source_instance_id,
-                resource_kind: "thread",
-                id_kind: "internal",
-                native_id: thread.id,
-                account_provenance: { kind: "not_account_scoped" },
-              },
-              pr_locator: null,
-            });
-            prepared.add(key);
-            phase = "reload";
-            snapshot = await sequence.load();
-            state = threadReferenceState(snapshot, thread, input.now);
-            if (state === "ambiguous") throw new WorkstreamActionError("ambiguous");
-            reference = exactThreadReferences(snapshot, thread)[0];
-            if (!reference || reference.native_reference_id !== receipt.effects.native_reference_id)
-              throw new WorkstreamActionError("unknown");
-          }
-          qualifiedRegistrationSource(snapshot, "t3", thread);
-          phase = "verify";
-          await send({
-            operation: "verify_reference",
-            native_reference_id: reference.native_reference_id,
-            expected_attestation_version: reference.registration.attestation_version,
-          });
-          prepared.add(key);
-          phase = "reload";
-          snapshot = await sequence.load();
-          const refreshed = await controller.loadReference(reference.native_reference_id, options);
-          assertWorkstreamReadContext(snapshot.data, refreshed.context);
-          if (
-            refreshed.reference.native_reference_id !==
-              exactThreadReferences(snapshot, thread)[0]?.native_reference_id ||
-            threadReferenceState(snapshot, thread, input.now) !== "verified"
-          )
-            throw new WorkstreamActionError("stale");
-        }
-        const current =
-          snapshot.placements?.items.find(
-            (item) =>
-              item.kind === "primary" &&
-              item.source_instance_id === thread.environmentId &&
-              item.native_thread_id === thread.id,
-          )?.workstream_id ?? null;
-        const detailId = destination ?? current;
-        const detail = detailId === null ? null : await controller.loadDetail(detailId, options);
-        if (detail) assertWorkstreamReadContext(snapshot.data, detail.detail.context);
-        if (!snapshot.placements) throw new WorkstreamActionError("stale");
-        phase = "assign";
-        const action = planNativeMembership({
-          data: snapshot.data,
-          placements: snapshot.placements,
-          references: snapshot.references.items,
-          ...(detail ? { destinationMemberships: detail.memberships.items } : {}),
-          thread,
-          destination,
-          now: input.now,
-        });
-        if (action) committedWorkstreamReceipt(await send(action));
-        completed.push(key);
-      } catch (cause) {
-        throw new ThreadMovementError(
-          workstreamFailureMessage(cause),
-          completed,
-          key,
-          threads
-            .slice(index + 1)
-            .map((item) => nativeWorkstreamThreadKey(item.environmentId, item.id)),
-          attemptedCommandId,
-          [...prepared],
-          thread.title ?? key,
-          phase,
-        );
-      }
-    }
-    return completed;
-  });
-}
-
-export function projectWorkstreamShelves<
-  T extends WorkstreamThreadLike & {
-    readonly createdAt: string;
-    readonly pinnedAt?: string | null | undefined;
-    readonly activeOrderKey?: string | null | undefined;
-  },
->(
-  grouping: NativeWorkstreamThreadGrouping<T>,
-  pinnedThreads: readonly T[],
-): { readonly grouping: NativeWorkstreamThreadGrouping<T>; readonly pinnedThreads: readonly T[] } {
-  const groups = grouping.groups.map((group) => ({
-    ...group,
-    threads: sortActiveThreadsByOrderKey(group.threads),
-  }));
-  const ungrouped = grouping.ungrouped.filter((thread) => thread.pinnedAt == null);
-  return {
-    grouping: {
-      ...grouping,
-      groups,
-      ungrouped,
-      ordered: [...groups.flatMap((group) => group.threads), ...ungrouped],
-    },
-    pinnedThreads: pinnedThreads.filter(
-      (thread) =>
-        !grouping.groupedKeys.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id)),
-    ),
-  };
 }

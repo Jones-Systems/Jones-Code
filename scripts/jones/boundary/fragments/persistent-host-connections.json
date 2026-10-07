@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "persistent-host-connections",
+  "jonesOwnedPaths": [
+    "packages/ssh/src/jones/persistentRemoteLifecycle.ts",
+    "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts"
+  ],
+  "hookPaths": ["packages/ssh/src/tunnel.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/ssh/src/tunnel.ts",
+      "to": "packages/ssh/src/jones/persistentRemoteLifecycle.ts"
+    }
+  ]
+}

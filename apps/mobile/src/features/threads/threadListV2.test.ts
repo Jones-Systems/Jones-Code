@@ -1,3 +1,5 @@
+import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import * as DateTime from "effect/DateTime";
 import {
   projectMobileWorkstreamList,
   mobileWorkstreamMoveDestination,
@@ -27,7 +29,7 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
-import { makeThreadShellFixture } from "../../test-fixtures";
+import { makeRawThreadShell, makeThreadShellFixture } from "../../test-fixtures";
 import { threadJumpTarget } from "../keyboard/threadKeyboardShortcuts";
 import {
   buildThreadListV2Items,
@@ -40,6 +42,7 @@ import {
   resolveThreadListV2SwipeActions,
   sortThreadsForListV2,
   threadListV2ListItemsAreEqual,
+  threadHasUnseenCompletion,
   type ThreadListV2ListItem,
 } from "./threadListV2";
 
@@ -164,9 +167,7 @@ describe("resolveThreadListV2Status", () => {
         makeThread({
           id: ThreadId.make("t"),
           title: "t",
-          pendingBackgroundTasks: [
-            { taskId: "bg-1", description: "Run Codex review", kind: "command" },
-          ],
+          pendingBackgroundTasks: [{ taskId: "bg-1", description: "Watch build", kind: "monitor" }],
           runtime: {
             status: "idle",
             activeRunId: null,
@@ -179,6 +180,28 @@ describe("resolveThreadListV2Status", () => {
       ),
     ).toBe("waiting");
   });
+
+  it.each([
+    { kind: "command", status: "ready" },
+    { kind: "monitor", status: "waiting" },
+  ] as const)(
+    "presents an unseen completion with a $kind roster as $status",
+    ({ kind, status }) => {
+      const thread = presentThreadShell(
+        environmentId,
+        makeRawThreadShell({
+          latestRunId: RunId.make("run-background-completion"),
+          status: "completed",
+          latestRunCompletedAt: DateTime.makeUnsafe(NOW),
+          lastVisitedAt: DateTime.makeUnsafe("2026-06-01T23:59:00.000Z"),
+          pendingBackgroundTasks: [{ taskId: "background-work", kind }],
+        }),
+      );
+
+      expect(resolveThreadListV2Status(thread)).toBe(status);
+      expect(threadHasUnseenCompletion(thread)).toBe(true);
+    },
+  );
 
   it("resolves ready for quiescent threads", () => {
     expect(resolveThreadListV2Status(makeThread({ id: ThreadId.make("t"), title: "t" }))).toBe(
@@ -2255,6 +2278,24 @@ describe("mobile Workstream projection", () => {
     );
   });
 
+  it("keeps the current Working shelf and its card rows out of Workstream grouping", () => {
+    const inbox = rows([first]);
+    const working = rows([second]).find((item) => item.type === "v2-thread")!;
+    const shelf: ThreadListV2ListItem = {
+      type: "v2-working-shelf",
+      key: "v2-working-shelf",
+      count: 1,
+      expanded: true,
+      disabled: false,
+    };
+    const result = projectMobileWorkstreamList([...inbox, shelf, working], projection);
+    expect(result.filter((item) => item.type === "v2-workstream")).toMatchObject([
+      { name: "Delivery", count: 1 },
+    ]);
+    expect(result.findIndex((item) => item.type === "v2-working-shelf")).toBe(2);
+    expect(result[3]).toMatchObject({ type: "v2-thread", item: { thread: second } });
+  });
+
   it("retains native order when grouping is off and keeps the pending and parked tail intact", () => {
     const snoozed = makeThread({
       id: ThreadId.make("snoozed-member"),
@@ -2313,79 +2354,146 @@ describe("mobile Workstream projection", () => {
   });
 });
 
-describe("workstream ordering preserves independent pins", () => {
-  it("orders grouped pins by active keys and excludes them from native shelves", () => {
-    const pinned = makeThread({
-      id: ThreadId.make("group-pin"),
-      title: "Pin",
-      pinnedAt: NOW,
-      pinOrderKey: "zz",
-      activeOrderKey: "aa",
+describe("Working section beta", () => {
+  const running = {
+    status: "running" as const,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: "Codex",
+    lastError: null,
+    updatedAt: NOW,
+  };
+  const finishedAt = (id: string, completedAt: string) =>
+    makeThread({
+      id: ThreadId.make(id),
+      title: id,
+      createdAt: "2026-06-01T00:00:00.000Z",
+      latestRun: {
+        runId: RunId.make(`run-${id}`),
+        status: "completed",
+        requestedAt: "2026-06-01T00:00:00.000Z",
+        startedAt: "2026-06-01T00:00:00.000Z",
+        completedAt,
+        assistantMessageId: null,
+      },
     });
-    const member = makeThread({
-      id: ThreadId.make("group-member"),
-      title: "Member",
-      activeOrderKey: "bb",
-    });
-    const freePin = makeThread({
-      id: ThreadId.make("free-pin"),
-      title: "Free",
-      pinnedAt: NOW,
-      pinOrderKey: "aa",
-    });
-    const snapshot = {
-      enabled: true,
-      revision: "verified",
-      primaryGroupByThreadKey: new Map([
-        [JSON.stringify([environmentId, pinned.id]), "group"],
-        [JSON.stringify([environmentId, member.id]), "group"],
-      ]),
-    };
-    const input = {
-      threads: [member, freePin, pinned],
-      now: NOW,
-      section: "active" as const,
-      scope: { kind: "workstream" as const, groupKey: "group" },
-      snapshot,
-    };
-    expect(getThreadListV2OrderedSection(input)).toEqual([pinned, member]);
-    expect(
-      getThreadListV2OrderedSection({
-        ...input,
-        section: "pinned",
-        scope: { kind: "shelf", section: "pinned" },
-      }),
-    ).toEqual([freePin]);
-    const layout = buildThreadListV2Items({
-      threads: [member, freePin, pinned],
+  const threads = [
+    finishedAt("finished-early", "2026-06-01T01:00:00.000Z"),
+    finishedAt("finished-late", "2026-06-01T03:00:00.000Z"),
+    makeThread({ id: ThreadId.make("working"), title: "working", runtime: running }),
+    makeThread({
+      id: ThreadId.make("asks-approval"),
+      title: "asks-approval",
+      createdAt: "2026-06-01T02:00:00.000Z",
+      runtime: running,
+      hasPendingApprovals: true,
+    }),
+    makeThread({
+      id: ThreadId.make("pinned-working"),
+      title: "pinned-working",
+      runtime: running,
+      pinnedAt: "2026-06-01T00:00:00.000Z",
+    }),
+  ];
+  const build = (input: Partial<Parameters<typeof buildThreadListV2Items>[0]> = {}) =>
+    buildThreadListV2Items({
+      threads,
       environmentId: null,
       searchQuery: "",
       now: NOW,
+      workingShelfEnabled: true,
+      ...input,
     });
-    const rows = projectMobileWorkstreamList(
-      buildThreadListV2ListItems({ ...layout, pendingTasks: [] }),
-      {
-        enabled: true,
-        groups: [
-          {
-            key: "group",
-            name: "Group",
-            color: "#123456",
-            threadKeys: new Set(snapshot.primaryGroupByThreadKey.keys()),
-          },
-        ],
-        collapsedKeys: new Set(),
-        secondaryLabelsByKey: new Map(),
-      },
-    );
-    expect(rows.filter((row) => row.type === "v2-thread").map((row) => row.item.thread)).toEqual([
-      freePin,
-      pinned,
-      member,
+  const ids = (layout: ReturnType<typeof buildThreadListV2Items>) =>
+    layout.items.map((item) => item.thread.id);
+
+  it("folds unpinned working threads into a collapsed shelf", () => {
+    const layout = build();
+    expect(ids(layout)).toEqual([
+      "pinned-working",
+      "finished-late",
+      "asks-approval",
+      "finished-early",
     ]);
-    expect(mobileWorkstreamMoveDestination(rows, member, "up")).toEqual({
-      targetId: `${environmentId}:${pinned.id}`,
-      placement: "before",
+    expect(layout.workingCount).toBe(1);
+    expect(layout.workingShelfHeaderIndex).toBe(4);
+
+    const off = build({ workingShelfEnabled: false });
+    expect(ids(off)).toContain("working");
+    expect(off.workingCount).toBe(0);
+  });
+
+  it("shows working rows as cards when expanded, or only the selected one when collapsed", () => {
+    expect(build({ workingShelfExpanded: true }).items.at(-1)).toMatchObject({
+      thread: { id: "working" },
+      variant: "card",
     });
+    expect(ids(build({ selectedThreadKey: `${environmentId}:working` })).at(-1)).toBe("working");
+  });
+
+  it("orders the inbox by the latest return this device observed", () => {
+    const layout = build({
+      inboxReturnAt: (thread) =>
+        thread.id === "finished-early" ? Date.parse("2026-06-01T04:00:00.000Z") : undefined,
+    });
+    expect(ids(layout).slice(1)).toEqual(["finished-early", "finished-late", "asks-approval"]);
+  });
+
+  it("places the shelf after queued tasks and before snoozed and settled threads", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({ id: ThreadId.make("active"), title: "active" }),
+        makeThread({ id: ThreadId.make("working"), title: "working", runtime: running }),
+        makeThread({
+          id: ThreadId.make("snoozed"),
+          title: "snoozed",
+          runtime: running,
+          snoozedUntil: "2026-06-03T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("settled"),
+          title: "settled",
+          settledOverride: "settled",
+          settledAt: NOW,
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      workingShelfEnabled: true,
+      workingShelfExpanded: true,
+      snoozedShelfExpanded: true,
+    });
+    const items = buildThreadListV2ListItems({
+      items: layout.items,
+      pendingTasks: [makePendingTask("queued")],
+      workingCount: layout.workingCount,
+      workingShelfExpanded: true,
+      workingShelfHeaderIndex: layout.workingShelfHeaderIndex,
+      snoozedCount: layout.snoozedCount,
+      snoozedShelfExpanded: true,
+      snoozedShelfHeaderIndex: layout.snoozedShelfHeaderIndex,
+      settledCount: layout.settledCount,
+      settledShelfHeaderIndex: layout.settledShelfHeaderIndex,
+    });
+    expect(
+      items.map((item) =>
+        item.type === "v2-thread"
+          ? item.item.thread.id
+          : item.type === "v2-pending"
+            ? item.pendingTask.title
+            : item.type,
+      ),
+    ).toEqual([
+      "active",
+      "queued",
+      "v2-working-shelf",
+      "working",
+      "v2-snoozed-shelf",
+      "snoozed",
+      "v2-settled-shelf",
+      "settled",
+    ]);
   });
 });

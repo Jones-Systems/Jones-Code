@@ -5,7 +5,10 @@ import { CollapsibleSectionHeader, SectionHeaderStatus } from "../ui/collapsible
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  projectedSubagentsToRuntime,
+  type RuntimeSubagent,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import {
   deriveThreadRelationshipGraph,
@@ -23,6 +26,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-workflows";
 import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import { groupBy } from "effect/Array";
+import * as DateTime from "effect/DateTime";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowRightIcon,
@@ -46,8 +50,6 @@ import {
 } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useCurrentRuntimeStop } from "../../hooks/useCurrentRuntimeStop";
-import type { CurrentThreadRuntimeStopState } from "@t3tools/client-runtime/state/thread-continuation";
 import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 
@@ -99,7 +101,7 @@ export function ThreadLineageRowList(props: {
         <button
           type="button"
           onClick={props.onShowMore}
-          className={`flex h-9 w-full cursor-pointer items-center rounded-lg ${THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS} text-sm font-medium text-muted-foreground/70 hover:bg-black/[0.055] hover:text-foreground/80 dark:hover:bg-white/[0.075]`}
+          className={`flex h-8 w-full cursor-pointer items-center rounded-lg ${THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS} text-sm font-medium text-muted-foreground/70 hover:bg-black/[0.055] hover:text-foreground/80 dark:hover:bg-white/[0.075]`}
         >
           <PlusIcon aria-hidden className="size-4 shrink-0" />
           Show {Math.min(props.hiddenCount, THREAD_LINEAGE_PAGE_COUNT)} more
@@ -164,6 +166,30 @@ function relationshipThreadTitle(input: {
   return formatSubagentDisplayTitle(input.title);
 }
 
+/**
+ * A delegated task settles with its first run, but the parent can keep sending
+ * the child follow-ups. While the child thread has a live run, the row's timer
+ * and hover card follow that run instead of the settled task.
+ */
+function liveSubagent<Agent extends RuntimeSubagent>(
+  agent: Agent | undefined,
+  childThread: OrchestrationV2ThreadShell | null | undefined,
+): Agent | undefined {
+  const liveStatus = childThread?.activityRunStatus;
+  if (!agent || !liveStatus) return agent;
+  const startedAt = childThread.activityRunStartedAt;
+  return {
+    ...agent,
+    status: liveStatus === "running" || liveStatus === "waiting" ? liveStatus : "pending",
+    startedAt: startedAt ? DateTime.formatIso(startedAt) : null,
+    completedAt: null,
+    // The settled task's output belongs to its first run, not this one.
+    progress: null,
+    result: null,
+    error: null,
+  };
+}
+
 export function ThreadRelationshipsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -206,15 +232,8 @@ export function ThreadRelationshipsPanel(props: {
   const currentProject = projects.find((project) => project.id === currentThread?.projectId);
   const navigate = useNavigate();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack);
-  const runtimeStop = useCurrentRuntimeStop();
+  const stopSession = useAtomCommand(threadEnvironment.stopSession);
   const [busyAction, setBusyAction] = useState<"merge" | "detach" | null>(null);
-  const [detachResult, setDetachResult] = useState<{
-    readonly threadKey: string;
-    readonly state: CurrentThreadRuntimeStopState;
-  } | null>(null);
-  const currentDetachState = detachResult?.threadKey === scopedThreadKey(ref)
-    ? detachResult.state
-    : null;
   const latestMergeBackRun = projection === null ? null : resolveLatestMergeBackRun(projection);
   const mergeTargetThreadId = resolveMergeBackTargetThreadId(projection);
   const relationshipRows = useMemo(
@@ -229,8 +248,6 @@ export function ThreadRelationshipsPanel(props: {
   );
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
-  const canCheckDetach = currentDetachState?.status === "pending" ||
-    currentDetachState?.status === "unknown";
 
   const {
     related = [],
@@ -250,11 +267,13 @@ export function ThreadRelationshipsPanel(props: {
     { id: "active", label: null, rows: active, expanded: true },
     { id: "previous", label: "Previous agents", rows: previous, expanded: false },
   ];
+  // Subagents without a child thread yet have no row, so count them separately.
   const runningCount =
-    projection?.subagents.filter((agent) => agent.status === "running").length ??
-    active.filter(({ edge }) => edge.status === "running").length;
+    (projection?.subagents.filter(
+      (agent) => agent.childThreadId === null && agent.status === "running",
+    ).length ?? 0) + active.filter(({ edge }) => edge.status === "running").length;
 
-  if (relationshipRows.length === 0 && runningCount === 0 && currentDetachState === null) {
+  if (relationshipRows.length === 0 && runningCount === 0) {
     return null;
   }
 
@@ -281,40 +300,13 @@ export function ThreadRelationshipsPanel(props: {
   };
 
   const detach = async () => {
-    if ((!canDetach && !canCheckDetach) || busyAction !== null) return;
+    if (!canDetach || busyAction !== null) return;
     setBusyAction("detach");
-    const threadKey = scopedThreadKey(ref);
-    const showResult = (state: CurrentThreadRuntimeStopState) =>
-      setDetachResult({ threadKey, state });
-    try {
-      const observed = await runtimeStop.observe(ref);
-      if (observed !== null) {
-        showResult(observed);
-        return;
-      }
-      const captured = await runtimeStop.capture(ref);
-      if (captured.status === "known-stopped") {
-        showResult({
-          status: "stopped", commandAccepted: false, queueFenceInstalled: false, reason: null,
-        });
-        return;
-      }
-      if (captured.status === "unavailable") {
-        showResult({
-          status: "unknown", commandAccepted: false, queueFenceInstalled: false,
-          reason: captured.reason,
-        });
-        return;
-      }
-      showResult(await runtimeStop.request(ref, captured.target));
-    } catch (error) {
-      showResult({
-        status: "unknown", commandAccepted: false, queueFenceInstalled: false,
-        reason: error instanceof Error ? error.message : "Disconnect outcome is unknown. Check the original stop again.",
-      });
-    } finally {
-      setBusyAction(null);
-    }
+    await stopSession({
+      environmentId: props.environmentId,
+      input: { threadId: props.threadId },
+    });
+    setBusyAction(null);
   };
 
   const parentTitle =
@@ -328,7 +320,7 @@ export function ThreadRelationshipsPanel(props: {
       title={runningCount > 0 ? `Lineage · ${runningCount} running` : "Lineage"}
       data-thread-relationships-panel
       actions={
-        canDetach || canCheckDetach ? (
+        canDetach ? (
           <Menu>
             <MenuTrigger
               render={
@@ -346,27 +338,13 @@ export function ThreadRelationshipsPanel(props: {
             <MenuPopup align="end" className="min-w-60 max-w-(--available-width)">
               <MenuItem onClick={() => void detach()}>
                 <UnplugIcon className="size-3.5" />
-                {canCheckDetach
-                  ? "Check disconnect status"
-                  : "Disconnect agent session"}
+                Disconnect agent session
               </MenuItem>
             </MenuPopup>
           </Menu>
         ) : null
       }
     >
-      {currentDetachState ? (
-        <p role="status" className="px-1.5 py-1 text-xs text-muted-foreground">
-          {currentDetachState.status === "stopped"
-            ? "Runtime stopped."
-            : currentDetachState.status === "pending"
-              ? "Disconnect pending."
-              : currentDetachState.status === "rejected"
-                ? "Disconnect rejected."
-                : "Disconnect outcome unknown."}
-          {currentDetachState.reason ? ` ${currentDetachState.reason}` : null}
-        </p>
-      ) : null}
       {groups.map((group) => (
         <ThreadLineageGroup key={`${scopedThreadKey(ref)}:${group.id}`} {...group}>
           {(visibleRows) =>
@@ -382,7 +360,10 @@ export function ThreadRelationshipsPanel(props: {
                   ? BotIcon
                   : GitForkIcon;
               const relationship = relationshipLabel(edge, props.threadId);
-              const agent = isSubagent && !isParent ? subagentsByThreadId.get(threadId) : undefined;
+              const agent = liveSubagent(
+                isSubagent && !isParent ? subagentsByThreadId.get(threadId) : undefined,
+                node?.thread,
+              );
               const threadTitle = relationshipThreadTitle({
                 title: node?.thread?.title ?? agent?.title ?? threadId,
                 isSubagent,
@@ -403,6 +384,7 @@ export function ThreadRelationshipsPanel(props: {
                   title={threadTitle}
                   model={agent.model}
                   provider={provider}
+                  providers={providers}
                   driver={providerDriver}
                   elapsed={<AgentElapsed agent={agent} />}
                   status={agent.status}
@@ -446,7 +428,7 @@ export function ThreadRelationshipsPanel(props: {
                 </>
               );
               return (
-                <li key={threadId} className="group flex h-9 items-center rounded-lg">
+                <li key={threadId} className="group flex h-8 items-center rounded-lg">
                   {isMergeTarget ? (
                     <div className={THREAD_DETAILS_PANEL_LINK_SPLIT_GROUP_CLASS}>
                       <Tooltip>

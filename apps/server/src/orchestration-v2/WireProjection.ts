@@ -1,5 +1,18 @@
 import type {
+  RecordedAppThread,
+  RecordedRun,
+  RecordedLifecycleEvent,
+  RecordedStoredLifecycleEvent,
+  RecordedEvent as OrchestrationV2RecordedEvent,
+  RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
+  RecordedThreadProjection,
+  ApplicationRecordedLifecycleEvent,
+} from "./RecordedTypes.ts";
+import type {
   OrchestrationV2DomainEvent,
+  OrchestrationV2AppThread,
+  OrchestrationV2Run,
+  ApplicationProjectEvent,
   OrchestrationV2ContextHandoff,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
@@ -8,19 +21,22 @@ import { compactDynamicToolOutput, toolOutputIndicatesFailure } from "@t3tools/s
 
 const MAX_DETAIL_STRING_BYTES = 32_768;
 const MAX_DYNAMIC_VALUE_BYTES = 16_384;
+const MAX_ON_DEMAND_BYTES = 256 * 1024;
 
-function truncateDetail(value: string | undefined): string | undefined {
+function truncateDetail(
+  value: string | undefined,
+  maxBytes = MAX_DETAIL_STRING_BYTES,
+): string | undefined {
   if (
     value === undefined ||
-    (value.length <= MAX_DETAIL_STRING_BYTES &&
-      Buffer.byteLength(value, "utf8") <= MAX_DETAIL_STRING_BYTES)
+    (value.length <= maxBytes && Buffer.byteLength(value, "utf8") <= maxBytes)
   ) {
     return value;
   }
   // UTF-8 needs at least one byte per UTF-16 code unit. Only encode the prefix
   // that could fit, rather than allocating a buffer for the complete output.
-  const prefix = Buffer.from(value.slice(0, MAX_DETAIL_STRING_BYTES), "utf8")
-    .subarray(0, MAX_DETAIL_STRING_BYTES)
+  const prefix = Buffer.from(value.slice(0, maxBytes), "utf8")
+    .subarray(0, maxBytes)
     .toString("utf8")
     .replace(/\uFFFD$/u, "");
   return `${prefix}\n… output truncated for transport`;
@@ -80,13 +96,20 @@ export function projectTurnItemForWire(item: OrchestrationV2TurnItem): Orchestra
         (item.exitCode !== undefined && item.exitCode !== 0) ||
         (output !== undefined &&
           toolOutputIndicatesFailure(output.slice(0, MAX_DETAIL_STRING_BYTES)));
-      return failed ? { ...projected, outputIndicatesFailure: true } : projected;
+      return {
+        ...projected,
+        ...(failed ? { outputIndicatesFailure: true } : {}),
+        ...(output?.trim() ? { outputOmitted: true } : {}),
+      };
     }
     case "file_change": {
       // File identity and counts are enough for activity. Full diffs already
       // have a dedicated read path and remain intact in persistence.
-      const { diffStr: _diff, oldStr: _old, newStr: _new, ...projected } = item;
-      return projected;
+      const { diffStr, oldStr: _old, newStr: _new, ...projected } = item;
+      // A failed edit stores the provider's error where the diff would be.
+      return item.status === "failed" && diffStr?.trim()
+        ? { ...projected, diffStr: truncateDetail(diffStr) }
+        : projected;
     }
     case "subagent":
       return {
@@ -102,8 +125,65 @@ export function projectTurnItemForWire(item: OrchestrationV2TurnItem): Orchestra
         ...projected,
         input: summarizeDynamicValue(item.input),
         ...(output === undefined ? {} : { output }),
+        ...(hasDynamicValue(rawOutput) ? { outputOmitted: true } : {}),
       };
     }
+    default:
+      return item;
+  }
+}
+
+function hasDynamicValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return typeof value !== "object" || Object.keys(value).length > 0;
+}
+
+function boundDynamicValue(value: unknown): unknown {
+  if (value === undefined) return value;
+  if (typeof value === "string") return truncateDetail(value, MAX_ON_DEMAND_BYTES);
+  let json: string;
+  try {
+    // Compact, so measuring does not inflate the value; clients indent it.
+    json = JSON.stringify(value) ?? String(value);
+  } catch {
+    return "Unserializable tool value";
+  }
+  return Buffer.byteLength(json, "utf8") <= MAX_ON_DEMAND_BYTES
+    ? value
+    : truncateDetail(json, MAX_ON_DEMAND_BYTES);
+}
+
+/**
+ * Projects one item for an on-demand detail read: keeps the input and output
+ * the timeline withholds, bounded so a huge result cannot stall the socket.
+ */
+export function projectTurnItemForDetail(item: OrchestrationV2TurnItem): OrchestrationV2TurnItem {
+  switch (item.type) {
+    case "command_execution":
+      return {
+        ...item,
+        input: truncateDetail(item.input, MAX_ON_DEMAND_BYTES) ?? "",
+        output: truncateDetail(item.output, MAX_ON_DEMAND_BYTES),
+      };
+    case "dynamic_tool":
+      return {
+        ...item,
+        input: boundDynamicValue(item.input),
+        output: boundDynamicValue(item.output),
+      };
+    case "subagent":
+      return {
+        ...item,
+        prompt: truncateDetail(item.prompt, MAX_ON_DEMAND_BYTES) ?? "",
+        progress: truncateDetail(item.progress, MAX_ON_DEMAND_BYTES),
+        result:
+          item.result === null ? null : (truncateDetail(item.result, MAX_ON_DEMAND_BYTES) ?? null),
+      };
+    case "handoff":
+    case "file_change":
+      return projectTurnItemForWire(item);
     default:
       return item;
   }
@@ -116,8 +196,36 @@ export function projectContextHandoffForWire(
   return { ...projected, summaryText: "" };
 }
 
+function projectRecordedThreadForWire(thread: RecordedAppThread): OrchestrationV2AppThread {
+  if (!("legacyBootstrapClaim" in thread)) return thread;
+  const { legacyBootstrapClaim: _claim, ...publicThread } = thread;
+  return publicThread;
+}
+
+function projectRecordedRunForWire(run: RecordedRun): OrchestrationV2Run {
+  if (
+    !("legacyBootstrap" in run) &&
+    !("legacyPreparationFailureKnown" in run) &&
+    !("workspaceRunSetupScript" in run) &&
+    !("legacyReleaseDecision" in run) &&
+    !("legacyPreparationFailureDecision" in run) &&
+    !("legacyPreparation" in run)
+  )
+    return run;
+  const {
+    legacyBootstrap: _policy,
+    legacyPreparationFailureKnown: _known,
+    workspaceRunSetupScript: _setup,
+    legacyReleaseDecision: _decision,
+    legacyPreparationFailureDecision: _failureDecision,
+    legacyPreparation: _preparation,
+    ...publicRun
+  } = run;
+  return publicRun;
+}
+
 export function projectThreadProjectionForWire(
-  projection: OrchestrationV2ThreadProjection,
+  projection: RecordedThreadProjection,
 ): OrchestrationV2ThreadProjection {
   const projectedById = new Map<string, OrchestrationV2TurnItem>();
   const project = (item: OrchestrationV2TurnItem) => {
@@ -130,6 +238,8 @@ export function projectThreadProjectionForWire(
   };
   return {
     ...projection,
+    thread: projectRecordedThreadForWire(projection.thread),
+    runs: projection.runs.map(projectRecordedRunForWire),
     contextHandoffs: projection.contextHandoffs.map(projectContextHandoffForWire),
     turnItems: projection.turnItems.map(project),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
@@ -140,11 +250,60 @@ export function projectThreadProjectionForWire(
 }
 
 export function projectDomainEventForWire(
-  event: OrchestrationV2DomainEvent,
+  event: RecordedLifecycleEvent,
 ): OrchestrationV2DomainEvent {
-  return event.type === "turn-item.updated"
-    ? { ...event, payload: projectTurnItemForWire(event.payload) }
-    : event.type === "context-handoff.updated"
-      ? { ...event, payload: projectContextHandoffForWire(event.payload) }
-      : event;
+  switch (event.type) {
+    case "thread.created":
+    case "thread.archived":
+    case "thread.unarchived":
+    case "thread.deleted":
+    case "thread.settled":
+    case "thread.unsettled":
+    case "thread.snoozed":
+    case "thread.unsnoozed":
+    case "thread.pinned":
+    case "thread.auto-settle-set":
+    case "thread.unpinned":
+    case "thread.pin-reordered":
+    case "thread.active-reordered":
+    case "thread.visited":
+    case "thread.marked-unread":
+    case "thread.metadata-updated":
+    case "thread.pull-request-synced":
+    case "thread.runtime-mode-updated":
+    case "thread.interaction-mode-updated":
+    case "thread.model-selection-updated":
+    case "thread.provider-switched":
+      return { ...event, payload: projectRecordedThreadForWire(event.payload) };
+    case "run.created":
+    case "run.updated":
+      return { ...event, payload: projectRecordedRunForWire(event.payload) };
+    case "turn-item.updated":
+      return { ...event, payload: projectTurnItemForWire(event.payload) };
+    case "context-handoff.updated":
+      return { ...event, payload: projectContextHandoffForWire(event.payload) };
+    default:
+      return event;
+  }
+}
+
+export function isPublicOrchestrationEvent(
+  event: OrchestrationV2RecordedEvent,
+): event is RecordedLifecycleEvent {
+  return (
+    event.type !== "legacy-bootstrap.preflight-intent" &&
+    event.type !== "legacy-bootstrap.preflight-outcome"
+  );
+}
+
+export function isPublicStoredOrchestrationEvent(
+  stored: OrchestrationV2RecordedStoredEvent,
+): stored is RecordedStoredLifecycleEvent {
+  return isPublicOrchestrationEvent(stored.event);
+}
+
+export function isPublicApplicationEvent(
+  event: ApplicationProjectEvent | OrchestrationV2RecordedStoredEvent,
+): event is ApplicationRecordedLifecycleEvent {
+  return !("event" in event) || isPublicStoredOrchestrationEvent(event);
 }

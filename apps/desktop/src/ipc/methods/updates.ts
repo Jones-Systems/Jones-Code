@@ -43,13 +43,10 @@ export const downloadUpdate = DesktopIpc.makeIpcMethod({
 
 export const installUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_INSTALL_CHANNEL,
-  payload: Schema.Union([Schema.Void, Schema.String]),
+  payload: Schema.Void,
   result: DesktopUpdateActionResultSchema,
-  handler: Effect.fn("desktop.ipc.updates.install")(function* (stagedHandle) {
+  handler: Effect.fn("desktop.ipc.updates.install")(function* () {
     const updates = yield* DesktopUpdates.DesktopUpdates;
-    if (stagedHandle !== undefined && updates.installStaged !== undefined) {
-      return yield* updates.installStaged(stagedHandle);
-    }
     return yield* updates.install;
   }),
 });

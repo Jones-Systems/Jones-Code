@@ -4,7 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-/** Build-job-only stamping. Hash the checked-in tree before preview package versions change it. */
+/** Build-job-only stamping of the committed tree, independent of preview package version edits. */
 const root = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const git = (args: string[]) =>
   NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();

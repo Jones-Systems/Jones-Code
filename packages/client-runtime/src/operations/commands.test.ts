@@ -10,39 +10,21 @@ import {
   type VcsListRefsInput,
   type VcsListRefsResult,
   NodeId,
-  OrchestrationV2ImportedHistoryReviewBasis,
   ORCHESTRATION_V2_WS_METHODS,
   PlanId,
   ProjectId,
-  ProviderInstanceId,
   ProviderDriverKind,
+  ProviderInstanceId,
   ProviderSessionId,
-  ProviderThreadId,
   RunId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
   WS_METHODS,
   type OrchestrationV2Command,
+  type OrchestrationV2ProviderSession,
   type OrchestrationV2ThreadLaunchInput,
   type OrchestrationV2ThreadProjection,
-  type OrchestrationV2ImportedHistoryDelivery,
-  type OrchestrationV2ImportedHistoryReviewResult,
-  type OrchestrationV2ImportedHistoryStartReceipt,
-  type OrchestrationV2ObserveImportedHistoryStartInput,
-  type OrchestrationV2ReviewImportedHistoryStartInput,
-  type OrchestrationV2StartWithImportedHistoryCommand,
-  type OrchestrationV2StopCurrentThreadRuntimeInput,
-  type OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
-  type OrchestrationV2ObserveThreadDeletionCleanupInput,
-  type OrchestrationV2ThreadDeletionCleanupObservation,
-  type OrchestrationV2StopCurrentThreadRuntimeResult,
-  type OrchestrationV2GetThreadRuntimeObservationInput,
-  type OrchestrationV2ThreadRuntimeObservationResult,
-  type OrchestrationV2GetOperatingCountsInput,
-  type OrchestrationV2OperatingCountsResult,
-  type ChatAttachment,
-  type PersistChatAttachmentsInput,
   type ProjectMutation,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -67,16 +49,6 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import { v2Now, v2Projection, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
 import {
   archiveThread,
-  deleteThread,
-  observeThreadDeletionCleanup,
-  deliverImportedContinuation,
-  prepareImportedContinuation,
-  reviewImportedHistoryStart,
-  observeImportedHistoryStart,
-  stopCurrentThreadRuntime,
-  observeCurrentThreadRuntimeStop,
-  getThreadRuntimeObservation,
-  getOperatingCounts,
   cancelQueuedRun,
   createProject,
   dismissThreadUserInput,
@@ -90,6 +62,7 @@ import {
   revertThreadCheckpoint,
   settleThread,
   startThreadTurn,
+  stopThreadSession,
   unsettleThread,
   updateProject,
   updateThreadMetadata,
@@ -121,112 +94,13 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly projection?: OrchestrationV2ThreadProjection;
   readonly projectionRequests?: ThreadId[];
   readonly advertiseServerResolvedCommandContext?: boolean;
-  readonly importedReviews?: OrchestrationV2ReviewImportedHistoryStartInput[];
-  readonly importedStarts?: OrchestrationV2StartWithImportedHistoryCommand[];
-  readonly importedObservations?: OrchestrationV2ObserveImportedHistoryStartInput[];
-  readonly importedReview?: OrchestrationV2ImportedHistoryReviewResult;
-  readonly importedReceipt?: OrchestrationV2ImportedHistoryStartReceipt;
-  readonly loseImportedStartResponse?: boolean;
-  readonly attachmentRequests?: PersistChatAttachmentsInput[];
-  readonly persistedAttachments?: ReadonlyArray<ChatAttachment>;
-  readonly runtimeStops?: OrchestrationV2StopCurrentThreadRuntimeInput[];
-  readonly runtimeStopObservations?: OrchestrationV2ObserveCurrentThreadRuntimeStopInput[];
-  readonly runtimeStopResult?: OrchestrationV2StopCurrentThreadRuntimeResult;
-  readonly loseRuntimeStopResponse?: boolean;
-  readonly runtimeObservationRequests?: OrchestrationV2GetThreadRuntimeObservationInput[];
-  readonly runtimeObservation?: OrchestrationV2ThreadRuntimeObservationResult;
-  readonly operatingCountRequests?: OrchestrationV2GetOperatingCountsInput[];
-  readonly operatingCounts?: OrchestrationV2OperatingCountsResult;
-  readonly failOperatingCounts?: boolean;
-  readonly deletionObservations?: OrchestrationV2ObserveThreadDeletionCleanupInput[];
-  readonly deletionObservation?: OrchestrationV2ThreadDeletionCleanupObservation;
-  readonly loseDeleteResponse?: boolean;
+  readonly advertiseQueuedToolBoundaryDelivery?: boolean;
 }) {
   const client = {
     [WS_METHODS.vcsListRefs]: input.listRefs ?? (() => Effect.never),
-    [ORCHESTRATION_V2_WS_METHODS.observeThreadDeletionCleanup]: (
-      observation: OrchestrationV2ObserveThreadDeletionCleanupInput,
-    ) =>
-      Effect.sync(() => {
-        input.deletionObservations?.push(observation);
-        if (input.deletionObservation === undefined)
-          throw new Error("Unexpected deletion observation.");
-        return input.deletionObservation;
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.getThreadRuntimeObservation]: (
-      observationInput: OrchestrationV2GetThreadRuntimeObservationInput,
-    ) =>
-      Effect.sync(() => {
-        input.runtimeObservationRequests?.push(observationInput);
-        if (input.runtimeObservation === undefined)
-          throw new Error("Unexpected runtime observation.");
-        return input.runtimeObservation;
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.getOperatingCounts]: (
-      countsInput: OrchestrationV2GetOperatingCountsInput,
-    ) =>
-      Effect.sync(() => {
-        input.operatingCountRequests?.push(countsInput);
-        if (input.failOperatingCounts) throw new Error("Operating counts manager unavailable.");
-        if (input.operatingCounts === undefined)
-          throw new Error("Unexpected Operating counts read.");
-        return input.operatingCounts;
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: (
-      stopInput: OrchestrationV2StopCurrentThreadRuntimeInput,
-    ) =>
-      Effect.sync(() => {
-        input.runtimeStops?.push(stopInput);
-        if (input.loseRuntimeStopResponse) throw new Error("Stop response was lost.");
-        if (input.runtimeStopResult === undefined)
-          throw new Error("Unexpected current runtime stop.");
-        return input.runtimeStopResult;
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: (
-      observation: OrchestrationV2ObserveCurrentThreadRuntimeStopInput,
-    ) =>
-      Effect.sync(() => {
-        input.runtimeStopObservations?.push(observation);
-        if (input.runtimeStopResult === undefined)
-          throw new Error("Unexpected runtime stop observation.");
-        return input.runtimeStopResult;
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.reviewImportedHistoryStart]: (
-      reviewInput: OrchestrationV2ReviewImportedHistoryStartInput,
-    ) =>
-      Effect.sync(() => {
-        input.importedReviews?.push(reviewInput);
-        if (input.importedReview === undefined) throw new Error("Unexpected imported review.");
-        return input.importedReview;
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.startWithImportedHistory]: (
-      command: OrchestrationV2StartWithImportedHistoryCommand,
-    ) =>
-      Effect.sync(() => {
-        input.importedStarts?.push(command);
-        if (input.loseImportedStartResponse) throw new Error("Start response was lost.");
-        if (input.importedReceipt === undefined) throw new Error("Unexpected imported start.");
-        return input.importedReceipt;
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.observeImportedHistoryStart]: (
-      observation: OrchestrationV2ObserveImportedHistoryStartInput,
-    ) =>
-      Effect.sync(() => {
-        input.importedObservations?.push(observation);
-        if (input.importedReceipt === undefined)
-          throw new Error("Unexpected imported observation.");
-        return input.importedReceipt;
-      }),
-    [WS_METHODS.assetsPersistChatAttachments]: (attachmentInput: PersistChatAttachmentsInput) =>
-      Effect.sync(() => {
-        input.attachmentRequests?.push(attachmentInput);
-        return { attachments: input.persistedAttachments ?? [] };
-      }),
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
       Effect.sync(() => {
         input.commands.push(command);
-        if (input.loseDeleteResponse && command.type === "thread.delete")
-          throw new Error("Delete response was lost.");
         return { sequence: input.commands.length };
       }),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (requestInput: {
@@ -270,6 +144,9 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
       environment: {
         capabilities: {
           repositoryIdentity: true,
+          ...(input.advertiseQueuedToolBoundaryDelivery === undefined
+            ? {}
+            : { queuedToolBoundaryDelivery: input.advertiseQueuedToolBoundaryDelivery }),
           ...(input.advertiseServerResolvedCommandContext === false
             ? {}
             : { serverResolvedCommandContext: true }),
@@ -290,427 +167,6 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
     disconnect: Effect.void,
     retryNow: Effect.void,
   } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-});
-
-const IMPORTED_MESSAGE = MessageId.make("reviewed-message");
-const IMPORTED_BASIS = OrchestrationV2ImportedHistoryReviewBasis.make("reviewed-imported-basis");
-const IMPORTED_COMMAND = CommandId.make("reviewed-imported-command");
-const importedReview = (
-  delivery: OrchestrationV2ImportedHistoryDelivery,
-): OrchestrationV2ImportedHistoryReviewResult => ({
-  version: 2,
-  threadId: v2ThreadId,
-  target:
-    delivery.type === "queued_run" ? delivery : { type: "message", messageId: delivery.messageId },
-  capability: { startWithImportedHistory: true },
-  applicability: "imported",
-  qualification: { type: "unsupported", reason: "Use the explicit imported action." },
-  restoredBinding: { type: "missing", reason: "No native binding." },
-  nativeEffects: { type: "clear" },
-  transcriptEligibility: { type: "eligible" },
-  reviewedBasis: IMPORTED_BASIS,
-});
-const importedReceipt = (
-  delivery: OrchestrationV2ImportedHistoryDelivery,
-): OrchestrationV2ImportedHistoryStartReceipt => ({
-  version: 2,
-  threadId: v2ThreadId,
-  target: importedReview(delivery).target,
-  commandId: IMPORTED_COMMAND,
-  reviewedBasis: IMPORTED_BASIS,
-  intentStatus: "accepted",
-  receipt: {
-    commandId: IMPORTED_COMMAND,
-    threadId: v2ThreadId,
-    commandType: "thread.imported-history.start",
-    acceptedAt: v2Now,
-    resultSequence: 7,
-    status: "accepted",
-    error: null,
-  },
-  rejectionReason: null,
-  execution: {
-    status: "pending",
-    runId: delivery.type === "queued_run" ? delivery.runId : null,
-    providerThreadId: null,
-    providerSessionId: null,
-    nativeThreadId: null,
-    effectOutcome: null,
-    error: null,
-  },
-});
-
-describe("unified imported continuation commands", () => {
-  const deliveries: ReadonlyArray<OrchestrationV2ImportedHistoryDelivery> = [
-    {
-      type: "message",
-      messageId: IMPORTED_MESSAGE,
-      text: "Continue this reviewed conversation.",
-      attachments: [
-        {
-          type: "image",
-          id: "stored-image",
-          name: "image.png",
-          mimeType: "image/png",
-          sizeBytes: 10,
-        },
-      ],
-      context: { version: 1, records: [] },
-      modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "claude-sonnet-4" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      sourcePlanRef: { threadId: v2ThreadId, planId: PlanId.make("reviewed-plan") },
-      titleSeed: "Reviewed title",
-      dispatchMode: { type: "start_immediately" },
-      deliveryIntent: "start",
-    },
-    { type: "queued_run", runId: RunId.make("held-run"), messageId: IMPORTED_MESSAGE },
-  ];
-
-  for (const delivery of deliveries) {
-    it.effect(
-      `delivers the reviewed ${delivery.type} through one unified RPC without ordinary dispatch`,
-      () =>
-        Effect.gen(function* () {
-          const commands: OrchestrationV2Command[] = [];
-          const importedReviews: OrchestrationV2ReviewImportedHistoryStartInput[] = [];
-          const importedStarts: OrchestrationV2StartWithImportedHistoryCommand[] = [];
-          const receipt = importedReceipt(delivery);
-          const supervisor = yield* makeSupervisor({
-            commands,
-            projects: [],
-            importedReviews,
-            importedStarts,
-            importedReview: importedReview(delivery),
-            importedReceipt: receipt,
-          });
-          const input = { threadId: v2ThreadId, delivery };
-          const prepared = yield* prepareImportedContinuation(input).pipe(
-            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          );
-          const review = yield* reviewImportedHistoryStart(prepared).pipe(
-            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          );
-          expect(importedStarts).toEqual([]);
-          const result = yield* deliverImportedContinuation({
-            ...prepared,
-            commandId: IMPORTED_COMMAND,
-            reviewedBasis: review.reviewedBasis!,
-          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-
-          expect(importedReviews).toEqual([input]);
-          expect(importedStarts).toEqual([
-            {
-              type: "thread.imported-history.start",
-              commandId: IMPORTED_COMMAND,
-              reviewedBasis: IMPORTED_BASIS,
-              ...input,
-            },
-          ]);
-          expect(commands).toEqual([]);
-          expect(result).toBe(receipt);
-          if (delivery.type === "queued_run") expect(importedStarts[0]!.delivery).toBe(delivery);
-        }),
-    );
-  }
-
-  it.effect(
-    "persists uploads against the reviewed message before review and preserves context correlation",
-    () =>
-      Effect.gen(function* () {
-        const commands: OrchestrationV2Command[] = [];
-        const attachmentRequests: PersistChatAttachmentsInput[] = [];
-        const stored: ChatAttachment = {
-          type: "image",
-          id: "already-stored",
-          name: "stored.png",
-          mimeType: "image/png",
-          sizeBytes: 10,
-        };
-        const persisted: ChatAttachment = {
-          type: "image",
-          id: "persisted-upload",
-          name: "upload.png",
-          mimeType: "image/png",
-          sizeBytes: 12,
-        };
-        const upload = {
-          type: "image" as const,
-          id: "draft-upload",
-          name: "upload.png",
-          mimeType: "image/png",
-          sizeBytes: 12,
-          dataUrl: "data:image/png;base64,AQ==",
-        };
-        const delivery = {
-          ...deliveries[0]!,
-          type: "message" as const,
-          messageId: IMPORTED_MESSAGE,
-          text: "Reviewed text",
-          runtimeMode: "full-access" as const,
-          interactionMode: "default" as const,
-          dispatchMode: { type: "start_immediately" as const },
-          attachments: [stored, upload],
-          context: {
-            version: 1 as const,
-            records: [
-              {
-                version: 1 as const,
-                kind: "image" as const,
-                contextId: "upload-context",
-                label: "Uploaded image",
-                attachmentId: "draft-upload",
-                name: "upload.png",
-                mimeType: "image/png",
-                sizeBytes: 12,
-              },
-            ],
-          },
-        };
-        const supervisor = yield* makeSupervisor({
-          commands,
-          projects: [],
-          attachmentRequests,
-          persistedAttachments: [persisted],
-        });
-        const prepared = yield* prepareImportedContinuation({
-          threadId: v2ThreadId,
-          delivery,
-        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-
-        expect(attachmentRequests).toEqual([
-          {
-            threadId: v2ThreadId,
-            messageId: IMPORTED_MESSAGE,
-            attachments: [upload],
-          },
-        ]);
-        expect(prepared.delivery).toEqual({
-          ...delivery,
-          attachments: [stored, persisted],
-          context: {
-            ...delivery.context,
-            records: [{ ...delivery.context.records[0]!, attachmentId: persisted.id }],
-          },
-        });
-        expect(commands).toEqual([]);
-      }),
-  );
-
-  it.effect(
-    "observes the original command after a lost start response without resending or allocating an ID",
-    () =>
-      Effect.gen(function* () {
-        const delivery = deliveries[1]!;
-        const commands: OrchestrationV2Command[] = [];
-        const importedStarts: OrchestrationV2StartWithImportedHistoryCommand[] = [];
-        const importedObservations: OrchestrationV2ObserveImportedHistoryStartInput[] = [];
-        const receipt = importedReceipt(delivery);
-        const supervisor = yield* makeSupervisor({
-          commands,
-          projects: [],
-          importedStarts,
-          importedObservations,
-          importedReceipt: receipt,
-          loseImportedStartResponse: true,
-        });
-        const result = yield* Effect.exit(
-          deliverImportedContinuation({
-            threadId: v2ThreadId,
-            commandId: IMPORTED_COMMAND,
-            reviewedBasis: IMPORTED_BASIS,
-            delivery,
-          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor)),
-        );
-        expect(result._tag).toBe("Failure");
-        const observed = yield* observeImportedHistoryStart({
-          threadId: v2ThreadId,
-          commandId: IMPORTED_COMMAND,
-        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-
-        expect(importedStarts).toHaveLength(1);
-        expect(importedStarts[0]!.commandId).toBe(IMPORTED_COMMAND);
-        expect(importedObservations).toEqual([
-          { threadId: v2ThreadId, commandId: IMPORTED_COMMAND },
-        ]);
-        expect(observed).toBe(receipt);
-        expect(commands).toEqual([]);
-      }),
-  );
-});
-
-describe("dedicated current runtime stop commands", () => {
-  const input: OrchestrationV2StopCurrentThreadRuntimeInput = {
-    commandId: CommandId.make("captured-runtime-stop"),
-    threadId: v2ThreadId,
-    target: {
-      binding: {
-        threadId: v2ThreadId,
-        providerThreadId: ProviderThreadId.make("current-provider-thread"),
-        providerSessionId: ProviderSessionId.make("current-provider-session"),
-        instanceId: ProviderInstanceId.make("codex"),
-        runtimeGeneration: "current-generation",
-        nativeThreadId: "current-native-thread",
-      },
-      driver: ProviderDriverKind.make("codex"),
-      evidenceRevision: 8,
-    },
-  };
-  const result: OrchestrationV2StopCurrentThreadRuntimeResult = {
-    version: 2,
-    ...input,
-    commandStatus: "accepted",
-    receipt: {
-      commandId: input.commandId,
-      threadId: v2ThreadId,
-      commandType: ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
-      acceptedAt: v2Now,
-      resultSequence: 8,
-      status: "accepted",
-      error: null,
-    },
-    queueFence: { status: "installed", affectedRunIds: [RunId.make("fenced-queued-run")] },
-    runtimeStop: { status: "pending" },
-    reason: null,
-  };
-
-  it.effect(
-    "stops only the captured current tuple through the dedicated RPC without reading historical sessions",
-    () =>
-      Effect.gen(function* () {
-        const commands: OrchestrationV2Command[] = [];
-        const projectionRequests: ThreadId[] = [];
-        const runtimeStops: OrchestrationV2StopCurrentThreadRuntimeInput[] = [];
-        const supervisor = yield* makeSupervisor({
-          commands,
-          projects: [],
-          projectionRequests,
-          runtimeStops,
-          runtimeStopResult: result,
-        });
-        const actual = yield* stopCurrentThreadRuntime(input).pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        );
-
-        expect(runtimeStops).toEqual([input]);
-        expect(actual).toBe(result);
-        expect(actual.runtimeStop.status).toBe("pending");
-        expect(commands).toEqual([]);
-        expect(projectionRequests).toEqual([]);
-      }),
-  );
-
-  it.effect(
-    "observes the same stop command after a lost response without issuing another stop",
-    () =>
-      Effect.gen(function* () {
-        const commands: OrchestrationV2Command[] = [];
-        const runtimeStops: OrchestrationV2StopCurrentThreadRuntimeInput[] = [];
-        const runtimeStopObservations: OrchestrationV2ObserveCurrentThreadRuntimeStopInput[] = [];
-        const unknownResult: OrchestrationV2StopCurrentThreadRuntimeResult = {
-          ...result,
-          runtimeStop: { status: "unknown" },
-          reason: "Native stop needs reconciliation.",
-        };
-        const supervisor = yield* makeSupervisor({
-          commands,
-          projects: [],
-          runtimeStops,
-          runtimeStopObservations,
-          runtimeStopResult: unknownResult,
-          loseRuntimeStopResponse: true,
-        });
-        const lost = yield* Effect.exit(
-          stopCurrentThreadRuntime(input).pipe(
-            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          ),
-        );
-        expect(lost._tag).toBe("Failure");
-        const observed = yield* observeCurrentThreadRuntimeStop({
-          threadId: v2ThreadId,
-          commandId: input.commandId,
-        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-
-        expect(runtimeStops).toEqual([input]);
-        expect(runtimeStopObservations).toEqual([
-          { threadId: v2ThreadId, commandId: input.commandId },
-        ]);
-        expect(observed).toBe(unknownResult);
-        expect(commands).toEqual([]);
-      }),
-  );
-});
-
-describe("current runtime observation reads", () => {
-  const counts: OrchestrationV2OperatingCountsResult = {
-    total: 7,
-    operating: 2,
-    foregroundWaitingApproval: 1,
-    foregroundWaitingInput: 1,
-    foregroundWaitingPlan: 1,
-    backgroundOperating: 1,
-    backgroundUnknown: 1,
-    snapshotSequence: 12,
-    observedAt: "2026-10-03T02:28:34Z",
-    backgroundSampledAt: "2026-10-03T02:28:30Z",
-  };
-
-  it.effect(
-    "reads runtime and scoped Operating counts through dedicated read ports without hydration or dispatch",
-    () =>
-      Effect.gen(function* () {
-        const commands: OrchestrationV2Command[] = [];
-        const projectionRequests: ThreadId[] = [];
-        const runtimeObservationRequests: OrchestrationV2GetThreadRuntimeObservationInput[] = [];
-        const operatingCountRequests: OrchestrationV2GetOperatingCountsInput[] = [];
-        const runtimeObservation: OrchestrationV2ThreadRuntimeObservationResult = {
-          threadId: v2ThreadId,
-          observation: { status: "unknown", reason: "Current registration is unavailable." },
-        };
-        const supervisor = yield* makeSupervisor({
-          commands,
-          projects: [],
-          projectionRequests,
-          runtimeObservationRequests,
-          operatingCountRequests,
-          runtimeObservation,
-          operatingCounts: counts,
-        });
-        const observation = yield* getThreadRuntimeObservation({ threadId: v2ThreadId }).pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        );
-        const allCounts = yield* getOperatingCounts({}).pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        );
-        const scopedCounts = yield* getOperatingCounts({
-          projectId: ProjectId.make("selected-project"),
-        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-
-        expect(observation).toBe(runtimeObservation);
-        expect(allCounts).toBe(counts);
-        expect(scopedCounts).toBe(counts);
-        expect(runtimeObservationRequests).toEqual([{ threadId: v2ThreadId }]);
-        expect(operatingCountRequests).toEqual([{}, { projectId: "selected-project" }]);
-        expect(commands).toEqual([]);
-        expect(projectionRequests).toEqual([]);
-      }),
-  );
-
-  it.effect("propagates count-read failures without synthesizing healthy zeros", () =>
-    Effect.gen(function* () {
-      const supervisor = yield* makeSupervisor({
-        commands: [],
-        projects: [],
-        failOperatingCounts: true,
-      });
-      const result = yield* Effect.exit(
-        getOperatingCounts({}).pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        ),
-      );
-      expect(result._tag).toBe("Failure");
-    }),
-  );
 });
 
 describe("V2 environment commands", () => {
@@ -1068,83 +524,81 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
-  for (const status of [
+  it.effect.each([
     "waiting",
     "completed",
     "failed",
     "interrupted",
     "cancelled",
     "rolled_back",
-  ] as const) {
-    it.effect(`dispatches Stop for ${status} runs with background commands except rollback`, () =>
-      Effect.gen(function* () {
-        const waitingRunId = RunId.make("run-waiting");
-        const projection: OrchestrationV2ThreadProjection = {
-          ...v2Projection,
-          runs: [
-            {
-              id: waitingRunId,
-              threadId: v2ThreadId,
-              ordinal: 1,
-              providerInstanceId: v2Projection.thread.providerInstanceId,
-              modelSelection: v2Projection.thread.modelSelection,
-              providerThreadId: null,
-              userMessageId: MessageId.make("message-waiting"),
-              rootNodeId: null,
-              activeAttemptId: null,
-              status,
-              requestedAt: v2Now,
-              startedAt: v2Now,
-              completedAt: null,
-              checkpointId: null,
-              contextHandoffId: null,
-            },
-          ],
-          turnItems: [
-            {
-              id: TurnItemId.make("background-command"),
-              threadId: v2ThreadId,
-              runId: waitingRunId,
-              nodeId: null,
-              providerThreadId: null,
-              providerTurnId: null,
-              nativeItemRef: null,
-              parentItemId: null,
-              ordinal: 1,
-              status: "running",
-              title: null,
-              startedAt: v2Now,
-              completedAt: null,
-              updatedAt: v2Now,
-              type: "command_execution",
-              input: "vp run dev",
-            },
-          ],
-        };
-        const commands: OrchestrationV2Command[] = [];
-        const supervisor = yield* makeSupervisor({ commands, projects: [], projection });
+  ] as const)("dispatches Stop for %s runs with background commands except rollback", (status) =>
+    Effect.gen(function* () {
+      const waitingRunId = RunId.make("run-waiting");
+      const projection: OrchestrationV2ThreadProjection = {
+        ...v2Projection,
+        runs: [
+          {
+            id: waitingRunId,
+            threadId: v2ThreadId,
+            ordinal: 1,
+            providerInstanceId: v2Projection.thread.providerInstanceId,
+            modelSelection: v2Projection.thread.modelSelection,
+            providerThreadId: null,
+            userMessageId: MessageId.make("message-waiting"),
+            rootNodeId: null,
+            activeAttemptId: null,
+            status,
+            requestedAt: v2Now,
+            startedAt: v2Now,
+            completedAt: null,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        ],
+        turnItems: [
+          {
+            id: TurnItemId.make("background-command"),
+            threadId: v2ThreadId,
+            runId: waitingRunId,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            status: "running",
+            title: null,
+            startedAt: v2Now,
+            completedAt: null,
+            updatedAt: v2Now,
+            type: "command_execution",
+            input: "vp run dev",
+          },
+        ],
+      };
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [], projection });
 
-        const result = yield* interruptThreadTurn({ threadId: v2ThreadId }).pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        );
+      const result = yield* interruptThreadTurn({ threadId: v2ThreadId }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
 
-        expect(result).toEqual({ sequence: status === "rolled_back" ? 0 : 1 });
-        expect(commands).toEqual(
-          status === "rolled_back"
-            ? []
-            : [
-                {
-                  type: "run.interrupt",
-                  commandId: expect.any(String),
-                  threadId: v2ThreadId,
-                  runId: waitingRunId,
-                  holdQueue: true,
-                },
-              ],
-        );
-      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
-    );
-  }
+      expect(result).toEqual({ sequence: status === "rolled_back" ? 0 : 1 });
+      expect(commands).toEqual(
+        status === "rolled_back"
+          ? []
+          : [
+              {
+                type: "run.interrupt",
+                commandId: expect.any(String),
+                threadId: v2ThreadId,
+                runId: waitingRunId,
+                holdQueue: true,
+              },
+            ],
+      );
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
 
   it.effect(
     "dispatches V2-native relationship and queue commands without compatibility shaping",
@@ -1401,6 +855,163 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
+  it.effect(
+    "stops all projected sessions with detach only, preserving thread lifecycle state",
+    () =>
+      Effect.gen(function* () {
+        const projection: OrchestrationV2ThreadProjection = {
+          ...v2Projection,
+          thread: { ...v2Projection.thread, settledOverride: "active" },
+          providerSessions: (["ready", "running"] as const).map(
+            (status, index): OrchestrationV2ProviderSession => ({
+              id: ProviderSessionId.make(`session-${index}`),
+              driver: ProviderDriverKind.make("codex"),
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              status,
+              cwd: "/workspace/project",
+              model: null,
+              capabilities: {
+                sessions: {
+                  supportsMultipleProviderThreadsPerSession: false,
+                  supportsModelSwitchInSession: false,
+                  supportsProviderSwitchingViaHandoff: false,
+                  supportsRuntimeModeSwitchInSession: false,
+                  pendingRequestsSurviveRestart: false,
+                },
+                threads: {
+                  canCreateEmptyThread: false,
+                  canReadThreadSnapshot: false,
+                  canRollbackThread: false,
+                  canForkThread: false,
+                  canForkFromTurn: false,
+                  canForkFromSubagentThread: false,
+                  exposesNativeThreadId: false,
+                },
+                turns: {
+                  exposesNativeTurnId: false,
+                  emitsTurnStarted: false,
+                  emitsTurnCompleted: false,
+                  supportsInterrupt: false,
+                  supportsActiveSteering: false,
+                  supportsSteeringByInterruptRestart: false,
+                  supportsQueuedMessages: false,
+                  terminalStatusQuality: "none",
+                },
+                streaming: {
+                  streamsAssistantText: false,
+                  streamsReasoning: false,
+                  streamsToolOutput: false,
+                  streamsPlanText: false,
+                  emitsMessageCompleted: false,
+                },
+                tools: {
+                  exposesToolItemIds: false,
+                  emitsToolStarted: false,
+                  emitsToolCompleted: false,
+                  emitsToolOutput: false,
+                  supportsMcpTools: false,
+                  supportsDynamicToolCallbacks: false,
+                },
+                approvals: {
+                  supportsCommandApproval: false,
+                  supportsFileReadApproval: false,
+                  supportsFileChangeApproval: false,
+                  supportsApplyPatchApproval: false,
+                  approvalsHaveNativeRequestIds: false,
+                  approvalCallbacksAreLiveOnly: false,
+                  approvalsCanOriginateFromSubagents: false,
+                },
+                planning: {
+                  emitsPlanUpdated: false,
+                  emitsTodoList: false,
+                  emitsProposedPlan: false,
+                  supportsStructuredQuestions: false,
+                  planDeltasHaveItemIds: false,
+                },
+                subagents: {
+                  supportsSubagents: false,
+                  exposesSubagentThreadIds: false,
+                  emitsSubagentLifecycle: false,
+                  canWaitForSubagents: false,
+                  canCloseSubagents: false,
+                  canForkSubagentThread: false,
+                },
+                context: {
+                  acceptsSystemContext: false,
+                  acceptsDeveloperContext: false,
+                  acceptsSyntheticUserContext: false,
+                  canGenerateSummaries: false,
+                  canConsumeHandoffSummaries: false,
+                  supportsDeltaHandoff: false,
+                  supportsFullThreadHandoff: false,
+                  maxRecommendedHandoffChars: null,
+                },
+                checkpointing: {
+                  appCanCheckpointFilesystem: false,
+                  supportsNestedCheckpointScopes: false,
+                  providerCanRollbackConversation: false,
+                  providerRollbackReturnsSnapshot: false,
+                  providerCanReadConversationSnapshot: false,
+                },
+                identity: {
+                  nativeThreadIds: "none",
+                  nativeTurnIds: "none",
+                  nativeItemIds: "none",
+                  nativeRequestIds: "none",
+                },
+                runtimePolicy: {
+                  enforcement: "client-boundary",
+                },
+              },
+              createdAt: v2Now,
+              updatedAt: v2Now,
+              lastError: null,
+            }),
+          ),
+        };
+        const commands: OrchestrationV2Command[] = [];
+        const projectionRequests: ThreadId[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          projection,
+          projectionRequests,
+        });
+        const result = yield* stopThreadSession({
+          threadId: v2ThreadId,
+          commandId: CommandId.make("stop-command"),
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        expect(projectionRequests).toEqual([v2ThreadId]);
+        expect(commands).toEqual(
+          projection.providerSessions.map((session) => ({
+            type: "provider-session.detach",
+            threadId: v2ThreadId,
+            commandId: `stop-command:detach:${session.id}`,
+            providerSessionId: session.id,
+            reason: "client-requested",
+          })),
+        );
+        expect(result).toEqual({ sequence: 2 });
+      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("does not dispatch any lifecycle command when no provider sessions remain", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        projection: v2Projection,
+      });
+      const result = yield* stopThreadSession({
+        threadId: v2ThreadId,
+        commandId: CommandId.make("stop-empty"),
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(commands).toEqual([]);
+      expect(result).toEqual({ sequence: 0 });
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
   it.effect("dispatches settle and unsettle commands without timestamps", () =>
     Effect.gen(function* () {
       const dispatched: OrchestrationV2Command[] = [];
@@ -1539,75 +1150,57 @@ describe("V2 environment commands", () => {
   );
 });
 
-describe("correlated thread deletion cleanup", () => {
-  it.effect("forwards exact optional consent with the caller's stable command ID", () =>
+it.effect.each([true, false, undefined] as const)(
+  "negotiates queued tool eligibility only with capability %s",
+  (capability) =>
     Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projects: [] });
-      const commandId = CommandId.make("delete-original");
-      const worktreeRemoval = {
-        projectId: ProjectId.make("project-1"),
-        path: "/worktree/exact",
-        branch: "task",
-        force: true,
-      } as const;
-      yield* deleteThread({ threadId: v2ThreadId, commandId, worktreeRemoval }).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
-      yield* deleteThread({ threadId: v2ThreadId, commandId: CommandId.make("delete-only") }).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
-      expect(commands).toEqual([
-        { type: "thread.delete", commandId, threadId: v2ThreadId, worktreeRemoval },
-        { type: "thread.delete", commandId: "delete-only", threadId: v2ThreadId },
-      ]);
-    }),
-  );
-
-  it.effect(
-    "observes the original delete after response loss without dispatching or hydrating again",
-    () =>
-      Effect.gen(function* () {
+      for (const serverResolution of [true, false]) {
         const commands: OrchestrationV2Command[] = [];
-        const deletionObservations: OrchestrationV2ObserveThreadDeletionCleanupInput[] = [];
-        const projectionRequests: ThreadId[] = [];
-        const commandId = CommandId.make("delete-lost");
-        const observation: OrchestrationV2ThreadDeletionCleanupObservation = {
-          threadId: v2ThreadId,
-          commandId,
-          receipt: null,
-          deletion: null,
-          worktree: null,
-          state: "unknown",
-          removalOutcome: null,
-          currentLease: "unavailable",
-          reason: "Readback unavailable",
-        };
         const supervisor = yield* makeSupervisor({
           commands,
           projects: [],
-          deletionObservations,
-          projectionRequests,
-          deletionObservation: observation,
-          loseDeleteResponse: true,
+          advertiseServerResolvedCommandContext: serverResolution,
+          ...(capability === undefined ? {} : { advertiseQueuedToolBoundaryDelivery: capability }),
         });
-        const result = yield* Effect.exit(
-          deleteThread({ threadId: v2ThreadId, commandId }).pipe(
-            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          ),
-        );
-        expect(result._tag).toBe("Failure");
-        const observed = yield* observeThreadDeletionCleanup({
-          threadId: v2ThreadId,
-          commandId,
-        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-        expect(observed).toBe(observation);
-        expect(deletionObservations).toEqual([{ threadId: v2ThreadId, commandId }]);
-        expect(commands).toHaveLength(1);
-        expect(projectionRequests).toEqual([]);
-      }),
-  );
-});
+        for (const mode of ["queue", "auto", "start", "steer", "restart"] as const) {
+          yield* startThreadTurn({
+            commandId: CommandId.make(`policy-${mode}`),
+            threadId: v2ThreadId,
+            message: {
+              messageId: MessageId.make(`message-${mode}`),
+              role: "user",
+              text: "Owner follow-up",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: mode,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          const command = commands.at(-1)!;
+          if (capability === true && (mode === "queue" || mode === "auto"))
+            expect(command).toHaveProperty("queuedToolBoundaryEligible", true);
+          else expect(command).not.toHaveProperty("queuedToolBoundaryEligible");
+        }
+        for (const source of ["mcp", "provider", "server"] as const) {
+          yield* startThreadTurn({
+            commandId: CommandId.make(`policy-source-${source}`),
+            threadId: v2ThreadId,
+            creationSource: source,
+            message: {
+              messageId: MessageId.make(`source-${source}`),
+              role: "user",
+              text: "Special delivery",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: "queue",
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          expect(commands.at(-1)).not.toHaveProperty("queuedToolBoundaryEligible");
+        }
+      }
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+);
 
 const automaticWorktreeTurn = {
   commandId: CommandId.make("captured-command"),

@@ -5,7 +5,6 @@ import {
   EventId,
   MessageId,
   NodeId,
-  type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
@@ -25,8 +24,6 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as Tracer from "effect/Tracer";
-import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import * as TestClock from "effect/testing/TestClock";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
@@ -193,33 +190,12 @@ const makeTestRelay = Effect.fnUntraced(function* (
         catchUp.shellSnapshotReads += 1;
         return { schemaVersion: 2, snapshotSequence: 1, threads: [], archivedThreads: [] };
       }),
+    requestSelfSettlement: unused,
     ensureLegacyTranscript: unused,
     dispatch: unused,
-    dispatchNativeWorkstreamSettlement: unused,
-    observeNativeWorkstreamSettlementBinding: unused,
-    dispatchGuarded: unused,
-    dispatchRestartContinuation: unused,
-    dispatchNativeCreationStage: unused,
-    dispatchNativeCreationRecovery: unused,
-    reviewImportedHistoryStart: unused,
-    observeImportedHistoryStart: unused,
-    observeCurrentThreadRuntimeStop: unused,
-    observeThreadDeletionCleanup: unused,
-    stopCurrentThreadRuntime: unused,
-    startWithImportedHistory: unused,
-    observeCommand: unused,
-    observeLegacyCommand: unused,
-    readCurrentThreadRuntimeAttachment: unused,
-    observeCurrentThreadRuntime: unused,
-    getOperatingCounts: unused,
-    acquireWorktreeOwnership: unused,
-    acquireOrdinaryWorktreeOwnership: unused,
-    releaseWorktreeOwnership: unused,
-    getThreadOwnershipIncarnation: unused,
-    getOrdinaryThreadOwnershipIncarnation: unused,
-    listWorktreeOwnershipLeases: unused(),
     getTimelinePage: () => Effect.die("Unused timeline read"),
     getMessageCount: () => Effect.die("unused message count"),
+    getTurnItem: () => Effect.die("unused turn item read"),
     getThreadRecords: () => Effect.die("unused record read"),
     getThreadProjection: unused,
     getCheckpointContext: unused,
@@ -232,6 +208,8 @@ const makeTestRelay = Effect.fnUntraced(function* (
     waitForThread: unused,
     interruptThread: unused,
     getThreadEventSequence: unused,
+    recoverDelegatedTask: unused,
+    delegatedTaskResultPending: unused,
     streamStoredEvents: Stream.empty,
     streamStoredEventsFrom: () => Stream.empty,
     streamDomainEvents: options.domainEvents ?? Stream.empty,
@@ -277,7 +255,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
       update: unused,
       delete: unused,
       getByWorkspaceRoot: unused,
-      snapshot: Effect.succeed({ projects: [], updatedAt: NOW }),
+      snapshot: Effect.succeed({ projects: [] } as never),
       getShell: unused,
       listShells: unused,
       getById: () =>
@@ -301,95 +279,11 @@ const makeTestRelay = Effect.fnUntraced(function* (
 });
 
 describe("AgentAwarenessRelay", () => {
-  it.effect("keeps the listener armed and skips imported thread work", () =>
-    Effect.scoped(Effect.gen(function* () {
-      const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
-      const pulls = yield* Queue.unbounded<void>();
-      const shellRequested = yield* Deferred.make<void>();
-      const releaseShell = yield* Deferred.make<void>();
-      const { relay, shellReads, publications } = yield* makeTestRelay({
-        readShell: () => Deferred.succeed(shellRequested, undefined).pipe(
-          Effect.andThen(Deferred.await(releaseShell)),
-          Effect.as(shell()),
-        ),
-        domainEvents: Stream.fromEffectRepeat(
-          Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(events))),
-        ),
-      });
-      yield* relay.start();
-      yield* Queue.take(pulls);
-      const now = DateTime.makeUnsafe(NOW);
-      const thread: OrchestrationV2AppThread = {
-        id: THREAD_ID, projectId: PROJECT_ID, title: "Thread",
-        providerInstanceId: ProviderInstanceId.make("codex"),
-        modelSelection: {instanceId: ProviderInstanceId.make("codex"), model: "test-model"},
-        runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null,
-        activeProviderThreadId: null,
-        lineage: {rootThreadId: THREAD_ID, parentThreadId: null, relationshipToParent: null},
-        forkedFrom: null, createdBy: "user", creationSource: "web",
-        createdAt: now, updatedAt: now, archivedAt: null, settledOverride: null, settledAt: null,
-        lastVisitedAt: null, deletedAt: null,
-      };
-      const importedThreadId = ThreadId.make("imported-relay-thread");
-      yield* Queue.offer(events, {
-        id: EventId.make("relay-imported"),
-        type: "thread.created",
-        threadId: importedThreadId,
-        occurredAt: now,
-        payload: {...thread, id: importedThreadId, historyOrigin: "v1_import",
-          lineage: {rootThreadId: importedThreadId, parentThreadId: null, relationshipToParent: null}},
-      });
-      yield* Queue.take(pulls);
-      yield* relay.drain;
-      assert.deepEqual(shellReads, []);
-      yield* Queue.offer(events, {
-        id: EventId.make("relay-live-title"),
-        type: "thread.metadata-updated",
-        threadId: THREAD_ID,
-        occurredAt: DateTime.makeUnsafe(NOW),
-        payload: thread,
-      });
-      yield* Deferred.await(shellRequested);
-      yield* Queue.take(pulls);
-      assert.deepEqual(shellReads, [THREAD_ID]);
-      assert.equal(publications.length, 0);
-      yield* Deferred.succeed(releaseShell, undefined);
-      yield* relay.drain;
-      assert.equal(publications.length, 1);
-    })),
-  );
-
-  it.effect("sends publish proof spans only to the dedicated relay tracer", () =>
-    Effect.scoped(Effect.gen(function* () {
-      const userSpans: string[] = [];
-      const productSpans: string[] = [];
-      const collectingTracer = (spans: string[]) => Tracer.make({
-        span: (options) => {
-          const span = new Tracer.NativeSpan(options);
-          const end = span.end.bind(span);
-          span.end = (endTime, exit) => { end(endTime, exit); spans.push(span.name); };
-          return span;
-        },
-      });
-      yield* Effect.gen(function* () {
-        const { relay, publications } = yield* makeTestRelay();
-        yield* relay.publishThread(THREAD_ID);
-        assert.equal(publications.length, 1);
-        assert.include(productSpans, "makePublishProof");
-        assert.notInclude(userSpans, "makePublishProof");
-      }).pipe(
-        Effect.provideService(RelayClientTracer, Option.some(collectingTracer(productSpans))),
-        Effect.withTracer(collectingTracer(userSpans)),
-      );
-    })),
-  );
-
   it("ignores transcript and tool updates but retains activity and metadata changes", () => {
     for (const type of [
       "message.updated",
       "turn-item.updated",
       "provider-turn.updated",
-      "provider-session.detach-requested",
       "thread.visited",
       "thread.pinned",
     ] as const) {
@@ -766,6 +660,30 @@ describe("AgentAwarenessRelay", () => {
       yield* relay.drain;
       assert.equal(publications.length, 2);
       assert.equal(publications[1]?.state, null);
+    }),
+  );
+
+  it.effect.each([
+    { label: "live", archived: false },
+    { label: "archived", archived: true },
+  ])("never publishes tombstones for $label subagent threads", ({ archived }) =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* Ref.set(
+        currentShell,
+        shell({
+          lineage: {
+            rootThreadId: THREAD_ID,
+            parentThreadId: THREAD_ID,
+            relationshipToParent: "subagent",
+          },
+          ...(archived ? { archivedAt: yield* DateTime.now } : {}),
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.equal(publications.length, 0);
     }),
   );
 

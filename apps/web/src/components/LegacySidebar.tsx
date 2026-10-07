@@ -1,5 +1,3 @@
-import { isOperatingThread } from "@t3tools/contracts";
-import { filterSidebarOperatingThreads } from "./Sidebar.logic";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { Spinner } from "~/components/ui/spinner";
@@ -184,6 +182,9 @@ import {
   buildMultiSelectThreadContextMenuItems,
   deleteSelectedThreadEntries,
   getSidebarThreadIdsToPrewarm,
+  filterSidebarOperatingThreads,
+  filterSidebarV2VisibleThreads,
+  isSidebarThreadOperating,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
@@ -1275,7 +1276,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
   const projectThreads = useMemo(
-    () => filterSidebarOperatingThreads(sidebarThreads, props.activeOnly, isOperatingThread),
+    () =>
+      filterSidebarOperatingThreads(
+        filterSidebarV2VisibleThreads(sidebarThreads, null),
+        props.activeOnly,
+        isSidebarThreadOperating,
+      ),
     [sidebarThreads, props.activeOnly],
   );
   const projectPreferenceKeys = useMemo(() => projectExpansionPreferenceKeys(project), [project]);
@@ -2754,7 +2760,11 @@ function ProjectSortMenu({
     <Menu>
       <Tooltip>
         <TooltipTrigger
-          render={<MenuTrigger render={<Button size="icon-xs" variant="ghost-muted" />} />}
+          render={
+            <MenuTrigger
+              render={<Button size="icon-xs" variant="ghost-muted" aria-label="Sidebar options" />}
+            />
+          }
         >
           <ArrowUpDownIcon className="size-3.5" />
         </TooltipTrigger>
@@ -3146,13 +3156,17 @@ export default function LegacySidebar() {
   const allSidebarThreads = useThreadShells();
   const [activeOnly, setActiveOnly] = useState(false);
   const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
-  const activeThreadCount = useMemo(
-    () => allSidebarThreads.filter(isOperatingThread).length,
+  const visibleThreads = useMemo(
+    () => filterSidebarV2VisibleThreads(allSidebarThreads, null),
     [allSidebarThreads],
   );
+  const activeThreadCount = useMemo(
+    () => visibleThreads.filter(isSidebarThreadOperating).length,
+    [visibleThreads],
+  );
   const sidebarThreads = useMemo(
-    () => filterSidebarOperatingThreads(allSidebarThreads, activeOnly, isOperatingThread),
-    [allSidebarThreads, activeOnly],
+    () => filterSidebarOperatingThreads(visibleThreads, activeOnly, isSidebarThreadOperating),
+    [visibleThreads, activeOnly],
   );
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
@@ -3438,10 +3452,6 @@ export default function LegacySidebar() {
     animatedThreadListsRef.current.add(node);
   }, []);
 
-  const visibleThreads = useMemo(
-    () => allSidebarThreads.filter((thread) => thread.archivedAt === null),
-    [allSidebarThreads],
-  );
   const sortedProjects = useMemo(() => {
     const sortableProjects = sidebarProjects.map((project) => ({
       ...project,

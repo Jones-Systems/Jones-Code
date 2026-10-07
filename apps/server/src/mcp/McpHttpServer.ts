@@ -15,6 +15,7 @@ import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { PreviewAutomationError } from "@t3tools/contracts";
 
+import { OrganizationMetadataRegistrationLive } from "../jones/mcp/organizationMetadata/handlers.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
@@ -58,13 +59,6 @@ import {
   DeviceScreenshotToolkit,
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
-
-import { OrganizationToolkit } from "./toolkits/organization/tools.ts";
-import { OrganizationToolkitHandlersLive } from "./toolkits/organization/handlers.ts";
-
-import { DecisionSnapshotToolkit } from "./toolkits/decisionSnapshot/tools.ts";
-import { DecisionSnapshotToolkitHandlersLive } from "./toolkits/decisionSnapshot/handlers.ts";
-import { DecisionSnapshotCollectorLive } from "./toolkits/decisionSnapshot/collector.ts";
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -715,17 +709,6 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
-export const DecisionSnapshotToolkitRegistrationLive = McpServer.toolkit(
-  DecisionSnapshotToolkit,
-).pipe(
-  Layer.provide(DecisionSnapshotToolkitHandlersLive),
-  Layer.provide(DecisionSnapshotCollectorLive),
-);
-
-const OrganizationToolkitRegistrationLive = McpServer.toolkit(OrganizationToolkit).pipe(
-  Layer.provide(OrganizationToolkitHandlersLive),
-);
-
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -734,6 +717,7 @@ const McpTransportLive = McpServer.layerHttp({
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
 export const layer = Layer.mergeAll(
+  OrganizationMetadataRegistrationLive,
   PreviewToolkitRegistrationLive,
   OrchestratorToolkitRegistrationLive,
   ThreadToolkitRegistrationLive,
@@ -744,6 +728,4 @@ export const layer = Layer.mergeAll(
   WorktreeToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
-  OrganizationToolkitRegistrationLive,
-  DecisionSnapshotToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

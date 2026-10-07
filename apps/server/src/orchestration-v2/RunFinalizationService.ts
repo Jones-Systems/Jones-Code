@@ -9,8 +9,6 @@ import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as CheckpointCapture from "./CheckpointCaptureService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import * as CheckpointService from "./CheckpointService.ts";
-import type { OrdinaryCheckoutUseV1 } from "./OrdinaryCheckoutOwnership.ts";
 
 export class RunFinalizationError extends Schema.TaggedError<RunFinalizationError>()(
   "RunFinalizationError",
@@ -46,8 +44,7 @@ export class RunFinalizationService extends Context.Service<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly scopeId: CheckpointScopeId;
-      readonly ordinaryCheckoutUse?: OrdinaryCheckoutUseV1;
-    }) => Effect.Effect<void, RunFinalizationError | CheckpointService.OrdinaryCheckoutMutationError>;
+    }) => Effect.Effect<void, RunFinalizationError>;
   }
 >()("t3/orchestration-v2/RunFinalizationService") {}
 
@@ -63,8 +60,7 @@ const make = Effect.gen(function* () {
       .execute(input)
       .pipe(
         Effect.mapError(
-          (cause) => CheckpointService.isOrdinaryCheckoutMutationError(cause) ? cause
-            : new RunFinalizationError({ ...input, operation: "capture-checkpoint", cause }),
+          (cause) => new RunFinalizationError({ ...input, operation: "capture-checkpoint", cause }),
         ),
       );
     const projection = yield* projections

@@ -25,7 +25,6 @@ vi.mock("react", async (original) => ({
   useCallback: (callback: unknown) => callback,
   useMemo: (create: () => unknown) => create(),
   useRef: (value: unknown) => ({ current: value }),
-  useEffect: () => undefined,
 }));
 vi.mock("@tanstack/react-router", () => ({ useRouter: () => router }));
 vi.mock("./useSettings", () => ({ useClientSettings: () => false }));
@@ -50,9 +49,6 @@ vi.mock("../state/entities", async (original) => ({
   readEnvironmentSupportsSettlement: () => true,
   readEnvironmentSupportsSnooze: () => true,
   readThreadShell: () => threadShell,
-}));
-vi.mock("../state/use-atom-query-runner", () => ({
-  useAtomQueryRunner: () => vi.fn(async () => ({ _tag: "Success", value: null })),
 }));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: (command: unknown) => {
@@ -90,16 +86,6 @@ function currentUndo() {
 }
 
 beforeEach(() => {
-  const storage = new Map<string, string>();
-  vi.stubGlobal("window", {
-    localStorage: {
-      getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => { storage.set(key, value); },
-      removeItem: (key: string) => { storage.delete(key); },
-      key: (index: number) => [...storage.keys()][index] ?? null,
-      get length() { return storage.size; },
-    },
-  });
   vi.useFakeTimers();
   for (const command of Object.values(commands)) {
     command.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
@@ -113,7 +99,6 @@ afterEach(() => {
   vi.runAllTimers();
   vi.useRealTimers();
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
 });
 
 describe("unpin Undo", () => {

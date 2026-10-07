@@ -19,7 +19,6 @@ import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import type { OrdinaryCheckoutUseV1 } from "./OrdinaryCheckoutOwnership.ts";
 
 export class CheckpointCaptureExecutionError extends Schema.TaggedError<CheckpointCaptureExecutionError>()(
   "CheckpointCaptureExecutionError",
@@ -38,8 +37,7 @@ export interface CheckpointCaptureServiceV2Shape {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly scopeId: CheckpointScopeId;
-    readonly ordinaryCheckoutUse?: OrdinaryCheckoutUseV1;
-  }) => Effect.Effect<void, CheckpointCaptureExecutionError | CheckpointService.OrdinaryCheckoutMutationError>;
+  }) => Effect.Effect<void, CheckpointCaptureExecutionError>;
 }
 
 export class CheckpointCaptureServiceV2 extends Context.Service<
@@ -66,7 +64,6 @@ export const layer: Layer.Layer<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly scopeId: CheckpointScopeId;
-      readonly ordinaryCheckoutUse?: OrdinaryCheckoutUseV1;
     }) {
       const { run, rootNode, scope, providerThread, readyCheckpointOrdinals } =
         yield* projections.getCheckpointCaptureContext(input.threadId, input);
@@ -130,8 +127,7 @@ export const layer: Layer.Layer<
         ordinalWithinScope: run.ordinal,
         appRunOrdinal: run.ordinal,
         capturedAt,
-        ...(input.ordinaryCheckoutUse === undefined ? {} : { ordinaryCheckoutUse: input.ordinaryCheckoutUse }),
-      }).pipe(Effect.provideService(EventSink.EventSinkV2, eventSink));
+      });
       // Match RunExecutionService: capture loaded the waiting run before
       // materializing baselines. Omit delegatedCompletion so a newer cohort
       // write during capture is not overwritten by this stale snapshot
@@ -246,7 +242,7 @@ export const layer: Layer.Layer<
       execute: (input) =>
         execute(input).pipe(
           Effect.mapError((cause) =>
-            isCheckpointCaptureExecutionError(cause) || CheckpointService.isOrdinaryCheckoutMutationError(cause)
+            isCheckpointCaptureExecutionError(cause)
               ? cause
               : new CheckpointCaptureExecutionError({ ...input, cause }),
           ),

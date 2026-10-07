@@ -16,9 +16,3 @@ export const withDeviceHubQuery = (url: string, access: DeviceHubAccess): string
   const separator = url.includes("?") ? "&" : "?";
   return `${url}${separator}${new URLSearchParams(entries).toString()}`;
 };
-
-export {
-  createDeviceMediaRouteManager,
-  type DeviceMediaRoute,
-  type DeviceMediaTunnelBridge,
-} from "./mediaRoute.ts";

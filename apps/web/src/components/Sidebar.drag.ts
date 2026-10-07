@@ -19,7 +19,7 @@ const isShelfHeader = (item: SidebarListItem | undefined) =>
     item.marker === "snoozed-header" ||
     item.marker === "settled-header");
 
-/** Keep the lifted card below the supplied label boundary, including empty shelves.
+/** Keep the lifted card below the Pins label, including when Pins is empty.
  * The container rect follows scrolling; the offset is measured once at pickup. */
 export function restrictBelowSidebarLabel(
   { transform, containerNodeRect, draggingNodeRect }: Parameters<Modifier>[0],
@@ -43,43 +43,32 @@ export function createSidebarCollisionDetection(
   const sections = new Map<string, SidebarSection | null>();
   let previousPointerY = options.activationY;
   let boundarySection: "pinned" | "active" | undefined;
-  const activeFirst =
-    options.items?.[0]?.kind === "marker" && options.items[0].marker === "active-placeholder";
   return (args) => {
     let collisions = closestCenter(args);
     const pointer = args.pointerCoordinates;
     const items = options.items;
     const source = items?.find((item) => item.kind === "thread" && item.key === args.active.id);
     const boundary = args.droppableContainers
-      .find(
-        (container) =>
-          container.id === sidebarMarkerId(activeFirst ? "pinned-header" : "pinned-divider"),
-      )
+      .find((container) => container.id === sidebarMarkerId("pinned-divider"))
       ?.node.current?.querySelector(".sidebar-drag-boundary-label")
       ?.getBoundingClientRect();
     if (items && boundary && source?.kind === "thread" && pointer) {
       boundarySection ??= source.section === "pinned" ? "pinned" : "active";
-      // Use the visible boundary row, including its sortable translation.
+      // Use the visible divider row, including its sortable translation.
       // Only pointer movement can change sections: opening the destination
       // moves this row, but must not toggle a stationary gesture back.
       const previousY = previousPointerY ?? pointer.y;
       previousPointerY = pointer.y;
       if (pointer.x >= boundary.left && pointer.x <= boundary.right) {
-        if (pointer.y < previousY && pointer.y <= boundary.bottom)
-          boundarySection = activeFirst ? "active" : "pinned";
-        else if (pointer.y > previousY && pointer.y >= boundary.top)
-          boundarySection = activeFirst ? "pinned" : "active";
+        if (pointer.y < previousY && pointer.y <= boundary.bottom) boundarySection = "pinned";
+        else if (pointer.y > previousY && pointer.y >= boundary.top) boundarySection = "active";
         const nextHeader = (["working-header", "snoozed-header", "settled-header"] as const)
           .map((marker) =>
             args.droppableContainers.find((container) => container.id === sidebarMarkerId(marker)),
           )
           .find((container) => container !== undefined);
         const activeBottom = nextHeader?.node.current?.getBoundingClientRect().top;
-        if (
-          activeFirst
-            ? activeBottom != null && pointer.y < activeBottom
-            : boundarySection === "pinned" || (activeBottom != null && pointer.y < activeBottom)
-        ) {
+        if (boundarySection === "pinned" || (activeBottom != null && pointer.y < activeBottom)) {
           const target = collisions.find((collision) => {
             const id = String(collision.id);
             if (!sections.has(id)) {
@@ -196,17 +185,10 @@ export function createSidebarSortingStrategy(input: {
       if (groups[name].length > 0) projected.push(...groups[name]);
       else marker(`${name}-placeholder`);
     };
-    if (items[0]?.kind === "marker" && items[0].marker === "active-placeholder") {
-      section("active");
-      marker("pinned-header");
-      projected.push(...groups.pinned);
-      marker("pinned-divider");
-    } else {
-      marker("pinned-header");
-      projected.push(...groups.pinned);
-      marker("pinned-divider");
-      section("active");
-    }
+    marker("pinned-header");
+    projected.push(...groups.pinned);
+    marker("pinned-divider");
+    section("active");
     if (items.some((item) => item.kind === "marker" && item.marker === "working-header")) {
       marker("working-header");
       projected.push(...groups.working);

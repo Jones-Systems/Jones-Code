@@ -1,11 +1,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import { expect, it } from "@effect/vitest";
-import {
-  WORKSTREAM_COUNTS_MANIFEST_SHA256,
-  WorkstreamDetail,
-  WorkstreamReferenceDetail,
-} from "@t3tools/contracts";
+import { WorkstreamDetail, WorkstreamReferenceDetail } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -369,50 +365,5 @@ it.effect("reconciles pending and unresolved commands only through the exact GET
     expect((yield* gateway.pollCommand(command.command_id)).state).toBe("committed");
     expect(submissions).toBe(1);
     expect(polls).toBe(2);
-  }),
-);
-
-it.effect("negotiates owner-scoped registry counts without pages and rejects identity drift", () =>
-  Effect.gen(function* () {
-    const fixture = makeSyntheticWorkstreamTransport();
-    const old = yield* fixture.getCapabilities({
-      contractVersion: WORKSTREAM_CONTRACT_HEADER_VERSION,
-      contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-    });
-    let principal = binding.principalId as string;
-    const transport: WorkstreamTransport = {
-      ...fixture,
-      listWorkstreams: () => Effect.die("counts must not load pages"),
-      getCountsCapabilities: () =>
-        Effect.succeed({
-          ...old,
-          manifest_sha256: WORKSTREAM_COUNTS_MANIFEST_SHA256,
-          registry_counts: {
-            version: 1,
-            path: "/workstreams/v1/counts",
-            active_definition: "latest_owner_lifecycle_declaration_active",
-          },
-        }),
-      getRegistryCounts: () =>
-        Effect.succeed({
-          context: old.context,
-          principal_id: principal,
-          observed_at: "2026-10-02T00:00:00Z",
-          authority_effect: "none",
-          total: 6,
-          active: 4,
-          unknown_lifecycle: 1,
-        }),
-    };
-    const gateway = yield* make(transport, { binding });
-    expect((yield* gateway.readRegistryCounts()).active).toBe(4);
-    principal = "other-principal";
-    expect(yield* gateway.readRegistryCounts().pipe(Effect.flip)).toMatchObject({
-      reason: "stale",
-    });
-    const legacy = yield* make(fixture, { binding });
-    expect(yield* legacy.readRegistryCounts().pipe(Effect.flip)).toMatchObject({
-      reason: "contract-mismatch",
-    });
   }),
 );

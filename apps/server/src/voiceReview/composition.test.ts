@@ -3,16 +3,18 @@ import { it } from "@effect/vitest";
 import {
   AuthSessionId,
   EnvironmentId,
+  ThreadId,
   VoiceReviewForbiddenError,
   type EnvironmentSessionPrincipalShape,
-  type OrchestrationShellSnapshot,
+  type OrchestrationV2ThreadShellSnapshot,
   type ThreadRegistryThread,
   type T3PlacementResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as Data from "effect/Data";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
 import { makeVoiceReviewComposition, makeVoiceReviewCompositionFactory } from "./composition.ts";
 
@@ -61,17 +63,18 @@ const result: T3PlacementResult = {
   trustedEnvironments: [],
   readiness: "ready",
 };
-const seam = () => {
+const seam = (location: "active" | "archive" = "active") => {
   let threadIds = ["thread"];
   let environmentId = "native-environment";
   const read = vi.fn(() => Effect.succeed(result));
   const projectionRead = vi.fn(() =>
     Effect.succeed({
       snapshotSequence: 1,
-      projects: [],
-      threads: threadIds.map((id) => ({ id })),
-      updatedAt: "2026-10-02T12:00:00Z",
-    } as unknown as OrchestrationShellSnapshot),
+      schemaVersion: 1,
+      threads: location === "active" ? threadIds.map((id) => ({ id, deletedAt: null })) : [],
+      archivedThreads:
+        location === "archive" ? threadIds.map((id) => ({ id, deletedAt: null })) : [],
+    } as unknown as OrchestrationV2ThreadShellSnapshot),
   );
   const run = (
     input: {
@@ -84,9 +87,18 @@ const seam = () => {
       Effect.provideService(ServerEnvironmentIdentity, {
         getEnvironmentId: Effect.suspend(() => Effect.succeed(EnvironmentId.make(environmentId))),
       }),
-      Effect.provideService(ProjectionSnapshotQuery, {
+      Effect.provideService(ProjectionStore.ProjectionStoreV2, {
         getShellSnapshot: projectionRead,
-      } as unknown as ProjectionSnapshotQuery["Service"]),
+        getThreadShell: (id: ThreadId) =>
+          projectionRead().pipe(
+            Effect.map(
+              (snapshot) =>
+                [...snapshot.threads, ...snapshot.archivedThreads].find(
+                  (thread) => thread.id === id,
+                ) ?? null,
+            ),
+          ),
+      } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
       Effect.provideService(WorkstreamGateway, {
         readThreadPlacements: read,
       } as unknown as WorkstreamGateway["Service"]),
@@ -113,15 +125,16 @@ describe("voice native service composition", () => {
           Effect.provideService(ServerEnvironmentIdentity, {
             getEnvironmentId: Effect.succeed(EnvironmentId.make("native-environment")),
           }),
-          Effect.provideService(ProjectionSnapshotQuery, {
+          Effect.provideService(ProjectionStore.ProjectionStoreV2, {
             getShellSnapshot: () =>
               Effect.succeed({
                 snapshotSequence: 1,
-                projects: [],
+                schemaVersion: 1,
                 threads: [],
-                updatedAt: "2026-10-02T12:00:00Z",
+                archivedThreads: [],
               }),
-          } as unknown as ProjectionSnapshotQuery["Service"]),
+            getThreadShell: () => Effect.succeed(null),
+          } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
           Effect.provideService(WorkstreamGateway, {
             readThreadPlacements: read,
           } as unknown as WorkstreamGateway["Service"]),
@@ -197,3 +210,66 @@ describe("voice native service composition", () => {
     }),
   );
 });
+
+it.effect("includes archived V2 threads and rechecks their exact native identity", () =>
+  Effect.gen(function* () {
+    const fixture = seam("archive");
+    const port = yield* fixture.run();
+    expect(port).toBeDefined();
+    const identities = Array.from(port!.identities([registryThread]).values());
+    expect(identities).toEqual([
+      { source_instance_id: "native-environment", native_thread_id: "thread" },
+    ]);
+    expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual(result);
+    expect(fixture.read).toHaveBeenCalledExactlyOnceWith({ identities });
+    expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
+  }),
+);
+
+it.effect("uses the injected clock for native placement expiry on every read", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(1_000);
+    const fixture = seam();
+    const current: T3PlacementResult = {
+      ...result,
+      page: {
+        ...result.page,
+        items: [
+          {
+            membership_id: "membership",
+            workstream_id: "workstream",
+            native_reference_id: "reference",
+            kind: "primary",
+            source_instance_id: "native-environment",
+            native_thread_id: "thread",
+            attestation_version: 1,
+            attested_at: "1970-01-01T00:00:00Z",
+            expires_at: "1970-01-01T00:00:02Z",
+            evidence_sha256: "a".repeat(64),
+            source_binding_version: 1,
+            authority_namespace: "native-authority",
+            store_generation: 3,
+          },
+        ],
+      },
+      trustedEnvironments: [
+        {
+          environmentId: "native-environment",
+          authorityNamespace: "native-authority",
+          storeGeneration: 3,
+        },
+      ],
+    };
+    fixture.read.mockReturnValue(Effect.succeed(current));
+    const port = yield* fixture.run();
+    const identities = Array.from(port!.identities([registryThread]).values());
+    expect(yield* Effect.promise(() => port!.read(principal, identities))).toEqual(current);
+    yield* TestClock.setTime(2_000);
+    const error = yield* Effect.tryPromise({
+      try: () => port!.read(principal, identities),
+      catch: (cause) => new NativeReadFailure({ cause }),
+    }).pipe(Effect.flip);
+    expect(error._tag).toBe("NativeReadFailure");
+    expect(fixture.read).toHaveBeenCalledTimes(2);
+  }),
+);

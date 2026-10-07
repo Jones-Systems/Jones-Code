@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from "vite-plus/test";
-import * as DateTime from "effect/DateTime";
-import type { OrchestrationV2CurrentThreadRuntimeTarget, OrchestrationV2StopCurrentThreadRuntimeInput, OrchestrationV2StopCurrentThreadRuntimeResult, OrchestrationV2ThreadRuntimeAttachmentResult, ScopedThreadRef } from "@t3tools/contracts";
+import { describe, expect, it } from "vite-plus/test";
 
-import { buildThreadActionMenuItems, createCurrentRuntimeStopController, currentRuntimeStopMenuTarget, type ThreadActionMenuState } from "./threadActionMenu.logic";
+import {
+  canStopThreadSession,
+  buildDraftActionMenuItems,
+  buildThreadActionMenuItems,
+  type ThreadActionMenuState,
+} from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
   branch: null,
@@ -14,7 +17,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
-  canStopSession: true,
+  canStopSession: false,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -37,8 +40,39 @@ function allIds(state: ThreadActionMenuState): string[] {
   return flatten(buildThreadActionMenuItems(state));
 }
 
+describe("canStopThreadSession", () => {
+  it("requires a non-stopped projected session, including an idle or errored attachment", () => {
+    expect(canStopThreadSession(null)).toBe(false);
+    expect(canStopThreadSession([])).toBe(false);
+    expect(canStopThreadSession([{ status: "stopped" }, { status: "stopped" }])).toBe(false);
+    for (const status of ["starting", "ready", "running", "waiting", "error"] as const) {
+      expect(canStopThreadSession([{ status: "stopped" }, { status }])).toBe(true);
+    }
+  });
+});
+
 describe("buildThreadActionMenuItems", () => {
-  it("hides lifecycle items when the environment lacks the capabilities", () => {
+  it("places Stop after settlement and disables it after all sessions stop", () => {
+    const items = buildThreadActionMenuItems({ ...baseState, canStopSession: true });
+    expect(items[items.findIndex((item) => item.id === "settle") + 1]).toMatchObject({
+      id: "stop-thread",
+      label: "Stop thread",
+      icon: "square",
+      disabled: false,
+    });
+    expect(
+      buildThreadActionMenuItems(baseState).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: true });
+    expect(
+      buildThreadActionMenuItems({
+        ...baseState,
+        isPinned: true,
+        isSettled: true,
+        canStopSession: true,
+      }).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: false });
+  });
+  it("hides capability-gated items while keeping Stop available as a disabled action", () => {
     expect(
       ids({
         ...baseState,
@@ -51,7 +85,7 @@ describe("buildThreadActionMenuItems", () => {
         },
       }),
     ).toEqual([
-      "kill-thread",
+      "stop-thread",
       "rename",
       "mark-unread",
       "copy",
@@ -106,21 +140,6 @@ describe("buildThreadActionMenuItems", () => {
       expect.arrayContaining(["unpin", "unsettle", "unsnooze"]),
     );
     expect(ids(baseState)).toEqual(expect.arrayContaining(["pin", "settle", "snooze"]));
-  });
-
-  it("places Kill Thread below Settle and disables it after the session stops", () => {
-    const items = buildThreadActionMenuItems(baseState);
-    const settleIndex = items.findIndex((item) => item.id === "settle");
-    expect(items[settleIndex + 1]).toMatchObject({
-      id: "kill-thread",
-      label: "Kill Thread",
-      disabled: false,
-    });
-    expect(
-      buildThreadActionMenuItems({ ...baseState, canStopSession: false }).find(
-        (item) => item.id === "kill-thread",
-      ),
-    ).toMatchObject({ disabled: true });
   });
 
   it("offers auto-settle as a submenu with the current option checked", () => {
@@ -194,131 +213,23 @@ describe("buildThreadActionMenuItems", () => {
   });
 });
 
-describe("current runtime stop command correlation", () => {
-  const threadRef = { environmentId: "environment:current", threadId: "thread:current" } as ScopedThreadRef;
-  const target = {
-    binding: { threadId: threadRef.threadId, providerThreadId: "provider:current", providerSessionId: "session:current", instanceId: "codex", runtimeGeneration: "generation:current", nativeThreadId: "native:current" },
-    driver: "codex", evidenceRevision: 7,
-  } as OrchestrationV2CurrentThreadRuntimeTarget;
-  const result = (input: OrchestrationV2StopCurrentThreadRuntimeInput, patch = {}): OrchestrationV2StopCurrentThreadRuntimeResult => ({
-    version: 2, commandId: input.commandId, threadId: input.threadId, target: input.target,
-    commandStatus: "accepted",
-    receipt: { commandId: input.commandId, threadId: input.threadId, commandType: "provider-session.detach", acceptedAt: DateTime.makeUnsafe("2026-10-03T00:00:00Z"), resultSequence: 1, status: "accepted", error: null },
-    queueFence: { status: "installed", affectedRunIds: ["run:held"] },
-    runtimeStop: { status: "pending" }, reason: null, ...patch,
-  }) as never;
-  const attachment = (runtimeStatus = "idle", patch = {}): OrchestrationV2ThreadRuntimeAttachmentResult => ({
-    threadId: threadRef.threadId, stopCapability: { version: 2 },
-    attachment: { status: "attached", binding: target.binding, driver: target.driver, evidenceRevision: target.evidenceRevision, runtimeStatus, observedAt: "2026-10-03T00:00:00Z" }, ...patch,
-  }) as never;
-  const harness = () => {
-    let pointer: OrchestrationV2StopCurrentThreadRuntimeInput | null = null;
-    const options = {
-      read: () => pointer,
-      reserve: vi.fn((_ref: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => { pointer = input; }),
-      clear: vi.fn(() => { pointer = null; }),
-      stop: vi.fn(async (_ref: ScopedThreadRef, input: OrchestrationV2StopCurrentThreadRuntimeInput) => result(input)),
-      observe: vi.fn(async (_ref: ScopedThreadRef, _input: Pick<OrchestrationV2StopCurrentThreadRuntimeInput, "commandId" | "threadId">) => result(pointer!)),
-    };
-    return { options, read: () => pointer, run: createCurrentRuntimeStopController(options) };
-  };
+describe("buildDraftActionMenuItems", () => {
+  it("offers only the copy values the draft has", () => {
+    const items = buildDraftActionMenuItems({ hasPath: false, hasBranch: true, hasProject: true });
+    expect(items[0]).toMatchObject({ id: "copy", disabled: false });
+    expect(items[0]?.children?.map((item) => item.id)).toEqual(["copy-branch"]);
 
-  it.each(["idle", "error"])("enables Kill only for an advertised capability and exact attached %s runtime", (runtimeStatus) => {
-    const captured = currentRuntimeStopMenuTarget(attachment(runtimeStatus), threadRef.threadId);
-    expect(captured).toEqual(target);
-    expect(captured!.binding).not.toBe(target.binding);
-    expect(buildThreadActionMenuItems({ ...baseState, canStopSession: captured !== null }).find((item) => item.id === "kill-thread")?.disabled).toBe(false);
+    const noCopy = buildDraftActionMenuItems({
+      hasPath: false,
+      hasBranch: false,
+      hasProject: true,
+    });
+    expect(noCopy[0]).toMatchObject({ id: "copy", disabled: true, children: [] });
   });
 
-  it.each([
-    null,
-    attachment("idle", { stopCapability: undefined }),
-    attachment("idle", { stopCapability: null }),
-    attachment("idle", { stopCapability: { version: 1 } }),
-    attachment("idle", { threadId: "thread:other" }),
-    attachment("idle", { attachment: { status: "stopped", reason: "runtime_not_resident", observedAt: "2026-10-03T00:00:00Z" } }),
-    attachment("idle", { attachment: { status: "unknown", reason: "Current binding is unknown.", observedAt: "2026-10-03T00:00:00Z" } }),
-  ])("keeps Kill disabled without current target and canonical capability %#", (value) => {
-    const captured = currentRuntimeStopMenuTarget(value, threadRef.threadId);
-    expect(captured).toBeNull();
-    expect(buildThreadActionMenuItems({ ...baseState, canStopSession: captured !== null }).find((item) => item.id === "kill-thread")?.disabled).toBe(true);
-  });
-
-  it("captures one exact current target, persists before RPC and shares simultaneous calls", async () => {
-    const { run, options, read } = harness();
-    let complete!: (value: OrchestrationV2StopCurrentThreadRuntimeResult) => void;
-    options.stop.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
-    const first = run(threadRef, target);
-    expect(run(threadRef, target)).toBe(first);
-    await Promise.resolve();
-    expect(options.stop).toHaveBeenCalledTimes(1);
-    expect(options.stop.mock.calls[0]![1].target).toEqual(target);
-    expect(options.reserve.mock.invocationCallOrder[0]).toBeLessThan(options.stop.mock.invocationCallOrder[0]!);
-    complete(result(read()!));
-    expect((await first).status).toBe("pending");
-    expect(options.clear).not.toHaveBeenCalled();
-    expect(read()).not.toBeNull();
-  });
-
-  it("observes the saved command and original target after response loss and attachment replacement", async () => {
-    const { run, options, read } = harness();
-    options.stop.mockRejectedValue(new Error("Lost response"));
-    expect((await run(threadRef, target)).status).toBe("unknown");
-    const original = read()!;
-    const replacement = { ...target, evidenceRevision: 8, binding: { ...target.binding, providerSessionId: "session:replacement" as never } };
-    expect((await run(threadRef, replacement)).status).toBe("pending");
-    expect(options.stop).toHaveBeenCalledTimes(1);
-    expect(options.observe).toHaveBeenCalledWith(threadRef, { threadId: original.threadId, commandId: original.commandId });
-    expect(read()).toEqual(original);
-    expect(options.clear).not.toHaveBeenCalled();
-  });
-
-  it("never claims runtime stop from acceptance and a queue fence alone", async () => {
-    const { run, options, read } = harness();
-    expect((await run(threadRef, target)).status).toBe("pending");
-    options.observe.mockImplementation(async () => result(read()!, { runtimeStop: { status: "stopped" } }));
-    expect((await run(threadRef, target)).status).toBe("stopped");
-    expect(options.stop).toHaveBeenCalledTimes(1);
-    expect(options.clear).toHaveBeenCalledTimes(1);
-  });
-
-  it("retains an unknown pointer on a missing or mismatched result target", async () => {
-    const { run, options, read } = harness();
-    options.stop.mockImplementation(async (_ref, input) => result(input, { target: null, commandStatus: "unknown", receipt: null, queueFence: { status: "unknown", affectedRunIds: [] }, runtimeStop: { status: "unknown" } }));
-    expect((await run(threadRef, target)).status).toBe("unknown");
-    const original = read()!;
-    options.observe.mockImplementation(async () => result(original, { target: { ...target, evidenceRevision: 99 }, runtimeStop: { status: "stopped" } }));
-    expect((await run(threadRef, target)).status).toBe("unknown");
-    expect(read()).toEqual(original);
-    expect(options.clear).not.toHaveBeenCalled();
-  });
-
-  it("sends no stop RPC when correlation storage fails", async () => {
-    const { run, options } = harness();
-    options.reserve.mockImplementation(() => { throw new Error("Storage is full"); });
-    await expect(run(threadRef, target)).rejects.toThrow("Storage is full");
-    expect(options.stop).not.toHaveBeenCalled();
-    expect(options.observe).not.toHaveBeenCalled();
-  });
-
-  it("permits an explicit save retry only for the same live pre-RPC operation", async () => {
-    const { run, options, read } = harness();
-    options.reserve.mockImplementationOnce(() => { throw new Error("Storage is full"); });
-    await expect(run(threadRef, target)).rejects.toThrow("Storage is full");
-    const originalId = options.reserve.mock.calls[0]![1].commandId;
-    expect((await run(threadRef, target)).status).toBe("pending");
-    expect(read()!.commandId).toBe(originalId);
-    expect(options.stop).toHaveBeenCalledTimes(1);
-    expect(options.reserve).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps a confirmed result when terminal correlation cleanup fails after RPC", async () => {
-    const { run, options } = harness();
-    options.stop.mockImplementation(async (_ref, input) => result(input, { runtimeStop: { status: "stopped" } }));
-    options.clear.mockImplementation(() => { throw new Error("Storage is full"); });
-    const outcome = await run(threadRef, target);
-    expect(outcome.status).toBe("stopped");
-    expect(outcome.reason).toContain("saved correlation could not be cleared");
-    expect(options.stop).toHaveBeenCalledTimes(1);
+  it("drops project settings without a project and keeps discard last", () => {
+    const items = buildDraftActionMenuItems({ hasPath: true, hasBranch: false, hasProject: false });
+    expect(items.map((item) => item.id)).toEqual(["copy", "discard"]);
+    expect(items.at(-1)).toMatchObject({ label: "Discard draft", destructive: true });
   });
 });
