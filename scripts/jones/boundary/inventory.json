@@ -752,7 +752,14 @@
     "apps/web/src/jones/composer/composerShortcutRails.ts": "jones-owned",
     "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/providerRuntimeIdentity.test.ts": "jones-tests-in-upstream",
-    "packages/contracts/src/jones/providerRuntimeIdentity.ts": "jones-owned"
+    "packages/contracts/src/jones/providerRuntimeIdentity.ts": "jones-owned",
+    "apps/server/src/cli/pair.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cli/service.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cloud/bootService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cloud/pinnedRuntime.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cloud/selfUpdate.test.ts": "jones-tests-in-upstream",
+    "docs/operations/persistent-hosts.md": "jones-owned",
+    "docs/user/background-service.md": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

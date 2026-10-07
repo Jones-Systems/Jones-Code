@@ -184,6 +184,18 @@
         "packages/contracts/src/device.test.ts"
       ],
       "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
+    },
+    {
+      "id": "persistent-private-services",
+      "tests": [
+        "apps/server/src/jones/hostService/HostService.test.ts",
+        "apps/server/src/jones/hostService/cli.test.ts",
+        "apps/server/src/jones/hostService/artifactVerification.test.ts",
+        "apps/server/src/jones/hostService/HostServiceConfig.test.ts",
+        "packages/tailscale/src/jones/serveOwnership.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
     }
   ]
 }

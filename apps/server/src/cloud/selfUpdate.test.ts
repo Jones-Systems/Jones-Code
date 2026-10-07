@@ -3,10 +3,12 @@ import { expect, it } from "@effect/vitest";
 import { ServerSelfUpdateError, ThreadId } from "@t3tools/contracts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -20,6 +22,7 @@ import * as ServerSelfUpdate from "./selfUpdate.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
+  readonly releaseBaseUrl?: string | null;
   readonly managed?: boolean;
   readonly preflight?: "ready" | "blocked";
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
@@ -123,7 +126,22 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
     Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order)),
     Effect.provideService(HostProcessPlatform, "linux"),
     Effect.provideService(HostProcessArchitecture, "x64"),
-    Effect.provide(ServerConfig.layer({ ...config, mode: options.mode ?? "web" })),
+    Effect.provide(
+      Layer.mergeAll(
+        ServerConfig.layer({ ...config, mode: options.mode ?? "web" }),
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env:
+              options.releaseBaseUrl === null
+                ? {}
+                : {
+                    T3CODE_RELEASE_BASE_URL:
+                      options.releaseBaseUrl ?? "https://releases.example/download",
+                  },
+          }),
+        ),
+      ),
+    ),
   );
   return { selfUpdate, order };
 });
@@ -341,6 +359,15 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         expect(Cause.hasInterruptsOnly(exit.cause)).toBe(false);
       }
       expect(events).toEqual(["clear"]);
+    }),
+  );
+
+  it.effect("refuses the implicit upstream origin with an actionable staging message", () =>
+    Effect.gen(function* () {
+      const { selfUpdate, order } = yield* makeHarness({ releaseBaseUrl: null });
+      const error = yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip);
+      expect(error.reason).toContain("t3 jones host stage-runtime");
+      expect(order).toEqual([]);
     }),
   );
 

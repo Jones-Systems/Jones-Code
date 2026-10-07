@@ -43,7 +43,8 @@ import * as ProcessRunner from "../processRunner.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { createUpdateProgress } from "./updateProgress.ts";
-import { bootServiceLayer } from "./service.ts";
+import { bootServiceLayer, jonesBootServiceLayer } from "./service.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 
 export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpdateError", {
   reason: Schema.String,
@@ -314,6 +315,19 @@ const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(func
   return state.value;
 });
 
+export function isJonesBootServiceCgroup(contents: string): boolean {
+  return contents
+    .split("\n")
+    .some((line) =>
+      line
+        .split(":")
+        .slice(2)
+        .join(":")
+        .split("/")
+        .includes(JONES_BOOT_SERVICE_IDENTITY.systemdUnitFile),
+    );
+}
+
 const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(function* (
   pid: number,
 ) {
@@ -322,7 +336,7 @@ const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(fun
   const runner = yield* ProcessRunner.ProcessRunner;
   if (platform === "linux") {
     const cgroup = yield* fs.readFileString(`/proc/${pid}/cgroup`).pipe(Effect.option);
-    return Option.isSome(cgroup) && cgroup.value.includes("/t3code.service");
+    return Option.isSome(cgroup) && isJonesBootServiceCgroup(cgroup.value);
   }
   if (platform === "darwin") {
     // The service server's parent is the launcher process.
@@ -574,7 +588,7 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
         target.install({ allowDowngrade: input.allowDowngrade, start: restartService }),
       ),
       Effect.provide(
-        BootService.layer({
+        jonesBootServiceLayer({
           baseDir: input.baseDir,
           logsDir: input.logsDir,
           cliVersion: targetVersion,

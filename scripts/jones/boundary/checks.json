@@ -243,6 +243,34 @@
       "commands": [
         "vp test run apps/server/src/diagnostics/ProcessDiagnostics.test.ts apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts apps/server/src/provider/Drivers/CodexDriver.test.ts apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts apps/server/src/provider/Layers/ProviderRegistry.test.ts apps/server/src/resourceTelemetry/Model.test.ts apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
       ]
+    },
+    {
+      "id": "jones-persistent-private-services",
+      "tests": [
+        "apps/server/src/cloud/bootService.test.ts",
+        "apps/server/src/cloud/pinnedRuntime.test.ts",
+        "apps/server/src/cloud/selfUpdate.test.ts",
+        "apps/server/src/cli/service.test.ts",
+        "apps/server/src/cli/update.test.ts",
+        "apps/server/src/cli/pair.test.ts",
+        "apps/server/src/jones/hostService/artifactVerification.test.ts",
+        "apps/server/src/jones/hostService/releasePolicy.test.ts",
+        "apps/server/src/jones/hostService/HostServiceConfig.test.ts",
+        "apps/server/src/jones/hostService/HostService.test.ts",
+        "apps/server/src/jones/hostService/cli.test.ts",
+        "packages/tailscale/src/tailscale.test.ts",
+        "packages/tailscale/src/jones/serveOwnership.test.ts",
+        "scripts/lib/dev-share.test.ts",
+        "scripts/dev-runner.test.ts",
+        "packages/ssh/src/tunnel.test.ts",
+        "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts apps/server/src/cli/pair.test.ts apps/server/src/jones/hostService/artifactVerification.test.ts apps/server/src/jones/hostService/releasePolicy.test.ts apps/server/src/jones/hostService/HostServiceConfig.test.ts apps/server/src/jones/hostService/HostService.test.ts apps/server/src/jones/hostService/cli.test.ts packages/tailscale/src/tailscale.test.ts packages/tailscale/src/jones/serveOwnership.test.ts scripts/lib/dev-share.test.ts scripts/dev-runner.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/tailscale typecheck",
+        "vp run --filter @t3tools/scripts typecheck"
+      ]
     }
   ]
 }

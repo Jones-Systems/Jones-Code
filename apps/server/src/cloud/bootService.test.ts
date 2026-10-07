@@ -1,6 +1,8 @@
+import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  HostProcessArchitecture,
   HostProcessExecutablePath,
   HostProcessPlatform,
   HostProcessUserId,
@@ -11,11 +13,18 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import { cliArchiveFileName, cliArchivePlatformKey } from "@t3tools/shared/cliRelease";
 import { HttpClient } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as BootService from "./bootService.ts";
+import {
+  JonesRuntimeProvenance,
+  JONES_RUNTIME_PROVENANCE_FILE,
+} from "../jones/hostService/artifactVerification.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import { pinnedRuntimePaths } from "./pinnedRuntime.ts";
 import {
   parseServiceState,
@@ -23,6 +32,10 @@ import {
   SERVICE_RESTART_PENDING_FILE,
   serviceStateHasPendingUpdate,
 } from "./serviceProtocol.ts";
+
+const encodeJonesRuntimeProvenance = Schema.encodeEffect(
+  Schema.fromJsonString(JonesRuntimeProvenance),
+);
 
 const linuxRuntime = "/home/theo/.t3/runtime/versions/1.2.3/t3";
 const linuxPlan = {
@@ -133,11 +146,17 @@ it("escapes XML in host paths", () => {
 const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
   platform: NodeJS.Platform = "linux",
   installerPath = macInstallerPath,
+  serviceOptions: {
+    readonly identity?: BootService.BootServiceIdentity;
+    readonly environment?: Readonly<Record<string, string>>;
+    readonly allowEnableLinger?: boolean;
+  } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-boot-service-test-" });
   const baseDir = path.join(home, ".t3");
+  const arch = platform === "darwin" ? "arm64" : "x64";
   const statePath = path.join(baseDir, "runtime", "service-state.json");
   // A complete pinned runtime is already present, so install only validates
   // it and never downloads a release archive.
@@ -146,6 +165,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
   yield* fs.writeFileString(runtime.entryPath, "#!/bin/sh\n");
   yield* fs.writeFileString(runtime.sentinelPath, "1.2.3\n");
 
+  const unitFile = serviceOptions.identity?.systemdUnitFile ?? "t3code.service";
   const commands: string[] = [];
   const timeouts = new Map<string, unknown>();
   const control: {
@@ -170,11 +190,11 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       const failed = command === control.failCommand;
       if (!failed && command === "loginctl enable-linger --no-ask-password 501")
         control.linger = "yes";
-      if (!failed && command === "systemctl --user enable t3code.service") control.enabled = true;
-      if (!failed && command === "systemctl --user restart t3code.service") control.active = true;
+      if (!failed && command === `systemctl --user enable ${unitFile}`) control.enabled = true;
+      if (!failed && command === `systemctl --user restart ${unitFile}`) control.active = true;
       if (
         control.stateAfterStop !== undefined &&
-        (command === "systemctl --user stop t3code.service" ||
+        (command === `systemctl --user stop ${unitFile}` ||
           command.startsWith("launchctl bootout --wait "))
       ) {
         yield* fs.writeFileString(statePath, control.stateAfterStop).pipe(Effect.orDie);
@@ -216,17 +236,34 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       yield* fs.makeDirectory(path.dirname(paths.entryPath), { recursive: true });
       yield* fs.writeFileString(paths.entryPath, "#!/bin/sh\n");
       yield* fs.writeFileString(paths.sentinelPath, `${cliVersion}\n`);
+      const platformKey = cliArchivePlatformKey(platform, arch)!;
+      yield* fs.writeFileString(
+        path.join(paths.versionDir, JONES_RUNTIME_PROVENANCE_FILE),
+        yield* encodeJonesRuntimeProvenance({
+          schema: 1,
+          repository: "Jones-Systems/Jones-Code",
+          source: "a".repeat(40),
+          version: cliVersion,
+          platform,
+          architecture: arch,
+          artifact: cliArchiveFileName(cliVersion, platformKey),
+          sha256: "b".repeat(64),
+          entrySha256: NodeCrypto.createHash("sha256").update("#!/bin/sh\n").digest("hex"),
+        }),
+      );
       return yield* BootService.make({
         baseDir: serviceBaseDir,
         logsDir: path.join(serviceBaseDir, "userdata", "logs"),
         cliVersion,
         host: { execPath: "/usr/bin/t3" },
+        ...serviceOptions,
       });
     }).pipe(
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(HostProcessPlatform, platform),
+          Layer.succeed(HostProcessArchitecture, arch),
           Layer.succeed(HostProcessUserId, 501),
           Layer.succeed(HostProcessExecutablePath, "/usr/bin/t3"),
           Layer.succeed(
@@ -832,6 +869,120 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           `launchctl bootstrap gui/501 ${plistPath}`,
         ]);
       }
+    }),
+  );
+});
+
+it("renders Jones identity with a deterministic escaped service environment", () => {
+  const environment = { Z_VALUE: '100% "quoted" \\ path & <tag>', A_VALUE: "first" };
+  const plan = { ...linuxPlan, environment };
+  const unit = BootService.renderBootServiceUnit(plan, JONES_BOOT_SERVICE_IDENTITY);
+  expect(unit).toContain("Description=Jones Code server");
+  expect(unit).toContain("Environment=T3_BOOT_SERVICE_UNIT=jones-code.service");
+  expect(unit).toContain('Environment=Z_VALUE="100%% \\"quoted\\" \\\\ path & <tag>"');
+  expect(unit.indexOf("Environment=A_VALUE=")).toBeLessThan(unit.indexOf("Environment=Z_VALUE="));
+  expect(
+    BootService.renderBootServiceUnit(
+      {
+        ...plan,
+        environment: {
+          A_VALUE: environment.A_VALUE,
+          Z_VALUE: environment.Z_VALUE,
+        },
+      },
+      JONES_BOOT_SERVICE_IDENTITY,
+    ),
+  ).toBe(unit);
+  expect(BootService.bootServiceBaseDirOf(unit)).toBe(plan.baseDir);
+
+  const plist = BootService.renderBootServicePlist(
+    plan,
+    macRenderOptions,
+    JONES_BOOT_SERVICE_IDENTITY,
+  );
+  expect(plist).toContain("<string>com.jones-systems.jones-code.service</string>");
+  expect(plist).toContain("<string>com.jones-systems.jones-code.service.plist</string>");
+  expect(plist).toContain('<string>100% "quoted" \\ path &amp; &lt;tag&gt;</string>');
+  expect(plist.indexOf("<key>A_VALUE</key>")).toBeLessThan(plist.indexOf("<key>Z_VALUE</key>"));
+  expect(BootService.renderBootServiceUnit({ ...linuxPlan, environment: {} })).toBe(
+    BootService.renderBootServiceUnit(linuxPlan),
+  );
+  expect(
+    BootService.renderBootServicePlist({ ...macPlan, environment: {} }, macRenderOptions),
+  ).toBe(BootService.renderBootServicePlist(macPlan, macRenderOptions));
+});
+
+it.layer(NodeServices.layer)("Jones boot service identity", (it) => {
+  it.effect.each(["linux", "darwin"] as const)(
+    "controls only the Jones service and preserves upstream units on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const { service, fs, commands } = yield* makeHarness(platform, macInstallerPath, {
+          identity: JONES_BOOT_SERVICE_IDENTITY,
+          environment: {
+            T3CODE_HOST: "127.0.0.1",
+            T3CODE_PORT: "4321",
+            T3CODE_TAILSCALE_SERVE: "false",
+          },
+        });
+        const path = yield* Path.Path;
+        const status = yield* service.status;
+        const upstreamPath = path.join(
+          path.dirname(status.unitPath),
+          platform === "linux" ? "t3code.service" : "com.t3tools.t3code.service.plist",
+        );
+        yield* fs.makeDirectory(path.dirname(upstreamPath), { recursive: true });
+        yield* fs.writeFileString(upstreamPath, "upstream-owned-unit");
+        const plan = yield* service.install();
+        expect(plan.unitPath).toBe(status.unitPath);
+        expect((yield* service.status).current).toBe(true);
+        yield* service.restart;
+        yield* service.uninstall;
+        expect(yield* fs.readFileString(upstreamPath)).toBe("upstream-owned-unit");
+        expect(commands.some((command) => command.includes("t3code.service"))).toBe(false);
+        expect(
+          commands.some((command) =>
+            command.includes(
+              platform === "linux" ? "jones-code.service" : "com.jones-systems.jones-code.service",
+            ),
+          ),
+        ).toBe(true);
+      }),
+  );
+
+  it.effect("preserves runtime-policy recovery text without controlling the service", () =>
+    Effect.gen(function* () {
+      const { service, fs, commands, runtime } = yield* makeHarness("linux", macInstallerPath, {
+        identity: JONES_BOOT_SERVICE_IDENTITY,
+      });
+      const path = yield* Path.Path;
+      yield* fs.remove(path.join(runtime.versionDir, JONES_RUNTIME_PROVENANCE_FILE));
+      const error = yield* service.install().pipe(Effect.flip);
+      expect(error._tag).toBe("BootServiceInstallError");
+      expect(error.message).toContain("t3 jones host stage-runtime");
+      expect(
+        commands.some((command) => command.includes("restart") || command.includes("stop")),
+      ).toBe(false);
+      expect(yield* fs.readFileString(runtime.entryPath)).toBe("#!/bin/sh\n");
+    }),
+  );
+
+  it.effect("refuses implicit linger enable before runtime checks or unit writes", () =>
+    Effect.gen(function* () {
+      const { service, fs, commands, control } = yield* makeHarness("linux", macInstallerPath, {
+        identity: JONES_BOOT_SERVICE_IDENTITY,
+        allowEnableLinger: false,
+      });
+      const status = yield* service.status;
+      control.linger = "no";
+      const error = yield* service.install().pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "BootServicePrerequisiteError",
+        problem: "linger-disabled",
+      });
+      expect(commands.some((command) => command.includes("enable-linger"))).toBe(false);
+      expect(commands.some((command) => command.includes("--version"))).toBe(false);
+      expect(yield* fs.exists(status.unitPath)).toBe(false);
     }),
   );
 });

@@ -1,0 +1,61 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "persistent-private-services",
+  "jonesOwnedPaths": ["apps/server/src/jones/hostService/", "packages/tailscale/src/jones/"],
+  "hookPaths": [
+    "apps/server/src/cloud/bootService.ts",
+    "apps/server/src/cloud/pinnedRuntime.ts",
+    "apps/server/src/cloud/selfUpdate.ts",
+    "apps/server/src/cli/service.ts",
+    "apps/server/src/cli/pair.ts",
+    "packages/tailscale/src/tailscale.ts",
+    "packages/tailscale/src/index.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/cloud/pinnedRuntime.ts",
+      "to": "apps/server/src/jones/hostService/artifactVerification.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/pinnedRuntime.ts",
+      "to": "apps/server/src/jones/hostService/releasePolicy.ts"
+    },
+    {
+      "from": "apps/server/src/cli/service.ts",
+      "to": "apps/server/src/jones/hostService/HostServiceConfig.ts"
+    },
+    {
+      "from": "apps/server/src/cli/service.ts",
+      "to": "apps/server/src/jones/hostService/identity.ts"
+    },
+    {
+      "from": "apps/server/src/cli/update.ts",
+      "to": "apps/server/src/jones/hostService/identity.ts"
+    },
+    {
+      "from": "apps/server/src/binCli.ts",
+      "to": "apps/server/src/jones/hostService/cli.ts"
+    },
+    {
+      "from": "packages/tailscale/src/index.ts",
+      "to": "packages/tailscale/src/jones/serveOwnership.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.test.ts",
+      "to": "apps/server/src/jones/hostService/artifactVerification.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.test.ts",
+      "to": "apps/server/src/jones/hostService/identity.ts"
+    },
+    {
+      "from": "apps/server/src/cli/service.test.ts",
+      "to": "apps/server/src/jones/hostService/HostServiceConfig.ts"
+    },
+    {
+      "from": "apps/server/src/cli/service.test.ts",
+      "to": "apps/server/src/jones/hostService/identity.ts"
+    }
+  ]
+}

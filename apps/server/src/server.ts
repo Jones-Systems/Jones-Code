@@ -184,7 +184,7 @@ import { orchestrationHttpApiLayer } from "./orchestration-v2/http.ts";
 import { projectHttpApiLayer } from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
-import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
+import { acquireServeMapping, releaseServeMapping } from "@t3tools/tailscale";
 import * as ServerActivation from "./serverActivation.ts";
 
 // MCP handoff thread IDs include escaped provenance and can exceed find-my-way's
@@ -769,40 +769,47 @@ const makeServerLayer = Layer.unwrap(
               }
 
               const localPort = address.port;
-              return yield* ensureTailscaleServe({
-                localPort,
+              const claim = {
                 servePort: config.tailscaleServePort,
-                localHost: "127.0.0.1",
-              }).pipe(
-                Effect.as({ localPort, servePort: config.tailscaleServePort }),
-                Effect.tap(() =>
-                  Effect.logInfo("Tailscale Serve configured", {
+                expectedTarget: `http://127.0.0.1:${String(localPort)}`,
+              };
+              const acquired = yield* acquireServeMapping(claim);
+              if ("skipped" in acquired) {
+                yield* Effect.logWarning(
+                  "Tailscale Serve skipped; inspect the route with tailscale serve status --json and remove a stale owned route explicitly",
+                  {
+                    state: acquired.skipped._tag,
+                    reason: "reason" in acquired.skipped ? acquired.skipped.reason : undefined,
                     localPort,
-                    servePort: config.tailscaleServePort,
-                  }),
-                ),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Failed to configure Tailscale Serve", {
-                    cause,
-                    localPort,
-                    servePort: config.tailscaleServePort,
-                  }).pipe(Effect.as(null)),
-                ),
-              );
+                    servePort: claim.servePort,
+                  },
+                );
+                return null;
+              }
+              yield* Effect.logInfo("Tailscale Serve configured", {
+                localPort,
+                servePort: claim.servePort,
+                created: acquired.created,
+              });
+              return { ...claim, created: acquired.created };
             }),
             (configured) =>
               configured
-                ? disableTailscaleServe({ servePort: configured.servePort }).pipe(
-                    Effect.tap(() =>
-                      Effect.logInfo("Tailscale Serve disabled", {
-                        servePort: configured.servePort,
-                      }),
-                    ),
-                    Effect.catch((cause) =>
-                      Effect.logWarning("Failed to disable Tailscale Serve", {
-                        cause,
-                        servePort: configured.servePort,
-                      }),
+                ? releaseServeMapping(configured).pipe(
+                    Effect.flatMap((outcome) =>
+                      outcome === "disabled"
+                        ? Effect.logInfo("Tailscale Serve disabled", {
+                            servePort: configured.servePort,
+                          })
+                        : configured.created
+                          ? Effect.logWarning(
+                              "Tailscale Serve release skipped or effect unknown; inspect tailscale serve status --json before removing the route",
+                              {
+                                outcome,
+                                servePort: configured.servePort,
+                              },
+                            )
+                          : Effect.void,
                     ),
                   )
                 : Effect.void,
