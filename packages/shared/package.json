@@ -394,6 +394,10 @@
     "./codexAuthHandoff": {
       "types": "./src/codexAuthHandoff.ts",
       "import": "./src/codexAuthHandoff.ts"
+    },
+    "./jones/jonesActions": {
+      "types": "./src/jones/jonesActions.ts",
+      "import": "./src/jones/jonesActions.ts"
     }
   },
   "scripts": {
