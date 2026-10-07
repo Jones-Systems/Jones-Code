@@ -1,0 +1,36 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "qualified-updates",
+  "jonesOwnedPaths": [
+    "packages/shared/src/jones/jonesActions.ts",
+    "packages/shared/src/jones/jonesActions.test.ts",
+    "apps/server/src/jones/cloud/qualifiedArchive.test.ts",
+    "apps/server/src/jones/cloud/qualifiedArchive.ts",
+    "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
+    "apps/server/src/jones/cloud/qualifiedDarwinRuntime.ts",
+    "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
+    "apps/server/src/jones/cloud/qualifiedQuiescence.ts",
+    "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
+    "apps/server/src/jones/cloud/qualifiedRuntime.ts",
+    "apps/server/src/jones/updates/JonesUpdater.test.ts",
+    "apps/server/src/jones/updates/JonesUpdater.ts",
+    "apps/server/src/jones/updates/nativePreparation.ts",
+    "apps/server/src/jones/updates/qualification.test.ts",
+    "apps/server/src/jones/updates/qualification.ts",
+    "apps/server/src/jones/updates/stagedSelection.test.ts",
+    "apps/server/src/jones/updates/stagedSelection.ts",
+    "apps/server/src/jones/updates/trialGate.test.ts",
+    "apps/server/src/jones/updates/trialGate.ts"
+  ],
+  "hookPaths": [
+    "packages/contracts/package.json",
+    "packages/shared/package.json"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    }
+  ]
+}
