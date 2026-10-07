@@ -1,4 +1,4 @@
-import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
+import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { CapturedRuntimeStop } from "./ProviderAdapter.ts";
 import type * as RuntimeAttachment from "../jones/runtime/CurrentThreadRuntimeAttachment.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";

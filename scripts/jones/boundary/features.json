@@ -320,6 +320,17 @@
       "scope": "Existing imported composer and queue choice placements use exact reviewed delivery, shared canonical bytes, durable original correlation and exclusive WebLocks. Lost responses observe the original command; accepted admission remains pending, without clearing replacement drafts or claiming execution."
     },
     {
+      "id": "imported-history-mobile",
+      "tests": [
+        "apps/mobile/src/jones/importedHistory/controller.test.ts",
+        "apps/mobile/src/jones/importedHistory/identity.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "apps/mobile/src/features/threads/threadQueueControlPresentation.test.ts",
+        "apps/mobile/src/state/queued-run-edit.test.ts"
+      ],
+      "scope": "Existing mobile composer and queue imported choices persist exact original correlation before delivery, use receiving typed HTTP and shared canonical bytes, serialize per-thread controllers in the current process, retain unknown no-resend and stale-draft fences. Admission remains pending execution."
+    },
+    {
       "id": "receiving-native-qualification",
       "tests": [
         "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts",
