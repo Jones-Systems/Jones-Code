@@ -2,7 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "runtime-identity-extraction",
   "jonesOwnedPaths": [],
-  "hookPaths": ["packages/contracts/src/index.ts", "packages/contracts/src/orchestrationV2.ts"],
+  "hookPaths": ["packages/contracts/src/orchestrationV2.ts"],
   "tombstones": [
     "apps/server/src/orchestration-v2/EventSink.runtimeIdentity.test.ts",
     "packages/contracts/src/providerRuntimeIdentity.test.ts",
