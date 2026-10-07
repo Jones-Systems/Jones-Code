@@ -10,7 +10,12 @@ import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof NodeFSP>();
-  return { ...original, readFile: vi.fn(original.readFile), link: vi.fn(original.link), open: vi.fn(original.open) };
+  return {
+    ...original,
+    readFile: vi.fn(original.readFile),
+    link: vi.fn(original.link),
+    open: vi.fn(original.open),
+  };
 });
 afterEach(async () => {
   const original = await vi.importActual<typeof NodeFSP>("node:fs/promises");
@@ -328,7 +333,9 @@ it("retains an uncertain preparation reservation and refuses replay", async () =
 
 function latch() {
   let resolve!: () => void;
-  const promise = new Promise<void>((complete) => { resolve = complete; });
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
   return { promise, resolve };
 }
 
@@ -339,7 +346,9 @@ async function publishGrant(path: string, value: unknown) {
 }
 
 async function noReservation(root: string) {
-  await expect(NodeFSP.lstat(NodePath.join(root, "resume-dispatched.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(NodeFSP.lstat(NodePath.join(root, "resume-dispatched.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
   expect((await NodeFSP.readdir(root)).filter((name) => name.endsWith(".pending"))).toEqual([]);
 }
 
@@ -356,10 +365,14 @@ it.each([
   fixture(async (root) => {
     const input = await trial(root);
     await NodeFSP.writeFile(input.descriptorPath, JSON.stringify({ ...input, ...change }));
-    await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "identity", uncertain: false });
+    await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({
+      step: "identity",
+      uncertain: false,
+    });
     await expect(NodeFSP.lstat(input.trialReceiptPath)).rejects.toMatchObject({ code: "ENOENT" });
     await noReservation(root);
-  }));
+  }),
+);
 
 it.each([
   ["startup gate discriminator", { startupGateProtocol: undefined }],
@@ -386,27 +399,40 @@ it.each([
     try {
       await Promise.race([watchFile(input.trialReceiptPath, controller.signal), gate]);
       const rejected = expect(gate).rejects.toMatchObject({ step: "grant", uncertain: false });
-      await publishGrant(input.commitGrantPath, { ...input, generation: input.transactionId, ...change });
+      await publishGrant(input.commitGrantPath, {
+        ...input,
+        generation: input.transactionId,
+        ...change,
+      });
       await rejected;
       await noReservation(root);
     } finally {
       controller.abort();
       await Promise.allSettled([gate]);
     }
-  }));
+  }),
+);
 
-it.each(["receipt", "reservation"])("refuses an occupied %s without replacing it", async (artifact) =>
-  fixture(async (root) => {
-    const input = await trial(root);
-    const occupied = artifact === "receipt" ? input.trialReceiptPath : NodePath.join(root, "resume-dispatched.json");
-    await NodeFSP.writeFile(occupied, "prior exact bytes");
-    await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "receipt" });
-    expect(await NodeFSP.readFile(occupied, "utf8")).toBe("prior exact bytes");
-    if (artifact === "reservation") {
-      await expect(NodeFSP.lstat(input.trialReceiptPath)).rejects.toMatchObject({ code: "ENOENT" });
-    }
-    expect((await NodeFSP.readdir(root)).filter((name) => name.endsWith(".pending"))).toEqual([]);
-  }));
+it.each(["receipt", "reservation"])(
+  "refuses an occupied %s without replacing it",
+  async (artifact) =>
+    fixture(async (root) => {
+      const input = await trial(root);
+      const occupied =
+        artifact === "receipt"
+          ? input.trialReceiptPath
+          : NodePath.join(root, "resume-dispatched.json");
+      await NodeFSP.writeFile(occupied, "prior exact bytes");
+      await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "receipt" });
+      expect(await NodeFSP.readFile(occupied, "utf8")).toBe("prior exact bytes");
+      if (artifact === "reservation") {
+        await expect(NodeFSP.lstat(input.trialReceiptPath)).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      }
+      expect((await NodeFSP.readdir(root)).filter((name) => name.endsWith(".pending"))).toEqual([]);
+    }),
+);
 
 it.each([
   NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 4889),
@@ -416,18 +442,27 @@ it.each([
 ])("holds unsupported actual listener %s", async (observedListener) =>
   fixture(async (root) => {
     const input = await trial(root);
-    await expect(awaitJonesTrialCommit({ ...input, observedListener })).rejects.toMatchObject({ step: "listener" });
+    await expect(awaitJonesTrialCommit({ ...input, observedListener })).rejects.toMatchObject({
+      step: "listener",
+    });
     await expect(NodeFSP.lstat(input.trialReceiptPath)).rejects.toMatchObject({ code: "ENOENT" });
-  }));
+  }),
+);
 
 it("cancels before any receipt I/O and distinguishes absent from empty descriptor", async () =>
   fixture(async (root) => {
     const input = await trial(root);
     const controller = new AbortController();
     controller.abort();
-    await expect(awaitJonesTrialCommit({ ...input, signal: controller.signal })).rejects.toMatchObject({ step: "cancel" });
-    await expect(awaitJonesTrialCommit({ ...input, descriptorPath: undefined })).resolves.toBeUndefined();
-    await expect(awaitJonesTrialCommit({ ...input, descriptorPath: "" })).rejects.toMatchObject({ step: "identity" });
+    await expect(
+      awaitJonesTrialCommit({ ...input, signal: controller.signal }),
+    ).rejects.toMatchObject({ step: "cancel" });
+    await expect(
+      awaitJonesTrialCommit({ ...input, descriptorPath: undefined }),
+    ).resolves.toBeUndefined();
+    await expect(awaitJonesTrialCommit({ ...input, descriptorPath: "" })).rejects.toMatchObject({
+      step: "identity",
+    });
     await expect(NodeFSP.lstat(input.trialReceiptPath)).rejects.toMatchObject({ code: "ENOENT" });
   }));
 
@@ -437,7 +472,9 @@ it("drains an in-flight grant inspection on cancellation and never reserves", as
     const original = await vi.importActual<typeof NodeFSP>("node:fs/promises");
     const entered = latch();
     const release = latch();
-    vi.mocked(NodeFSP.readFile).mockImplementation((async (...args: Parameters<typeof NodeFSP.readFile>) => {
+    vi.mocked(NodeFSP.readFile).mockImplementation((async (
+      ...args: Parameters<typeof NodeFSP.readFile>
+    ) => {
       if (args[0] === input.commitGrantPath) {
         entered.resolve();
         await release.promise;
@@ -447,7 +484,14 @@ it("drains an in-flight grant inspection on cancellation and never reserves", as
     const controller = new AbortController();
     let settled = false;
     const gate = awaitJonesTrialCommit({ ...input, signal: controller.signal });
-    void gate.then(() => { settled = true; }, () => { settled = true; });
+    void gate.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     try {
       await Promise.race([entered.promise, gate]);
       controller.abort();
@@ -481,7 +525,14 @@ it("retains the resume marker and reports uncertainty when cancellation overlaps
     const controller = new AbortController();
     let settled = false;
     const gate = awaitJonesTrialCommit({ ...input, signal: controller.signal });
-    void gate.then(() => { settled = true; }, () => { settled = true; });
+    void gate.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     try {
       await Promise.race([entered.promise, gate]);
       controller.abort();
@@ -489,8 +540,13 @@ it("retains the resume marker and reports uncertainty when cancellation overlaps
       release.resolve();
       await expect(gate).rejects.toMatchObject({ step: "reservation", uncertain: true });
       expect(JSON.parse(await NodeFSP.readFile(reservation, "utf8"))).toMatchObject({
-        protocol: 1, startupGateProtocol: 1, sourceTree: input.sourceTree, version: input.version,
-        listener: input.listener, transactionId: input.transactionId, resumeHeld: true,
+        protocol: 1,
+        startupGateProtocol: 1,
+        sourceTree: input.sourceTree,
+        version: input.version,
+        listener: input.listener,
+        transactionId: input.transactionId,
+        resumeHeld: true,
       });
       await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "receipt" });
       expect((await NodeFSP.readdir(root)).filter((name) => name.endsWith(".pending"))).toEqual([]);
@@ -510,15 +566,23 @@ it("retains a reservation when directory fsync fails and never treats it as acti
       const file = await original.open(path, flags, mode);
       if (path === root && ++directoryOpens === 2) {
         return {
-          sync: async () => { throw new Error("Synthetic reservation fsync failure"); },
+          sync: async () => {
+            throw new Error("Synthetic reservation fsync failure");
+          },
           close: () => file.close(),
         } as typeof file;
       }
       return file;
     });
     await publishGrant(input.commitGrantPath, { ...input, generation: input.transactionId });
-    await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "reservation", uncertain: true });
-    expect(JSON.parse(await NodeFSP.readFile(NodePath.join(root, "resume-dispatched.json"), "utf8")).resumeHeld).toBe(true);
+    await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({
+      step: "reservation",
+      uncertain: true,
+    });
+    expect(
+      JSON.parse(await NodeFSP.readFile(NodePath.join(root, "resume-dispatched.json"), "utf8"))
+        .resumeHeld,
+    ).toBe(true);
     expect((await NodeFSP.readdir(root)).filter((name) => name.endsWith(".pending"))).toEqual([]);
   }));
 
@@ -528,20 +592,37 @@ it("publishes full identity and exact backend proof before accepting one grant",
     const unrelated = NodePath.join(root, ".another-owner.pending");
     await NodeFSP.writeFile(unrelated, "another invocation");
     const controller = new AbortController();
-    const gate = awaitJonesTrialCommit({ ...input, observedListener: NetAddress.inetAddressFromIpStringUnsafe("0.0.0.0", 4888), signal: controller.signal });
+    const gate = awaitJonesTrialCommit({
+      ...input,
+      observedListener: NetAddress.inetAddressFromIpStringUnsafe("0.0.0.0", 4888),
+      signal: controller.signal,
+    });
     try {
       await Promise.race([watchFile(input.trialReceiptPath, controller.signal), gate]);
       const receipt = JSON.parse(await NodeFSP.readFile(input.trialReceiptPath, "utf8"));
-      const { descriptorPath: _path, buildMetadata: _build, trialReceiptPath: _receipt, commitGrantPath: _grant, observedListener: _socket, ...identity } = input;
+      const {
+        descriptorPath: _path,
+        buildMetadata: _build,
+        trialReceiptPath: _receipt,
+        commitGrantPath: _grant,
+        observedListener: _socket,
+        ...identity
+      } = input;
       expect(receipt).toMatchObject({ ...identity, resumeHeld: true });
       expect(receipt.backendProcess.pid).toBe(process.pid);
       expect(receipt.backendProcess.identity).toMatch(/\S/);
-      await expect(NodeFSP.lstat(NodePath.join(root, "resume-dispatched.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(
+        NodeFSP.lstat(NodePath.join(root, "resume-dispatched.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
       await publishGrant(input.commitGrantPath, { ...identity, generation: input.transactionId });
       await gate;
-      expect(JSON.parse(await NodeFSP.readFile(NodePath.join(root, "resume-dispatched.json"), "utf8"))).toEqual(receipt);
+      expect(
+        JSON.parse(await NodeFSP.readFile(NodePath.join(root, "resume-dispatched.json"), "utf8")),
+      ).toEqual(receipt);
       expect(await NodeFSP.readFile(unrelated, "utf8")).toBe("another invocation");
-      expect((await NodeFSP.readdir(root)).filter((name) => name.endsWith(".pending"))).toEqual([NodePath.basename(unrelated)]);
+      expect((await NodeFSP.readdir(root)).filter((name) => name.endsWith(".pending"))).toEqual([
+        NodePath.basename(unrelated),
+      ]);
       await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "receipt" });
     } finally {
       controller.abort();

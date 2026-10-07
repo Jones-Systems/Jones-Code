@@ -436,15 +436,16 @@ export const runRuntimeShutdown = <PrepareError, ReconcileError, R>(input: {
   readonly prepareForShutdown: Effect.Effect<void, PrepareError, R>;
   readonly shutdownSessions: Effect.Effect<void, never, R>;
   readonly reconcile: Effect.Effect<void, ReconcileError, R>;
-}) => Effect.gen(function* () {
-  // An unactivated native trial owns local cleanup but must preserve paired continuation state.
-  if (!input.continuationWritesAllowed) {
-    yield* input.shutdownSessions;
-    return;
-  }
-  yield* input.prepareForShutdown.pipe(Effect.ensuring(input.shutdownSessions));
-  yield* input.reconcile;
-});
+}) =>
+  Effect.gen(function* () {
+    // An unactivated native trial owns local cleanup but must preserve paired continuation state.
+    if (!input.continuationWritesAllowed) {
+      yield* input.shutdownSessions;
+      return;
+    }
+    yield* input.prepareForShutdown.pipe(Effect.ensuring(input.shutdownSessions));
+    yield* input.reconcile;
+  });
 
 const make = (options?: StartupOptions) =>
   Effect.gen(function* () {
@@ -499,11 +500,16 @@ const make = (options?: StartupOptions) =>
           continuationWritesAllowed: !nativeTrial || (yield* Ref.get(trialActivated)),
           prepareForShutdown: providerRuntimeRecovery.prepareForShutdown,
           shutdownSessions: providerSessions.shutdown,
-          reconcile: providerRuntimeRecovery.reconcile("shutdown").pipe(
-            Effect.flatMap((reconciliation) =>
-              Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation),
+          reconcile: providerRuntimeRecovery
+            .reconcile("shutdown")
+            .pipe(
+              Effect.flatMap((reconciliation) =>
+                Effect.logInfo(
+                  "V2 orchestration shutdown reconciliation completed",
+                  reconciliation,
+                ),
+              ),
             ),
-          ),
         });
       }).pipe(
         Effect.catchCause((cause) =>

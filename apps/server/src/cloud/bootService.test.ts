@@ -19,7 +19,10 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as ProcessRunner from "../processRunner.ts";
 import * as BootService from "./bootService.ts";
 import { pinnedRuntimePaths } from "./pinnedRuntime.ts";
-import { qualifiedPayloadDigest, QUALIFIED_RUNTIME_RECEIPT } from "../jones/cloud/qualifiedRuntime.ts";
+import {
+  qualifiedPayloadDigest,
+  QUALIFIED_RUNTIME_RECEIPT,
+} from "../jones/cloud/qualifiedRuntime.ts";
 import {
   parseServiceState,
   SERVICE_LAUNCHER_PROTOCOL,

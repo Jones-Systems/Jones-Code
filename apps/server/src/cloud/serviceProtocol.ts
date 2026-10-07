@@ -110,12 +110,18 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   const { id, fromVersion, targetVersion, status } = value;
   const qualified =
     value.qualified === undefined ? undefined : decodeStagedQualifiedRuntime(value.qualified);
-  const startupReceipt = value.startupReceipt === undefined
-    ? undefined : decodeQualifiedTrialReceipt(value.startupReceipt);
+  const startupReceipt =
+    value.startupReceipt === undefined
+      ? undefined
+      : decodeQualifiedTrialReceipt(value.startupReceipt);
   if (value.startupReceipt !== undefined) {
-    if (startupReceipt === undefined || qualified === undefined || typeof id !== "string") return undefined;
-    try { assertQualifiedTrialBinding({ updateId: id, qualified, receipt: startupReceipt }); }
-    catch { return undefined; }
+    if (startupReceipt === undefined || qualified === undefined || typeof id !== "string")
+      return undefined;
+    try {
+      assertQualifiedTrialBinding({ updateId: id, qualified, receipt: startupReceipt });
+    } catch {
+      return undefined;
+    }
   }
   if (
     value.qualified !== undefined &&
@@ -353,7 +359,11 @@ export function decodeServiceLauncherChildMessage(
   if (value.type !== "prepared" || typeof value.updateId !== "string") return undefined;
   if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
     const qualified = decodeQualifiedTrialReceipt(value.qualified);
-    if (value.startupGateProtocol !== 1 || qualified === undefined || qualified.updateId !== value.updateId)
+    if (
+      value.startupGateProtocol !== 1 ||
+      qualified === undefined ||
+      qualified.updateId !== value.updateId
+    )
       return undefined;
     return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
   }
@@ -373,7 +383,11 @@ export function decodeServiceLauncherParentMessage(
   if (value.type !== "committed" || typeof value.updateId !== "string") return undefined;
   if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
     const qualified = decodeQualifiedTrialGrant(value.qualified);
-    if (value.startupGateProtocol !== 1 || qualified === undefined || qualified.updateId !== value.updateId)
+    if (
+      value.startupGateProtocol !== 1 ||
+      qualified === undefined ||
+      qualified.updateId !== value.updateId
+    )
       return undefined;
     return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
   }

@@ -12,11 +12,13 @@ export const servicePreflightCommand = Command.make("__service-preflight", {
   Command.unlisted,
   Command.withHandler(({ databasePath, launcherProtocol }) =>
     Console.log(
-      JSON.stringify(runServicePreflight({
-        databasePath,
-        launcherProtocol,
-        startupGateProtocol: readJonesStartupGateProtocol(),
-      })),
+      JSON.stringify(
+        runServicePreflight({
+          databasePath,
+          launcherProtocol,
+          startupGateProtocol: readJonesStartupGateProtocol(),
+        }),
+      ),
     ).pipe(Effect.asVoid),
   ),
 );

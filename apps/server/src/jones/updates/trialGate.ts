@@ -46,17 +46,28 @@ const identityKeys = Object.keys(TrialIdentity.fields) as Array<keyof typeof Tri
 export class JonesTrialGateError extends Schema.TaggedError<JonesTrialGateError>()(
   "JonesTrialGateError",
   {
-    step: Schema.Literals(["identity", "listener", "process", "receipt", "grant", "reservation", "cancel"]),
+    step: Schema.Literals([
+      "identity",
+      "listener",
+      "process",
+      "receipt",
+      "grant",
+      "reservation",
+      "cancel",
+    ]),
     uncertain: Schema.Boolean,
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    if (this.uncertain) return "Jones trial resume reservation has an uncertain effect; activation remains held.";
+    if (this.uncertain)
+      return "Jones trial resume reservation has an uncertain effect; activation remains held.";
     if (this.step === "cancel") return "Jones trial was cancelled before commit.";
     if (this.step === "identity") return "Jones trial identity does not match this native runtime.";
-    if (this.step === "listener") return "Jones trial listener does not match a supported native socket.";
-    if (this.step === "grant") return "Jones commit grant does not match the trial identity or generation.";
+    if (this.step === "listener")
+      return "Jones trial listener does not match a supported native socket.";
+    if (this.step === "grant")
+      return "Jones commit grant does not match the trial identity or generation.";
     return `Jones trial ${this.step} could not be proved or durably published.`;
   }
 }
@@ -68,11 +79,21 @@ function cancelled(signal?: AbortSignal): void {
 }
 
 class PublicationFailure {
-  constructor(readonly published: boolean, readonly cause: unknown) {}
+  constructor(
+    readonly published: boolean,
+    readonly cause: unknown,
+  ) {}
 }
 
-async function writeDurableExclusive(path: string, value: unknown, signal?: AbortSignal): Promise<void> {
-  const temp = NodePath.join(NodePath.dirname(path), `.${NodePath.basename(path)}.${process.pid}.${NodeCrypto.randomUUID()}.pending`);
+async function writeDurableExclusive(
+  path: string,
+  value: unknown,
+  signal?: AbortSignal,
+): Promise<void> {
+  const temp = NodePath.join(
+    NodePath.dirname(path),
+    `.${NodePath.basename(path)}.${process.pid}.${NodeCrypto.randomUUID()}.pending`,
+  );
   let owned = false;
   let published = false;
   try {
@@ -115,15 +136,22 @@ function assertListener(endpoint: string, observed: NetAddress.SocketAddress): v
   const family = NodeNet.isIP(host);
   const port = Number(url.port || "80");
   if (
-    url.protocol !== "http:" || url.username !== "" || url.password !== "" ||
-    url.pathname !== "/" || url.search !== "" || url.hash !== "" ||
+    url.protocol !== "http:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== "" ||
     !((family === 4 && host.startsWith("127.")) || host === "::1") ||
-    observed._tag === "UnixPathAddress" || observed.port !== port
-  ) throw new Error("Unsupported trial listener endpoint or socket.");
+    observed._tag === "UnixPathAddress" ||
+    observed.port !== port
+  )
+    throw new Error("Unsupported trial listener endpoint or socket.");
   const bound = observed.address.toString();
-  const covered = observed._tag === "InetAddressV4"
-    ? family === 4 && (bound === host || bound === "0.0.0.0")
-    : observed.scopeId === 0 && family === 6 && (bound === host || bound === "::");
+  const covered =
+    observed._tag === "InetAddressV4"
+      ? family === 4 && (bound === host || bound === "0.0.0.0")
+      : observed.scopeId === 0 && family === 6 && (bound === host || bound === "::");
   // IPv6 wildcard does not prove IPv4 coverage: the socket may be IPv6-only.
   if (!covered) throw new Error("The actual socket does not prove coverage of the trial endpoint.");
 }
@@ -141,9 +169,10 @@ async function assertAbsent(path: string): Promise<void> {
 async function proveBackend(signal?: AbortSignal): Promise<{ pid: number; identity: string }> {
   const identity = await new Promise<string>((resolve, reject) =>
     NodeChildProcess.execFile(
-      "/bin/ps", ["-p", String(process.pid), "-o", "lstart=", "-o", "command="],
+      "/bin/ps",
+      ["-p", String(process.pid), "-o", "lstart=", "-o", "command="],
       { maxBuffer: 16384, ...(signal === undefined ? {} : { signal }) },
-      (error, stdout) => error === null ? resolve(stdout.trim()) : reject(error),
+      (error, stdout) => (error === null ? resolve(stdout.trim()) : reject(error)),
     ),
   );
   cancelled(signal);
@@ -176,21 +205,35 @@ export async function awaitJonesTrialCommit(input: {
     descriptor = decodeDescriptor(await NodeFSP.readFile(descriptorPath, "utf8"));
     const build = decodeBuildIdentity(input.buildMetadata);
     const [home, databasePath, profile] = await Promise.all([
-      NodeFSP.realpath(input.home), NodeFSP.realpath(input.databasePath), NodeFSP.realpath(input.profile),
+      NodeFSP.realpath(input.home),
+      NodeFSP.realpath(input.databasePath),
+      NodeFSP.realpath(input.profile),
     ]);
     cancelled(signal);
     const directory = NodePath.dirname(descriptorPath);
     const reservationPath = NodePath.join(directory, "resume-dispatched.json");
     if (
-      descriptor.home !== home || descriptor.databasePath !== databasePath || descriptor.profile !== profile ||
-      descriptor.environmentId !== input.environmentId || descriptor.version !== input.version ||
-      descriptor.sourceSha !== build.jonesSource.sha || descriptor.sourceTree !== build.jonesSource.tree ||
-      !/^[a-f0-9]{40}$/.test(build.jonesSource.sha) || !/^[a-f0-9]{40}$/.test(build.jonesSource.tree) ||
+      descriptor.home !== home ||
+      descriptor.databasePath !== databasePath ||
+      descriptor.profile !== profile ||
+      descriptor.environmentId !== input.environmentId ||
+      descriptor.version !== input.version ||
+      descriptor.sourceSha !== build.jonesSource.sha ||
+      descriptor.sourceTree !== build.jonesSource.tree ||
+      !/^[a-f0-9]{40}$/.test(build.jonesSource.sha) ||
+      !/^[a-f0-9]{40}$/.test(build.jonesSource.tree) ||
       NodePath.dirname(descriptor.trialReceiptPath) !== directory ||
       NodePath.dirname(descriptor.commitGrantPath) !== directory ||
-      !NodePath.isAbsolute(descriptor.trialReceiptPath) || !NodePath.isAbsolute(descriptor.commitGrantPath) ||
-      new Set([descriptorPath, descriptor.trialReceiptPath, descriptor.commitGrantPath, reservationPath]).size !== 4
-    ) throw new Error("Descriptor identity or artifact paths differ.");
+      !NodePath.isAbsolute(descriptor.trialReceiptPath) ||
+      !NodePath.isAbsolute(descriptor.commitGrantPath) ||
+      new Set([
+        descriptorPath,
+        descriptor.trialReceiptPath,
+        descriptor.commitGrantPath,
+        reservationPath,
+      ]).size !== 4
+    )
+      throw new Error("Descriptor identity or artifact paths differ.");
   } catch (cause) {
     if (cause instanceof JonesTrialGateError) throw cause;
     throw new JonesTrialGateError({ step: "identity", uncertain: false, cause });
@@ -239,16 +282,23 @@ export async function awaitJonesTrialCommit(input: {
       // Drain an inspection before returning: cancellation can overlap durable reservation I/O.
       void (inFlight ?? Promise.resolve()).then(() => {
         if (terminalCause === undefined) resolve();
-        else if (reservationPublished) reject(new JonesTrialGateError({
-          step: "reservation", uncertain: true, cause: terminalCause,
-        }));
+        else if (reservationPublished)
+          reject(
+            new JonesTrialGateError({
+              step: "reservation",
+              uncertain: true,
+              cause: terminalCause,
+            }),
+          );
         else reject(terminalCause);
       });
     };
     const abort = () => {
       watcher?.close();
       if (inFlight === undefined) {
-        finish(new JonesTrialGateError({ step: "cancel", uncertain: false, cause: signal?.reason }));
+        finish(
+          new JonesTrialGateError({ step: "cancel", uncertain: false, cause: signal?.reason }),
+        );
       }
     };
     const inspect = async () => {
@@ -265,7 +315,10 @@ export async function awaitJonesTrialCommit(input: {
         }
         cancelled(signal);
         const grant = decodeGrant(raw);
-        if (identityKeys.some((key) => grant[key] !== descriptor[key]) || grant.generation !== descriptor.transactionId) {
+        if (
+          identityKeys.some((key) => grant[key] !== descriptor[key]) ||
+          grant.generation !== descriptor.transactionId
+        ) {
           throw new Error("Commit identity or generation differs.");
         }
         if (terminal) return;
@@ -299,7 +352,9 @@ export async function awaitJonesTrialCommit(input: {
     };
     try {
       watcher = NodeFS.watch(NodePath.dirname(descriptorPath), startInspect);
-      watcher.on("error", (cause) => finish(new JonesTrialGateError({ step: "grant", uncertain: false, cause })));
+      watcher.on("error", (cause) =>
+        finish(new JonesTrialGateError({ step: "grant", uncertain: false, cause })),
+      );
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
       else startInspect();

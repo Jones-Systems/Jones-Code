@@ -46,7 +46,7 @@ export interface QualifiedTrialGrant extends QualifiedTrialReceipt {
 
 const record = (input: unknown): Record<string, unknown> | undefined =>
   typeof input === "object" && input !== null && !Array.isArray(input)
-    ? input as Record<string, unknown>
+    ? (input as Record<string, unknown>)
     : undefined;
 const transactionId = (id: unknown): id is string =>
   typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id);
@@ -59,33 +59,57 @@ export function decodeQualifiedTrialReceipt(input: unknown): QualifiedTrialRecei
   const value = record(input);
   const listener = record(value?.listener);
   if (
-    value?.protocol !== 4 || value.startupGateProtocol !== 1 ||
+    value?.protocol !== 4 ||
+    value.startupGateProtocol !== 1 ||
     !transactionId(value.updateId) ||
     typeof value.stagedHandle !== "string" ||
-    !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.stagedHandle) ||
-    !absolute(value.home) || !absolute(value.databasePath) || !absolute(value.serviceUserdata) ||
+    !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+      value.stagedHandle,
+    ) ||
+    !absolute(value.home) ||
+    !absolute(value.databasePath) ||
+    !absolute(value.serviceUserdata) ||
     value.serviceUserdata !== NodePath.join(value.home, "userdata") ||
     value.databasePath !== NodePath.join(value.serviceUserdata, "statev2.sqlite") ||
-    typeof value.environmentId !== "string" || value.environmentId.trim() === "" ||
-    typeof value.version !== "string" || value.version.trim() === "" ||
-    !source(value.sourceSha) || !source(value.sourceTree) ||
-    !Number.isSafeInteger(value.processId) || (value.processId as number) < 1 ||
-    value.resumeHeld !== true || listener === undefined ||
+    typeof value.environmentId !== "string" ||
+    value.environmentId.trim() === "" ||
+    typeof value.version !== "string" ||
+    value.version.trim() === "" ||
+    !source(value.sourceSha) ||
+    !source(value.sourceTree) ||
+    !Number.isSafeInteger(value.processId) ||
+    (value.processId as number) < 1 ||
+    value.resumeHeld !== true ||
+    listener === undefined ||
     (listener.family !== "IPv4" && listener.family !== "IPv6") ||
     typeof listener.address !== "string" ||
     NodeNet.isIP(listener.address) !== (listener.family === "IPv4" ? 4 : 6) ||
-    !Number.isSafeInteger(listener.port) || (listener.port as number) < 1 || (listener.port as number) > 65535 ||
+    !Number.isSafeInteger(listener.port) ||
+    (listener.port as number) < 1 ||
+    (listener.port as number) > 65535 ||
     listener.scopeId !== 0
-  ) return undefined;
+  )
+    return undefined;
   return {
-    protocol: 4, startupGateProtocol: 1, updateId: value.updateId,
-    stagedHandle: value.stagedHandle, home: value.home, databasePath: value.databasePath,
-    serviceUserdata: value.serviceUserdata, environmentId: value.environmentId,
-    version: value.version, sourceSha: value.sourceSha, sourceTree: value.sourceTree,
+    protocol: 4,
+    startupGateProtocol: 1,
+    updateId: value.updateId,
+    stagedHandle: value.stagedHandle,
+    home: value.home,
+    databasePath: value.databasePath,
+    serviceUserdata: value.serviceUserdata,
+    environmentId: value.environmentId,
+    version: value.version,
+    sourceSha: value.sourceSha,
+    sourceTree: value.sourceTree,
     listener: {
-      family: listener.family, address: listener.address, port: listener.port as number, scopeId: 0,
+      family: listener.family,
+      address: listener.address,
+      port: listener.port as number,
+      scopeId: 0,
     },
-    processId: value.processId as number, resumeHeld: true,
+    processId: value.processId as number,
+    resumeHeld: true,
   };
 }
 
@@ -114,16 +138,21 @@ export function assertQualifiedTrialBinding(input: {
   const { qualified, receipt } = input;
   if (
     decodeQualifiedTrialReceipt(receipt) === undefined ||
-    input.updateId !== receipt.updateId || qualified.stagedHandle !== receipt.stagedHandle ||
-    qualified.binding.baseDir !== receipt.home || qualified.binding.dbPath !== receipt.databasePath ||
+    input.updateId !== receipt.updateId ||
+    qualified.stagedHandle !== receipt.stagedHandle ||
+    qualified.binding.baseDir !== receipt.home ||
+    qualified.binding.dbPath !== receipt.databasePath ||
     qualified.binding.environmentId !== receipt.environmentId ||
-    qualified.receipt.version !== receipt.version || qualified.receipt.sourceSha !== receipt.sourceSha ||
+    qualified.receipt.version !== receipt.version ||
+    qualified.receipt.sourceSha !== receipt.sourceSha ||
     qualified.receipt.sourceTree !== receipt.sourceTree
-  ) throw new Error("Qualified startup proof does not match the retained transaction.");
+  )
+    throw new Error("Qualified startup proof does not match the retained transaction.");
 }
 
 const cancelled = (signal?: AbortSignal): void => {
-  if (signal?.aborted) throw new Error("Qualified startup was cancelled; its prior effects require reconciliation.");
+  if (signal?.aborted)
+    throw new Error("Qualified startup was cancelled; its prior effects require reconciliation.");
 };
 
 export async function makeQualifiedTrialReceipt(input: {
@@ -143,22 +172,30 @@ export async function makeQualifiedTrialReceipt(input: {
     throw new Error("Qualified startup requires an observed internet listener.");
   // No requested host or port is used here: the bound server supplies its actual socket address.
   const receipt = decodeQualifiedTrialReceipt({
-    protocol: 4, startupGateProtocol: 1, updateId: input.updateId,
+    protocol: 4,
+    startupGateProtocol: 1,
+    updateId: input.updateId,
     stagedHandle: input.qualified.stagedHandle,
     home: await NodeFSP.realpath(witness.home),
     databasePath: await NodeFSP.realpath(witness.databasePath),
     serviceUserdata: await NodeFSP.realpath(witness.serviceUserdata),
-    environmentId: witness.environmentId, version: witness.version,
-    sourceSha: identity.sha, sourceTree: identity.tree,
+    environmentId: witness.environmentId,
+    version: witness.version,
+    sourceSha: identity.sha,
+    sourceTree: identity.tree,
     listener: {
       family: listener._tag === "InetAddressV4" ? "IPv4" : "IPv6",
-      address: listener.address.toString(), port: listener.port,
+      address: listener.address.toString(),
+      port: listener.port,
       scopeId: listener._tag === "InetAddressV6" ? listener.scopeId : 0,
     },
-    processId: witness.processId, resumeHeld: true,
+    processId: witness.processId,
+    resumeHeld: true,
   });
   if (receipt === undefined || witness.processId !== process.pid)
-    throw new Error("Qualified startup runtime witness is incomplete or belongs to another process.");
+    throw new Error(
+      "Qualified startup runtime witness is incomplete or belongs to another process.",
+    );
   assertQualifiedTrialBinding({ ...input, receipt });
   cancelled(input.signal);
   return receipt;
@@ -167,33 +204,50 @@ export async function makeQualifiedTrialReceipt(input: {
 export function qualifiedResumeReservationPath(receipt: QualifiedTrialReceipt): string {
   if (decodeQualifiedTrialReceipt(receipt) === undefined)
     throw new Error("Invalid qualified resume reservation identity.");
-  return NodePath.join(receipt.home, "runtime", "db-backup", receipt.updateId, "resume-dispatched.json");
+  return NodePath.join(
+    receipt.home,
+    "runtime",
+    "db-backup",
+    receipt.updateId,
+    "resume-dispatched.json",
+  );
 }
 
 export interface QualifiedReservationAdapter {
   readonly before?: (phase: "write" | "file-sync" | "link" | "directory-sync") => Promise<void>;
 }
 
-export async function assertQualifiedResumeUnreserved(receipt: QualifiedTrialReceipt): Promise<void> {
+export async function assertQualifiedResumeUnreserved(
+  receipt: QualifiedTrialReceipt,
+): Promise<void> {
   const path = qualifiedResumeReservationPath(receipt);
   await assertQualifiedResumeDirectory(receipt);
-  const present = await NodeFSP.lstat(path).then(() => true, (cause: NodeJS.ErrnoException) => {
-    if (cause.code === "ENOENT") return false;
-    throw cause;
-  });
-  if (present) throw new Error("Qualified resume is already reserved; replay requires reconciliation.");
+  const present = await NodeFSP.lstat(path).then(
+    () => true,
+    (cause: NodeJS.ErrnoException) => {
+      if (cause.code === "ENOENT") return false;
+      throw cause;
+    },
+  );
+  if (present)
+    throw new Error("Qualified resume is already reserved; replay requires reconciliation.");
 }
 
 async function assertQualifiedResumeDirectory(receipt: QualifiedTrialReceipt): Promise<void> {
   const directory = NodePath.dirname(qualifiedResumeReservationPath(receipt));
   for (const path of [
     NodePath.join(receipt.home, "runtime"),
-    NodePath.join(receipt.home, "runtime", "db-backup"), directory,
+    NodePath.join(receipt.home, "runtime", "db-backup"),
+    directory,
   ]) {
     const stat = await NodeFSP.lstat(path);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o022) !== 0 ||
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      (stat.mode & 0o022) !== 0 ||
       (typeof process.getuid === "function" && stat.uid !== process.getuid()) ||
-      await NodeFSP.realpath(path) !== path)
+      (await NodeFSP.realpath(path)) !== path
+    )
       throw new Error("Qualified resume transaction path has unknown ownership.");
   }
 }
@@ -208,7 +262,10 @@ export async function reserveQualifiedResume(input: {
   cancelled(input.signal);
   // The retained paired snapshot owns this transaction path; startup never creates another root.
   await assertQualifiedResumeUnreserved(input.receipt);
-  const temp = NodePath.join(directory, `.resume-dispatched.${process.pid}.${NodeCrypto.randomUUID()}`);
+  const temp = NodePath.join(
+    directory,
+    `.resume-dispatched.${process.pid}.${NodeCrypto.randomUUID()}`,
+  );
   let handle: NodeFSP.FileHandle | undefined;
   let ownedTemp = false;
   let linked = false;
@@ -229,18 +286,26 @@ export async function reserveQualifiedResume(input: {
     linked = true;
     await input.adapter?.before?.("directory-sync");
     const parent = await NodeFSP.open(directory, "r");
-    try { await parent.sync(); } finally { await parent.close(); }
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
     cancelled(input.signal);
   } catch (cause) {
     if (linked)
-      throw new Error("Qualified resume reservation may be durable; retained for reconciliation.", { cause });
+      throw new Error("Qualified resume reservation may be durable; retained for reconciliation.", {
+        cause,
+      });
     throw cause;
   } finally {
-    try { await handle?.close(); }
-    finally {
-      if (ownedTemp) await NodeFSP.unlink(temp).catch((cause: NodeJS.ErrnoException) => {
-        if (cause.code !== "ENOENT") throw cause;
-      });
+    try {
+      await handle?.close();
+    } finally {
+      if (ownedTemp)
+        await NodeFSP.unlink(temp).catch((cause: NodeJS.ErrnoException) => {
+          if (cause.code !== "ENOENT") throw cause;
+        });
     }
   }
 }

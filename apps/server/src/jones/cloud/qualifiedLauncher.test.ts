@@ -35,7 +35,7 @@ async function runScenario(
   const base = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
   try {
     const userdata = NodePath.join(base, "userdata");
-    await NodeFSP.mkdir(userdata);
+    await NodeFSP.mkdir(userdata, { mode: 0o700 });
     const dbPath = NodePath.join(userdata, "statev2.sqlite");
     const database = new NodeSqlite.DatabaseSync(dbPath);
     database.exec("CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES ('before');");
@@ -96,7 +96,7 @@ if (context.update?.status === "pending") {
     const active = NodePath.join(base, "runtime", "versions", baseline);
     const payload = NodePath.join(base, "payload");
     for (const directory of [active, payload]) {
-      await NodeFSP.mkdir(directory, { recursive: true });
+      await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
       await NodeFSP.writeFile(NodePath.join(directory, "t3"), child, { mode: 0o755 });
     }
     const metadata: Omit<QualifiedRuntimeReceipt, "payloadSha256"> = {
@@ -173,13 +173,30 @@ it("commits a qualified trial after readiness and retains its previous binary/st
     );
     assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "after");
     await NodeFSP.access(NodePath.join(base, "runtime", "versions", baseline, "t3"));
+    for (const directory of [
+      NodePath.join(base, "runtime"),
+      NodePath.join(base, "runtime", "db-backup"),
+      backup,
+    ]) {
+      const stat = await NodeFSP.lstat(directory);
+      assert.equal(stat.isDirectory(), true);
+      assert.equal(stat.isSymbolicLink(), false);
+      assert.equal(stat.mode & 0o777, 0o700);
+    }
     const reservation = NodePath.join(backup, "resume-dispatched.json");
-    assert.deepEqual(JSON.parse(await NodeFSP.readFile(reservation, "utf8")), state.update!.startupReceipt);
+    assert.deepEqual(
+      JSON.parse(await NodeFSP.readFile(reservation, "utf8")),
+      state.update!.startupReceipt,
+    );
     const statePath = NodePath.join(base, "runtime", "service-state.json");
     const beforeRecovery = await NodeFSP.readFile(statePath, "utf8");
-    await NodeAssert.rejects(new Launcher(base, state, {
-      quiescenceAdapter: { scan: async () => [] }, startupGateProtocol: 1,
-    }).run(), /held for reconciliation/);
+    await NodeAssert.rejects(
+      new Launcher(base, state, {
+        quiescenceAdapter: { scan: async () => [] },
+        startupGateProtocol: 1,
+      }).run(),
+      /held for reconciliation/,
+    );
     assert.equal(await NodeFSP.readFile(statePath, "utf8"), beforeRecovery);
     await NodeFSP.access(reservation);
   });
@@ -201,23 +218,34 @@ it("holds a stale captured PID proof without committing or automatically restori
 it("records stop intent during readiness proof before committing or granting qualified resume", async () => {
   let captured: Launcher | undefined;
   let stop: Promise<void> | undefined;
-  await runScenario("commit", async (base) => {
-    await stop;
-    const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
-    assert.equal(state.activeVersion, baseline);
-    assert.equal(state.update?.status, "pending");
-    assert.equal(state.update?.startupReceipt, undefined);
-    await NodeFSP.access(NodePath.join(base, "runtime", ".service-stopping"));
-    await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup", state.update!.id, "resume-dispatched.json")));
-  }, {
-    scan: async ({ allowedProcessIds }) => {
-      if (allowedProcessIds.length > 0) {
-        if (captured === undefined) throw new Error("missing controlled launcher");
-        stop = captured.stop("SIGTERM");
-      }
-      return [];
+  await runScenario(
+    "commit",
+    async (base) => {
+      await stop;
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.activeVersion, baseline);
+      assert.equal(state.update?.status, "pending");
+      assert.equal(state.update?.startupReceipt, undefined);
+      await NodeFSP.access(NodePath.join(base, "runtime", ".service-stopping"));
+      await NodeAssert.rejects(
+        NodeFSP.access(
+          NodePath.join(base, "runtime", "db-backup", state.update!.id, "resume-dispatched.json"),
+        ),
+      );
     },
-  }, (launcher) => { captured = launcher; });
+    {
+      scan: async ({ allowedProcessIds }) => {
+        if (allowedProcessIds.length > 0) {
+          if (captured === undefined) throw new Error("missing controlled launcher");
+          stop = captured.stop("SIGTERM");
+        }
+        return [];
+      },
+    },
+    (launcher) => {
+      captured = launcher;
+    },
+  );
 });
 
 it("restores paired settings and SQLite after a failed trial and retains its advanced state", async () => {
@@ -266,15 +294,20 @@ it("retains the active pointer and unchanged state when an unknown same-home wri
   );
 });
 
-
-it.each(["missing-gate", "wrong-gate"] as const)("rejects candidate %s before recording or launching a qualified transaction", async (mode) => {
-  await runScenario(mode, async (base) => {
-    const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
-    assert.equal(state.activeVersion, baseline);
-    assert.equal(state.update, undefined);
-    assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
-    assert.equal(await NodeFSP.readFile(NodePath.join(base, "userdata", "settings.json"), "utf8"), "before-settings");
-    await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
-    await NodeFSP.access(NodePath.join(base, "runtime", "test-handle"));
-  });
-});
+it.each(["missing-gate", "wrong-gate"] as const)(
+  "rejects candidate %s before recording or launching a qualified transaction",
+  async (mode) => {
+    await runScenario(mode, async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.activeVersion, baseline);
+      assert.equal(state.update, undefined);
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+      assert.equal(
+        await NodeFSP.readFile(NodePath.join(base, "userdata", "settings.json"), "utf8"),
+        "before-settings",
+      );
+      await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
+      await NodeFSP.access(NodePath.join(base, "runtime", "test-handle"));
+    });
+  },
+);

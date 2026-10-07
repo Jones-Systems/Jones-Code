@@ -88,21 +88,32 @@ const preflightQualifiedCandidate = async (
 ): Promise<void> => {
   const env = { ...process.env };
   delete env[SERVICE_LAUNCHER_CONTEXT_ENV];
-  const result = await new Promise<{ readonly code: number | null; readonly stdout: string }>((resolve, reject) => {
-    NodeChildProcess.execFile(
-      runtimePaths(baseDir, staged.receipt.version).entryPath,
-      ["__service-preflight", "--database-path", staged.binding.dbPath,
-        "--launcher-protocol", String(SERVICE_LAUNCHER_PROTOCOL)],
-      { env, timeout: 30_000, maxBuffer: 64 * 1024, encoding: "utf8" },
-      (error, stdout) => {
-        if (error !== null) {
-          reject(new Error("startup-gate-unavailable: Could not preflight the qualified candidate.", { cause: error }));
-          return;
-        }
-        resolve({ code: 0, stdout });
-      },
-    );
-  });
+  const result = await new Promise<{ readonly code: number | null; readonly stdout: string }>(
+    (resolve, reject) => {
+      NodeChildProcess.execFile(
+        runtimePaths(baseDir, staged.receipt.version).entryPath,
+        [
+          "__service-preflight",
+          "--database-path",
+          staged.binding.dbPath,
+          "--launcher-protocol",
+          String(SERVICE_LAUNCHER_PROTOCOL),
+        ],
+        { env, timeout: 30_000, maxBuffer: 64 * 1024, encoding: "utf8" },
+        (error, stdout) => {
+          if (error !== null) {
+            reject(
+              new Error("startup-gate-unavailable: Could not preflight the qualified candidate.", {
+                cause: error,
+              }),
+            );
+            return;
+          }
+          resolve({ code: 0, stdout });
+        },
+      );
+    },
+  );
   const reason = qualifiedServicePreflightFailure({ ...result, version: staged.receipt.version });
   if (reason !== undefined) throw new Error(reason);
 };
@@ -602,7 +613,9 @@ export class Launcher {
     // A committed pointer proves neither grant delivery nor continuation dispatch.
     // Even an occupied resume reservation is uncertain; restart never repeats the transaction.
     if (this.#state.update?.qualified !== undefined) {
-      throw new Error("Qualified update recovery is held for reconciliation; retained pointer, receipt and paired state were preserved.");
+      throw new Error(
+        "Qualified update recovery is held for reconciliation; retained pointer, receipt and paired state were preserved.",
+      );
     }
     // A fresh launcher means servers are running again: any stop marker from
     // a previous explicit stop is stale and must not make a future update
@@ -770,9 +783,18 @@ export class Launcher {
     child.on("message", (value) => {
       const message = decodeServiceLauncherChildMessage(value);
       if (message !== undefined) this.#enqueue(() => this.#handleMessage(managed, message));
-      else if (update?.qualified !== undefined && typeof value === "object" && value !== null &&
-        "type" in value && value.type === "prepared") {
-        this.#enqueue(() => Promise.reject(new Error("Qualified child supplied malformed startup proof; transaction retained.")));
+      else if (
+        update?.qualified !== undefined &&
+        typeof value === "object" &&
+        value !== null &&
+        "type" in value &&
+        value.type === "prepared"
+      ) {
+        this.#enqueue(() =>
+          Promise.reject(
+            new Error("Qualified child supplied malformed startup proof; transaction retained."),
+          ),
+        );
       }
     });
     child.once("exit", (code, signal) =>
@@ -923,10 +945,20 @@ export class Launcher {
     }
     let startupReceipt: QualifiedTrialReceipt | undefined;
     if (pending.qualified !== undefined) {
-      if (message.startupGateProtocol !== 1 || message.qualified === undefined || this.#startupGateProtocol !== 1)
-        throw new Error("Qualified startup proof is required before pointer commit; transaction retained.");
+      if (
+        message.startupGateProtocol !== 1 ||
+        message.qualified === undefined ||
+        this.#startupGateProtocol !== 1
+      )
+        throw new Error(
+          "Qualified startup proof is required before pointer commit; transaction retained.",
+        );
       startupReceipt = message.qualified;
-      assertQualifiedTrialBinding({ updateId: pending.id, qualified: pending.qualified, receipt: startupReceipt });
+      assertQualifiedTrialBinding({
+        updateId: pending.id,
+        qualified: pending.qualified,
+        receipt: startupReceipt,
+      });
       const home = await NodeFSP.realpath(this.#baseDir);
       const serviceUserdata = await NodeFSP.realpath(NodePath.join(home, "userdata"));
       const database = await NodeFSP.realpath(pending.dbPath);
@@ -937,12 +969,17 @@ export class Launcher {
       if (
         JSON.stringify(receipt) !== JSON.stringify(pending.qualified.receipt) ||
         environment !== pending.qualified.binding.environmentId ||
-        startupReceipt.home !== home || startupReceipt.serviceUserdata !== serviceUserdata ||
-        startupReceipt.databasePath !== database || startupReceipt.processId !== child.process.pid ||
-        startupReceipt.version !== child.version || startupReceipt.sourceSha !== receipt.sourceSha ||
+        startupReceipt.home !== home ||
+        startupReceipt.serviceUserdata !== serviceUserdata ||
+        startupReceipt.databasePath !== database ||
+        startupReceipt.processId !== child.process.pid ||
+        startupReceipt.version !== child.version ||
+        startupReceipt.sourceSha !== receipt.sourceSha ||
         startupReceipt.sourceTree !== receipt.sourceTree
       ) {
-        throw new Error("Qualified startup observed identity mismatched the captured child; transaction retained.");
+        throw new Error(
+          "Qualified startup observed identity mismatched the captured child; transaction retained.",
+        );
       }
     }
     if (pending.qualified !== undefined) {
@@ -973,18 +1010,27 @@ export class Launcher {
     if (pending.qualified === undefined)
       await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
     await sendMessage(child.process, {
-      type: "committed", updateId: committed.id,
-      ...(startupReceipt === undefined ? {} : {
-        startupGateProtocol: 1 as const,
-        qualified: { ...startupReceipt, generation: committed.id },
-      }),
+      type: "committed",
+      updateId: committed.id,
+      ...(startupReceipt === undefined
+        ? {}
+        : {
+            startupGateProtocol: 1 as const,
+            qualified: { ...startupReceipt, generation: committed.id },
+          }),
     });
   }
 
   #assertQualifiedChildLive(child: ManagedChild): void {
-    if (this.#stopRequested || this.#stopping || this.#child !== child ||
-      child.process.pid === undefined || child.process.exitCode !== null ||
-      child.process.signalCode !== null || !child.process.connected)
+    if (
+      this.#stopRequested ||
+      this.#stopping ||
+      this.#child !== child ||
+      child.process.pid === undefined ||
+      child.process.exitCode !== null ||
+      child.process.signalCode !== null ||
+      !child.process.connected
+    )
       throw new Error("Qualified child liveness or stop intent changed; transaction retained.");
     // The PID belongs to this captured spawn, never a path/name search.
     process.kill(child.process.pid, 0);
@@ -1037,15 +1083,22 @@ export class Launcher {
     child?: ManagedChild,
   ): Promise<void> {
     if (pending.qualified !== undefined && this.#qualifiedPointerCommitAttempted)
-      throw new Error("Qualified pointer commit may have occurred; paired state is retained for reconciliation.");
+      throw new Error(
+        "Qualified pointer commit may have occurred; paired state is retained for reconciliation.",
+      );
     if (child !== undefined) {
       this.#child = null;
       await terminateChild(child.process);
-      if (pending.qualified !== undefined && child.process.exitCode === null && child.process.signalCode === null)
+      if (
+        pending.qualified !== undefined &&
+        child.process.exitCode === null &&
+        child.process.signalCode === null
+      )
         throw new Error("Qualified trial stop is unproved; paired state was retained.");
     }
     if (pending.qualified !== undefined) {
-      if (child === undefined) throw new Error("Qualified rollback requires the exact captured child stop.");
+      if (child === undefined)
+        throw new Error("Qualified rollback requires the exact captured child stop.");
       await this.#proveQuiescence();
     }
     await restoreDatabaseBackup(this.#baseDir, pending);

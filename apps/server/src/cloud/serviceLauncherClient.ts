@@ -158,17 +158,21 @@ export const QualifiedTrialOperations = Context.Reference<{
 const qualifiedOperation = <A>(
   operation: (signal: AbortSignal) => Promise<A>,
   failure: "qualified-proof" | "qualified-reservation",
-) => Effect.callback<A, ServiceLauncherClientError>((resume) => {
-  const controller = new AbortController();
-  const completion = Promise.resolve().then(() => operation(controller.signal)).then(
-    (result) => resume(Effect.succeed(result)),
-    (cause) => resume(Effect.fail(new ServiceLauncherClientError({ operation: failure, cause }))),
-  );
-  return Effect.promise(async () => {
-    controller.abort();
-    await completion;
+) =>
+  Effect.callback<A, ServiceLauncherClientError>((resume) => {
+    const controller = new AbortController();
+    const completion = Promise.resolve()
+      .then(() => operation(controller.signal))
+      .then(
+        (result) => resume(Effect.succeed(result)),
+        (cause) =>
+          resume(Effect.fail(new ServiceLauncherClientError({ operation: failure, cause }))),
+      );
+    return Effect.promise(async () => {
+      controller.abort();
+      await completion;
+    });
   });
-});
 
 const resolveStartup = Effect.fn("cloud.service_launcher_client.resolve_startup")(
   function* (options?: { readonly currentVersion?: string }) {
@@ -235,10 +239,19 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
         const reply = decodeServiceLauncherParentMessage(args[0]);
         if (qualifiedReceipt !== undefined) {
           const raw = args[0];
-          if (typeof raw === "object" && raw !== null && "type" in raw && raw.type === "committed") {
-            if (reply?.type !== "committed" || reply.startupGateProtocol !== 1 ||
-              reply.qualified === undefined || reply.updateId !== qualifiedReceipt.updateId ||
-              !sameQualifiedTrialIdentity(qualifiedReceipt, reply.qualified)) {
+          if (
+            typeof raw === "object" &&
+            raw !== null &&
+            "type" in raw &&
+            raw.type === "committed"
+          ) {
+            if (
+              reply?.type !== "committed" ||
+              reply.startupGateProtocol !== 1 ||
+              reply.qualified === undefined ||
+              reply.updateId !== qualifiedReceipt.updateId ||
+              !sameQualifiedTrialIdentity(qualifiedReceipt, reply.qualified)
+            ) {
               settle(Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" })));
               return;
             }
@@ -324,37 +337,50 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     context.update.qualified !== undefined;
   const requiresQualifiedTrialGate = pending !== undefined && pending.qualified !== undefined;
   let qualifiedAttempted = false;
-  const prepareQualifiedTrial: ServiceLauncherClient["Service"]["prepareQualifiedTrial"] = (witness) =>
+  const prepareQualifiedTrial: ServiceLauncherClient["Service"]["prepareQualifiedTrial"] = (
+    witness,
+  ) =>
     Effect.suspend(() => {
       if (qualifiedAttempted)
         return Effect.fail(new ServiceLauncherClientError({ operation: "qualified-replay" }));
       qualifiedAttempted = true;
-      if (!requiresQualifiedTrialGate || pending?.qualified === undefined ||
-        context?.protocol !== SERVICE_LAUNCHER_PROTOCOL || context.qualifiedUpdatesProtocol !== 1 ||
-        context.startupGateProtocol !== 1)
+      if (
+        !requiresQualifiedTrialGate ||
+        pending?.qualified === undefined ||
+        context?.protocol !== SERVICE_LAUNCHER_PROTOCOL ||
+        context.qualifiedUpdatesProtocol !== 1 ||
+        context.startupGateProtocol !== 1
+      )
         return Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" }));
       const qualified = pending.qualified;
       return Effect.gen(function* () {
-        const receipt = yield* qualifiedOperation(
-          async (signal) => {
-            const receipt = await qualifiedOperations.receipt({ updateId: pending.id, qualified, witness, signal });
-            assertQualifiedTrialBinding({ updateId: pending.id, qualified, receipt });
-            await qualifiedOperations.assertUnreserved(receipt);
-            return receipt;
-          }, "qualified-proof",
-        );
+        const receipt = yield* qualifiedOperation(async (signal) => {
+          const receipt = await qualifiedOperations.receipt({
+            updateId: pending.id,
+            qualified,
+            witness,
+            signal,
+          });
+          assertQualifiedTrialBinding({ updateId: pending.id, qualified, receipt });
+          await qualifiedOperations.assertUnreserved(receipt);
+          return receipt;
+        }, "qualified-proof");
         const reply = yield* exchange(
           { type: "prepared", updateId: pending.id, startupGateProtocol: 1, qualified: receipt },
-          (reply) => reply.type === "committed", receipt,
+          (reply) => reply.type === "committed",
+          receipt,
         );
         if (reply.type !== "committed" || reply.qualified === undefined)
           return yield* new ServiceLauncherClientError({ operation: "qualified-proof" });
         yield* qualifiedOperation(
-          (signal) => qualifiedOperations.reserve({ receipt, signal }), "qualified-reservation",
+          (signal) => qualifiedOperations.reserve({ receipt, signal }),
+          "qualified-reservation",
         );
         outcome = {
-          id: pending.id, fromVersion: pending.fromVersion,
-          targetVersion: pending.targetVersion, status: "committed",
+          id: pending.id,
+          fromVersion: pending.fromVersion,
+          targetVersion: pending.targetVersion,
+          status: "committed",
         };
         return outcome;
       });
@@ -381,17 +407,18 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       : Effect.succeed(outcome),
   );
   const prepareTrial = requiresQualifiedTrialGate
-    ? Effect.suspend(() => outcome === undefined
-      ? Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" }))
-      : Effect.succeed(outcome))
+    ? Effect.suspend(() =>
+        outcome === undefined
+          ? Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" }))
+          : Effect.succeed(outcome),
+      )
     : ordinaryPrepareTrial;
 
   return ServiceLauncherClient.of({
     managed,
     requiresQualifiedTrialGate,
     prepareQualifiedTrial,
-    qualifiedUpdates:
-      context?.qualifiedUpdatesProtocol === 1 && context.startupGateProtocol === 1,
+    qualifiedUpdates: context?.qualifiedUpdatesProtocol === 1 && context.startupGateProtocol === 1,
     qualifiedStaging: context?.qualifiedUpdatesProtocol === 1,
     ...(context === undefined ? {} : { currentVersion: context.childVersion }),
     requestUpdate,

@@ -92,7 +92,8 @@ it.layer(NodeServices.layer)("Jones update Release compatibility", (it) => {
             Layer.succeed(Launcher.ServiceLauncherClient, {
               managed: false,
               requiresQualifiedTrialGate: false,
-              prepareQualifiedTrial: () => Effect.die("Release state must not prepare a qualified trial"),
+              prepareQualifiedTrial: () =>
+                Effect.die("Release state must not prepare a qualified trial"),
               requestUpdate: () => Effect.die("Release state must not request Install"),
               prepareTrial: Effect.undefined,
             }),
@@ -182,12 +183,17 @@ describe("qualified update HTTP authority and decoding", () => {
         currentVersion: app.state.currentVersion,
         continueRunningThreads: true,
       };
-      for (const [action, input] of [["download", download], ["install", install]] as const) {
-        const response = await app.handler(new Request(`http://fixture/api/jones-updates/${action}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(input),
-        }));
+      for (const [action, input] of [
+        ["download", download],
+        ["install", install],
+      ] as const) {
+        const response = await app.handler(
+          new Request(`http://fixture/api/jones-updates/${action}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input),
+          }),
+        );
         expect(response.status).toBe(200);
         expect(response.headers.get("cache-control")).toBe("no-store");
         expect(await response.json()).toEqual(app.state);
@@ -204,11 +210,13 @@ describe("qualified update HTTP authority and decoding", () => {
   test("rejects malformed install before calling the service", async () => {
     const app = fixture(["orchestration:operate"]);
     try {
-      const response = await app.handler(new Request("http://fixture/api/jones-updates/install", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ stagedHandle: 123, environmentId: "synthetic-environment" }),
-      }));
+      const response = await app.handler(
+        new Request("http://fixture/api/jones-updates/install", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ stagedHandle: 123, environmentId: "synthetic-environment" }),
+        }),
+      );
       expect(response.status).toBe(400);
       expect(app.calls).toEqual([]);
     } finally {
@@ -225,11 +233,15 @@ describe("qualified update HTTP authority and decoding", () => {
         currentVersion: app.state.currentVersion,
       };
       for (const action of ["check", "download", "prepare-native", "install"]) {
-        const response = await app.handler(new Request(`http://fixture/api/jones-updates/${action}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(action === "download" ? { artifactId: 101, sourceSha: "a".repeat(40) } : input),
-        }));
+        const response = await app.handler(
+          new Request(`http://fixture/api/jones-updates/${action}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(
+              action === "download" ? { artifactId: 101, sourceSha: "a".repeat(40) } : input,
+            ),
+          }),
+        );
         expect(response.status).toBe(403);
       }
       expect(app.calls).toEqual([]);

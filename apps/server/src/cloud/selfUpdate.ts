@@ -49,7 +49,10 @@ import {
   PinnedRuntimeInstallError,
   PinnedRuntimePreflightBlockedError,
 } from "./pinnedRuntime.ts";
-import { qualifiedServicePreflightFailure } from "./servicePreflight.ts";
+import {
+  decodeServicePreflightResult,
+  qualifiedServicePreflightFailure,
+} from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
@@ -437,17 +440,31 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         .run({
           command: entryPath,
           args: [
-            "__service-preflight", "--database-path", databasePath,
-            "--launcher-protocol", String(SERVICE_LAUNCHER_PROTOCOL),
+            "__service-preflight",
+            "--database-path",
+            databasePath,
+            "--launcher-protocol",
+            String(SERVICE_LAUNCHER_PROTOCOL),
           ],
           timeout: PREFLIGHT_TIMEOUT,
         })
-        .pipe(Effect.mapError((cause) => failWith(
-          "startup-gate-unavailable: Could not preflight the qualified candidate.", cause,
-        )));
+        .pipe(
+          Effect.mapError((cause) =>
+            failWith(
+              "startup-gate-unavailable: Could not preflight the qualified candidate.",
+              cause,
+            ),
+          ),
+        );
       if (result.timedOut || result.stdoutTruncated || result.stdoutInvalidUtf8)
-        return yield* failWith("startup-gate-unavailable: The candidate preflight response was incomplete.");
-      const reason = qualifiedServicePreflightFailure({ code: result.code, stdout: result.stdout, version });
+        return yield* failWith(
+          "startup-gate-unavailable: The candidate preflight response was incomplete.",
+        );
+      const reason = qualifiedServicePreflightFailure({
+        code: result.code,
+        stdout: result.stdout,
+        version,
+      });
       if (reason !== undefined) return yield* failWith(reason);
     });
   const stageQualified = (artifact: JonesStagedArtifact) =>
