@@ -23,6 +23,10 @@ import {
   T3PlacementPage,
   T3PlacementRequest,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
+  WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
+  WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
+  WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -40,6 +44,16 @@ import {
 
 const EMPTY_SHA256 = NodeCrypto.createHash("sha256").update("").digest("hex");
 const TIMEOUT_MS = 15_000;
+
+const REGISTRATION_CONTEXT_ROUTE = "/workstreams/v1/t3/registration-context";
+
+export interface WorkstreamRegistrationTransport {
+  readonly configuredBinding: Pick<
+    T3WorkstreamBinding,
+    "ownerId" | "principalId" | "authorizationRevision"
+  > | null;
+  readonly readRegistrationContext: Effect.Effect<string, WorkstreamTransportError>;
+}
 
 class BoundedTransportFailure extends Error {
   readonly reason:
@@ -176,7 +190,8 @@ export function signWorkstreamRequest(input: {
   readonly contractVersion?:
     | typeof WORKSTREAM_CONTRACT_HEADER_VERSION
     | typeof T3_PLACEMENT_CONTRACT
-    | typeof WORKSTREAM_APPEARANCE_CONTRACT;
+    | typeof WORKSTREAM_APPEARANCE_CONTRACT
+    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL;
   readonly requestId: string;
   readonly idempotencyKey?: string;
   readonly sentAt: string;
@@ -206,9 +221,12 @@ export function signWorkstreamRequest(input: {
   return NodeCrypto.createHmac("sha256", key).update(canonical).digest("base64url");
 }
 
-async function readBoundedResponse(response: Response): Promise<string> {
+async function readBoundedResponse(
+  response: Response,
+  maxBytes = WORKSTREAM_MAX_RESPONSE_BYTES,
+): Promise<string> {
   const declared = response.headers.get("content-length");
-  if (declared !== null && Number(declared) > WORKSTREAM_MAX_RESPONSE_BYTES) {
+  if (declared !== null && Number(declared) > maxBytes) {
     await response.body?.cancel();
     throw new BoundedTransportFailure("response_too_large");
   }
@@ -225,7 +243,7 @@ async function readBoundedResponse(response: Response): Promise<string> {
       const chunk = await reader.read();
       if (chunk.done) break;
       total += chunk.value.byteLength;
-      if (total > WORKSTREAM_MAX_RESPONSE_BYTES) {
+      if (total > maxBytes) {
         throw new BoundedTransportFailure("response_too_large");
       }
       body += decoder.decode(chunk.value, { stream: true });
@@ -259,6 +277,7 @@ async function performRequest(input: {
   readonly idempotencyKey?: string;
   readonly signal: AbortSignal;
 }): Promise<string> {
+  const registration = input.target.split(/[?#]/, 1)[0] === REGISTRATION_CONTEXT_ROUTE;
   const appearance =
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/read` ||
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/write`;
@@ -270,6 +289,11 @@ async function performRequest(input: {
       (input.method !== "POST" ||
         input.target !== T3_PLACEMENT_ROUTE ||
         Buffer.byteLength(input.body) > T3_PLACEMENT_MAX_REQUEST_BYTES)) ||
+    (registration &&
+      (input.method !== "GET" ||
+        input.target !== REGISTRATION_CONTEXT_ROUTE ||
+        input.body !== "" ||
+        input.idempotencyKey !== undefined)) ||
     input.target.includes("#") ||
     /[\r\n]/.test(input.target)
   )
@@ -281,11 +305,13 @@ async function performRequest(input: {
       ? EMPTY_SHA256
       : NodeCrypto.createHash("sha256").update(input.body).digest("hex");
   const signature = signWorkstreamRequest({
-    contractVersion: appearance
-      ? WORKSTREAM_APPEARANCE_CONTRACT
-      : placement
-        ? T3_PLACEMENT_CONTRACT
-        : WORKSTREAM_CONTRACT_HEADER_VERSION,
+    contractVersion: registration
+      ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
+      : appearance
+        ? WORKSTREAM_APPEARANCE_CONTRACT
+        : placement
+          ? T3_PLACEMENT_CONTRACT
+          : WORKSTREAM_CONTRACT_HEADER_VERSION,
     requestId,
     ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
     sentAt: input.sentAt,
@@ -305,16 +331,20 @@ async function performRequest(input: {
       accept: "application/json",
       "content-type": "application/json; charset=utf-8",
       "x-control-algorithm": "hmac-sha256-v1",
-      "x-control-contract-version": appearance
-        ? WORKSTREAM_APPEARANCE_CONTRACT
-        : placement
-          ? T3_PLACEMENT_CONTRACT
-          : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
-      "x-control-contract-manifest": appearance
-        ? WORKSTREAM_APPEARANCE_MANIFEST
-        : placement
-          ? T3_PLACEMENT_MANIFEST_SHA256
-          : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+      "x-control-contract-version": registration
+        ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
+        : appearance
+          ? WORKSTREAM_APPEARANCE_CONTRACT
+          : placement
+            ? T3_PLACEMENT_CONTRACT
+            : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
+      "x-control-contract-manifest": registration
+        ? WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256
+        : appearance
+          ? WORKSTREAM_APPEARANCE_MANIFEST
+          : placement
+            ? T3_PLACEMENT_MANIFEST_SHA256
+            : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
       "x-control-request-id": requestId,
       "x-control-timestamp": input.sentAt,
       "x-control-nonce": nonce,
@@ -347,7 +377,22 @@ async function performRequest(input: {
     await response.body?.cancel();
     throw new BoundedTransportFailure("http_error");
   }
-  return readBoundedResponse(response);
+  if (
+    registration &&
+    (response.headers.get("x-control-contract-version") !==
+      WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL ||
+      response.headers.get("x-control-contract-manifest") !==
+        WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256)
+  ) {
+    await response.body?.cancel();
+    throw new BoundedTransportFailure("http_error");
+  }
+  return readBoundedResponse(
+    response,
+    registration
+      ? WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES
+      : WORKSTREAM_MAX_RESPONSE_BYTES,
+  );
 }
 
 export function makeControlPlaneWorkstreamTransport(
@@ -355,6 +400,7 @@ export function makeControlPlaneWorkstreamTransport(
   fetchPort: WorkstreamFetch = globalThis.fetch.bind(globalThis),
 ): {
   readonly transport: WorkstreamTransport;
+  readonly registrationContext: WorkstreamRegistrationTransport;
   readonly binding: Pick<
     T3WorkstreamBinding,
     "registryId" | "ownerId" | "principalId" | "authorizationRevision"
@@ -363,6 +409,16 @@ export function makeControlPlaneWorkstreamTransport(
   if (activation.state === "disabled" || !hasCanonicalActivation(activation.value)) {
     return {
       transport: disabled(),
+      registrationContext: {
+        configuredBinding: null,
+        readRegistrationContext: Effect.fail(
+          new WorkstreamTransportError({
+            operation: "registration_context",
+            effect: "no-effect",
+            detail: "Workstream control-plane activation is disabled.",
+          }),
+        ),
+      },
       binding: {
         registryId: "disabled",
         ownerId: "disabled",
@@ -443,6 +499,47 @@ export function makeControlPlaneWorkstreamTransport(
       );
     });
   return {
+    registrationContext: {
+      configuredBinding: {
+        ownerId: config.ownerId,
+        principalId: config.principalId,
+        authorizationRevision: config.authorizationRevision,
+      },
+      readRegistrationContext: Effect.gen(function* () {
+        const sentAt = DateTime.formatIso(yield* DateTime.now);
+        return yield* Effect.tryPromise({
+          try: (signal) =>
+            performRequest({
+              fetch: fetchPort,
+              config,
+              method: "GET",
+              target: REGISTRATION_CONTEXT_ROUTE,
+              body: "",
+              sentAt,
+              signal,
+            }),
+          catch: (cause) =>
+            new WorkstreamTransportError({
+              operation: "registration_context",
+              effect: "no-effect",
+              detail:
+                cause instanceof BoundedTransportFailure ? cause.reason : "transport_unavailable",
+            }),
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS,
+            orElse: () =>
+              Effect.fail(
+                new WorkstreamTransportError({
+                  operation: "registration_context",
+                  effect: "no-effect",
+                  detail: "Control-plane request timed out.",
+                }),
+              ),
+          }),
+        );
+      }),
+    },
     binding: {
       registryId: config.baseUrl.origin,
       ownerId: config.ownerId,

@@ -194,3 +194,110 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
     assert.deepStrictEqual(pulled, ["/inherited"]);
   }),
 );
+
+it.effect("holds recovery, activation and queued commands before the trial grant", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const trialEntered = yield* Deferred.make<void>();
+      const grant = yield* Deferred.make<void>();
+      const gate = yield* ServerRuntimeStartup.makeCommandGate;
+      const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+      const record = (label: string) => Ref.update(calls, (current) => [...current, label]);
+      const queued = yield* gate.enqueueCommand(record("command")).pipe(Effect.forkScoped);
+      const startup = yield* ServerRuntimeStartup.runOrderedV2StartupPhases({
+        awaitTrialCommit: Deferred.succeed(trialEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(grant)),
+          Effect.andThen(record("reservation")),
+        ),
+        importLegacyShells: record("legacy"),
+        recover: record("provider"),
+        recoverDelegatedTasks: record("delegated"),
+        startEffectWorker: record("worker"),
+        autoBootstrap: record("bootstrap"),
+      }).pipe(
+        Effect.andThen(record("activation")),
+        Effect.andThen(gate.signalCommandReady),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(trialEntered);
+      assert.deepEqual(yield* Ref.get(calls), []);
+      yield* Deferred.succeed(grant, undefined);
+      yield* Fiber.join(startup);
+      yield* Fiber.join(queued);
+      assert.deepEqual(yield* Ref.get(calls), [
+        "reservation",
+        "legacy",
+        "provider",
+        "delegated",
+        "worker",
+        "bootstrap",
+        "activation",
+        "command",
+      ]);
+    }),
+  ),
+);
+
+it.effect("a failed native trial fails readiness and leaves every recovery step held", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const gate = yield* ServerRuntimeStartup.makeCommandGate;
+      const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+      const record = Ref.update(calls, (current) => [...current, "must not dispatch"]);
+      const failure = new ServerRuntimeStartup.ServerRuntimeStartupError({
+        mode: "desktop",
+        host: "127.0.0.1",
+        port: 4888,
+        cause: "Synthetic mismatched commit identity",
+      });
+      const queued = yield* gate.enqueueCommand(record).pipe(Effect.forkScoped);
+      const exit = yield* ServerRuntimeStartup.runOrderedV2StartupPhases({
+        awaitTrialCommit: Effect.fail(failure),
+        importLegacyShells: record,
+        recover: record,
+        recoverDelegatedTasks: record,
+        startEffectWorker: record,
+        autoBootstrap: record,
+      }).pipe(
+        Effect.tapError((error) => gate.failCommandReady(error)),
+        Effect.exit,
+      );
+      assert.isTrue(Exit.isFailure(exit));
+      assert.equal(yield* Effect.flip(Fiber.join(queued)), failure);
+      assert.deepEqual(yield* Ref.get(calls), []);
+    }),
+  ),
+);
+
+it.effect(
+  "pre-activation native trial shutdown preserves continuation rows and cleans local sessions",
+  () =>
+    Effect.gen(function* () {
+      const continuationRows = yield* Ref.make(["paired-continuation"]);
+      const localCleanup = yield* Ref.make(false);
+      yield* ServerRuntimeStartup.runRuntimeShutdown({
+        continuationWritesAllowed: false,
+        prepareForShutdown: Ref.set(continuationRows, ["rewritten"]),
+        shutdownSessions: Ref.set(localCleanup, true),
+        reconcile: Ref.set(continuationRows, []),
+      });
+      assert.deepEqual(yield* Ref.get(continuationRows), ["paired-continuation"]);
+      assert.isTrue(yield* Ref.get(localCleanup));
+    }),
+);
+
+it.effect(
+  "ordinary and activated runtime shutdown preserves preparation, cleanup and reconciliation order",
+  () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+      const record = (label: string) => Ref.update(calls, (current) => [...current, label]);
+      yield* ServerRuntimeStartup.runRuntimeShutdown({
+        continuationWritesAllowed: true,
+        prepareForShutdown: record("prepare"),
+        shutdownSessions: record("cleanup"),
+        reconcile: record("reconcile"),
+      });
+      assert.deepEqual(yield* Ref.get(calls), ["prepare", "cleanup", "reconcile"]);
+    }),
+);

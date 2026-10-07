@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "imported-history-custody",
+  "jonesOwnedPaths": ["apps/server/src/jones/importedHistory/"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/importedHistory/ApplicationBirth.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/importedHistory/ImportedApplicationAttachmentInventory.ts"
+    }
+  ]
+}

@@ -20,6 +20,10 @@ import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 
 import * as ProcessRunner from "../processRunner.ts";
 import {
+  QUALIFIED_RUNTIME_RECEIPT,
+  readQualifiedRuntimeReceipt,
+} from "../jones/cloud/qualifiedRuntime.ts";
+import {
   ensurePinnedRuntimeInstalled,
   pinnedRuntimeCommand,
   pinnedRuntimePaths,
@@ -499,13 +503,31 @@ export class BootServiceDowngradeRefusedError extends Schema.TaggedError<BootSer
   }
 }
 
+export class BootServiceBootstrapRequiredError extends Schema.TaggedError<BootServiceBootstrapRequiredError>()(
+  "BootServiceBootstrapRequiredError",
+  {
+    reason: Schema.Literals([
+      "desktop-owned-home",
+      "qualified-activation-required",
+      "source-unqualified",
+    ]),
+  },
+) {
+  override get message(): string {
+    return this.reason === "desktop-owned-home"
+      ? "bootstrap-required: This native home is desktop-owned; activate its qualified app through the desktop installer."
+      : "bootstrap-required: Version-only service setup cannot repoint a Jones installation. Use qualified staging and explicit Install, or complete source-qualified launcher bootstrap on this host.";
+  }
+}
+
 export type BootServiceError =
   | BootServiceUnsupportedError
   | BootServiceCommandError
   | BootServiceInstallError
   | BootServicePrerequisiteError
   | BootServiceUpdatePendingError
-  | BootServiceDowngradeRefusedError;
+  | BootServiceDowngradeRefusedError
+  | BootServiceBootstrapRequiredError;
 
 export interface BootServiceStatus {
   readonly supported: boolean;
@@ -751,6 +773,56 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     readonly start?: boolean;
   }) {
     const manager = yield* requireManager;
+    const exists = (file: string) =>
+      fs.exists(file).pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
+    // Qualification is checked before administrative probes, downloads or
+    // stops. A generic version request must never replace the native pointer.
+    if (yield* exists(path.join(input.baseDir, "runtime", "jones-active-install.json"))) {
+      return yield* new BootServiceBootstrapRequiredError({ reason: "desktop-owned-home" });
+    }
+    const priorState = yield* fs.readFileString(statePath).pipe(Effect.option);
+    const activeVersion = Option.isSome(priorState)
+      ? serviceStateActiveVersion(priorState.value)
+      : undefined;
+    const qualified =
+      input.cliVersion.includes("-preview.") ||
+      activeVersion?.includes("-preview.") === true ||
+      (yield* exists(path.join(runtimePaths.versionDir, QUALIFIED_RUNTIME_RECEIPT))) ||
+      (activeVersion === undefined
+        ? false
+        : yield* exists(
+            path.join(
+              input.baseDir,
+              "runtime",
+              "versions",
+              activeVersion,
+              QUALIFIED_RUNTIME_RECEIPT,
+            ),
+          ));
+    if (qualified) {
+      const state = Option.isSome(priorState) ? parseServiceState(priorState.value) : undefined;
+      const unit = yield* fs.readFileString(unitPath).pipe(Effect.option);
+      if (
+        options?.start === false &&
+        state?.activeVersion === input.cliVersion &&
+        state.update?.status !== "pending" &&
+        Option.isSome(unit) &&
+        unit.value === manager.render(plan)
+      ) {
+        yield* Effect.tryPromise({
+          try: () =>
+            readQualifiedRuntimeReceipt(input.baseDir, input.cliVersion, {
+              platform,
+              architecture: arch,
+            }),
+          catch: () => new BootServiceBootstrapRequiredError({ reason: "source-unqualified" }),
+        });
+        return plan;
+      }
+      return yield* new BootServiceBootstrapRequiredError({
+        reason: "qualified-activation-required",
+      });
+    }
     yield* fs
       .makeDirectory(input.logsDir, { recursive: true })
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));

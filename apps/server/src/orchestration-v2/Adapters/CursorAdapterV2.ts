@@ -1,3 +1,5 @@
+import * as Context from "effect/Context";
+import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
 import type {
   AgentMessage,
   AgentOptions,
@@ -836,9 +838,14 @@ interface ActiveCursorTurn {
 }
 
 interface CursorLiveAgent {
+  readonly eventProducer: ProviderEventOrigin.ProviderEventProducer;
   readonly nativeThreadId: string;
   readonly session: CursorAgentSdk.CursorAgentSdkSession;
 }
+
+class CursorEventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
+>("t3/CursorAdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
 
 export interface CursorAdapterV2Options {
   readonly instanceId: ProviderInstanceId;
@@ -874,12 +881,24 @@ export function makeCursorAdapterV2(
           now: createdAt,
         });
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        const sessionEventProducer = ProviderEventOrigin.makeProviderEventProducer({
+          driver: CursorAgentSdk.CURSOR_PROVIDER,
+          instanceId: adapterOptions.instanceId,
+          providerSessionId: input.providerSessionId,
+        });
         const liveAgent = yield* Ref.make<CursorLiveAgent | null>(null);
         const activeTurn = yield* Ref.make<ActiveCursorTurn | null>(null);
         const planIds = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact["id"]>());
 
-        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        const emitProviderEvent = (
+          event: ProviderAdapter.ProviderAdapterV2Event,
+          captured?: ProviderEventOrigin.ProviderEventProducerOrigin,
+        ) =>
+          Effect.gen(function* () {
+            const producer =
+              captured ?? (yield* CursorEventProducerContext) ?? sessionEventProducer.origin;
+            yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
+          }).pipe(Effect.asVoid);
 
         const resolveItemOrdinal = (context: ActiveCursorTurn, nativeItemId: string) =>
           Effect.sync(() => {
@@ -2087,6 +2106,7 @@ export function makeCursorAdapterV2(
             return existing;
           }
           if (existing !== null) {
+            existing.eventProducer.retire();
             yield* existing.session.close.pipe(Effect.ignore);
             yield* Ref.set(liveAgent, null);
           }
@@ -2103,6 +2123,11 @@ export function makeCursorAdapterV2(
             providerSessionId: input.providerSessionId,
           });
           const next = {
+            eventProducer: ProviderEventOrigin.makeProviderEventProducer({
+              driver: CursorAgentSdk.CURSOR_PROVIDER,
+              instanceId: adapterOptions.instanceId,
+              providerSessionId: input.providerSessionId,
+            }),
             nativeThreadId: sdkSession.agentId,
             session: sdkSession,
           } satisfies CursorLiveAgent;
@@ -2224,7 +2249,9 @@ export function makeCursorAdapterV2(
                     pendingUpdates.push(update);
                   });
                 }
-                return handleInteractionUpdate(context, update);
+                return handleInteractionUpdate(context, update).pipe(
+                  Effect.provideService(CursorEventProducerContext, agent.eventProducer.origin),
+                );
               },
             });
             const startedAt = yield* DateTime.now;
@@ -2255,27 +2282,35 @@ export function makeCursorAdapterV2(
               finalized: false,
             };
             yield* Ref.set(activeTurn, context);
-            yield* emitProviderEvent({
-              type: "provider_turn.updated",
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerTurn: providerTurnPayload({
-                context,
-                status: "running",
-                completedAt: null,
-              }),
-            });
-            yield* emitProviderEvent({
-              type: "provider_thread.updated",
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerThread: {
-                ...turnInput.providerThread,
-                providerSessionId: session.id,
-                status: "active",
-                updatedAt: startedAt,
+            yield* emitProviderEvent(
+              {
+                type: "provider_turn.updated",
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerTurn: providerTurnPayload({
+                  context,
+                  status: "running",
+                  completedAt: null,
+                }),
               },
-            });
+              agent.eventProducer.origin,
+            );
+            yield* emitProviderEvent(
+              {
+                type: "provider_thread.updated",
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerThread: {
+                  ...turnInput.providerThread,
+                  providerSessionId: session.id,
+                  status: "active",
+                  updatedAt: startedAt,
+                },
+              },
+              agent.eventProducer.origin,
+            );
             for (const update of pendingUpdates) {
-              yield* handleInteractionUpdate(context, update);
+              yield* handleInteractionUpdate(context, update).pipe(
+                Effect.provideService(CursorEventProducerContext, agent.eventProducer.origin),
+              );
             }
 
             yield* sdkRun.wait.pipe(
@@ -2346,6 +2381,7 @@ export function makeCursorAdapterV2(
                   });
                 }),
               ),
+              Effect.provideService(CursorEventProducerContext, agent.eventProducer.origin),
               Effect.forkIn(sessionScope),
             );
           },
@@ -2365,8 +2401,10 @@ export function makeCursorAdapterV2(
         );
 
         const closeSession = Effect.fnUntraced(function* () {
+          sessionEventProducer.drain();
           const existing = yield* Ref.get(liveAgent);
           if (existing !== null) {
+            existing.eventProducer.drain();
             yield* existing.session.close.pipe(Effect.ignore);
             yield* Ref.set(liveAgent, null);
           }
@@ -2386,6 +2424,7 @@ export function makeCursorAdapterV2(
           driver: CursorAgentSdk.CURSOR_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          eventOriginMode: "captured",
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ensureThread: Effect.fn("CursorAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {

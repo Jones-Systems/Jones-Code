@@ -1,5 +1,7 @@
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as NativeWorkstreams from "../jones/workstreams/runtimeIntegration/native.ts";
 import * as Layer from "effect/Layer";
 import * as OrchestrationCommandReceipts from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as OrchestrationEventStore from "../persistence/Layers/OrchestrationEventStore.ts";
@@ -233,7 +235,13 @@ const agentSessionImporterProvided = agentSessionImporterLayer.pipe(
 );
 
 const threadManagementProvided = threadManagementServiceLayer.pipe(
-  Layer.provide(Layer.merge(orchestratorProvided, legacyV1ThreadImporterProvided)),
+  Layer.provide(
+    Layer.mergeAll(
+      orchestratorProvided,
+      legacyV1ThreadImporterProvided,
+      providerSessionManagerProvided,
+    ),
+  ),
 );
 export const ProjectSetupScriptRunnerLayerLive = projectSetupScriptRunnerLayer.pipe(
   Layer.provide(ProjectServiceLayerLive),
@@ -312,7 +320,12 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
   legacyV1ThreadImporterProvided,
 );
 
+const nativeWorkstreamsRuntimeProvided = NativeWorkstreams.nativeWorkstreamsRuntimeLayer.pipe(
+  Layer.provide(AuthSessions.layer),
+);
+
 export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
+  nativeWorkstreamsRuntimeProvided,
   ProjectServiceLayerLive,
   managedProjectFoldersProvided,
   threadLaunchProvided,
