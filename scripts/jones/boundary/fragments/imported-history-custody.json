@@ -2,7 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "imported-history-custody",
   "jonesOwnedPaths": ["apps/server/src/jones/importedHistory/"],
-  "hookPaths": ["apps/server/src/orchestration-v2/EventSink.ts"],
+  "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
     {

@@ -1504,7 +1504,9 @@ const baseLayer: Layer.Layer<
       readApplicationBirthRecord: (threadId) =>
         sql
           .withTransaction(
-            readApplicationBirthRecord(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+            readApplicationBirthRecord(threadId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
           )
           .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       commitLegacyPreflight,
