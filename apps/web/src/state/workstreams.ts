@@ -481,7 +481,7 @@ export function useWorkstreams(
         setData(metadataCache.read(normalized.binding));
         setError(null);
         void request(
-          (client) => client.workstreams.registrationContext({ headers: {}, payload: {} }),
+          (client) => client.workstreams.registrationContext({ headers: {} }),
           controller.signal,
         ).then((context) => {
           if (generation.current !== current || controller.signal.aborted) return;
@@ -735,7 +735,7 @@ export function useWorkstreams(
         (cursor) => request((client) => client.workstreams.references({ headers: {}, payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) } }), options.signal),
         options,
       );
-      const context = await request((client) => client.workstreams.registrationContext({ headers: {}, payload: {} }), options.signal);
+      const context = await request((client) => client.workstreams.registrationContext({ headers: {} }), options.signal);
       options.signal?.throwIfAborted();
       if (!dataRef.current || actionAuthorityKey(started) !== actionAuthorityKey(dataRef.current.binding))
         throw new WorkstreamActionError("stale");
