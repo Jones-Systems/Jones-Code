@@ -1,3 +1,4 @@
+import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
@@ -49,6 +50,7 @@ import type {
   ProviderSelectionTransitionInput,
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
+import type { ProviderEventProducerOrigin } from "../jones/orchestration/ProviderEventOrigin.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
@@ -428,6 +430,7 @@ export interface ProviderRuntimeLifecycle {
     readonly runtimeGeneration: string;
     readonly requested: RequestedRuntimeIdentity;
     readonly observed: ObservedRuntimeIdentity;
+    readonly producerOrigin?: ProviderEventProducerOrigin;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
   readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly invalidate: (
@@ -617,6 +620,7 @@ export interface ProviderAdapterV2HistoricalContext {
 }
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly eventOriginMode?: "captured";
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
@@ -634,6 +638,9 @@ export interface ProviderAdapterV2SessionRuntime {
    * here so the session manager defers idle release while it is pending.
    */
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+  readonly readThreadActivity?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<RuntimeObservation.ProviderRuntimeObservation>;
   /**
    * Per-provider-thread pending work for root-run ingestion stop gates. When
    * present, RunExecutionService uses only this probe (never the session-wide

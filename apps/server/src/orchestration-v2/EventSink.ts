@@ -1,5 +1,8 @@
 import type { DeletionWorktreeRemovalStartV1 } from "../jones/cleanup/DeletionWorktreeRemovalTypes.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "../jones/cleanup/DeletionWorktreeRemoval.ts";
+import { readApplicationBirthRecord } from "../jones/importedHistory/ApplicationBirth.ts";
+import type { ImportedApplicationAttachmentBirthV1 } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
+import * as NativeCreationRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
 import { DispatchGuardRejected } from "./DispatchGuard.ts";
 import {
   type RecordedRun as OrchestrationV2Run,
@@ -151,6 +154,9 @@ export interface EventSinkV2Shape {
   readonly qualifyDeletionWorktreeRemovalObservation?: (
     observation: DeletionWorktreeRemovalObservationV1,
   ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly readApplicationBirthRecord?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ImportedApplicationAttachmentBirthV1 | null, EventSinkV2Error>;
 
   readonly commitLegacyPreflight: (input: {
     readonly commandId: CommandId;
@@ -229,6 +235,10 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly nativeCreation?: {
+      readonly claimId: string;
+      readonly command: import("@t3tools/contracts").OrchestrationV2Command;
+    };
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -342,6 +352,9 @@ const baseLayer: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const nativeCreation = yield* Effect.serviceOption(
+      NativeCreationRepository.NativeCreationRepository,
+    );
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -795,6 +808,41 @@ const baseLayer: Layer.Layer<
     ) {
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
+          if (
+            input.effects.some(
+              (effect) =>
+                effect.nativeCreationExecutionReference !== undefined &&
+                (input.nativeCreation === undefined ||
+                  effect.commandId !== input.commandId ||
+                  effect.threadId !== input.threadId ||
+                  effect.nativeCreationExecutionReference.claimId !==
+                    input.nativeCreation.claimId ||
+                  effect.nativeCreationExecutionReference.stageCommandId !== input.commandId ||
+                  effect.nativeCreationExecutionReference.effectId !== effect.id),
+            )
+          ) {
+            return yield* Effect.fail(
+              new NativeCreationRepository.NativeCreationRepositoryError({
+                code: "unresolved_claim",
+                message: "Native queued effect differs from its acceptance binding",
+              }),
+            );
+          }
+          if (
+            input.nativeCreation !== undefined &&
+            input.effects.some(
+              (effect) =>
+                effect.request.type === "provider-turn.start" &&
+                effect.nativeCreationExecutionReference === undefined,
+            )
+          ) {
+            return yield* Effect.fail(
+              new NativeCreationRepository.NativeCreationRepositoryError({
+                code: "unresolved_claim",
+                message: "Native provider start is missing its execution envelope",
+              }),
+            );
+          }
           const reserved = yield* commandReceipts.insertIfAbsent({
             commandId: input.commandId,
             threadId: input.threadId,
@@ -806,6 +854,25 @@ const baseLayer: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
+            if (input.nativeCreation !== undefined) {
+              const boundary = existing.storedEvents.at(-1);
+              if (
+                Option.isNone(nativeCreation) ||
+                nativeCreation.value.recordExecutionAcceptance === undefined ||
+                boundary === undefined
+              )
+                return yield* Effect.fail(
+                  new NativeCreationRepository.NativeCreationRepositoryError({
+                    code: "unresolved_claim",
+                    message: "Native receipt retry has no native acceptance owner",
+                  }),
+                );
+              yield* nativeCreation.value.recordExecutionAcceptance({
+                ...input.nativeCreation,
+                eventId: boundary.event.id,
+                sequence: boundary.sequence,
+              });
+            }
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
@@ -834,6 +901,29 @@ const baseLayer: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
+          if (input.nativeCreation !== undefined) {
+            if (
+              Option.isNone(nativeCreation) ||
+              nativeCreation.value.recordExecutionAcceptance === undefined ||
+              input.nativeCreation.command.commandId !== input.commandId ||
+              !("threadId" in input.nativeCreation.command) ||
+              input.nativeCreation.command.threadId !== input.threadId ||
+              input.nativeCreation.command.type !== input.commandType
+            ) {
+              return yield* Effect.fail(
+                new NativeCreationRepository.NativeCreationRepositoryError({
+                  code: "unresolved_claim",
+                  message: "Native acceptance owner is unavailable or differs from the receipt",
+                }),
+              );
+            }
+            const event = storedEvents.at(-1)!;
+            yield* nativeCreation.value.recordExecutionAcceptance({
+              ...input.nativeCreation,
+              eventId: event.event.id,
+              sequence,
+            });
+          }
           const cancelledEffectIds =
             input.cancelUnsettledEffects === undefined
               ? []
@@ -1427,6 +1517,14 @@ const baseLayer: Layer.Layer<
     }
 
     return EventSinkV2.of({
+      readApplicationBirthRecord: (threadId) =>
+        sql
+          .withTransaction(
+            readApplicationBirthRecord(threadId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          )
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       commitLegacyPreflight,
       write: (input) =>
         writeEffect({ ...input, effects: [] }).pipe(

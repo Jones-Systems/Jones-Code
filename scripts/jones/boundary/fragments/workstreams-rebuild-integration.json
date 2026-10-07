@@ -98,7 +98,12 @@
     "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/conformance.json",
     "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/negative-cases.json",
     "packages/contracts/contracts/workstreams-t3-provider/v1/manifest.json",
-    "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json"
+    "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json",
+    "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx",
+    "apps/web/src/jones/workstreams/workstreamReferenceActions.ts",
+    "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
+    "apps/web/src/jones/workstreams/workstreamActionSnapshot.ts"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -106,6 +111,8 @@
     "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
     "apps/mobile/src/features/threads/threadListV2.test.ts",
     "apps/mobile/src/features/threads/threadListV2.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
+    "apps/server/src/auth/SessionStore.ts",
     "apps/server/src/binCli.ts",
     "apps/server/src/cli/config.test.ts",
     "apps/server/src/cli/config.ts",
@@ -116,6 +123,7 @@
     "apps/server/src/config.ts",
     "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.testkit.ts",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
     "apps/server/src/serviceLauncher.test.ts",
     "apps/server/src/serviceLauncher.ts",
@@ -124,10 +132,8 @@
     "apps/web/src/lib/runtime.ts",
     "apps/web/src/test/reactHookHarness.ts",
     "packages/client-runtime/src/authorization/index.ts",
-    "apps/server/src/auth/SessionStore.ts",
-    "apps/server/src/auth/SessionStore.test.ts",
-    "apps/server/src/orchestration-v2/runtimeLayer.ts",
-    "packages/contracts/src/auth.ts"
+    "packages/contracts/src/auth.ts",
+    "vite.config.ts"
   ],
   "tombstones": [],
   "allowedImports": [

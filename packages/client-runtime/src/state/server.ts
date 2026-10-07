@@ -58,6 +58,15 @@ import {
 // Exported server state includes this type in its inferred public return type.
 export type { ServerConfigProjection } from "./serverConfigProjection.ts";
 
+export class JonesUpdateQualificationRequiredError extends Schema.TaggedError<JonesUpdateQualificationRequiredError>()(
+  "JonesUpdateQualificationRequiredError",
+  {},
+) {
+  override get message() {
+    return "Jones previews require a qualified Download and a separate explicit Install action.";
+  }
+}
+
 export type ServerUpdateStage = "downloading" | "installing" | "resuming";
 
 export type ServerUpdateState =
@@ -698,6 +707,9 @@ export function createServerEnvironmentAtoms<R, E>(
       let fromVersion =
         atomRegistry.get(configValueAtom(target.environmentId))?.environment.serverVersion ??
         targetVersion;
+      if (fromVersion.includes("-preview.") || targetVersion.includes("-preview.")) {
+        return Effect.fail(new JonesUpdateQualificationRequiredError({}));
+      }
       let currentStage: ServerUpdateStage = "downloading";
       let desktopCommitLostTransport = false;
       atomRegistry.set(stateAtom, {
@@ -732,6 +744,9 @@ export function createServerEnvironmentAtoms<R, E>(
           Effect.gen(function* () {
             const currentConfig = atomRegistry.get(configValueAtom(target.environmentId));
             fromVersion = currentConfig?.environment.serverVersion ?? targetVersion;
+            if (fromVersion.includes("-preview.") || targetVersion.includes("-preview.")) {
+              return yield* new JonesUpdateQualificationRequiredError({});
+            }
             atomRegistry.set(stateAtom, {
               status: "running",
               stage: currentStage,

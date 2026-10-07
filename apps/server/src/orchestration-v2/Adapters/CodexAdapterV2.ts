@@ -1,3 +1,6 @@
+import * as BackgroundLiveness from "../../jones/provider/observations/ProviderSessionBackgroundLiveness.ts";
+import type * as RuntimeObservation from "../../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
+import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
 import { readCodexGoalState, unknownProviderGoal } from "../../provider/providerGoal.ts";
 import type { ServerProviderModel } from "@t3tools/contracts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
@@ -1606,6 +1609,7 @@ class CodexInterruptAcknowledgementTimeout extends Schema.TaggedError<CodexInter
 }
 
 interface CodexRuntimeProducer {
+  readonly eventProducer: ProviderEventOrigin.ProviderEventProducer;
   readonly generation: string;
   readonly client: CodexClient.CodexAppServerClient["Service"];
   readonly scope: Scope.Closeable;
@@ -1683,6 +1687,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     environment: resolvedRuntime?.environment ?? adapterOptions.environment,
                   });
                   return {
+                    eventProducer: ProviderEventOrigin.makeProviderEventProducer({
+                      driver: CODEX_PROVIDER,
+                      instanceId: adapterOptions.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      runtimeGeneration: generation,
+                    }),
                     generation,
                     client: actualClient,
                     scope: producerScope,
@@ -1762,6 +1772,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             currentProducer.active = false;
+            currentProducer.eventProducer.drain();
             yield* Scope.close(currentProducer.scope, Exit.void);
             yield* input.runtimeLifecycle?.abandon(currentProducer.generation) ?? Effect.void;
           }).pipe(Effect.orDie),
@@ -1976,6 +1987,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 : yield* input.runtimeLifecycle.bind({
                     providerThread: thread,
                     runtimeGeneration: producer.generation,
+                    producerOrigin: producer.eventProducer.origin,
                     requested,
                     observed,
                   });
@@ -1987,25 +1999,37 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             producer.pendingReroutes.delete(nativeId);
             const binding = runtimeBinding(bound, producer.generation);
             if (binding !== undefined && input.runtimeLifecycle === undefined)
-              yield* Queue.offer(events, {
-                type: "runtime_identity.observed",
-                driver: CODEX_PROVIDER,
-                binding,
-                requested,
-                observed,
-              });
+              yield* Queue.offer(
+                events,
+                ProviderEventOrigin.stampProviderEvent(
+                  {
+                    type: "runtime_identity.observed",
+                    driver: CODEX_PROVIDER,
+                    binding,
+                    requested,
+                    observed,
+                  },
+                  { producer: producer.eventProducer.origin },
+                ),
+              );
             if (binding !== undefined)
               for (const model of reroutes)
-                yield* Queue.offer(events, {
-                  type: "runtime_identity.observed",
-                  driver: CODEX_PROVIDER,
-                  binding,
-                  requested,
-                  observed: {
-                    ...observed,
-                    model: { status: "observed", value: model, sourceEvent: "model/rerouted" },
-                  },
-                });
+                yield* Queue.offer(
+                  events,
+                  ProviderEventOrigin.stampProviderEvent(
+                    {
+                      type: "runtime_identity.observed",
+                      driver: CODEX_PROVIDER,
+                      binding,
+                      requested,
+                      observed: {
+                        ...observed,
+                        model: { status: "observed", value: model, sourceEvent: "model/rerouted" },
+                      },
+                    },
+                    { producer: producer.eventProducer.origin },
+                  ),
+                );
             return bound;
           }).pipe(
             Effect.tapError(() =>
@@ -2037,10 +2061,17 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             readonly observed: ReturnType<typeof codexObservedRuntimeIdentity>;
           }
         >();
-        const emitProviderEvent = (event: ProviderAdapterV2Event) =>
+        const emitProviderEvent = (
+          event: ProviderAdapterV2Event,
+          capturedTurn?: ActiveCodexTurnContext,
+        ) =>
           Effect.gen(function* () {
-            const producer = yield* CodexProducerContext;
-            if (producer !== undefined && (!producer.active || producer !== currentProducer))
+            const producer = (yield* CodexProducerContext) ?? currentProducer;
+            if (
+              !producer.eventProducer.accepting ||
+              !producer.active ||
+              producer !== currentProducer
+            )
               return;
             const providerThreadId =
               event.type === "provider_thread.updated"
@@ -2058,8 +2089,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               thread === undefined || producer === undefined
                 ? undefined
                 : runtimeBinding(thread, producer.generation);
-            yield* Queue.offer(
-              events,
+            const queuedEvent: ProviderAdapterV2Event =
               binding === undefined || event.type === "runtime_identity.observed"
                 ? event
                 : {
@@ -2068,8 +2098,47 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                       ...binding,
                       evidenceRevision: thread!.runtimeIdentity?.evidenceRevision,
                     },
-                  },
-            );
+                  };
+            const providerTurnId =
+              event.type === "turn.terminal"
+                ? event.providerTurnId
+                : event.type === "provider_turn.updated"
+                  ? event.providerTurn.id
+                  : event.type === "turn_item.updated"
+                    ? event.turnItem.providerTurnId
+                    : undefined;
+            const eventRunId =
+              event.type === "message.updated"
+                ? event.message.runId
+                : event.type === "node.updated"
+                  ? event.node.runId
+                  : undefined;
+            const turnContext =
+              capturedTurn ??
+              [...(yield* Ref.get(activeTurns)).values()].find(
+                (candidate) =>
+                  candidate.subagent === null &&
+                  ((providerTurnId != null && candidate.providerTurnId === providerTurnId) ||
+                    (eventRunId != null && candidate.input.runId === eventRunId)),
+              );
+            const turnBinding =
+              turnContext === undefined
+                ? undefined
+                : runtimeBinding(turnContext.providerThread, producer.generation);
+            ProviderEventOrigin.stampProviderEvent(queuedEvent, {
+              producer: producer.eventProducer.origin,
+              ...(turnContext === undefined || turnBinding === undefined
+                ? {}
+                : {
+                    turn: {
+                      binding: turnBinding,
+                      runId: turnContext.input.runId,
+                      attemptId: turnContext.input.attemptId,
+                      providerTurnId: turnContext.providerTurnId,
+                    },
+                  }),
+            });
+            yield* Queue.offer(events, queuedEvent);
           }).pipe(Effect.asVoid);
 
         // Call only for new model-output activity. A local item/completed can
@@ -4952,15 +5021,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               node: artifacts.node,
             });
             yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CODEX_PROVIDER,
+              turnItem: artifacts.turnItem,
+            });
+            yield* emitProviderEvent({
               type: "runtime_request.updated",
               driver: CODEX_PROVIDER,
               threadId: artifacts.node.threadId,
               runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
             });
 
             const resolved = yield* Deferred.await(decision).pipe(
@@ -5012,15 +5081,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               node: artifacts.node,
             });
             yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CODEX_PROVIDER,
+              turnItem: artifacts.turnItem,
+            });
+            yield* emitProviderEvent({
               type: "runtime_request.updated",
               driver: CODEX_PROVIDER,
               threadId: artifacts.node.threadId,
               runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
             });
 
             const resolved = yield* Deferred.await(decision).pipe(
@@ -5073,15 +5142,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               node: artifacts.node,
             });
             yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CODEX_PROVIDER,
+              turnItem: artifacts.turnItem,
+            });
+            yield* emitProviderEvent({
               type: "runtime_request.updated",
               driver: CODEX_PROVIDER,
               threadId: artifacts.node.threadId,
               runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
             });
 
             const resolved = yield* Deferred.await(decision).pipe(
@@ -5158,15 +5227,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               node: artifacts.node,
             });
             yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CODEX_PROVIDER,
+              turnItem: artifacts.turnItem,
+            });
+            yield* emitProviderEvent({
               type: "runtime_request.updated",
               driver: CODEX_PROVIDER,
               threadId: artifacts.node.threadId,
               runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
             });
 
             const resolved = yield* Deferred.await(decision).pipe(
@@ -5217,15 +5286,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               node: artifacts.node,
             });
             yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CODEX_PROVIDER,
+              turnItem: artifacts.turnItem,
+            });
+            yield* emitProviderEvent({
               type: "runtime_request.updated",
               driver: CODEX_PROVIDER,
               threadId: artifacts.node.threadId,
               runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
             });
 
             const resolved = yield* Deferred.await(decision).pipe(
@@ -5277,15 +5346,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               node: artifacts.node,
             });
             yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CODEX_PROVIDER,
+              turnItem: artifacts.turnItem,
+            });
+            yield* emitProviderEvent({
               type: "runtime_request.updated",
               driver: CODEX_PROVIDER,
               threadId: artifacts.node.threadId,
               runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
             });
 
             const resolved = yield* Deferred.await(decision).pipe(
@@ -5335,15 +5404,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               node: artifacts.node,
             });
             yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CODEX_PROVIDER,
+              turnItem: artifacts.turnItem,
+            });
+            yield* emitProviderEvent({
               type: "runtime_request.updated",
               driver: CODEX_PROVIDER,
               threadId: artifacts.node.threadId,
               runtimeRequest: artifacts.request,
-            });
-            yield* emitProviderEvent({
-              type: "turn_item.updated",
-              driver: CODEX_PROVIDER,
-              turnItem: artifacts.turnItem,
             });
 
             const resolved = yield* Deferred.await(answers).pipe(
@@ -5453,7 +5522,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   },
                 }
               : event;
-          yield* emitProviderEvent(current);
+          yield* emitProviderEvent(current, context);
           if (current.status === "failed" && current.failure.class === "usage_limit") {
             const item = makeProviderFailureTurnItem({
               idAllocator,
@@ -6268,6 +6337,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           driver: CODEX_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          eventOriginMode: "captured",
           events: Stream.fromEffectRepeat(Queue.take(events)),
           canReuseContextUsage: canReuseCodexContextUsage,
           // Known gap: a subagent that Codex resumes later reads as completed
@@ -6301,6 +6371,118 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }
             return false;
           }),
+          readThreadActivity: (providerThread) =>
+            Effect.gen(function* () {
+              const unavailable = (
+                reason: string,
+              ): RuntimeObservation.ProviderRuntimeObservation => ({ status: "unknown", reason });
+              const producer = currentProducer;
+              const nativeId = providerThread.nativeThreadRef?.nativeId;
+              const bound = nativeId == null ? undefined : producer.bindings.get(nativeId);
+              if (
+                !producer.active ||
+                bound === undefined ||
+                bound.id !== providerThread.id ||
+                bound.appThreadId !== providerThread.appThreadId ||
+                bound.providerSessionId !== input.providerSessionId ||
+                bound.providerInstanceId !== adapterOptions.instanceId ||
+                providerThread.providerInstanceId !== bound.providerInstanceId ||
+                providerThread.providerSessionId !== bound.providerSessionId ||
+                providerThread.driver !== CODEX_PROVIDER ||
+                providerThread.nativeThreadRef?.driver !== CODEX_PROVIDER ||
+                providerThread.runtimeIdentity?.runtimeGeneration !== producer.generation
+              )
+                return unavailable("runtime_binding_changed");
+              const binding = runtimeBinding(bound, producer.generation);
+              if (binding === undefined) return unavailable("native_binding_unavailable");
+              const active = yield* Ref.get(activeTurns);
+              const contexts = [...active.values(), ...(yield* Ref.get(settledTurns)).values()];
+              const allAgents = [...(yield* Ref.get(subagentThreads)).values()];
+              const roots = [
+                ...contexts,
+                ...allAgents.map((agent) => approvalOwnerCodexTurn(agent.parentContext).owner),
+              ].filter(
+                (context) =>
+                  context.providerThread.id === providerThread.id &&
+                  context.providerThread.runtimeIdentity?.runtimeGeneration === producer.generation,
+              );
+              const owns = (context: ActiveCodexTurnContext) =>
+                roots.some((root) => context === root || isDescendantCodexTurn(context, root));
+              const commands = yield* Ref.get(runningCommandItemsByTurn);
+              const tools = yield* Ref.get(runningDynamicToolsByTurn);
+              const agents = allAgents.filter((agent) => owns(agent.parentContext));
+              const turnItems: Parameters<
+                typeof BackgroundLiveness.providerSessionBackgroundLiveness
+              >[0]["turnItems"][number][] = [];
+              for (const context of contexts.filter(owns)) {
+                for (const item of commands.get(context.nativeTurnId)?.values() ?? []) {
+                  turnItems.push({
+                    id: idAllocator.derive.turnItemFromProviderItem({
+                      driver: CODEX_PROVIDER,
+                      nativeItemId: item.id,
+                    }),
+                    threadId: binding.threadId,
+                    providerThreadId: binding.providerThreadId,
+                    parentItemId: context.subagent?.turnItemId ?? null,
+                    nodeId: context.subagent?.subagentNodeId ?? null,
+                    type: "command_execution",
+                    status: "running",
+                  });
+                }
+                for (const item of tools.get(context.nativeTurnId)?.values() ?? []) {
+                  turnItems.push({
+                    id: idAllocator.derive.turnItemFromProviderItem({
+                      driver: CODEX_PROVIDER,
+                      nativeItemId: item.id,
+                    }),
+                    threadId: binding.threadId,
+                    providerThreadId: binding.providerThreadId,
+                    parentItemId: context.subagent?.turnItemId ?? null,
+                    nodeId: context.subagent?.subagentNodeId ?? null,
+                    type: "dynamic_tool",
+                    status: "running",
+                    input: item.arguments,
+                  });
+                }
+              }
+              const background = BackgroundLiveness.providerSessionBackgroundLiveness({
+                runtimeLive: producer.active,
+                threadId: binding.threadId,
+                providerThreadId: binding.providerThreadId,
+                providerThreads: [],
+                subagents: agents.map((agent) => ({
+                  id: agent.subagentNodeId,
+                  threadId: binding.threadId,
+                  status: [...agent.nativeTurnIds].some((id) => active.has(id))
+                    ? "running"
+                    : agent.task.status,
+                })),
+                turnItems,
+              });
+              const observedAt = DateTime.formatIso(yield* DateTime.now);
+              if (
+                !producer.active ||
+                currentProducer !== producer ||
+                producer.bindings.get(binding.nativeThreadId) !== bound
+              )
+                return unavailable("runtime_binding_changed");
+              const request = capacityByThread.get(binding.nativeThreadId);
+              const nativeBusy =
+                roots.some((root) => active.has(root.nativeTurnId)) ||
+                (request !== undefined &&
+                  currentCapacityBinding(request) &&
+                  request.recoveryEnabled &&
+                  (request.state.phase === "waiting_retry" ||
+                    request.state.phase === "awaiting_start"));
+              if (background === null && !nativeBusy)
+                return unavailable("native_background_coverage_incomplete");
+              return {
+                binding,
+                observedAt,
+                backgroundCoverage: "partial",
+                status: background ?? "busy",
+              } satisfies RuntimeObservation.ProviderRuntimeObservation;
+            }),
           hasPendingBackgroundWorkForThread: (providerThread) =>
             Effect.gen(function* () {
               const request = capacityByThread.get(providerThread.nativeThreadRef?.nativeId ?? "");
@@ -7627,6 +7809,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   );
                 const previous = currentProducer;
                 previous.active = false;
+                previous.eventProducer.retire();
                 yield* Scope.close(previous.scope, Exit.void);
                 yield* input.runtimeLifecycle?.abandon(previous.generation) ?? Effect.void;
                 const opened = yield* openProducer(
@@ -7677,6 +7860,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   const rebound = yield* input.runtimeLifecycle.bind({
                     providerThread: updated,
                     runtimeGeneration: currentProducer.generation,
+                    producerOrigin: currentProducer.eventProducer.origin,
                     requested: next.requested,
                     observed: unobservedRuntimeIdentity(),
                   });

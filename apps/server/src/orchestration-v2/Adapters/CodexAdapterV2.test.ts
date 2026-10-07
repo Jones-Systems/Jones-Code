@@ -1878,6 +1878,103 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       };
     });
 
+  it.effect("publishes approval artifacts before a consumer can answer the pending request", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeThreadId = "native-origin-approval-order";
+        const nativeTurnId = "native-origin-approval-turn";
+        const prompt = "Request approval.";
+        const transcript = makeCodexReplayTranscript({
+          scenario: "origin-approval-order",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 0,
+                method: "item/commandExecution/requestApproval",
+                params: {
+                  kind: "command",
+                  threadId: nativeThreadId,
+                  turnId: nativeTurnId,
+                  itemId: "command-origin-approval",
+                  startedAtMs: 1782622440000,
+                  environmentId: "local",
+                  command: "printf approved",
+                  cwd: "/workspace",
+                  commandActions: [{ type: "unknown", command: "printf approved" }],
+                  availableDecisions: ["accept", "cancel"],
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: { id: 0, result: { decision: "accept" } },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+            { type: "runtime_exit", status: "success" },
+          ],
+        });
+        const consumed: Array<ProviderAdapterV2Event> = [];
+        const requestPublished = yield* Deferred.make<{
+          readonly event: Extract<ProviderAdapterV2Event, { type: "runtime_request.updated" }>;
+          readonly preceding: ReadonlyArray<ProviderAdapterV2Event>;
+        }>();
+        const harness = yield* makeCodexReplayHarness(transcript, (event) =>
+          Effect.sync(() => {
+            consumed.push(event);
+            return [...consumed];
+          }).pipe(
+            Effect.flatMap((preceding) =>
+              event.type === "runtime_request.updated"
+                ? Deferred.succeed(requestPublished, { event, preceding })
+                : Effect.void,
+            ),
+          ),
+        );
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("origin-approval-order"),
+            text: prompt,
+          }),
+        );
+        const published = yield* Deferred.await(requestPublished);
+        const pending = published.event.runtimeRequest;
+        const nodeEvent = published.preceding.find(
+          (event): event is Extract<ProviderAdapterV2Event, { type: "node.updated" }> =>
+            event.type === "node.updated" && event.node.runtimeRequestId === pending.id,
+        );
+        const itemEvent = published.preceding.find(
+          (event): event is Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }> =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "approval_request" &&
+            event.turnItem.requestId === pending.id,
+        );
+        assert.equal(pending.status, "pending");
+        assert.equal(nodeEvent?.node.status, "waiting");
+        assert.equal(itemEvent?.turnItem.status, "waiting");
+        yield* harness.runtime.respondToRuntimeRequest({
+          requestId: pending.id,
+          decision: "accept",
+        });
+        yield* harness.firstTerminal;
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
   it.effect("reads a bound native goal without starting turns or recovering sessions", () =>
     Effect.gen(function* () {
       const requests: Array<{ method: string; params: unknown }> = [];
@@ -6434,6 +6531,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
           );
           assert.lengthOf(harness.continuationRequests, 0);
+          if (harness.runtime.readThreadActivity === undefined)
+            return yield* Effect.die("Missing Codex activity port");
+          assert.equal(
+            (yield* harness.runtime.readThreadActivity(harness.providerThread)).status,
+            "monitoring",
+          );
           const terminalIndex = harness.events.findIndex((event) => event.type === "turn.terminal");
 
           yield* TestClock.adjust("30 seconds");
@@ -8947,6 +9050,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             "persistent dynamic tools must keep the session residency pin until they complete",
           );
 
+          if (harness.runtime.readThreadActivity === undefined)
+            return yield* Effect.die("Missing Codex activity port");
+          assert.equal(
+            (yield* harness.runtime.readThreadActivity(harness.providerThread)).status,
+            "monitoring",
+          );
+          assert.equal(
+            (yield* harness.runtime.readThreadActivity({
+              ...harness.providerThread,
+              runtimeIdentity: undefined,
+            })).status,
+            "unknown",
+          );
           yield* TestClock.adjust("30 seconds");
           yield* Deferred.await(monitorCompleted);
           const lateMonitorUpdateIndex = harness.events.findIndex(
@@ -8964,6 +9080,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           assert.lengthOf(harness.terminalEvents(), 1);
           assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          assert.equal(
+            (yield* harness.runtime.readThreadActivity(harness.providerThread)).status,
+            "unknown",
+          );
         }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
       ),
   );
@@ -9128,6 +9248,73 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       childTurnCompleted(RESUME_CHILD_TURN_2),
     ],
   });
+
+  it.effect(
+    "gives current resumed native agents precedence over a standalone persistent monitor",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const monitor: Extract<CodexReplay.CodexAppServerReplayEntry, { type: "emit_inbound" }> =
+            {
+              type: "emit_inbound" as const,
+              label: "item/started/activity-monitor",
+              frame: {
+                method: "item/started",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  turnId: RESUME_NATIVE_TURN,
+                  startedAtMs: 1782622443500,
+                  item: {
+                    type: "dynamicToolCall",
+                    id: "activity-monitor",
+                    namespace: "test",
+                    tool: "monitor",
+                    status: "inProgress",
+                    arguments: { persistent: true },
+                  },
+                },
+              },
+            };
+          const harness = yield* makeCodexReplayHarness({
+            ...resumeSubagentTranscript,
+            entries: resumeSubagentTranscript.entries.flatMap((entry) =>
+              entry.type === "emit_inbound" && entry.label === "turn/completed/root"
+                ? [monitor, entry]
+                : [entry],
+            ),
+          });
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("activity-precedence"),
+              text: RESUME_PROMPT,
+            }),
+          );
+          yield* TestClock.adjust("100 millis");
+          yield* harness.firstTerminal;
+          const observe = harness.runtime.readThreadActivity;
+          if (observe === undefined) return yield* Effect.die("Missing Codex activity port");
+          assert.equal((yield* observe(harness.providerThread)).status, "monitoring");
+          const previous = harness.subagentUpdates().length;
+          yield* TestClock.adjust("30 seconds");
+          yield* awaitUntil(
+            () => harness.subagentUpdates().length > previous,
+            "activity subagent resume",
+          );
+          const activity = yield* observe(harness.providerThread);
+          assert.equal(activity.status, "working");
+          if (activity.status !== "unknown") assert.equal(activity.backgroundCoverage, "partial");
+          yield* TestClock.adjust("30 seconds");
+          yield* awaitUntil(
+            () => harness.subagentUpdates().at(-1)?.subagent.status === "completed",
+            "activity subagent completed",
+          );
+          assert.equal((yield* observe(harness.providerThread)).status, "monitoring");
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
+  );
 
   it.effect.each([
     { name: "Sol", model: "gpt-5.6-sol" },
@@ -9297,6 +9484,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(DateTime.toEpochMillis(reopened!.subagent.startedAt!), 1782622470000);
         assert.isNull(reopened!.subagent.completedAt);
         assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        if (harness.runtime.readThreadActivity === undefined)
+          return yield* Effect.die("Missing Codex activity port");
+        assert.equal(
+          (yield* harness.runtime.readThreadActivity(harness.providerThread)).status,
+          "working",
+        );
 
         yield* TestClock.adjust("30 seconds");
         yield* awaitUntil(() => {
