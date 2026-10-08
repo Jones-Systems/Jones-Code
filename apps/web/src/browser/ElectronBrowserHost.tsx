@@ -5,6 +5,10 @@ import { AuthPreviewOperateScope, FILL_PREVIEW_VIEWPORT } from "@t3tools/contrac
 import { useAtomValue } from "@effect/atom-react";
 import { type ComponentProps, useEffect, useMemo } from "react";
 
+import { Atom, AsyncResult } from "effect/reactivity";
+import { useAssignedCompanionSessions } from "../jones/previewCompanion/sessions";
+import { bindingsQuery, companionStateAtom } from "../jones/previewCompanion/state";
+import { mergeCompanionSessions } from "../jones/previewCompanion/inventory";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 
 import { isElectron } from "~/env";
@@ -22,17 +26,50 @@ export function ElectronBrowserHost() {
   const { resolvedTheme } = useTheme();
   const previewByThreadKey = useActivePreviewSessions();
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
-  const sessions = useMemo(
+  const assignedSessions = useAssignedCompanionSessions();
+  const companion = useAtomValue(companionStateAtom);
+  const bindingResults = useAtomValue(
+    useMemo(
+      () =>
+        Atom.make((get) => {
+          const results = new Map<string, ReturnType<typeof getBindingValue>>();
+          for (const key of Object.keys(previewByThreadKey)) {
+            const threadRef = parseScopedThreadKey(key);
+            if (threadRef)
+              results.set(
+                key,
+                getBindingValue(
+                  get(
+                    bindingsQuery({
+                      environmentId: threadRef.environmentId,
+                      input: { threadId: threadRef.threadId },
+                    }),
+                  ),
+                ),
+              );
+          }
+          return results;
+        }),
+      [previewByThreadKey],
+    ),
+  );
+  const ordinarySessions = useMemo(
     () =>
       Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
         const threadRef = parseScopedThreadKey(threadKey);
-        // Server tabs of other environments stream; this desktop's own server tabs render here.
+        // Companion sessions come only from the assignment inventory below.
         return threadRef
           ? Object.values(previewState.sessions)
               .filter(
                 (snapshot) =>
                   snapshot.runtime !== "server" ||
-                  rendersServerTabNatively(threadRef.environmentId, primaryEnvironmentId, snapshot),
+                  (bindingResults.get(threadKey)?.tabs.find((tab) => tab.tabId === snapshot.tabId)
+                    ?.hostId == null &&
+                    rendersServerTabNatively(
+                      threadRef.environmentId,
+                      primaryEnvironmentId,
+                      snapshot,
+                    )),
               )
               .map((snapshot) => ({
                 threadRef,
@@ -48,8 +85,10 @@ export function ElectronBrowserHost() {
               }))
           : [];
       }),
-    [previewByThreadKey, primaryEnvironmentId],
+    [previewByThreadKey, primaryEnvironmentId, bindingResults, companion],
   );
+
+  const sessions = mergeCompanionSessions(ordinarySessions, assignedSessions);
 
   useEffect(() => {
     const preview = window.desktopBridge?.preview;
@@ -95,31 +134,34 @@ export function ElectronBrowserHost() {
   if (!isElectron) return null;
   return (
     <div className="contents" data-electron-browser-host>
-      {sessions.map(({ threadRef, snapshot, runtimeTabId, pictureInPicture, zoomFactor }) => {
-        const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
-        return (
-          <AuthorizedBrowserWebview
-            key={runtimeTabId}
-            threadRef={threadRef}
-            tabId={snapshot.tabId}
-            runtimeTabId={runtimeTabId}
-            initialUrl={url}
-            viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
-            pictureInPicture={pictureInPicture}
-            profileId={snapshot.profileId}
-            zoomFactor={zoomFactor}
-            serverDriven={snapshot.runtime === "server"}
-            {...(snapshot.runtime === "server"
-              ? {
-                  serverRendering: {
-                    colorScheme: snapshot.colorScheme ?? "system",
-                    zoomFactor: snapshot.zoomFactor ?? 1,
-                  },
-                }
-              : {})}
-          />
-        );
-      })}
+      {sessions.map(
+        ({ threadRef, snapshot, runtimeTabId, pictureInPicture, zoomFactor, companion }) => {
+          const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
+          return (
+            <AuthorizedBrowserWebview
+              key={runtimeTabId}
+              threadRef={threadRef}
+              tabId={snapshot.tabId}
+              runtimeTabId={runtimeTabId}
+              initialUrl={url}
+              {...(companion === undefined ? {} : { companion })}
+              viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
+              pictureInPicture={pictureInPicture}
+              profileId={snapshot.profileId}
+              zoomFactor={zoomFactor}
+              serverDriven={snapshot.runtime === "server"}
+              {...(snapshot.runtime === "server"
+                ? {
+                    serverRendering: {
+                      colorScheme: snapshot.colorScheme ?? "system",
+                      zoomFactor: snapshot.zoomFactor ?? 1,
+                    },
+                  }
+                : {})}
+            />
+          );
+        },
+      )}
     </div>
   );
 }
@@ -130,4 +172,8 @@ function AuthorizedBrowserWebview(props: ComponentProps<typeof HostedBrowserWebv
     AuthPreviewOperateScope,
   );
   return canOperatePreview ? <HostedBrowserWebview {...props} /> : null;
+}
+
+function getBindingValue(value: Atom.Type<ReturnType<typeof bindingsQuery>>) {
+  return AsyncResult.isSuccess(value) && value.value.status === "ready" ? value.value.value : null;
 }

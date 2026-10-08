@@ -1,0 +1,187 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "preview-companion-host",
+  "jonesOwnedPaths": [
+    "apps/desktop/src/jones/previewCompanion/",
+    "apps/server/src/jones/previewCompanion/",
+    "packages/shared/src/jones/previewCompanionFraming.ts",
+    "apps/web/src/jones/previewCompanion/",
+    "packages/client-runtime/src/jones/previewCompanion/",
+    "docs/operations/preview-browser-companion.md",
+    "docs/user/preview-browser-hosts.md",
+    "packages/shared/src/jones/previewCompanionProduct.ts"
+  ],
+  "hookPaths": [
+    "apps/desktop/src/app/DesktopApp.ts",
+    "apps/desktop/src/backend/DesktopBackendManager.ts",
+    "apps/desktop/src/ipc/methods/localEnvironment.ts",
+    "apps/desktop/src/preview/BrowserSession.ts",
+    "apps/desktop/src/preview/CdpRelay.ts",
+    "apps/desktop/src/preview/Manager.ts",
+    "apps/server/src/preview/ServerBrowserPage.ts",
+    "apps/server/src/preview/ServerBrowserStream.ts",
+    "apps/web/src/AppRoot.tsx",
+    "apps/web/src/browser/previewRuntime.ts",
+    "apps/web/src/browser/ElectronBrowserHost.tsx",
+    "apps/web/src/browser/HostedBrowserWebview.tsx",
+    "apps/web/src/browser/ServerBrowserSurface.tsx",
+    "apps/web/src/browser/serverPictureInPicture.ts",
+    "apps/web/src/components/settings/IntegrationsSettings.tsx",
+    "apps/web/src/components/preview/PreviewView.tsx",
+    "packages/client-runtime/src/preview/serverBrowserStream.ts",
+    "apps/desktop/src/app/DesktopLinuxUrlHandler.ts",
+    "apps/desktop/src/app/DesktopClerk.ts",
+    "apps/desktop/src/app/DesktopPreReadyPlatform.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/desktop/src/app/DesktopApp.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionConfig.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionIsolation.ts"
+    },
+    {
+      "from": "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/ipcMethods.ts"
+    },
+    {
+      "from": "apps/desktop/src/main.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionConfig.ts"
+    },
+    {
+      "from": "apps/desktop/src/main.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionUplink.ts"
+    },
+    {
+      "from": "apps/desktop/src/preload.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/channels.ts"
+    },
+    {
+      "from": "apps/desktop/src/preview/BrowserSession.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionIsolation.ts"
+    },
+    {
+      "from": "apps/desktop/src/preview/DesktopBrowserHost.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionCdpPolicy.ts"
+    },
+    {
+      "from": "apps/desktop/src/preview/DesktopBrowserHost.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionIsolation.ts"
+    },
+    {
+      "from": "apps/desktop/src/preview/Manager.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionPopup.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.ts",
+      "to": "apps/server/src/jones/previewCompanion/CompanionHostRegistry.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.ts",
+      "to": "apps/server/src/jones/previewCompanion/RenderPlacement.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.ts",
+      "to": "apps/server/src/jones/previewCompanion/companionCapabilities.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.ts",
+      "to": "apps/server/src/jones/previewCompanion/outcome.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.ts",
+      "to": "apps/server/src/jones/previewCompanion/serverBrowserAdapter.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowserStream.ts",
+      "to": "apps/server/src/jones/previewCompanion/streamCloseReason.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/previewCompanion.ts"
+    },
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/previewCompanion.ts"
+    },
+    {
+      "from": "apps/desktop/src/ipc/methods/localEnvironment.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionConfig.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/preview/serverBrowserStream.ts",
+      "to": "packages/client-runtime/src/jones/previewCompanion/streamUnavailable.ts"
+    },
+    {
+      "from": "apps/desktop/src/app/DesktopEnvironment.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionProduct.ts"
+    },
+    {
+      "from": "apps/desktop/src/boot.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionProduct.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionProductUpdates.ts"
+    },
+    {
+      "from": "apps/web/src/AppRoot.tsx",
+      "to": "apps/web/src/jones/previewCompanion/CompanionController.tsx"
+    },
+    {
+      "from": "apps/web/src/browser/ElectronBrowserHost.tsx",
+      "to": "apps/web/src/jones/previewCompanion/sessions.ts"
+    },
+    {
+      "from": "apps/web/src/browser/ElectronBrowserHost.tsx",
+      "to": "apps/web/src/jones/previewCompanion/state.ts"
+    },
+    {
+      "from": "apps/web/src/browser/ElectronBrowserHost.tsx",
+      "to": "apps/web/src/jones/previewCompanion/inventory.ts"
+    },
+    {
+      "from": "apps/web/src/browser/HostedBrowserWebview.tsx",
+      "to": "apps/web/src/jones/previewCompanion/guest.ts"
+    },
+    {
+      "from": "apps/web/src/browser/ServerBrowserSurface.tsx",
+      "to": "packages/client-runtime/src/jones/previewCompanion/streamUnavailable.ts"
+    },
+    {
+      "from": "apps/web/src/browser/previewRuntime.ts",
+      "to": "apps/web/src/jones/previewCompanion/state.ts"
+    },
+    {
+      "from": "apps/web/src/browser/previewRuntime.ts",
+      "to": "apps/web/src/jones/previewCompanion/inventory.ts"
+    },
+    {
+      "from": "apps/web/src/browser/serverPictureInPicture.ts",
+      "to": "packages/client-runtime/src/jones/previewCompanion/streamUnavailable.ts"
+    },
+    {
+      "from": "apps/web/src/components/preview/PreviewView.tsx",
+      "to": "apps/web/src/jones/previewCompanion/HostControls.tsx"
+    },
+    {
+      "from": "apps/web/src/components/preview/PreviewView.tsx",
+      "to": "apps/web/src/jones/previewCompanion/state.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/IntegrationsSettings.tsx",
+      "to": "apps/web/src/jones/previewCompanion/BrowserHostsSettings.tsx"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/preview-companion/packageVariant.ts"
+    },
+    {
+      "from": "apps/desktop/src/app/DesktopPreReadyPlatform.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionProduct.ts"
+    }
+  ]
+}

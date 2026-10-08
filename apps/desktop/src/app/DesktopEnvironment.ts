@@ -16,6 +16,7 @@ import * as DesktopConfig from "./DesktopConfig.ts";
 import { resolveLinuxDesktopEntryName } from "./DesktopEarlyElectronStartup.ts";
 import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePaths.ts";
 import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
+import { COMPANION_PRODUCT } from "../jones/previewCompanion/CompanionProduct.ts";
 import type { OtlpProtocol } from "@t3tools/shared/observability";
 
 export interface MakeDesktopEnvironmentInput {
@@ -33,6 +34,7 @@ export interface MakeDesktopEnvironmentInput {
 export class DesktopEnvironment extends Context.Service<
   DesktopEnvironment,
   {
+    readonly previewCompanionProduct?: boolean;
     readonly path: Path.Path;
     readonly dirname: string;
     readonly platform: NodeJS.Platform;
@@ -176,10 +178,16 @@ const make = Effect.fn("desktop.environment.make")(function* (
     input.isPackaged && input.platform === "win32"
       ? path.join(input.resourcesPath, "server.asar")
       : appRoot;
-  const branding = resolveDesktopAppBranding({
-    isDevelopment,
-    appVersion: input.appVersion,
-  });
+  const branding = config.previewCompanionProduct
+    ? {
+        baseName: COMPANION_PRODUCT.name,
+        stageLabel: "Alpha" as const,
+        displayName: COMPANION_PRODUCT.name,
+      }
+    : resolveDesktopAppBranding({
+        isDevelopment,
+        appVersion: input.appVersion,
+      });
   const displayName = branding.displayName;
   const stateDir = resolveDesktopStateDir({
     baseDir,
@@ -194,6 +202,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
+    previewCompanionProduct: config.previewCompanionProduct,
     path,
     dirname: input.dirname,
     platform: input.platform,
@@ -237,11 +246,19 @@ const make = Effect.fn("desktop.environment.make")(function* (
     otlpProtocol: config.otlpProtocol,
     branding,
     displayName,
-    appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
-    ),
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    appUserModelId: config.previewCompanionProduct
+      ? COMPANION_PRODUCT.appId
+      : Option.getOrElse(config.appUserModelIdOverride, () =>
+          isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+        ),
+    linuxDesktopEntryName: config.previewCompanionProduct
+      ? `${COMPANION_PRODUCT.packageName}.desktop`
+      : resolveLinuxDesktopEntryName(isDevelopment),
+    linuxWmClass: config.previewCompanionProduct
+      ? COMPANION_PRODUCT.packageName
+      : isDevelopment
+        ? "t3code-dev"
+        : "t3code",
     linuxApplicationsDir,
     appImagePath: config.appImagePath,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),

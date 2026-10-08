@@ -707,6 +707,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(workstreamHttpApiLayer),
       Layer.provide(NativeWorkstreams.nativeWorkstreamsHttpApiLayer),
       Layer.provide(JonesHttp.hostStatusHttpApiLayer),
+      Layer.provide(JonesHttp.previewCompanionHttpApiLayer),
       Layer.provide(OrchestrationHttp.layer),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(ProjectHttp.layer),
@@ -719,6 +720,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAttachmentUploadRoute,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    JonesHttp.previewCompanionRouteLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
@@ -736,7 +738,9 @@ const layerMakeRoutes = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(layerPullRequestService),
   // The stream route and the WebSocket RPCs share one browser.
-  Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
+  Layer.provide(ServerBrowser.layer),
+  Layer.provide(JonesHttp.previewCompanionServicesLayer),
+  Layer.provide(DesktopBrowserChannel.layer),
   // Server browser tabs and HTML render previews install and run the same headless browser.
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(workstreamGatewayLayerLive),

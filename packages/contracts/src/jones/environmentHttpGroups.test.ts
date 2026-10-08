@@ -25,6 +25,7 @@ describe("Jones environment HTTP registration", () => {
       "conversationLibrary",
       "jonesUpdates",
       "jonesImportedHistory",
+      "previewCompanion",
       "webhooks",
     ]);
   });

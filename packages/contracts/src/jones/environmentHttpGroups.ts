@@ -12,6 +12,7 @@ import {
   JonesUpdateState,
 } from "./jonesUpdates.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
+import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
 import {
   VoiceReviewRecentList,
   VoiceReviewDiagnostics,
@@ -474,6 +475,13 @@ export const makeJonesHttpGroups = ({
     ) {}
 
   return {
+    EnvironmentPreviewCompanionHttpApi: makePreviewCompanionHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+    }),
     EnvironmentImportedHistoryHttpApi,
     EnvironmentJonesUpdatesHttpApi,
     EnvironmentWorkQueueMetadataHttpApi,

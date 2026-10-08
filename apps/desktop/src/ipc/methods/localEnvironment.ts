@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import * as DesktopLifecycle from "../../app/DesktopLifecycle.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
+import * as CompanionConfig from "../../jones/previewCompanion/CompanionConfig.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod, makeSyncIpcMethod } from "../DesktopIpc.ts";
 
@@ -20,6 +21,7 @@ export const setLocalEnvironmentEnabled = makeIpcMethod({
   payload: Schema.Boolean,
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.localEnvironment.setEnabled")(function* (enabled) {
+    yield* CompanionConfig.checkLocalEnvironmentEnable(enabled);
     const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
     const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
     const change = yield* appSettings.setLocalEnvironmentEnabled(enabled);

@@ -763,6 +763,7 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
 ) {}
 
 const {
+  EnvironmentPreviewCompanionHttpApi,
   EnvironmentImportedHistoryHttpApi,
   EnvironmentJonesUpdatesHttpApi,
   EnvironmentVoiceReviewHttpApi,
@@ -1014,4 +1015,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentConversationLibraryHttpApi)
   .add(EnvironmentJonesUpdatesHttpApi)
   .add(EnvironmentImportedHistoryHttpApi)
+  .add(EnvironmentPreviewCompanionHttpApi)
   .add(EnvironmentWebhooksHttpApi) {}
