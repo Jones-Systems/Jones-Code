@@ -32,9 +32,9 @@ import {
   ThreadRegistryMutationReceipt,
 } from "../threadRegistry.ts";
 import * as Schema from "effect/Schema";
-import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint";
-import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup";
-import * as HttpApiSchema from "effect/unstable/httpapi/HttpApiSchema";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 import { TrimmedNonEmptyString } from "../baseSchemas.ts";
 import { HostStatusSnapshot } from "../hostStatus.ts";
 import type * as Environment from "../environmentHttp.ts";

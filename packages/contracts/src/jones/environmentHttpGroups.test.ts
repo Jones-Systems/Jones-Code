@@ -15,6 +15,7 @@ describe("Jones environment HTTP registration", () => {
       "workQueueMetadata",
       "metadata",
       "auth",
+      "mcpOAuth",
       "orchestration",
       "pullRequests",
       "workstreams",
@@ -24,6 +25,7 @@ describe("Jones environment HTTP registration", () => {
       "conversationLibrary",
       "jonesUpdates",
       "jonesImportedHistory",
+      "webhooks",
     ]);
   });
 

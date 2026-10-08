@@ -69,9 +69,13 @@ const harness = Effect.fnUntraced(function* (
       Effect.map((results) => results.at(-1)!.result),
       Effect.provideService(McpInvocationContext, {
         environmentId: EnvironmentId.make("fixture-environment"),
-        threadId: ThreadId.make("fixture-thread"),
-        providerSessionId: "fixture-session",
-        providerInstanceId: ProviderInstanceId.make("codex"),
+        requestNamespace: "fixture-session",
+        thread: {
+          threadId: ThreadId.make("fixture-thread"),
+          providerSessionId: "fixture-session",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
         capabilities: new Set(capabilities),
         issuedAt: 1,
       }),

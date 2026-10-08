@@ -17,7 +17,7 @@ const [Prefix, Ws, Threads, Events] = await Promise.all([
   app("rpcInitialItems"),
   app("ws"),
   app("orchestration-v2/ThreadManagementService"),
-  app("persistence/Services/OrchestrationEventStore"),
+  app("persistence/OrchestrationEventStore"),
 ]);
 const Contracts = await import("@t3tools/contracts");
 const thread = Schema.decodeUnknownSync(Contracts.OrchestrationV2AppThreadJson)({

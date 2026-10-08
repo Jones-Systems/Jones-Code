@@ -4,7 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeNet from "node:net";
-import type * as NetAddress from "effect/unstable/net/NetAddress";
+import type * as NetAddress from "effect/net/NetAddress";
 import type { StagedQualifiedRuntime } from "./qualifiedRuntime.ts";
 
 export interface QualifiedTrialRuntimeWitness {

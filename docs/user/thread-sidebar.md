@@ -134,11 +134,12 @@ sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
-On web and desktop, choose **Stop thread** from the sidebar or chat header menu
-to stop the thread's agent sessions while keeping its conversation, pin, and
-settlement state. Sending another message starts a session again. Stop leaves
-terminals open. Use **Settle thread** to move finished work out of the active
-list, or **Delete** to permanently clear the conversation history.
+To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
+thread settles** for one of the project's actions, or set `"runOnSettle": true` on a
+`t3.json` script, for example `cargo clean`. It runs each time a thread in its own
+worktree settles, manually or automatically, even if a terminal there still runs a
+command such as a dev server. Threads in the project's main checkout skip it. Its terminal
+closes when the command succeeds and stays open when it fails.
 
 On web and desktop, press a thread's **Settle** button and drag up or down to
 settle every thread in that section between it and the one you release on.
@@ -188,17 +189,6 @@ and copying a thread reference. A copied reference uses the thread's pull reques
 link when available, otherwise its thread ID. See [keybindings](./keybindings.md)
 for custom configuration.
 
-## Block messages from other threads
-
-Ask the agent to block incoming messages for its thread, or for another thread
-in the same project. The block stays in place across restarts. You can still
-message the thread directly, and task-completion notifications and work already
-accepted into its queue continue normally.
-
-To allow messages again, ask the agent in the blocked thread to unblock itself.
-Agents in other threads cannot remove its block. New forks and subagent threads
-start with their own unblocked setting.
-
 ## Inspect agent work
 
 **Limited** means the provider stopped on a usage or rate limit. The conversation
@@ -225,6 +215,7 @@ snooze limit stops by default. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
 On web and desktop, use **Agents** to follow work delegated to subagents.
+Stop on a thread also stops the subagents it delegated to.
 
 Subagent threads started by the agent can't take messages; message the parent
 thread instead. When such a subagent needs an approval or an answer, the parent

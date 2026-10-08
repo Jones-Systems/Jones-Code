@@ -17,7 +17,7 @@ import {
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64 from "effect/encoding/Base64";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -184,7 +184,7 @@ const make = Effect.gen(function* () {
           const parsed = parseBase64DataUrl(attachment.dataUrl);
           if (parsed === null || parsed.mimeType !== attachment.mimeType.toLowerCase())
             return yield* invalid("Invalid image data URL");
-          const bytes = yield* Effect.fromResult(Encoding.decodeBase64(parsed.base64)).pipe(
+          const bytes = yield* Effect.fromResult(Base64.decode(parsed.base64)).pipe(
             Effect.mapError((cause) => invalid(cause)),
           );
           if (bytes.byteLength === 0) return yield* invalid("Empty image payload");

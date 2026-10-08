@@ -1,13 +1,7 @@
 import {
+  DesktopPreviewAnnotationSendEnabledInputSchema,
   DesktopPreviewAnnotationThemeInputSchema,
   DesktopPreviewArtifactInputSchema,
-  DesktopPreviewAutomationClickInputSchema,
-  DesktopPreviewAutomationEvaluateInputSchema,
-  DesktopPreviewAutomationPressInputSchema,
-  DesktopPreviewAutomationScrollInputSchema,
-  DesktopPreviewAutomationStatusSchema,
-  DesktopPreviewAutomationTypeInputSchema,
-  DesktopPreviewAutomationWaitForInputSchema,
   DesktopPreviewConfigInputSchema,
   DesktopPreviewNavigateInputSchema,
   DesktopPreviewRecordingArtifactSchema,
@@ -16,6 +10,7 @@ import {
   DesktopPreviewScreenshotArtifactSchema,
   DesktopPreviewSetAudioMutedInputSchema,
   DesktopPreviewSetColorSchemeInputSchema,
+  DesktopPreviewSetZoomFactorInputSchema,
   BrowserImportResult,
   BrowserImportSource,
   DesktopPreviewClearDataInputSchema,
@@ -24,9 +19,10 @@ import {
   DesktopPreviewTabInputSchema,
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationSubmissionResultSchema,
-  PreviewAutomationSnapshot,
   DEFAULT_BROWSER_PROFILE_ID,
   INCOGNITO_BROWSER_PROFILE_ID,
+  PreviewForwardedShortcut,
+  MAX_KEYBINDINGS_COUNT,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -60,6 +56,16 @@ export const installPreviewEventForwarding = Effect.fn(
   );
 });
 
+export const setForwardedShortcuts = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_FORWARDED_SHORTCUTS_CHANNEL,
+  payload: Schema.Array(PreviewForwardedShortcut).check(Schema.isMaxLength(MAX_KEYBINDINGS_COUNT)),
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setForwardedShortcuts")(function* (shortcuts) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.setForwardedShortcuts(shortcuts);
+  }),
+});
+
 export const createTab = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_CREATE_TAB_CHANNEL,
   payload: DesktopPreviewCreateTabInputSchema,
@@ -68,9 +74,10 @@ export const createTab = DesktopIpc.makeIpcMethod({
     tabId,
     zoomFactor,
     colorScheme,
+    serverTab,
   }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.createTab(tabId, { zoomFactor, colorScheme });
+    yield* manager.createTab(tabId, { zoomFactor, colorScheme, serverTab });
   }),
 });
 
@@ -157,6 +164,15 @@ export const hardReload = tabMethod(
   "desktop.ipc.preview.hardReload",
   (manager, tabId) => manager.hardReload(tabId),
 );
+export const setZoomFactor = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_ZOOM_FACTOR_CHANNEL,
+  payload: DesktopPreviewSetZoomFactorInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setZoomFactor")(function* ({ tabId, zoomFactor }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.setZoomFactor(tabId, zoomFactor);
+  }),
+});
 export const setColorScheme = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_SET_COLOR_SCHEME_CHANNEL,
   payload: DesktopPreviewSetColorSchemeInputSchema,
@@ -362,6 +378,19 @@ export const pickElement = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const setAnnotationSendEnabled = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_ANNOTATION_SEND_ENABLED_CHANNEL,
+  payload: DesktopPreviewAnnotationSendEnabledInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setAnnotationSendEnabled")(function* ({
+    tabId,
+    enabled,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.setAnnotationSendEnabled(tabId, enabled);
+  }),
+});
+
 export const captureScreenshot = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_CAPTURE_SCREENSHOT_CHANNEL,
   payload: DesktopPreviewTabInputSchema,
@@ -392,153 +421,6 @@ export const copyArtifactToClipboard = DesktopIpc.makeIpcMethod({
   }),
 });
 
-export const automationStatus = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_AUTOMATION_STATUS_CHANNEL,
-  payload: DesktopPreviewTabInputSchema,
-  result: DesktopPreviewAutomationStatusSchema,
-  handler: Effect.fn("desktop.ipc.preview.automationStatus")(function* ({ tabId }) {
-    const manager = yield* PreviewManager.PreviewManager;
-    return yield* manager.automationStatus(tabId);
-  }),
-});
-
-const automationResultEnvelope = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("previewAutomationResult"),
-    ok: Schema.Literal(true),
-    result: Schema.Unknown,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("previewAutomationResult"),
-    ok: Schema.Literal(false),
-    error: Schema.Struct({
-      _tag: Schema.Literal("PreviewAutomationNotStartedError"),
-      outcome: Schema.Literal("not_started"),
-    }),
-  }),
-]);
-
-const automationResult = <A, E, R>(
-  effect: Effect.Effect<A, E, R>,
-  deadlineMs: number | undefined,
-) =>
-  deadlineMs === undefined
-    ? effect
-    : effect.pipe(
-        Effect.map((result) => ({
-          type: "previewAutomationResult" as const,
-          ok: true as const,
-          result,
-        })),
-        Effect.catchIf(Schema.is(PreviewManager.PreviewAutomationNotStartedError), () =>
-          Effect.succeed({
-            type: "previewAutomationResult" as const,
-            ok: false as const,
-            error: {
-              _tag: "PreviewAutomationNotStartedError" as const,
-              outcome: "not_started" as const,
-            },
-          }),
-        ),
-      );
-
-export const automationSnapshot = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL,
-  payload: DesktopPreviewTabInputSchema,
-  result: Schema.Union([PreviewAutomationSnapshot, automationResultEnvelope]),
-  handler: Effect.fn("desktop.ipc.preview.automationSnapshot")(function* ({ tabId, deadlineMs }) {
-    const manager = yield* PreviewManager.PreviewManager;
-    return yield* automationResult(manager.automationSnapshot(tabId, deadlineMs), deadlineMs);
-  }),
-});
-
-export const automationClick = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL,
-  payload: DesktopPreviewAutomationClickInputSchema,
-  result: Schema.Union([Schema.Void, automationResultEnvelope]),
-  handler: Effect.fn("desktop.ipc.preview.automationClick")(function* ({
-    tabId,
-    input,
-    deadlineMs,
-  }) {
-    const manager = yield* PreviewManager.PreviewManager;
-    return yield* automationResult(manager.automationClick(tabId, input, deadlineMs), deadlineMs);
-  }),
-});
-
-export const automationType = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL,
-  payload: DesktopPreviewAutomationTypeInputSchema,
-  result: Schema.Union([Schema.Void, automationResultEnvelope]),
-  handler: Effect.fn("desktop.ipc.preview.automationType")(function* ({
-    tabId,
-    input,
-    deadlineMs,
-  }) {
-    const manager = yield* PreviewManager.PreviewManager;
-    return yield* automationResult(manager.automationType(tabId, input, deadlineMs), deadlineMs);
-  }),
-});
-
-export const automationPress = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL,
-  payload: DesktopPreviewAutomationPressInputSchema,
-  result: Schema.Union([Schema.Void, automationResultEnvelope]),
-  handler: Effect.fn("desktop.ipc.preview.automationPress")(function* ({
-    tabId,
-    input,
-    deadlineMs,
-  }) {
-    const manager = yield* PreviewManager.PreviewManager;
-    return yield* automationResult(manager.automationPress(tabId, input, deadlineMs), deadlineMs);
-  }),
-});
-
-export const automationScroll = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_AUTOMATION_SCROLL_CHANNEL,
-  payload: DesktopPreviewAutomationScrollInputSchema,
-  result: Schema.Union([Schema.Void, automationResultEnvelope]),
-  handler: Effect.fn("desktop.ipc.preview.automationScroll")(function* ({
-    tabId,
-    input,
-    deadlineMs,
-  }) {
-    const manager = yield* PreviewManager.PreviewManager;
-    return yield* automationResult(manager.automationScroll(tabId, input, deadlineMs), deadlineMs);
-  }),
-});
-
-export const automationEvaluate = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_AUTOMATION_EVALUATE_CHANNEL,
-  payload: DesktopPreviewAutomationEvaluateInputSchema,
-  result: Schema.Unknown,
-  handler: Effect.fn("desktop.ipc.preview.automationEvaluate")(function* ({
-    tabId,
-    input,
-    deadlineMs,
-  }) {
-    const manager = yield* PreviewManager.PreviewManager;
-    return yield* automationResult(
-      manager.automationEvaluate(tabId, input, deadlineMs),
-      deadlineMs,
-    );
-  }),
-});
-
-export const automationWaitFor = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL,
-  payload: DesktopPreviewAutomationWaitForInputSchema,
-  result: Schema.Union([Schema.Void, automationResultEnvelope]),
-  handler: Effect.fn("desktop.ipc.preview.automationWaitFor")(function* ({
-    tabId,
-    input,
-    deadlineMs,
-  }) {
-    const manager = yield* PreviewManager.PreviewManager;
-    return yield* automationResult(manager.automationWaitFor(tabId, input, deadlineMs), deadlineMs);
-  }),
-});
-
 export const saveRecording = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_RECORDING_SAVE_CHANNEL,
   payload: DesktopPreviewRecordingSaveInputSchema,
@@ -550,6 +432,7 @@ export const saveRecording = DesktopIpc.makeIpcMethod({
 });
 
 export const methods = [
+  setForwardedShortcuts,
   createTab,
   closeTab,
   registerWebview,
@@ -562,12 +445,14 @@ export const methods = [
   resetZoom,
   hardReload,
   setColorScheme,
+  setZoomFactor,
   setAudioMuted,
   openDevTools,
   clearCookies,
   clearCache,
   getPreviewConfig,
   setAnnotationTheme,
+  setAnnotationSendEnabled,
   pickElement,
   cancelPickElement,
   captureScreenshot,
@@ -575,14 +460,6 @@ export const methods = [
   copyArtifactToClipboard,
   openPictureInPicture,
   closePictureInPicture,
-  automationStatus,
-  automationSnapshot,
-  automationClick,
-  automationType,
-  automationPress,
-  automationScroll,
-  automationEvaluate,
-  automationWaitFor,
   startRecording,
   stopRecording,
   saveRecording,

@@ -13,8 +13,8 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vite-plus/test";
 
 import * as ProviderAdapter from "../../../orchestration-v2/ProviderAdapter.ts";
@@ -333,7 +333,7 @@ it.effect("blocks the actual local spawn boundary and abandons on authorization 
       }),
     ).pipe(
       Effect.provide(
-        OpenCodeRuntime.OpenCodeRuntimeLive.pipe(
+        OpenCodeRuntime.layer.pipe(
           Layer.provide(OpenCodeServerLedger.layerTest),
           Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
         ),
@@ -386,7 +386,7 @@ it.effect.each(["start", "connect"] as const)(
         }),
       ).pipe(
         Effect.provide(
-          OpenCodeRuntime.OpenCodeRuntimeLive.pipe(
+          OpenCodeRuntime.layer.pipe(
             Layer.provide(OpenCodeServerLedger.layerTest),
             Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
           ),

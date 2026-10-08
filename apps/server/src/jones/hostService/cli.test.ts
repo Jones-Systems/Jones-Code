@@ -3,7 +3,7 @@ import { expect, it } from "@effect/vitest";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { Command } from "effect/unstable/cli";
+import { Command } from "effect/cli";
 
 import * as HostService from "./HostService.ts";
 import { jonesCommand } from "./cli.ts";

@@ -9,14 +9,14 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ByteSize from "effect/ByteSize";
-import * as HttpEffect from "effect/unstable/http/HttpEffect";
+import * as HttpEffect from "effect/http/HttpEffect";
 import {
   HttpIncomingMessage,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+} from "effect/http";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import {
   annotateEnvironmentRequest,
@@ -102,7 +102,7 @@ const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrus
     }),
   );
 export const workstreamNativeAuthorityLayerLive = NativeStoreAuthority.layer.pipe(
-  Layer.provide(ServerEnvironment.identityLayer),
+  Layer.provide(ServerEnvironment.layerIdentity),
 );
 
 export const workstreamGatewayLayerLive = makeWorkstreamGatewayLayerLive().pipe(

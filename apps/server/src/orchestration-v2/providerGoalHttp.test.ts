@@ -1,15 +1,17 @@
+import * as OrchestrationHttpApi from "./http.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { describe, expect, it } from "vite-plus/test";
 import * as Context from "effect/Context";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as HttpApi from "effect/unstable/httpapi/HttpApi";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import {
   AuthSessionId,
   AuthOrchestrationReadScope,
@@ -31,8 +33,8 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
-import * as ApplicationEvents from "../persistence/Services/OrchestrationEventStore.ts";
-import { orchestrationHttpApiLayer } from "./http.ts";
+import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
+
 const threadId = ThreadId.make("goal-http-thread");
 const instanceId = ProviderInstanceId.make("codex-owner");
 const providerThreadId = ProviderThreadId.make("goal-http-provider-thread");
@@ -105,12 +107,12 @@ function fixture(
   const provider = Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
     get: () => Effect.succeed(Option.some(runtime)),
   });
-  let group = orchestrationHttpApiLayer.pipe(
+  let group = OrchestrationHttpApi.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         projection,
         Layer.mock(EventSinkV2)({}),
-        SqlitePersistenceMemory,
+        SqlitePersistence.layerMemory,
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
         Layer.mock(ProjectStore.ProjectStoreV2)({}),
         Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),

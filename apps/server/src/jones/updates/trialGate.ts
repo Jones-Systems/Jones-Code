@@ -7,7 +7,7 @@ import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
-import type * as NetAddress from "effect/unstable/net/NetAddress";
+import type * as NetAddress from "effect/net/NetAddress";
 
 const TrialIdentity = Schema.Struct({
   protocol: Schema.Literal(1),

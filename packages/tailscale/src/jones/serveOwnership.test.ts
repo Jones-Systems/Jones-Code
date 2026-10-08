@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import { readTailscaleServeConfigJson, TAILSCALE_STATUS_TIMEOUT } from "../tailscale.ts";
 import {

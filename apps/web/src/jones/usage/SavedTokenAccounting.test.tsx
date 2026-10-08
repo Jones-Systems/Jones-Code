@@ -15,7 +15,7 @@ import {
   type SupervisorConnectionState,
 } from "@t3tools/client-runtime/connection";
 import * as Schema from "effect/Schema";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";

@@ -10,12 +10,12 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Etag from "effect/unstable/http/Etag";
-import * as HttpPlatform from "effect/unstable/http/HttpPlatform";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpApi from "effect/unstable/httpapi/HttpApi";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+import * as Etag from "effect/http/Etag";
+import * as HttpPlatform from "effect/http/HttpPlatform";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { expect, it, vi } from "vite-plus/test";
 
 import * as HostStatus from "./HostStatus.ts";

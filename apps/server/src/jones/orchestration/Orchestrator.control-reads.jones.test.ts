@@ -20,11 +20,8 @@ import * as Path from "effect/Path";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import {
-  SqlitePersistenceMemory,
-  makeSqlitePersistenceLive,
-} from "../../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadMetadataMcpService from "../../mcp/ThreadMetadataMcpService.ts";
@@ -34,7 +31,7 @@ import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import type { ProviderAdapterV2Shape } from "../../orchestration-v2/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.1-codex" };
@@ -45,13 +42,13 @@ const adapter = {
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No provider process needed for metadata controls"),
 } as ProviderAdapterV2Shape;
-const database = SqlitePersistenceMemory;
+const database = SqlitePersistence.layerMemory;
 const testLayer = Layer.mergeAll(
   database,
   ProjectionStore.layer.pipe(Layer.provide(database)),
-  makeOrchestratorV2ReplayLayerWithRegistry(
+  ProviderReplayHarness.layerWithRegistry(
     { name: "control-reads" },
-    ProviderAdapterRegistry.makeLayer([adapter]),
+    ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: database, runEffectWorker: false },
   ),
 );
@@ -271,20 +268,26 @@ it.effect("keeps peer blocking and accepted receipts across a scoped SQLite clos
     const senderThreadId = ThreadId.make("thread:peer-block-reopen-sender");
     const scope: McpInvocationScope = {
       environmentId: EnvironmentId.make("environment:peer-block-reopen"),
-      threadId,
-      providerSessionId: "session:peer-block-reopen",
-      providerInstanceId: instanceId,
+      thread: {
+        threadId,
+        providerSessionId: "session:peer-block-reopen",
+        providerInstanceId: instanceId,
+      },
+      client: undefined,
+      requestNamespace: "peer-block-reopen",
       capabilities: new Set(["orchestration"]),
       issuedAt: 1,
     };
     const makeFileRuntime = () => {
-      const database = makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer));
+      const database = SqlitePersistence.layerFromPath(dbPath).pipe(
+        Layer.provide(NodeServices.layer),
+      );
       const core = Layer.mergeAll(
         database,
         ProjectionStore.layer.pipe(Layer.provide(database)),
-        makeOrchestratorV2ReplayLayerWithRegistry(
+        ProviderReplayHarness.layerWithRegistry(
           { name: "peer-block-reopen" },
-          ProviderAdapterRegistry.makeLayer([adapter]),
+          ProviderAdapterRegistry.layerFromAdapters([adapter]),
           { databaseLayer: database, runEffectWorker: false },
         ),
       );

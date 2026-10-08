@@ -57,11 +57,11 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { identityForRequest } from "./ProviderAdapter.ts";
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
-import type { UnsequencedProjectEvent } from "../persistence/Services/OrchestrationEventStore.ts";
+import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
 import { isPublicStoredOrchestrationEvent, projectDomainEventForWire } from "./WireProjection.ts";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
@@ -402,7 +402,7 @@ export class EventSinkV2 extends Context.Service<EventSinkV2, EventSinkV2Shape>(
 const isDispatchGuardRejected = (value: unknown): value is DispatchGuardRejected =>
   Schema.is(DispatchGuardRejected)(value);
 
-const baseLayer: Layer.Layer<
+const layerBase: Layer.Layer<
   EventSinkV2,
   never,
   | CommandReceiptStore.CommandReceiptStoreV2
@@ -777,14 +777,13 @@ const baseLayer: Layer.Layer<
             return { committed: true as const, storedEvents };
           }),
           (result) =>
-            result.committed
-              ? Effect.gen(function* () {
-                  if (input.effects !== undefined && input.effects.length > 0) {
-                    yield* effectOutbox.notifyAvailable(input.effects.length);
-                  }
-                  yield* publishStoredEvents(result.storedEvents);
-                })
-              : Effect.void,
+            Effect.gen(function* () {
+              if (!result.committed) return;
+              if (input.effects !== undefined && input.effects.length > 0) {
+                yield* effectOutbox.notifyAvailable(input.effects.length);
+              }
+              yield* publishStoredEvents(result.storedEvents);
+            }),
         );
       },
     );
@@ -1989,13 +1988,13 @@ const baseLayer: Layer.Layer<
  * important because enqueue notifications are in-memory wakeups backed by the
  * durable SQL queue.
  */
-export const layerFromStores = baseLayer;
+export const layerFromStores = layerBase;
 
 export const layer: Layer.Layer<
   EventSinkV2,
   never,
   EventStore.EventStoreV2 | ProjectionStore.ProjectionStoreV2 | SqlClient.SqlClient
-> = baseLayer.pipe(
+> = layerBase.pipe(
   Layer.provide(
     Layer.mergeAll(
       CommandReceiptStore.layer,

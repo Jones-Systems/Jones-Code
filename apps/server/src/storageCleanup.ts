@@ -5,7 +5,7 @@ import {
   OrchestrationV2ProviderSessionJson,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import type {
   OrchestrationV2ThreadShell,
   ProjectId,
@@ -38,6 +38,7 @@ import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementSer
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 
@@ -90,7 +91,12 @@ export function storageCleanupThreadIdle(thread: OrchestrationV2ThreadShell, now
     thread.branch !== null &&
     thread.worktreePath !== null &&
     thread.activeRunId === null &&
-    (thread.status === "idle" || thread.status === "failed") &&
+    (thread.status === "idle" ||
+      thread.status === "completed" ||
+      thread.status === "interrupted" ||
+      thread.status === "failed" ||
+      thread.status === "cancelled" ||
+      thread.status === "rolled_back") &&
     (thread.pendingBackgroundTasks?.length ?? 0) === 0 &&
     thread.pendingRuntimeRequest === null &&
     !threadHasQueuedTurnStart(thread, now)
@@ -107,6 +113,32 @@ export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): nu
       thread.latestRunStartedAt,
       thread.latestRunCompletedAt,
     ].flatMap((value) => (value == null ? [] : [DateTime.toEpochMillis(value)])),
+  );
+}
+
+/**
+ * Whether the host's pull request proves this worktree's head was merged. A
+ * squash or rebase merge leaves the head outside the default branch, so the
+ * merged pull request then has to name this exact commit.
+ */
+export function storageCleanupPullRequestMerged(
+  pullRequest: Pick<
+    GitManager.GitBranchPullRequest,
+    "state" | "headRef" | "baseRef" | "headSha"
+  > | null,
+  worktree: {
+    readonly branch: string;
+    readonly defaultBranch: string;
+    readonly headSha: string;
+    readonly integrated: boolean;
+  },
+): boolean {
+  return (
+    pullRequest?.state === "merged" &&
+    (worktree.integrated ||
+      (pullRequest.headRef === worktree.branch &&
+        pullRequest.baseRef === worktree.defaultBranch &&
+        pullRequest.headSha === worktree.headSha))
   );
 }
 
@@ -193,7 +225,20 @@ export const make = Effect.gen(function* () {
     now: number,
   ) {
     if (!anyWorktreePolicy(serverSettings, worktreeCleanupEnabled)) return;
-    if (!(yield* fs.exists(config.worktreesDir))) return;
+    const roots: Array<string> = [];
+    for (const directory of managedWorktreesDirectories(
+      serverSettings,
+      config.worktreesDir,
+      path,
+    )) {
+      // An unmounted drive only skips its own worktrees.
+      const root = yield* fs.exists(directory).pipe(
+        Effect.flatMap((exists) => (exists ? fs.realPath(directory) : Effect.succeed(null))),
+        Effect.orElseSucceed(() => null),
+      );
+      if (root !== null && !isFilesystemRoot(root, path)) roots.push(root);
+    }
+    if (roots.length === 0) return;
     const hasDeleteRule = anyWorktreePolicy(serverSettings, (rules) => rules.worktreeOnDelete);
     const deletedRows = hasDeleteRule
       ? yield* sql<{ payload_json: string; workspaceRoot: string }>`
@@ -214,7 +259,6 @@ export const make = Effect.gen(function* () {
         resolveWorktreeCleanup(serverSettings, thread.projectId).worktreeOnDelete,
     );
     const snapshot = yield* readThreads();
-    const root = yield* fs.realPath(config.worktreesDir);
     const refreshedDefaultRefs = new Map<string, Set<string>>();
     const groups = Map.groupBy(
       snapshot.threads.filter((thread) => thread.worktreePath !== null),
@@ -239,7 +283,6 @@ export const make = Effect.gen(function* () {
       )
         continue;
       yield* Effect.gen(function* () {
-        if (!inside(root, worktreePath)) return;
         if (deleted && sink.readDeletionWorktreeRemovalStartForTarget !== undefined) {
           const original = yield* sink.readDeletionWorktreeRemovalStartForTarget(thread.id, {
             projectId: thread.projectId,
@@ -256,7 +299,12 @@ export const make = Effect.gen(function* () {
           }
         }
         if (!(yield* fs.exists(worktreePath))) return;
-        if ((yield* fs.realPath(worktreePath)) !== worktreePath) return;
+        // Roots are canonical, so compare canonical paths. A symlinked parent
+        // (a linked drive) is fine; a symlinked worktree directory is not.
+        const realPath = yield* fs.realPath(worktreePath);
+        const realParent = yield* fs.realPath(path.dirname(worktreePath));
+        if (realPath !== path.join(realParent, path.basename(worktreePath))) return;
+        if (!roots.some((root) => inside(root, realPath))) return;
         if (yield* containsProjectRoot(worktreePath, [project, ...snapshot.projects])) return;
         // A linked worktree has a .git file. Never remove a main checkout.
         if ((yield* fs.stat(path.join(worktreePath, ".git"))).type !== "File") return;
@@ -310,14 +358,19 @@ export const make = Effect.gen(function* () {
             args: ["merge-base", "--is-ancestor", head.commitSha, base.commitSha],
             allowNonZeroExit: true,
           });
-          if (ancestor.exitCode !== 0) return;
-          eligible = settings.worktreeUnchanged;
+          const integrated = ancestor.exitCode === 0;
+          eligible = integrated && settings.worktreeUnchanged;
           if (!eligible && settings.worktreeOnMerge && thread.branch !== null) {
             const pullRequest = yield* gitManager.branchPullRequest(
               { cwd: worktreePath, branch: thread.branch },
               { refresh: true },
             );
-            eligible = pullRequest?.state === "merged";
+            eligible = storageCleanupPullRequestMerged(pullRequest, {
+              branch: thread.branch,
+              defaultBranch: branch,
+              headSha: head.commitSha,
+              integrated,
+            });
           }
         }
         if (!eligible) return;

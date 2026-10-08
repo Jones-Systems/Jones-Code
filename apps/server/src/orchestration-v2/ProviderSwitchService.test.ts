@@ -69,7 +69,7 @@ function deadSessionRecord(
   };
 }
 
-function testLayer(
+function layerTest(
   metadata: Readonly<Record<string, { continuationKey: string; driver?: typeof driver }>>,
   planSelectionTransition: ProviderAdapterV2Shape["planSelectionTransition"] = () =>
     Effect.succeed({ type: "restart_session" }),
@@ -81,7 +81,7 @@ function testLayer(
     planSelectionTransition,
     openSession: () => Effect.die("ProviderSwitchService tests do not open sessions."),
   });
-  const registry = Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+  const layerRegistry = Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
     get: (instanceId) =>
       metadata[instanceId] === undefined
         ? Effect.fail(
@@ -103,7 +103,7 @@ function testLayer(
           });
     },
   });
-  return ProviderSwitch.layer.pipe(Layer.provide(registry));
+  return ProviderSwitch.layer.pipe(Layer.provide(layerRegistry));
 }
 
 it.effect(
@@ -119,7 +119,7 @@ it.effect(
       assert.deepEqual(result.releaseProviderSessionIds, [currentSessionId]);
     }).pipe(
       Effect.provide(
-        testLayer({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
+        layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
       ),
     ),
 );
@@ -144,7 +144,7 @@ it.effect.each(["stopped", "error"] as const)(
       assert.deepEqual(result.releaseProviderSessionIds, [currentSessionId]);
     }).pipe(
       Effect.provide(
-        testLayer({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
+        layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
       ),
     ),
 );
@@ -173,7 +173,7 @@ it.effect("releases the newest live session, not the newest record overall", () 
     assert.deepEqual(result.releaseProviderSessionIds, [newerLiveSessionId]);
   }).pipe(
     Effect.provide(
-      testLayer({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
+      layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
     ),
   ),
 );
@@ -196,7 +196,7 @@ it.effect("creates a fresh session with handoff when every recorded session is d
     assert.deepEqual(result.releaseProviderSessionIds, []);
   }).pipe(
     Effect.provide(
-      testLayer({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
+      layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
     ),
   ),
 );
@@ -250,7 +250,7 @@ it.effect("falls back to the native provider thread when every recorded session 
     assert.deepEqual(result.releaseProviderSessionIds, []);
   }).pipe(
     Effect.provide(
-      testLayer({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
+      layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }),
     ),
   ),
 );
@@ -271,7 +271,7 @@ it.effect("rejects incompatible Codex account continuation after its session det
     assert.nestedPropertyVal(result, "cause.cause", incompatibleConversationMessage);
   }).pipe(
     Effect.provide(
-      testLayer({
+      layerTest({
         [currentInstanceId]: { continuationKey: "codex:account:primary" },
         codex_other: { continuationKey: "codex:account:other" },
       }),
@@ -296,7 +296,7 @@ it.effect.each(["stopped", "error"] as const)(
       assert.deepEqual(result.releaseProviderSessionIds, []);
     }).pipe(
       Effect.provide(
-        testLayer({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }, (input) =>
+        layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }, (input) =>
           Effect.succeed(acpSelectionTransition(input)),
         ),
       ),
@@ -315,7 +315,7 @@ it.effect("rejects a model change the dead record never negotiated support for",
     assert.instanceOf(result, ProviderSwitch.ProviderSwitchPlanError);
   }).pipe(
     Effect.provide(
-      testLayer({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }, (input) =>
+      layerTest({ [currentInstanceId]: { continuationKey: "codex:account:primary" } }, (input) =>
         Effect.succeed(acpSelectionTransition(input)),
       ),
     ),
@@ -341,7 +341,7 @@ it.effect("distinguishes compatible and incompatible instances of the same drive
     assert.instanceOf(incompatible, ProviderSwitch.ProviderSwitchPlanError);
   }).pipe(
     Effect.provide(
-      testLayer({
+      layerTest({
         [currentInstanceId]: { continuationKey: "codex:account:primary" },
         codex_compatible: { continuationKey: "codex:account:primary" },
         codex_incompatible: { continuationKey: "codex:account:other" },
@@ -368,7 +368,7 @@ it.effect.each(["stopped", "error"] as const)(
       assert.equal(input.thread.worktreePath, "/repo");
     }).pipe(
       Effect.provide(
-        testLayer({
+        layerTest({
           [currentInstanceId]: { continuationKey: "codex:home:/shared/sessions" },
           codex_work: { continuationKey: "codex:home:/shared/sessions" },
         }),
@@ -421,7 +421,7 @@ it.effect.each(["missing", "null-id", "empty", "blank", "wrong-driver", "wrong-t
       assert.nestedPropertyVal(result, "cause.cause", missingConversationMessage);
     }).pipe(
       Effect.provide(
-        testLayer({
+        layerTest({
           [currentInstanceId]: { continuationKey: "codex:home:/shared/sessions" },
           codex_work: { continuationKey: "codex:home:/shared/sessions" },
         }),
@@ -446,7 +446,7 @@ it.effect("rejects a stopped Codex account switch when its saved cursor record i
     assert.nestedPropertyVal(result, "cause.cause", missingConversationMessage);
   }).pipe(
     Effect.provide(
-      testLayer({
+      layerTest({
         [currentInstanceId]: { continuationKey: "codex:home:/shared/sessions" },
         codex_work: { continuationKey: "codex:home:/shared/sessions" },
       }),
@@ -469,7 +469,7 @@ it.effect("allows account selection on a fresh thread without provider history",
     assert.deepEqual(result.releaseProviderSessionIds, []);
   }).pipe(
     Effect.provide(
-      testLayer({
+      layerTest({
         [currentInstanceId]: { continuationKey: "codex:home:/primary" },
         codex_other: { continuationKey: "codex:home:/other" },
       }),
@@ -491,7 +491,7 @@ it.effect("preserves cross-driver handoff for an existing Codex conversation", (
     assert.deepEqual(result.releaseProviderSessionIds, []);
   }).pipe(
     Effect.provide(
-      testLayer({
+      layerTest({
         [currentInstanceId]: { continuationKey: "codex:home:/primary" },
         claude_target: {
           driver: ProviderDriverKind.make("claude"),

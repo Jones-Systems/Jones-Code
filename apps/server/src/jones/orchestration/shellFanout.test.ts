@@ -11,9 +11,9 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import * as OrchestrationEventStore from "../../persistence/Services/OrchestrationEventStore.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as OrchestrationEventStore from "../../persistence/OrchestrationEventStore.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -203,7 +203,7 @@ for (const clients of [1, 2, 8, 32]) {
         assert.strictEqual(liveStarts, clients);
         assert.strictEqual(activeLive, 0);
         assert.strictEqual(activeEnrichment, 0);
-      }).pipe(Effect.provide(SqlitePersistenceMemory)),
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
     );
   }
 }

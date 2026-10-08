@@ -13,8 +13,8 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -80,12 +80,12 @@ const seed = (running = false) =>
     },
   ]);
 const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
-  Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(SqlitePersistence.layerMemory),
 );
 const sqlite = Layer.mergeAll(
   stores,
-  SqlitePersistenceMemory,
-  EventSink.layer.pipe(Layer.provide(Layer.merge(stores, SqlitePersistenceMemory))),
+  SqlitePersistence.layerMemory,
+  EventSink.layer.pipe(Layer.provide(Layer.merge(stores, SqlitePersistence.layerMemory))),
 );
 const cases = [
   { storage: "sqlite", layer: sqlite },

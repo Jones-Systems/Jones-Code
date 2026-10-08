@@ -14,7 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import type * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as NetAddress from "effect/unstable/net/NetAddress";
+import * as NetAddress from "effect/net/NetAddress";
 import * as Ref from "effect/Ref";
 import { vi } from "vite-plus/test";
 import * as ServerConfig from "../../config.ts";

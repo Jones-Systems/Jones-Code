@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
-import type * as GitHubCli from "../../sourceControl/GitHubCli.ts";
+import type * as GitHubApi from "../../sourceControl/GitHubApi.ts";
 import type * as PullRequestProviderRegistry from "../../pullRequest/PullRequestProviderRegistry.ts";
 import type {
   PullRequestError,
@@ -23,7 +23,7 @@ interface CiStatusDependencies {
     PullRequestProviderRegistry.PullRequestProviderRegistry["Service"],
     "get"
   >;
-  readonly githubCi: Option.Option<GitHubCli.GitHubCli["Service"]>;
+  readonly githubCi: Option.Option<GitHubApi.GitHubApi["Service"]>;
   readonly rateLimits: SourceControlRateLimit.SourceControlRateLimit["Service"];
 }
 

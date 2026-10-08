@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
-import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 import { DeviceHostError } from "../../device/DeviceHost.ts";
 
 /** Registered before bootstrap so cancellation reconciles a partially started gateway. */

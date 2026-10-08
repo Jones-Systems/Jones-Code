@@ -4,7 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import { afterEach, expect, it, vi } from "vite-plus/test";
-import * as NetAddress from "effect/unstable/net/NetAddress";
+import * as NetAddress from "effect/net/NetAddress";
 import { awaitJonesTrialCommit } from "./trialGate.ts";
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 

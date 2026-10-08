@@ -4,8 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import { annotateEnvironmentRequest, requireEnvironmentScope } from "../../../auth/http.ts";
 import { NativeStoreAuthority } from "../../../environment/NativeStoreAuthority.ts";

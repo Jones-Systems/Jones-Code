@@ -1,6 +1,8 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it, vi } from "@effect/vitest";
 import { CommandId, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -32,6 +34,9 @@ it.effect("resolves setup scripts through the standalone project service", () =>
   const write = vi.fn(
     (_input: Parameters<TerminalManager.TerminalManager["Service"]["write"]>[0]) => Effect.void,
   );
+  const closeIdle = vi.fn(
+    (_input: Parameters<TerminalManager.TerminalManager["Service"]["closeIdle"]>[0]) => Effect.void,
+  );
   const listeners: Array<Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]> =
     [];
   const subscribe: TerminalManager.TerminalManager["Service"]["subscribe"] = (listener) =>
@@ -55,19 +60,29 @@ it.effect("resolves setup scripts through the standalone project service", () =>
         icon: "configure" as const,
         runOnWorktreeCreate: true,
       },
+      {
+        id: "clean",
+        name: "Clean",
+        command: "cargo clean",
+        icon: "build" as const,
+        runOnWorktreeCreate: false,
+        runOnSettle: true,
+      },
     ],
     createdAt: "2026-06-20T00:00:00.000Z",
     updatedAt: "2026-06-20T00:00:00.000Z",
     deletedAt: null,
   };
   const layer = ProjectSetupScriptRunner.layer.pipe(
+    Layer.provide(NodeCrypto.layer),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectService.ProjectService)({
           getById: () => Effect.succeed(Option.some(project)),
         }),
-        Layer.mock(TerminalManager.TerminalManager)({ open, write, subscribe }),
+        Layer.mock(TerminalManager.TerminalManager)({ open, write, subscribe, closeIdle }),
         ServerSettings.layerTest(),
+        NodeCrypto.layer,
       ),
     ),
   );
@@ -119,6 +134,55 @@ it.effect("resolves setup scripts through the standalone project service", () =>
     });
     assert.deepEqual(lines, ["Downloading 10%", "Downloading 20%", "Done"]);
     yield* listener({ type: "closed", threadId: "thread-1", terminalId: "setup-setup" });
+
+    const settle = yield* runner.runForThread({
+      threadId: "thread-1",
+      projectId,
+      worktreePath: "/repo-worktree",
+      trigger: "settle",
+    });
+    const settleTerminalId = settle.status === "started" ? settle.terminalId : "";
+    assert.match(settleTerminalId, /^settle-clean-/);
+    assert.equal(write.mock.calls.at(-1)?.[0].data, "cargo clean\r");
+
+    // A clean run closes its shell once the prompt is back, not at the
+    // sentinel, so the prompt redraw is not taken for new activity.
+    const observedSettle = yield* runner.runForThread({
+      threadId: "thread-1",
+      projectId,
+      worktreePath: "/repo-worktree",
+      trigger: "settle",
+      observeCompletion: {},
+    });
+    const observedTerminalId = observedSettle.status === "started" ? observedSettle.terminalId : "";
+    // Each settle gets its own shell, so a busy one is never typed into.
+    assert.notEqual(observedTerminalId, settleTerminalId);
+    const token = /__T3_SETUP_DONE___(\w+):/.exec(write.mock.calls.at(-1)?.[0].data ?? "")?.[1];
+    const settleListener = listeners.at(-1)!;
+    const completion = yield* Effect.forkChild(
+      observedSettle.status === "started" && observedSettle.completion
+        ? observedSettle.completion
+        : Effect.die("no completion"),
+    );
+    yield* settleListener({
+      type: "output",
+      threadId: "thread-1",
+      terminalId: observedTerminalId,
+      data: `\r\n__T3_SETUP_DONE___${token}:0\r\n`,
+    });
+    yield* Effect.yieldNow;
+    assert.equal(closeIdle.mock.calls.length, 0);
+    yield* settleListener({
+      type: "output",
+      threadId: "thread-1",
+      terminalId: observedTerminalId,
+      data: "$ ",
+    });
+    assert.deepEqual((yield* Fiber.join(completion)).exitCode, 0);
+    assert.deepEqual(closeIdle.mock.calls[0]?.[0], {
+      threadId: "thread-1",
+      terminalId: observedTerminalId,
+    });
   }).pipe(Effect.provide(layer));
 });
 
@@ -303,6 +367,7 @@ it.effect(
       }),
     ).pipe(Layer.provide(ServerSettings.layerTest()));
     const layer = ProjectSetupScriptRunner.layer.pipe(
+      Layer.provide(NodeCrypto.layer),
       Layer.provide(
         Layer.mergeAll(
           terminal,
@@ -404,6 +469,7 @@ it.effect(
       | Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]
       | undefined;
     const layer = ProjectSetupScriptRunner.layer.pipe(
+      Layer.provide(NodeCrypto.layer),
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectService.ProjectService)({}),
@@ -453,7 +519,7 @@ it.effect(
                   type: "output",
                   threadId: input.threadId,
                   terminalId: input.terminalId,
-                  data: `__T3_SETUP_DONE___${token}:0\r\n`,
+                  data: `__T3_SETUP_DONE___${token}:0\r\nfixture> `,
                 });
               }).pipe(
                 Effect.mapError(

@@ -4,8 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Terminal from "effect/Terminal";
-import { Command, Flag, GlobalFlag, Prompt } from "effect/unstable/cli";
-import { FetchHttpClient } from "effect/unstable/http";
+import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
+import { FetchHttpClient } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
@@ -40,7 +40,7 @@ export const jonesBootServiceLayer = (input: {
     }),
   ).pipe(Layer.provide(HostServiceConfig.layer));
 
-export const bootServiceLayer = (config: ServerConfig.ServerConfig["Service"]) =>
+export const layer = (config: ServerConfig.ServerConfig["Service"]) =>
   jonesBootServiceLayer({
     baseDir: config.baseDir,
     logsDir: config.logsDir,
@@ -134,7 +134,7 @@ const runServiceCommand = Effect.fn("cli.service.run")(function* <A, E>(
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel);
-  return yield* run.pipe(Effect.provide(bootServiceLayer(config)));
+  return yield* run.pipe(Effect.provide(layer(config)));
 });
 
 const serviceReconcileFlags = {

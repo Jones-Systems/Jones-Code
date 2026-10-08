@@ -1,7 +1,7 @@
 import type { ThreadId } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
-import type * as SqlClient from "effect/unstable/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
+import type * as SqlClient from "effect/sql/SqlClient";
 import type { readApplicationBirthRecord } from "../../../apps/server/src/jones/importedHistory/ApplicationBirth.ts";
 
 type Row = Readonly<Record<string, unknown>>;

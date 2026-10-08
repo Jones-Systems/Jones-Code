@@ -341,6 +341,21 @@
       "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     },
     {
+      "id": "preview-runtime-identity",
+      "tests": [
+        "apps/desktop/src/ipc/methods/preview.test.ts",
+        "apps/desktop/src/preview/DesktopBrowserHost.test.ts",
+        "apps/desktop/src/preview/Manager.test.ts",
+        "apps/server/src/mcp/PreviewAutomationBroker.test.ts",
+        "apps/server/src/mcp/toolkits/preview/handlers.test.ts",
+        "apps/server/src/preview/DesktopBrowserChannel.test.ts",
+        "apps/server/src/preview/ServerBrowser.test.ts",
+        "apps/server/src/preview/SessionControl.test.ts",
+        "packages/contracts/src/preview.test.ts"
+      ],
+      "scope": "Native desktop identity and generation fences, physical-host affinity and recovery, active-operation/snapshot ordering, local preflight deadlines and initialization isolation retain Jones intent together with receiving preview resilience. Broker and native receipt clocks own separate relative budgets; network transit timing is not qualified."
+    },
+    {
       "id": "persistent-private-services",
       "tests": [
         "apps/server/src/jones/hostService/HostService.test.ts",

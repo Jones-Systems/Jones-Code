@@ -1,3 +1,4 @@
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -23,12 +24,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
+
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
-import * as ApplicationEvents from "../persistence/Services/OrchestrationEventStore.ts";
-import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
+import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
+
 import * as Fiber from "effect/Fiber";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
@@ -49,7 +50,7 @@ it.effect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-preflight-" });
-      const database = makeSqlitePersistenceLive(`${directory}/preflight.sqlite`);
+      const database = SqlitePersistence.layerFromPath(`${directory}/preflight.sqlite`);
       const stores = Layer.mergeAll(
         EventStore.layer,
         ProjectionStore.layer,
@@ -209,12 +210,12 @@ it.effect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-preflight-wire-" });
-      const database = makeSqlitePersistenceLive(`${directory}/wire.sqlite`);
+      const database = SqlitePersistence.layerFromPath(`${directory}/wire.sqlite`);
       const stores = Layer.mergeAll(
         EventStore.layer,
         ProjectionStore.layer,
         CommandReceiptStore.layer,
-        OrchestrationEventStoreLive,
+        ApplicationEvents.layer,
       ).pipe(Layer.provideMerge(database));
       const layer = Layer.mergeAll(stores, EventSink.layer.pipe(Layer.provide(stores)));
       yield* Effect.gen(function* () {
@@ -498,7 +499,7 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "recorded-bootstrap-codecs-" });
-    const database = makeSqlitePersistenceLive(`${directory}/recorded.sqlite`);
+    const database = SqlitePersistence.layerFromPath(`${directory}/recorded.sqlite`);
     const stores = Layer.mergeAll(
       EventStore.layer,
       ProjectionStore.layer,
