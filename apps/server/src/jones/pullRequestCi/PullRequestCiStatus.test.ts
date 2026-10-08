@@ -13,7 +13,7 @@ import * as SourceControlProviderRegistry from "../../sourceControl/SourceContro
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import * as PullRequestFilesViewed from "../../persistence/PullRequestFilesViewed.ts";
-import * as GitHubPullRequestCli from "../../pullRequest/GitHubPullRequestCli.ts";
+import * as GitHubPullRequestApi from "../../pullRequest/GitHubPullRequestApi.ts";
 import * as GitHubPullRequestProvider from "../../pullRequest/GitHubPullRequestProvider.ts";
 import * as PullRequestProviderRegistry from "../../pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestReadCache from "../../pullRequest/PullRequestReadCache.ts";
@@ -65,7 +65,7 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>) {
     const calls: { endpoint: string; credential: string | undefined }[] = [];
     const provider = yield* GitHubPullRequestProvider.make.pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           withVerifiedCredential: (request, use) =>
             Effect.suspend(() =>
               use({

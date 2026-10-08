@@ -66,7 +66,7 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "61247d98500049d8ebd417a5b0f7894786dbac70f3a6245ac240e778ebba8ed2"
+          "sha256": "e49a03be818b1d30eea5322b8752833ebecb64db4c49985a4c9112dc154bb36f"
         }
       ],
       "targets": []
@@ -79,7 +79,7 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "61247d98500049d8ebd417a5b0f7894786dbac70f3a6245ac240e778ebba8ed2"
+          "sha256": "e49a03be818b1d30eea5322b8752833ebecb64db4c49985a4c9112dc154bb36f"
         }
       ],
       "targets": []
@@ -153,7 +153,7 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "7b87790f95a6ae29f0b762a4bd82b01095abe7c8fde6a80d2f7f39846f71a78d"
+          "sha256": "78df16751f89c10129340880b7b14030e976bbccf5e1d3b1d5d63a540e5975dc"
         }
       ],
       "targets": []
@@ -202,6 +202,23 @@
         "apps/mobile/scripts/generate-device-stream.mts",
         "apps/mobile/src/features/browser/preview-stream.browser.ts"
       ]
+    },
+    {
+      "from": "apps/web/src/components/diffs/codeViewSearch.test.ts",
+      "sourceSha256": "b133ce67231c1a916dc6004e02a7e655d935003f9cf0e0ec2ff8ec3e5cde1f72",
+      "expression": "searchUrl.href",
+      "reason": "Upstream synthetic search test loads the patched Pierre dependency-internal module URL; external dependency loader is unsupported.",
+      "anchors": [
+        {
+          "path": "apps/web/package.json",
+          "sha256": "78df16751f89c10129340880b7b14030e976bbccf5e1d3b1d5d63a540e5975dc"
+        },
+        {
+          "path": "patches/@pierre%2Fdiffs@1.5.2.patch",
+          "sha256": "b33a575eb1382270ed0df956307e4b6ffe4b8e4349cefeb43e14f648c0fdc3b0"
+        }
+      ],
+      "targets": []
     }
   ]
 }
