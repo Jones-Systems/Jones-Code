@@ -1806,6 +1806,9 @@ const make = Effect.gen(function* () {
       .finally(() => markUsed(request));
     // Respond to preflight expiry while retaining the original work in the receive barrier.
     const response = budget.response(work);
+    // The native producer starts before the forked Effect consumer. Observe rejection now,
+    // while leaving this same rejected Promise for the consumer to classify and report.
+    void response.catch(constVoid);
     if (controlledOperations.has(request.operation)) {
       const actions = receivedActions.get(key) ?? new Set<Promise<unknown>>();
       actions.add(work);

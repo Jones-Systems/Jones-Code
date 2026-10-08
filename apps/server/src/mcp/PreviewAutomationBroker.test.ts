@@ -1605,6 +1605,7 @@ it.effect("keeps the host connected when a background status read times out", ()
           input: {},
           timeoutMs: 500,
           updateCurrentTab: false,
+          failurePolicy: "request_only",
         })
         .pipe(Effect.flip, Effect.forkScoped);
       yield* TestClock.adjust(500);

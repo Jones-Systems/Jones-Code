@@ -4341,8 +4341,16 @@ describe("PreviewOperationError", () => {
         }));
         const first = makeTestPreviewWebContents(capture, 41);
         const second = makeTestPreviewWebContents(capture, 42);
-        Object.assign(first, { isDevToolsOpened: () => false });
-        Object.assign(second, { isDevToolsOpened: () => false });
+        const destructionHandlers = new Map<number, () => void>();
+        for (const guest of [first, second]) {
+          Object.assign(guest, {
+            isDevToolsOpened: () => false,
+            once: vi.fn((event: string, handler: () => void) => {
+              if (event === "destroyed") destructionHandlers.set(guest.id, handler);
+              return guest;
+            }),
+          });
+        }
         Object.assign(first.debugger, { sendCommand: vi.fn(() => new Promise<unknown>(() => {})) });
         fromId.mockImplementation((id) => (id === 41 ? first : second));
         const blocked = yield* Effect.exit(manager.prepareWebview(first)).pipe(
@@ -4358,6 +4366,8 @@ describe("PreviewOperationError", () => {
           { color: { r: 255, g: 255, b: 255, a: 1 } },
         );
         expect(second.debugger.attach).toHaveBeenCalledOnce();
+        expect(destructionHandlers.has(41)).toBe(true);
+        expect(destructionHandlers.has(42)).toBe(true);
         expect(blocked.pollUnsafe()).toBeUndefined();
         yield* TestClock.adjust(5_000);
         yield* Fiber.join(blocked);
