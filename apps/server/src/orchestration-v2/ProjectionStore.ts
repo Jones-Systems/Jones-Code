@@ -23,6 +23,7 @@ import type {
   OrchestrationV2ExecutionNode,
   OrchestrationV2PlanArtifact,
   PlanId,
+  ProjectId,
   OrchestrationV2ConversationMessage,
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ProviderThread,
@@ -81,6 +82,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type * as Statement from "effect/unstable/sql/Statement";
@@ -322,7 +324,33 @@ export interface ProjectionTimelinePage {
   readonly hasMore: boolean;
 }
 
+type ProjectionOperatingCountsCandidate = Pick<
+  OrchestrationV2ThreadShell,
+  | "id"
+  | "projectId"
+  | "activeProviderThreadId"
+  | "archivedAt"
+  | "deletedAt"
+  | "interactionMode"
+  | "activityRunStatus"
+  | "hasActionableProposedPlan"
+  | "latestRunCompletedAt"
+> & {
+  readonly pendingRuntimeRequest: Pick<
+    NonNullable<OrchestrationV2ThreadShell["pendingRuntimeRequest"]>,
+    "kind"
+  > | null;
+};
+
+interface ProjectionOperatingCountsCandidates {
+  readonly snapshotSequence: number;
+  readonly threads: ReadonlyArray<ProjectionOperatingCountsCandidate>;
+}
+
 export interface ProjectionStoreV2Shape {
+  readonly getOperatingCountsCandidates?: (input?: {
+    readonly projectId?: ProjectId;
+  }) => Effect.Effect<ProjectionOperatingCountsCandidates, ProjectionStoreV2Error>;
   readonly getThreadAttachmentIds: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<string>, ProjectionStoreV2Error>;
@@ -1050,6 +1078,8 @@ export function applyToProjection(
         ...base,
         providerSessions: upsertById(base.providerSessions, event.payload),
       };
+    case "provider-session.detach-requested":
+      return projection;
     case "provider-session.detached":
       return {
         ...base,
@@ -2486,6 +2516,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             }
             break;
           }
+          case "provider-session.detach-requested":
+            break;
           case "provider-session.detached": {
             yield* sql`
               DELETE FROM orchestration_v2_projection_provider_session_bindings
@@ -2968,6 +3000,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         }
 
         if (
+          event.type !== "provider-session.detach-requested" &&
           event.type !== "thread.created" &&
           event.type !== "thread.archived" &&
           event.type !== "thread.unarchived" &&
@@ -5959,6 +5992,79 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         } satisfies ShellThreadState;
       });
 
+    const getOperatingCountsCandidates: ProjectionStoreV2Shape["getOperatingCountsCandidates"] = (
+      input,
+    ) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{
+              readonly payload_json: string;
+              readonly activity_run_status: ProjectionOperatingCountsCandidate["activityRunStatus"];
+              readonly pending_request_payload_json: string | null;
+              readonly has_actionable_proposed_plan: number;
+              readonly latest_run_completed_at: string | null;
+            }>`
+          SELECT t.payload_json,
+            (SELECT r.status FROM orchestration_v2_projection_runs r
+              WHERE r.thread_id = t.thread_id AND r.status IN ('preparing', 'starting', 'running', 'waiting')
+              ORDER BY r.ordinal DESC, r.run_id DESC LIMIT 1) AS activity_run_status,
+            (SELECT request.payload_json FROM orchestration_v2_projection_runtime_requests request
+              WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+              ORDER BY request.created_at DESC, request.runtime_request_id DESC LIMIT 1) AS pending_request_payload_json,
+            EXISTS (SELECT 1 FROM orchestration_v2_projection_plans plan
+              WHERE plan.thread_id = t.thread_id AND plan.kind = 'proposed_plan' AND plan.status = 'active') AS has_actionable_proposed_plan,
+            (SELECT r.completed_at FROM orchestration_v2_projection_runs r
+              WHERE r.thread_id = t.thread_id
+                AND CASE WHEN r.status = 'queued'
+                  THEN json_extract(r.payload_json, '$.queueHeld') IS NOT 1 ELSE 1 END
+              ORDER BY r.ordinal DESC, r.run_id DESC LIMIT 1) AS latest_run_completed_at
+          FROM orchestration_v2_projection_threads t
+          WHERE t.deleted_at IS NULL AND json_extract(t.payload_json, '$.archivedAt') IS NULL
+            ${input?.projectId === undefined ? sql`` : sql`AND t.project_id = ${input.projectId}`}
+          ORDER BY t.thread_id ASC
+        `;
+            const threads = yield* Effect.forEach(rows, (row) =>
+              Effect.gen(function* () {
+                const thread = yield* decodeThreadPayload(row.payload_json);
+                const request =
+                  row.pending_request_payload_json === null
+                    ? null
+                    : yield* decodeRuntimeRequestPayload(row.pending_request_payload_json);
+                return {
+                  id: thread.id,
+                  projectId: thread.projectId,
+                  activeProviderThreadId: thread.activeProviderThreadId,
+                  archivedAt: thread.archivedAt,
+                  deletedAt: thread.deletedAt,
+                  interactionMode: thread.interactionMode,
+                  activityRunStatus: row.activity_run_status,
+                  pendingRuntimeRequest: request === null ? null : { kind: request.kind },
+                  hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
+                  latestRunCompletedAt:
+                    row.latest_run_completed_at === null
+                      ? null
+                      : DateTime.makeUnsafe(row.latest_run_completed_at),
+                } satisfies ProjectionOperatingCountsCandidate;
+              }),
+            );
+            const sequences = yield* sql<{ readonly snapshot_sequence: number | null }>`
+          SELECT MAX(sequence) AS snapshot_sequence FROM orchestration_events
+          WHERE application_event_version = 2 AND aggregate_kind = 'thread'
+        `;
+            return { threads, snapshotSequence: sequences[0]?.snapshot_sequence ?? 0 };
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProjectionStoreReadError({
+                threadId: ThreadId.make("thread:operating-counts"),
+                cause,
+              }),
+          ),
+        );
+
     const getShellSnapshot: ProjectionStoreV2Shape["getShellSnapshot"] = (options) =>
       sql
         .withTransaction(
@@ -6122,6 +6228,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         .pipe(Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause })));
 
     return {
+      getOperatingCountsCandidates,
       apply,
       getShellSnapshot,
       getThreadShell,
@@ -6166,8 +6273,52 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
   Effect.gen(function* () {
     const replayState = yield* Ref.make(makeProjectionReplayState());
     const sequence = yield* Ref.make(0);
+    const censusPermit = yield* Semaphore.make(1);
 
     const service: ProjectionStoreV2Shape = {
+      getOperatingCountsCandidates: (input) =>
+        Effect.gen(function* () {
+          const projections = (yield* Ref.get(replayState)).projections;
+          const threads = [...projections.values()]
+            .filter(
+              ({ thread }) =>
+                thread.archivedAt === null &&
+                thread.deletedAt === null &&
+                (input?.projectId === undefined || thread.projectId === input.projectId),
+            )
+            .map((projection): ProjectionOperatingCountsCandidate => {
+              const pending = projection.runtimeRequests
+                .filter((request) => request.status === "pending")
+                .toSorted(
+                  (left, right) =>
+                    DateTime.toEpochMillis(right.createdAt) -
+                      DateTime.toEpochMillis(left.createdAt) ||
+                    String(right.id).localeCompare(String(left.id)),
+                )[0];
+              const active = projection.runs
+                .filter(isActivityRunForShell)
+                .toSorted(
+                  (left, right) =>
+                    right.ordinal - left.ordinal || String(right.id).localeCompare(String(left.id)),
+                )[0];
+              return {
+                id: projection.thread.id,
+                projectId: projection.thread.projectId,
+                activeProviderThreadId: projection.thread.activeProviderThreadId,
+                archivedAt: null,
+                deletedAt: null,
+                interactionMode: projection.thread.interactionMode,
+                activityRunStatus: active?.status ?? null,
+                pendingRuntimeRequest: pending === undefined ? null : { kind: pending.kind },
+                hasActionableProposedPlan: projection.plans.some(
+                  (plan) => plan.kind === "proposed_plan" && plan.status === "active",
+                ),
+                latestRunCompletedAt: latestUnheldRun(projection.runs)?.completedAt ?? null,
+              };
+            })
+            .toSorted((left, right) => String(left.id).localeCompare(String(right.id)));
+          return { threads, snapshotSequence: yield* Ref.get(sequence) };
+        }).pipe(censusPermit.withPermits(1)),
       apply: (event) =>
         Effect.gen(function* () {
           const result = yield* Ref.modify(
@@ -6203,7 +6354,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             return yield* result;
           }
           yield* Ref.update(sequence, (current) => current + 1);
-        }),
+        }).pipe(Effect.uninterruptible, censusPermit.withPermits(1)),
       getShellSnapshot: (options) =>
         Effect.gen(function* () {
           const existing = (yield* Ref.get(replayState)).projections;

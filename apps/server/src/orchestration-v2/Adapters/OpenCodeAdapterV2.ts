@@ -1,3 +1,5 @@
+import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
+import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
 import type {
   Event as OpenCodeEvent,
   Message as OpenCodeMessage,
@@ -431,6 +433,7 @@ interface PendingOpenCodeRequest {
 }
 
 export interface OpenCodeAdapterV2Options {
+  readonly authority?: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority;
   readonly instanceId: ProviderInstanceId;
   readonly settings: OpenCodeSettings;
   readonly environment: NodeJS.ProcessEnv;
@@ -959,7 +962,19 @@ export function makeOpenCodeAdapterV2(
           directory: cwd,
           serverUrl: options.settings.serverUrl,
           environment: options.environment,
+          ...(options.authority !== undefined
+            ? { creationHooks: options.authority.creationHooks }
+            : {}),
         });
+        const adoption =
+          options.authority === undefined
+            ? undefined
+            : yield* OpenCodeCreationPolicy.adoptSession({
+                parent: connection.ownedProcess,
+                authority: options.authority,
+                providerInstanceId: options.instanceId,
+                session: input,
+              });
         const client = runtime.createOpenCodeSdkClient({
           baseUrl: connection.url,
           directory: cwd,
@@ -999,6 +1014,36 @@ export function makeOpenCodeAdapterV2(
           lastError: null,
         };
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
+        const eventProducer = ProviderEventOrigin.makeProviderEventProducer(
+          {
+            driver: OPENCODE_PROVIDER,
+            instanceId: options.instanceId,
+            providerSessionId: input.providerSessionId,
+            ...(adoption !== undefined
+              ? { runtimeGeneration: adoption.capture.runtimeGeneration }
+              : {}),
+          },
+          adoption?.isCurrent,
+        );
+        const bindAdoption = (providerThread: OrchestrationV2ProviderThread) =>
+          adoption === undefined
+            ? Effect.succeed(providerThread)
+            : OpenCodeCreationPolicy.bindSessionAdoption(adoption, input.runtimeLifecycle!, {
+                providerThread,
+                requested: ProviderAdapter.requestedRuntimeIdentity(
+                  input.modelSelection,
+                  OPENCODE_PROVIDER,
+                ),
+                observed: ProviderAdapter.unobservedRuntimeIdentity(),
+                producerOrigin: eventProducer.origin,
+              });
+        const requireAdoption =
+          adoption === undefined
+            ? Effect.void
+            : OpenCodeCreationPolicy.requireCurrent({
+                incarnation: adoption.capture.parent,
+                isCurrent: adoption.isCurrent,
+              }).pipe(Effect.asVoid);
         let nativeStreamFailure: OrchestrationV2ProviderFailure | null = null;
         const threads = new Map<string, OpenCodeThreadState>();
         const commandReceipts = new Map<string, Deferred.Deferred<void>>();
@@ -1030,7 +1075,12 @@ export function makeOpenCodeAdapterV2(
         let hasConnected = false;
 
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+          Queue.offer(
+            events,
+            ProviderEventOrigin.stampProviderEvent(event, {
+              producer: eventProducer.origin,
+            }),
+          ).pipe(Effect.asVoid);
 
         const logProtocolEvent = makeOpenCodeProtocolLogger({
           nativeEventLogger: options.nativeEventLogger,
@@ -2738,6 +2788,7 @@ export function makeOpenCodeAdapterV2(
                     threadDisposition: "broken",
                   });
               }
+              eventProducer.drain();
               yield* Queue.end(events);
             }),
           ),
@@ -2798,6 +2849,7 @@ export function makeOpenCodeAdapterV2(
           scope,
           Effect.sync(() => {
             closing = true;
+            eventProducer.drain();
           }),
         );
 
@@ -3014,10 +3066,12 @@ export function makeOpenCodeAdapterV2(
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: sessionEntity,
+          eventOriginMode: "captured",
           events: Stream.fromEffectRepeat(Queue.take(events)),
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: (threadInput) =>
             Effect.gen(function* () {
+              yield* requireAdoption;
               // Only a row that already carries a native session can be
               // resumed; a placeholder without one still needs session.create.
               if (threadInput.existingProviderThread?.nativeThreadRef != null) {
@@ -3060,8 +3114,9 @@ export function makeOpenCodeAdapterV2(
                       status: created.status,
                       updatedAt: created.updatedAt,
                     };
-              registerThread(nativeSession, providerThread, null);
-              return providerThread;
+              const bound = yield* bindAdoption(providerThread);
+              registerThread(nativeSession, bound, null);
+              return bound;
             }).pipe(
               Effect.mapError(
                 (cause) =>
@@ -3074,6 +3129,7 @@ export function makeOpenCodeAdapterV2(
             ),
           resumeThread: (threadInput) =>
             Effect.gen(function* () {
+              yield* requireAdoption;
               const sessionId = nativeThreadId(threadInput.providerThread);
               const response = yield* sdkCall("session.get", { sessionID: sessionId }, () =>
                 client.session.get({ sessionID: sessionId }),
@@ -3086,8 +3142,9 @@ export function makeOpenCodeAdapterV2(
                 status: "idle" as const,
                 updatedAt: dateTimeFromEpoch(nativeSession.time.updated, resumedAt),
               };
-              registerThread(nativeSession, providerThread, null);
-              return providerThread;
+              const bound = yield* bindAdoption(providerThread);
+              registerThread(nativeSession, bound, null);
+              return bound;
             }).pipe(
               Effect.mapError(
                 (cause) =>
@@ -3106,6 +3163,11 @@ export function makeOpenCodeAdapterV2(
             }),
           startTurn: (turnInput) =>
             Effect.gen(function* () {
+              if (adoption !== undefined)
+                yield* OpenCodeCreationPolicy.requireCurrent({
+                  incarnation: adoption.capture.parent,
+                  isCurrent: adoption.isCurrent,
+                });
               if (nativeStreamFailure !== null) {
                 return yield* protocolError(
                   "OpenCode event stream has ended; reconnect the provider session before starting another turn.",
@@ -3729,7 +3791,12 @@ export const OpenCodeAdapterV2Driver: ProviderAdapterDriver<
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const providerEventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
       const serverConfig = yield* ServerConfig.ServerConfig;
+      const authority = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
+      const qualified = Option.isSome(authority)
+        ? authority.value.forInstance(input.instanceId)
+        : undefined;
       return makeOpenCodeAdapterV2({
+        ...(qualified !== undefined ? { authority: qualified } : {}),
         instanceId: input.instanceId,
         settings: { ...input.config, enabled: input.enabled },
         environment: mergeProviderInstanceEnvironment(input.environment, hostEnvironment),

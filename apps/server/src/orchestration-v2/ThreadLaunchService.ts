@@ -1,3 +1,10 @@
+import * as Path from "effect/Path";
+import * as NativeBootstrap from "../jones/nativeCreation/NativeBootstrapDispatch.ts";
+import { EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
+import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
+import * as ServerConfig from "../config.ts";
+import type * as NativeWorkspaceTypes from "../jones/nativeCreation/NativeCreationWorkspaceTypes.ts";
+import * as NativeWorkspace from "../jones/nativeCreation/NativeCreationWorkspacePreparation.ts";
 import {
   LegacyOwnedTerminalControl,
   LegacyNoTerminalControl,
@@ -199,6 +206,19 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
 export class ThreadLaunchService extends Context.Service<
   ThreadLaunchService,
   {
+    readonly dispatchNativeBootstrap?: (
+      submission: unknown,
+    ) => Effect.Effect<
+      NativeBootstrap.NativeBootstrapDispatchResult,
+      NativeAuthority.NativeCreationAuthorityError,
+      EnvironmentAuthenticatedPrincipal
+    >;
+    readonly prepareNativeWorkspace?: (
+      input: NativeWorkspace.NativeWorkspaceInput,
+    ) => Effect.Effect<
+      NativeWorkspaceTypes.NativeWorkspaceVerified,
+      NativeWorkspace.NativeWorkspaceError
+    >;
     readonly preflightLegacyBootstrap: (
       binding: OrchestrationV2LegacyPreflightBinding,
     ) => Effect.Effect<LegacyPreflightOutcome, ThreadLaunchError>;
@@ -229,6 +249,13 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
+  const nativeBootstrapContext = yield* Effect.context<never>();
+  const nativeBootstrapConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+  const nativeBootstrapPath = yield* Effect.serviceOption(Path.Path);
+  const nativeBootstrapBootId = yield* randomUuidV4;
+  const nativeWorkspace = yield* Effect.serviceOption(
+    NativeWorkspace.NativeCreationWorkspacePreparation,
+  );
   const projects = yield* ProjectService.ProjectService;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
@@ -2554,6 +2581,34 @@ const make = Effect.gen(function* () {
   };
 
   return ThreadLaunchService.of({
+    dispatchNativeBootstrap: (submission) =>
+      Effect.flatMap(EnvironmentAuthenticatedPrincipal, (principal) =>
+        Option.isSome(nativeBootstrapConfig) && Option.isSome(nativeBootstrapPath)
+          ? NativeBootstrap.dispatchNativeBootstrap(submission, {
+              bootId: nativeBootstrapBootId,
+              worktreesDir: nativeBootstrapConfig.value.worktreesDir,
+              deriveRunId: (threadId) => ids.derive.run({ threadId, ordinal: 1 }),
+            }).pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+              Effect.provideService(Path.Path, nativeBootstrapPath.value),
+              Effect.provide(nativeBootstrapContext),
+            )
+          : Effect.fail(
+              new NativeAuthority.NativeCreationAuthorityError({
+                code: "unsupported_authority",
+                message: "Native bootstrap server configuration is unavailable",
+              }),
+            ),
+      ),
+    prepareNativeWorkspace: (input) =>
+      Option.isSome(nativeWorkspace)
+        ? nativeWorkspace.value.prepare(input)
+        : Effect.fail(
+            new NativeWorkspace.NativeWorkspaceError({
+              code: "unavailable",
+              message: "Native workspace preparation is not qualified",
+            }),
+          ),
     preflightLegacyBootstrap: (binding) =>
       preflight(binding).pipe(
         Effect.mapError(

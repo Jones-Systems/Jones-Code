@@ -1,6 +1,11 @@
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
 import { RuntimeIdentityAttestation } from "./jones/providerRuntimeIdentity.ts";
-import { NativeCreationObservation, NativeCreationRejectionCode } from "./nativeCreation.ts";
+import {
+  NativeBootstrapSubmission,
+  NativeBootstrapDispatchResultV2,
+  NativeCreationObservation,
+  NativeCreationRejectionCode,
+} from "./nativeCreation.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -1653,6 +1658,11 @@ export const OrchestrationV2DomainEvent = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("provider-session.detach-requested"),
+    payload: Schema.Struct({ providerSessionId: ProviderSessionId }),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("provider-session.detached"),
     payload: OrchestrationV2ProviderSessionDetached,
   }),
@@ -2494,6 +2504,11 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("provider-session.detach-requested"),
+    payload: Schema.Struct({ providerSessionId: ProviderSessionId }),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("provider-session.detached"),
     payload: OrchestrationV2ProviderSessionDetachedJson,
   }),
@@ -3085,6 +3100,10 @@ export type OrchestrationV2ServerCommand =
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
+  stopCurrentThreadRuntime: "orchestration.stopCurrentThreadRuntime",
+  readCurrentRuntimeStopTarget: "orchestration.readCurrentRuntimeStopTarget",
+  observeCurrentThreadRuntimeStop: "orchestration.observeCurrentThreadRuntimeStop",
+  dispatchNativeBootstrap: "orchestration.dispatchNativeBootstrap",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
@@ -3428,6 +3447,10 @@ export class OrchestrationGetWorkflowScriptError extends Schema.TaggedError<Orch
 }
 
 export const OrchestrationV2RpcSchemas = {
+  dispatchNativeBootstrap: {
+    input: NativeBootstrapSubmission,
+    output: NativeBootstrapDispatchResultV2,
+  },
   dispatchCommand: {
     input: OrchestrationV2Command,
     output: OrchestrationV2DispatchCommandResult,

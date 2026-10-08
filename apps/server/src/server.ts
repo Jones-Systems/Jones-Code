@@ -1,5 +1,8 @@
+import { importedHistoryHttpApiLayer } from "./jones/importedHistory/http.ts";
 import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
 import * as JonesHttp from "./jones/http/registration.ts";
+import * as JonesUpdates from "./jones/updates/service.ts";
+import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
 import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
@@ -45,8 +48,11 @@ import { websocketRpcRouteLayer } from "./ws.ts";
 import {
   workstreamGatewayLayerLive,
   workstreamHttpApiLayer,
+  workstreamNativeAuthorityLayerLive,
+  workstreamRegistrationContextLayerLive,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
+import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
@@ -231,6 +237,15 @@ const HostPowerMonitorLayerLive = HostPowerMonitor.layer.pipe(
 // Reuses DesktopTelemetryReceiverLayerLive: a fresh receiver layer here
 // would open a second reader on the desktop telemetry fd.
 const DesktopAppUpdateLayerLive = DesktopAppUpdate.layer.pipe(
+  Layer.provide(DesktopTelemetryReceiverLayerLive),
+);
+
+const ServerSelfUpdateLayerLive = ServerSelfUpdate.layer.pipe(
+  Layer.provide(DesktopAppUpdateLayerLive),
+);
+
+const JonesUpdatesLayerLive = JonesUpdates.layer.pipe(
+  Layer.provide(ServerSelfUpdateLayerLive),
   Layer.provide(DesktopTelemetryReceiverLayerLive),
 );
 
@@ -457,6 +472,7 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
 );
 
 const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
+  Layer.provide(workstreamNativeAuthorityLayerLive),
   Layer.provide(ProviderEventIngestor.analyticsLive),
   Layer.provide(CheckpointStoreLayerLive),
   Layer.provide(GitWorkflowLayerLive),
@@ -659,12 +675,15 @@ const makeRoutesLayer = Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
+      Layer.provide(jonesUpdatesHttpApiLayer),
+      Layer.provide(importedHistoryHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
       JonesHttp.provideConversationAndVoiceReview,
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(workstreamHttpApiLayer),
+      Layer.provide(NativeWorkstreams.nativeWorkstreamsHttpApiLayer),
       Layer.provide(JonesHttp.hostStatusHttpApiLayer),
       Layer.provide(projectHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
@@ -691,9 +710,11 @@ const makeRoutesLayer = Layer.mergeAll(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
-  Layer.provide(workstreamGatewayLayerLive.pipe(Layer.provide(ServerEnvironment.identityLayer))),
+  Layer.provide(workstreamGatewayLayerLive),
+  Layer.provide(workstreamRegistrationContextLayerLive),
   Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
+  Layer.provide(ServerSelfUpdateLayerLive),
+  Layer.provide(JonesUpdatesLayerLive),
   Layer.provide(commandReadinessLayer),
   Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
   Layer.provide(workstreamResponseHeadersLayer),
@@ -717,9 +738,9 @@ const makeServerLayer = Layer.unwrap(
 
     const httpListeningLayer = Layer.effectDiscard(
       Effect.gen(function* () {
-        yield* HttpServer.HttpServer;
+        const server = yield* HttpServer.HttpServer;
         const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-        yield* startup.markHttpListening;
+        yield* startup.markHttpListening(server.address);
       }),
     );
     const runtimeStateLayer = Layer.effectDiscard(

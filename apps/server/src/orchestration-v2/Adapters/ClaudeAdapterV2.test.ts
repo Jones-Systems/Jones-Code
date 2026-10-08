@@ -32,6 +32,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
+import type * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -75,6 +76,7 @@ import type { ProviderContinuationRequest } from "../ProviderContinuationRequest
 import { makeProviderFailure } from "../ProviderFailure.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "../IdAllocator.ts";
+import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
 
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
 const AUTO_COMPACT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
@@ -7122,6 +7124,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const SUBAGENT_TASK_ID = "task-buffer-replace-subagent";
           const SUBAGENT_TOOL_USE_ID = "toolu-buffer-replace-subagent";
           const SUBAGENT_SUMMARY = "SUB_BUFFER_REPLACE_DONE";
+          const releaseRetiredFrame = yield* Deferred.make<void>();
+          const retiredFrameHandled = yield* Deferred.make<void>();
           const subagentTaskStarted = claudeSdkFrame({
             type: "system",
             subtype: "task_started",
@@ -7173,7 +7177,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
             prefix: "t3-claude-v2-subagent-buffer-replace-",
           });
-          const processQueues: Array<Queue.Queue<SDKMessage>> = [];
+          const processQueues: Array<Queue.Queue<SDKMessage, Cause.Done>> = [];
           const events: Array<ProviderAdapterV2Event> = [];
           const continuationRequests: Array<ProviderContinuationRequest> = [];
           const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
@@ -7194,15 +7198,39 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               allocateSessionId: Effect.succeed(WAKE_NATIVE_SESSION),
               open: () =>
                 Effect.gen(function* () {
-                  const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+                  const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
+                  const isFirstQuery = processQueues.length === 0;
                   processQueues.push(sdkMessages);
                   return {
-                    messages: Stream.fromQueue(sdkMessages),
+                    messages: isFirstQuery
+                      ? Stream.fromQueue(sdkMessages).pipe(
+                          Stream.concat(
+                            Stream.fromEffect(
+                              Deferred.await(releaseRetiredFrame).pipe(
+                                Effect.as(
+                                  claudeSdkFrame({
+                                    ...subagentNotification,
+                                    status: "failed",
+                                    summary: "FRESH_RETIRED_QUERY_OUTPUT",
+                                  }),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Stream.concat(
+                            Stream.fromEffect(
+                              Deferred.succeed(retiredFrameHandled, undefined),
+                            ).pipe(Stream.drain),
+                          ),
+                        )
+                      : Stream.fromQueue(sdkMessages),
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     setPermissionMode: () => Effect.void,
                     interrupt: Effect.void,
-                    close: Queue.shutdown(sdkMessages),
+                    close: isFirstQuery
+                      ? Queue.end(sdkMessages).pipe(Effect.asVoid)
+                      : Queue.shutdown(sdkMessages),
                   };
                 }),
               forkSession: () => Effect.die("unused forkSession"),
@@ -7299,6 +7327,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }),
           );
           assert.equal(processQueues.length, 2);
+          yield* Deferred.succeed(releaseRetiredFrame, undefined);
+          yield* Deferred.await(retiredFrameHandled);
           const secondProcess = processQueues[1]!;
           yield* Queue.offer(
             secondProcess,
@@ -7344,6 +7374,37 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(finalSubagent?.status, "completed");
           assert.equal(finalSubagent?.result, SUBAGENT_SUMMARY);
           assert.equal(finalSubagent?.runId, subagentEvents()[0]?.subagent.runId);
+          const firstSubagentOrigin = ProviderEventOrigin.readProviderEventOrigin(
+            subagentEvents()[0]!,
+          );
+          const finalSubagentEvent = subagentEvents().at(-1)!;
+          const finalSubagentOrigin =
+            ProviderEventOrigin.readProviderEventOrigin(finalSubagentEvent);
+          const sessionEvent = events.find((event) => event.type === "provider_turn.updated")!;
+          const sessionOrigin = ProviderEventOrigin.readProviderEventOrigin(sessionEvent);
+          assert.isDefined(firstSubagentOrigin);
+          assert.isDefined(finalSubagentOrigin);
+          assert.isDefined(sessionOrigin);
+          assert.strictEqual(finalSubagentOrigin!.producer.token, sessionOrigin!.producer.token);
+          assert.notStrictEqual(
+            finalSubagentOrigin!.producer.token,
+            firstSubagentOrigin!.producer.token,
+          );
+          assert.strictEqual(
+            finalSubagentOrigin!.producer.revalidateCurrent,
+            sessionOrigin!.producer.revalidateCurrent,
+          );
+          assert.isUndefined(finalSubagentOrigin!.producer.runtimeGeneration);
+          assert.isUndefined(finalSubagentOrigin!.turn);
+          assert.isUndefined(finalSubagentEvent.runtimeEvidence);
+          yield* ProviderEventOrigin.revalidateProviderEventOrigin(finalSubagentEvent, runtime);
+          assert.equal(
+            (yield* firstSubagentOrigin!.producer.revalidateCurrent.pipe(Effect.result))._tag,
+            "Failure",
+          );
+          assert.isFalse(
+            events.some((event) => JSON.stringify(event).includes("FRESH_RETIRED_QUERY_OUTPUT")),
+          );
           const subagentNodeEvents = events.filter(
             (event): event is Extract<ProviderAdapterV2Event, { type: "node.updated" }> =>
               event.type === "node.updated" &&

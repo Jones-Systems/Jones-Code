@@ -18,6 +18,11 @@ vi.mock("@t3tools/client-runtime/state/thread-workflows", () => ({
   deriveThreadQueueWorkflowState: () => state.workflow,
 }));
 
+vi.mock("../../jones/importedHistory/ContinuationChoiceBanner", () => ({
+  importedHistoryCommands: { review: Symbol("reviewImportedHistory") },
+  ContinuationChoiceBanner: () => null,
+}));
+
 vi.mock("../../state/entities", () => ({
   useThreadProjection: () => state.projection,
 }));

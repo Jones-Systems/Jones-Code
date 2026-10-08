@@ -1,6 +1,6 @@
-import * as Crypto from "node:crypto";
-import * as FS from "node:fs";
-import * as Path from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 import { createOwnedRoot, disposeOwnedRoot } from "./guard.mjs";
 import { runOwnedChild } from "./lifecycle.mjs";
 import {
@@ -14,13 +14,13 @@ export async function withPreparedHistoricalSources(options, use) {
   if (
     options?.explicitHistoricalRequest !== true ||
     typeof use !== "function" ||
-    !Path.isAbsolute(options.gitExecutable ?? "")
+    !NodePath.isAbsolute(options.gitExecutable ?? "")
   )
     throw Object.assign(
       new Error("historical source preparation needs explicit opt-in and an exact Git executable"),
       { code: "unavailable" },
     );
-  const backing = FS.statfsSync(options.parentPath);
+  const backing = NodeFS.statfsSync(options.parentPath);
   if ([0x01021994, 0x858458f6].includes(backing.type))
     throw new Error("historical clones require disk-backed scratch");
   const policy = {
@@ -35,7 +35,7 @@ export async function withPreparedHistoricalSources(options, use) {
   const owner = createOwnedRoot({
     ...options,
     policy,
-    childName: `historical-sources-${Crypto.randomUUID()}`,
+    childName: `historical-sources-${NodeCrypto.randomUUID()}`,
   });
   const root = owner.creationReceipt.canonicalRootPath;
   const children = [];
@@ -43,8 +43,8 @@ export async function withPreparedHistoricalSources(options, use) {
   const environment = { [sourceParentEnvironment]: root };
   const childEnvironment = {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
-    HOME: Path.join(root, "home"),
-    TMPDIR: Path.join(root, "tmp"),
+    HOME: NodePath.join(root, "home"),
+    TMPDIR: NodePath.join(root, "tmp"),
     LANG: "C.UTF-8",
     TZ: "UTC",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -68,8 +68,8 @@ export async function withPreparedHistoricalSources(options, use) {
       throw Object.assign(new Error("historical source Git operation failed"), { receipt });
   };
   try {
-    FS.mkdirSync(childEnvironment.HOME, { mode: 0o700 });
-    FS.mkdirSync(childEnvironment.TMPDIR, { mode: 0o700 });
+    NodeFS.mkdirSync(childEnvironment.HOME, { mode: 0o700 });
+    NodeFS.mkdirSync(childEnvironment.TMPDIR, { mode: 0o700 });
     const sources = [];
     for (const pin of qualificationSourcePins) {
       options.signal?.throwIfAborted();
@@ -119,7 +119,7 @@ export async function withPreparedHistoricalSources(options, use) {
       },
     };
     if (cleanup.outcome !== "complete")
-      FS.writeFileSync(`${root}.json`, `${JSON.stringify(error.evidence)}\n`, {
+      NodeFS.writeFileSync(`${root}.json`, `${JSON.stringify(error.evidence)}\n`, {
         flag: "wx",
         mode: 0o600,
       });

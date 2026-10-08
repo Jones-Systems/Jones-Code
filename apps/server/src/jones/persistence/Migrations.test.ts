@@ -66,57 +66,59 @@ const futureMigration = Effect.gen(function* () {
 });
 const futureEntries = [...originals, [100, "FutureProbe", futureMigration] as const];
 
-it.effect("runs upstream 1–56 and all six exact Jones effects once on a fresh V2 database", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    assert.deepStrictEqual(yield* runMigrations(), migrationManifest);
-    assert.deepStrictEqual(
-      yield* sql`SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`,
-      names,
-    );
-    assert.deepStrictEqual(
-      yield* sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
-      migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
-    );
-    assert.ok(
-      (yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_thread_sessions)`).some(
-        ({ name }) => name === "runtime_identity_json",
-      ),
-    );
-    assert.deepStrictEqual(
-      yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (
+it.effect(
+  "runs upstream 1–56, the six released Jones effects and receiving native execution once",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(yield* runMigrations(), migrationManifest);
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id < 100 ORDER BY migration_id`,
+        names,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
+        migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
+      );
+      assert.ok(
+        (yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_thread_sessions)`).some(
+          ({ name }) => name === "runtime_identity_json",
+        ),
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (
       'worktree_ownership_leases', 'native_creation_intents', 'native_creation_reserved_command_identities',
       'workstreams_native_attempts', 'workstreams_native_enrollments'
     ) ORDER BY name`,
-      [
-        { name: "native_creation_intents" },
-        { name: "native_creation_reserved_command_identities" },
-        { name: "workstreams_native_attempts" },
-        { name: "workstreams_native_enrollments" },
-        { name: "worktree_ownership_leases" },
-      ],
-    );
-    const ledger = yield* readLedger;
-    const schema = yield* readSchema;
-    assert.deepStrictEqual(yield* runMigrations(), []);
-    assert.deepStrictEqual(yield* readLedger, ledger);
-    assert.deepStrictEqual(yield* readSchema, schema);
-    yield* sql`INSERT INTO workstreams_native_attempts VALUES (
+        [
+          { name: "native_creation_intents" },
+          { name: "native_creation_reserved_command_identities" },
+          { name: "workstreams_native_attempts" },
+          { name: "workstreams_native_enrollments" },
+          { name: "worktree_ownership_leases" },
+        ],
+      );
+      const ledger = yield* readLedger;
+      const schema = yield* readSchema;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* readLedger, ledger);
+      assert.deepStrictEqual(yield* readSchema, schema);
+      yield* sql`INSERT INTO workstreams_native_attempts VALUES (
       'owner', 'principal', 'command', '{}', ${"a".repeat(64)}, ${"b".repeat(64)}, '{}', 'native', 'created', NULL
     )`;
-    yield* sql`UPDATE workstreams_native_attempts SET dispatch_started_at = 'started'`;
-    assert.ok(
-      Exit.isFailure(
-        yield* Effect.exit(
-          sql`UPDATE workstreams_native_attempts SET dispatch_started_at = 'again'`,
+      yield* sql`UPDATE workstreams_native_attempts SET dispatch_started_at = 'started'`;
+      assert.ok(
+        Exit.isFailure(
+          yield* Effect.exit(
+            sql`UPDATE workstreams_native_attempts SET dispatch_started_at = 'again'`,
+          ),
         ),
-      ),
-    );
-    yield* sql`INSERT INTO native_creation_automation_enrollments VALUES ('session', 'enrolled')`;
-    assert.ok(
-      Exit.isFailure(yield* Effect.exit(sql`DELETE FROM native_creation_automation_enrollments`)),
-    );
-  }).pipe(Effect.provide(memory)),
+      );
+      yield* sql`INSERT INTO native_creation_automation_enrollments VALUES ('session', 'enrolled')`;
+      assert.ok(
+        Exit.isFailure(yield* Effect.exit(sql`DELETE FROM native_creation_automation_enrollments`)),
+      );
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect.each([0, 1, 2, 3, 4, 5, 6])(
@@ -152,7 +154,7 @@ it.effect.each([0, 1, 2, 3, 4, 5, 6])(
       );
       assert.deepStrictEqual((yield* readLedger).slice(0, prefix), before);
       assert.deepStrictEqual(
-        yield* sql`SELECT migration_id, name FROM jones_sql_migrations ORDER BY migration_id`,
+        yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id < 100 ORDER BY migration_id`,
         names,
       );
       for (const row of oldSchema) {
@@ -195,7 +197,8 @@ it.effect("preserves applied lookup 007 and still applies a registered future mi
     const before = yield* readLedger;
     const index =
       yield* sql`SELECT sql FROM sqlite_master WHERE name = 'idx_orch_events_thread_creation_lookup'`;
-    yield* runMigrations();
+    // Keep the original FutureProbe fixture isolated from the installed receiving migration 100.
+    yield* runJonesMigrations(originals);
     assert.deepStrictEqual(yield* readLedger, before);
     assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), [[100, "FutureProbe"]]);
     assert.deepStrictEqual(yield* runJonesMigrations(futureEntries), []);
@@ -243,7 +246,7 @@ it.effect.each([5, 7])(
       const logger = Logger.make<unknown, void>(({ message }) => {
         logs.push(...(Array.isArray(message) ? message : [message]));
       });
-      yield* runMigrations().pipe(Effect.provide(Logger.layer([logger])));
+      yield* runJonesMigrations(originals).pipe(Effect.provide(Logger.layer([logger])));
       assert.include(
         logs,
         "Preserving known foreign Jones migration history without adopting its features",
@@ -312,7 +315,7 @@ it.effect.each([
 it.effect("rejects a future ledger gap instead of skipping a pending lower registered ID", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations();
+    yield* seedLegacy();
     yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (101, 'LaterProbe')`;
     const before = yield* readLedger;
     const result = yield* Effect.exit(
@@ -382,4 +385,33 @@ it.effect("preserves preexisting identity JSON when the column predates the fork
       { runtime_identity_json: identity },
     ]);
   }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "receiving native execution schema preserves ordinary startup and foreign evidence without adopting it",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedLegacy();
+      yield* sql`INSERT INTO jones_sql_migrations(migration_id,name) VALUES(7,'V2NativeAcceptance')`;
+      const before = yield* readLedger;
+      yield* runMigrations();
+      assert.deepStrictEqual((yield* readLedger).slice(0, before.length), before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id=100`,
+        [{ migration_id: 100, name: "NativeCreationExecution" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'jones_native_creation_execution_%' ORDER BY name`,
+        [
+          { name: "jones_native_creation_execution_acceptances" },
+          { name: "jones_native_creation_execution_confirmations" },
+          { name: "jones_native_creation_execution_holds" },
+          { name: "jones_native_creation_execution_starts" },
+        ],
+      );
+      const ledger = yield* readLedger;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* readLedger, ledger);
+    }).pipe(Effect.provide(memory)),
 );

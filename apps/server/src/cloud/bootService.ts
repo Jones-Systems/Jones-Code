@@ -19,6 +19,11 @@ import * as Schema from "effect/Schema";
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { verifyPrivateServiceRuntimeCache } from "../jones/hostService/privateRuntime.ts";
+import {
+  QUALIFIED_RUNTIME_RECEIPT,
+  readQualifiedRuntimeReceipt,
+} from "../jones/cloud/qualifiedRuntime.ts";
 import {
   ensurePinnedRuntimeInstalled,
   pinnedRuntimeCommand,
@@ -532,13 +537,31 @@ export class BootServiceDowngradeRefusedError extends Schema.TaggedError<BootSer
   }
 }
 
+export class BootServiceBootstrapRequiredError extends Schema.TaggedError<BootServiceBootstrapRequiredError>()(
+  "BootServiceBootstrapRequiredError",
+  {
+    reason: Schema.Literals([
+      "desktop-owned-home",
+      "qualified-activation-required",
+      "source-unqualified",
+    ]),
+  },
+) {
+  override get message(): string {
+    return this.reason === "desktop-owned-home"
+      ? "bootstrap-required: This native home is desktop-owned; activate its qualified app through the desktop installer."
+      : "bootstrap-required: Version-only service setup cannot repoint a Jones installation. Use qualified staging and explicit Install, or complete source-qualified launcher bootstrap on this host.";
+  }
+}
+
 export type BootServiceError =
   | BootServiceUnsupportedError
   | BootServiceCommandError
   | BootServiceInstallError
   | BootServicePrerequisiteError
   | BootServiceUpdatePendingError
-  | BootServiceDowngradeRefusedError;
+  | BootServiceDowngradeRefusedError
+  | BootServiceBootstrapRequiredError;
 
 export interface BootServiceStatus {
   readonly supported: boolean;
@@ -593,6 +616,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   readonly identity?: BootServiceIdentity;
   readonly environment?: Readonly<Record<string, string>>;
   readonly allowEnableLinger?: boolean;
+  readonly runtimeMode?: "verified-private-artifact";
 }) {
   const hostExecPath = yield* HostProcessExecutablePath;
   const platform = yield* HostProcessPlatform;
@@ -793,6 +817,80 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     readonly start?: boolean;
   }) {
     const manager = yield* requireManager;
+    const exists = (file: string) =>
+      fs.exists(file).pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
+    // Qualification is checked before administrative probes, downloads or
+    // stops. A generic version request must never replace the native pointer.
+    if (yield* exists(path.join(input.baseDir, "runtime", "jones-active-install.json"))) {
+      return yield* new BootServiceBootstrapRequiredError({ reason: "desktop-owned-home" });
+    }
+    const priorState = yield* fs.readFileString(statePath).pipe(Effect.option);
+    const activeVersion = Option.isSome(priorState)
+      ? serviceStateActiveVersion(priorState.value)
+      : undefined;
+    const privateRuntime = input.runtimeMode === "verified-private-artifact";
+    const qualified =
+      (!privateRuntime &&
+        (input.cliVersion.includes("-preview.") ||
+          activeVersion?.includes("-preview.") === true)) ||
+      (yield* exists(path.join(runtimePaths.versionDir, QUALIFIED_RUNTIME_RECEIPT))) ||
+      (activeVersion === undefined
+        ? false
+        : yield* exists(
+            path.join(
+              input.baseDir,
+              "runtime",
+              "versions",
+              activeVersion,
+              QUALIFIED_RUNTIME_RECEIPT,
+            ),
+          ));
+    if (qualified) {
+      const state = Option.isSome(priorState) ? parseServiceState(priorState.value) : undefined;
+      const unit = yield* fs.readFileString(unitPath).pipe(Effect.option);
+      if (
+        options?.start === false &&
+        state?.activeVersion === input.cliVersion &&
+        state.update?.status !== "pending" &&
+        Option.isSome(unit) &&
+        unit.value === manager.render(plan)
+      ) {
+        yield* Effect.tryPromise({
+          try: () =>
+            readQualifiedRuntimeReceipt(input.baseDir, input.cliVersion, {
+              platform,
+              architecture: arch,
+            }),
+          catch: () => new BootServiceBootstrapRequiredError({ reason: "source-unqualified" }),
+        });
+        return plan;
+      }
+      return yield* new BootServiceBootstrapRequiredError({
+        reason: "qualified-activation-required",
+      });
+    }
+    const verifyPrivateCache = (installedVersion: string | undefined) =>
+      verifyPrivateServiceRuntimeCache({
+        baseDir: input.baseDir,
+        version: input.cliVersion,
+        activeVersion: installedVersion,
+        fs,
+        path,
+        runner,
+        platform,
+        arch,
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new BootServiceInstallError({
+              cause,
+              ...(cause._tag === "JonesRuntimePolicyError" ? { reason: cause.message } : {}),
+            }),
+        ),
+      );
+    if (privateRuntime) {
+      yield* verifyPrivateCache(activeVersion);
+    }
     yield* fs
       .makeDirectory(input.logsDir, { recursive: true })
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -803,61 +901,63 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     }
 
     // Prepare every immutable artifact before stopping the installed unit.
-    yield* ensurePinnedRuntimeInstalled({
-      baseDir: input.baseDir,
-      version: input.cliVersion,
-      fs,
-      path,
-      runner,
-      httpClient,
-      platform,
-      arch,
-      releaseBaseUrl,
-      validate: (runtime) =>
-        runner
-          .run({
-            command: pinnedRuntimeCommand(runtime).command,
-            args: [...pinnedRuntimeCommand(runtime).args, "--version"],
-            timeout: Duration.seconds(30),
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new PinnedRuntimeInstallError({
-                  step: "verifying the pinned t3 runtime",
-                  cause,
-                }),
-            ),
-            Effect.flatMap((result) => {
-              const reportedVersion = /\bv(\S+)\s*$/.exec(result.stdout)?.[1];
-              return result.code === 0 && reportedVersion === input.cliVersion
-                ? Effect.void
-                : Effect.fail(
-                    new PinnedRuntimeInstallError({
-                      step: "verifying the pinned t3 runtime",
-                      exitCode: Number(result.code),
-                      stdoutLength: result.stdout.length,
-                      stderrLength: result.stderr.length,
-                    }),
-                  );
-            }),
-          ),
-    }).pipe(
-      Effect.mapError((error) =>
-        error._tag === "PinnedRuntimeInstallError"
-          ? new BootServiceCommandError({
-              step: error.step,
-              exitCode: error.exitCode,
-              stdoutLength: error.stdoutLength,
-              stderrLength: error.stderrLength,
-              cause: error,
+    if (!privateRuntime) {
+      yield* ensurePinnedRuntimeInstalled({
+        baseDir: input.baseDir,
+        version: input.cliVersion,
+        fs,
+        path,
+        runner,
+        httpClient,
+        platform,
+        arch,
+        releaseBaseUrl,
+        validate: (runtime) =>
+          runner
+            .run({
+              command: pinnedRuntimeCommand(runtime).command,
+              args: [...pinnedRuntimeCommand(runtime).args, "--version"],
+              timeout: Duration.seconds(30),
             })
-          : new BootServiceInstallError({
-              cause: error,
-              ...(error._tag === "JonesRuntimePolicyError" ? { reason: error.message } : {}),
-            }),
-      ),
-    );
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PinnedRuntimeInstallError({
+                    step: "verifying the pinned t3 runtime",
+                    cause,
+                  }),
+              ),
+              Effect.flatMap((result) => {
+                const reportedVersion = /\bv(\S+)\s*$/.exec(result.stdout)?.[1];
+                return result.code === 0 && reportedVersion === input.cliVersion
+                  ? Effect.void
+                  : Effect.fail(
+                      new PinnedRuntimeInstallError({
+                        step: "verifying the pinned t3 runtime",
+                        exitCode: Number(result.code),
+                        stdoutLength: result.stdout.length,
+                        stderrLength: result.stderr.length,
+                      }),
+                    );
+              }),
+            ),
+      }).pipe(
+        Effect.mapError((error) =>
+          error._tag === "PinnedRuntimeInstallError"
+            ? new BootServiceCommandError({
+                step: error.step,
+                exitCode: error.exitCode,
+                stdoutLength: error.stdoutLength,
+                stderrLength: error.stderrLength,
+                cause: error,
+              })
+            : new BootServiceInstallError({
+                cause: error,
+                ...(error._tag === "JonesRuntimePolicyError" ? { reason: error.message } : {}),
+              }),
+        ),
+      );
+    }
     const installed = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -883,6 +983,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           // A remote update can finish after the CLI checks status. Read its
           // final version after the launcher stops and before changing files.
           const installedVersion = serviceStateActiveVersion(previousStateText.value);
+          if (privateRuntime && installedVersion !== activeVersion) {
+            yield* verifyPrivateCache(installedVersion);
+          }
           if (
             installedVersion !== undefined &&
             options?.allowDowngrade !== true &&

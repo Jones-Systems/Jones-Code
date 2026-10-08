@@ -1,3 +1,11 @@
+import {
+  decodeImportedHistoryCorrelation,
+  encodeImportedHistoryCorrelation,
+  type ImportedHistoryCorrelation,
+  type ImportedHistoryCorrelationStorage,
+} from "@t3tools/client-runtime/jones/imported-history/continuation";
+import type { ThreadId } from "@t3tools/contracts";
+import { scopedThreadKey } from "../lib/scopedEntities";
 import { useAtomValue } from "@effect/atom-react";
 import {
   EnvironmentId as EnvironmentIdSchema,
@@ -325,6 +333,7 @@ export class ComposerDraftPersistenceError extends Schema.TaggedError<ComposerDr
 }
 
 export interface ComposerDraft {
+  readonly importedHistoryCorrelation?: string;
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
@@ -387,6 +396,7 @@ const PersistedComposerContextSchema = Schema.Struct({
 });
 
 const ComposerDraftSchema = Schema.Struct({
+  importedHistoryCorrelation: Schema.optional(Schema.String),
   text: Schema.String,
   context: Schema.optional(PersistedComposerContextSchema),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
@@ -564,7 +574,8 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.modelSelection === undefined &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
-    draft.workspaceSelection === undefined
+    draft.workspaceSelection === undefined &&
+    draft.importedHistoryCorrelation === undefined
   );
 }
 
@@ -1832,7 +1843,9 @@ export function clearComposerDraft(
       return current;
     }
     const next = { ...current };
-    delete next[draftKey];
+    const correlation = current[draftKey]?.importedHistoryCorrelation;
+    if (correlation === undefined) delete next[draftKey];
+    else next[draftKey] = { ...EMPTY_DRAFT, importedHistoryCorrelation: correlation };
     return next;
   });
   if (!options?.deferAttachmentCleanup) {
@@ -1976,4 +1989,69 @@ export function useStickyComposerModelSelection(): ModelSelection | null {
     ensureComposerDraftsLoaded();
   }, []);
   return selection;
+}
+
+const importedHistoryLocks = new Map<string, SerializedAsyncQueue>();
+export function mobileImportedHistoryStorage(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): ImportedHistoryCorrelationStorage {
+  const key = scopedThreadKey(environmentId, threadId);
+  let lock = importedHistoryLocks.get(key);
+  if (lock === undefined) {
+    lock = new SerializedAsyncQueue();
+    importedHistoryLocks.set(key, lock);
+  }
+  const queue = lock;
+  const read = () => {
+    const raw = getComposerDraftSnapshot(key).importedHistoryCorrelation;
+    if (raw === undefined) return null;
+    const value = decodeImportedHistoryCorrelation(raw);
+    if (value.environmentId !== environmentId || value.command.threadId !== threadId)
+      throw new Error("Saved imported history choice belongs to another environment or thread.");
+    return value;
+  };
+  return {
+    withLock: (operation) =>
+      queue.run(async () => {
+        ensureComposerDraftsLoaded();
+        if (loadPromise !== null) await loadPromise;
+        return operation();
+      }),
+    read,
+    reserve(value) {
+      if (
+        read() !== null ||
+        value.environmentId !== environmentId ||
+        value.command.threadId !== threadId
+      )
+        throw new Error("Imported history correlation cannot be replaced.");
+      const encoded = encodeImportedHistoryCorrelation(value);
+      updateComposerDrafts((current) => ({
+        ...current,
+        [key]: { ...normalizeDraft(current[key]), importedHistoryCorrelation: encoded },
+      }));
+    },
+    remove(value) {
+      if (
+        getComposerDraftSnapshot(key).importedHistoryCorrelation !==
+        encodeImportedHistoryCorrelation(value)
+      )
+        return;
+      updateComposerDrafts((current) => {
+        const { importedHistoryCorrelation: _correlation, ...draft } = normalizeDraft(current[key]);
+        return withComposerDraft(current, key, draft);
+      });
+    },
+  };
+}
+export async function flushMobileImportedHistoryCorrelation(
+  value: ImportedHistoryCorrelation,
+): Promise<void> {
+  const key = scopedThreadKey(value.environmentId, value.command.threadId);
+  const encoded = encodeImportedHistoryCorrelation(value);
+  await flushComposerDrafts();
+  const persisted = await loadPersistedComposerState();
+  if (persisted.drafts[key]?.importedHistoryCorrelation !== encoded)
+    throw new Error("Imported history correlation was not persisted exactly.");
 }

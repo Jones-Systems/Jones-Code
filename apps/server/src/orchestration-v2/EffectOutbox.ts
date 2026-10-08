@@ -1,3 +1,4 @@
+import { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
 import {
   CheckpointId,
@@ -34,6 +35,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("provider-session.detach"),
+    runtimeStopCommandId: Schema.optional(CommandId),
     providerSessionId: ProviderSessionId,
     detail: Schema.optional(Schema.String),
     /** Set on terminal detaches (thread archive/delete): revoke the thread's MCP credentials. */
@@ -141,6 +143,7 @@ export interface OrchestrationEffectV2 {
   readonly id: string;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
   readonly request: OrchestrationEffectRequestV2;
   readonly status: OrchestrationEffectStatusV2;
   readonly attemptCount: number;
@@ -157,6 +160,7 @@ export interface PendingOrchestrationEffectV2 {
   readonly id: string;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
+  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
   readonly request: OrchestrationEffectRequestV2;
   readonly availableAt?: DateTime.Utc;
 }
@@ -256,13 +260,36 @@ const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
 );
 
+export const NativeOrchestrationEffectPayloadV2 = Schema.Struct({
+  request: OrchestrationEffectRequestV2,
+  nativeCreationExecutionReference: NativeCreationExecutionReferenceV2,
+});
+const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffectPayloadV2, {
+  onExcessProperty: "error",
+});
+const encodeNativePayload = Schema.encodeSync(
+  Schema.fromJsonString(NativeOrchestrationEffectPayloadV2),
+);
+// An invalid native envelope must never fall back to ordinary provider execution.
+export const decodeOrchestrationEffectPayloadV2 = (payload: string) =>
+  Effect.gen(function* () {
+    const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(payload);
+    if (
+      typeof raw === "object" &&
+      raw !== null &&
+      (Object.hasOwn(raw, "request") || Object.hasOwn(raw, "nativeCreationExecutionReference"))
+    )
+      return yield* decodeNativePayload(raw);
+    return { request: yield* decodeRequest(payload) };
+  });
+
 const rowToEffect = (row: EffectRow) =>
-  decodeRequest(row.payload_json).pipe(
-    Effect.map((request): OrchestrationEffectV2 => ({
+  decodeOrchestrationEffectPayloadV2(row.payload_json).pipe(
+    Effect.map((payload): OrchestrationEffectV2 => ({
       id: row.effect_id,
       commandId: CommandId.make(row.command_id),
       threadId: ThreadId.make(row.thread_id),
-      request,
+      ...payload,
       status: row.status as OrchestrationEffectStatusV2,
       attemptCount: row.attempt_count,
       availableAt: row.available_at,
@@ -421,7 +448,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${effect.commandId},
                 ${effect.threadId},
                 ${effect.request.type},
-                ${encodeRequest(effect.request)},
+                ${effect.nativeCreationExecutionReference === undefined ? encodeRequest(effect.request) : encodeNativePayload({ request: effect.request, nativeCreationExecutionReference: effect.nativeCreationExecutionReference })},
                 'pending',
                 0,
                 ${DateTime.formatIso(effect.availableAt ?? now)},
@@ -664,6 +691,23 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       succeed: ({ effectId, workerId }) =>
         Effect.gen(function* () {
           const now = DateTime.formatIso(yield* DateTime.now);
+          const current = yield* sql<{
+            payload_json: string;
+          }>`SELECT payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${effectId}`;
+          if (current.length === 1) {
+            const payload = yield* decodeOrchestrationEffectPayloadV2(current[0]!.payload_json);
+            if ("nativeCreationExecutionReference" in payload) {
+              const confirmed =
+                yield* sql`SELECT effect.effect_id FROM orchestration_v2_effect_outbox effect
+                JOIN jones_native_creation_execution_confirmations confirmation ON confirmation.effect_id=effect.effect_id
+                JOIN jones_native_creation_execution_starts start ON start.effect_id=effect.effect_id
+                WHERE effect.effect_id=${effectId} AND effect.lease_owner=${workerId} AND effect.lease_expires_at>${now}
+                AND confirmation.worker_id=${workerId} AND confirmation.expected_attempt=effect.attempt_count
+                AND start.lease_expires_at=effect.lease_expires_at
+                AND NOT EXISTS(SELECT 1 FROM jones_native_creation_execution_holds hold WHERE hold.effect_id=effect.effect_id)`;
+              if (confirmed.length !== 1) return false;
+            }
+          }
           const rows = yield* sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
@@ -699,7 +743,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           const rows = yield* sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
-              status = 'pending',
+              status = CASE WHEN json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL THEN 'pending' ELSE 'failed' END,
               available_at = ${availableAt},
               lease_owner = NULL,
               lease_expires_at = NULL,

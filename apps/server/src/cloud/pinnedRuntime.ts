@@ -530,13 +530,21 @@ export const verifyPinnedRuntimeProvenance = Effect.fn(
 });
 
 export const ensurePinnedRuntimeInstalled = (input: PinnedRuntimeInstallInput) =>
-  pinnedRuntimeInstallLock.withPermit(
-    installPinnedRuntime({
-      ...input,
-      requireInstall: requireExplicitJonesReleaseBaseUrl(input.releaseBaseUrl).pipe(Effect.asVoid),
-      installArchive: (stagingDir) => installFromArchive(input, stagingDir),
-    }),
-  );
+  input.version.includes("-preview.")
+    ? Effect.fail(
+        new PinnedRuntimeInstallError({
+          step: "requiring a qualified Jones Actions artifact for preview runtime staging",
+        }),
+      )
+    : pinnedRuntimeInstallLock.withPermit(
+        installPinnedRuntime({
+          ...input,
+          requireInstall: requireExplicitJonesReleaseBaseUrl(input.releaseBaseUrl).pipe(
+            Effect.asVoid,
+          ),
+          installArchive: (stagingDir) => installFromArchive(input, stagingDir),
+        }),
+      );
 
 interface LocalJonesArtifactInput {
   readonly artifactDir: string;

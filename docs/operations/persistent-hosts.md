@@ -95,6 +95,13 @@ pins that CLI's package version. `stage-runtime` can stage a different version,
 but staging alone does not switch the active service. Execute the matching
 artifact CLI for setup; do not use an arbitrary source CLI to provision it.
 
+`jones host setup` uses a verified private-artifact cache, including preview
+artifacts. It validates the cached executable before service changes and never
+downloads a replacement. Ordinary `service install` retains the source-qualified
+preview restrictions. A desktop-owned home or a runtime with qualified update
+receipts must use its qualified activation procedure; private setup does not
+replace those receipts or take over that home.
+
 Review the printed plan. Under the approved rollout, rerun setup without
 `--dry-run`. Add `--allow-linger-enable` only with coverage for that effect.
 Setup writes the fixed loopback configuration, explicitly disables server-owned
@@ -164,7 +171,8 @@ tailscale serve status --json
 Do not blindly reinstall, uninstall, delete a cache, or retry an uncertain route
 write. Reconcile the observed service/config/runtime against the approved plan.
 For a known installed service needing repair, use its printed instructions;
-`service install --base-dir "$JONES_BASE"` repairs and
+rerun the matching artifact CLI's `jones host setup` with the retained base and
+ports to repair a private preview service.
 `service restart --base-dir "$JONES_BASE"` interrupts work. Only use the verified
 matching Jones CLI and include those effects in approval.
 

@@ -1,3 +1,10 @@
+import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
+import {
+  NativeBootstrapDispatchError,
+  NativeCreationRejectionCode,
+  EnvironmentAuthenticatedPrincipal,
+  CurrentRuntimeStopRequestError,
+} from "@t3tools/contracts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { QueueDispatchCommand } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
@@ -1191,6 +1198,19 @@ const makeWsRpcLayer = (
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const currentRuntimeStop = yield* Effect.serviceOption(RuntimeStop.CurrentRuntimeStop);
+      const withCurrentRuntimeStop = <A, E, R>(
+        action: (owner: RuntimeStop.CurrentRuntimeStop["Service"]) => Effect.Effect<A, E, R>,
+      ): Effect.Effect<A, E | CurrentRuntimeStopRequestError, R> =>
+        Option.isNone(currentRuntimeStop)
+          ? Effect.fail(
+              new CurrentRuntimeStopRequestError({ reason: "captured_runtime_stop_unavailable" }),
+            )
+          : action(currentRuntimeStop.value);
+      const runtimeStopPrincipal = EnvironmentAuthenticatedPrincipal.of({
+        ...currentSession,
+        scopes: new Set(currentSession.scopes),
+      });
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -1803,6 +1823,79 @@ const makeWsRpcLayer = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
+            startup
+              .enqueueCommand(
+                withCurrentRuntimeStop((owner) => owner.stop(input)).pipe(
+                  Effect.provideService(EnvironmentAuthenticatedPrincipal, runtimeStopPrincipal),
+                ),
+              )
+              .pipe(
+                Effect.mapError(
+                  () =>
+                    new CurrentRuntimeStopRequestError({
+                      reason: "captured_runtime_stop_rejected",
+                    }),
+                ),
+              ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
+            withCurrentRuntimeStop((owner) => owner.observe(input)).pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, runtimeStopPrincipal),
+              Effect.mapError(
+                (error) => new CurrentRuntimeStopRequestError({ reason: error.reason }),
+              ),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget,
+            withCurrentRuntimeStop((owner) => owner.readTarget(input.threadId)).pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, runtimeStopPrincipal),
+              Effect.mapError(
+                (error) => new CurrentRuntimeStopRequestError({ reason: error.reason }),
+              ),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: (submission) =>
+          observeRpcEffect(
+            ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap,
+            threadLaunch.dispatchNativeBootstrap === undefined
+              ? Effect.fail(
+                  new NativeBootstrapDispatchError({
+                    code: "unsupported_authority",
+                    message: "Native bootstrap is unavailable",
+                  }),
+                )
+              : startup
+                  .enqueueCommand(
+                    threadLaunch.dispatchNativeBootstrap(submission).pipe(
+                      Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+                        ...currentSession,
+                        scopes: new Set(currentSession.scopes),
+                      }),
+                    ),
+                  )
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new NativeBootstrapDispatchError({
+                          code:
+                            "code" in cause &&
+                            typeof cause.code === "string" &&
+                            Schema.is(NativeCreationRejectionCode)(cause.code)
+                              ? cause.code
+                              : "unresolved_claim",
+                          message: "Native bootstrap was rejected; observe the original claim",
+                        }),
+                    ),
+                  ),
+            { "rpc.aggregate": "orchestrationV2" },
+          ),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Schema.is(QueueDispatchCommand)(command)
             ? observeRpcEffect(
