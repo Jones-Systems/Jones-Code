@@ -3,10 +3,6 @@
   "feature": "persistent-private-services",
   "jonesOwnedPaths": ["apps/server/src/jones/hostService/", "packages/tailscale/src/jones/"],
   "hookPaths": [
-    "apps/server/src/cloud/bootService.ts",
-    "apps/server/src/cloud/pinnedRuntime.ts",
-    "apps/server/src/cloud/selfUpdate.ts",
-    "apps/server/src/cli/service.ts",
     "apps/server/src/cli/pair.ts",
     "packages/tailscale/src/tailscale.ts",
     "packages/tailscale/src/index.ts"
