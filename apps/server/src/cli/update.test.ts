@@ -18,6 +18,7 @@ import {
 
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
+  isJonesBootServiceCgroup,
   assertReleaseUpdateAllowed,
   repointLauncher,
   resolveLauncherPath,
@@ -304,4 +305,14 @@ describe("t3 update release source", () => {
         );
       }),
   );
+});
+
+it("recognizes only the Jones service cgroup for legacy server lineage", () => {
+  assert.isTrue(
+    isJonesBootServiceCgroup("0::/user.slice/user-501.slice/app.slice/jones-code.service"),
+  );
+  assert.isTrue(isJonesBootServiceCgroup("1:name=systemd:/user.slice/jones-code.service/worker"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/t3code.service"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/not-jones-code.service"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/jones-code.service-extra"));
 });

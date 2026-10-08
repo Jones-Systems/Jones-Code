@@ -5,11 +5,19 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
+import * as Fiber from "effect/Fiber";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/unstable/cli";
 
@@ -28,6 +36,7 @@ import {
   DevServerNotProxiableError,
   resolveDirectPairingBaseUrl,
   resolveTailscaleLocalTarget,
+  resolveTailscalePairingBase,
 } from "./pair.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -288,4 +297,233 @@ describe("t3 pair", () => {
       assert.include(rendered, "No running T3 Code server found.");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+});
+
+const guardedPairClaim = { servePort: 8443, localPort: baseState.port };
+const guardedServeConfig = (
+  localPort: number = guardedPairClaim.localPort,
+  extraHandlers = false,
+) =>
+  JSON.stringify({
+    TCP: { "8443": { HTTPS: true } },
+    Web: {
+      "pair.tail.ts.net:8443": {
+        Handlers: {
+          "/": { Proxy: `http://127.0.0.1:${String(localPort)}` },
+          ...(extraHandlers ? { "/api": { Proxy: "http://127.0.0.1:1" } } : {}),
+        },
+      },
+    },
+  });
+const pairEncoder = new TextEncoder();
+const pairStatusArgs = ["serve", "status", "--json"];
+
+function guardedPairLayers(input: {
+  readonly serveReads: ReadonlyArray<string>;
+  readonly probe: "same" | "different" | "502";
+  readonly writeTimeout?: boolean;
+}) {
+  const commands: Array<ReadonlyArray<string>> = [];
+  let readIndex = 0;
+  const spawner = ChildProcessSpawner.make((command) => {
+    const child = command as unknown as { readonly args: ReadonlyArray<string> };
+    commands.push(child.args);
+    const isStatus = child.args[0] === "status";
+    const isServeRead = child.args[1] === "status";
+    const stdout = isStatus
+      ? '{"Self":{"DNSName":"pair.tail.ts.net."}}'
+      : isServeRead
+        ? input.serveReads[readIndex++]
+        : "";
+    if (stdout === undefined) return Effect.die(new Error("Unexpected Serve read"));
+    return Effect.succeed(
+      ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(1),
+        exitCode:
+          input.writeTimeout && child.args.includes("--bg")
+            ? Effect.never
+            : Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+        isRunning: Effect.succeed(false),
+        kill: () => Effect.void,
+        unref: Effect.succeed(Effect.void),
+        stdin: Sink.drain,
+        stdout: Stream.make(pairEncoder.encode(stdout)),
+        stderr: Stream.empty,
+        all: Stream.empty,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+      }),
+    );
+  });
+  let probes = 0;
+  const client = HttpClient.make((request) => {
+    probes += 1;
+    const response =
+      input.probe === "502" && probes === 1
+        ? new Response("", { status: 502 })
+        : new Response(
+            JSON.stringify({
+              ...testDescriptor,
+              environmentId:
+                input.probe === "different" ? "another-environment" : testDescriptor.environmentId,
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+    return Effect.succeed(HttpClientResponse.fromWeb(request, response));
+  });
+  return {
+    commands,
+    layer: Layer.mergeAll(
+      Layer.succeed(HostProcessPlatform, "linux"),
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, client),
+    ),
+  };
+}
+
+const decodePairDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
+
+const guardedPairTarget = (dev = false) => ({
+  baseDir: "/synthetic-pair-base",
+  variant: dev ? ("dev" as const) : ("userdata" as const),
+  state: dev ? { ...baseState, devUrl: "http://localhost:5733/" } : baseState,
+  descriptor: decodePairDescriptor(testDescriptor),
+});
+
+describe("guarded Tailscale pairing", () => {
+  it.effect("refuses a conflicting route even when it returns 502", () => {
+    const { commands, layer } = guardedPairLayers({
+      serveReads: [guardedServeConfig(9999)],
+      probe: "502",
+    });
+    return Effect.gen(function* () {
+      const error = yield* resolveTailscalePairingBase({
+        target: guardedPairTarget(),
+        servePort: 8443,
+      }).pipe(Effect.flip);
+      assert.equal(error._tag, "ServePortClaimedError");
+      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "writes an absent mapping and requires exact readback before returning a pairing URL",
+    () => {
+      const { commands, layer } = guardedPairLayers({
+        serveReads: ["{}", guardedServeConfig()],
+        probe: "502",
+      });
+      return Effect.gen(function* () {
+        const resolved = yield* resolveTailscalePairingBase({
+          target: guardedPairTarget(),
+          servePort: 8443,
+        });
+        assert.equal(resolved.baseUrl, "https://pair.tail.ts.net:8443/");
+        assert.deepEqual(commands, [
+          ["status", "--json"],
+          pairStatusArgs,
+          ["serve", "--bg", "--https=8443", "http://127.0.0.1:3773"],
+          pairStatusArgs,
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("reuses an exact route without writing", () => {
+    const { commands, layer } = guardedPairLayers({
+      serveReads: [guardedServeConfig()],
+      probe: "same",
+    });
+    return Effect.gen(function* () {
+      yield* resolveTailscalePairingBase({ target: guardedPairTarget(), servePort: 8443 });
+      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("stops on unknown configuration without writing", () => {
+    const { commands, layer } = guardedPairLayers({ serveReads: [""], probe: "same" });
+    return Effect.gen(function* () {
+      const error = yield* resolveTailscalePairingBase({
+        target: guardedPairTarget(),
+        servePort: 8443,
+      }).pipe(Effect.flip);
+      assert.equal(error._tag, "TailscaleServeStateUnknownError");
+      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "returns unknown after mismatching postwrite readback and never removes the route",
+    () => {
+      const { commands, layer } = guardedPairLayers({
+        serveReads: ["{}", guardedServeConfig(9999)],
+        probe: "502",
+      });
+      return Effect.gen(function* () {
+        const error = yield* resolveTailscalePairingBase({
+          target: guardedPairTarget(),
+          servePort: 8443,
+        }).pipe(Effect.flip);
+        assert.equal(error._tag, "TailscaleServeStateUnknownError");
+        assert.equal(commands.length, 4);
+        assert.isFalse(commands.some((args) => args.includes("off")));
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("returns unknown on ensure timeout without readback, cleanup or retry", () => {
+    const { commands, layer } = guardedPairLayers({
+      serveReads: ["{}"],
+      probe: "502",
+      writeTimeout: true,
+    });
+    return Effect.gen(function* () {
+      const fiber = yield* resolveTailscalePairingBase({
+        target: guardedPairTarget(),
+        servePort: 8443,
+      }).pipe(Effect.flip, Effect.forkChild);
+      yield* TestClock.adjust("10 seconds");
+      assert.equal((yield* Fiber.join(fiber))._tag, "TailscaleServeStateUnknownError");
+      assert.equal(commands.length, 3);
+      assert.isFalse(commands.some((args) => args.includes("off")));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("repoints only a dev target proved to be the same environment", () => {
+    const { commands, layer } = guardedPairLayers({
+      serveReads: [guardedServeConfig(), guardedServeConfig(5733)],
+      probe: "same",
+    });
+    return Effect.gen(function* () {
+      yield* resolveTailscalePairingBase({ target: guardedPairTarget(true), servePort: 8443 });
+      assert.deepEqual(commands, [
+        ["status", "--json"],
+        pairStatusArgs,
+        ["serve", "--bg", "--https=8443", "http://127.0.0.1:5733"],
+        pairStatusArgs,
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([
+    { label: "a different environment", probe: "different", extraHandlers: false },
+    {
+      label: "a route with extra handlers despite the same environment",
+      probe: "same",
+      extraHandlers: true,
+    },
+  ] as const)("does not repoint $label", ({ probe, extraHandlers }) => {
+    const { commands, layer } = guardedPairLayers({
+      serveReads: [guardedServeConfig(3773, extraHandlers)],
+      probe,
+    });
+    return Effect.gen(function* () {
+      const error = yield* resolveTailscalePairingBase({
+        target: guardedPairTarget(true),
+        servePort: 8443,
+      }).pipe(Effect.flip);
+      assert.equal(error._tag, "ServePortClaimedError");
+      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
+    }).pipe(Effect.provide(layer));
+  });
 });

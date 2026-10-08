@@ -27,6 +27,7 @@ import { servicePreflightCommand } from "./cli/servicePreflight.ts";
 import { themeCommand } from "./cli/theme.ts";
 import { traceCommand } from "./cli/trace.ts";
 import { triageCommand } from "./cli/triage.ts";
+import * as JonesHostCli from "./jones/hostService/cli.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -79,6 +80,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       themeCommand,
       traceCommand,
       triageCommand,
+      JonesHostCli.jonesCommand.pipe(Command.provide(JonesHostCli.layer)),
       cloudEnabled ? connectCommand : connectUnavailableCommand,
     ]),
   );

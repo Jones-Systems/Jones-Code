@@ -2,6 +2,7 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Terminal from "effect/Terminal";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/unstable/cli";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -11,10 +12,36 @@ import * as BootService from "../cloud/bootService.ts";
 import { compareExactServiceVersions } from "../cloud/serviceProtocol.ts";
 import type * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as HostServiceConfig from "../jones/hostService/HostServiceConfig.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
+export const jonesBootServiceLayer = (input: {
+  readonly baseDir: string;
+  readonly logsDir: string;
+  readonly cliVersion: string;
+  readonly allowEnableLinger?: boolean;
+  readonly runtimeMode?: "verified-private-artifact";
+}) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const configService = yield* HostServiceConfig.HostServiceConfig;
+      const config = yield* configService
+        .read(input.baseDir)
+        .pipe(Effect.mapError((cause) => new BootService.BootServiceInstallError({ cause })));
+      return BootService.layer({
+        ...input,
+        identity: JONES_BOOT_SERVICE_IDENTITY,
+        allowEnableLinger: input.allowEnableLinger === true,
+        ...(Option.isNone(config)
+          ? {}
+          : { environment: HostServiceConfig.configEnvironment(config.value) }),
+      });
+    }),
+  ).pipe(Layer.provide(HostServiceConfig.layer));
+
 export const bootServiceLayer = (config: ServerConfig.ServerConfig["Service"]) =>
-  BootService.layer({
+  jonesBootServiceLayer({
     baseDir: config.baseDir,
     logsDir: config.logsDir,
     cliVersion: packageJson.version,

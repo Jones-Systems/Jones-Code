@@ -338,6 +338,61 @@ const runTailscaleCommand = (
     );
   });
 
+export const readTailscaleServeConfigJson: Effect.Effect<
+  string,
+  TailscaleCommandError,
+  ChildProcessSpawner.ChildProcessSpawner
+> = Effect.gen(function* () {
+  const args = ["serve", "status", "--json"];
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const hostPlatform = yield* HostProcessPlatform;
+  const executable = tailscaleCommandForPlatform(hostPlatform);
+  const commandContext = { executable, subcommand: "serve" as const, argumentCount: args.length };
+  return yield* Effect.gen(function* () {
+    const child = yield* spawner.spawn(ChildProcess.make(executable, args)).pipe(
+      Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
+      Effect.catchDefect((cause) =>
+        Effect.fail(new TailscaleCommandSpawnError({ ...commandContext, cause })),
+      ),
+    );
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [
+        collectStdout(child.stdout),
+        collectStderr(child.stderr),
+        child.exitCode.pipe(Effect.map(Number)),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.mapError((cause) => new TailscaleCommandOutputError({ ...commandContext, cause })),
+    );
+    if (exitCode !== 0) {
+      return yield* new TailscaleCommandExitError({
+        ...commandContext,
+        exitCode,
+        stdoutLength: stdout.length,
+        stderrLength: stderr.length,
+        ...(stderrDiagnosticOf(stderr) !== undefined
+          ? { stderrDiagnostic: stderrDiagnosticOf(stderr) }
+          : {}),
+      });
+    }
+    return stdout;
+  }).pipe(
+    Effect.scoped,
+    Effect.timeout(TAILSCALE_STATUS_TIMEOUT),
+    Effect.catchTags({
+      TimeoutError: (cause) =>
+        Effect.fail(
+          new TailscaleCommandTimeoutError({
+            ...commandContext,
+            timeoutMs: Duration.toMillis(TAILSCALE_STATUS_TIMEOUT),
+            cause,
+          }),
+        ),
+    }),
+  );
+});
+
 export const ensureTailscaleServe = (input: {
   readonly localPort: number;
   readonly servePort?: number;

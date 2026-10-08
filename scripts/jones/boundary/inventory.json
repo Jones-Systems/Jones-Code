@@ -779,7 +779,14 @@
     "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.ts": "jones-owned",
     "scripts/jones/boundary/fragments/deletion-worktree-removal.json": "jones-owned",
-    "apps/server/src/jones/persistence/JonesMigrations.ts": "jones-owned"
+    "apps/server/src/jones/persistence/JonesMigrations.ts": "jones-owned",
+    "apps/server/src/cli/pair.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cli/service.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cloud/bootService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cloud/pinnedRuntime.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/cloud/selfUpdate.test.ts": "jones-tests-in-upstream",
+    "docs/operations/persistent-hosts.md": "jones-owned",
+    "docs/user/background-service.md": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1295,6 +1302,10 @@
     {
       "from": "packages/contracts/src/server.ts",
       "to": "packages/contracts/src/providerQueue.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.ts",
+      "to": "apps/server/src/jones/hostService/privateRuntime.ts"
     }
   ]
 }

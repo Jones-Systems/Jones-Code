@@ -339,6 +339,18 @@
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
       "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+    },
+    {
+      "id": "persistent-private-services",
+      "tests": [
+        "apps/server/src/jones/hostService/HostService.test.ts",
+        "apps/server/src/jones/hostService/cli.test.ts",
+        "apps/server/src/jones/hostService/artifactVerification.test.ts",
+        "apps/server/src/jones/hostService/HostServiceConfig.test.ts",
+        "packages/tailscale/src/jones/serveOwnership.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
     }
   ]
 }
