@@ -802,7 +802,8 @@
     "scripts/notify-discord-release.test.ts": "accepted-shared",
     "scripts/release-smoke.ts": "accepted-shared",
     "scripts/stamp-jones-build.test.ts": "jones-owned",
-    "scripts/stamp-jones-build.ts": "jones-owned"
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "packages/contracts/src/auth.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
