@@ -68,17 +68,15 @@ export const assertPrivateServiceRuntimeOwnership = Effect.fn(
   ];
   for (const protectedPath of protectedPaths) {
     if (
-      yield* input.fs
-        .exists(protectedPath)
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new JonesRuntimePolicyError({
-                reason: "Could not establish private runtime ownership.",
-                cause,
-              }),
-          ),
-        )
+      yield* input.fs.exists(protectedPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new JonesRuntimePolicyError({
+              reason: "Could not establish private runtime ownership.",
+              cause,
+            }),
+        ),
+      )
     )
       return yield* new JonesRuntimePolicyError({
         reason:
@@ -106,17 +104,15 @@ export const verifyPrivateServiceRuntimeCache = Effect.fn(
   for (const version of versions) {
     const paths = pinnedRuntimePaths(input.path, input.baseDir, version, input.platform);
     yield* verifyPinnedRuntimeProvenance({ ...input, version, paths });
-    const sentinel = yield* input.fs
-      .readFileString(paths.sentinelPath)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new JonesRuntimePolicyError({
-              reason: "The verified private runtime cache is incomplete.",
-              cause,
-            }),
-        ),
-      );
+    const sentinel = yield* input.fs.readFileString(paths.sentinelPath).pipe(
+      Effect.mapError(
+        (cause) =>
+          new JonesRuntimePolicyError({
+            reason: "The verified private runtime cache is incomplete.",
+            cause,
+          }),
+      ),
+    );
     if (sentinel.trim() !== version)
       return yield* new JonesRuntimePolicyError({
         reason: "The private runtime cache completion marker does not match its version.",
