@@ -7,12 +7,17 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Terminal from "effect/Terminal";
-import { Command } from "effect/unstable/cli";
+import { Command } from "effect/cli";
+import { HttpClient } from "effect/http";
 import { afterEach, vi } from "vite-plus/test";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as HostServiceConfig from "../jones/hostService/HostServiceConfig.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import {
+  jonesBootServiceLayer,
   formatServiceStatus,
   offerServiceDuringOnboarding,
   reconcileService,
@@ -274,3 +279,85 @@ it.effect("keeps the manual-server fallback when background prerequisites fail",
     expect(ready).toBe(false);
   }),
 );
+
+const jonesConfigurationTestLayer = Layer.mergeAll(
+  NodeServices.layer,
+  Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make(() => Effect.die("no HTTP expected")),
+  ),
+  Layer.succeed(
+    ProcessRunner.ProcessRunner,
+    ProcessRunner.ProcessRunner.of({
+      run: () => Effect.die("no process expected"),
+    }),
+  ),
+);
+
+it.layer(jonesConfigurationTestLayer)("Jones CLI service configuration", (it) => {
+  it.effect("uses Jones identity without inventing a port when config is missing", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-cli-config-" });
+      const { service } = makeTestService(status);
+      const layerSpy = vi
+        .spyOn(BootService, "layer")
+        .mockReturnValue(Layer.succeed(BootService.BootService, service));
+      yield* BootService.BootService.pipe(
+        Effect.provide(
+          jonesBootServiceLayer({
+            baseDir,
+            logsDir: `${baseDir}/logs`,
+            cliVersion: "1.2.3",
+          }),
+        ),
+      );
+      expect(layerSpy).toHaveBeenCalledWith({
+        baseDir,
+        logsDir: `${baseDir}/logs`,
+        cliVersion: "1.2.3",
+        identity: JONES_BOOT_SERVICE_IDENTITY,
+        allowEnableLinger: false,
+      });
+    }),
+  );
+
+  it.effect("loads persisted loopback environment for updates and explicit linger setup", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-cli-config-" });
+      yield* HostServiceConfig.HostServiceConfig.pipe(
+        Effect.flatMap((config) =>
+          config.write(baseDir, { schema: 1, port: 4321, tailscaleServePort: 8443 }),
+        ),
+        Effect.provide(HostServiceConfig.layer),
+      );
+      const { service } = makeTestService(status);
+      const layerSpy = vi
+        .spyOn(BootService, "layer")
+        .mockReturnValue(Layer.succeed(BootService.BootService, service));
+      yield* BootService.BootService.pipe(
+        Effect.provide(
+          jonesBootServiceLayer({
+            baseDir,
+            logsDir: `${baseDir}/logs`,
+            cliVersion: "1.2.4",
+            allowEnableLinger: true,
+          }),
+        ),
+      );
+      expect(layerSpy).toHaveBeenCalledWith({
+        baseDir,
+        logsDir: `${baseDir}/logs`,
+        cliVersion: "1.2.4",
+        allowEnableLinger: true,
+        identity: JONES_BOOT_SERVICE_IDENTITY,
+        environment: {
+          T3CODE_HOST: "127.0.0.1",
+          T3CODE_PORT: "4321",
+          T3CODE_TAILSCALE_SERVE: "false",
+        },
+      });
+    }),
+  );
+});

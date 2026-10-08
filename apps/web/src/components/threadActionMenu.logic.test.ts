@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildThreadActionMenuItems, type ThreadActionMenuState } from "./threadActionMenu.logic";
+import {
+  canStopThreadSession,
+  buildDraftActionMenuItems,
+  buildThreadActionMenuItems,
+  type ThreadActionMenuState,
+} from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
+  canOperate: true,
   branch: null,
   projectFilter: null,
   isPinned: false,
@@ -12,7 +18,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
-  canStopSession: true,
+  canStopSession: false,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -35,8 +41,96 @@ function allIds(state: ThreadActionMenuState): string[] {
   return flatten(buildThreadActionMenuItems(state));
 }
 
+describe("canStopThreadSession", () => {
+  it("requires a non-stopped projected session, including an idle or errored attachment", () => {
+    expect(canStopThreadSession(null)).toBe(false);
+    expect(canStopThreadSession([])).toBe(false);
+    expect(canStopThreadSession([{ status: "stopped" }, { status: "stopped" }])).toBe(false);
+    for (const status of ["starting", "ready", "running", "waiting", "error"] as const) {
+      expect(canStopThreadSession([{ status: "stopped" }, { status }])).toBe(true);
+    }
+  });
+});
+
 describe("buildThreadActionMenuItems", () => {
-  it("hides lifecycle items when the environment lacks the capabilities", () => {
+  it("places Stop after settlement and disables it after all sessions stop", () => {
+    const items = buildThreadActionMenuItems({ ...baseState, canStopSession: true });
+    expect(items[items.findIndex((item) => item.id === "settle") + 1]).toMatchObject({
+      id: "stop-thread",
+      label: "Stop thread",
+      icon: "square",
+      disabled: false,
+    });
+    expect(
+      buildThreadActionMenuItems(baseState).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: true });
+    expect(
+      buildThreadActionMenuItems({
+        ...baseState,
+        isPinned: true,
+        isSettled: true,
+        canStopSession: true,
+      }).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: false });
+  });
+  it.each([false, true])(
+    "disables both lifecycle directions without permission (reversed: %s)",
+    (reversed) => {
+      const items = buildThreadActionMenuItems({
+        ...baseState,
+        canOperate: false,
+        isPinned: reversed,
+        isSettled: reversed,
+        isSnoozed: reversed,
+      });
+      const expected = reversed
+        ? [
+            "unpin",
+            "unsettle",
+            "stop-thread",
+            "unsnooze",
+            "rename",
+            "regenerate-title",
+            "auto-settle",
+            "archive",
+            "delete",
+          ]
+        : [
+            "pin",
+            "settle",
+            "stop-thread",
+            "snooze",
+            "rename",
+            "regenerate-title",
+            "auto-settle",
+            "archive",
+            "delete",
+          ];
+      expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(expected);
+      expect(
+        items.find((item) => item.id === "snooze")?.children?.every((child) => child.disabled) ??
+          true,
+      ).toBe(true);
+    },
+  );
+
+  it("preserves local actions and restores mutations after a grant", () => {
+    const denied = buildThreadActionMenuItems({ ...baseState, canOperate: false, branch: "main" });
+    expect(denied.filter((item) => !item.disabled).map((item) => item.id)).toEqual([
+      "new-thread-on-branch",
+      "mark-unread",
+      "copy",
+      "project-settings",
+    ]);
+    const allowed = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: true,
+      canStopSession: true,
+    });
+    expect(allowed.every((item) => !item.disabled)).toBe(true);
+  });
+
+  it("hides capability-gated items while keeping Stop available as a disabled action", () => {
     expect(
       ids({
         ...baseState,
@@ -49,7 +143,7 @@ describe("buildThreadActionMenuItems", () => {
         },
       }),
     ).toEqual([
-      "kill-thread",
+      "stop-thread",
       "rename",
       "mark-unread",
       "copy",
@@ -104,21 +198,6 @@ describe("buildThreadActionMenuItems", () => {
       expect.arrayContaining(["unpin", "unsettle", "unsnooze"]),
     );
     expect(ids(baseState)).toEqual(expect.arrayContaining(["pin", "settle", "snooze"]));
-  });
-
-  it("places Kill Thread below Settle and disables it after the session stops", () => {
-    const items = buildThreadActionMenuItems(baseState);
-    const settleIndex = items.findIndex((item) => item.id === "settle");
-    expect(items[settleIndex + 1]).toMatchObject({
-      id: "kill-thread",
-      label: "Kill Thread",
-      disabled: false,
-    });
-    expect(
-      buildThreadActionMenuItems({ ...baseState, canStopSession: false }).find(
-        (item) => item.id === "kill-thread",
-      ),
-    ).toMatchObject({ disabled: true });
   });
 
   it("offers auto-settle as a submenu with the current option checked", () => {
@@ -189,5 +268,26 @@ describe("buildThreadActionMenuItems", () => {
       (item) => item.id === "archive",
     );
     expect(archiveItem?.disabled).toBe(true);
+  });
+});
+
+describe("buildDraftActionMenuItems", () => {
+  it("offers only the copy values the draft has", () => {
+    const items = buildDraftActionMenuItems({ hasPath: false, hasBranch: true, hasProject: true });
+    expect(items[0]).toMatchObject({ id: "copy", disabled: false });
+    expect(items[0]?.children?.map((item) => item.id)).toEqual(["copy-branch"]);
+
+    const noCopy = buildDraftActionMenuItems({
+      hasPath: false,
+      hasBranch: false,
+      hasProject: true,
+    });
+    expect(noCopy[0]).toMatchObject({ id: "copy", disabled: true, children: [] });
+  });
+
+  it("drops project settings without a project and keeps discard last", () => {
+    const items = buildDraftActionMenuItems({ hasPath: true, hasBranch: false, hasProject: false });
+    expect(items.map((item) => item.id)).toEqual(["copy", "discard"]);
+    expect(items.at(-1)).toMatchObject({ label: "Discard draft", destructive: true });
   });
 });

@@ -226,10 +226,21 @@ export const listen: Effect.Effect<
             );
             return;
           }
-          const downloaded =
-            latest.jones.phase === "staged"
-              ? { accepted: true, completed: true, state: latest }
-              : yield* updates.download;
+          if (updates.downloadSelected === undefined) {
+            yield* publishReport(
+              latest,
+              {
+                outcome: "failed",
+                reason: "The desktop cannot reserve a qualified Jones selection.",
+              },
+              request.requestId,
+            );
+            return;
+          }
+          const downloaded = yield* updates.downloadSelected({
+            artifactId: fixed.artifactId,
+            sourceSha: fixed.sourceSha,
+          });
           const stagedHandle = downloaded.state.jones?.stagedHandle;
           if (
             !downloaded.completed ||
@@ -240,7 +251,10 @@ export const listen: Effect.Effect<
               downloaded.state,
               {
                 outcome: "failed",
-                reason: downloaded.state.message ?? "The Jones app could not be staged.",
+                reason:
+                  downloaded.refusal === "selection-mismatch"
+                    ? "The selected Jones artifact changed; check again before Download."
+                    : (downloaded.state.message ?? "The Jones app could not be staged."),
               },
               request.requestId,
             );
@@ -259,6 +273,17 @@ export const listen: Effect.Effect<
           yield* publishReport(
             downloaded.state,
             { outcome: "ready-to-install" },
+            request.requestId,
+          );
+          return;
+        }
+        if (request.action !== undefined) {
+          yield* publishReport(
+            latest,
+            {
+              outcome: "failed",
+              reason: "Jones update controls are unavailable for this desktop.",
+            },
             request.requestId,
           );
           return;

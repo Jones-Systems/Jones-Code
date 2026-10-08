@@ -1,13 +1,51 @@
-import { EnvironmentId } from "@t3tools/contracts";
+// @vitest-environment jsdom
+
+import { EnvironmentId, type AuthEnvironmentScope } from "@t3tools/contracts";
 import { act, type ComponentProps, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestRenderer } from "react-test-renderer";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import * as clientSettings from "../hooks/useSettings";
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
 import { GitHubIcon } from "./Icons";
 import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
+
+const originalGetAnimations = Object.getOwnPropertyDescriptor(Element.prototype, "getAnimations");
+
+beforeEach(() => {
+  // jsdom does not implement the Web Animations API used by the real scroll area.
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value: () => [],
+  });
+  vi.stubGlobal("matchMedia", () => ({
+    matches: false,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+  }));
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  if (originalGetAnimations) {
+    Object.defineProperty(Element.prototype, "getAnimations", originalGetAnimations);
+  } else {
+    Reflect.deleteProperty(Element.prototype, "getAnimations");
+  }
+});
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
 vi.mock("../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
@@ -36,10 +74,19 @@ vi.mock("./ui/tooltip", async () => {
 });
 vi.mock("../state/use-atom-query-runner", () => ({ useAtomQueryRunner: () => vi.fn() }));
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
-vi.mock("../state/session", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../state/session")>()),
-  usePreparedConnection: () => ({ _tag: "Loading" }),
-}));
+vi.mock("../state/session", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../state/session")>();
+  const { AuthStandardClientScopes } = await import("@t3tools/contracts");
+  const grantedScopes = new Set<AuthEnvironmentScope>(AuthStandardClientScopes);
+  const hasScope = (environmentId: EnvironmentId | null, scope: AuthEnvironmentScope) =>
+    environmentId !== null && grantedScopes.has(scope);
+  return {
+    ...actual,
+    useEnvironmentScope: hasScope,
+    readEnvironmentScope: hasScope,
+    usePreparedConnection: () => ({ _tag: "Loading" }),
+  };
+});
 vi.mock("../state/entities", () => ({
   readThreadShell: () => null,
   useProjects: () => [],
@@ -72,6 +119,82 @@ function codeButton(renderer: ReactTestRenderer, label: string) {
   if (!button) throw new Error(`Missing code button: ${label}`);
   return button.props as ComponentProps<typeof Button>;
 }
+
+describe("ChatMarkdown bare anchor placeholders", () => {
+  it.each(["<A>", "<a>", "<a >", "<a/>", "<A/>", "<a />"])(
+    "preserves unmatched %s without linking later blocks",
+    (token) => {
+      const text = `- **"From ${token}"** appears in the header.\n\n- **Tests:** cover inheritance.\n\nThe deferred move continues on B.\n\nSee <a href="https://example.com">the link</a>.`;
+      const document = new DOMParser().parseFromString(
+        renderToStaticMarkup(<ChatMarkdown cwd="/tmp/project" text={text} />),
+        "text/html",
+      );
+
+      expect(document.querySelector("strong")?.textContent).toBe(`"From ${token}"`);
+      expect([...document.querySelectorAll("a")].map((link) => link.textContent)).toEqual([
+        "the link",
+      ]);
+      expect(document.querySelectorAll("li")).toHaveLength(2);
+      expect(
+        [...document.querySelectorAll("p")].map((paragraph) => paragraph.textContent),
+      ).toContain("The deferred move continues on B.");
+    },
+  );
+
+  it.each(["</a>  ", "<div>more</div>\n</a>"])(
+    "preserves a paired anchor closing in the raw block %s",
+    (closing) => {
+      const document = new DOMParser().parseFromString(
+        renderToStaticMarkup(
+          <ChatMarkdown cwd="/tmp/project" text={`See <a>label\n\n${closing}\n\nfinish`} />,
+        ),
+        "text/html",
+      );
+      expect(document.querySelector("p")?.textContent).toBe("See label");
+    },
+  );
+
+  it("preserves a paired anchor after comment-looking raw text", () => {
+    const document = new DOMParser().parseFromString(
+      renderToStaticMarkup(
+        <ChatMarkdown cwd="/tmp/project" text="See <a>label<script><!-- </script> --></a>" />,
+      ),
+      "text/html",
+    );
+    expect(document.querySelector("p")?.textContent).toBe("See label -->");
+  });
+
+  it.each(["<!-- </a> -->", '<div title="</a>">more</div>', '<script>"</a>"</script>'])(
+    "ignores apparent closing anchors inside %s",
+    (html) => {
+      const document = new DOMParser().parseFromString(
+        renderToStaticMarkup(
+          <ChatMarkdown cwd="/tmp/project" text={`Before <A>.\n\n${html}\n\nAfter.`} />,
+        ),
+        "text/html",
+      );
+      expect(document.querySelector("p")?.textContent).toBe("Before <A>.");
+      expect(document.querySelectorAll("a")).toHaveLength(0);
+    },
+  );
+
+  it("preserves paired HTML anchors, details, markdown links, and inline code", () => {
+    const text =
+      'Bare <a>label</a>, <a id="section"></a>, `<A>`, and [docs](https://example.com).\n\n<details><summary>More</summary>Details</details>';
+    const document = new DOMParser().parseFromString(
+      renderToStaticMarkup(<ChatMarkdown cwd="/tmp/project" text={text} />),
+      "text/html",
+    );
+
+    expect([...document.querySelectorAll("a")].map((link) => link.textContent)).toEqual([
+      "label",
+      "",
+      "docs",
+    ]);
+    expect(document.querySelector("code")?.textContent).toBe("<A>");
+    expect(document.querySelector("[data-markdown-details]")?.textContent).toContain("More");
+  });
+});
 
 describe("ChatMarkdown context references", () => {
   it("renders text and image references through the chip renderer, with readable fallback", async () => {
@@ -863,6 +986,23 @@ describe("ChatMarkdown Windows file links", () => {
   });
 
   it.each([true, false])(
+    "keeps backslashes CommonMark would read as escapes with parseRawHtml=%s",
+    (parseRawHtml) => {
+      const html = renderToStaticMarkup(
+        <ChatMarkdown
+          cwd="C:/Users/shawn/project"
+          environmentId={environmentId}
+          text={String.raw`[settings](C:\Users\shawn\.claude\settings.json)`}
+          lineBreaks={!parseRawHtml}
+          parseRawHtml={parseRawHtml}
+        />,
+      );
+
+      expect(html).toContain('href="C:/Users/shawn/.claude/settings.json"');
+    },
+  );
+
+  it.each([true, false])(
     "distinguishes same-named backslash paths with parseRawHtml=%s",
     (parseRawHtml) => {
       const html = renderToStaticMarkup(
@@ -928,5 +1068,155 @@ describe("ChatMarkdown Windows file links", () => {
     expect(html).not.toContain("javascript:");
     expect(html).not.toContain("d:alert");
     expect(html).not.toContain("chat-markdown-file-link");
+  });
+});
+
+// DOM actions prove the controls and serialized contents; jsdom does not prove
+// pane widths, container query units, or actual scrollbar geometry.
+describe("ChatMarkdown table controls", () => {
+  const tableText = [
+    "Before the table.",
+    "",
+    "| Name | Notes |",
+    "| --- | --- |",
+    "| Item | literal, comma and **bold** |",
+    "| next | `code` |",
+    "",
+    "After the table.",
+  ].join("\n");
+
+  async function mountedTable(wordWrap: boolean, text = tableText) {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const settings = clientSettings.getClientSettings();
+    vi.spyOn(clientSettings, "getClientSettings").mockReturnValue({ ...settings, wordWrap });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<ChatMarkdown cwd={undefined} text={text} />));
+    } catch (error) {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+      throw error;
+    }
+    return { root, container };
+  }
+
+  async function unmountTable(root: Root | undefined, container: HTMLDivElement | undefined) {
+    await act(async () => root?.unmount());
+    container?.remove();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
+
+  function clickButton(container: Element, label: string) {
+    const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+    if (!button) throw new Error(`Missing table button: ${label}`);
+    button.click();
+  }
+
+  it("expands and collapses one table without changing its text or another table", async () => {
+    let mounted: Awaited<ReturnType<typeof mountedTable>> | undefined;
+    const text = tableText + "\n\n> | Nested | Value |\n> | --- | --- |\n> | N | V |";
+    try {
+      mounted = await mountedTable(false, text);
+      const containers = mounted.container.querySelectorAll<HTMLElement>(
+        ".chat-markdown-table-container",
+      );
+      const first = containers[0]!;
+      const nested = containers[1]!;
+      const contents = [...first.querySelectorAll("th, td")].map((cell) => cell.textContent);
+      expect(nested.closest("blockquote")).not.toBeNull();
+      expect(first.parentElement?.classList.contains("chat-markdown")).toBe(true);
+      expect(nested.parentElement?.classList.contains("chat-markdown")).toBe(false);
+      expect(first.dataset.expanded).toBe("false");
+      expect(first.querySelector("[data-markdown-table-scroll]")).not.toBeNull();
+      await act(async () => clickButton(first, "Expand table"));
+      expect(first.dataset.expanded).toBe("true");
+      expect(
+        first.querySelector('button[aria-label="Collapse table"]')?.getAttribute("aria-pressed"),
+      ).toBe("true");
+      expect(nested.dataset.expanded).toBe("false");
+      expect([...first.querySelectorAll("th, td")].map((cell) => cell.textContent)).toEqual(
+        contents,
+      );
+      expect(first.querySelector("td strong")?.textContent).toBe("bold");
+      expect(first.querySelector("td code")?.textContent).toBe("code");
+      await act(async () => clickButton(first, "Collapse table"));
+      expect(first.dataset.expanded).toBe("false");
+      expect(mounted.container.querySelector(".chat-markdown > p")?.textContent).toBe(
+        "Before the table.",
+      );
+      expect(mounted.container.textContent).toContain("After the table.");
+      expect([...first.querySelectorAll("th, td")].map((cell) => cell.textContent)).toEqual(
+        contents,
+      );
+    } finally {
+      await unmountTable(mounted?.root, mounted?.container);
+    }
+  });
+
+  it.each([true, false])(
+    "uses word wrap preference %s only as the initial state",
+    async (wordWrap) => {
+      let mounted: Awaited<ReturnType<typeof mountedTable>> | undefined;
+      try {
+        mounted = await mountedTable(wordWrap);
+        const table = mounted.container.querySelector<HTMLElement>(
+          ".chat-markdown-table-container",
+        )!;
+        expect(table.dataset.expanded).toBe(String(wordWrap));
+        await act(async () => clickButton(table, wordWrap ? "Collapse table" : "Expand table"));
+        expect(table.dataset.expanded).toBe(String(!wordWrap));
+        await act(async () =>
+          mounted!.root.render(
+            <ChatMarkdown cwd={undefined} text={tableText + "\n\nStreaming continuation."} />,
+          ),
+        );
+        expect(mounted.container.querySelector(".chat-markdown-table-container")).toBe(table);
+        expect(table.dataset.expanded).toBe(String(!wordWrap));
+        expect(mounted.container.textContent).toContain("Streaming continuation.");
+      } finally {
+        await unmountTable(mounted?.root, mounted?.container);
+      }
+    },
+  );
+
+  it.each([
+    [
+      "Copy as Markdown",
+      "| Name | Notes |\n| --- | --- |\n| Item | literal, comma and **bold** |\n| next | `code` |",
+    ],
+    ["Copy as CSV", 'Name,Notes\nItem,"literal, comma and bold"\nnext,code'],
+  ])("%s serializes the real table after expansion and collapse", async (action, expected) => {
+    let mounted: Awaited<ReturnType<typeof mountedTable>> | undefined;
+    const writeText = vi.fn(async (_text: string) => {});
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    try {
+      mounted = await mountedTable(false);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      const table = mounted.container.querySelector<HTMLElement>(".chat-markdown-table-container")!;
+      for (const expanded of [true, false]) {
+        await act(async () => clickButton(table, expanded ? "Expand table" : "Collapse table"));
+        await act(async () =>
+          clickButton(table, writeText.mock.calls.length === 0 ? "Copy table" : "Copied"),
+        );
+        const menuItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+          (item) => item.textContent === action,
+        );
+        expect(menuItem).toBeDefined();
+        await act(async () => menuItem!.click());
+        expect(writeText).toHaveBeenLastCalledWith(expected);
+        expect(table.dataset.expanded).toBe(String(expanded));
+        expect(table.querySelector('button[aria-label="Copied"]')).not.toBeNull();
+      }
+      expect(writeText).toHaveBeenCalledTimes(2);
+    } finally {
+      await unmountTable(mounted?.root, mounted?.container);
+      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
   });
 });

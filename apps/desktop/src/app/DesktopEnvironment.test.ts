@@ -20,7 +20,7 @@ const defaultInput = {
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
-const makeEnvironmentLayer = (
+const layerEnvironment = (
   overrides: Partial<DesktopEnvironment.MakeDesktopEnvironmentInput> = {},
   env: Record<string, string | undefined> = {},
 ) =>
@@ -36,10 +36,61 @@ const makeEnvironmentLayer = (
 const makeEnvironment = (
   overrides: Partial<DesktopEnvironment.MakeDesktopEnvironmentInput> = {},
   env: Record<string, string | undefined> = {},
-) =>
-  DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
+) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect.each([
+    {
+      channel: "development",
+      appVersion: "0.0.22",
+      isDevelopment: true,
+      displayName: "Jones Code (Dev)",
+      stageLabel: "Dev",
+    },
+    {
+      channel: "stable",
+      appVersion: "0.0.22",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Alpha",
+    },
+    {
+      channel: "nightly",
+      appVersion: "0.0.17-nightly.20260413.42",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Nightly",
+    },
+    {
+      channel: "preview",
+      appVersion: "0.0.44-preview.20261002.36963972634",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Nightly",
+    },
+  ] as const)(
+    "uses Jones Code branding for $channel",
+    ({ appVersion, isDevelopment, displayName, stageLabel }) =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment(
+          { appVersion, isPackaged: !isDevelopment },
+          isDevelopment ? { VITE_DEV_SERVER_URL: "http://localhost:5173" } : {},
+        );
+
+        assert.equal(environment.isDevelopment, isDevelopment);
+        assert.equal(environment.displayName, displayName);
+        assert.deepEqual(environment.branding, {
+          baseName: "Jones Code",
+          displayName,
+          stageLabel,
+        });
+        assert.equal(
+          environment.appUserModelId,
+          isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+        );
+      }),
+  );
+
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(

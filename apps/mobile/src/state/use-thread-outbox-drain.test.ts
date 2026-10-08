@@ -8,18 +8,20 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
+import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { PreparedTurnAttachments } from "../lib/attachmentUpload";
 
 const harness = vi.hoisted(() => ({
+  canOperate: true,
   manager: null as unknown as ReturnType<
     typeof import("./thread-outbox-manager").createThreadOutboxManager
   >,
   removePersistedFile: vi.fn(async () => undefined),
   removeOutboxMessage: vi.fn(async (_message: QueuedThreadMessage) => undefined),
   prepareTurnAttachments: vi.fn<typeof import("../lib/attachmentUpload").prepareTurnAttachments>(),
-  setPendingConnectionError: vi.fn(),
   draftFile: (() => {
     let document = "";
     let writeError: Error | null = null;
@@ -66,7 +68,6 @@ vi.mock("expo-file-system", () => ({
 
 vi.mock("../lib/composerImages", () => ({
   removePersistedComposerAttachmentFile: harness.removePersistedFile,
-  toUploadChatImageAttachments: () => [],
 }));
 
 vi.mock("../lib/uuid", () => ({
@@ -85,7 +86,7 @@ vi.mock("./entities", () => ({
 }));
 
 vi.mock("./server", async () => {
-  const { Atom } = await import("effect/unstable/reactivity");
+  const { Atom } = await import("effect/reactivity");
   return { serverEnvironment: { configValueAtom: Atom.family(() => Atom.make(null)) } };
 });
 
@@ -97,8 +98,13 @@ vi.mock("./use-atom-command", () => ({
   useAtomCommand: () => async () => undefined,
 }));
 
+vi.mock("./session", () => ({
+  readEnvironmentScope: () => harness.canOperate,
+  useEnvironmentsWithScope: () => new Set(),
+}));
+
 vi.mock("./use-thread-outbox", async () => {
-  const { Atom } = await import("effect/unstable/reactivity");
+  const { Atom } = await import("effect/reactivity");
   return {
     editingQueuedMessageIdsAtom: Atom.make<Record<string, boolean>>({}).pipe(Atom.keepAlive),
     useThreadOutboxMessages: () => ({}),
@@ -107,7 +113,6 @@ vi.mock("./use-thread-outbox", async () => {
 });
 
 vi.mock("./use-remote-environment-registry", () => ({
-  setPendingConnectionError: harness.setPendingConnectionError,
   useRemoteConnectionStatus: () => ({ connectedEnvironments: [] }),
 }));
 
@@ -138,11 +143,21 @@ import {
   clearPendingThreadCreationOutcome,
   pendingThreadCreationOutcomesAtom,
 } from "./pending-thread-creation";
-import type { QueuedThreadMessage } from "./thread-outbox-model";
+import {
+  decodeQueuedThreadMessage,
+  encodeQueuedThreadMessage,
+  type QueuedThreadMessage,
+} from "./thread-outbox-model";
+import {
+  clearThreadComposerError,
+  setThreadComposerError,
+  threadComposerErrorsAtom,
+} from "./thread-composer-error";
 import * as composerDrafts from "./use-composer-drafts";
 import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
 import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
+  buildQueuedThreadCreationStartTurnInput,
   completeQueuedMessageDelivery,
   prepareQueuedMessageAttachments,
   recoverEditedCreationAfterDelivery,
@@ -201,6 +216,7 @@ function remainingMessages(): ReadonlyArray<QueuedThreadMessage> {
 
 beforeEach(() => {
   appAtomRegistry.set(acknowledgedThreadMessagesAtom, []);
+  harness.canOperate = true;
   harness.draftFile.setDocument({ schemaVersion: 1, drafts: {} });
 });
 
@@ -210,14 +226,202 @@ afterEach(() => {
   appAtomRegistry.set(composerDrafts.composerCloudDraftsAtom, { accountId: null, signedOut: {} });
   appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
   appAtomRegistry.set(pendingThreadCreationOutcomesAtom, {});
+  appAtomRegistry.set(threadComposerErrorsAtom, {});
   harness.draftFile.setWriteError(null);
   harness.removePersistedFile.mockClear();
   harness.removeOutboxMessage.mockClear();
   harness.prepareTurnAttachments.mockReset();
-  harness.setPendingConnectionError.mockClear();
+});
+
+describe("queued worktree creation command", () => {
+  it.each([true, false])(
+    "preserves queued context and uploaded attachments at delivery (%s)",
+    (inlineMessageContext) => {
+      const terminal = {
+        version: 1 as const,
+        kind: "terminal" as const,
+        contextId: ComposerContextId.make("build-output"),
+        label: "Build output",
+        terminalId: "main",
+        terminalLabel: "Terminal",
+        lineStart: 4,
+        lineEnd: 5,
+        text: "build failed\nretry",
+      };
+      const image = {
+        version: 1 as const,
+        kind: "image" as const,
+        contextId: ComposerContextId.make("screenshot"),
+        label: "Screenshot",
+        attachmentId: "draft-photo",
+        name: "shot.png",
+        mimeType: "image/png",
+        sizeBytes: 123,
+      };
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
+      const uploadedAttachment = {
+        type: "image" as const,
+        id: "server-photo",
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+      };
+      const context = { version: 1 as const, records: [terminal, image] };
+      const creation = {
+        projectId: ProjectId.make("project"),
+        workspaceMode: "worktree" as const,
+        branch: null,
+        worktreePath: null,
+      };
+      const message = decodeQueuedThreadMessage(
+        encodeQueuedThreadMessage({
+          ...queuedMessage({
+            messageId: "context-worktree",
+            text: context.records.map(formatComposerContextReference).join(" "),
+          }),
+          modelSelection,
+          creation,
+          context,
+          attachments: [
+            {
+              ...uploadedAttachment,
+              id: image.attachmentId,
+              fileUri: "file:///draft-photo.png",
+              previewUri: "file:///draft-photo.png",
+            },
+          ],
+        }),
+      );
+      const input = buildQueuedThreadCreationStartTurnInput({
+        message,
+        creation,
+        projectCwd: "/current/workspace",
+        attachments: [uploadedAttachment],
+        settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
+        serverResolvesWorktreeBase: true,
+        inlineMessageContext,
+      });
+
+      expect(input.message.attachments).toEqual([uploadedAttachment]);
+      if (inlineMessageContext) {
+        expect(input.message.text).toBe(message.text);
+        expect(input.message.context?.records).toEqual([
+          terminal,
+          { ...image, attachmentId: uploadedAttachment.id },
+        ]);
+      } else {
+        expect(input.message).not.toHaveProperty("context");
+        expect(input.message.text).not.toContain("t3-context://");
+        expect(
+          upgradeLegacyContextMessage(input.message.text).records.find(
+            (record) => record.kind === "terminal",
+          ),
+        ).toMatchObject({
+          text: terminal.text,
+          lineStart: terminal.lineStart,
+          lineEnd: terminal.lineEnd,
+        });
+      }
+      expect(message.context).toEqual(context);
+    },
+  );
+
+  it.each([true, false])(
+    "delivers persisted automatic intent with current server support (%s)",
+    (serverResolvesWorktreeBase) => {
+      const message = decodeQueuedThreadMessage(
+        encodeQueuedThreadMessage({
+          ...queuedMessage({ messageId: "automatic-worktree", text: "  queued task  " }),
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+          creation: {
+            projectId: ProjectId.make("project"),
+            workspaceMode: "worktree",
+            branch: null,
+            worktreePath: null,
+            startFromOrigin: true,
+          },
+        }),
+      );
+      const input = buildQueuedThreadCreationStartTurnInput({
+        message,
+        creation: message.creation!,
+        projectCwd: "/current/workspace",
+        attachments: [],
+        settings: {
+          modelSelection: message.modelSelection!,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        serverResolvesWorktreeBase,
+      });
+
+      expect(input.bootstrap.prepareWorktree).toMatchObject({
+        projectCwd: "/current/workspace",
+        startFromOrigin: true,
+      });
+      expect(input.bootstrap.prepareWorktree).not.toHaveProperty("baseBranch");
+      expect(input.bootstrap.createThread.branch).toBeNull();
+      expect(input.serverResolvesWorktreeBase).toBe(serverResolvesWorktreeBase);
+      expect(input.commandId).toBe(message.commandId);
+      expect(input.threadId).toBe(message.threadId);
+      expect(input.message.messageId).toBe(message.messageId);
+      expect(input.createdAt).toBe(message.createdAt);
+      expect(input.message.text).toBe("queued task");
+    },
+  );
+
+  it("keeps a persisted explicit base and origin setting when delivered to an older server", () => {
+    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
+    const message = decodeQueuedThreadMessage(
+      encodeQueuedThreadMessage({
+        ...queuedMessage({ messageId: "explicit-worktree", text: "queued task" }),
+        modelSelection,
+        creation: {
+          projectId: ProjectId.make("project"),
+          workspaceMode: "worktree",
+          branch: "upstream/release",
+          worktreePath: null,
+          startFromOrigin: false,
+        },
+      }),
+    );
+    const input = buildQueuedThreadCreationStartTurnInput({
+      message,
+      creation: message.creation!,
+      projectCwd: "/current/workspace",
+      attachments: [],
+      settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
+      serverResolvesWorktreeBase: false,
+    });
+
+    expect(input.bootstrap.prepareWorktree).toMatchObject({ baseBranch: "upstream/release" });
+    expect(input.bootstrap.prepareWorktree).not.toHaveProperty("startFromOrigin");
+    expect(input.bootstrap.createThread.branch).toBe("upstream/release");
+  });
 });
 
 describe("thread outbox attachment preparation", () => {
+  it("keeps a denied message queued without starting its attachment upload", async () => {
+    const message = queuedMessage({
+      messageId: "denied-queued-message",
+      text: "Keep this queued",
+      fileUri: "file:///documents/keep.pdf",
+    });
+    await harness.manager.enqueue(message);
+    harness.prepareTurnAttachments.mockResolvedValueOnce({
+      status: "ready",
+      attachments: [],
+      draftAttachments: message.attachments,
+      pendingAttachmentIds: [],
+    });
+    harness.canOperate = false;
+    await expect(prepareQueuedMessageAttachments(message)).resolves.toEqual({
+      status: "abandoned",
+    });
+    expect(harness.prepareTurnAttachments).not.toHaveBeenCalled();
+    expect(remainingMessages()).toEqual([message]);
+  });
+
   it("abandons reused uploads when an editor saves changed text during verification", async () => {
     const message = withReusedFileUpload(
       queuedMessage({
@@ -441,6 +645,25 @@ describe("thread outbox drain delivery cleanup", () => {
 
     expect(remainingMessages()).toEqual([]);
     expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([message]);
+  });
+
+  it("clears an error about the delivered message but keeps one about another message", async () => {
+    const threadKey = "environment-1:thread-1";
+    const retried = queuedMessage({ messageId: "message-retried", text: "retried" });
+    await harness.manager.enqueue(retried);
+    // A failed recovery left this message queued with an error about it.
+    setThreadComposerError(threadKey, "could not be restored", retried.messageId);
+
+    await completeQueuedMessageDelivery(retried, harness.manager.revisionOf(retried.messageId));
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]).toBeUndefined();
+
+    const other = queuedMessage({ messageId: "message-other", text: "other" });
+    await harness.manager.enqueue(other);
+    // The thread's error explains a different, rejected message still in the draft.
+    setThreadComposerError(threadKey, "rejected", "message-rejected");
+
+    await completeQueuedMessageDelivery(other, harness.manager.revisionOf(other.messageId));
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.message).toBe("rejected");
   });
 
   it("keeps a delivered message when its editor opens during storage removal", async () => {
@@ -698,13 +921,45 @@ describe("thread outbox recovery rollback", () => {
       },
     });
     expect(remainingMessages()).toEqual([]);
-    expect(harness.setPendingConnectionError).toHaveBeenCalledWith("rejected by server");
+    // The creation's failure card shows the reason; the composer is hidden.
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
     // The thread screen opened for this creation reads the failure from here.
     expect(
       appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[
         `${message.environmentId}:${message.threadId}`
       ],
     ).toEqual({ kind: "failed", message, reason: "rejected by server" });
+  });
+
+  it("drops an earlier recovery error once a rejected new task is restored", async () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "message-creation-retried", text: "new task text" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      creation: {
+        projectId: ProjectId.make("project-1"),
+        workspaceMode: "local",
+        branch: null,
+        worktreePath: null,
+      },
+    };
+    await harness.manager.enqueue(message);
+    harness.draftFile.setWriteError(new Error("disk full"));
+    await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
+      "retry",
+    );
+    const threadKey = `${message.environmentId}:${message.threadId}`;
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.messageId).toBe(
+      message.messageId,
+    );
+
+    harness.draftFile.setWriteError(null);
+    await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
+      "restored",
+    );
+
+    // The failure card carries the reason now; nothing stale sits above it.
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
+    expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[threadKey]?.kind).toBe("failed");
   });
 
   it("keeps a failed outcome until its thread screen consumes it", async () => {
@@ -735,6 +990,46 @@ describe("thread outbox recovery rollback", () => {
     await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
 
     expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)).toEqual({});
+    // The thread screen shows why the message came back into the composer.
+    expect(
+      appAtomRegistry.get(threadComposerErrorsAtom)[`${message.environmentId}:${message.threadId}`],
+    ).toEqual({ message: "rejected", messageId: message.messageId });
+  });
+
+  it("leaves no error when the restored text is resent before recovery finishes", async () => {
+    const message = queuedMessage({ messageId: "message-resent", text: "resend me" });
+    const threadKey = `${message.environmentId}:${message.threadId}`;
+    await harness.manager.enqueue(message);
+    // The user sees the restored text as soon as the merge publishes it and
+    // sends it again while the recovery is still awaiting persistence.
+    const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
+      if (drafts[threadKey]?.text === "resend me") {
+        unsubscribe();
+        clearThreadComposerError(threadKey);
+        void composerDrafts.clearComposerDraftContent(threadKey);
+      }
+    });
+
+    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
+
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
+  });
+
+  it("withdraws the error when an edit makes the recovery back out", async () => {
+    const message = queuedMessage({ messageId: "message-edited-mid-recovery", text: "edit me" });
+    const threadKey = `${message.environmentId}:${message.threadId}`;
+    await harness.manager.enqueue(message);
+    const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
+      if (drafts[threadKey]?.text === "edit me") {
+        unsubscribe();
+        appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+      }
+    });
+
+    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
+    expect(remainingMessages()).toEqual([message]);
   });
 
   it("rolls a failed recovery merge back so the retry cannot duplicate the text", async () => {
@@ -760,6 +1055,6 @@ describe("thread outbox recovery rollback", () => {
       "typed offline\n\nqueued text",
     );
     expect(remainingMessages()).toEqual([]);
-    expect(harness.setPendingConnectionError).toHaveBeenCalledWith("too large");
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)[draftKey]?.message).toBe("too large");
   });
 });

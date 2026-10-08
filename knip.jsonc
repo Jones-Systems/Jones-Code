@@ -8,37 +8,55 @@
     ".": {
       // Keep vendored reference repositories outside the root project.
       "project": ["*.{js,mjs,cjs,ts,mts,cts}", ".github/**/*.cjs"],
-      "entry": [".github/scripts/thread-transfer-report.cjs"],
+      "entry": [
+        // CodeRabbit loads its configuration by filename.
+        ".coderabbit.config.ts",
+        ".github/scripts/thread-transfer-report.cjs",
+      ],
       "vite": { "entry": [".github/**/*.test.cjs"] },
       "vitest": { "entry": [".github/**/*.test.cjs"] },
     },
     "scripts": {
       // Knip loads its preprocessor through a CLI option; native verification and
-      // worktree setup (from t3.json) run directly.
+      // worktree setup (from t3.json) run directly. Retain the CLI archive verifier.
       "entry": [
         "knip-schemas.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
-        // Retained CLI archive verifier for the deferred release workflow.
         "smoke-cli-archive.ts",
-        "runtime-adoption-qualification/run.mjs",
+        "jones/performance/*.node-test.mjs",
+        "jones/performance/*.d.mts",
+        "jones/performance/prepare-sources.mjs",
+        "jones/performance/fixtures-historical-worker.mjs",
+        "jones/performance/migration-restore-worker.mjs",
+        "jones/performance/current-qualification-worker.mjs",
       ],
     },
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
       "entry": [
         "src/bin.ts!",
+        "scripts/jones/v2Benchmark.mjs",
+        "scripts/jones/v2Benchmark.worker.mjs",
+        "src/jones/orchestration/*.bench.ts",
+        "scripts/jones/currentFixtures.ts",
+        "scripts/jones/sqliteHealth.ts",
+        "scripts/jones/sqliteHealth.worker.ts",
+        "src/jones/cloud/*.ts",
+        "src/jones/updates/*.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/evaluate-thread-titles.ts",
         "scripts/measure-pr-preview.ts",
+        "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
+        "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
-        // Staged native creation ports are consumed by the dependent execution slice.
-        // Analyzer entries preserve their source API without enabling runtime authority.
-        "src/orchestration/NativeCreationPreparation.ts",
-        "src/orchestration/NativeCreationAuthority.ts",
-        "src/persistence/Layers/NativeCreationRepository.ts",
+        // Staged native creation substrate is consumed by the deferred L39 execution slice.
+        // Analyzer entries preserve these APIs without registering runtime authority or launch.
+        "src/jones/nativeCreation/NativeCreationPreparation.ts",
+        "src/jones/nativeCreation/NativeCreationAuthority.ts",
+        "src/jones/nativeCreation/NativeCreationRepositorySqlite.ts",
       ],
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
@@ -81,12 +99,15 @@
       "ignoreIssues": { "src/components/ui/*.tsx": ["exports", "nsExports", "duplicates"] },
     },
     "apps/mobile": {
-      // Expo loads plugins by string; Metro embeds the browser entry in the native WebView.
+      // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
       "entry": [
         "index.ts!",
+        "src/jones/performance/*.bench.ts",
+        "fingerprint.config.js",
         "plugins/*.cjs",
         "scripts/generate-device-stream.mts",
         "src/features/devices/device-stream.browser.ts!",
+        "src/features/browser/preview-stream.browser.ts!",
       ],
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [
@@ -101,6 +122,10 @@
     },
     "infra/relay": {
       "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!"],
+    },
+    "packages/client-runtime": {
+      "includeEntryExports": true,
+      "entry": ["src/jones/*.bench.ts"],
     },
     "packages/*": {
       // These workspace packages are private to this monorepo.

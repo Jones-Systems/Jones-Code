@@ -1,9 +1,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  EnvironmentAuthorizationError,
   EnvironmentId,
-  PreviewTabId,
-  ThreadId,
-  type PreviewAutomationStreamEvent,
   type RelayClientInstallProgressEvent,
   type ServerConfigStreamEvent,
   type ServerLifecycleStreamEvent,
@@ -21,7 +19,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
-import { RpcClientError } from "effect/unstable/rpc";
+import { RpcClientError } from "effect/rpc";
 
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -33,6 +31,7 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
+  EnvironmentRpcUnavailableError,
   EnvironmentRpcRequestObserver,
   request,
   runStream,
@@ -91,156 +90,6 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
 });
 
 describe("environment RPC", () => {
-  it.effect("registers a fresh preview host after completion without replaying requests", () =>
-    Effect.gen(function* () {
-      const firstCompleted = yield* Deferred.make<void>();
-      const reconnected = yield* Deferred.make<void>();
-      const requests: string[] = [];
-      const connections: string[] = [];
-      let attempts = 0;
-      const client = {
-        [WS_METHODS.previewAutomationConnect]: () =>
-          Stream.suspend(() => {
-            attempts += 1;
-            const connected: PreviewAutomationStreamEvent = {
-              type: "connected",
-              connectionId: `connection-${attempts}`,
-            };
-            return attempts === 1
-              ? Stream.make(connected, {
-                  type: "request",
-                  connectionId: connected.connectionId,
-                  request: {
-                    requestId: "timed-out-action",
-                    operation: "click",
-                    threadId: ThreadId.make("thread-1"),
-                    tabId: PreviewTabId.make("tab-1"),
-                    input: {},
-                    timeoutMs: 1_000,
-                  },
-                } satisfies PreviewAutomationStreamEvent).pipe(
-                  Stream.ensuring(Deferred.succeed(firstCompleted, undefined)),
-                )
-              : Stream.succeed(connected).pipe(Stream.concat(Stream.never));
-          }),
-      } as unknown as WsRpcProtocolClient;
-      const { activeSession, supervisor } = yield* makeHarness();
-      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const consumer = yield* subscribe(WS_METHODS.previewAutomationConnect, {
-        clientId: "preview-host",
-        environmentId: TARGET.environmentId,
-      }).pipe(
-        Stream.runForEach((event) => {
-          if (event.type === "request") {
-            requests.push(event.request.requestId);
-            return Effect.void;
-          }
-          connections.push(event.connectionId);
-          return connections.length === 2 ? Deferred.succeed(reconnected, undefined) : Effect.void;
-        }),
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.forkChild,
-      );
-      yield* Deferred.await(firstCompleted);
-      yield* TestClock.adjust(999);
-      expect(attempts).toBe(1);
-      yield* TestClock.adjust(1);
-      expect(attempts).toBe(2);
-      yield* Deferred.await(reconnected);
-      expect(connections).toEqual(["connection-1", "connection-2"]);
-      expect(requests).toEqual(["timed-out-action"]);
-      yield* Fiber.interrupt(consumer);
-    }),
-  );
-
-  it.effect("does not re-register an unmounted preview host during the recovery delay", () =>
-    Effect.gen(function* () {
-      const completed = yield* Deferred.make<void>();
-      let attempts = 0;
-      const client = {
-        [WS_METHODS.previewAutomationConnect]: () =>
-          Stream.suspend(() => {
-            attempts += 1;
-            return Stream.empty.pipe(Stream.ensuring(Deferred.succeed(completed, undefined)));
-          }),
-      } as unknown as WsRpcProtocolClient;
-      const { activeSession, supervisor } = yield* makeHarness();
-      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const consumer = yield* subscribe(WS_METHODS.previewAutomationConnect, {
-        clientId: "preview-host",
-        environmentId: TARGET.environmentId,
-      }).pipe(
-        Stream.runDrain,
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.forkChild,
-      );
-      yield* Deferred.await(completed);
-      yield* Fiber.interrupt(consumer);
-      yield* TestClock.adjust(10_000);
-      expect(attempts).toBe(1);
-    }),
-  );
-
-  it.effect.each(["completion", "transport failure"] as const)(
-    "keeps preview recovery tied to the active session after %s",
-    (reason) =>
-      Effect.gen(function* () {
-        const completed = yield* Deferred.make<void>();
-        const nextConnected = yield* Deferred.make<void>();
-        let oldAttempts = 0;
-        let nextAttempts = 0;
-        const firstClient = {
-          [WS_METHODS.previewAutomationConnect]: () =>
-            Stream.suspend(() => {
-              oldAttempts += 1;
-              return (
-                reason === "completion"
-                  ? Stream.empty
-                  : Stream.fail(
-                      new RpcClientError.RpcClientError({
-                        reason: new RpcClientError.RpcClientDefect({
-                          message: "socket closed",
-                          cause: new Error("socket closed"),
-                        }),
-                      }),
-                    )
-              ).pipe(Stream.ensuring(Deferred.succeed(completed, undefined)));
-            }),
-        } as unknown as WsRpcProtocolClient;
-        const nextClient = {
-          [WS_METHODS.previewAutomationConnect]: () =>
-            Stream.suspend(() => {
-              nextAttempts += 1;
-              return Stream.fromEffect(Deferred.succeed(nextConnected, undefined)).pipe(
-                Stream.drain,
-                Stream.concat(Stream.never),
-              );
-            }),
-        } as unknown as WsRpcProtocolClient;
-        const { activeSession, supervisor } = yield* makeHarness();
-        yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
-        const consumer = yield* subscribe(WS_METHODS.previewAutomationConnect, {
-          clientId: "preview-host",
-          environmentId: TARGET.environmentId,
-        }).pipe(
-          Stream.runDrain,
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          Effect.forkChild,
-        );
-        yield* Deferred.await(completed);
-        if (reason === "transport failure") {
-          yield* TestClock.adjust(10_000);
-          expect(oldAttempts).toBe(1);
-        }
-        yield* SubscriptionRef.set(activeSession, Option.some(session(nextClient)));
-        yield* Deferred.await(nextConnected);
-        yield* TestClock.adjust(10_000);
-        expect(oldAttempts).toBe(1);
-        expect(nextAttempts).toBe(1);
-        yield* Fiber.interrupt(consumer);
-      }),
-  );
-
   it.effect("reuses the session config stream instead of opening a duplicate subscription", () =>
     Effect.gen(function* () {
       const event: ServerConfigStreamEvent = {
@@ -306,6 +155,122 @@ describe("environment RPC", () => {
         `finish:${TARGET.environmentId}:${WS_METHODS.cloudGetRelayClientStatus}`,
       ]);
     }),
+  );
+
+  it.effect.each(["validation failure", "disconnected"] as const)(
+    "keeps %s local without observing, dispatching, or retrying a request",
+    (reason) =>
+      Effect.gen(function* () {
+        let validations = 0;
+        let requests = 0;
+        let observations = 0;
+        const client = {
+          [WS_METHODS.cloudGetRelayClientStatus]: () =>
+            Effect.sync(() => {
+              requests += 1;
+              return { status: "available", version: "2026.6.0" };
+            }),
+        } as unknown as WsRpcProtocolClient;
+        const { activeSession, retryCount, supervisor } = yield* makeHarness();
+        if (reason === "validation failure") {
+          yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+        }
+
+        const failure = yield* request(
+          WS_METHODS.cloudGetRelayClientStatus,
+          {},
+          {
+            validateSession: () =>
+              Effect.sync(() => {
+                validations += 1;
+              }).pipe(Effect.andThen(Effect.fail("validation failed"))),
+          },
+        ).pipe(
+          Effect.flip,
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(
+            EnvironmentRpcRequestObserver,
+            EnvironmentRpcRequestObserver.of({
+              observe: () =>
+                Effect.sync(() => {
+                  observations += 1;
+                  return Effect.void;
+                }),
+            }),
+          ),
+        );
+
+        if (reason === "validation failure") {
+          expect(failure).toBe("validation failed");
+          expect(validations).toBe(1);
+        } else {
+          expect(failure).toBeInstanceOf(EnvironmentRpcUnavailableError);
+          expect(validations).toBe(0);
+        }
+        expect(requests).toBe(0);
+        expect(observations).toBe(0);
+        expect(yield* Ref.get(retryCount)).toBe(0);
+      }),
+  );
+
+  it.effect.each(["failure", "interruption"] as const)(
+    "finalizes a validated unary request observation after %s without retrying",
+    (reason) =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const finish = yield* Deferred.make<void>();
+        const observations: string[] = [];
+        const client = {
+          [WS_METHODS.cloudGetRelayClientStatus]: () =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(finish)),
+              Effect.andThen(
+                Effect.fail(
+                  new RpcClientError.RpcClientError({
+                    reason: new RpcClientError.RpcClientDefect({
+                      message: "socket closed",
+                      cause: new Error("socket closed"),
+                    }),
+                  }),
+                ),
+              ),
+            ),
+        } as unknown as WsRpcProtocolClient;
+        const { activeSession, retryCount, supervisor } = yield* makeHarness();
+        yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+        const requestFiber = yield* request(
+          WS_METHODS.cloudGetRelayClientStatus,
+          {},
+          {
+            validateSession: () => Effect.void,
+          },
+        ).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(
+            EnvironmentRpcRequestObserver,
+            EnvironmentRpcRequestObserver.of({
+              observe: () =>
+                Effect.sync(() => {
+                  observations.push("start");
+                  return Effect.sync(() => {
+                    observations.push("finish");
+                  });
+                }),
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(started);
+        expect(observations).toEqual(["start"]);
+        if (reason === "failure") {
+          yield* Deferred.succeed(finish, undefined);
+          expect(Exit.isFailure(yield* Fiber.await(requestFiber))).toBe(true);
+        } else {
+          yield* Fiber.interrupt(requestFiber);
+        }
+        expect(observations).toEqual(["start", "finish"]);
+        expect(yield* Ref.get(retryCount)).toBe(0);
+      }),
   );
 
   it.effect("binds finite streaming commands to one active session", () =>
@@ -615,6 +580,114 @@ describe("environment RPC", () => {
 
       expect(yield* Ref.get(subscriptionCount)).toBe(2);
       expect(yield* Ref.get(expectedFailureCount)).toBe(1);
+    }),
+  );
+
+  it.effect("doubles the retry delay for repeated failures and resets it after a value", () =>
+    Effect.gen(function* () {
+      const domainError = new Error("thread not hydrated yet");
+      const subscriptions = yield* Queue.unbounded<number>();
+      const failures = yield* Queue.unbounded<void>();
+      let attempts = 0;
+      const client = {
+        [WS_METHODS.subscribeTerminalEvents]: () =>
+          Stream.unwrap(
+            Effect.sync(() => {
+              attempts += 1;
+              return attempts;
+            }).pipe(
+              Effect.tap((attempt) => Queue.offer(subscriptions, attempt)),
+              Effect.map((attempt) => {
+                if (attempt <= 2) return Stream.fail(domainError);
+                if (attempt === 3)
+                  return Stream.concat(Stream.make("event"), Stream.fail(domainError));
+                return Stream.never;
+              }),
+            ),
+          ),
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor } = yield* makeHarness();
+
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      const subscriptionFiber = yield* subscribe(
+        WS_METHODS.subscribeTerminalEvents,
+        {},
+        {
+          onExpectedFailure: () => Queue.offer(failures, undefined),
+          retryExpectedFailureAfter: "100 millis",
+        },
+      ).pipe(
+        Stream.runDrain,
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+
+      expect(yield* Queue.take(subscriptions)).toBe(1);
+      yield* Queue.take(failures);
+      yield* TestClock.adjust("100 millis");
+      expect(yield* Queue.take(subscriptions)).toBe(2);
+      yield* Queue.take(failures);
+      // The second retry waits 200ms, so 100ms is not enough.
+      yield* TestClock.adjust("100 millis");
+      expect(Option.isNone(yield* Queue.poll(subscriptions))).toBe(true);
+      yield* TestClock.adjust("100 millis");
+      expect(yield* Queue.take(subscriptions)).toBe(3);
+      // Attempt 3 delivered a value before failing, so the delay is back to 100ms.
+      yield* Queue.take(failures);
+      yield* TestClock.adjust("100 millis");
+      expect(yield* Queue.take(subscriptions)).toBe(4);
+      yield* Fiber.interrupt(subscriptionFiber);
+    }),
+  );
+
+  it.effect("waits for the next session after an authorization failure", () =>
+    Effect.gen(function* () {
+      const subscriptions = yield* Queue.unbounded<void>();
+      const failed = yield* Deferred.make<void>();
+      let attempts = 0;
+      const client = {
+        [WS_METHODS.subscribeTerminalEvents]: () =>
+          Stream.unwrap(
+            Queue.offer(subscriptions, undefined).pipe(
+              Effect.map(() => {
+                attempts += 1;
+                return attempts === 1
+                  ? Stream.fail(
+                      new EnvironmentAuthorizationError({
+                        message: "Missing scope",
+                        requiredScope: "orchestration:read",
+                      }),
+                    )
+                  : Stream.never;
+              }),
+            ),
+          ),
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor } = yield* makeHarness();
+
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      const subscriptionFiber = yield* subscribe(
+        WS_METHODS.subscribeTerminalEvents,
+        {},
+        {
+          onExpectedFailure: () => Deferred.succeed(failed, undefined).pipe(Effect.asVoid),
+          retryExpectedFailureAfter: "100 millis",
+        },
+      ).pipe(
+        Stream.runDrain,
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+
+      yield* Queue.take(subscriptions);
+      yield* Deferred.await(failed);
+      yield* TestClock.adjust("1 minute");
+      expect(Option.isNone(yield* Queue.poll(subscriptions))).toBe(true);
+
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      yield* Queue.take(subscriptions);
+      yield* Fiber.interrupt(subscriptionFiber);
+      expect(attempts).toBe(2);
     }),
   );
 

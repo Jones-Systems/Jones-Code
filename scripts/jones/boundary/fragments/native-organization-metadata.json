@@ -1,0 +1,31 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "native-organization-metadata",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
+    "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts",
+    "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
+    "apps/server/src/jones/mcp/organizationMetadata/handlers.ts",
+    "apps/server/src/jones/mcp/organizationMetadata/tools.ts"
+  ],
+  "hookPaths": ["apps/server/src/mcp/McpHttpServer.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/organizationMetadata/handlers.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/organizationMetadata.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/organizationMetadata/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts"
+    }
+  ]
+}

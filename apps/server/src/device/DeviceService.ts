@@ -46,6 +46,7 @@ import {
   writeAgentDeviceConfig,
 } from "./AgentDeviceTarget.ts";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -56,7 +57,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import * as ServerSettings from "../serverSettings.ts";
 import { isLocalSshDeviceHost, remoteSshDeviceHosts } from "./localSshDeviceHost.ts";
@@ -186,6 +187,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   installTool?: (tool: "hub" | "agent") => Effect.Effect<unknown, DeviceError>,
 ) {
   const settings = yield* ServerSettings.ServerSettingsService;
+  const crypto = yield* Crypto.Crypto;
   const lifecycleLock = yield* Semaphore.make(1);
   const readDeviceSettings = settings.getSettings.pipe(
     Effect.map((value) => ({
@@ -943,12 +945,12 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
               return yield* configureAgent(input.hostId, ready);
             }),
           );
-          return [
-            "--config",
-            configPath,
-            "--session",
-            agentDeviceSession(input.threadId, input.hostId, input.deviceId),
-          ];
+          const session = yield* agentDeviceSession(
+            input.threadId,
+            input.hostId,
+            input.deviceId,
+          ).pipe(Effect.provideService(Crypto.Crypto, crypto));
+          return ["--config", configPath, "--session", session];
         }),
       state: SynchronizedRef.get(stateRef).pipe(Effect.map(({ state }) => state)),
       subscribe: PubSub.subscribe(statePubSub),
@@ -998,9 +1000,17 @@ export const make = Effect.gen(function* () {
   const hosts = new Map<DeviceHostId, DeviceHost.DeviceHost["Service"]>([
     [localHost.id, localHost],
   ]);
-  const configureAgent = (hostId: DeviceHostId, ready: DeviceHost.DeviceHostAgentReady) => {
-    const file = agentDeviceConfigPath(config.stateDir, hostId, path);
-    return writeAgentDeviceConfig(file, ready.agentDevice).pipe(
+  const crypto = yield* Crypto.Crypto;
+  const configPath = (hostId: DeviceHostId) =>
+    agentDeviceConfigPath(config.stateDir, hostId, path).pipe(
+      Effect.provideService(Crypto.Crypto, crypto),
+    );
+  const configureAgent = (hostId: DeviceHostId, ready: DeviceHost.DeviceHostAgentReady) =>
+    Effect.gen(function* () {
+      const file = yield* configPath(hostId);
+      yield* writeAgentDeviceConfig(file, ready.agentDevice);
+      return file;
+    }).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
       Effect.mapError(
@@ -1011,9 +1021,7 @@ export const make = Effect.gen(function* () {
             cause,
           }),
       ),
-      Effect.as(file),
     );
-  };
   const probeContext =
     yield* Effect.context<Effect.Services<ReturnType<typeof SshDeviceHost.probe>>>();
   const localTargetContext =
@@ -1070,6 +1078,7 @@ export const make = Effect.gen(function* () {
                   host.id === id &&
                   host.label === previous.config.label &&
                   host.target === previous.config.target &&
+                  host.directSshTarget === previous.config.directSshTarget &&
                   host.port === previous.config.port &&
                   host.identityFile === previous.config.identityFile,
               )
@@ -1089,9 +1098,7 @@ export const make = Effect.gen(function* () {
         ({ id, scope }) =>
           Effect.gen(function* () {
             yield* Scope.close(scope, Exit.void);
-            yield* fs
-              .remove(agentDeviceConfigPath(config.stateDir, id, path), { force: true })
-              .pipe(Effect.ignore);
+            yield* fs.remove(yield* configPath(id), { force: true }).pipe(Effect.ignore);
           }),
         { concurrency: 4, discard: true },
       );
@@ -1118,6 +1125,9 @@ export const make = Effect.gen(function* () {
                 service
                   .setHostStatus(host.id, { status, ...(detail ? { detail } : {}) })
                   .pipe(Effect.asVoid),
+              service
+                .currentReadiness(host.id)
+                .pipe(Effect.map((ready) => ready?.directMedia ?? null)),
             ).pipe(Effect.provideService(Scope.Scope, hostScope), Effect.provide(hostContext));
             hosts.set(host.id, instance);
             configured.set(host.id, { config: host, scope: hostScope });

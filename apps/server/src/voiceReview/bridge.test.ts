@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { it as effectIt } from "@effect/vitest";
 import {
   AuthSessionId,
   VoiceReviewForbiddenError,
@@ -18,6 +19,9 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import { makeVoiceReviewBridge } from "./bridge.ts";
+import * as VoiceReview from "./bridge.ts";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import { voiceReviewConfigFromEnv } from "./config.ts";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
@@ -437,3 +441,31 @@ describe("voice routing and registry bridge", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 });
+
+effectIt.effect("provides broker operations through the injected Effect service", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.acquireRelease(
+      Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "voice-review-"))),
+      (root) => Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })),
+    );
+    const tokenFile = NodePath.join(root, "reviewer-token");
+    yield* Effect.promise(() =>
+      NodeFSP.writeFile(tokenFile, "fixture-reviewer-token\n", { mode: 0o600 }),
+    ).pipe(Effect.uninterruptible);
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json(draft));
+    const serviceLayer = VoiceReview.layer.pipe(
+      Layer.provide(
+        Layer.succeed(VoiceReview.VoiceReviewDependencies, {
+          config: config(tokenFile),
+          fetcher,
+        }),
+      ),
+    );
+    const result = yield* Effect.gen(function* () {
+      const service = yield* VoiceReview.VoiceReview;
+      return yield* service.get(principal, "capture");
+    }).pipe(Effect.provide(serviceLayer));
+    expect(result).toEqual(draft);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  }).pipe(Effect.scoped),
+);

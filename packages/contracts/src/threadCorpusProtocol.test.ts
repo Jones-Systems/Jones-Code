@@ -7,7 +7,7 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadDetailWindow,
-} from "./orchestration.ts";
+} from "./legacyOrchestrationCompatibility.ts";
 import { QUEUE_DISPATCH_CAPABILITY } from "./queueProtocol.ts";
 import { THREAD_CORPUS_CAPABILITY, ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
 

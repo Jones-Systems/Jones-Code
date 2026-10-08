@@ -1,9 +1,7 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous contract hashing and opaque request identities retain their existing wire encoding.
 import * as NodeCrypto from "node:crypto";
 
 import {
-  WORKSTREAM_COUNTS_MANIFEST_SHA256,
-  WORKSTREAM_COUNTS_ROUTE,
-  WorkstreamRegistryCounts,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_HEADER_VERSION,
   WORKSTREAM_CONTRACT_VERSION,
@@ -37,8 +35,17 @@ import * as Schema from "effect/Schema";
 
 import { WorkstreamTransportError, type WorkstreamTransport } from "./WorkstreamGateway.ts";
 
+import {
+  WORKSTREAM_APPEARANCE_CONTRACT,
+  WORKSTREAM_APPEARANCE_MANIFEST,
+  WORKSTREAM_APPEARANCE_ROUTE,
+  WorkstreamAppearancePage,
+  WorkstreamAppearance,
+} from "@t3tools/contracts";
+
 const EMPTY_SHA256 = NodeCrypto.createHash("sha256").update("").digest("hex");
 const TIMEOUT_MS = 15_000;
+
 const REGISTRATION_CONTEXT_ROUTE = "/workstreams/v1/t3/registration-context";
 
 export interface WorkstreamRegistrationTransport {
@@ -50,9 +57,21 @@ export interface WorkstreamRegistrationTransport {
 }
 
 class BoundedTransportFailure extends Error {
-  readonly reason: "invalid_target" | "response_too_large" | "http_error" | "cursor_stale";
+  readonly reason:
+    | "invalid_target"
+    | "response_too_large"
+    | "http_error"
+    | "cursor_stale"
+    | "unsupported_appearance";
 
-  constructor(reason: "invalid_target" | "response_too_large" | "http_error" | "cursor_stale") {
+  constructor(
+    reason:
+      | "invalid_target"
+      | "response_too_large"
+      | "http_error"
+      | "cursor_stale"
+      | "unsupported_appearance",
+  ) {
     super(reason);
     this.reason = reason;
   }
@@ -172,6 +191,7 @@ export function signWorkstreamRequest(input: {
   readonly contractVersion?:
     | typeof WORKSTREAM_CONTRACT_HEADER_VERSION
     | typeof T3_PLACEMENT_CONTRACT
+    | typeof WORKSTREAM_APPEARANCE_CONTRACT
     | typeof WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL;
   readonly requestId: string;
   readonly idempotencyKey?: string;
@@ -257,13 +277,15 @@ async function performRequest(input: {
   readonly sentAt: string;
   readonly idempotencyKey?: string;
   readonly signal: AbortSignal;
-  readonly countsContract?: boolean;
 }): Promise<string> {
+  const registration = input.target.split(/[?#]/, 1)[0] === REGISTRATION_CONTEXT_ROUTE;
+  const appearance =
+    input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/read` ||
+    input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/write`;
   const placement =
     input.target === T3_PLACEMENT_ROUTE || input.target.startsWith(`${T3_PLACEMENT_ROUTE}?`);
-  const registration = input.target.split(/[?#]/, 1)[0] === REGISTRATION_CONTEXT_ROUTE;
   if (
-    (!input.target.startsWith("/workstreams/v1/") && !placement) ||
+    (!input.target.startsWith("/workstreams/v1/") && !placement && !appearance) ||
     (placement &&
       (input.method !== "POST" ||
         input.target !== T3_PLACEMENT_ROUTE ||
@@ -286,9 +308,11 @@ async function performRequest(input: {
   const signature = signWorkstreamRequest({
     contractVersion: registration
       ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
-      : placement
-        ? T3_PLACEMENT_CONTRACT
-        : WORKSTREAM_CONTRACT_HEADER_VERSION,
+      : appearance
+        ? WORKSTREAM_APPEARANCE_CONTRACT
+        : placement
+          ? T3_PLACEMENT_CONTRACT
+          : WORKSTREAM_CONTRACT_HEADER_VERSION,
     requestId,
     ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
     sentAt: input.sentAt,
@@ -310,15 +334,17 @@ async function performRequest(input: {
       "x-control-algorithm": "hmac-sha256-v1",
       "x-control-contract-version": registration
         ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
-        : placement
-          ? T3_PLACEMENT_CONTRACT
-          : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
+        : appearance
+          ? WORKSTREAM_APPEARANCE_CONTRACT
+          : placement
+            ? T3_PLACEMENT_CONTRACT
+            : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
       "x-control-contract-manifest": registration
         ? WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256
-        : placement
-          ? T3_PLACEMENT_MANIFEST_SHA256
-          : input.countsContract
-            ? WORKSTREAM_COUNTS_MANIFEST_SHA256
+        : appearance
+          ? WORKSTREAM_APPEARANCE_MANIFEST
+          : placement
+            ? T3_PLACEMENT_MANIFEST_SHA256
             : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
       "x-control-request-id": requestId,
       "x-control-timestamp": input.sentAt,
@@ -331,22 +357,33 @@ async function performRequest(input: {
     },
     ...(input.body === "" ? {} : { body: input.body }),
   });
+  if (appearance) {
+    if (response.status === 404 && response.headers.get("x-control-contract-version") === null) {
+      await response.body?.cancel();
+      throw new BoundedTransportFailure("unsupported_appearance");
+    }
+    if (
+      response.headers.get("x-control-contract-version") !== WORKSTREAM_APPEARANCE_CONTRACT ||
+      response.headers.get("x-control-contract-manifest") !== WORKSTREAM_APPEARANCE_MANIFEST
+    ) {
+      await response.body?.cancel();
+      throw new BoundedTransportFailure("http_error");
+    }
+  }
   if (
-    input.countsContract &&
-    (response.headers.get("x-control-contract-version") !== WORKSTREAM_CONTRACT_HEADER_VERSION ||
-      response.headers.get("x-control-contract-manifest") !== WORKSTREAM_COUNTS_MANIFEST_SHA256)
+    placement &&
+    (response.headers.get("x-control-contract-version") !== T3_PLACEMENT_CONTRACT ||
+      response.headers.get("x-control-contract-manifest") !== T3_PLACEMENT_MANIFEST_SHA256)
   ) {
     await response.body?.cancel();
     throw new BoundedTransportFailure("http_error");
   }
   if (
-    (placement || registration) &&
+    registration &&
     (response.headers.get("x-control-contract-version") !==
-      (registration ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL : T3_PLACEMENT_CONTRACT) ||
+      WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL ||
       response.headers.get("x-control-contract-manifest") !==
-        (registration
-          ? WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256
-          : T3_PLACEMENT_MANIFEST_SHA256))
+        WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256)
   ) {
     await response.body?.cancel();
     throw new BoundedTransportFailure("http_error");
@@ -399,7 +436,6 @@ export function makeControlPlaneWorkstreamTransport(
     schema: S,
     body = "",
     idempotencyKey?: string,
-    countsContract = false,
   ): Effect.Effect<S["Type"], WorkstreamTransportError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const sentAt = DateTime.formatIso(yield* DateTime.now);
@@ -414,13 +450,14 @@ export function makeControlPlaneWorkstreamTransport(
             sentAt,
             ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
             signal,
-            countsContract,
           }),
         catch: (cause) =>
           new WorkstreamTransportError({
             operation,
             effect:
-              method === "POST" && operation !== "thread_placements"
+              method === "POST" &&
+              operation !== "thread_placements" &&
+              operation !== "appearance_read"
                 ? "unknown-effect"
                 : "no-effect",
             detail:
@@ -434,7 +471,9 @@ export function makeControlPlaneWorkstreamTransport(
               new WorkstreamTransportError({
                 operation,
                 effect:
-                  method === "POST" && operation !== "thread_placements"
+                  method === "POST" &&
+                  operation !== "thread_placements" &&
+                  operation !== "appearance_read"
                     ? "unknown-effect"
                     : "no-effect",
                 detail: "Control-plane request timed out.",
@@ -450,7 +489,9 @@ export function makeControlPlaneWorkstreamTransport(
             new WorkstreamTransportError({
               operation,
               effect:
-                method === "POST" && operation !== "thread_placements"
+                method === "POST" &&
+                operation !== "thread_placements" &&
+                operation !== "appearance_read"
                   ? "unknown-effect"
                   : "no-effect",
               detail: "Control-plane returned invalid JSON for the accepted contract.",
@@ -507,25 +548,30 @@ export function makeControlPlaneWorkstreamTransport(
       authorizationRevision: config.authorizationRevision,
     },
     transport: {
-      getCountsCapabilities: () =>
+      readAppearance: (input) =>
         request(
-          "counts_capabilities",
-          "GET",
-          "/workstreams/v1/capabilities",
-          WorkstreamCapabilities,
-          "",
-          undefined,
-          true,
+          "appearance_read",
+          "POST",
+          `${WORKSTREAM_APPEARANCE_ROUTE}/read`,
+          WorkstreamAppearancePage,
+          JSON.stringify(input),
+          NodeCrypto.randomUUID(),
+        ).pipe(
+          Effect.map((page) => ({ supported: true as const, page })),
+          Effect.catch((error) =>
+            error.detail === "unsupported_appearance"
+              ? Effect.succeed({ supported: false as const })
+              : Effect.fail(error),
+          ),
         ),
-      getRegistryCounts: () =>
+      saveAppearance: (input) =>
         request(
-          "registry_counts",
-          "GET",
-          WORKSTREAM_COUNTS_ROUTE,
-          WorkstreamRegistryCounts,
-          "",
-          undefined,
-          true,
+          "appearance_write",
+          "POST",
+          `${WORKSTREAM_APPEARANCE_ROUTE}/write`,
+          WorkstreamAppearance,
+          JSON.stringify(input),
+          input.command_id,
         ),
       listThreadPlacements: (input) =>
         Schema.encodeEffect(Schema.fromJsonString(T3PlacementRequest))(input, {

@@ -7,8 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { TestClock } from "effect/testing";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
 import {
   HostProcessEnvironment,
@@ -17,7 +16,9 @@ import {
   HostProcessWorkingDirectory,
 } from "@t3tools/shared/hostProcess";
 
+import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
+  isJonesBootServiceCgroup,
   assertReleaseUpdateAllowed,
   repointLauncher,
   resolveLauncherPath,
@@ -304,4 +305,14 @@ describe("t3 update release source", () => {
         );
       }),
   );
+});
+
+it("recognizes only the Jones service cgroup for legacy server lineage", () => {
+  assert.isTrue(
+    isJonesBootServiceCgroup("0::/user.slice/user-501.slice/app.slice/jones-code.service"),
+  );
+  assert.isTrue(isJonesBootServiceCgroup("1:name=systemd:/user.slice/jones-code.service/worker"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/t3code.service"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/not-jones-code.service"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/jones-code.service-extra"));
 });

@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalFetchInEffect:off - Hosted handoff test uses a real localhost listener without an OpenAI account.
 import * as NodeHttp from "node:http";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { codexAuthHandoffUrl, readCodexAuthDelivery } from "@t3tools/shared/codexAuthHandoff";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import { HostProcessArguments } from "@t3tools/shared/hostProcess";
@@ -35,24 +36,28 @@ import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopPreReadyFileSystem from "./DesktopPreReadyFileSystem.ts";
 
-const makeDesktopClerkLayer = (
+const layerDesktopClerk = (
   isDevelopment = true,
   events: string[] = [],
+  platform: NodeJS.Platform = "darwin",
+  fileSystemLayer: Layer.Layer<FileSystem.FileSystem> = FileSystem.layerNoop({
+    exists: () => Effect.succeed(false),
+  }),
   shell: ElectronShell.ElectronShell["Service"] = {
     openExternal: () => Effect.succeed(true),
     openSystemSettings: () => Effect.succeed(false),
     copyText: () => Effect.void,
   },
+  userDataDirectoryOverride: Option.Option<string> = Option.none(),
 ) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir: "/tmp/t3-state",
     isDevelopment,
     appDataDirectory: "/tmp/app-data",
-    userDataDirName: isDevelopment ? "t3code-dev" : "t3code",
-    userDataDirectoryOverride: Option.none(),
-    legacyUserDataDirName: isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)",
-    path: { join: (...parts: ReadonlyArray<string>) => parts.join("/") },
+    platform,
+    userDataDirectoryOverride,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
 
   const electronApp = {
@@ -65,10 +70,11 @@ const makeDesktopClerkLayer = (
   return DesktopClerk.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        NodePath.layerPosix,
         Layer.succeed(DesktopEnvironment.DesktopEnvironment, environment),
         Layer.succeed(ElectronApp.ElectronApp, electronApp),
         Layer.succeed(ElectronShell.ElectronShell, shell),
-        FileSystem.layerNoop({ exists: () => Effect.succeed(false) }),
+        fileSystemLayer,
       ),
     ),
   );
@@ -90,7 +96,7 @@ describe("DesktopClerk", () => {
     });
 
     return Effect.gen(function* () {
-      yield* Effect.scoped(Layer.build(makeDesktopClerkLayer(true, events)));
+      yield* Effect.scoped(Layer.build(layerDesktopClerk(true, events)));
 
       assert.deepEqual(createClerkBridgeMock.mock.calls, [
         [
@@ -111,6 +117,79 @@ describe("DesktopClerk", () => {
     });
   });
 
+  it.each([
+    {
+      name: "packaged Windows",
+      isDevelopment: false,
+      platform: "win32" as const,
+      userData: "/tmp/app-data/t3code-v2",
+    },
+    {
+      name: "development",
+      isDevelopment: true,
+      platform: "win32" as const,
+      userData: "/tmp/app-data/t3code-dev",
+    },
+  ])(
+    "creates the bridge before startup can yield to the event loop ($name)",
+    ({ isDevelopment, platform, userData }) => {
+      const events: string[] = [];
+      storageMock.mockReturnValue(storageAdapter);
+      createClerkBridgeMock.mockImplementation(() => {
+        events.push("createClerkBridge");
+        return { cleanup: vi.fn(), isPrimaryInstance: true };
+      });
+      // runSync throws if the layer ever suspends, which would let Electron emit
+      // ready before the bridge exists. main.ts provides the same FileSystem.
+      // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- The assertion IS that the layer builds synchronously; it.effect would mask a regression to async.
+      Effect.runSync(
+        Effect.scoped(
+          Layer.build(
+            layerDesktopClerk(isDevelopment, events, platform, DesktopPreReadyFileSystem.layer),
+          ),
+        ),
+      );
+
+      assert.deepEqual(events, [`setPath:userData:${userData}`, "createClerkBridge"]);
+    },
+  );
+
+  it.effect(
+    "binds an explicit profile before Clerk without inspecting or copying default Windows state",
+    () => {
+      const events: string[] = [];
+      storageMock.mockReturnValue(storageAdapter);
+      createClerkBridgeMock.mockImplementation(() => {
+        events.push("createClerkBridge");
+        return { cleanup: vi.fn(), isPrimaryInstance: true };
+      });
+      const noProfileAccess = FileSystem.layerNoop({
+        exists: () => Effect.die("must not inspect a default profile"),
+        readFileString: () => Effect.die("must not copy Windows Local State"),
+        makeDirectory: () => Effect.die("boot owns profile directory creation"),
+        writeFileString: () => Effect.die("must not migrate default profile state"),
+      });
+      return Effect.gen(function* () {
+        yield* Effect.scoped(
+          Layer.build(
+            layerDesktopClerk(
+              false,
+              events,
+              "win32",
+              noProfileAccess,
+              undefined,
+              Option.some("/isolated/client-profile"),
+            ),
+          ),
+        );
+        assert.deepEqual(events, [
+          "setPath:userData:/isolated/client-profile",
+          "createClerkBridge",
+        ]);
+      });
+    },
+  );
+
   it.effect("preserves bridge initialization failures", () => {
     const cause = new Error("bridge initialization failed");
     storageMock.mockReturnValue(storageAdapter);
@@ -119,7 +198,7 @@ describe("DesktopClerk", () => {
     });
 
     return Effect.gen(function* () {
-      const error = yield* Effect.scoped(Layer.build(makeDesktopClerkLayer())).pipe(Effect.flip);
+      const error = yield* Effect.scoped(Layer.build(layerDesktopClerk())).pipe(Effect.flip);
 
       assert.instanceOf(error, DesktopClerk.DesktopClerkBridgeInitializationError);
       assert.equal(error.stateDir, "/tmp/t3-state");
@@ -142,7 +221,7 @@ describe("DesktopClerk", () => {
     });
 
     return Effect.gen(function* () {
-      const exit = yield* Effect.exit(Effect.scoped(Layer.build(makeDesktopClerkLayer(false))));
+      const exit = yield* Effect.exit(Effect.scoped(Layer.build(layerDesktopClerk(false))));
 
       assert.equal(exit._tag, "Failure");
       if (exit._tag === "Failure") {
@@ -181,7 +260,7 @@ describe("DesktopClerk", () => {
       assert.equal(quit.mock.calls.length, 0);
       assert.deepEqual(registeredEvents, ["open-url", "second-instance"]);
     }).pipe(
-      Effect.provide(makeDesktopClerkLayer()),
+      Effect.provide(layerDesktopClerk()),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),
       Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
     );
@@ -209,7 +288,7 @@ describe("DesktopClerk", () => {
       assert.equal(quit.mock.calls.length, 1);
       assert.deepEqual(registeredEvents, []);
     }).pipe(
-      Effect.provide(makeDesktopClerkLayer()),
+      Effect.provide(layerDesktopClerk()),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),
       Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
     );
@@ -255,15 +334,16 @@ it.effect(
       assert.equal(event.preventDefault.mock.calls.length, 1);
     }).pipe(
       Effect.scoped,
-      Effect.provide(makeDesktopClerkLayer()),
+      Effect.provide(layerDesktopClerk()),
       Effect.provideService(ElectronApp.ElectronApp, electronApp),
       Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
     );
   },
 );
 
-for (const entry of ["startup", "open-url"] as const) {
-  it.effect(`receives hosted web sign-in through the desktop ${entry} handler`, () =>
+it.effect.each(["startup", "open-url"] as const)(
+  "receives hosted web sign-in through the desktop %s handler",
+  (entry) =>
     Effect.gen(function* () {
       storageMock.mockReturnValue(storageAdapter);
       createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
@@ -332,7 +412,7 @@ for (const entry of ["startup", "open-url"] as const) {
         assert.strictEqual(delivery?.flowId, request.flowId);
         assert.strictEqual(delivery?.returnUrl, request.returnUrl);
       }).pipe(
-        Effect.provide(makeDesktopClerkLayer(true, [], shell)),
+        Effect.provide(layerDesktopClerk(true, [], "darwin", undefined, shell)),
         Effect.provideService(HostProcessArguments, entry === "startup" ? ["t3", link] : ["t3"]),
         Effect.provideService(ElectronApp.ElectronApp, electronApp),
         Effect.provideService(
@@ -341,5 +421,4 @@ for (const entry of ["startup", "open-url"] as const) {
         ),
       );
     }).pipe(Effect.scoped),
-  );
-}
+);

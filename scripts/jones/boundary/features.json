@@ -1,0 +1,371 @@
+{
+  "schema": "jones.boundary-features/v1",
+  "scopeReference": "docs/operations/upstream-sync.md",
+  "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
+  "features": [
+    {
+      "id": "conversation-library",
+      "tests": [
+        "apps/server/src/conversations/Service.test.ts",
+        "packages/client-runtime/src/conversations/model.test.ts"
+      ]
+    },
+    {
+      "id": "token-accounting",
+      "tests": [
+        "apps/server/src/tokenAccounting/TokenAccountingService.test.ts",
+        "apps/web/src/state/tokenAccounting.test.ts"
+      ]
+    },
+    {
+      "id": "voice-review",
+      "tests": [
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
+        "apps/server/src/voiceReview/composition.test.ts",
+        "apps/server/src/voiceReview/native.test.ts",
+        "apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx"
+      ]
+    },
+    {
+      "id": "work-queue-preview",
+      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
+      "scope": "Mock submitted-work preview remains covered by WorkQueuePage.test.tsx; the adapted canonical metadata panel, service, HTTP route, contracts and shared client runtime are covered by work-queue-metadata."
+    },
+    {
+      "id": "boundary-inventory",
+      "tests": ["scripts/jones/check-boundary.test.ts"]
+    },
+    {
+      "id": "provider-settlement",
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "packages/client-runtime/src/state/threadExecution.test.ts",
+        "apps/web/src/components/chat/MessagesTimeline.logic.test.ts"
+      ],
+      "scope": "Landed rebuild #111 distinguishes attributed provider response settlement from checkpoint completion."
+    },
+    {
+      "id": "workstreams",
+      "tests": [
+        "packages/contracts/src/workstreams.conformance.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/mobile/src/features/workstreams/projection.test.ts"
+      ]
+    },
+    {
+      "id": "native-store-authority",
+      "tests": [
+        "apps/server/src/environment/NativeStoreAuthority.test.ts",
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+      ]
+    },
+    {
+      "id": "legacy-compatibility-contracts",
+      "tests": [
+        "packages/contracts/src/queueProtocol.test.ts",
+        "packages/contracts/src/threadCorpusProtocol.test.ts"
+      ]
+    },
+    {
+      "id": "queue-dispatch-goals",
+      "tests": [
+        "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
+        "apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
+        "apps/server/src/provider/providerQueue.test.ts",
+        "apps/server/src/provider/providerGoal.test.ts"
+      ]
+    },
+    {
+      "id": "provider-runtime-identity",
+      "tests": [
+        "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
+        "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
+        "packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
+      ]
+    },
+    {
+      "id": "process-placement",
+      "tests": [
+        "apps/server/src/jones/processPlacement/processPlacement.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
+        "native/process-placement/build.test.mjs"
+      ]
+    },
+    {
+      "id": "composer-shortcuts",
+      "tests": [
+        "apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx",
+        "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
+        "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
+        "apps/web/src/jones/composer/composerShortcutRails.test.ts"
+      ]
+    },
+    {
+      "id": "workstream-appearance",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx",
+        "packages/client-runtime/src/state/workstreams/appearance.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "scope": "Jones appearance contracts exported through the contracts barrel and registered by makeJonesHttpGroups; shared client binding validation and native web color editing are covered by the focused tests."
+    },
+    {
+      "id": "work-mode",
+      "tests": [
+        "apps/mobile/src/features/threads/pending-thread-feed.test.ts",
+        "apps/mobile/src/lib/threadActivity.test.ts",
+        "apps/server/src/jones/provider/workModePrompt.test.ts",
+        "apps/server/src/jones/workMode/Policy.test.ts",
+        "apps/server/src/jones/workMode/Retention.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
+        "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
+        "packages/contracts/src/jones/workMode.test.ts",
+        "packages/shared/src/jones/workMode.test.ts",
+        "packages/shared/src/serverSettings.test.ts"
+      ],
+      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers."
+    },
+    {
+      "id": "persistent-host-connections",
+      "tests": [
+        "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
+        "packages/ssh/src/tunnel.test.ts",
+        "packages/ssh/src/runnerProcess.test.ts"
+      ],
+      "scope": "SSH disconnect and client shutdown preserve host-owned remote servers. Shell policy is isolated under Jones ownership; manager lifecycle tests retain their shared harness."
+    },
+    {
+      "id": "native-organization-metadata",
+      "tests": [
+        "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
+        "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
+        "packages/contracts/src/jones/organizationMetadata.test.ts"
+      ],
+      "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
+    },
+    {
+      "id": "work-queue-metadata",
+      "tests": [
+        "apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts",
+        "apps/server/src/jones/workQueueMetadata/http.test.ts",
+        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
+        "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/contracts/src/jones/workQueueMetadata.test.ts"
+      ],
+      "scope": "Adapted rebuild #113 canonical artifact metadata: validated server configuration and artifact reads, authenticated HTTP registration, capability-gated shared client reads, and metadata panel integration in WorkQueuePage."
+    },
+    {
+      "id": "direct-desktop-media",
+      "tests": [
+        "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
+        "apps/server/src/device/DeviceHubProxy.test.ts",
+        "apps/server/src/device/SshDeviceHost.test.ts",
+        "apps/server/src/device/sshDeviceScript.test.ts",
+        "apps/server/src/jones/device/DeviceDirectAdmission.test.ts",
+        "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
+        "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
+        "apps/server/src/jones/device/directDeviceGateway.test.ts",
+        "apps/web/src/components/device/DeviceStreamView.test.tsx",
+        "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts",
+        "apps/web/src/jones/device/device.test.tsx",
+        "packages/client-runtime/src/device/stream.test.ts",
+        "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
+        "packages/contracts/src/device.test.ts"
+      ],
+      "scope": "Adapted rebuild #80 direct device admission, generation-bound grants, server gateway lifecycle, desktop media tunnel IPC, shared media routing and proxy fallback. Existing device schemas, SSH host lifecycle, stream view and connection checks retain exact shared seams."
+    },
+    {
+      "id": "imported-history-custody",
+      "tests": [
+        "apps/server/src/jones/importedHistory/ImportedApplicationAttachmentInventory.test.ts",
+        "apps/server/src/jones/importedHistory/ApplicationBirth.test.ts"
+      ],
+      "scope": "Application birth readback and immutable attachment inventory validation. Reviewed continuation acceptance and queued preparation are declared separately by imported-history-admission; complete retention traversal remains unavailable."
+    },
+    {
+      "id": "provider-background-activity",
+      "tests": [
+        "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts",
+        "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
+    },
+    {
+      "id": "opencode-process-adoption",
+      "tests": [
+        "apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts",
+        "apps/server/src/provider/OpenCodeServerOwner.test.ts",
+        "apps/server/src/provider/opencode2/OpenCode2Server.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts"
+      ],
+      "scope": "Physical process incarnation, qualified per-session adoption and pre-effect revocation checks; absent authority preserves ordinary sessions. Positive authority and live provider qualification are not supplied."
+    },
+    {
+      "id": "runtime-census",
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeCensus.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts"
+      ],
+      "scope": "Coherent application candidate census and captured manager attachment observation with before/after revision validation. Native and external coverage remain explicitly unknown; observation does not create or stop a runtime."
+    },
+    {
+      "id": "native-bootstrap-acceptance",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "apps/server/src/ws.test.ts",
+        "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "packages/contracts/src/nativeCreation.test.ts",
+        "packages/contracts/src/orchestrationV2.test.ts",
+        "packages/contracts/src/rpc.test.ts"
+      ],
+      "scope": "Verified-principal accepting route on existing native100/workspace101 owners; private ordered stages and public reserved-ID refusal; production grants and executors unavailable until exact owner bindings exist."
+    },
+    {
+      "id": "native-workspace-physical",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeWorkspacePhysicalPorts.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.test.ts",
+        "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+        "apps/server/src/terminal/Manager.test.ts"
+      ],
+      "scope": "Exact Git/lstat workspace proof and retained native setup terminal with existing101 start/claim ownership. Missing qualified physical/grant/account owners deny before allocation; unknown original effects never replay."
+    },
+    {
+      "id": "imported-history-admission",
+      "tests": [
+        "apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
+        "apps/server/src/jones/importedHistory/http.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts"
+      ],
+      "scope": "Ordinary authenticated reviewed message and queued-run choice acceptance, atomic receipt/event/outbox/outcome reservation, and exact preparation observation. Native enrolled execution remains unavailable."
+    },
+    {
+      "id": "runtime-stop",
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts",
+        "packages/contracts/src/jones/runtimeStop.test.ts",
+        "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
+        "apps/web/src/hooks/useCurrentRuntimeStop.test.ts"
+      ],
+      "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Unsupported captures remain unavailable; background coverage remains partial."
+    },
+    {
+      "id": "deletion-worktree-removal",
+      "tests": [
+        "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+        "apps/server/src/jones/persistence/Migrations/104_JonesDeletionAdmission.test.ts"
+      ],
+      "scope": "Deleted-thread worktreeOnDelete policy uses same EventSink SQL admission and original-start qualification; native workspace101 paths require explicit original-owner handoff."
+    },
+    {
+      "id": "native-provider-whole-operation",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationAuthority.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts"
+      ],
+      "scope": "Codex-first issued-reference execution, durable start before allocation, exact physical binding and direct acknowledgement, no resume or replay, and ordinary-path compatibility. Missing trusted grant or qualified account denies capability."
+    },
+    {
+      "id": "imported-history-client",
+      "tests": [
+        "packages/shared/src/jones/importedHistoryCanonical.test.ts",
+        "packages/client-runtime/src/jones/importedHistory/commands.test.ts",
+        "packages/client-runtime/src/jones/importedHistory/continuation.test.ts",
+        "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx",
+        "apps/web/src/components/chat/QueuedRunsControl.test.tsx",
+        "apps/web/src/composerDraftStore.test.ts",
+        "apps/web/src/components/ChatView.logic.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts"
+      ],
+      "scope": "Existing imported composer and queue choice placements use exact reviewed delivery, shared canonical bytes, durable original correlation and exclusive WebLocks. Lost responses observe the original command; accepted admission remains pending, without clearing replacement drafts or claiming execution."
+    },
+    {
+      "id": "imported-history-mobile",
+      "tests": [
+        "apps/mobile/src/jones/importedHistory/controller.test.ts",
+        "apps/mobile/src/jones/importedHistory/identity.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "apps/mobile/src/features/threads/threadQueueControlPresentation.test.ts",
+        "apps/mobile/src/state/queued-run-edit.test.ts"
+      ],
+      "scope": "Existing mobile composer and queue imported choices persist exact original correlation before delivery, use receiving typed HTTP and shared canonical bytes, serialize per-thread controllers in the current process, retain unknown no-resend and stale-draft fences. Admission remains pending execution."
+    },
+    {
+      "id": "receiving-native-qualification",
+      "tests": [
+        "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts",
+        "apps/server/src/jones/importedHistory/ApplicationBirth.test.ts",
+        "scripts/jones/performance/current-qualification.node-test.mjs",
+        "scripts/jones/performance/migration-restore.node-test.mjs"
+      ],
+      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+    },
+    {
+      "id": "preview-runtime-identity",
+      "tests": [
+        "apps/desktop/src/ipc/methods/preview.test.ts",
+        "apps/desktop/src/preview/DesktopBrowserHost.test.ts",
+        "apps/desktop/src/preview/Manager.test.ts",
+        "apps/server/src/mcp/PreviewAutomationBroker.test.ts",
+        "apps/server/src/mcp/toolkits/preview/handlers.test.ts",
+        "apps/server/src/preview/DesktopBrowserChannel.test.ts",
+        "apps/server/src/preview/ServerBrowser.test.ts",
+        "apps/server/src/preview/SessionControl.test.ts",
+        "packages/contracts/src/preview.test.ts"
+      ],
+      "scope": "Native desktop identity and generation fences, physical-host affinity and recovery, active-operation/snapshot ordering, local preflight deadlines and initialization isolation retain Jones intent together with receiving preview resilience. Broker and native receipt clocks own separate relative budgets; network transit timing is not qualified."
+    },
+    {
+      "id": "persistent-private-services",
+      "tests": [
+        "apps/server/src/jones/hostService/HostService.test.ts",
+        "apps/server/src/jones/hostService/cli.test.ts",
+        "apps/server/src/jones/hostService/artifactVerification.test.ts",
+        "apps/server/src/jones/hostService/HostServiceConfig.test.ts",
+        "packages/tailscale/src/jones/serveOwnership.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
+    }
+  ]
+}

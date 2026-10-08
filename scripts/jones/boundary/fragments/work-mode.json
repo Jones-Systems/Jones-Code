@@ -1,0 +1,85 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "work-mode",
+  "jonesOwnedPaths": [
+    "apps/mobile/src/jones/workMode/WorkModeSettings.tsx",
+    "apps/server/src/jones/provider/workModePrompt.test.ts",
+    "apps/server/src/jones/provider/workModePrompt.ts",
+    "apps/server/src/jones/workMode/Admission.ts",
+    "apps/server/src/jones/workMode/Fixtures.testkit.ts",
+    "apps/server/src/jones/workMode/Policy.test.ts",
+    "apps/server/src/jones/workMode/Policy.ts",
+    "apps/server/src/jones/workMode/Retention.test.ts",
+    "apps/server/src/jones/workMode/Retention.ts",
+    "apps/server/src/jones/workMode/WorkMode.test.ts",
+    "apps/server/src/jones/workMode/WorkMode.ts",
+    "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
+    "apps/web/src/jones/workMode/SidebarWorkModePill.tsx",
+    "docs/user/work-mode.md",
+    "packages/shared/src/jones/workMode.test.ts",
+    "packages/shared/src/jones/workMode.ts"
+  ],
+  "hookPaths": [
+    "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
+    "apps/mobile/src/features/threads/pending-thread-feed.ts",
+    "apps/mobile/src/lib/threadActivity.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+    "apps/web/src/components/chat/MessagesTimeline.logic.ts",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx",
+    "packages/contracts/src/settings.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/settings.ts",
+      "to": "packages/contracts/src/jones/workMode.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/provider/workModePrompt.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/jones/workMode/SidebarWorkModePill.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
+      "to": "apps/mobile/src/jones/workMode/WorkModeSettings.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/MessagesTimeline.logic.ts",
+      "to": "packages/shared/src/jones/workMode.ts"
+    },
+    {
+      "from": "apps/mobile/src/lib/threadActivity.ts",
+      "to": "packages/shared/src/jones/workMode.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/workMode/Policy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/workMode/Admission.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workMode/WorkMode.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/pending-thread-feed.ts",
+      "to": "packages/shared/src/jones/workMode.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/workMode/Retention.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "apps/server/src/jones/workMode/Fixtures.testkit.ts"
+    }
+  ]
+}

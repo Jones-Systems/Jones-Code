@@ -1,6 +1,6 @@
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
-import { Command, GlobalFlag } from "effect/unstable/cli";
+import { Command, GlobalFlag } from "effect/cli";
 
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
@@ -8,7 +8,6 @@ import {
   NativeStoreAuthorityPersistenceError,
 } from "../environment/nativeStoreAuthorityPersistence.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
-import { workstreamProviderCommand } from "./workstreamProvider.ts";
 
 const authorityEnrollCommand = Command.make("enroll", projectLocationFlags).pipe(
   Command.withDescription(
@@ -43,5 +42,5 @@ const authorityCommand = Command.make("authority").pipe(
 
 export const workstreamCommand = Command.make("workstream").pipe(
   Command.withDescription("Manage cross-system workstream integration."),
-  Command.withSubcommands([authorityCommand, workstreamProviderCommand]),
+  Command.withSubcommands([authorityCommand]),
 );

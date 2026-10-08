@@ -1,13 +1,13 @@
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import {
   CLI_RELEASE_CHECKSUMS_FILE,
@@ -19,6 +19,11 @@ import {
 } from "@t3tools/shared/cliRelease";
 
 import * as ProcessRunner from "../processRunner.ts";
+import * as JonesArtifact from "../jones/hostService/artifactVerification.ts";
+import {
+  JonesRuntimePolicyError,
+  requireExplicitJonesReleaseBaseUrl,
+} from "../jones/hostService/releasePolicy.ts";
 
 /**
  * A pinned runtime is an exact t3 release archive unpacked into
@@ -28,18 +33,22 @@ import * as ProcessRunner from "../processRunner.ts";
  * target version here before switching over. The runtime never depends on a
  * Node or npm on the machine; the only npm involvement in T3 Code is the `t3`
  * package for people who prefer `npx t3` or `npm install -g t3`, and even a
- * CLI installed that way pins an archive when it sets up the service.
+ * CLI installed that way uses a staged runtime or an explicit release origin
+ * when it sets up the service.
  */
 const PINNED_RUNTIME_DIR = "runtime";
 const PINNED_RUNTIME_INSTALL_TIMEOUT = Duration.minutes(10);
 const PINNED_RUNTIME_ARCHIVE_FILE = "t3-runtime-archive";
+const encodeJonesRuntimeProvenanceJson = Schema.encodeEffect(
+  Schema.fromJsonString(JonesArtifact.JonesRuntimeProvenance),
+);
 // Boot-service setup and remote update can construct separate layers. Serialize
 // the complete install transaction across every caller in this process.
 const pinnedRuntimeInstallLock = Semaphore.makeUnsafe(1);
 
 export interface PinnedRuntimePaths {
   readonly versionDir: string;
-  /** The executable. Its existence is what marks a runtime as present. */
+  /** The executable; provenance and the sentinel establish a completed install. */
   readonly entryPath: string;
   readonly sentinelPath: string;
 }
@@ -105,7 +114,7 @@ export type PinnedRuntimeProgress =
 
 /**
  * Installs the t3 release archive for `version` into the pinned runtime
- * directory unless a complete install is already there, and returns its
+ * directory unless a complete verified Jones install is already there, and returns its
  * paths. The sentinel is written only after extraction and validation
  * succeed; checking the entry file alone is not enough, since tar writes the
  * executable before the last native package and a killed install leaves a
@@ -125,7 +134,7 @@ interface PinnedRuntimeInstallInput {
   readonly arch: string;
   readonly httpClient: HttpClient.HttpClient;
   readonly releaseBaseUrl?: string | undefined;
-  readonly onProgress?: (progress: PinnedRuntimeProgress) => void;
+  readonly onProgress?: ((progress: PinnedRuntimeProgress) => void) | undefined;
 }
 
 const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(function* (
@@ -185,7 +194,6 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
   input: PinnedRuntimeInstallInput,
   stagingDir: string,
 ) {
-  const { fs, path } = input;
   const platformKey = cliArchivePlatformKey(input.platform, input.arch);
   if (platformKey === undefined) {
     return yield* new PinnedRuntimeInstallError({
@@ -193,7 +201,8 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
     });
   }
   const httpClient = input.httpClient;
-  const baseUrl = cliReleaseDownloadBaseUrl(input.version, input.releaseBaseUrl);
+  const explicitBaseUrl = yield* requireExplicitJonesReleaseBaseUrl(input.releaseBaseUrl);
+  const baseUrl = cliReleaseDownloadBaseUrl(input.version, explicitBaseUrl);
   const fileName = cliArchiveFileName(input.version, platformKey);
 
   input.onProgress?.({ stage: "download", received: 0, total: undefined });
@@ -224,12 +233,32 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
     catch: (cause) =>
       new PinnedRuntimeInstallError({ step: "verifying the t3 release archive", cause }),
   });
-  if (Encoding.encodeHex(new Uint8Array(digest)) !== expected) {
+  if (Hex.encode(new Uint8Array(digest)) !== expected) {
     return yield* new PinnedRuntimeInstallError({
       step: "verifying the t3 release archive checksum",
     });
   }
 
+  yield* extractArchive(input, stagingDir, archive);
+});
+
+interface PinnedRuntimeTransactionInput extends Omit<
+  PinnedRuntimeInstallInput,
+  "httpClient" | "releaseBaseUrl"
+> {
+  readonly installArchive: (
+    stagingDir: string,
+  ) => Effect.Effect<void, PinnedRuntimeInstallError | JonesRuntimePolicyError>;
+  readonly requireInstall: Effect.Effect<void, JonesRuntimePolicyError>;
+  readonly expectedProvenance?: JonesArtifact.JonesArtifactMetadata | undefined;
+}
+
+const extractArchive = Effect.fn("cloud.pinned_runtime.extract_archive")(function* (
+  input: Pick<PinnedRuntimeInstallInput, "fs" | "path" | "runner" | "platform" | "onProgress">,
+  stagingDir: string,
+  archive: Uint8Array,
+) {
+  const { fs, path } = input;
   const archivePath = path.join(stagingDir, PINNED_RUNTIME_ARCHIVE_FILE);
   yield* fs
     .writeFile(archivePath, archive)
@@ -261,11 +290,18 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
           }),
       ),
     );
-  yield* fs.remove(archivePath, { force: true }).pipe(Effect.ignore);
+  yield* fs
+    .remove(archivePath, { force: true })
+    .pipe(
+      Effect.mapError(
+        (cause) =>
+          new PinnedRuntimeInstallError({ step: "removing the staged runtime archive", cause }),
+      ),
+    );
 });
 
 const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(function* (
-  input: PinnedRuntimeInstallInput,
+  input: PinnedRuntimeTransactionInput,
 ) {
   const { fs } = input;
   const paths = pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform);
@@ -280,11 +316,19 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   );
   const alreadyPinned =
     entryExists && Option.isSome(sentinel) && sentinel.value.trim() === input.version;
+  if (versionDirExists) {
+    yield* verifyPinnedRuntimeProvenance({
+      ...input,
+      paths,
+      expectedProvenance: input.expectedProvenance,
+    });
+  }
   if (alreadyPinned) {
     input.onProgress?.({ stage: "cached" });
     yield* input.validate(paths);
     return paths;
   }
+  yield* input.requireInstall;
   if (versionDirExists) {
     yield* fs.remove(paths.versionDir, { recursive: true, force: true }).pipe(
       Effect.mapError(
@@ -328,10 +372,41 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   };
 
   return yield* Effect.gen(function* () {
-    yield* installFromArchive(input, stagingDir);
+    yield* input.installArchive(stagingDir);
 
     input.onProgress?.({ stage: "validate" });
     yield* input.validate(stagingPaths);
+    if (input.expectedProvenance !== undefined) {
+      const entrySha256 = yield* fs.readFile(stagingPaths.entryPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({ step: "reading the staged Jones executable", cause }),
+        ),
+        Effect.flatMap((bytes) => runtimeSha256(bytes, "hashing the staged Jones executable")),
+      );
+      const provenance = {
+        ...input.expectedProvenance,
+        repository: "Jones-Systems/Jones-Code" as const,
+        entrySha256,
+      };
+      const provenanceJson = yield* encodeJonesRuntimeProvenanceJson(provenance).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({ step: "encoding Jones runtime provenance", cause }),
+        ),
+      );
+      yield* fs
+        .writeFileString(
+          input.path.join(stagingDir, JonesArtifact.JONES_RUNTIME_PROVENANCE_FILE),
+          provenanceJson,
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new PinnedRuntimeInstallError({ step: "recording Jones runtime provenance", cause }),
+          ),
+        );
+    }
     yield* fs
       .writeFileString(stagingPaths.sentinelPath, `${input.version}\n`)
       .pipe(
@@ -340,6 +415,35 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
             new PinnedRuntimeInstallError({ step: "recording the completed install", cause }),
         ),
       );
+    if (
+      yield* fs.exists(paths.versionDir).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({
+              step: "checking the runtime publication target",
+              cause,
+            }),
+        ),
+      )
+    ) {
+      yield* verifyPinnedRuntimeProvenance({ ...input, paths });
+      const publishedSentinel = yield* fs.readFileString(paths.sentinelPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({
+              step: "checking a concurrently published pinned runtime",
+              cause,
+            }),
+        ),
+      );
+      if (publishedSentinel.trim() !== input.version) {
+        return yield* new PinnedRuntimeInstallError({
+          step: "checking a concurrently published pinned runtime",
+        });
+      }
+      yield* input.validate(paths);
+      return paths;
+    }
     const published = yield* fs.rename(stagingDir, paths.versionDir).pipe(
       Effect.as(true),
       Effect.catch((cause) =>
@@ -369,11 +473,60 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
         ),
       ),
     );
-    if (!published) yield* input.validate(paths);
+    if (!published) {
+      yield* verifyPinnedRuntimeProvenance({ ...input, paths });
+      yield* input.validate(paths);
+    }
     return paths;
   }).pipe(
-    Effect.ensuring(fs.remove(stagingDir, { recursive: true, force: true }).pipe(Effect.ignore)),
+    Effect.onExit(() =>
+      fs.remove(stagingDir, { recursive: true, force: true }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({
+              step: "cleaning the pinned runtime staging directory",
+              cause,
+            }),
+        ),
+      ),
+    ),
   );
+});
+
+const runtimeSha256 = (bytes: Uint8Array, step: string) =>
+  Effect.tryPromise({
+    try: () => crypto.subtle.digest("SHA-256", bytes),
+    catch: (cause) => new PinnedRuntimeInstallError({ step, cause }),
+  }).pipe(Effect.map((digest) => Hex.encode(new Uint8Array(digest))));
+
+export const verifyPinnedRuntimeProvenance = Effect.fn(
+  "cloud.pinned_runtime.verify_jones_provenance",
+)(function* (
+  input: Pick<PinnedRuntimeInstallInput, "fs" | "path" | "version" | "platform" | "arch"> & {
+    readonly paths: PinnedRuntimePaths;
+    readonly expectedProvenance?: JonesArtifact.JonesArtifactMetadata | undefined;
+  },
+) {
+  const [provenanceJson, entry] = yield* Effect.all([
+    input.fs.readFileString(
+      input.path.join(input.paths.versionDir, JonesArtifact.JONES_RUNTIME_PROVENANCE_FILE),
+    ),
+    input.fs.readFile(input.paths.entryPath),
+  ]).pipe(
+    Effect.mapError(
+      (cause) =>
+        new JonesRuntimePolicyError({
+          reason: "The existing runtime has missing or unreadable Jones provenance or executable.",
+          cause,
+        }),
+    ),
+  );
+  const entrySha256 = yield* runtimeSha256(entry, "hashing the existing Jones executable");
+  return yield* JonesArtifact.verifyJonesRuntimeProvenance({
+    ...input,
+    provenanceJson,
+    entrySha256,
+  });
 });
 
 export const ensurePinnedRuntimeInstalled = (input: PinnedRuntimeInstallInput) =>
@@ -383,4 +536,110 @@ export const ensurePinnedRuntimeInstalled = (input: PinnedRuntimeInstallInput) =
           step: "requiring a qualified Jones Actions artifact for preview runtime staging",
         }),
       )
-    : pinnedRuntimeInstallLock.withPermit(installPinnedRuntime(input));
+    : pinnedRuntimeInstallLock.withPermit(
+        installPinnedRuntime({
+          ...input,
+          requireInstall: requireExplicitJonesReleaseBaseUrl(input.releaseBaseUrl).pipe(
+            Effect.asVoid,
+          ),
+          installArchive: (stagingDir) => installFromArchive(input, stagingDir),
+        }),
+      );
+
+interface LocalJonesArtifactInput {
+  readonly artifactDir: string;
+  readonly expectSourceCommit: string;
+  readonly fs: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly platform: NodeJS.Platform;
+  readonly arch: string;
+}
+
+export const readLocalJonesArtifact = Effect.fn("cloud.pinned_runtime.read_local_jones_artifact")(
+  function* (input: LocalJonesArtifactInput) {
+    const fail = (reason: string, cause?: unknown) =>
+      new JonesArtifact.JonesArtifactVerificationError({ reason, cause });
+    const [metadataJson, sourceCommit, checksums] = yield* Effect.all([
+      input.fs.readFileString(input.path.join(input.artifactDir, "ARTIFACT.json")),
+      input.fs.readFileString(input.path.join(input.artifactDir, "SOURCE_COMMIT")),
+      input.fs.readFileString(input.path.join(input.artifactDir, CLI_RELEASE_CHECKSUMS_FILE)),
+    ]).pipe(Effect.mapError((cause) => fail("reading local artifact metadata", cause)));
+    const metadata = yield* JonesArtifact.decodeJonesArtifactMetadata(metadataJson);
+    const platformKey = cliArchivePlatformKey(input.platform, input.arch);
+    if (
+      platformKey === undefined ||
+      metadata.artifact !== cliArchiveFileName(metadata.version, platformKey)
+    ) {
+      return yield* fail("artifact filename does not match its version and host platform");
+    }
+    const archive = yield* input.fs
+      .readFile(input.path.join(input.artifactDir, metadata.artifact))
+      .pipe(Effect.mapError((cause) => fail("reading the local Jones archive", cause)));
+    const archiveSha256 = yield* runtimeSha256(archive, "hashing the local Jones archive").pipe(
+      Effect.mapError((cause) => fail("hashing the local Jones archive", cause)),
+    );
+    const verified = yield* JonesArtifact.verifyJonesArtifact({
+      ...input,
+      metadataJson,
+      sourceCommit,
+      checksums,
+      archiveSha256,
+    });
+    return { metadata: verified, archive };
+  },
+);
+
+export const installPinnedRuntimeFromLocalArchive = Effect.fn(
+  "cloud.pinned_runtime.install_local_jones_artifact",
+)(function* (
+  input: LocalJonesArtifactInput & {
+    readonly baseDir: string;
+    readonly runner: ProcessRunner.ProcessRunner["Service"];
+    readonly validate: PinnedRuntimeInstallInput["validate"];
+    readonly onProgress?: PinnedRuntimeInstallInput["onProgress"];
+  },
+) {
+  const { metadata, archive } = yield* readLocalJonesArtifact(input);
+  return yield* pinnedRuntimeInstallLock.withPermit(
+    installPinnedRuntime({
+      ...input,
+      version: metadata.version,
+      expectedProvenance: metadata,
+      requireInstall: Effect.void,
+      installArchive: (stagingDir) => extractArchive(input, stagingDir, archive),
+      validate: (paths) =>
+        Effect.gen(function* () {
+          const result = yield* input.runner
+            .run({
+              ...pinnedRuntimeCommand(paths),
+              args: ["--version"],
+              timeout: PINNED_RUNTIME_INSTALL_TIMEOUT,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PinnedRuntimeInstallError({
+                    step: "checking the Jones artifact version",
+                    cause,
+                  }),
+              ),
+            );
+          if (
+            result.code !== 0 ||
+            result.timedOut ||
+            result.stdoutTruncated ||
+            result.stdoutInvalidUtf8 ||
+            /\bv(\S+)\s*$/.exec(result.stdout)?.[1] !== metadata.version
+          ) {
+            return yield* new PinnedRuntimeInstallError({
+              step: "checking the Jones artifact version",
+              exitCode: Number(result.code),
+              stdoutLength: result.stdout.length,
+              stderrLength: result.stderr.length,
+            });
+          }
+          yield* input.validate(paths);
+        }),
+    }),
+  );
+});

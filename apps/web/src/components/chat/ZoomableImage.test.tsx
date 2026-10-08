@@ -196,6 +196,23 @@ describe("image zoom interactions", () => {
     expect(image().style.height).toBe("100px");
   });
 
+  it("leaves gallery arrows available without horizontal overflow and pans only while zoomed", async () => {
+    await render("dialog");
+    await key(region(), "Enter");
+    Object.defineProperty(region(), "scrollWidth", { configurable: true, value: 400 });
+    const left = region().scrollLeft;
+    expect(handle.current!.pan("ArrowRight")).toBe(false);
+    expect(region().scrollLeft).toBe(left);
+    const top = region().scrollTop;
+    expect(handle.current!.pan("ArrowDown")).toBe(true);
+    expect(region().scrollTop).toBe(top + 40);
+    Object.defineProperty(region(), "scrollWidth", { configurable: true, value: 800 });
+    expect(handle.current!.pan("ArrowRight")).toBe(true);
+    expect(region().scrollLeft).toBe(left + 40);
+    await key(region(), "0");
+    expect(handle.current!.pan("ArrowDown")).toBe(false);
+  });
+
   it("suppresses the release click after a drag and shows grabbing only after movement", async () => {
     await render("panel");
     await edit("150");

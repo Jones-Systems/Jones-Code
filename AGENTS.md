@@ -23,6 +23,14 @@ Source changes do not update an installed application, adopt a runtime, publish
 a release, or authorize deployment. Report source and operational results
 separately.
 
+## Jones-owned changes
+
+Before adding or changing Jones-specific behavior, follow the
+[extraction rules](docs/operations/contributor-guidance.md#keep-jones-changes-separate-from-upstream).
+Keep Jones logic and tests in Jones-owned modules, with small recorded hooks
+into T3-owned files. This reduces recurring conflicts when importing T3 Code;
+it does not eliminate compatibility work. Explain necessary shared-file edits.
+
 ## Boundaries that apply throughout
 
 - Execution belongs to the server environment that owns the workspace:
@@ -42,8 +50,10 @@ separately.
 - Never start a development server against live `~/.t3/userdata`, open that
   state read-write, or clean it up. Reading or copying private state requires
   exact authorization; its presence on this machine is not permission.
-- Browser and computer use require the user's authorization for that
-  verification. Existing authorization carries forward within its scope.
+- M Jones grants standing browser and computer-use permission for behavioral
+  testing of owner-built local apps, including Jones Code and T3 Code. Do not
+  ask again per task; follow [local app testing permission](docs/operations/contributor-guidance.md#local-app-testing-permission)
+  for isolated test state and protected-effect boundaries.
 - Keep `VITE_HTTP_URL` and `VITE_WS_URL` unset for browser development.
   The dev runner owns desktop's loopback configuration.
 - Do not commit implementation plans, research notes, or agent scratch.
@@ -66,20 +76,27 @@ separately.
   [glossary](docs/internals/glossary.md). A runtime test receipt is distinct
   from a durable command receipt.
 - For provider identity or launch/recovery changes, read
-  [provider runtime identity](docs/internals/provider-runtime-identity.md).
+  [provider constraints](docs/internals/providers.md).
   Requested configuration is not observed identity; absent evidence stays
   unknown or unavailable.
 - For connection, retry, authentication renewal, subscription, or cache changes,
   read [connection runtime](docs/internals/connection-runtime.md). Preserve one
   transport retry owner and distinguish transport health from data freshness.
-- For checkout ownership or native mutation lifecycle changes, read
-  [worktree ownership leases](docs/internals/worktree-ownership-leases.md).
-  Lease expiry does not authorize takeover or prove a process stopped.
-  Leases do not fence external filesystem writers.
 - Before adding server code, read
   [Effect services](docs/internals/effect-services.md). Keep capabilities in
   domain services and transports thin. Use `.repos/effect-smol/LLMS.md` for
   Effect library guidance when needed; vendored references are read-only.
+
+## Pull request merge qualification
+
+Ordinary PR merges require passing applicable checks on the current head.
+For an atomically selected, contiguous complete stack, follow the standing
+[atomic stack qualification policy](docs/operations/contributor-guidance.md#atomic-stack-qualification).
+A qualified current top may cover lower failures repaired higher in that group;
+record their repair evidence instead of making every intermediate layer green
+or requesting a new exception for each eligible stack. Broken prefixes cannot
+merge independently. Merge authority, required reviews and thread resolution
+still apply; the policy does not authorize bypasses or ruleset changes.
 
 ## Test data
 

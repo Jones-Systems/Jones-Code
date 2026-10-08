@@ -1,0 +1,139 @@
+name: Mac CLI artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: artifact-cli-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Apple Silicon CLI
+    if: github.repository == 'Jones-Systems/Jones-Code' && github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      TMPDIR: ${{ github.workspace }}/.artifact-cli-mac-scratch
+    steps:
+      - name: Checkout public artifact source
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          # Auth cleanup in actions/checkout traverses unmapped vendored gitlinks.
+          # This public-only fetch needs no token and preserves the exact event SHA.
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+      - name: Prepare job scratch
+        run: mkdir -p "$TMPDIR"
+
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+              - --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Configure public T3 Connect build identifiers
+        run: cp .env.example .env
+
+      - name: Set preview version
+        run: |
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          echo "ARTIFACT_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Bind Jones source identity
+        run: node scripts/stamp-jones-build.ts
+
+      - name: Build server and web client
+        run: vp run --filter t3 build
+
+      - name: Build CLI single-executable
+        env:
+          # Keep this aligned with SEA_NODE_VERSION in apps/server/vite.config.ts.
+          VP_NODE_VERSION: "26.8.2"
+        run: node apps/server/scripts/cli.ts build-exe --target darwin-arm64 --verbose
+
+      - name: Build and stage resource monitor
+        env:
+          RUST_TARGET: aarch64-apple-darwin
+          RESOURCE_KEY: darwin-arm64
+        run: |
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target "$RUST_TARGET"
+          mkdir -p "$TMPDIR/resource-monitor/$RESOURCE_KEY"
+          cp "native/resource-monitor/target/$RUST_TARGET/release/t3-resource-monitor" "$TMPDIR/resource-monitor/$RESOURCE_KEY/"
+
+      - name: Build CLI archive
+        run: |
+          node scripts/build-cli-archive.ts \
+            --platform mac --arch arm64 --version "$ARTIFACT_VERSION" \
+            --resource-monitor-dir "$TMPDIR/resource-monitor" --output-dir release-cli
+
+      - name: Smoke-test CLI archive
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/*.tar.gz --expect-version "$ARTIFACT_VERSION"
+
+      - name: Record checksums and source
+        run: |
+          (cd release-cli && shasum -a 256 *.tar.gz > SHA256SUMS && shasum -a 256 -c SHA256SUMS)
+          git rev-parse HEAD > release-cli/SOURCE_COMMIT
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const artifact = `t3-${process.env.ARTIFACT_VERSION}-darwin-arm64.tar.gz`;
+            fs.writeFileSync("release-cli/ARTIFACT.json", JSON.stringify({
+              repository: "Jones-Systems/Jones-Code", source: fs.readFileSync("release-cli/SOURCE_COMMIT", "utf8").trim(),
+              version: process.env.ARTIFACT_VERSION, platform: "darwin", architecture: "arm64", artifact,
+              sha256: fs.readFileSync("release-cli/SHA256SUMS", "utf8").split(/\s+/)[0],
+              publicConfigSource: ".env.example", signed: false, signing: "ad-hoc", notarized: false,
+              releaseRepository: "Jones-Systems/Jones-Code", publishedRelease: false,
+              connectLogin: "untested", peerConnection: "untested",
+              schema: 1, tree: process.env.JONES_SOURCE_TREE,
+              workflow: process.env.GITHUB_WORKFLOW_REF.split("@")[0].replace(`${process.env.GITHUB_REPOSITORY}/`, ""),
+              event: process.env.GITHUB_EVENT_NAME, ref: process.env.GITHUB_REF,
+              runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT
+            }, null, 2) + "\n");
+          '
+          printf 'Version: %s\nSource: %s\n' "$ARTIFACT_VERSION" "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: jones-code-cli-mac-arm64-${{ github.run_id }}-${{ github.run_attempt }}--${{ env.ARTIFACT_VERSION }}
+          path: release-cli/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Clean job scratch
+        if: always()
+        run: rm -rf -- "$GITHUB_WORKSPACE/.artifact-cli-mac-scratch"

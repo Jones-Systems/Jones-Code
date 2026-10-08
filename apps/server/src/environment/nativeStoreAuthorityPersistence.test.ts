@@ -17,7 +17,6 @@ import {
   initializeNativeStoreAuthorityForBaseDir,
   nativeStoreAuthorityPaths,
   readNativeStoreAuthorityState,
-  readExistingNativeStoreAuthorityState,
 } from "./nativeStoreAuthorityPersistence.ts";
 
 const withDirectory = (run: (directory: string) => void): void => {
@@ -30,32 +29,6 @@ const withDirectory = (run: (directory: string) => void): void => {
 };
 
 describe("native store authority persistence", () => {
-  it("existing-state reader never creates missing directories, state or writer locks", () => {
-    withDirectory((authorityStateDir) => {
-      const root = NodePath.dirname(authorityStateDir);
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("missing");
-      expect(NodeFS.readdirSync(root)).toEqual([]);
-      NodeFS.mkdirSync(authorityStateDir, { mode: 0o700 });
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("missing");
-      expect(NodeFS.readdirSync(authorityStateDir)).toEqual([]);
-      const state = {
-        record_version: "t3-native-store-authority/1.0.0",
-        environment_id: "synthetic-environment",
-        authority_namespace: "t3-native:12345678-1234-4234-8234-123456789abc",
-        store_generation: 7,
-        state: "active",
-        transition_id: null,
-      };
-      const statePath = nativeStoreAuthorityPaths(authorityStateDir).statePath;
-      NodeFS.writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
-      const before = NodeFS.statSync(statePath);
-      expect(readExistingNativeStoreAuthorityState(authorityStateDir)).toEqual(state);
-      expect(NodeFS.readdirSync(authorityStateDir)).toEqual([NodePath.basename(statePath)]);
-      expect(NodeFS.statSync(statePath).mtimeMs).toBe(before.mtimeMs);
-      NodeFS.writeFileSync(statePath, "x".repeat(8193));
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("bounded");
-    });
-  });
   it("enrolls only from the persisted T3 environment identity", () => {
     const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-native-enroll-test-"));
     try {

@@ -21,13 +21,13 @@ import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 import {
   validateJonesStagedArtifact,
   type JonesStagedArtifact,
-} from "@t3tools/shared/jonesActions";
+} from "@t3tools/shared/jones/jonesActions";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import {
@@ -36,9 +36,9 @@ import {
   stageQualifiedRuntime,
   verifyStagedQualifiedRuntime,
   type StagedQualifiedRuntime,
-} from "./qualifiedRuntime.ts";
-import { extractQualifiedLinuxArchive } from "./qualifiedArchive.ts";
-import { extractQualifiedDarwinRuntime } from "./qualifiedDarwinRuntime.ts";
+} from "../jones/cloud/qualifiedRuntime.ts";
+import { extractQualifiedLinuxArchive } from "../jones/cloud/qualifiedArchive.ts";
+import { extractQualifiedDarwinRuntime } from "../jones/cloud/qualifiedDarwinRuntime.ts";
 
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
@@ -49,7 +49,10 @@ import {
   PinnedRuntimeInstallError,
   PinnedRuntimePreflightBlockedError,
 } from "./pinnedRuntime.ts";
-import { decodeServicePreflightResult } from "./servicePreflight.ts";
+import {
+  decodeServicePreflightResult,
+  qualifiedServicePreflightFailure,
+} from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
@@ -391,7 +394,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         Effect.mapError((error) =>
           error._tag === "PinnedRuntimePreflightBlockedError"
             ? failWith(error.reason, error)
-            : failWith(`Could not prepare t3@${targetVersion}.`, error),
+            : error._tag === "JonesRuntimePolicyError"
+              ? failWith(error.message, error)
+              : failWith(`Could not prepare t3@${targetVersion}.`, error),
         ),
       );
 
@@ -419,10 +424,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }).pipe(Effect.onError(() => Ref.set(inFlight, false)));
   });
 
-  const requireQualifiedLauncher = () => {
+  const requireQualifiedLauncher = (install = false) => {
     if (
       capability !== "boot-service" ||
-      launcher.qualifiedUpdates !== true ||
+      (install ? launcher.qualifiedUpdates !== true : launcher.qualifiedStaging !== true) ||
       launcher.currentVersion === undefined
     ) {
       throw new Error(
@@ -431,6 +436,39 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }
     return launcher.currentVersion;
   };
+  const validateQualifiedCandidate = (entryPath: string, databasePath: string, version: string) =>
+    Effect.gen(function* () {
+      const result = yield* runner
+        .run({
+          command: entryPath,
+          args: [
+            "__service-preflight",
+            "--database-path",
+            databasePath,
+            "--launcher-protocol",
+            String(SERVICE_LAUNCHER_PROTOCOL),
+          ],
+          timeout: PREFLIGHT_TIMEOUT,
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            failWith(
+              "startup-gate-unavailable: Could not preflight the qualified candidate.",
+              cause,
+            ),
+          ),
+        );
+      if (result.timedOut || result.stdoutTruncated || result.stdoutInvalidUtf8)
+        return yield* failWith(
+          "startup-gate-unavailable: The candidate preflight response was incomplete.",
+        );
+      const reason = qualifiedServicePreflightFailure({
+        code: result.code,
+        stdout: result.stdout,
+        version,
+      });
+      if (reason !== undefined) return yield* failWith(reason);
+    });
   const stageQualified = (artifact: JonesStagedArtifact) =>
     Effect.tryPromise({
       try: async () => {
@@ -483,30 +521,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               // Darwin Download inspects app metadata and ASAR; it never launches
               // an unsigned candidate against the owner's native service home.
               if (staged.candidate.platform === "darwin") return;
-              const result = await runPromise(
-                runner.run({
-                  command: entryPath,
-                  args: [
-                    "__service-preflight",
-                    "--database-path",
-                    binding.dbPath,
-                    "--launcher-protocol",
-                    String(SERVICE_LAUNCHER_PROTOCOL),
-                  ],
-                  timeout: PREFLIGHT_TIMEOUT,
-                }),
+              await runPromise(
+                validateQualifiedCandidate(entryPath, binding.dbPath, staged.receipt.version),
               );
-              const preflight = decodeServicePreflightResult(
-                JSON.parse(result.stdout.trim()) as unknown,
-              );
-              if (
-                result.code !== 0 ||
-                preflight?.status !== "ready" ||
-                preflight.version !== staged.receipt.version
-              )
-                throw new Error(
-                  "The qualified candidate did not pass its read-only service preflight.",
-                );
             },
           });
         } finally {
@@ -528,7 +545,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         try: () =>
           verifyStagedQualifiedRuntime(
             serverConfig.baseDir,
-            requireQualifiedLauncher(),
+            requireQualifiedLauncher(true),
             input.stagedHandle,
             { platform, architecture: arch },
           ),
@@ -544,6 +561,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       });
       if (staged.binding.dbPath !== actualDatabase)
         return yield* failWith("The staged update belongs to a different running database.");
+      yield* validateQualifiedCandidate(
+        NodePath.join(staged.binding.baseDir, "runtime", "versions", staged.receipt.version, "t3"),
+        staged.binding.dbPath,
+        staged.receipt.version,
+      );
       const updateId = yield* Effect.uninterruptible(
         launcher
           .requestUpdate({

@@ -16,7 +16,8 @@ export {
 
 export interface EnvironmentOption {
   environmentId: EnvironmentId;
-  projectId: ProjectId;
+  /** Null when the machine's "No project" folder is not created yet. */
+  projectId: ProjectId | null;
   label: string;
   isPrimary: boolean;
   machine: EnvironmentMachineKind;
@@ -64,6 +65,8 @@ export function shouldShowEnvironmentIndicator(input: {
 }
 
 export function shouldShowComposerContextStrip(input: {
+  isDraftHeroState: boolean;
+  persistInActiveThreads: boolean;
   hasActiveProject: boolean;
   isGitRepo: boolean;
   showEnvironmentIndicator: boolean;
@@ -72,6 +75,7 @@ export function shouldShowComposerContextStrip(input: {
 }): boolean {
   return (
     input.hasActiveProject &&
+    (input.isDraftHeroState || input.persistInActiveThreads) &&
     (input.isGitRepo || input.showEnvironmentIndicator || input.hostsRestingComposerControls)
   );
 }
@@ -322,4 +326,22 @@ export function shouldIncludeBranchPickerItem(input: {
     sanitizedQuery !== normalizedQuery &&
     lowerItemValue.includes(sanitizedQuery)
   );
+}
+
+export function resolveAutomaticWorktreeBaseBranch(input: {
+  effectiveEnvMode: EnvMode;
+  envLocked: boolean;
+  activeWorktreePath: string | null;
+  activeThreadBranch: string | null;
+  worktreeBaseBranchCandidate: string | null;
+}): string | null {
+  if (
+    input.envLocked ||
+    input.effectiveEnvMode !== "worktree" ||
+    input.activeWorktreePath !== null ||
+    input.activeThreadBranch !== null
+  ) {
+    return null;
+  }
+  return input.worktreeBaseBranchCandidate;
 }

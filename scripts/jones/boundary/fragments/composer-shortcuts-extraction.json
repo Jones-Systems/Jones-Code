@@ -1,0 +1,47 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "composer-shortcuts-extraction",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts",
+    "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx",
+    "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
+    "apps/web/src/jones/composer/ReasoningEffortShortcuts.tsx",
+    "apps/web/src/jones/composer/composerShortcutRails.test.ts",
+    "apps/web/src/jones/composer/composerShortcutRails.ts"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/ChatView.tsx",
+    "apps/web/src/components/chat/ChatComposer.tsx",
+    "apps/web/src/components/chat/ModelPickerContent.tsx"
+  ],
+  "tombstones": [
+    "apps/web/src/components/chat/ProviderInstanceShortcuts.test.ts",
+    "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx",
+    "apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx",
+    "apps/web/src/components/chat/ReasoningEffortShortcuts.tsx",
+    "apps/web/src/components/chat/composerShortcutRails.test.ts",
+    "apps/web/src/components/chat/composerShortcutRails.ts"
+  ],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/composer/ReasoningEffortShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/composer/composerShortcutRails.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ModelPickerContent.tsx",
+      "to": "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx"
+    }
+  ]
+}

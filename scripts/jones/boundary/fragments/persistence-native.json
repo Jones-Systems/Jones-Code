@@ -1,0 +1,119 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "persistence-native",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/persistence/",
+    "apps/server/src/jones/nativeCreation/"
+  ],
+  "hookPaths": [
+    "apps/server/src/persistence/Migrations.ts",
+    "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EffectWorker.ts",
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts"
+  ],
+  "tombstones": [
+    "apps/server/src/persistence/JonesMigrationGuard.ts",
+    "apps/server/src/persistence/Migrations.test.ts",
+    "apps/server/src/persistence/Migrations/001_JonesWorktreeOwnershipLeases.ts",
+    "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.ts",
+    "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.ts",
+    "apps/server/src/persistence/Migrations/004_JonesNativeCreationCommandIdentities.ts",
+    "apps/server/src/persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts",
+    "apps/server/src/persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts",
+    "apps/server/src/nativeCreation/NativeCreationAuthority.test.ts",
+    "apps/server/src/nativeCreation/NativeCreationAuthority.ts",
+    "apps/server/src/nativeCreation/NativeCreationPreparation.test.ts",
+    "apps/server/src/nativeCreation/NativeCreationPreparation.ts",
+    "apps/server/src/nativeCreation/NativeCreationRepository.test.ts",
+    "apps/server/src/nativeCreation/NativeCreationRepository.ts",
+    "apps/server/src/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+    "apps/server/src/nativeCreation/NativeCreationRepositorySqlite.ts"
+  ],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/jones/persistence/JonesMigrations.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepository.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationWorkspaceTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepository.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/nativeCreation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderAdapter.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepositorySqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    }
+  ]
+}

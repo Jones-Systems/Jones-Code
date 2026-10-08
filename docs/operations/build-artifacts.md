@@ -6,7 +6,7 @@ for seven days. They are not GitHub Releases, package publications, or a deploye
 Jones-Code installation. Native GitHub-hosted Ubuntu 24.04 runners build each
 architecture; the minimum compatible Linux environment is not yet established.
 
-Main pushes produce qualified update candidates. For a manual trial, run the
+Main pushes build trial artifacts for each source change. For a manual trial, run the
 workflow from Actions on the default branch, selecting the intended source ref. Pull requests touching the workflow or its selected build
 inputs run it automatically. The narrow PR trigger validates packaging; main pushes build every source change. Check both architecture jobs and the source
 commit in the run summary. PR runs build GitHub's merge ref; `SOURCE_COMMIT` records
@@ -28,13 +28,13 @@ for your architecture, and unzip it into a new empty directory. Alternatively:
 
 ```bash
 gh run download RUN_ID --repo Jones-Systems/Jones-Code \
-  --name jones-code-cli-linux-x64-RUN_ID-RUN_ATTEMPT --dir ./jones-code-trial
+  --name jones-code-cli-linux-x64-RUN_ID-RUN_ATTEMPT--VERSION --dir ./jones-code-trial
 cd ./jones-code-trial
 sha256sum --check SHA256SUMS
 cat SOURCE_COMMIT
 ```
 
-Replace the placeholders with the run's identifiers; use `arm64` on an ARM host.
+Replace the placeholders with the run's identifiers and preview version; use `arm64` on an ARM host.
 Confirm the recorded source matches the intended workflow checkout. Checksums
 detect download corruption; these unsigned archives have no independent signature.
 
@@ -60,76 +60,65 @@ owned by the person running the trial; retain them only as long as needed and
 remove only that exact directory after stopping the trial. Do not copy credentials
 or real user state into this first smoke trial.
 
-Versions use `BASE-preview.YYYYMMDD.RUN_ID.RUN_ATTEMPT`, where `BASE` is the checked-in server package version, which the existing CLI recognizes as
-the preview channel. The archive retains T3 branding. CLI discovery, archive downloads and the tracked
-installers default to `Jones-Systems/Jones-Code`; desktop release feeds use the
-same repository unless `T3CODE_DESKTOP_UPDATE_REPOSITORY` explicitly overrides it.
-`T3CODE_RELEASE_BASE_URL` remains an explicit archive-mirror override. A missing
-Jones release fails explicitly and never falls back to upstream. Actions trial
-outputs do not populate that release channel: download another successful
-workflow artifact for subsequent trials. Use a distinct Jones preview version;
-server runtime caches still require separate provenance qualification before
-an installed transition. Shell and SSH installers reject existing caches with
-missing or different `.install-source` origin instead of replacing them.
+Versions use `BASE-preview.YYYYMMDD.RUN_ID.RUN_ATTEMPT`, where `BASE` is the
+checked-in server package version. Both the CLI channel parser and desktop build
+recognize that preview form. The archive retains T3 branding. These Actions
+outputs do not create GitHub Releases or populate a release channel: download
+another successful workflow artifact for subsequent trials. Upstream installers
+and release discovery remain separate from these Jones trial workflows.
 
 Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
 separate decision covering the target, state backup, rollback, and verification.
 
-## Qualified main updates
+## Mac CLI artifact
 
-Both artifact workflows run on canonical main pushes. The Jones updater accepts
-successful completed main push builds only after CI succeeds on the same source
-SHA and canonical ancestry is verified. PR and fork builds remain useful for
-manual trials but cannot become updater candidates. Build receipts bind source
-and tree, workflow, run attempt, artifact ID, outer artifact digest and inner
-payload hash. Artifacts remain subject to their seven-day retention window.
+The separate **Mac CLI artifact** workflow builds a headless Apple Silicon CLI
+archive on a GitHub-hosted `macos-15` runner and asserts the runner is `arm64`.
+It runs only through manual dispatch: no main push or pull request starts it.
+Once this workflow policy has been reviewed and a native run is authorized,
+select the intended source ref in Actions. A successful job packages
+`t3-VERSION-darwin-arm64.tar.gz`, then extracts it and runs `--version` and a real
+loopback server with an empty `PATH` and an isolated home. Its build and smoke
+scratch use the exact workspace directory `.artifact-cli-mac-scratch`; scoped
+script cleanup and the always-run job cleanup own removal, with disposable-runner
+teardown covering forced termination.
 
-Download stages a verified immutable candidate; Install uses its fixed handle.
-Existing version-only caches and older launchers require a local, source-qualified
-bootstrap. The unsigned Mac desktop uses the detached Jones activation helper;
-the Darwin arm64 headless service derives an Electron server runtime from the
-same qualified DMG and uses the service launcher. Neither route publishes a
-Release or supplies a Squirrel feed. Native Mac acceptance and initial host
-bootstrap must be performed on each host with its original state.
+Download the successful run's seven-day artifact into a new empty directory and
+verify it on a Mac:
 
-### State continuity across updates
+```bash
+gh run download RUN_ID --repo Jones-Systems/Jones-Code \
+  --name jones-code-cli-mac-arm64-RUN_ID-RUN_ATTEMPT--VERSION --dir ./jones-code-mac-trial
+cd ./jones-code-mac-trial
+shasum -a 256 -c SHA256SUMS
+cat SOURCE_COMMIT
+cat ARTIFACT.json
+```
 
-Keep one fixed absolute T3 home per host, outside the versioned app/runtime tree.
-For example, retain `T3CODE_HOME=/absolute/path/to/jones-home` in its launcher.
-The server resolves `--base-dir` before `T3CODE_HOME`, then the desktop bootstrap
-home, then `~/.t3`. Normal state lives in `<home>/userdata`: database, settings,
-keybindings, themes, attachments and `environment-id`. Desktop preferences, saved
-connections and the encrypted connection catalog use that same state directory.
-An implicit home with a development URL uses `dev` instead; use an explicit home
-for an existing installation. A missing or empty environment identity is regenerated.
+Confirm the source, version, architecture, checksum, and run identity before an
+approved isolated foreground trial. Use the manual trial procedure above with
+`t3-VERSION-darwin-arm64.tar.gz` and its matching extracted directory, keeping all
+adjacent runtime files together. The archive builder ad hoc signs the CLI and
+native dependencies. `ARTIFACT.json` records `signing: "ad-hoc"`, `signed: false`,
+and `notarized: false`: `signed` means publisher-authenticated signing, which ad
+hoc signing does not provide. There is no Developer ID identity, notarization,
+GitHub Release, or release feed.
 
-The Electron browser profile is separate. Retain an absolute
-`T3CODE_DESKTOP_USER_DATA_DIR=/absolute/path/to/desktop-profile`; without it,
-Electron uses its fixed platform default, including supported legacy-folder reuse.
-Enroll the qualified launcher/helper with the existing home and profile, and use
-that launcher for every version. Opening an app copy without custom overrides can
-select different state. Keep provider stores on their original host; do not copy
-provider credentials to enroll another host.
-
-Check and Download may write runtime caches, staging and selection receipts under
-`<home>/runtime`; those updater operations do not change userdata, the profile or
-the active-install pointer. Install relaunches with the same home/profile and
-checks the environment binding. Before Install, require writer quiescence and a
-retained compatible binary/state recovery pair.
-
-Pre-commit recovery restores its covered pair at the same paths and retains the
-advanced state. The desktop pair covers the database, `settings.json`,
-`desktop-settings.json`, `client-settings.json`, `saved-environments.json` and the
-profile. The headless pair covers the database, `settings.json`, `keybindings.json`,
-`server-runtime.json`, `environment-id` and `anonymous-id`. Other local state stays
-in place but is not snapshot-restored by those pairs. Migrations are forward-only;
-after commit, changing only the binary is not a supported compatible rollback.
+Workflow source alone proves no successful native artifact. A successful smoke
+run would establish native archive startup and loopback serving, but not
+Gatekeeper acceptance, provider login or work, private pairing, installed service
+startup, boot behavior, or host rollout. Those require separately authorized
+native evidence. Publishing this manual workflow does not authorize dispatch or
+installation.
 
 ## Mac desktop artifact
 
 The companion **Mac Desktop Artifact** workflow builds an Apple Silicon
-DMG on `macos-15`. It follows the same seven-day
+DMG on `macos-15`. It runs on main pushes and manual dispatch, and on matching pull requests whose
+base is `main` and whose head belongs to the same repository. Dependency-base
+pull requests do not trigger this workflow;
+use a separate manual run for DMG evidence when needed. It follows the same seven-day
 Actions download process, with artifact name
 `desktop-mac-arm64-RUN_ID-RUN_ATTEMPT--VERSION`. Confirm the source revision in its run
 summary and downloaded `SOURCE_COMMIT`/`ARTIFACT.json`. After downloading into an empty directory on a Mac, verify:
@@ -148,9 +137,9 @@ verification alone do not perform those steps.
 
 ## Public Connect configuration and provenance
 
-Both trial workflows copy the tracked `.env.example` before compiling. It contains
+All three trial workflows copy the tracked `.env.example` before compiling. It contains
 public production Clerk and relay identifiers documented in
-[Connect setup](connect-setup.md#public-application-configuration); no credential
+[T3 Connect](../internals/t3-connect.md); no credential
 or signing material is supplied. Process variables still override those public
 inputs. The web client and bundled server embed them; the desktop main process
 also embeds the publishable key. An existing bundle reused with `--skip-build`
@@ -159,17 +148,18 @@ requires separately recorded public-configuration provenance.
 Each workflow uploads `ARTIFACT.json` with repository, built source commit,
 version, platform, architecture, artifact filename, SHA-256, run/attempt and
 public configuration source. CLI jobs upload `SHA256SUMS` and `SOURCE_COMMIT`;
-Mac jobs upload the DMG checksum and `SOURCE_COMMIT`. Compare all three identities
-before using an artifact. Public build configuration, unsigned container
-verification, authentic binary login and peer connection are separate checks;
-these workflows leave login and peer connection explicitly untested. An M2 Pro
-requires arm64. Determine the Mini's architecture before selecting its package.
+Mac desktop jobs upload the DMG checksum and `SOURCE_COMMIT`. Compare all three identities
+before using an artifact. The source stamp records the committed Git tree even
+when build-only package versions have changed the workspace; it refuses a checkout
+whose HEAD differs from `GITHUB_SHA`. Public build configuration, archive/container
+verification, publisher-authenticated signing, binary login and peer connection are separate checks;
+these workflows leave login and peer connection explicitly untested. Select the artifact for the target host's architecture.
 
 A future Jones release needs an approved exact source/tag, distinct version,
 per-platform archives, `SHA256SUMS`, source descriptors and desktop update assets
 (including ZIP/update metadata where required). Trial artifacts expire and do not
 constitute a release feed. Installing or updating each host separately requires
 an approved binary/state/service envelope, a consistent state snapshot and a
-retained compatible prior binary plus prior state. Preserve desktop profile and
-encrypted connection catalog separately from server state. Repointing a launcher
+retained compatible prior binary plus prior state. Preserve the desktop profile
+and saved connection data separately from server state. Repointing a launcher
 alone does not prove a compatible state rollback.

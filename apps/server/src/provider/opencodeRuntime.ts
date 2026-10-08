@@ -28,9 +28,12 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { signalProcessGroup } from "../process/processGroup.ts";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
+import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
+import * as OpenCodeCreationPolicy from "../jones/provider/opencode/OpenCodeCreationPolicy.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
 import * as NetService from "@t3tools/shared/Net";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -83,6 +86,8 @@ const DEFAULT_HOSTNAME = "127.0.0.1";
 const OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS = 64 * 1024;
 const OPENCODE_SKILL_DISCOVERY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export interface OpenCodeServerProcess {
+  readonly runtimeGeneration?: string;
+  readonly ownedProcess?: OpenCodeCreationPolicy.OpenCodeOwnedProcess;
   readonly url: string;
   readonly serverPassword?: string;
   readonly version: string;
@@ -91,6 +96,7 @@ export interface OpenCodeServerProcess {
 }
 
 export interface OpenCodeServerConnection {
+  readonly ownedProcess?: OpenCodeCreationPolicy.OpenCodeOwnedProcess;
   readonly url: string;
   readonly serverPassword?: string;
   readonly version: string;
@@ -235,11 +241,14 @@ export interface OpenCodeRuntimeShape {
   readonly startOpenCodeServerProcess: (input: {
     readonly binaryPath: string;
     readonly directory: string;
+    readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
     readonly serverPassword?: string;
     readonly environment?: NodeJS.ProcessEnv;
     readonly port?: number;
     readonly hostname?: string;
     readonly timeoutMs?: number;
+    /** Checks the listening server and returns its version. Defaults to the 1.x health check. */
+    readonly verify?: (url: string) => Effect.Effect<string, OpenCodeRuntimeError>;
   }) => Effect.Effect<OpenCodeServerProcess, OpenCodeRuntimeError, Scope.Scope>;
   /**
    * Returns a handle to either an externally-managed OpenCode server (when
@@ -249,6 +258,7 @@ export interface OpenCodeRuntimeShape {
   readonly connectToOpenCodeServer: (input: {
     readonly binaryPath: string;
     readonly directory: string;
+    readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
     readonly serverUrl?: string | null;
     readonly serverPassword?: string;
     readonly environment?: NodeJS.ProcessEnv;
@@ -588,6 +598,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const netService = yield* NetService.NetService;
   const hostPlatform = yield* HostProcessPlatform;
+  const serverLedger = yield* OpenCodeServerLedger.OpenCodeServerLedger;
   const resolveCommand = (command: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
     resolveSpawnCommand(command, args, env ? { env } : {});
 
@@ -607,7 +618,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ? child.kill({ killSignal: "SIGKILL" }).pipe(Effect.asVoid)
           : Effect.sync(() => {
               try {
-                process.kill(-Number(child.pid), "SIGKILL");
+                signalProcessGroup(Number(child.pid), "SIGKILL");
               } catch {
                 // The command and its process group may already have exited.
               }
@@ -689,10 +700,18 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         ...(input.environment !== undefined ? { environment: input.environment } : {}),
       });
 
+      // Scopes close in reverse order. Forking this before the group kill is
+      // registered forgets the ledger entry only once the group is stopped.
+      const ledgerScope = yield* Scope.fork(runtimeScope);
+      const capture =
+        input.creationHooks === undefined
+          ? undefined
+          : yield* OpenCodeCreationPolicy.prepareGeneration(input.directory, input.creationHooks);
       const child = yield* spawner
         .spawn(
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
             detached: hostPlatform !== "win32",
+            cwd: input.directory,
             shell: spawnCommand.shell,
             env: {
               ...input.environment,
@@ -726,7 +745,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ? child.kill({ killSignal: signal, forceKillAfter: "1 second" }).pipe(Effect.asVoid)
           : Effect.sync(() => {
               try {
-                process.kill(-Number(child.pid), signal);
+                signalProcessGroup(Number(child.pid), signal);
               } catch {
                 // The direct child may already have exited after starting the
                 // server; the process group kill is best-effort cleanup for
@@ -738,7 +757,11 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         Effect.andThen(killOpenCodeProcessGroup("SIGKILL")),
         Effect.ignore,
       );
+      // Registered before recording, so an interrupt while the ledger writes
+      // still stops the group.
       yield* Scope.addFinalizer(runtimeScope, terminateChild);
+      const forgetServer = yield* serverLedger.track({ pid: Number(child.pid), port, args });
+      yield* Scope.addFinalizer(ledgerScope, forgetServer);
 
       const stdoutRef = yield* Ref.make<string | null>("");
       const stderrRef = yield* Ref.make<string | null>("");
@@ -837,15 +860,27 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       yield* Ref.set(stderrRef, null);
 
       const url = readyOption.value;
-      const version = yield* verifyOpenCodeServerVersion(
-        createOpenCodeSdkClient({
-          baseUrl: url,
-          directory: input.directory,
-          ...(serverPassword !== undefined ? { serverPassword } : {}),
-        }),
+      const version = yield* (
+        input.verify?.(url) ??
+          verifyOpenCodeServerVersion(
+            createOpenCodeSdkClient({
+              baseUrl: url,
+              directory: input.directory,
+              ...(serverPassword !== undefined ? { serverPassword } : {}),
+            }),
+          )
       );
 
       return {
+        ...(capture !== undefined
+          ? {
+              runtimeGeneration: capture.runtimeGeneration,
+              ownedProcess: Object.freeze({
+                incarnation: Object.freeze({ ...capture, pid: Number(child.pid), url }),
+                isCurrent: child.isRunning.pipe(Effect.orElseSucceed(() => false)),
+              }),
+            }
+          : {}),
         url,
         ...(serverPassword !== undefined ? { serverPassword } : {}),
         version,
@@ -884,6 +919,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     return startOpenCodeServerProcess({
       binaryPath: input.binaryPath,
       directory: input.directory,
+      ...(input.creationHooks !== undefined ? { creationHooks: input.creationHooks } : {}),
       ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
       ...(input.port !== undefined ? { port: input.port } : {}),
@@ -891,6 +927,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     }).pipe(
       Effect.map((server) => ({
+        ...(server.ownedProcess !== undefined ? { ownedProcess: server.ownedProcess } : {}),
         url: server.url,
         ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
         version: server.version,
@@ -1091,6 +1128,6 @@ export class OpenCodeRuntime extends Context.Service<OpenCodeRuntime, OpenCodeRu
   "t3/provider/opencodeRuntime",
 ) {}
 
-export const OpenCodeRuntimeLive = Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime).pipe(
+export const layer = Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime).pipe(
   Layer.provide(NetService.layer),
 );

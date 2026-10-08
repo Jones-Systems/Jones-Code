@@ -19,8 +19,9 @@ source does not itself authorize running setup or accessing those files.
 Confirm the applicable scope before invoking it; do not print their contents.
 
 Give the printed pairing URL to the authorized tester. The bare origin does not
-authenticate a new browser. Agents must have browser authorization before
-opening a browser and must not consume the user's pairing token.
+authenticate a new browser. [Standing local app testing permission](./contributor-guidance.md#local-app-testing-permission)
+covers isolated synthetic verification; agents must not consume the user's
+pairing token.
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
@@ -33,7 +34,8 @@ See the [mobile README](../../apps/mobile/README.md) for native builds and Metro
 Flags go directly after the task name, for example
 `vp run dev --home-dir /absolute/task-owned/t3-home`.
 Use an isolated, task-owned directory with a defined lifetime and cleanup owner.
-Add `--browser` only when opening a browser is authorized.
+The [standing testing permission](./contributor-guidance.md#local-app-testing-permission)
+covers `--browser` for isolated synthetic verification.
 
 ### State and ports
 
@@ -74,16 +76,17 @@ credentials, secrets, settings, or unrelated files.
 For an authorized SQLite snapshot:
 
 1. Choose a fresh destination under the task-owned T3 home, normally
-   `<worktree>/.t3/userdata/state.sqlite`. Verify that the destination and its
+   `<worktree>/.t3/userdata/statev2.sqlite`. Verify that the destination and its
    parents are isolated from live state and that no server is using them.
    If the destination already exists, stop and reconcile ownership; do not
-   remove `state.sqlite*` or other state unconditionally.
+   remove `statev2.sqlite*` or other state unconditionally.
 2. Open the approved source read-only and use SQLite's online backup API or
    `VACUUM INTO` to create a consistent snapshot at the fresh destination.
    `VACUUM INTO` requires a destination file that does not already exist.
    Do not copy a live SQLite file with `cp`, including its WAL or SHM siblings
    as a substitute for a consistent snapshot.
-3. Close the source connection and validate the copied database locally.
+3. Close the source connection and validate the copied V2 database locally.
+   The server uses `statev2.sqlite`; a V1 `state.sqlite` copy is not a substitute.
    Run the test server only against the isolated copy.
 4. Copy additional files only when the flow requires them and their access
    and copying are separately authorized. In particular, do not bring
@@ -146,8 +149,10 @@ The workarounds live in the [web entry](../../apps/web/src/bootstrap.ts) and
 
 Configure or reuse this credential only when the task authorizes the exact
 configuration access and change. This procedure does not grant permission to
-read existing `.env` values, copy credentials, start a shared server, or open a
-browser. Reuse an existing authorization within its scope.
+read existing `.env` values, copy credentials, or start a shared server.
+Browser verification is covered separately by [standing local app testing
+permission](./contributor-guidance.md#local-app-testing-permission); credential
+configuration still needs exact authorization.
 
 Use this only on a hostname where you trust every service. Browsers send cookies to all ports
 on that hostname. Any service you visit there can receive the reusable admin credential,

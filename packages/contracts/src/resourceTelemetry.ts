@@ -337,9 +337,9 @@ export type DesktopTelemetrySetHostPowerIntervals =
   typeof DesktopTelemetrySetHostPowerIntervals.Type;
 
 /**
- * Server -> desktop main: run the app's own update flow now (check ->
- * download -> quit-and-install) with no local confirmation. The remote click
- * on the machine that sent the RPC is the consent.
+ * Server -> desktop main: legacy release requests prepare an update for a later commit.
+ * Jones requests select a separate Check or fixed-artifact Download action.
+ * Installation still requires the prepared request's explicit commit.
  */
 export const DesktopTelemetryRequestDesktopUpdate = Schema.Struct({
   version: Schema.Literal(1),

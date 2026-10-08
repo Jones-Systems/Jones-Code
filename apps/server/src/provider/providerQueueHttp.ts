@@ -6,9 +6,9 @@ import {
   type ProviderQueueRefreshResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { annotateEnvironmentRequest, requireEnvironmentScope } from "../auth/http.ts";
-import { ProviderRegistry } from "./Services/ProviderRegistry.ts";
+import { ProviderRegistry } from "./ProviderRegistry.ts";
 import { makeProviderQueue, makeProviderQueueStorage } from "./providerQueue.ts";
 
 const unavailable = (instanceId: ProviderInstanceId): ProviderQueueRefreshResult => ({
@@ -39,13 +39,12 @@ export const makeProviderQueueHttpApiLayer = <R>(
           Effect.fn("providerQueue.usage")(function* (args) {
             yield* annotateEnvironmentRequest(args.endpoint.name);
             yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-            return yield* queue
-              .usage(args.params.instanceId)
-              .pipe(
-                Effect.catchTag("ProviderQueueStorageError", () =>
+            return yield* queue.usage(args.params.instanceId).pipe(
+              Effect.catchTags({
+                ProviderQueueStorageError: () =>
                   Effect.succeed(unavailable(args.params.instanceId)),
-                ),
-              );
+              }),
+            );
           }),
         )
         .handle(
@@ -53,13 +52,12 @@ export const makeProviderQueueHttpApiLayer = <R>(
           Effect.fn("providerQueue.refresh")(function* (args) {
             yield* annotateEnvironmentRequest(args.endpoint.name);
             yield* requireEnvironmentScope(AuthAccessWriteScope);
-            return yield* queue
-              .refresh(args.params.instanceId)
-              .pipe(
-                Effect.catchTag("ProviderQueueStorageError", () =>
+            return yield* queue.refresh(args.params.instanceId).pipe(
+              Effect.catchTags({
+                ProviderQueueStorageError: () =>
                   Effect.succeed(unavailable(args.params.instanceId)),
-                ),
-              );
+              }),
+            );
           }),
         );
     }),

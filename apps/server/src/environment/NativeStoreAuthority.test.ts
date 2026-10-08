@@ -68,7 +68,6 @@ it.effect("publishes only the current T3-owned tuple and fails closed when fence
       NodeFS.mkdirSync(NodePath.join(root, "runtime"), { recursive: true });
       NodeFS.writeFileSync(
         NodePath.join(root, "runtime", "service-state.json"),
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - launcher-owned test fixture.
         JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
         { mode: 0o600 },
       );
@@ -95,7 +94,6 @@ it.effect("publishes only the current T3-owned tuple and fails closed when fence
 
       NodeFS.writeFileSync(
         NodePath.join(root, "runtime", "service-state.json"),
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - launcher-owned test fixture.
         JSON.stringify({ protocol: LEGACY_SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
         { mode: 0o600 },
       );
@@ -105,7 +103,6 @@ it.effect("publishes only the current T3-owned tuple and fails closed when fence
       });
       NodeFS.writeFileSync(
         NodePath.join(root, "runtime", "service-state.json"),
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - launcher-owned test fixture.
         JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
         { mode: 0o600 },
       );

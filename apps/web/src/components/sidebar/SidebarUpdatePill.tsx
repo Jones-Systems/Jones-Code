@@ -233,7 +233,7 @@ function SidebarUpdateControl() {
         return;
       }
       void bridge
-        .installUpdate(state?.jones?.stagedHandle)
+        .installUpdate()
         .then((result) => {
           if (!shouldToastDesktopUpdateActionResult(result)) return;
           const actionError = getDesktopUpdateActionError(result);

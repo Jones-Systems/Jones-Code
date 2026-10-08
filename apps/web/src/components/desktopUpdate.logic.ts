@@ -15,16 +15,7 @@ export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): st
 }
 
 /** Release notes for an exact downloaded build; nightly suffixes are part of the tag. */
-export function getDesktopUpdateReleaseUrl(
-  version: string | null,
-  state?: Pick<DesktopUpdateState, "jones">,
-): string | null {
-  if (state?.jones !== undefined) {
-    const run = state.jones.provenance?.runId;
-    return run === undefined
-      ? null
-      : `https://github.com/Jones-Systems/Jones-Code/actions/runs/${run}`;
-  }
+export function getDesktopUpdateReleaseUrl(version: string | null): string | null {
   const normalizedVersion = version?.trim();
   if (!normalizedVersion) return null;
   return `${DESKTOP_RELEASE_TAG_URL}/v${encodeURIComponent(normalizedVersion)}`;
@@ -37,13 +28,6 @@ export function getDesktopUpdateReleaseHistoryUrl(): string {
 export function resolveDesktopUpdateButtonAction(
   state: DesktopUpdateState,
 ): DesktopUpdateButtonAction {
-  if (state.jones !== undefined) {
-    if (state.jones.stagedHandle !== undefined)
-      return state.jones.capability.install ? "install" : "none";
-    return state.jones.phase === "available" && state.jones.capability.download
-      ? "download"
-      : "none";
-  }
   if (
     state.downloadedVersion &&
     (state.status === "downloaded" ||
@@ -68,11 +52,7 @@ export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | nul
 }
 
 export function isDesktopUpdateButtonDisabled(state: DesktopUpdateState | null): boolean {
-  return (
-    state?.status === "downloading" ||
-    (state?.jones !== undefined &&
-      ["checking", "verifying", "preparing", "installing"].includes(state.jones.phase))
-  );
+  return state?.status === "downloading";
 }
 
 export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState): string {
@@ -91,7 +71,6 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
 }
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
-  if (state.jones !== undefined) return state.jones.message ?? `Jones main: ${state.jones.phase}`;
   if (state.status === "available") {
     return `Update ${state.availableVersion ?? "available"} ready to download`;
   }
@@ -138,8 +117,6 @@ export function shouldToastDesktopUpdateActionResult(result: DesktopUpdateAction
 
 export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {
   if (!state || !state.enabled) return false;
-  if (state.jones !== undefined)
-    return state.jones.capability.check && !isDesktopUpdateButtonDisabled(state);
   return (
     state.status !== "checking" && state.status !== "downloading" && state.status !== "disabled"
   );

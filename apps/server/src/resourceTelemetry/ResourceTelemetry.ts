@@ -30,7 +30,7 @@ import {
   type TelemetryCounters,
 } from "./Model.ts";
 import * as NativeTelemetryClient from "./NativeTelemetryClient.ts";
-import * as ProcessAttribution from "./ProcessAttribution.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ResourceAttribution from "./ResourceAttribution.ts";
 import {
   buildResourceTelemetryHistory,

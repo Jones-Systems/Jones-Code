@@ -7,6 +7,14 @@ import {
   type DesktopUpdateCheckResult,
   type DesktopUpdateState,
 } from "@t3tools/contracts";
+import { HostProcessEnvironment, HostProcessExecutablePath } from "@t3tools/shared/hostProcess";
+import {
+  JonesDesktopUpdateController,
+  type JonesDesktopDownloadSelection,
+  type JonesDesktopDownloadResult,
+} from "../jones/updates/JonesDesktopUpdates.ts";
+import { prepareJonesNativeInstall } from "../jones/updates/jonesNativePreparation.ts";
+import { runNativeCommand } from "../jones/updates/jonesMacStaging.ts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -34,9 +42,6 @@ import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
-import { JonesDesktopUpdateController } from "./JonesDesktopUpdates.ts";
-import { prepareJonesNativeInstall } from "./jonesNativePreparation.ts";
-import { runNativeCommand } from "./jonesMacStaging.ts";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -186,6 +191,9 @@ export class DesktopUpdates extends Context.Service<
     ) => Effect.Effect<DesktopUpdateState, DesktopUpdateSetChannelError>;
     readonly check: (reason: string) => Effect.Effect<DesktopUpdateCheckResult>;
     readonly download: Effect.Effect<DesktopUpdateActionResult>;
+    readonly downloadSelected?: (
+      selection: JonesDesktopDownloadSelection,
+    ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
     readonly installStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
     readonly installPrepared: (
@@ -338,13 +346,15 @@ export const make = Effect.gen(function* () {
     /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(environment.appVersion)
   ) {
     const context = yield* Effect.context<never>();
+    const processEnv = yield* HostProcessEnvironment;
+    const executablePath = yield* HostProcessExecutablePath;
     const controller = new JonesDesktopUpdateController({
       home: environment.baseDir,
       appRoot: environment.appRoot,
       appPath: environment.path.resolve(environment.resourcesPath, "../.."),
-      executablePath: process.execPath,
-      profile: process.env.T3CODE_DESKTOP_USER_DATA_DIR,
-      activeGeneration: process.env.T3CODE_JONES_ACTIVE_GENERATION,
+      executablePath,
+      profile: processEnv.T3CODE_DESKTOP_USER_DATA_DIR,
+      activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
       architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
       platform: environment.platform,
       initialState: yield* Ref.get(updateStateRef),
@@ -440,6 +450,10 @@ export const make = Effect.gen(function* () {
       download: Effect.promise(() => controller.download()).pipe(
         Effect.map((result) => ({ ...result, state: controller.state })),
       ),
+      downloadSelected: (selection) =>
+        Effect.promise(() => controller.download(selection)).pipe(
+          Effect.map((result) => ({ ...result, state: controller.state })),
+        ),
       install: install().pipe(
         Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
       ),

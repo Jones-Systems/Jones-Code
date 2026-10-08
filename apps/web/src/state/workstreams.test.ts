@@ -3,109 +3,20 @@ import {
   T3_PLACEMENT_MAX_REQUEST_BYTES,
   type WorkstreamDetail,
   type WorkstreamReadContext,
+  type WorkstreamReceipt,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   loadCompleteWorkstreamDetail,
   loadCompleteWorkstreamList,
+  loadCompleteWorkstreamReferences,
+  reconcileWorkstreamCommands,
   nativePlacementInventory,
   nativePlacementInventoryJson,
   reuseNativePlacementIdentitySnapshot,
-  assertWorkstreamActionSnapshot,
-  assertWorkstreamSnapshotAuthority,
-  retryWorkstreamCommands,
-  loadCompleteWorkstreamReferences,
   type WorkstreamDetailLoaders,
 } from "./workstreams";
-
-describe("Workstream action reads", () => {
-  it.each([
-    { ownerId: "other-owner" },
-    { principalId: "other-principal" },
-    { authorizationRevision: 2 },
-    { serverGeneration: 8 },
-  ])("rejects a Retry result from changed authority before publishing: %j", (change) => {
-    let published = binding;
-    expect(() => {
-      const returned = { ...binding, ...change };
-      assertWorkstreamSnapshotAuthority(binding, binding, returned);
-      published = returned;
-    }).toThrow("changed");
-    expect(published).toBe(binding);
-  });
-  it("permits metadata-only registry advances and rejects authority loss or concurrent replacement", () => {
-    expect(() =>
-      assertWorkstreamSnapshotAuthority(binding, binding, { ...binding, registryVersion: 12 }),
-    ).not.toThrow();
-    expect(() => assertWorkstreamSnapshotAuthority(binding, undefined, binding)).toThrow("changed");
-    expect(() =>
-      assertWorkstreamSnapshotAuthority(
-        binding,
-        { ...binding, principalId: "replacement" },
-        binding,
-      ),
-    ).toThrow("changed");
-  });
-  it("admits a coherent cold load and binds it to authority established during the read", () => {
-    expect(() => assertWorkstreamSnapshotAuthority(undefined, undefined, binding)).not.toThrow();
-    expect(() =>
-      assertWorkstreamSnapshotAuthority(undefined, binding, { ...binding, registryVersion: 12 }),
-    ).not.toThrow();
-    expect(() =>
-      assertWorkstreamSnapshotAuthority(undefined, binding, { ...binding, ownerId: "other" }),
-    ).toThrow("changed");
-  });
-  it("reads every reference page before allowing preparation", async () => {
-    const load = vi.fn(async (cursor?: string) => ({
-      context,
-      items: [],
-      next_cursor: cursor ? null : "second",
-    }));
-    expect((await loadCompleteWorkstreamReferences(load)).next_cursor).toBeNull();
-    expect(load.mock.calls).toEqual([[], ["second"]]);
-  });
-  it("rejects changed principal or authorization across registration and placement reads", () => {
-    const data = { binding, items: [], source: "live" as const, stale: false, nextCursor: null };
-    for (const change of [
-      { principal_id: "other" },
-      { authorization_revision: 2 },
-      { registry_version: 12 },
-    ]) {
-      expect(() =>
-        assertWorkstreamActionSnapshot({
-          data,
-          references: { context, items: [], next_cursor: null },
-          placements: null,
-          registrationContext: {
-            protocol: "workstreams-registration-context/1.0.0",
-            state: "ready",
-            ...context,
-            principal_id: "principal",
-            grant_id: "grant",
-            authorization_revision: 1,
-            sources: [],
-            ...change,
-          },
-        }),
-      ).toThrow("changed");
-    }
-  });
-  it("Retry reloads first and observes only the exact attempted IDs without submitting or resuming", async () => {
-    const calls: string[] = [];
-    await retryWorkstreamCommands({
-      load: async () => {
-        calls.push("reload");
-      },
-      commandIds: ["lost-response", "pending-command"],
-      observe: async (id) => {
-        calls.push(`GET ${id}`);
-        return { state: "unresolved" } as import("@t3tools/contracts").WorkstreamReceipt;
-      },
-    });
-    expect(calls).toEqual(["reload", "GET lost-response", "GET pending-command"]);
-  });
-});
 
 const binding = {
   registryId: "registry",
@@ -506,5 +417,56 @@ describe("complete Workstream detail loading", () => {
     ] as const)
       expect(calls[name]).toHaveLength(1);
     expect(wait).not.toHaveBeenCalled();
+  });
+});
+
+describe("Workstream reference action reads", () => {
+  it("collects every reference page and refuses mixed registry versions", async () => {
+    const load = vi.fn(async (cursor?: string) =>
+      cursor === undefined ? { ...emptyPage, items: [], next_cursor: "next-page" } : emptyPage,
+    );
+    await expect(loadCompleteWorkstreamReferences(load)).resolves.toEqual(emptyPage);
+    expect(load.mock.calls).toEqual([[], ["next-page"]]);
+    const mixed = vi.fn(async (cursor?: string) =>
+      cursor === undefined
+        ? { ...emptyPage, next_cursor: "next-page" }
+        : { ...emptyPage, context: { ...context, registry_version: 12 } },
+    );
+    await expect(loadCompleteWorkstreamReferences(mixed)).rejects.toThrow();
+  });
+  it("removes only terminal observed IDs and retains unknown effects without replay", async () => {
+    const retained = new Set(["committed-command", "unknown-command", "unprocessed-command"]);
+    const observe = vi.fn(
+      async (id: string): Promise<WorkstreamReceipt> =>
+        ({ state: id === "committed-command" ? "committed" : "unresolved" }) as WorkstreamReceipt,
+    );
+    await expect(
+      reconcileWorkstreamCommands({
+        commandIds: [...retained],
+        observe,
+        resolved: (id) => retained.delete(id),
+      }),
+    ).rejects.toMatchObject({ reason: "unknown" });
+    expect([...retained]).toEqual(["unknown-command", "unprocessed-command"]);
+    expect(observe.mock.calls).toEqual([["committed-command"], ["unknown-command"]]);
+    observe.mockResolvedValue({ state: "rejected" } as WorkstreamReceipt);
+    await reconcileWorkstreamCommands({
+      commandIds: [...retained],
+      observe,
+      resolved: (id) => retained.delete(id),
+    });
+    expect(retained.size).toBe(0);
+    expect(observe.mock.calls.slice(2)).toEqual([["unknown-command"], ["unprocessed-command"]]);
+  });
+  it("retains the command when GET observation loses its response", async () => {
+    const resolved = vi.fn();
+    const observe = vi.fn(async () => {
+      throw new Error("lost-read-response");
+    });
+    await expect(
+      reconcileWorkstreamCommands({ commandIds: ["exact-command"], observe, resolved }),
+    ).rejects.toThrow("lost-read-response");
+    expect(observe).toHaveBeenCalledExactlyOnceWith("exact-command");
+    expect(resolved).not.toHaveBeenCalled();
   });
 });

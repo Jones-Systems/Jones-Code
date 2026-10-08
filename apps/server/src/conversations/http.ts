@@ -10,20 +10,16 @@ import {
   type LibraryErrorCode,
   type LibraryRequest,
 } from "@t3tools/contracts/conversationLibrary";
-import {
-  ConversationLibraryError,
-  libraryRequestMutates,
-} from "@t3tools/shared/conversationLibrary";
-import * as Clock from "effect/Clock";
+import { libraryRequestMutates } from "@t3tools/shared/conversationLibrary";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+import type * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
-import * as ServerConfig from "../config.ts";
 import { requireEnvironmentScope } from "../auth/http.ts";
-import { openConversationLibrary } from "./open.ts";
+import * as ConversationLibrary from "./Service.ts";
 
 const LIBRARY_ERROR_MESSAGE: Record<LibraryErrorCode, string> = {
   invalid: "The conversation library request is invalid.",
@@ -105,8 +101,9 @@ function decodeLibraryRequest(bytes: Uint8Array, traceId: string) {
 export const conversationLibraryHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
   "conversationLibrary",
-  (handlers) =>
-    handlers.handleRaw(
+  Effect.fnUntraced(function* (handlers) {
+    const library = yield* ConversationLibrary.ConversationLibrary;
+    return handlers.handleRaw(
       "conversationLibrary",
       Effect.fn("environment.conversationLibrary")(function* ({ request }) {
         const principal = yield* requireEnvironmentScope(AuthOrchestrationReadScope);
@@ -119,45 +116,10 @@ export const conversationLibraryHttpApiLayer = HttpApiBuilder.group(
         const mutates = libraryRequestMutates(libraryRequest);
         if (mutates) yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
 
-        const config = yield* ServerConfig.ServerConfig;
-        const now = yield* Clock.currentTimeMillis;
-        return yield* Effect.acquireUseRelease(
-          Effect.tryPromise({
-            try: () => openConversationLibrary(config.stateDir, mutates, now),
-            catch: (cause) =>
-              cause instanceof ConversationLibraryError
-                ? cause
-                : new ConversationLibraryError(
-                    "storage",
-                    "The conversation library could not be opened.",
-                  ),
-          }),
-          (store) =>
-            Effect.try({
-              try: () =>
-                store.execute(libraryRequest, principal.scopes.has(AuthOrchestrationOperateScope)),
-              catch: (cause) =>
-                cause instanceof ConversationLibraryError
-                  ? cause
-                  : new ConversationLibraryError(
-                      "storage",
-                      "The conversation library could not be read or changed.",
-                    ),
-            }).pipe(
-              Effect.catchIf(
-                (cause): cause is ConversationLibraryError =>
-                  cause instanceof ConversationLibraryError,
-                (cause) => Effect.fail(conversationLibraryHttpError(cause.code, traceId)),
-              ),
-            ),
-          (store) => Effect.sync(() => store.close()),
-        ).pipe(
-          Effect.mapError((cause) =>
-            cause instanceof ConversationLibraryError
-              ? conversationLibraryHttpError(cause.code, traceId)
-              : cause,
-          ),
-        );
+        return yield* library
+          .execute(libraryRequest, principal.scopes.has(AuthOrchestrationOperateScope))
+          .pipe(Effect.mapError((cause) => conversationLibraryHttpError(cause.code, traceId)));
       }),
-    ),
-);
+    );
+  }),
+).pipe(Layer.provide(ConversationLibrary.layer));

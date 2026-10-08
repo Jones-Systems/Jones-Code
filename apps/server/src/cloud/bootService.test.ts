@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous fixture provenance hashes must match the staged executable bytes.
+import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -13,13 +15,22 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { cliArchiveFileName, cliArchivePlatformKey } from "@t3tools/shared/cliRelease";
+import { HttpClient } from "effect/http";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as BootService from "./bootService.ts";
+import {
+  JonesRuntimeProvenance,
+  JONES_RUNTIME_PROVENANCE_FILE,
+} from "../jones/hostService/artifactVerification.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import { pinnedRuntimePaths } from "./pinnedRuntime.ts";
-import { qualifiedPayloadDigest, QUALIFIED_RUNTIME_RECEIPT } from "./qualifiedRuntime.ts";
+import {
+  qualifiedPayloadDigest,
+  QUALIFIED_RUNTIME_RECEIPT,
+} from "../jones/cloud/qualifiedRuntime.ts";
 import {
   parseServiceState,
   SERVICE_LAUNCHER_PROTOCOL,
@@ -27,6 +38,9 @@ import {
   serviceStateHasPendingUpdate,
 } from "./serviceProtocol.ts";
 
+const encodeJonesRuntimeProvenance = Schema.encodeEffect(
+  Schema.fromJsonString(JonesRuntimeProvenance),
+);
 const NativeFixtureJson = Schema.fromJsonString(Schema.Unknown);
 const encodeNativeFixtureJson = Schema.encodeSync(NativeFixtureJson);
 const decodeNativeFixtureJson = Schema.decodeUnknownSync(NativeFixtureJson);
@@ -140,11 +154,18 @@ it("escapes XML in host paths", () => {
 const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
   platform: NodeJS.Platform = "linux",
   installerPath = macInstallerPath,
+  serviceOptions: {
+    readonly identity?: BootService.BootServiceIdentity;
+    readonly environment?: Readonly<Record<string, string>>;
+    readonly allowEnableLinger?: boolean;
+    readonly runtimeMode?: "verified-private-artifact";
+  } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-boot-service-test-" });
   const baseDir = path.join(home, ".t3");
+  const arch = platform === "darwin" ? "arm64" : "x64";
   const statePath = path.join(baseDir, "runtime", "service-state.json");
   // A complete pinned runtime is already present, so install only validates
   // it and never downloads a release archive.
@@ -153,6 +174,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
   yield* fs.writeFileString(runtime.entryPath, "#!/bin/sh\n");
   yield* fs.writeFileString(runtime.sentinelPath, "1.2.3\n");
 
+  const unitFile = serviceOptions.identity?.systemdUnitFile ?? "t3code.service";
   const commands: string[] = [];
   const timeouts = new Map<string, unknown>();
   const control: {
@@ -161,6 +183,8 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
     linger: string;
     enabled: boolean;
     active: boolean;
+    versionOutput?: string;
+    versionIncomplete?: boolean;
   } = {
     failCommand: undefined,
     linger: "yes",
@@ -177,11 +201,11 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       const failed = command === control.failCommand;
       if (!failed && command === "loginctl enable-linger --no-ask-password 501")
         control.linger = "yes";
-      if (!failed && command === "systemctl --user enable t3code.service") control.enabled = true;
-      if (!failed && command === "systemctl --user restart t3code.service") control.active = true;
+      if (!failed && command === `systemctl --user enable ${unitFile}`) control.enabled = true;
+      if (!failed && command === `systemctl --user restart ${unitFile}`) control.active = true;
       if (
         control.stateAfterStop !== undefined &&
-        (command === "systemctl --user stop t3code.service" ||
+        (command === `systemctl --user stop ${unitFile}` ||
           command.startsWith("launchctl bootout --wait "))
       ) {
         yield* fs.writeFileString(statePath, control.stateAfterStop).pipe(Effect.orDie);
@@ -191,7 +215,8 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
           input.args[0] === "--version"
             ? // The runtime under test reports the version of the directory it
               // was launched from, like the real executable.
-              `t3 v${/versions\/([^/]+)\//.exec(input.command)?.[1] ?? "1.2.3"}\n`
+              (control.versionOutput ??
+              `t3 v${/versions\/([^/]+)\//.exec(input.command)?.[1] ?? "1.2.3"}\n`)
             : input.command === "loginctl" && input.args[0] === "show-user"
               ? `${control.linger}\n`
               : input.args[1] === "is-enabled"
@@ -204,7 +229,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
           failed || (input.args[1] === "is-active" && !control.active) ? 1 : 0,
         ),
         timedOut: false,
-        stdoutTruncated: false,
+        stdoutTruncated: input.args[0] === "--version" && control.versionIncomplete === true,
         stderrTruncated: false,
         stdoutInvalidUtf8: false,
         stderrInvalidUtf8: false,
@@ -223,17 +248,34 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       yield* fs.makeDirectory(path.dirname(paths.entryPath), { recursive: true });
       yield* fs.writeFileString(paths.entryPath, "#!/bin/sh\n");
       yield* fs.writeFileString(paths.sentinelPath, `${cliVersion}\n`);
+      const platformKey = cliArchivePlatformKey(platform, arch)!;
+      yield* fs.writeFileString(
+        path.join(paths.versionDir, JONES_RUNTIME_PROVENANCE_FILE),
+        yield* encodeJonesRuntimeProvenance({
+          schema: 1,
+          repository: "Jones-Systems/Jones-Code",
+          source: "a".repeat(40),
+          version: cliVersion,
+          platform,
+          architecture: arch,
+          artifact: cliArchiveFileName(cliVersion, platformKey),
+          sha256: "b".repeat(64),
+          entrySha256: NodeCrypto.createHash("sha256").update("#!/bin/sh\n").digest("hex"),
+        }),
+      );
       return yield* BootService.make({
         baseDir: serviceBaseDir,
         logsDir: path.join(serviceBaseDir, "userdata", "logs"),
         cliVersion,
         host: { execPath: "/usr/bin/t3" },
+        ...serviceOptions,
       });
     }).pipe(
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(HostProcessPlatform, platform),
+          Layer.succeed(HostProcessArchitecture, arch),
           Layer.succeed(HostProcessUserId, 501),
           Layer.succeed(HostProcessExecutablePath, "/usr/bin/t3"),
           Layer.succeed(
@@ -366,7 +408,6 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
         current: true,
         installedVersion: "1.2.3",
       });
-      // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned test document.
       const pendingState = JSON.stringify({
         protocol: SERVICE_LAUNCHER_PROTOCOL,
         activeVersion: "1.2.3",
@@ -553,7 +594,6 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
     Effect.gen(function* () {
       const { service, fs, statePath } = yield* makeHarness();
       yield* service.install();
-      // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned test document.
       const pendingState = JSON.stringify({
         protocol: SERVICE_LAUNCHER_PROTOCOL,
         activeVersion: "1.2.3",
@@ -654,7 +694,6 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
     Effect.gen(function* () {
       const { service, fs, statePath, commands } = yield* makeHarness();
       yield* service.install();
-      // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned test document.
       const pendingState = JSON.stringify({
         protocol: SERVICE_LAUNCHER_PROTOCOL - 1,
         activeVersion: "1.2.3",
@@ -815,7 +854,6 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const { service, fs, statePath, commands } = yield* makeHarness("darwin");
       yield* service.install();
       const plistPath = (yield* service.status).unitPath;
-      // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned test document.
       const pendingState = JSON.stringify({
         protocol: SERVICE_LAUNCHER_PROTOCOL - 1,
         activeVersion: "1.2.3",
@@ -839,6 +877,120 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           `launchctl bootstrap gui/501 ${plistPath}`,
         ]);
       }
+    }),
+  );
+});
+
+it("renders Jones identity with a deterministic escaped service environment", () => {
+  const environment = { Z_VALUE: '100% "quoted" \\ path & <tag>', A_VALUE: "first" };
+  const plan = { ...linuxPlan, environment };
+  const unit = BootService.renderBootServiceUnit(plan, JONES_BOOT_SERVICE_IDENTITY);
+  expect(unit).toContain("Description=Jones Code server");
+  expect(unit).toContain("Environment=T3_BOOT_SERVICE_UNIT=jones-code.service");
+  expect(unit).toContain('Environment=Z_VALUE="100%% \\"quoted\\" \\\\ path & <tag>"');
+  expect(unit.indexOf("Environment=A_VALUE=")).toBeLessThan(unit.indexOf("Environment=Z_VALUE="));
+  expect(
+    BootService.renderBootServiceUnit(
+      {
+        ...plan,
+        environment: {
+          A_VALUE: environment.A_VALUE,
+          Z_VALUE: environment.Z_VALUE,
+        },
+      },
+      JONES_BOOT_SERVICE_IDENTITY,
+    ),
+  ).toBe(unit);
+  expect(BootService.bootServiceBaseDirOf(unit)).toBe(plan.baseDir);
+
+  const plist = BootService.renderBootServicePlist(
+    plan,
+    macRenderOptions,
+    JONES_BOOT_SERVICE_IDENTITY,
+  );
+  expect(plist).toContain("<string>com.jones-systems.jones-code.service</string>");
+  expect(plist).toContain("<string>com.jones-systems.jones-code.service.plist</string>");
+  expect(plist).toContain('<string>100% "quoted" \\ path &amp; &lt;tag&gt;</string>');
+  expect(plist.indexOf("<key>A_VALUE</key>")).toBeLessThan(plist.indexOf("<key>Z_VALUE</key>"));
+  expect(BootService.renderBootServiceUnit({ ...linuxPlan, environment: {} })).toBe(
+    BootService.renderBootServiceUnit(linuxPlan),
+  );
+  expect(
+    BootService.renderBootServicePlist({ ...macPlan, environment: {} }, macRenderOptions),
+  ).toBe(BootService.renderBootServicePlist(macPlan, macRenderOptions));
+});
+
+it.layer(NodeServices.layer)("Jones boot service identity", (it) => {
+  it.effect.each(["linux", "darwin"] as const)(
+    "controls only the Jones service and preserves upstream units on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const { service, fs, commands } = yield* makeHarness(platform, macInstallerPath, {
+          identity: JONES_BOOT_SERVICE_IDENTITY,
+          environment: {
+            T3CODE_HOST: "127.0.0.1",
+            T3CODE_PORT: "4321",
+            T3CODE_TAILSCALE_SERVE: "false",
+          },
+        });
+        const path = yield* Path.Path;
+        const status = yield* service.status;
+        const upstreamPath = path.join(
+          path.dirname(status.unitPath),
+          platform === "linux" ? "t3code.service" : "com.t3tools.t3code.service.plist",
+        );
+        yield* fs.makeDirectory(path.dirname(upstreamPath), { recursive: true });
+        yield* fs.writeFileString(upstreamPath, "upstream-owned-unit");
+        const plan = yield* service.install();
+        expect(plan.unitPath).toBe(status.unitPath);
+        expect((yield* service.status).current).toBe(true);
+        yield* service.restart;
+        yield* service.uninstall;
+        expect(yield* fs.readFileString(upstreamPath)).toBe("upstream-owned-unit");
+        expect(commands.some((command) => command.includes("t3code.service"))).toBe(false);
+        expect(
+          commands.some((command) =>
+            command.includes(
+              platform === "linux" ? "jones-code.service" : "com.jones-systems.jones-code.service",
+            ),
+          ),
+        ).toBe(true);
+      }),
+  );
+
+  it.effect("preserves runtime-policy recovery text without controlling the service", () =>
+    Effect.gen(function* () {
+      const { service, fs, commands, runtime } = yield* makeHarness("linux", macInstallerPath, {
+        identity: JONES_BOOT_SERVICE_IDENTITY,
+      });
+      const path = yield* Path.Path;
+      yield* fs.remove(path.join(runtime.versionDir, JONES_RUNTIME_PROVENANCE_FILE));
+      const error = yield* service.install().pipe(Effect.flip);
+      expect(error._tag).toBe("BootServiceInstallError");
+      expect(error.message).toContain("t3 jones host stage-runtime");
+      expect(
+        commands.some((command) => command.includes("restart") || command.includes("stop")),
+      ).toBe(false);
+      expect(yield* fs.readFileString(runtime.entryPath)).toBe("#!/bin/sh\n");
+    }),
+  );
+
+  it.effect("refuses implicit linger enable before runtime checks or unit writes", () =>
+    Effect.gen(function* () {
+      const { service, fs, commands, control } = yield* makeHarness("linux", macInstallerPath, {
+        identity: JONES_BOOT_SERVICE_IDENTITY,
+        allowEnableLinger: false,
+      });
+      const status = yield* service.status;
+      control.linger = "no";
+      const error = yield* service.install().pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "BootServicePrerequisiteError",
+        problem: "linger-disabled",
+      });
+      expect(commands.some((command) => command.includes("enable-linger"))).toBe(false);
+      expect(commands.some((command) => command.includes("--version"))).toBe(false);
+      expect(yield* fs.exists(status.unitPath)).toBe(false);
     }),
   );
 });
@@ -876,59 +1028,68 @@ it.layer(NodeServices.layer)("qualified boot service setup boundary", (it) => {
       }),
   );
 
-  it.effect("retains an exact existing qualified install as a read-only no-op", () =>
-    Effect.gen(function* () {
-      const { makeService, fs, statePath, commands } = yield* makeHarness();
-      const path = yield* Path.Path;
-      const arch = yield* HostProcessArchitecture;
-      const version = "0.0.0-preview.20261002.100.1";
-      const preview = yield* makeService(undefined, version);
-      const baseDir = path.dirname(path.dirname(statePath));
-      const runtime = pinnedRuntimePaths(path, baseDir, version, "linux");
-      yield* fs.chmod(runtime.entryPath, 0o700);
-      const status = yield* preview.status;
-      const plan = {
-        program: [runtime.entryPath, "__service-launcher"],
-        baseDir,
-        logPath: status.logPath,
-        unitPath: status.unitPath,
-      };
-      yield* fs.makeDirectory(path.dirname(status.unitPath), { recursive: true });
-      const unit = BootService.renderBootServiceUnit(plan);
-      const state = encodeNativeFixtureJson({
-        protocol: SERVICE_LAUNCHER_PROTOCOL,
-        activeVersion: version,
-      });
-      yield* fs.writeFileString(status.unitPath, unit);
-      yield* fs.writeFileString(statePath, state);
-      yield* fs.writeFileString(
-        path.join(runtime.versionDir, QUALIFIED_RUNTIME_RECEIPT),
-        encodeNativeFixtureJson({
-          protocol: 1,
-          repository: "Jones-Systems/Jones-Code",
-          channel: "jones-main",
-          version,
-          sourceSha: "a".repeat(40),
-          sourceTree: "b".repeat(40),
-          installedSourceSha: "c".repeat(40),
-          runId: 100,
-          runAttempt: 1,
-          artifactId: 101,
-          workflow: ".github/workflows/artifact-cli-linux.yml",
-          artifactDigest: `sha256:${"d".repeat(64)}`,
-          archiveSha256: "e".repeat(64),
-          platform: "linux",
-          architecture: arch,
-          payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(runtime.versionDir)),
-        }),
-        { mode: 0o600 },
-      );
-      commands.length = 0;
-      expect(yield* preview.install({ start: false })).toEqual(plan);
-      expect(commands).toEqual([]);
-      expect(yield* fs.readFileString(statePath)).toBe(state);
-      expect(yield* fs.readFileString(status.unitPath)).toBe(unit);
-    }),
+  it.effect.each([undefined, "verified-private-artifact"] as const)(
+    "retains an exact existing qualified install as a read-only no-op in %s mode",
+    (runtimeMode) =>
+      Effect.gen(function* () {
+        const { makeService, fs, statePath, commands } = yield* makeHarness(
+          "linux",
+          macInstallerPath,
+          {
+            ...(runtimeMode === undefined ? {} : { runtimeMode }),
+          },
+        );
+        const path = yield* Path.Path;
+        const arch = "x64";
+        const version = "0.0.0-preview.20261002.100.1";
+        const preview = yield* makeService(undefined, version);
+        const baseDir = path.dirname(path.dirname(statePath));
+        const runtime = pinnedRuntimePaths(path, baseDir, version, "linux");
+        yield* fs.chmod(runtime.entryPath, 0o700);
+        yield* fs.remove(path.join(runtime.versionDir, JONES_RUNTIME_PROVENANCE_FILE));
+        const status = yield* preview.status;
+        const plan = {
+          program: [runtime.entryPath, "__service-launcher"],
+          baseDir,
+          logPath: status.logPath,
+          unitPath: status.unitPath,
+        };
+        yield* fs.makeDirectory(path.dirname(status.unitPath), { recursive: true });
+        const unit = BootService.renderBootServiceUnit(plan);
+        const state = encodeNativeFixtureJson({
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: version,
+        });
+        yield* fs.writeFileString(status.unitPath, unit);
+        yield* fs.writeFileString(statePath, state);
+        yield* fs.writeFileString(
+          path.join(runtime.versionDir, QUALIFIED_RUNTIME_RECEIPT),
+          encodeNativeFixtureJson({
+            protocol: 1,
+            repository: "Jones-Systems/Jones-Code",
+            channel: "jones-main",
+            version,
+            sourceSha: "a".repeat(40),
+            sourceTree: "b".repeat(40),
+            installedSourceSha: "c".repeat(40),
+            runId: 100,
+            runAttempt: 1,
+            artifactId: 101,
+            workflow: ".github/workflows/artifact-cli-linux.yml",
+            artifactDigest: `sha256:${"d".repeat(64)}`,
+            archiveSha256: "e".repeat(64),
+            platform: "linux",
+            architecture: arch,
+            payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(runtime.versionDir)),
+          }),
+          { mode: 0o600 },
+        );
+        commands.length = 0;
+        expect(yield* preview.install({ start: false })).toEqual(plan);
+        expect(commands).toEqual([]);
+        expect(yield* fs.readFileString(statePath)).toBe(state);
+        expect(yield* fs.readFileString(status.unitPath)).toBe(unit);
+      }),
   );
 
   it.effect("preserves desktop native ownership before any generic service setup side effect", () =>
@@ -950,5 +1111,143 @@ it.layer(NodeServices.layer)("qualified boot service setup boundary", (it) => {
         owner: "desktop",
       });
     }),
+  );
+});
+
+it.layer(NodeServices.layer)("verified private artifact boot service", (it) => {
+  const version = "1.2.4-preview.20261008.101.1";
+  const privateOptions = {
+    identity: JONES_BOOT_SERVICE_IDENTITY,
+    runtimeMode: "verified-private-artifact" as const,
+    allowEnableLinger: false,
+  };
+
+  it.effect("installs and repeats a cached preview without downloads or archive extraction", () =>
+    Effect.gen(function* () {
+      const { makeService, commands, fs, statePath } = yield* makeHarness(
+        "linux",
+        macInstallerPath,
+        privateOptions,
+      );
+      const preview = yield* makeService(undefined, version);
+      const plan = yield* preview.install();
+      expect(plan.unitPath).toContain("jones-code.service");
+      expect(parseServiceState(yield* fs.readFileString(statePath))?.activeVersion).toBe(version);
+      expect(commands[0]).toBe(`${plan.program[0]} --version`);
+      expect((yield* preview.status).current).toBe(true);
+      commands.length = 0;
+      yield* preview.install();
+      expect(commands[0]).toBe(`${plan.program[0]} --version`);
+      expect(
+        commands.some((command) => command.startsWith("tar ") || command.includes("enable-linger")),
+      ).toBe(false);
+      expect((yield* preview.status).current).toBe(true);
+    }),
+  );
+
+  it.effect.each([
+    "desktop",
+    "target-qualified",
+    "active-qualified",
+    "tampered",
+    "missing-provenance",
+    "missing-executable",
+    "missing-marker",
+    "wrong-marker",
+    "wrong-platform",
+    "wrong-version-output",
+    "incomplete-output",
+    "unverified-active",
+  ] as const)("refuses %s before service manager effects or unit writes", (failure) =>
+    Effect.gen(function* () {
+      const { makeService, commands, fs, statePath, runtime, control } = yield* makeHarness(
+        "linux",
+        macInstallerPath,
+        privateOptions,
+      );
+      const path = yield* Path.Path;
+      const baseDir = path.dirname(path.dirname(statePath));
+      const preview = yield* makeService(undefined, version);
+      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      const status = yield* preview.status;
+      if (failure === "desktop") {
+        yield* fs.writeFileString(path.join(baseDir, "runtime", "jones-active-install.json"), "{}");
+      } else if (failure === "target-qualified") {
+        yield* fs.writeFileString(path.join(paths.versionDir, QUALIFIED_RUNTIME_RECEIPT), "{}");
+      } else if (failure === "active-qualified" || failure === "unverified-active") {
+        yield* fs.writeFileString(
+          statePath,
+          encodeNativeFixtureJson({
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.2.3",
+          }),
+        );
+        if (failure === "active-qualified") {
+          yield* fs.writeFileString(path.join(runtime.versionDir, QUALIFIED_RUNTIME_RECEIPT), "{}");
+        } else {
+          yield* fs.remove(path.join(runtime.versionDir, JONES_RUNTIME_PROVENANCE_FILE));
+        }
+      } else if (failure === "tampered") {
+        yield* fs.writeFileString(paths.entryPath, "tampered executable");
+      } else if (failure === "missing-provenance") {
+        yield* fs.remove(path.join(paths.versionDir, JONES_RUNTIME_PROVENANCE_FILE));
+      } else if (failure === "missing-executable") {
+        yield* fs.remove(paths.entryPath);
+      } else if (failure === "missing-marker") {
+        yield* fs.remove(paths.sentinelPath);
+      } else if (failure === "wrong-marker") {
+        yield* fs.writeFileString(paths.sentinelPath, "0.0.44");
+      } else if (failure === "wrong-platform") {
+        const provenance = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(JonesRuntimeProvenance),
+        )(yield* fs.readFileString(path.join(paths.versionDir, JONES_RUNTIME_PROVENANCE_FILE)));
+        yield* fs.writeFileString(
+          path.join(paths.versionDir, JONES_RUNTIME_PROVENANCE_FILE),
+          yield* encodeJonesRuntimeProvenance({ ...provenance, platform: "darwin" }),
+        );
+      } else if (failure === "wrong-version-output") {
+        control.versionOutput = "t3 v0.0.44\n";
+      } else {
+        control.versionIncomplete = true;
+      }
+      commands.length = 0;
+      const error = yield* preview.install().pipe(Effect.flip);
+      expect(error._tag).toBe(
+        ["desktop", "target-qualified", "active-qualified"].includes(failure)
+          ? "BootServiceBootstrapRequiredError"
+          : "BootServiceInstallError",
+      );
+      expect(commands.every((command) => command.endsWith(" --version"))).toBe(true);
+      expect(yield* fs.exists(status.unitPath)).toBe(false);
+      if (failure === "missing-executable") {
+        expect(yield* fs.exists(paths.entryPath)).toBe(false);
+      } else {
+        expect(yield* fs.readFileString(paths.entryPath)).toBe(
+          failure === "tampered" ? "tampered executable" : "#!/bin/sh\n",
+        );
+      }
+    }),
+  );
+
+  it.effect(
+    "verifies both the active private runtime and the target before switching previews",
+    () =>
+      Effect.gen(function* () {
+        const { makeService, commands, fs, statePath, runtime } = yield* makeHarness(
+          "linux",
+          macInstallerPath,
+          privateOptions,
+        );
+        const current = yield* makeService();
+        yield* current.install();
+        const preview = yield* makeService(undefined, version);
+        commands.length = 0;
+        const plan = yield* preview.install();
+        expect(commands.slice(0, 2)).toEqual([
+          `${runtime.entryPath} --version`,
+          `${plan.program[0]} --version`,
+        ]);
+        expect(parseServiceState(yield* fs.readFileString(statePath))?.activeVersion).toBe(version);
+      }),
   );
 });

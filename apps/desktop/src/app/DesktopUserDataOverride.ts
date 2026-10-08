@@ -9,6 +9,9 @@ export function resolveDesktopUserDataOverride(
 ): string | null {
   const directory = value?.trim();
   if (!directory) return null;
+  if (directory.includes("\0")) {
+    throw new Error("T3CODE_DESKTOP_USER_DATA_DIR must not contain a null byte.");
+  }
   if (!path.isAbsolute(directory)) {
     throw new Error("T3CODE_DESKTOP_USER_DATA_DIR must be an absolute path.");
   }

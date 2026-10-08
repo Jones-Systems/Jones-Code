@@ -4,14 +4,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
-import { VcsRepositoryDetectionError } from "@t3tools/contracts";
+import { VcsRepositoryDetectionError, VcsUnsupportedOperationError } from "@t3tools/contracts";
 
 import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
-function makeLayer(input: {
+function layer(input: {
   readonly detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"];
 }) {
   return GitWorkflowService.layer.pipe(
@@ -34,7 +34,7 @@ describe("GitWorkflowService", () => {
       assert.equal(isRepository, false);
     }).pipe(
       Effect.provide(
-        makeLayer({
+        layer({
           detect: () =>
             Effect.succeed({
               kind: "jj",
@@ -55,6 +55,49 @@ describe("GitWorkflowService", () => {
     ),
   );
 
+  it.effect("keeps remote worktree lookup failures typed when repository resolution fails", () => {
+    const lookup = vi.fn(() => null);
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const error = yield* workflow
+        .resolveRemoteTrackingCommitIfExists({
+          cwd: "/not-a-repo",
+          remoteName: "origin",
+          branchName: "develop",
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "GitCommandError",
+        operation: "GitWorkflowService.resolveRemoteTrackingCommitIfExists",
+        cwd: "/not-a-repo",
+      });
+      expect(lookup).not.toHaveBeenCalled();
+    }).pipe(
+      Effect.provide(
+        GitWorkflowService.layer.pipe(
+          Layer.provide(
+            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+              resolve: () =>
+                Effect.fail(
+                  new VcsUnsupportedOperationError({
+                    operation: "VcsDriverRegistry.resolve",
+                    kind: "unknown",
+                    detail: "No Git repository is available.",
+                  }),
+                ),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(GitVcsDriver.GitVcsDriver)({
+              resolveRemoteTrackingCommitIfExists: () => Effect.sync(lookup),
+            }),
+          ),
+          Layer.provide(Layer.mock(GitManager.GitManager)({})),
+        ),
+      ),
+    );
+  });
+
   it.effect("returns an empty local status when no VCS repository is detected", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
@@ -74,7 +117,7 @@ describe("GitWorkflowService", () => {
       });
     }).pipe(
       Effect.provide(
-        makeLayer({
+        layer({
           detect: () => Effect.succeed(null),
         }),
       ),
@@ -105,7 +148,7 @@ describe("GitWorkflowService", () => {
       });
     }).pipe(
       Effect.provide(
-        makeLayer({
+        layer({
           detect: () => Effect.succeed(null),
         }),
       ),
@@ -117,7 +160,7 @@ describe("GitWorkflowService", () => {
     const remoteStatus = vi.fn();
     const status = vi.fn();
 
-    const testLayer = GitWorkflowService.layer.pipe(
+    const layerTest = GitWorkflowService.layer.pipe(
       Layer.provide(
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
           detect: () => Effect.succeed(null),
@@ -142,7 +185,7 @@ describe("GitWorkflowService", () => {
       assert.equal(localStatus.mock.calls.length, 0);
       assert.equal(remoteStatus.mock.calls.length, 0);
       assert.equal(status.mock.calls.length, 0);
-    }).pipe(Effect.provide(testLayer));
+    }).pipe(Effect.provide(layerTest));
   });
 
   it.effect("returns an empty ref list when no VCS repository is detected", () =>
@@ -159,7 +202,7 @@ describe("GitWorkflowService", () => {
       });
     }).pipe(
       Effect.provide(
-        makeLayer({
+        layer({
           detect: () => Effect.succeed(null),
         }),
       ),
@@ -186,7 +229,7 @@ describe("GitWorkflowService", () => {
       expect(error.message).not.toContain(cause.detail);
     }).pipe(
       Effect.provide(
-        makeLayer({
+        layer({
           detect: () => Effect.fail(cause),
         }),
       ),
@@ -214,7 +257,7 @@ describe("GitWorkflowService", () => {
       expect(error.message).not.toContain(cause.detail);
     }).pipe(
       Effect.provide(
-        makeLayer({
+        layer({
           detect: () => Effect.fail(cause),
         }),
       ),

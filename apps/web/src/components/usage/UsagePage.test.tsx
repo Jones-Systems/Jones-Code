@@ -83,13 +83,14 @@ vi.mock("./UsageProviderChart", async () => {
   };
 });
 vi.mock("./UsagePriceOverrides", () => ({ UsagePriceOverrides: () => null }));
+vi.mock("../../jones/usage/SavedTokenAccounting", () => ({ SavedTokenAccounting: () => null }));
 vi.mock("./usageProviders", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./usageProviders")>();
   return {
     ...actual,
     PROVIDER_PRESENTATION: {
-      codex: { color: "white", label: "Codex", mark: "span" },
-      claude: { color: "orange", label: "Claude Code", mark: "span" },
+      codex: { ...actual.PROVIDER_PRESENTATION.codex, color: "white" },
+      claude: { ...actual.PROVIDER_PRESENTATION.claude, color: "orange" },
     },
   };
 });
@@ -100,6 +101,7 @@ const environments = [
     environmentId: EnvironmentId.make("test-environment"),
     label: "Test environment",
     isPending: false,
+    canReadDiagnostics: true,
     error: null,
     summary: {
       contractVersion: USAGE_CONTRACT_VERSION,
@@ -467,7 +469,7 @@ describe("UsagePage provider and model details", () => {
 
   function modelNames() {
     return [...container.querySelectorAll('tbody button[aria-label$="token details"]')].map(
-      (button) => button.textContent?.trim(),
+      (button) => button.previousElementSibling?.textContent?.trim(),
     );
   }
 
@@ -489,7 +491,10 @@ describe("UsagePage provider and model details", () => {
     expect(metric(details(), "Recorded responses")).toBe("3");
     expect(metric(details(), "Model priced")).toBe("2");
     expect(metric(details(), "Unpriced")).toBe("1");
+    expect(container.querySelector("tbody tr")?.textContent).toContain("92.5%");
+    await clickText("Cost");
     expect(container.querySelector("tbody tr")?.textContent).toContain("100.0%");
+    await clickText("Tokens");
     expect(container.textContent).toContain("Shares are within Codex's API estimate");
     expect(container.querySelector(".text-4xl")?.textContent).toBe(summary);
     expect(container.querySelector('[data-testid="usage-chart"]')!.outerHTML).toBe(chart);

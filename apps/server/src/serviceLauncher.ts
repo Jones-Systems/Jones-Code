@@ -16,13 +16,19 @@ import {
   withQualifiedRuntimeLock,
   QUALIFIED_UPDATES_PROTOCOL,
   type StagedQualifiedRuntime,
-} from "./cloud/qualifiedRuntime.ts";
+} from "./jones/cloud/qualifiedRuntime.ts";
 
 import {
   proveQualifiedStateQuiescence,
   QUALIFIED_STARTUP_STATE_FILES,
   type QualifiedQuiescenceAdapter,
-} from "./cloud/qualifiedQuiescence.ts";
+} from "./jones/cloud/qualifiedQuiescence.ts";
+import {
+  assertQualifiedTrialBinding,
+  type QualifiedTrialReceipt,
+} from "./jones/cloud/qualifiedStartup.ts";
+
+import { qualifiedServicePreflightFailure } from "./cloud/servicePreflight.ts";
 
 import type {
   PendingServiceUpdate,
@@ -76,6 +82,42 @@ const runtimePaths = (baseDir: string, version: string) => {
   };
 };
 
+const preflightQualifiedCandidate = async (
+  baseDir: string,
+  staged: StagedQualifiedRuntime,
+): Promise<void> => {
+  const env = { ...process.env };
+  delete env[SERVICE_LAUNCHER_CONTEXT_ENV];
+  const result = await new Promise<{ readonly code: number | null; readonly stdout: string }>(
+    (resolve, reject) => {
+      NodeChildProcess.execFile(
+        runtimePaths(baseDir, staged.receipt.version).entryPath,
+        [
+          "__service-preflight",
+          "--database-path",
+          staged.binding.dbPath,
+          "--launcher-protocol",
+          String(SERVICE_LAUNCHER_PROTOCOL),
+        ],
+        { env, timeout: 30_000, maxBuffer: 64 * 1024, encoding: "utf8" },
+        (error, stdout) => {
+          if (error !== null) {
+            reject(
+              new Error("startup-gate-unavailable: Could not preflight the qualified candidate.", {
+                cause: error,
+              }),
+            );
+            return;
+          }
+          resolve({ code: 0, stdout });
+        },
+      );
+    },
+  );
+  const reason = qualifiedServicePreflightFailure({ ...result, version: staged.receipt.version });
+  if (reason !== undefined) throw new Error(reason);
+};
+
 const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
   command: paths.entryPath,
   args: ["serve"],
@@ -93,12 +135,12 @@ const databaseBackupFile = (backupDir: string, suffix: (typeof DB_FILE_SUFFIXES)
   NodePath.join(backupDir, suffix === "" ? "database" : `database${suffix}`);
 
 export const configuredDatabasePathForBaseDir = (baseDir: string): string =>
-  NodePath.resolve(baseDir, "userdata", "state.sqlite");
+  NodePath.resolve(baseDir, "userdata", "statev2.sqlite");
 
 export const validateDatabasePathForBaseDir = (baseDir: string, databasePath: string): string => {
   const configuredPath = configuredDatabasePathForBaseDir(baseDir);
   if (NodePath.resolve(databasePath) !== configuredPath) {
-    throw new Error("Service update database path must be the configured userdata/state.sqlite.");
+    throw new Error("Service update database path must be the configured userdata/statev2.sqlite.");
   }
   return configuredPath;
 };
@@ -447,6 +489,7 @@ export class Launcher {
   readonly #baseDir: string;
   readonly #statePath: string;
   readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
+  readonly #startupGateProtocol: 1 | undefined;
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
@@ -454,17 +497,22 @@ export class Launcher {
   #stopRequested = false;
   #stopping = false;
   #done = false;
+  #qualifiedPointerCommitAttempted = false;
   readonly #completion = Promise.withResolvers<void>();
 
   constructor(
     baseDir: string,
     state: ServiceState,
-    options: { readonly quiescenceAdapter?: QualifiedQuiescenceAdapter } = {},
+    options: {
+      readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
+      readonly startupGateProtocol?: 1;
+    } = {},
   ) {
     this.#baseDir = baseDir;
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
     this.#quiescenceAdapter = options.quiescenceAdapter;
+    this.#startupGateProtocol = options.startupGateProtocol;
   }
 
   async run(): Promise<void> {
@@ -524,6 +572,8 @@ export class Launcher {
   }
 
   async stop(signal: NodeJS.Signals): Promise<void> {
+    const alreadyRequested = this.#stopRequested;
+    this.#stopRequested = true;
     // This must happen synchronously at signal receipt. A queued update
     // transition may already be terminating the active child, and that child
     // needs to see the marker in its shutdown finalizer. KillMode=mixed also
@@ -535,14 +585,13 @@ export class Launcher {
     } catch {
       // Err toward keeping the tunnel; the next link or unlink reconciles it.
     }
-    if (this.#stopRequested || this.#stopping) {
+    if (alreadyRequested || this.#stopping) {
       await this.#completion.promise.catch(() => undefined);
       return;
     }
-    this.#stopRequested = true;
     this.#clearTimer();
     this.#enqueue(async () => {
-      // Let an update transition already in progress start its replacement
+      // Let an ordinary update transition already in progress start its replacement
       // before this queued stop tears it down. That replacement owns the
       // pre-activation tunnel cleanup path and observes the marker above.
       this.#stopping = true;
@@ -561,6 +610,13 @@ export class Launcher {
   }
 
   async #recover(): Promise<void> {
+    // A committed pointer proves neither grant delivery nor continuation dispatch.
+    // Even an occupied resume reservation is uncertain; restart never repeats the transaction.
+    if (this.#state.update?.qualified !== undefined) {
+      throw new Error(
+        "Qualified update recovery is held for reconciliation; retained pointer, receipt and paired state were preserved.",
+      );
+    }
     // A fresh launcher means servers are running again: any stop marker from
     // a previous explicit stop is stale and must not make a future update
     // handoff release its tunnel. A restart deferred by `t3 update` is done
@@ -581,11 +637,6 @@ export class Launcher {
       }
       await this.#startChild(this.#state.activeVersion, "active", update);
       return;
-    }
-    if (update.qualified !== undefined) {
-      throw new Error(
-        "Qualified update recovery requires reconciliation of prior writer ownership; state and paired backups were retained.",
-      );
     }
     if (update.phase === "accepted") {
       if (!(await runtimeExists(this.#baseDir, update.targetVersion))) {
@@ -635,7 +686,8 @@ export class Launcher {
     if (pending.phase === "accepted") {
       try {
         await backupDatabaseOnce(this.#baseDir, pending);
-      } catch {
+      } catch (cause) {
+        if (pending.qualified !== undefined) throw cause;
         await this.#finishWithoutTrial(pending, "db-backup-failed");
         return;
       }
@@ -652,7 +704,8 @@ export class Launcher {
     }
     try {
       await this.#startChild(trialReady.targetVersion, "trial", trialReady);
-    } catch {
+    } catch (cause) {
+      if (pending.qualified !== undefined) throw cause;
       await this.#returnToPrevious(trialReady, "failed", "candidate-start-failed");
     }
   }
@@ -693,6 +746,9 @@ export class Launcher {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      ...(this.#startupGateProtocol === undefined
+        ? {}
+        : { startupGateProtocol: this.#startupGateProtocol }),
       ...(update === undefined ? {} : { update }),
     };
     const spawnArguments = runtimeSpawnArguments(paths);
@@ -727,6 +783,19 @@ export class Launcher {
     child.on("message", (value) => {
       const message = decodeServiceLauncherChildMessage(value);
       if (message !== undefined) this.#enqueue(() => this.#handleMessage(managed, message));
+      else if (
+        update?.qualified !== undefined &&
+        typeof value === "object" &&
+        value !== null &&
+        "type" in value &&
+        value.type === "prepared"
+      ) {
+        this.#enqueue(() =>
+          Promise.reject(
+            new Error("Qualified child supplied malformed startup proof; transaction retained."),
+          ),
+        );
+      }
     });
     child.once("exit", (code, signal) =>
       this.#enqueue(() => this.#handleExit(managed, code, signal)),
@@ -746,7 +815,7 @@ export class Launcher {
       await this.#handleUpdateRequest(child, message);
       return;
     }
-    await this.#handlePrepared(child, message.updateId);
+    await this.#handlePrepared(child, message);
   }
 
   async #handleUpdateRequest(
@@ -792,7 +861,7 @@ export class Launcher {
     try {
       validateDatabasePathForBaseDir(this.#baseDir, message.dbPath);
     } catch {
-      await reject("The requested database path is not the configured userdata/state.sqlite.");
+      await reject("The requested database path is not the configured userdata/statev2.sqlite.");
       return;
     }
     if (!(await runtimeExists(this.#baseDir, message.targetVersion))) {
@@ -800,6 +869,10 @@ export class Launcher {
       return;
     }
 
+    if (message.stagedHandle !== undefined && this.#startupGateProtocol !== 1) {
+      await reject("bootstrap-required: The qualified startup gate is not bound on this launcher.");
+      return;
+    }
     let qualified: StagedQualifiedRuntime | undefined;
     if (message.stagedHandle !== undefined) {
       try {
@@ -813,9 +886,14 @@ export class Launcher {
           qualified.binding.dbPath !== message.dbPath
         )
           throw new Error("Install target differs from its staged handle.");
-      } catch {
+        await preflightQualifiedCandidate(this.#baseDir, qualified);
+        if (this.#child !== child || this.#stopRequested || this.#stopping)
+          throw new Error("The requesting child stopped during candidate preflight.");
+      } catch (cause) {
         await reject(
-          "Qualified staged runtime, active source or native environment binding is invalid.",
+          cause instanceof Error && cause.message.startsWith("startup-gate-unavailable:")
+            ? cause.message
+            : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
         );
         return;
       }
@@ -847,7 +925,11 @@ export class Launcher {
     await this.#startTrial(pending);
   }
 
-  async #handlePrepared(child: ManagedChild, updateId: string): Promise<void> {
+  async #handlePrepared(
+    child: ManagedChild,
+    message: Extract<ServiceLauncherChildMessage, { readonly type: "prepared" }>,
+  ): Promise<void> {
+    const updateId = message.updateId;
     const pending = this.#state.update;
     if (
       child.role !== "trial" ||
@@ -861,37 +943,97 @@ export class Launcher {
       }
       throw new Error("Trial child reported prepared for an unexpected update.");
     }
+    let startupReceipt: QualifiedTrialReceipt | undefined;
     if (pending.qualified !== undefined) {
+      if (
+        message.startupGateProtocol !== 1 ||
+        message.qualified === undefined ||
+        this.#startupGateProtocol !== 1
+      )
+        throw new Error(
+          "Qualified startup proof is required before pointer commit; transaction retained.",
+        );
+      startupReceipt = message.qualified;
+      assertQualifiedTrialBinding({
+        updateId: pending.id,
+        qualified: pending.qualified,
+        receipt: startupReceipt,
+      });
+      const home = await NodeFSP.realpath(this.#baseDir);
+      const serviceUserdata = await NodeFSP.realpath(NodePath.join(home, "userdata"));
+      const database = await NodeFSP.realpath(pending.dbPath);
       const receipt = await readQualifiedRuntimeReceipt(this.#baseDir, pending.targetVersion);
       const environment = (
         await NodeFSP.readFile(NodePath.join(this.#baseDir, "userdata", "environment-id"), "utf8")
       ).trim();
       if (
         JSON.stringify(receipt) !== JSON.stringify(pending.qualified.receipt) ||
-        environment !== pending.qualified.binding.environmentId
+        environment !== pending.qualified.binding.environmentId ||
+        startupReceipt.home !== home ||
+        startupReceipt.serviceUserdata !== serviceUserdata ||
+        startupReceipt.databasePath !== database ||
+        startupReceipt.processId !== child.process.pid ||
+        startupReceipt.version !== child.version ||
+        startupReceipt.sourceSha !== receipt.sourceSha ||
+        startupReceipt.sourceTree !== receipt.sourceTree
       ) {
-        await this.#returnToPrevious(pending, "rolled-back", "candidate-identity-mismatch", child);
-        return;
+        throw new Error(
+          "Qualified startup observed identity mismatched the captured child; transaction retained.",
+        );
       }
     }
     if (pending.qualified !== undefined) {
       if (child.process.pid === undefined) throw new Error("Trial writer identity is unavailable.");
       // Only the captured trial may own writable state at the pointer commit.
       await this.#proveQuiescence([child.process.pid]);
+      this.#assertQualifiedChildLive(child);
     }
     this.#clearTimer();
-    const committed = terminalUpdate({ pending, status: "committed" });
+    const committed = {
+      ...terminalUpdate({ pending, status: "committed" }),
+      ...(startupReceipt === undefined ? {} : { startupReceipt }),
+    };
     const next: ServiceState = {
       ...this.#state,
       activeVersion: pending.targetVersion,
       update: committed,
     };
+    if (pending.qualified !== undefined) {
+      this.#assertQualifiedChildLive(child);
+      // From this point a failed fsync/response can leave a committed pointer; rollback is forbidden.
+      this.#qualifiedPointerCommitAttempted = true;
+    }
     await writeServiceState(this.#statePath, next);
     this.#state = next;
+    if (pending.qualified !== undefined) this.#assertQualifiedChildLive(child);
     child.role = "active";
     if (pending.qualified === undefined)
       await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
-    await sendMessage(child.process, { type: "committed", updateId: committed.id });
+    await sendMessage(child.process, {
+      type: "committed",
+      updateId: committed.id,
+      ...(startupReceipt === undefined
+        ? {}
+        : {
+            startupGateProtocol: 1 as const,
+            qualified: { ...startupReceipt, generation: committed.id },
+          }),
+    });
+  }
+
+  #assertQualifiedChildLive(child: ManagedChild): void {
+    if (
+      this.#stopRequested ||
+      this.#stopping ||
+      this.#child !== child ||
+      child.process.pid === undefined ||
+      child.process.exitCode !== null ||
+      child.process.signalCode !== null ||
+      !child.process.connected
+    )
+      throw new Error("Qualified child liveness or stop intent changed; transaction retained.");
+    // The PID belongs to this captured spawn, never a path/name search.
+    process.kill(child.process.pid, 0);
   }
 
   async #handlePreparedTimeout(child: ManagedChild): Promise<void> {
@@ -920,6 +1062,7 @@ export class Launcher {
         pending,
         "rolled-back",
         `candidate-exited:${String(code ?? signal ?? "unknown")}`,
+        child,
       );
       return;
     }
@@ -939,11 +1082,25 @@ export class Launcher {
     reason: string,
     child?: ManagedChild,
   ): Promise<void> {
+    if (pending.qualified !== undefined && this.#qualifiedPointerCommitAttempted)
+      throw new Error(
+        "Qualified pointer commit may have occurred; paired state is retained for reconciliation.",
+      );
     if (child !== undefined) {
       this.#child = null;
       await terminateChild(child.process);
+      if (
+        pending.qualified !== undefined &&
+        child.process.exitCode === null &&
+        child.process.signalCode === null
+      )
+        throw new Error("Qualified trial stop is unproved; paired state was retained.");
     }
-    if (pending.qualified !== undefined) await this.#proveQuiescence();
+    if (pending.qualified !== undefined) {
+      if (child === undefined)
+        throw new Error("Qualified rollback requires the exact captured child stop.");
+      await this.#proveQuiescence();
+    }
     await restoreDatabaseBackup(this.#baseDir, pending);
     const outcome = terminalUpdate({ pending, status, reason });
     const next: ServiceState = {

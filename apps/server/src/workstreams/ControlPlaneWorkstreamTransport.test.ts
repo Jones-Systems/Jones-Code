@@ -2,25 +2,27 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import {
-  WORKSTREAM_COUNTS_MANIFEST_SHA256,
+  WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
+  T3_PLACEMENT_ROUTE,
+  T3_PLACEMENT_CONTRACT,
+  T3_PLACEMENT_MANIFEST_SHA256,
+  WORKSTREAM_APPEARANCE_CONTRACT,
+  WORKSTREAM_APPEARANCE_MANIFEST,
   WORKSTREAM_CONTRACT_FAMILY,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_VERSION,
-  WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
-  WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
-  T3_PLACEMENT_CONTRACT,
-  T3_PLACEMENT_MANIFEST_SHA256,
-  T3_PLACEMENT_ROUTE,
 } from "@t3tools/contracts";
 import {
   makeControlPlaneWorkstreamTransport,
   signWorkstreamRequest,
   type WorkstreamFetch,
 } from "./ControlPlaneWorkstreamTransport.ts";
+
 import {
-  encodeFixtureJson,
   response as registrationResponse,
-} from "./registrationContext/testFixtures.ts";
+  encodeFixtureJson,
+} from "../jones/workstreams/registrationContext/testFixtures.ts";
 
 const registrationHeaders = {
   "x-control-contract-version": WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
@@ -38,6 +40,50 @@ const activation = {
     signingSecret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
   },
 } as const;
+
+it.effect("negotiates independent appearance without interpreting errors as automatic colors", () =>
+  Effect.gen(function* () {
+    const old = makeControlPlaneWorkstreamTransport(
+      activation,
+      async () => new Response("Not found", { status: 404 }),
+    );
+    expect(
+      yield* old.transport.readAppearance!({ workstream_ids: ["workstream-fixture"] }),
+    ).toEqual({ supported: false });
+    const unavailable = makeControlPlaneWorkstreamTransport(
+      activation,
+      async () => new Response("Unavailable", { status: 503 }),
+    );
+    const failure = yield* unavailable.transport.readAppearance!({
+      workstream_ids: ["workstream-fixture"],
+    }).pipe(Effect.flip);
+    expect(failure.effect).toBe("no-effect");
+    const configured = makeControlPlaneWorkstreamTransport(activation, async (input, init) => {
+      expect(String(input)).toBe("https://control-plane.example/workstream-appearance/v1/read");
+      expect(new Headers(init?.headers).get("x-control-contract-version")).toBe(
+        WORKSTREAM_APPEARANCE_CONTRACT,
+      );
+      return new Response(
+        JSON.stringify({
+          owner_id: "owner-fixture",
+          server_generation: 7,
+          permissions: ["workstreams:read"],
+          items: [{ workstream_id: "workstream-fixture", border_color: "#123ABC", version: 1 }],
+        }),
+        {
+          headers: {
+            "x-control-contract-version": WORKSTREAM_APPEARANCE_CONTRACT,
+            "x-control-contract-manifest": WORKSTREAM_APPEARANCE_MANIFEST,
+          },
+        },
+      );
+    });
+    const result = yield* configured.transport.readAppearance!({
+      workstream_ids: ["workstream-fixture"],
+    });
+    expect(result.supported && result.page.items[0]?.border_color).toBe("#123ABC");
+  }),
+);
 
 it("matches the control-plane canonicalSignedRequest fixed 32-byte key vector", () => {
   expect(
@@ -269,54 +315,6 @@ it.effect("does not expose transport or decoder causes", () =>
       "Control-plane returned invalid JSON for the accepted contract.",
     );
     expect(decoderFailure.cause).toBeUndefined();
-  }),
-);
-
-it.effect("uses the negotiated counts manifest without changing legacy route pins", () =>
-  Effect.gen(function* () {
-    const requests: Array<{ target: string; manifest: string | null }> = [];
-    const { transport } = makeControlPlaneWorkstreamTransport(activation, async (url, init) => {
-      const headers = new Headers(init?.headers);
-      requests.push({
-        target: new URL(String(url)).pathname,
-        manifest: headers.get("x-control-contract-manifest"),
-      });
-      return new Response(
-        JSON.stringify({
-          context: { owner_id: "owner-fixture", server_generation: 7, registry_version: 11 },
-          principal_id: "principal-fixture",
-          observed_at: "2026-10-02T00:00:00Z",
-          authority_effect: "none",
-          total: 7,
-          active: 4,
-          unknown_lifecycle: 1,
-        }),
-        {
-          headers: {
-            "x-control-contract-version": "workstreams/1.0.0",
-            "x-control-contract-manifest": WORKSTREAM_COUNTS_MANIFEST_SHA256,
-          },
-        },
-      );
-    });
-    expect((yield* transport.getRegistryCounts!()).active).toBe(4);
-    expect(requests).toEqual([
-      { target: "/workstreams/v1/counts", manifest: WORKSTREAM_COUNTS_MANIFEST_SHA256 },
-    ]);
-    const invalid = makeControlPlaneWorkstreamTransport(
-      activation,
-      async () =>
-        new Response("{}", {
-          headers: {
-            "x-control-contract-version": "workstreams/1.0.0",
-            "x-control-contract-manifest": WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-          },
-        }),
-    );
-    expect(yield* invalid.transport.getRegistryCounts!().pipe(Effect.flip)).toMatchObject({
-      detail: "http_error",
-      effect: "no-effect",
-    });
   }),
 );
 

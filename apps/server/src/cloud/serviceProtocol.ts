@@ -1,5 +1,15 @@
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
-import { decodeStagedQualifiedRuntime, type StagedQualifiedRuntime } from "./qualifiedRuntime.ts";
+import {
+  decodeStagedQualifiedRuntime,
+  type StagedQualifiedRuntime,
+} from "../jones/cloud/qualifiedRuntime.ts";
+import {
+  assertQualifiedTrialBinding,
+  decodeQualifiedTrialReceipt,
+  decodeQualifiedTrialGrant,
+  type QualifiedTrialReceipt,
+  type QualifiedTrialGrant,
+} from "../jones/cloud/qualifiedStartup.ts";
 
 // Protocol 4 retains standalone executables and durably phases trials with
 // native authority fencing before rollback; launchers survive self-updates.
@@ -25,13 +35,17 @@ export interface PendingServiceUpdate {
   readonly status: "pending";
   readonly phase: "accepted" | "trial-ready";
   readonly qualified?: StagedQualifiedRuntime;
+  readonly startupReceipt?: QualifiedTrialReceipt;
 }
 
 interface LegacyPendingServiceUpdate extends Omit<PendingServiceUpdate, "phase"> {}
 
 export type ServiceUpdateRecord =
   | PendingServiceUpdate
-  | (ServerSelfUpdateOutcome & { readonly qualified?: StagedQualifiedRuntime });
+  | (ServerSelfUpdateOutcome & {
+      readonly qualified?: StagedQualifiedRuntime;
+      readonly startupReceipt?: QualifiedTrialReceipt;
+    });
 
 export interface ServiceState {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL;
@@ -44,6 +58,7 @@ export interface ServiceLauncherContext {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL | typeof LEGACY_SERVICE_LAUNCHER_PROTOCOL;
   readonly childVersion: string;
   readonly qualifiedUpdatesProtocol?: 1;
+  readonly startupGateProtocol?: 1;
   readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
 }
 
@@ -57,6 +72,8 @@ export type ServiceLauncherChildMessage =
   | {
       readonly type: "prepared";
       readonly updateId: string;
+      readonly startupGateProtocol?: 1;
+      readonly qualified?: QualifiedTrialReceipt;
     };
 
 export type ServiceLauncherParentMessage =
@@ -71,6 +88,8 @@ export type ServiceLauncherParentMessage =
   | {
       readonly type: "committed";
       readonly updateId: string;
+      readonly startupGateProtocol?: 1;
+      readonly qualified?: QualifiedTrialGrant;
     };
 
 const SEMVER_NUMBER = "(?:0|[1-9]\\d*)";
@@ -91,6 +110,19 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   const { id, fromVersion, targetVersion, status } = value;
   const qualified =
     value.qualified === undefined ? undefined : decodeStagedQualifiedRuntime(value.qualified);
+  const startupReceipt =
+    value.startupReceipt === undefined
+      ? undefined
+      : decodeQualifiedTrialReceipt(value.startupReceipt);
+  if (value.startupReceipt !== undefined) {
+    if (startupReceipt === undefined || qualified === undefined || typeof id !== "string")
+      return undefined;
+    try {
+      assertQualifiedTrialBinding({ updateId: id, qualified, receipt: startupReceipt });
+    } catch {
+      return undefined;
+    }
+  }
   if (
     value.qualified !== undefined &&
     (qualified === undefined ||
@@ -112,6 +144,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   if (status === "pending") {
     return typeof value.dbPath === "string" &&
       value.dbPath.trim() !== "" &&
+      (qualified === undefined || value.dbPath === qualified.binding.dbPath) &&
       (value.phase === "accepted" || value.phase === "trial-ready")
       ? {
           id,
@@ -121,6 +154,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
           status,
           phase: value.phase,
           ...(qualified === undefined ? {} : { qualified }),
+          ...(startupReceipt === undefined ? {} : { startupReceipt }),
         }
       : undefined;
   }
@@ -134,6 +168,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
       targetVersion,
       status,
       ...(qualified === undefined ? {} : { qualified }),
+      ...(startupReceipt === undefined ? {} : { startupReceipt }),
       ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
     };
   }
@@ -278,6 +313,7 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
     protocol: parsed.protocol,
     childVersion: parsed.childVersion,
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
+    ...(parsed.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
 }
@@ -286,6 +322,8 @@ function decodeLegacyServiceUpdate(
   value: unknown,
 ): ServiceUpdateRecord | LegacyPendingServiceUpdate | undefined {
   if (!isRecord(value)) return undefined;
+  // Legacy decoding must reject qualified context, never erase its identity and permit ID-only recovery.
+  if (value.qualified !== undefined || value.startupReceipt !== undefined) return undefined;
   if (value.status !== "pending") return decodeServiceUpdate(value);
   const { id, fromVersion, targetVersion, dbPath, status } = value;
   return typeof id === "string" &&
@@ -318,9 +356,18 @@ export function decodeServiceLauncherChildMessage(
       ...(typeof value.stagedHandle === "string" ? { stagedHandle: value.stagedHandle } : {}),
     };
   }
-  return value.type === "prepared" && typeof value.updateId === "string"
-    ? { type: value.type, updateId: value.updateId }
-    : undefined;
+  if (value.type !== "prepared" || typeof value.updateId !== "string") return undefined;
+  if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
+    const qualified = decodeQualifiedTrialReceipt(value.qualified);
+    if (
+      value.startupGateProtocol !== 1 ||
+      qualified === undefined ||
+      qualified.updateId !== value.updateId
+    )
+      return undefined;
+    return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
+  }
+  return { type: value.type, updateId: value.updateId };
 }
 
 export function decodeServiceLauncherParentMessage(
@@ -333,7 +380,16 @@ export function decodeServiceLauncherParentMessage(
   if (value.type === "update-accepted" && typeof value.updateId === "string") {
     return { type: value.type, updateId: value.updateId };
   }
-  return value.type === "committed" && typeof value.updateId === "string"
-    ? { type: value.type, updateId: value.updateId }
-    : undefined;
+  if (value.type !== "committed" || typeof value.updateId !== "string") return undefined;
+  if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
+    const qualified = decodeQualifiedTrialGrant(value.qualified);
+    if (
+      value.startupGateProtocol !== 1 ||
+      qualified === undefined ||
+      qualified.updateId !== value.updateId
+    )
+      return undefined;
+    return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
+  }
+  return { type: value.type, updateId: value.updateId };
 }

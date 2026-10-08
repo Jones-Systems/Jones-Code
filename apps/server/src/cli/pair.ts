@@ -10,6 +10,7 @@
  * HTTPS and pairs through the tailnet URL instead.
  */
 import {
+  type AuthEnvironmentScope,
   AuthStandardClientScopes,
   ExecutionEnvironmentDescriptor,
   PortSchema,
@@ -20,6 +21,8 @@ import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import {
   buildTailscaleHttpsBaseUrl,
   DEFAULT_TAILSCALE_SERVE_PORT,
+  decidePairWrite,
+  queryServeMapping,
   ensureTailscaleServe,
   readTailscaleStatus,
 } from "@t3tools/tailscale";
@@ -32,13 +35,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
-import { Command, Flag, GlobalFlag } from "effect/unstable/cli";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { Command, Flag, GlobalFlag } from "effect/cli";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
@@ -56,6 +54,7 @@ import {
   renderTerminalQrCode,
   resolveHeadlessConnectionString,
 } from "../startupAccess.ts";
+import { authScopesFlag } from "./authScopes.ts";
 import { baseDirFlag, DurationFromString } from "./config.ts";
 
 const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
@@ -120,7 +119,25 @@ export class TailscaleServeFailedError extends Schema.TaggedError<TailscaleServe
   { servePort: Schema.Number, cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return `tailscale serve failed for HTTPS port ${String(this.servePort)}. Run \`tailscale serve --https=${String(this.servePort)} --bg <local-url>\` by hand to see why.`;
+    return `tailscale serve failed for HTTPS port ${String(this.servePort)}. Inspect tailscale serve status --json and the Tailscale permissions before retrying.`;
+  }
+}
+
+export class ServePortClaimedError extends Schema.TaggedError<ServePortClaimedError>()(
+  "ServePortClaimedError",
+  { servePort: Schema.Number, reason: Schema.String },
+) {
+  override get message(): string {
+    return `Tailscale Serve HTTPS port ${String(this.servePort)} has a conflicting mapping (${this.reason}). Inspect it with tailscale serve status --json; remove only a route you own or choose another port.`;
+  }
+}
+
+export class TailscaleServeStateUnknownError extends Schema.TaggedError<TailscaleServeStateUnknownError>()(
+  "TailscaleServeStateUnknownError",
+  { servePort: Schema.Number },
+) {
+  override get message(): string {
+    return `Tailscale Serve state or effect unknown on HTTPS port ${String(this.servePort)}. No pairing token was minted. Run t3 jones host status or tailscale serve status --json before retrying.`;
   }
 }
 
@@ -197,8 +214,8 @@ const formatPairOutput = (input: {
 
 /**
  * Three outcomes, because they drive different decisions: a T3 descriptor
- * (pair with it), nothing answering (safe to configure Tailscale Serve), or
- * something answering that is not a T3 server (do NOT overwrite its mapping).
+ * (check environment identity), nothing answering, or another service.
+ * Serve configuration ownership independently determines whether a write is safe.
  */
 type EnvironmentProbeResult =
   | { readonly _tag: "descriptor"; readonly descriptor: ExecutionEnvironmentDescriptor }
@@ -217,9 +234,8 @@ const probeEnvironmentDescriptor = (
       Effect.mapError(() => ({ _tag: "unreachable" }) as const),
     );
     // Bad-gateway family means a proxy (Tailscale Serve) answered for a
-    // backend that is gone — a stale mapping, not a live occupant. Treating
-    // it as unreachable lets `t3 pair --tailscale` repair its own mapping
-    // after the server's port changed.
+    // backend that is gone. Unreachability does not prove mapping ownership;
+    // the Serve configuration guard still refuses a conflicting route.
     if (response.status === 502 || response.status === 503 || response.status === 504) {
       return { _tag: "unreachable" } as const;
     }
@@ -340,6 +356,8 @@ const makePairServerConfig = Effect.fn(function* (input: {
     startupPresentation: "headless",
     desktopBootstrapToken: undefined,
     desktopTelemetryFd: undefined,
+    desktopBrowserFd: undefined,
+    desktopBrowserControlFd: undefined,
     desktopTelemetryControlFd: undefined,
     resourceMonitorPath: undefined,
     autoBootstrapProjectFromCwd: false,
@@ -361,7 +379,7 @@ const awaitEnvironmentDescriptor = Effect.fn(function* (baseUrl: string) {
   return last;
 });
 
-const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase")(
+export const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase")(
   function* (input: { readonly target: DiscoveredPairTarget; readonly servePort: number }) {
     const notes: Array<string> = [];
     const status = yield* readTailscaleStatus.pipe(
@@ -375,42 +393,58 @@ const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase"
       servePort: input.servePort,
     });
 
-    // Only an unreachable port, or a mapping already fronting this exact
-    // environment, is safe to (re)configure. Any other responder — T3 or not
-    // — must not have its mapping silently replaced.
-    const existing = yield* probeEnvironmentDescriptor(baseUrl);
-    if (existing._tag === "descriptor") {
-      if (existing.descriptor.environmentId !== input.target.descriptor.environmentId) {
-        return yield* new ServesOtherEnvironmentError({ servePort: input.servePort });
-      }
-      // Matching environment id proves the mapping reaches this server, but
-      // not through which port: for a dev server it may front the backend
-      // (whose /.well-known also answers) while /pair only renders through
-      // the web origin. Reuse as-is for regular servers; fall through and
-      // repoint our own mapping at the web port for dev servers.
-      if (input.target.state.devUrl === undefined) {
-        return { baseUrl, notes };
-      }
-    }
-    if (existing._tag === "not-a-t3-server") {
-      return yield* new ServePortOccupiedError({ servePort: input.servePort });
-    }
-
     const localTarget = resolveTailscaleLocalTarget(input.target.state);
     if (isDevServerNotProxiableError(localTarget)) {
       return yield* localTarget;
     }
+    const claim = {
+      servePort: input.servePort,
+      expectedTarget: `http://${localTarget.localHost ?? "127.0.0.1"}:${String(localTarget.localPort)}`,
+    };
+    const mapping = yield* queryServeMapping(claim);
+    if (mapping._tag === "unknown") {
+      return yield* new TailscaleServeStateUnknownError({ servePort: input.servePort });
+    }
+    const existing = yield* probeEnvironmentDescriptor(baseUrl);
+    const sameEnvironment =
+      existing._tag === "descriptor" &&
+      existing.descriptor.environmentId === input.target.descriptor.environmentId;
+    // Only dev web-port repointing may use descriptor proof to replace another target.
+    const decision = decidePairWrite(
+      mapping,
+      input.target.state.devUrl !== undefined && sameEnvironment,
+    );
+    if (typeof decision === "object") {
+      return yield* new ServePortClaimedError({
+        servePort: input.servePort,
+        reason: mapping._tag === "conflicting" ? mapping.reason : mapping._tag,
+      });
+    }
+    if (existing._tag === "descriptor" && !sameEnvironment) {
+      return yield* new ServesOtherEnvironmentError({ servePort: input.servePort });
+    }
+    if (existing._tag === "not-a-t3-server") {
+      return yield* new ServePortOccupiedError({ servePort: input.servePort });
+    }
+    if (decision === "reuse") return { baseUrl, notes };
+
     yield* ensureTailscaleServe({
       localPort: localTarget.localPort,
       servePort: input.servePort,
       ...(localTarget.localHost !== undefined ? { localHost: localTarget.localHost } : {}),
     }).pipe(
-      Effect.mapError(
-        (cause) => new TailscaleServeFailedError({ servePort: input.servePort, cause }),
+      Effect.mapError((cause) =>
+        cause._tag === "TailscaleCommandTimeoutError"
+          ? new TailscaleServeStateUnknownError({ servePort: input.servePort })
+          : new TailscaleServeFailedError({ servePort: input.servePort, cause }),
       ),
     );
+    const readback = yield* queryServeMapping(claim);
+    if (readback._tag !== "exact") {
+      return yield* new TailscaleServeStateUnknownError({ servePort: input.servePort });
+    }
     notes.push(
-      `Tailscale Serve now maps ${baseUrl} to this server and persists across restarts. Remove it with \`tailscale serve --https=${String(input.servePort)} off\`.`,
+      `Tailscale Serve now maps ${baseUrl} to this server and persists across restarts. Inspect ownership before removing it; Jones host routes can be removed with t3 jones host route-remove --base-dir <base-dir>.`,
     );
 
     const probed = yield* awaitEnvironmentDescriptor(baseUrl);
@@ -429,20 +463,21 @@ const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase"
 
 const mintPairingLink = Effect.fn("pair.mintPairingLink")(function* (input: {
   readonly config: ServerConfig.ServerConfig["Service"];
+  readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
   readonly ttl: Option.Option<Duration.Duration>;
   readonly label: Option.Option<string>;
 }) {
   return yield* Effect.gen(function* () {
     const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
     return yield* environmentAuth.createPairingLink({
-      scopes: AuthStandardClientScopes,
+      scopes: input.scopes,
       subject: "one-time-token",
       label: Option.getOrElse(input.label, () => "t3 pair"),
       ...(Option.isSome(input.ttl) ? { ttl: input.ttl.value } : {}),
     });
   }).pipe(
     Effect.provide(
-      EnvironmentAuth.runtimeLayer.pipe(
+      EnvironmentAuth.layerRuntime.pipe(
         Layer.provide(ServerConfig.layer(input.config)),
         Layer.provide(Layer.succeed(References.MinimumLogLevel, input.config.logLevel)),
       ),
@@ -478,6 +513,7 @@ const tailscaleServePortFlag = Flag.Int("tailscale-serve-port").pipe(
 
 export const pairCommand = Command.make("pair", {
   baseDir: baseDirFlag,
+  scopes: authScopesFlag(AuthStandardClientScopes),
   ttl: ttlFlag,
   label: labelFlag,
   tailscale: tailscaleFlag,
@@ -519,7 +555,12 @@ export const pairCommand = Command.make("pair", {
       }
 
       const config = yield* makePairServerConfig({ target, logLevel });
-      const issued = yield* mintPairingLink({ config, ttl: flags.ttl, label: flags.label });
+      const issued = yield* mintPairingLink({
+        config,
+        scopes: flags.scopes,
+        ttl: flags.ttl,
+        label: flags.label,
+      });
       const pairingUrl = buildPairingUrl(pairingBaseUrl, issued.credential);
 
       yield* Console.log(

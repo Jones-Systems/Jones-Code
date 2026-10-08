@@ -15,13 +15,12 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderUsageLimitsUpdate } from "./providerUsageLimits.ts";
-import { ObservedRuntimeIdentity, ProviderApprovalOption } from "./orchestration.ts";
+import { ProviderApprovalOption } from "./providerPolicy.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
 
 const RuntimeEventRawSource = Schema.Union([
-  Schema.Literal("codex.app-server.response"),
   Schema.Literal("codex.app-server.notification"),
   Schema.Literal("codex.app-server.request"),
   Schema.Literal("codex.eventmsg"),
@@ -29,7 +28,6 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("claude.sdk.permission"),
   Schema.Literal("codex.sdk.thread-event"),
   Schema.Literal("opencode.sdk.event"),
-  Schema.Literal("t3.provider-service.recovery"),
   Schema.Literal("acp.jsonrpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
@@ -208,7 +206,6 @@ const ProviderRuntimeEventBase = Schema.Struct({
   // for the routing-key-vs-driver-id distinction. Once every emitter
   // populates it (post-slice-4), routing flips to instance-id-only.
   providerInstanceId: Schema.optional(ProviderInstanceId),
-  runtimeGeneration: Schema.optional(TrimmedNonEmptyStringSchema),
   threadId: ThreadId,
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),
@@ -227,8 +224,6 @@ export type SessionStartedPayload = typeof SessionStartedPayload.Type;
 
 const SessionConfiguredPayload = Schema.Struct({
   config: UnknownRecordSchema,
-  /** Provider-attested fields only; requested configuration is not observation. */
-  identity: Schema.optional(ObservedRuntimeIdentity),
 });
 export type SessionConfiguredPayload = typeof SessionConfiguredPayload.Type;
 
@@ -282,6 +277,12 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   durationMs: Schema.optional(NonNegativeInt),
   compactsAutomatically: Schema.optional(Schema.Boolean),
   autoCompactThreshold: Schema.optional(PositiveInt),
+  cost: Schema.optional(
+    Schema.Struct({
+      amount: Schema.Number.check(Schema.isFinite()),
+      currency: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(32)),
+    }),
+  ),
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 
@@ -540,43 +541,6 @@ export const TaskRunHandles = Schema.Struct({
 export type TaskRunHandles = typeof TaskRunHandles.Type;
 
 /**
- * Watch-loop task types: Monitor-tool tasks plus background shells (a shell
- * that outlives its turn is in practice a watch loop). Canonical single copy —
- * the server liveness registry, ingestion's agentKind stamp, and the client
- * fold's legacy fallback all classify with these sets.
- */
-export const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
-  "monitor",
-  "monitor_mcp",
-  "local_bash",
-  "shell",
-]);
-/** Task types that are neither agents nor watch loops (plan-mode bookkeeping). */
-export const INERT_TASK_TYPES: ReadonlySet<string> = new Set(["plan", "dream"]);
-
-/**
- * Agent-vs-background classification, stamped by ingestion as `agentKind` so
- * persisted rows are self-describing. A deliberate denylist: the SDK's
- * agent-flavored type names drift (subagent, local_agent, local_workflow, …)
- * and an allowlist silently dropped real subagents when "local_agent"
- * appeared. A task launched from inside a subagent (agentId set) is
- * agent-internal background work UNLESS it is itself agent-flavored — a
- * nested agent can outlive its parent and stays in the roster.
- */
-export function classifyTaskAgentKind(input: {
-  readonly taskType?: string | undefined;
-  readonly agentId?: string | undefined;
-}): "agent" | "background" {
-  const { taskType, agentId } = input;
-  const nonAgentType =
-    taskType !== undefined && (MONITOR_TASK_TYPES.has(taskType) || INERT_TASK_TYPES.has(taskType));
-  if (agentId !== undefined && agentId.trim().length > 0) {
-    return taskType === undefined || nonAgentType ? "background" : "agent";
-  }
-  return nonAgentType ? "background" : "agent";
-}
-
-/**
  * Optional agent-identity linkage carried on every task lifecycle payload.
  * Repeated on progress and terminal rows (not just start) so client folds can
  * reconstruct an agent even when its start row aged out of activity retention.
@@ -587,7 +551,7 @@ const taskAgentLinkageFields = {
    * every row so folds can classify without the start row. */
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
   /**
-   * Server-stamped classification (classifyTaskAgentKind at ingestion).
+   * Server-stamped classification, set at ingestion.
    * Clients trust this stamp outright; rows without it (legacy, pre-stamp)
    * fall back to client-side heuristics.
    */

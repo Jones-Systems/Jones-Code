@@ -7,6 +7,7 @@ import {
   type AuthClientSession,
   type AuthEnvironmentScope,
   type ClientSurface,
+  RuntimeMode,
   type ServerAuthSessionMethod,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -58,6 +59,8 @@ export interface VerifiedSession {
   readonly subject: string;
   readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
   readonly proofKeyThumbprint?: string;
+  /** The most an MCP client approved through OAuth may hand to the threads it drives. */
+  readonly runtimeModeCeiling?: RuntimeMode;
 }
 
 export type SessionCredentialChange =
@@ -374,15 +377,15 @@ export class SessionStore extends Context.Service<
       readonly scopes?: ReadonlyArray<AuthEnvironmentScope>;
       readonly client?: AuthClientMetadata;
       readonly proofKeyThumbprint?: string;
+      readonly runtimeModeCeiling?: RuntimeMode;
       /**
        * Atomically revoke active sessions with the same subject and method
        * before storing this session.
        */
       readonly replaceActiveForSubjectAndMethod?: boolean;
+      /** Replace only this session, of the same method, in the issuance transaction. */
+      readonly replaceSessionId?: AuthSessionId;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
-    readonly materializeReservedBearerSession: (
-      expected: AuthSessions.CreateAuthSessionInput,
-    ) => Effect.Effect<IssuedSession, SessionCredentialIssueError>;
     readonly verify: (token: string) => Effect.Effect<VerifiedSession, SessionCredentialError>;
     readonly issueWebSocketToken: (
       sessionId: AuthSessionId,
@@ -425,117 +428,20 @@ export class SessionStore extends Context.Service<
 const SIGNING_SECRET_NAME = "server-signing-key";
 const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
+
 const SessionClaims = Schema.Struct({
-  v: Schema.Literal(1),
+  v: Schema.Literals([1, 2]),
   kind: Schema.Literal("session"),
   sid: AuthSessionId,
   sub: Schema.String,
   scopes: AuthEnvironmentScopes,
   method: Schema.Literals(["browser-session-cookie", "bearer-access-token", "dpop-access-token"]),
   jkt: Schema.optionalKey(Schema.String),
+  rtc: Schema.optionalKey(RuntimeMode),
   iat: Schema.Number,
   exp: Schema.Number,
 });
 type SessionClaims = typeof SessionClaims.Type;
-
-const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
-const encodeSessionToken = (claims: SessionClaims, signingSecret: Uint8Array) =>
-  encodeClaims(claims).pipe(
-    Effect.map(base64UrlEncode),
-    Effect.mapError(
-      (cause) =>
-        new SessionCredentialIssueError({
-          sessionId: claims.sid,
-          cause: new SessionClaimsEncodingError({
-            sessionId: claims.sid,
-            operation: "encode_session_claims",
-            cause,
-          }),
-        }),
-    ),
-    Effect.map((payload) => `${payload}.${signPayload(payload, signingSecret)}`),
-  );
-
-export const matchesReservedAuthSession = (
-  record: AuthSessions.AuthSessionRecord,
-  expected: AuthSessions.CreateAuthSessionInput,
-): boolean =>
-  record.sessionId === expected.sessionId &&
-  record.subject === expected.subject &&
-  record.method === expected.method &&
-  JSON.stringify(record.scopes) === JSON.stringify(expected.scopes) &&
-  record.issuedAt.epochMilliseconds === expected.issuedAt.epochMilliseconds &&
-  record.expiresAt.epochMilliseconds === expected.expiresAt.epochMilliseconds &&
-  record.client.label === expected.client.label &&
-  record.client.ipAddress === expected.client.ipAddress &&
-  record.client.userAgent === expected.client.userAgent &&
-  record.client.deviceType === expected.client.deviceType &&
-  record.client.os === expected.client.os &&
-  record.client.browser === expected.client.browser;
-
-const reservedBearerMaterializer =
-  (
-    authSessions: AuthSessions.AuthSessionRepository["Service"],
-    signingSecret: Uint8Array,
-  ): SessionStore["Service"]["materializeReservedBearerSession"] =>
-  (expected) =>
-    Effect.gen(function* () {
-      const row = yield* authSessions
-        .getById({ sessionId: expected.sessionId })
-        .pipe(
-          Effect.mapError(
-            (cause) => new SessionCredentialIssueError({ sessionId: expected.sessionId, cause }),
-          ),
-        );
-      const now = yield* DateTime.now;
-      if (
-        expected.method !== "bearer-access-token" ||
-        Option.isNone(row) ||
-        row.value.revokedAt !== null ||
-        !matchesReservedAuthSession(row.value, expected) ||
-        expected.issuedAt.epochMilliseconds > now.epochMilliseconds ||
-        expected.expiresAt.epochMilliseconds <= now.epochMilliseconds ||
-        expected.expiresAt.epochMilliseconds <= expected.issuedAt.epochMilliseconds
-      ) {
-        return yield* new SessionCredentialIssueError({
-          sessionId: expected.sessionId,
-          cause: "reserved_session_mismatch",
-        });
-      }
-      const token = yield* encodeSessionToken(
-        {
-          v: 1,
-          kind: "session",
-          sid: expected.sessionId,
-          sub: expected.subject,
-          scopes: expected.scopes,
-          method: "bearer-access-token",
-          iat: expected.issuedAt.epochMilliseconds,
-          exp: expected.expiresAt.epochMilliseconds,
-        },
-        signingSecret,
-      );
-      return {
-        sessionId: expected.sessionId,
-        token,
-        method: "bearer-access-token",
-        client: toClientMetadata(expected.client),
-        expiresAt: expected.expiresAt,
-        scopes: expected.scopes,
-      } satisfies IssuedSession;
-    });
-
-// Enrollment must read an existing key; normal SessionStore startup still owns key creation.
-export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
-  const authSessions = yield* AuthSessions.AuthSessionRepository;
-  const secrets = yield* ServerSecretStore.ServerSecretStore;
-  const secret = yield* secrets
-    .get(SIGNING_SECRET_NAME)
-    .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause })));
-  if (Option.isNone(secret) || secret.value.byteLength !== 32)
-    return yield* new SessionCredentialIssueError({ cause: "signing_key_missing" });
-  return reservedBearerMaterializer(authSessions, secret.value);
-});
 
 const WebSocketClaims = Schema.Struct({
   v: Schema.Literal(1),
@@ -579,6 +485,23 @@ function toAuthClientSession(input: Omit<AuthClientSession, "current">): AuthCli
     current: false,
   };
 }
+
+export const matchesReservedAuthSession = (
+  record: AuthSessions.AuthSessionRecord,
+  expected: AuthSessions.CreateAuthSessionInput,
+): boolean =>
+  record.sessionId === expected.sessionId &&
+  record.subject === expected.subject &&
+  record.method === expected.method &&
+  JSON.stringify(record.scopes) === JSON.stringify(expected.scopes) &&
+  record.issuedAt.epochMilliseconds === expected.issuedAt.epochMilliseconds &&
+  record.expiresAt.epochMilliseconds === expected.expiresAt.epochMilliseconds &&
+  record.client.label === expected.client.label &&
+  record.client.ipAddress === expected.client.ipAddress &&
+  record.client.userAgent === expected.client.userAgent &&
+  record.client.deviceType === expected.client.deviceType &&
+  record.client.os === expected.client.os &&
+  record.client.browser === expected.client.browser;
 
 export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
@@ -747,6 +670,7 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markDisconnected"),
     );
 
+  const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
   const issue: SessionStore["Service"]["issue"] = Effect.fn("SessionStore.issue")(
     function* (input) {
       const sessionId = AuthSessionId.make(
@@ -766,11 +690,26 @@ export const make = Effect.gen(function* () {
         scopes: input?.scopes ?? AuthStandardClientScopes,
         method: input?.method ?? "browser-session-cookie",
         ...(input?.proofKeyThumbprint ? { jkt: input.proofKeyThumbprint } : {}),
+        ...(input?.runtimeModeCeiling ? { rtc: input.runtimeModeCeiling } : {}),
         iat: issuedAt.epochMilliseconds,
         exp: expiresAt.epochMilliseconds,
       };
 
-      const token = yield* encodeSessionToken(claims, signingSecret);
+      const encodedPayload = yield* encodeClaims(claims).pipe(
+        Effect.map(base64UrlEncode),
+        Effect.mapError(
+          (cause) =>
+            new SessionCredentialIssueError({
+              sessionId,
+              cause: new SessionClaimsEncodingError({
+                sessionId,
+                operation: "encode_session_claims",
+                cause,
+              }),
+            }),
+        ),
+      );
+      const signature = signPayload(encodedPayload, signingSecret);
       const client = input?.client ?? createDefaultClientMetadata();
       const sessionRecord = {
         sessionId,
@@ -789,8 +728,14 @@ export const make = Effect.gen(function* () {
         expiresAt,
       } satisfies AuthSessions.CreateAuthSessionInput;
       const replacedSessionIds = yield* (
-        input?.replaceActiveForSubjectAndMethod
-          ? authSessions.createReplacingActive({ session: sessionRecord, revokedAt: issuedAt })
+        input?.replaceSessionId !== undefined || input?.replaceActiveForSubjectAndMethod
+          ? authSessions.createReplacingActive({
+              session: sessionRecord,
+              revokedAt: issuedAt,
+              ...(input.replaceSessionId !== undefined
+                ? { replaceSessionId: input.replaceSessionId }
+                : {}),
+            })
           : authSessions.create(sessionRecord).pipe(Effect.as([] as ReadonlyArray<AuthSessionId>))
       ).pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })));
       if (replacedSessionIds.length > 0) {
@@ -822,7 +767,7 @@ export const make = Effect.gen(function* () {
 
       return {
         sessionId,
-        token,
+        token: `${encodedPayload}.${signature}`,
         method: claims.method,
         client,
         expiresAt: expiresAt,
@@ -926,6 +871,7 @@ export const make = Effect.gen(function* () {
         subject: claims.sub,
         scopes: claims.scopes,
         ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
+        ...(claims.rtc ? { runtimeModeCeiling: claims.rtc } : {}),
       } satisfies VerifiedSession;
     },
   );
@@ -1122,7 +1068,6 @@ export const make = Effect.gen(function* () {
     cookieName,
     legacyCookieName,
     issue,
-    materializeReservedBearerSession: reservedBearerMaterializer(authSessions, signingSecret),
     verify,
     issueWebSocketToken,
     verifyWebSocketToken,

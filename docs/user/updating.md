@@ -21,20 +21,20 @@ interrupted, and threads without saved provider resume state need a new message.
 If you previously enabled continuation for updates, enable this setting once
 to allow recovery without a connected client.
 
-## Jones main builds
+Updates from the previous orchestration system preserve conversation transcripts but cannot carry
+every kind of runtime history forward. Read [Threads from older T3 Code versions](./thread-migration.md)
+before continuing an important older thread.
 
-Jones preview installations check periodically for fresh, qualified builds from
-Jones Code's main branch. In **Settings → Connections**, use the controls for
-the machine you want to update. On mobile, open that environment in Settings.
-**Download** verifies and stages the selected build while the current app or
-server continues running. **Install** activates that fixed downloaded build and
-restarts its host. A newer check does not change the build selected for Install.
+## When versions don't match
 
-These builds come from GitHub Actions artifacts. If a build is still running,
-has expired, or GitHub access is unavailable, the controls explain the current
-state. A host that reports a required launcher bootstrap must be enrolled locally
-before installation. The Mac headless server uses the qualified Mac build;
-it preserves its own server home and does not use a desktop client profile.
+A client and server must speak the same orchestration protocol. If they do not, the connection is
+refused rather than running half-upgraded:
+
+- An app newer than the server is blocked before connecting, with a notice telling you to update
+  T3 Code on the machine named in the notice.
+- A server newer than your app refuses the connection with an update message.
+
+Update the side the notice names, then reconnect.
 
 ## Update a connected server
 
@@ -44,7 +44,8 @@ The offered action depends on how the server runs:
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Update server**          | Keep the client open while it installs and reconnects. Supported background services update remotely. For a desktop-hosted server, this also closes and relaunches the desktop app on the host. |
 | **Update the desktop app** | Update the desktop app on the machine running the server, then reopen it if needed.                                                                                                             |
-| **Copy update command**    | Stop the command-line server on its host and relaunch with the copied command, keeping your usual startup options.                                                                              |
+| **Copy update command**    | Run the command on the named host to update the detected global npm install, then restart the server with your usual options.                                                                   |
+| **Copy relaunch command**  | Stop the command-line server on its host and relaunch with the copied command, keeping your usual subcommand and options. This does not update an installed `t3` command.                       |
 
 On the host, run:
 

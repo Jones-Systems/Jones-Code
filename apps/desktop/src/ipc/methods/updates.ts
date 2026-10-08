@@ -47,8 +47,9 @@ export const installUpdate = DesktopIpc.makeIpcMethod({
   result: DesktopUpdateActionResultSchema,
   handler: Effect.fn("desktop.ipc.updates.install")(function* (stagedHandle) {
     const updates = yield* DesktopUpdates.DesktopUpdates;
-    if (stagedHandle !== undefined && updates.installStaged !== undefined) {
-      return yield* updates.installStaged(stagedHandle);
+    if (stagedHandle !== undefined) {
+      if (updates.installStaged !== undefined) return yield* updates.installStaged(stagedHandle);
+      return { accepted: false, completed: false, state: yield* updates.getState };
     }
     return yield* updates.install;
   }),

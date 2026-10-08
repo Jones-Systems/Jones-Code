@@ -1,7 +1,6 @@
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { WorktreeOwnershipConflictError } from "./worktreeOwnership.ts";
 
 /**
  * Client-side id for the first shell opened on a thread. Ids are uniformly
@@ -60,6 +59,9 @@ export const TerminalAttachInput = Schema.Struct({
   restartIfNotRunning: Schema.optional(Schema.Boolean),
 });
 export type TerminalAttachInput = typeof TerminalAttachInput.Type;
+
+export const TerminalObserveInput = TerminalSessionInput;
+export type TerminalObserveInput = Schema.Codec.Encoded<typeof TerminalObserveInput>;
 
 export const TerminalWriteInput = Schema.Struct({
   ...TerminalSessionInput.fields,
@@ -369,18 +371,6 @@ export class TerminalResizeError extends Schema.TaggedError<TerminalResizeError>
   }
 }
 
-export class TerminalOwnershipError extends Schema.TaggedError<TerminalOwnershipError>()(
-  "TerminalOwnershipError",
-  {
-    threadId: Schema.String,
-    cause: Schema.Defect(),
-  },
-) {
-  override get message() {
-    return `Failed to acquire checkout ownership for terminal thread: ${this.threadId}`;
-  }
-}
-
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,
@@ -390,7 +380,5 @@ export const TerminalError = Schema.Union([
   TerminalNotRunningError,
   TerminalWriteError,
   TerminalResizeError,
-  TerminalOwnershipError,
-  WorktreeOwnershipConflictError,
 ]);
 export type TerminalError = typeof TerminalError.Type;
