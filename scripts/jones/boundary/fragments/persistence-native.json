@@ -5,7 +5,13 @@
     "apps/server/src/jones/persistence/",
     "apps/server/src/jones/nativeCreation/"
   ],
-  "hookPaths": ["apps/server/src/persistence/Migrations.ts"],
+  "hookPaths": [
+    "apps/server/src/persistence/Migrations.ts",
+    "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EffectWorker.ts",
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts"
+  ],
   "tombstones": [
     "apps/server/src/persistence/JonesMigrationGuard.ts",
     "apps/server/src/persistence/Migrations.test.ts",
@@ -28,6 +34,86 @@
     {
       "from": "apps/server/src/persistence/Migrations.ts",
       "to": "apps/server/src/jones/persistence/JonesMigrations.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepository.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationWorkspaceTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationStageDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepository.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/nativeCreation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderAdapter.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationRepositorySqlite.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
     }
   ]
 }

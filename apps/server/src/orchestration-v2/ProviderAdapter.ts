@@ -1,3 +1,5 @@
+import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
+import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
@@ -49,6 +51,7 @@ import type {
   ProviderSelectionTransitionInput,
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
+import type { ProviderEventProducerOrigin } from "../jones/orchestration/ProviderEventOrigin.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
@@ -428,6 +431,7 @@ export interface ProviderRuntimeLifecycle {
     readonly runtimeGeneration: string;
     readonly requested: RequestedRuntimeIdentity;
     readonly observed: ObservedRuntimeIdentity;
+    readonly producerOrigin?: ProviderEventProducerOrigin;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
   readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly invalidate: (
@@ -506,6 +510,7 @@ export function identityForRequest(
 }
 
 export interface ProviderAdapterV2OpenSessionInput {
+  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly runtimeLifecycle?: ProviderRuntimeLifecycle;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
@@ -519,6 +524,7 @@ export interface ProviderAdapterV2OpenSessionInput {
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {
+  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly threadId: ThreadId;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
@@ -527,6 +533,8 @@ export interface ProviderAdapterV2EnsureThreadInput {
 }
 
 export interface ProviderAdapterV2TurnInput {
+  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
+  readonly revalidateStartAdmission?: Effect.Effect<void, ProviderAdapterV2Error>;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -616,7 +624,17 @@ export interface ProviderAdapterV2HistoricalContext {
   readonly context: string;
 }
 
+export interface CapturedRuntimeStop {
+  readonly binding: ProviderRuntimeBinding;
+  readonly evidenceRevision: number;
+  readonly isCurrent: Effect.Effect<boolean>;
+  readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
+}
 export interface ProviderAdapterV2SessionRuntime {
+  readonly captureRuntimeStop?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<CapturedRuntimeStop | null, ProviderAdapterV2Error>;
+  readonly eventOriginMode?: "captured";
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
@@ -634,6 +652,9 @@ export interface ProviderAdapterV2SessionRuntime {
    * here so the session manager defers idle release while it is pending.
    */
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+  readonly readThreadActivity?: (
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<RuntimeObservation.ProviderRuntimeObservation>;
   /**
    * Per-provider-thread pending work for root-run ingestion stop gates. When
    * present, RunExecutionService uses only this probe (never the session-wide
@@ -717,6 +738,7 @@ export interface ProviderAdapterV2SessionRuntime {
 }
 
 export interface ProviderAdapterV2Shape {
+  readonly nativeCreationExecution?: boolean;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly getCapabilities: () => Effect.Effect<

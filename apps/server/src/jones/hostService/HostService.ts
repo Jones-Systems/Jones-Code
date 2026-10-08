@@ -33,7 +33,14 @@ import * as ProcessRunner from "../../processRunner.ts";
 import { isProcessAlive, PersistedServerRuntimeState } from "../../serverRuntimeState.ts";
 import * as HostServiceConfig from "./HostServiceConfig.ts";
 import { JONES_BOOT_SERVICE_IDENTITY } from "./identity.ts";
-import type { JonesRuntimeProvenance } from "./artifactVerification.ts";
+import {
+  decodeJonesArtifactMetadata,
+  type JonesRuntimeProvenance,
+} from "./artifactVerification.ts";
+import {
+  assertPrivateServiceRuntimeOwnership,
+  verifyPrivateServiceRuntimeCache,
+} from "./privateRuntime.ts";
 
 export class HostServiceError extends Schema.TaggedError<HostServiceError>()("HostServiceError", {
   operation: Schema.String,
@@ -200,6 +207,7 @@ const make = Effect.gen(function* () {
       logsDir: path.join(baseDir, "userdata", "logs"),
       cliVersion: packageJson.version,
       allowEnableLinger,
+      runtimeMode: "verified-private-artifact",
     });
   const bootStatus = (baseDir: string) =>
     Effect.flatMap(BootService.BootService, (service) => service.status).pipe(
@@ -268,6 +276,22 @@ const make = Effect.gen(function* () {
       "stage-runtime",
       Effect.gen(function* () {
         yield* validateBase(input.baseDir);
+        const metadata = yield* decodeJonesArtifactMetadata(
+          yield* fs.readFileString(path.join(input.artifactDir, "ARTIFACT.json")),
+        );
+        const cacheInput = {
+          baseDir: input.baseDir,
+          version: metadata.version,
+          fs,
+          path,
+          runner,
+          platform,
+          arch,
+        };
+        const activeVersion = yield* assertPrivateServiceRuntimeOwnership(cacheInput);
+        if (activeVersion !== undefined) {
+          yield* verifyPrivateServiceRuntimeCache({ ...cacheInput, version: activeVersion });
+        }
         return yield* PinnedRuntime.installPinnedRuntimeFromLocalArchive({
           ...input,
           fs,
@@ -481,6 +505,26 @@ const make = Effect.gen(function* () {
         const effectPlan = yield* plan(input);
         if (input.dryRun) return { state: "dry-run", plan: effectPlan, warnings: [] };
         const before = yield* bootStatus(input.baseDir);
+        const privateRuntimeInput = {
+          baseDir: input.baseDir,
+          version: packageJson.version,
+          activeVersion: before.installedVersion,
+          fs,
+          path,
+          runner,
+          platform,
+          arch,
+        };
+        yield* assertPrivateServiceRuntimeOwnership(privateRuntimeInput);
+        if (
+          before.installedVersion !== undefined &&
+          before.installedVersion !== packageJson.version
+        ) {
+          yield* verifyPrivateServiceRuntimeCache({
+            ...privateRuntimeInput,
+            version: before.installedVersion,
+          });
+        }
         if (!before.supported)
           return yield* new HostServiceError({
             operation: "setup",
@@ -590,6 +634,7 @@ const make = Effect.gen(function* () {
                 "Runtime installation is incomplete; run t3 jones host stage-runtime with an approved artifact.",
             });
         }
+        yield* verifyPrivateServiceRuntimeCache(privateRuntimeInput);
         const awaitingLogin =
           platform === "darwin" && (yield* consoleLogin) === "gui-login-required";
         yield* config.write(input.baseDir, effectPlan.config);

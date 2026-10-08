@@ -4,6 +4,7 @@ import {
   CommandId,
   EventId,
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   ProjectId,
   ThreadId,
@@ -279,3 +280,16 @@ export const NativeCreationObservation = nativeCreationStruct({
   outcome: Schema.Literals(["complete", "in_progress", "incomplete", "unknown"]),
 });
 export type NativeCreationObservation = typeof NativeCreationObservation.Type;
+
+export const NativeBootstrapDispatchResultV2 = nativeCreationStruct({
+  version: Schema.Literal(2),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  commandAcceptance: Schema.Literal("accepted"),
+});
+export type NativeBootstrapDispatchResultV2 = typeof NativeBootstrapDispatchResultV2.Type;
+export class NativeBootstrapDispatchError extends Schema.TaggedError<NativeBootstrapDispatchError>()(
+  "NativeBootstrapDispatchError",
+  { code: NativeCreationRejectionCode, message: Schema.String },
+) {}

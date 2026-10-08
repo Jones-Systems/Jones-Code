@@ -16,14 +16,43 @@ import {
   HostProcessWorkingDirectory,
 } from "@t3tools/shared/hostProcess";
 
+import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
   isJonesBootServiceCgroup,
+  assertReleaseUpdateAllowed,
   repointLauncher,
   resolveLauncherPath,
   resolveNewestVersion,
 } from "./update.ts";
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
+  it.effect("refuses version-only updates of a preview or desktop-owned home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-qualified-update-" });
+      assert.equal(
+        (yield* assertReleaseUpdateAllowed(root, "0.0.44-preview.20261002.101.2").pipe(Effect.flip))
+          ._tag,
+        "CliUpdateError",
+      );
+      yield* assertReleaseUpdateAllowed(root, "0.0.44");
+      yield* fs.makeDirectory(path.join(root, "runtime"));
+      yield* fs.writeFileString(
+        path.join(root, "runtime", "service-state.json"),
+        `{"protocol":${SERVICE_LAUNCHER_PROTOCOL},"activeVersion":"0.0.44-preview.20261002.101.2"}`,
+      );
+      assert.equal(
+        (yield* assertReleaseUpdateAllowed(root, "0.0.44").pipe(Effect.flip))._tag,
+        "CliUpdateError",
+      );
+      yield* fs.writeFileString(path.join(root, "runtime", "jones-active-install.json"), "{}");
+      assert.equal(
+        (yield* assertReleaseUpdateAllowed(root, "0.0.44").pipe(Effect.flip))._tag,
+        "CliUpdateError",
+      );
+    }).pipe(Effect.scoped),
+  );
   it.effect("repoints a symlink that lives in a runtime versions tree", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -122,7 +122,19 @@ describe("receiving V2 synthetic fixtures", () => {
           invalidEventLinks: 0,
         });
         NodeAssert.equal(result.capture?.tables.orchestration_events?.count, 21);
-        NodeAssert.equal(result.capture?.ledgers.jones_sql_migrations?.length, 6);
+        NodeAssert.deepEqual(result.capture?.ledgers.jones_sql_migrations, [
+          { id: 1, name: "WorktreeOwnershipLeases" },
+          { id: 2, name: "ProjectionThreadRuntimeIdentity" },
+          { id: 3, name: "NativeCreationIntents" },
+          { id: 4, name: "NativeCreationCommandIdentities" },
+          { id: 5, name: "WorkstreamsNativeAttempts" },
+          { id: 6, name: "WorkstreamsProviderEnrollments" },
+          { id: 100, name: "NativeCreationExecution" },
+          { id: 101, name: "NativeWorkspacePreparation" },
+          { id: 102, name: "ImportedHistoryChoices" },
+          { id: 103, name: "RuntimeStop" },
+          { id: 104, name: "DeletionAdmission" },
+        ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);
         NodeAssert.equal(result.capture?.profile.productionObservations.length, 5);

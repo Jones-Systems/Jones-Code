@@ -1,6 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  IsoDateTime,
+  OrchestrationV2Command,
   NativeCreationHistoricalBinding,
   ThreadId,
   EventId,
@@ -15,6 +17,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import migration from "../persistence/Migrations/003_JonesNativeCreationIntents.ts";
+import * as Repository from "./NativeCreationRepository.ts";
+import { NativeCreationExecutionReferenceV2 } from "./NativeCreationExecutionTypes.ts";
 import * as RepositorySqlite from "./NativeCreationRepositorySqlite.ts";
 
 import * as Authority from "./NativeCreationAuthority.ts";
@@ -373,5 +377,203 @@ it.effect("unknown native enrollment lookup denies through the authority port", 
         ),
       ),
     );
+  }),
+);
+
+it.effect("rejects forged contexts and unavailable durable execution storage", () =>
+  Effect.gen(function* () {
+    const value = yield* fixture;
+    const forged = Object.freeze({}) as Authority.NativeCreationExecutionContextV2;
+    assert.strictEqual(Authority.getNativeCreationExecutionReference(forged), null);
+    const rejection = yield* Authority.authorizeNativeCreationExecution(forged, {
+      stage: "native_command",
+      resources: value.resources,
+    }).pipe(Effect.flip);
+    assert.strictEqual(rejection.code, "unsupported_authority");
+    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+      version: 2,
+      claimId: "fixture-claim",
+      stageCommandId: "fixture-command",
+      effectId: "fixture-effect",
+      stage: "native_command",
+    });
+    const result = yield* Effect.gen(function* () {
+      const authority = yield* Authority.NativeCreationAuthority;
+      assert.isDefined(authority.issueExecution);
+      return yield* authority.issueExecution!({
+        reference,
+        timestamp: "2026-10-02T12:34:56Z",
+      }).pipe(Effect.flip);
+    }).pipe(
+      Effect.provide(
+        Authority.NativeCreationAuthorityUnavailable.pipe(
+          Layer.provide(repositoryLayer),
+          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+        ),
+      ),
+    );
+    assert.strictEqual(result.code, "unresolved_claim");
+  }),
+);
+
+it.effect("issues only after a matching durable start and rechecks revoked authority", () =>
+  Effect.gen(function* () {
+    const value = yield* fixture;
+    let revoked = false;
+    let starts = 0;
+    let mismatchedStart = false;
+    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+      version: 2,
+      claimId: "fixture-claim",
+      stageCommandId: "fixture-command",
+      effectId: "fixture-effect",
+      stage: "native_command",
+    });
+    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+      type: "thread.create",
+      createdBy: "system",
+      creationSource: "server",
+      commandId: "fixture-command",
+      threadId: value.preparation.command.threadId,
+      projectId: value.historical.projectId,
+      title: "Synthetic thread",
+      modelSelection: value.historical.providerModelSelection,
+      runtimeMode: value.historical.runtimeMode,
+      interactionMode: value.historical.interactionMode,
+      branch: value.resources.branch,
+      worktreePath: value.resources.worktreePath,
+    });
+    const executionOwner = Layer.effect(
+      Repository.NativeCreationRepository,
+      Effect.gen(function* () {
+        const existing = yield* Repository.NativeCreationRepository;
+        return Repository.NativeCreationRepository.of({
+          ...existing,
+          hasAutomationEnrollment: () => Effect.succeed(true),
+          readExecutionReference: () =>
+            Effect.gen(function* () {
+              return {
+                history: {
+                  intent: yield* Schema.decodeUnknownEffect(Repository.NativeCreationStoredIntent)({
+                    claimId: "fixture-claim",
+                    claimedBootId: "fixture-boot",
+                    claimedAt: "2026-10-02T12:34:56Z",
+                    actorSessionId,
+                    grantId: guard.grantId,
+                    grantRevision: guard.grantRevision,
+                    preparationId: value.preparation.preparationId,
+                    operationId: value.preparation.operationId,
+                    preparationSha256: value.preparation.preparationSha256,
+                    bindingDigest: value.preparation.bindingDigest,
+                    promptDigest: value.preparation.promptDigest,
+                    commandDigest: value.preparation.commandDigest,
+                    commandId: reference.stageCommandId,
+                    threadId: value.preparation.command.threadId,
+                    messageId: value.preparation.command.message.messageId,
+                    canonicalPreparation: value.preparation.canonicalText,
+                    binding: value.historical,
+                    resources: value.resources,
+                  }).pipe(
+                    Effect.mapError(
+                      () =>
+                        new Repository.NativeCreationRepositoryError({
+                          code: "unresolved_claim",
+                          message: "Synthetic execution claim is invalid",
+                        }),
+                    ),
+                  ),
+                  normalizedCommandDigest: "a".repeat(64),
+                  effects: [],
+                },
+                preparation: value.preparation,
+                command,
+                nativeIdentity: { normalizedCommandDigest: "a".repeat(64) },
+              };
+            }),
+          startEffectV2: (ref, timestamp, authorize) =>
+            Effect.gen(function* () {
+              yield* authorize;
+              starts += 1;
+              return {
+                status: "started" as const,
+                fact: {
+                  version: 2 as const,
+                  kind: "native_command" as const,
+                  phase: "started" as const,
+                  ordinal: 0,
+                  timestamp: yield* Schema.decodeUnknownEffect(IsoDateTime)(timestamp).pipe(
+                    Effect.mapError(
+                      () =>
+                        new Repository.NativeCreationRepositoryError({
+                          code: "unresolved_claim",
+                          message: "Synthetic start timestamp is invalid",
+                        }),
+                    ),
+                  ),
+                  effectId: mismatchedStart ? "other-effect" : ref.effectId,
+                  commandId: ref.stageCommandId,
+                  threadId: ThreadId.make(value.preparation.command.threadId),
+                  commandType: "thread.create" as const,
+                  commandDigest: "a".repeat(64),
+                },
+              };
+            }),
+        });
+      }),
+    ).pipe(Layer.provide(repositoryLayer));
+    const context = yield* Effect.gen(function* () {
+      const authority = yield* Authority.NativeCreationAuthority;
+      const context = yield* authority.issueExecution!({
+        reference,
+        timestamp: "2026-10-02T12:34:56Z",
+      });
+      assert.strictEqual(starts, 1);
+      assert.deepEqual(Authority.getNativeCreationExecutionReference(context), reference);
+      const resourceMismatch = yield* Authority.authorizeNativeCreationExecution(context, {
+        stage: "fetch",
+        resources: { ...value.resources, worktreePath: "/other/worktree" },
+      }).pipe(Effect.flip);
+      assert.strictEqual(resourceMismatch.code, "binding_mismatch");
+      mismatchedStart = true;
+      const startMismatch = yield* authority.issueExecution!({
+        reference,
+        timestamp: "2026-10-02T12:34:56Z",
+      }).pipe(Effect.flip);
+      assert.strictEqual(startMismatch.code, "unresolved_claim");
+      revoked = true;
+      const rejection = yield* Authority.authorizeNativeCreationExecution(context, {
+        stage: "fetch",
+        resources: value.resources,
+      }).pipe(Effect.flip);
+      assert.strictEqual(rejection.code, "stale_grant");
+      return context;
+    }).pipe(
+      Effect.provide(
+        Authority.NativeCreationAuthorityLive.pipe(
+          Layer.provide(executionOwner),
+          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(
+            Layer.succeed(Authority.NativeCreationGrantResolver, {
+              resolveCurrent: () =>
+                Effect.succeed({
+                  enrolledSessionId: actorSessionId,
+                  trustedIssuerId: "fixture-issuer",
+                  grant: {
+                    ...value.grant,
+                    revoked,
+                    allowedStages: [...value.grant.allowedStages, "native_command"],
+                  },
+                }),
+            }),
+          ),
+          Layer.provide(
+            Layer.succeed(Authority.NativeCreationBindingResolver, {
+              resolveCurrent: () => Effect.succeed(value.historical),
+            }),
+          ),
+        ),
+      ),
+    );
+    assert.isTrue(Object.isFrozen(context));
   }),
 );

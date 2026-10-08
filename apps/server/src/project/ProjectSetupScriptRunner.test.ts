@@ -8,6 +8,7 @@ import { LegacyOwnedTerminalControl } from "../orchestration-v2/RecordedTypes.ts
 import { legacyBootstrapCreateCommandId } from "../orchestration-v2/LegacyBootstrap.ts";
 
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ProjectSetupScriptRunner from "./ProjectSetupScriptRunner.ts";
@@ -371,6 +372,166 @@ it.effect(
       assert.equal(spawns, 1);
       assert.lengthOf(writes, 1);
       assert.equal(settingsReads, 1);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect(
+  "native setup uses its captured terminal owner and completion without ordinary terminal cleanup",
+  () => {
+    const script = {
+      id: "native-setup",
+      name: "Native setup",
+      command: "synthetic-command",
+      icon: "configure" as const,
+      runOnWorktreeCreate: true,
+    };
+    const control = {
+      claimId: "fixture-claim",
+      effectId: "fixture-setup-effect",
+      bootId: "fixture-boot",
+      producerId: "fixture-producer",
+      threadId: "fixture-native-thread",
+      terminalId: "fixture-native-terminal",
+      generation: "fixture-generation",
+      projectCwd: "/fixture/project",
+      worktreePath: "/fixture/worktree",
+      definitionDigest: "fixture-definition",
+    };
+    const order: string[] = [];
+    let token: string | undefined;
+    let listener:
+      | Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]
+      | undefined;
+    const layer = ProjectSetupScriptRunner.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectService.ProjectService)({}),
+          ServerSettings.layerTest(),
+          Layer.mock(TerminalManager.TerminalManager)({
+            openNativeSetup: (input, hooks) =>
+              Effect.gen(function* () {
+                const plan = {
+                  control: hooks.control,
+                  shell: "/bin/fish",
+                  shellArgs: [],
+                  cwd: input.cwd,
+                };
+                yield* hooks.beforeSpawn(plan);
+                order.push("spawn");
+                yield* hooks.afterSpawn({ ...plan, pid: 123 });
+                return {
+                  threadId: input.threadId,
+                  terminalId: input.terminalId,
+                  cwd: input.cwd,
+                  worktreePath: input.worktreePath ?? null,
+                  status: "running" as const,
+                  pid: 123,
+                  history: "",
+                  exitCode: null,
+                  exitSignal: null,
+                  label: "Shell",
+                  updatedAt: "2026-10-07T12:00:00Z",
+                };
+              }).pipe(
+                Effect.mapError(
+                  () =>
+                    new NativeSetup.NativeSetupControlError({
+                      operation: "open",
+                      message: "Synthetic native spawn owner refused",
+                    }),
+                ),
+              ),
+            writeNativeSetup: (input, supplied, beforeWrite) =>
+              Effect.gen(function* () {
+                assert.deepEqual(supplied, control);
+                yield* beforeWrite;
+                order.push("write");
+                assert.isDefined(token);
+                assert.isTrue(input.data.includes(`__T3_SETUP_DONE___${token}`));
+                yield* listener!({
+                  type: "output",
+                  threadId: input.threadId,
+                  terminalId: input.terminalId,
+                  data: `__T3_SETUP_DONE___${token}:0\r\n`,
+                });
+              }).pipe(
+                Effect.mapError(
+                  () =>
+                    new NativeSetup.NativeSetupControlError({
+                      operation: "write",
+                      message: "Synthetic native write owner refused",
+                    }),
+                ),
+              ),
+            observeNativeSetup: (supplied) =>
+              Effect.succeed({
+                control: supplied,
+                status: "running" as const,
+                pid: 123,
+                writeEntered: true,
+                exitCode: null,
+              }),
+            subscribe: (callback) =>
+              Effect.sync(() => {
+                listener = callback;
+                return () => undefined;
+              }),
+            open: () => Effect.die("native setup must not use ordinary open"),
+            write: () => Effect.die("native setup must not use ordinary write"),
+            closeIdle: () => Effect.die("native setup must retain its terminal"),
+          }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const runner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
+      const result = yield* runner.runForThread({
+        threadId: control.threadId,
+        worktreePath: control.worktreePath,
+        project: {
+          id: ProjectId.make("fixture-project"),
+          workspaceRoot: control.projectCwd,
+          scripts: [script],
+        },
+        nativePreparation: {
+          control,
+          script,
+          beforeSpawn: (plan) =>
+            Effect.sync(() => {
+              assert.equal(plan.shell, "/bin/fish");
+              token = plan.completionToken;
+              assert.isTrue(plan.commandLine.includes("$status"));
+              order.push("spawn-authority");
+            }),
+          afterSpawn: () =>
+            Effect.sync(() => {
+              order.push("spawn-proof");
+            }),
+          beforeWrite: () =>
+            Effect.sync(() => {
+              order.push("write-authority");
+            }),
+          afterCompletion: (completion) =>
+            Effect.sync(() => {
+              assert.equal(completion.exitCode, 0);
+              order.push("completion-proof");
+            }),
+        },
+      });
+      assert.equal(result.status, "started");
+      if (result.status === "started") {
+        assert.equal(result.terminalId, control.terminalId);
+        assert.equal((yield* result.completion!).exitCode, 0);
+      }
+      assert.deepEqual(order, [
+        "spawn-authority",
+        "spawn",
+        "spawn-proof",
+        "write-authority",
+        "write",
+        "completion-proof",
+      ]);
     }).pipe(Effect.provide(layer));
   },
 );

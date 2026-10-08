@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/importedHistoryCanonical": {
+      "types": "./src/jones/importedHistoryCanonical.ts",
+      "import": "./src/jones/importedHistoryCanonical.ts"
+    },
     "./jones/workMode": {
       "types": "./src/jones/workMode.ts",
       "import": "./src/jones/workMode.ts"

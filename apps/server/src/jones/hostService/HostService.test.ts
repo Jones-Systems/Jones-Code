@@ -22,9 +22,15 @@ import { afterEach, vi } from "vite-plus/test";
 
 import packageJson from "../../../package.json" with { type: "json" };
 import * as BootService from "../../cloud/bootService.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../../cloud/serviceProtocol.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as HostServiceConfig from "./HostServiceConfig.ts";
 import * as HostService from "./HostService.ts";
+
+vi.mock("../../../package.json", async (importOriginal) => {
+  const original = await importOriginal<{ default: { version: string } }>();
+  return { default: { ...original.default, version: "0.0.45-preview.20261008.101.1" } };
+});
 
 afterEach(() => vi.restoreAllMocks());
 const baseDir = "/task-owned/jones-host";
@@ -60,6 +66,7 @@ function fixture(
     readonly foreground?: boolean;
     readonly unverified?: boolean;
     readonly initiallyInstalled?: boolean;
+    readonly unreadableState?: boolean;
   } = {},
 ) {
   const files = new Map<string, string>();
@@ -104,16 +111,25 @@ function fixture(
       }),
     );
   const read = (name: string) =>
-    files.has(name)
-      ? Effect.succeed(files.get(name)!)
-      : Effect.fail(
+    options.unreadableState && name === `${baseDir}/runtime/service-state.json`
+      ? Effect.fail(
           PlatformError.systemError({
             module: "FileSystem",
             method: "readFileString",
-            _tag: "NotFound",
+            _tag: "PermissionDenied",
             pathOrDescriptor: name,
           }),
-        );
+        )
+      : files.has(name)
+        ? Effect.succeed(files.get(name)!)
+        : Effect.fail(
+            PlatformError.systemError({
+              module: "FileSystem",
+              method: "readFileString",
+              _tag: "NotFound",
+              pathOrDescriptor: name,
+            }),
+          );
   const fs = FileSystem.makeNoop({
     readFileString: read,
     readFile: (name) => read(name).pipe(Effect.map(encode)),
@@ -213,15 +229,17 @@ function fixture(
           Effect.sync(() => {
             commands.push([input.command, ...input.args]);
             return output(
-              input.command === "loginctl"
-                ? (options.linger ?? "yes")
-                : input.command === "stat"
-                  ? "root"
-                  : input.command === "pmset"
-                    ? "AC Power:\n sleep 0\n disksleep 10\n"
-                    : input.command === "defaults"
-                      ? "synthetic-user"
-                      : "state = running\npid = 42",
+              input.args[0] === "--version"
+                ? `t3 v${packageJson.version}\n`
+                : input.command === "loginctl"
+                  ? (options.linger ?? "yes")
+                  : input.command === "stat"
+                    ? "root"
+                    : input.command === "pmset"
+                      ? "AC Power:\n sleep 0\n disksleep 10\n"
+                      : input.command === "defaults"
+                        ? "synthetic-user"
+                        : "state = running\npid = 42",
             );
           }),
       }),
@@ -400,4 +418,173 @@ it.effect("rejects relative bases and incomplete artifact options before setup w
     expect(f.commands).toEqual([]);
     expect(f.writes).toEqual([]);
   }),
+);
+
+it.effect(
+  "setup verifies a preview cache again when the installed service is already current",
+  () =>
+    Effect.gen(function* () {
+      const f = fixture({ initiallyInstalled: false });
+      const result = yield* Effect.flatMap(HostService.HostService, (service) =>
+        Effect.gen(function* () {
+          const first = yield* service.setup({ baseDir, port: 4321 });
+          const repeated = yield* service.setup({ baseDir, port: 4321 });
+          return { first, repeated };
+        }),
+      ).pipe(Effect.provide(f.layer));
+      expect(packageJson.version).toContain("-preview.");
+      expect(result.first.state).toBe("installed");
+      expect(result.repeated.status?.provenance).toBe("verified");
+      expect(f.installs).toEqual([{ start: true }]);
+      expect(f.commands.filter((args) => args[1] === "--version")).toEqual([
+        [`${baseDir}/runtime/versions/${packageJson.version}/t3`, "--version"],
+        [`${baseDir}/runtime/versions/${packageJson.version}/t3`, "--version"],
+      ]);
+      expect(
+        f.commands.some(
+          (args) => args.includes("off") || args.includes("--bg") || args[0] === "tar",
+        ),
+      ).toBe(false);
+    }),
+);
+
+it.effect.each([
+  "desktop",
+  "target-qualified",
+  "active-qualified",
+  "tampered",
+  "missing-marker",
+] as const)("setup rejects %s before any config or unit writes", (failure) =>
+  Effect.gen(function* () {
+    const f = fixture({ initiallyInstalled: false });
+    const versionDir = `${baseDir}/runtime/versions/${packageJson.version}`;
+    if (failure === "desktop") {
+      f.files.set(`${baseDir}/runtime/jones-active-install.json`, "{}");
+    } else if (failure === "target-qualified") {
+      f.files.set(`${versionDir}/.jones-runtime-receipt.json`, "{}");
+    } else if (failure === "active-qualified") {
+      f.files.set(
+        `${baseDir}/runtime/service-state.json`,
+        JSON.stringify({
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "0.0.44-preview.20261007.100.1",
+        }),
+      );
+      f.files.set(
+        `${baseDir}/runtime/versions/0.0.44-preview.20261007.100.1/.jones-runtime-receipt.json`,
+        "{}",
+      );
+    } else if (failure === "tampered") {
+      f.files.set(`${versionDir}/t3`, "tampered executable");
+    } else {
+      f.files.delete(`${versionDir}/.install-complete`);
+    }
+    yield* Effect.flatMap(HostService.HostService, (service) =>
+      service.setup({ baseDir, port: 4321 }),
+    ).pipe(Effect.provide(f.layer), Effect.flip);
+    expect(f.writes).toEqual([]);
+    expect(f.installs).toEqual([]);
+    expect(f.commands.some((args) => args.includes("restart") || args.includes("bootstrap"))).toBe(
+      false,
+    );
+  }),
+);
+
+it.effect.each(["desktop", "target-qualified", "active-qualified"] as const)(
+  "stage-runtime rejects %s without changing the artifact cache",
+  (failure) =>
+    Effect.gen(function* () {
+      const f = fixture();
+      const versionDir = `${baseDir}/runtime/versions/${packageJson.version}`;
+      f.files.set("/artifact/ARTIFACT.json", f.files.get(`${versionDir}/.jones-provenance.json`)!);
+      if (failure === "desktop") {
+        f.files.set(`${baseDir}/runtime/jones-active-install.json`, "{}");
+      } else if (failure === "target-qualified") {
+        f.files.set(`${versionDir}/.jones-runtime-receipt.json`, "{}");
+      } else {
+        f.files.set(
+          `${baseDir}/runtime/service-state.json`,
+          JSON.stringify({
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "0.0.44-preview.20261007.100.1",
+          }),
+        );
+        f.files.set(
+          `${baseDir}/runtime/versions/0.0.44-preview.20261007.100.1/.jones-runtime-receipt.json`,
+          "{}",
+        );
+      }
+      const before = Array.from(f.files.entries());
+      yield* Effect.flatMap(HostService.HostService, (service) =>
+        service.stageRuntime({
+          baseDir,
+          artifactDir: "/artifact",
+          expectSourceCommit: "a".repeat(40),
+        }),
+      ).pipe(Effect.provide(f.layer), Effect.flip);
+      expect(Array.from(f.files.entries())).toEqual(before);
+      expect(f.writes).toEqual([]);
+      expect(f.commands).toEqual([]);
+    }),
+);
+
+it.effect.each(["invalid", "unreadable", "pending"] as const)(
+  "setup and staging preserve %s prior service state without writes",
+  (failure) =>
+    Effect.gen(function* () {
+      const f = fixture({ unreadableState: failure === "unreadable" });
+      const versionDir = `${baseDir}/runtime/versions/${packageJson.version}`;
+      f.files.set("/artifact/ARTIFACT.json", f.files.get(`${versionDir}/.jones-provenance.json`)!);
+      const statePath = `${baseDir}/runtime/service-state.json`;
+      f.files.set(
+        statePath,
+        failure === "invalid"
+          ? "{broken"
+          : JSON.stringify({
+              protocol: SERVICE_LAUNCHER_PROTOCOL,
+              activeVersion: packageJson.version,
+              ...(failure === "pending"
+                ? {
+                    update: {
+                      id: "pending-private-update",
+                      fromVersion: packageJson.version,
+                      targetVersion: "0.0.45-preview.20261008.102.1",
+                      dbPath: `${baseDir}/userdata/state.sqlite`,
+                      status: "pending",
+                      phase: "accepted",
+                    },
+                  }
+                : {}),
+            }),
+      );
+      const before = Array.from(f.files.entries());
+      const errors = yield* Effect.flatMap(HostService.HostService, (service) =>
+        Effect.gen(function* () {
+          const setup = yield* service.setup({ baseDir, port: 4321 }).pipe(Effect.flip);
+          const stage = yield* service
+            .stageRuntime({
+              baseDir,
+              artifactDir: "/artifact",
+              expectSourceCommit: "a".repeat(40),
+            })
+            .pipe(Effect.flip);
+          return [setup, stage];
+        }),
+      ).pipe(Effect.provide(f.layer));
+      for (const error of errors)
+        expect(error.cause).toMatchObject({
+          _tag: "JonesRuntimePolicyError",
+          reason: expect.stringContaining(
+            failure === "pending"
+              ? "pending"
+              : failure === "unreadable"
+                ? "Could not read"
+                : "reconciliation",
+          ),
+        });
+      expect(Array.from(f.files.entries())).toEqual(before);
+      expect(f.writes).toEqual([]);
+      expect(f.installs).toEqual([]);
+      expect(f.commands).toEqual([]);
+    }),
 );

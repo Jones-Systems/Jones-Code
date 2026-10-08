@@ -1,5 +1,6 @@
 import type { ResponseStreamingMode } from "@t3tools/contracts";
 import type { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
+import * as ProviderEventOrigin from "../jones/orchestration/ProviderEventOrigin.ts";
 
 // An opening fence may sit at any indentation, since fences inside list
 // items are indented past the marker. A closing fence may be indented at most
@@ -118,12 +119,18 @@ export function makeAssistantStreamingFilter(mode: ResponseStreamingMode) {
     if (!ready || ready === previous?.text) return null;
     delivered.set(key, { text: ready, at: now });
     if (event.type === "message.updated")
-      return { ...event, message: { ...event.message, text: ready } };
+      return ProviderEventOrigin.copyProviderEventOrigin(event, {
+        ...event,
+        message: { ...event.message, text: ready },
+      });
     if (
       event.type === "turn_item.updated" &&
       (event.turnItem.type === "assistant_message" || event.turnItem.type === "reasoning")
     )
-      return { ...event, turnItem: { ...event.turnItem, text: ready } };
+      return ProviderEventOrigin.copyProviderEventOrigin(event, {
+        ...event,
+        turnItem: { ...event.turnItem, text: ready },
+      });
     return event;
   };
 }

@@ -1,3 +1,4 @@
+import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
 /**
  * The OpenCode 2 runtime behind the `opencode` driver. It talks to the
  * instance's `opencode serve` process through the HTTP client and reads that
@@ -21,6 +22,8 @@
  *
  * @module orchestration-v2/Adapters/OpenCode2AdapterV2
  */
+import * as Context from "effect/Context";
+import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
 import {
   AbsolutePath,
   Agent,
@@ -663,6 +666,10 @@ const CLEAR_PROMPT_REJECTIONS: ReadonlySet<string> = new Set([
   "SkillNotFoundError",
 ]);
 
+class OpenCode2EventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
+>("t3/OpenCode2AdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
+
 export const OPENCODE_2_STILL_STOPPING =
   "OpenCode is still stopping the previous turn. Send the message again in a moment.";
 const REQUEST_REPLY_TIMEOUT = "10 seconds";
@@ -814,6 +821,10 @@ const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["s
  * {@link OpenCode2Server.OpenCode2Server}, which the driver builds from the instance's settings.
  */
 export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: ProviderInstanceId) {
+  const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
+  const authority = Option.isSome(authorityOption)
+    ? authorityOption.value.forInstance(instanceId)
+    : undefined;
   const server = yield* OpenCode2Server.OpenCode2Server;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -827,8 +838,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
   const borrow = Effect.gen(function* () {
     const lent = yield* Deferred.make<OpenCode2Server.OpenCode2Connection, OpenCodeRuntimeError>();
     yield* server
-      .withConnection((connection) =>
-        Deferred.succeed(lent, connection).pipe(Effect.andThen(Effect.never)),
+      .withConnection(
+        (connection) => Deferred.succeed(lent, connection).pipe(Effect.andThen(Effect.never)),
+        undefined,
+        "session",
       )
       .pipe(
         Effect.catch((error) => Deferred.fail(lent, error)),
@@ -844,6 +857,28 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       readonly scope: Scope.Closeable;
     },
   ) {
+    const adopt = (
+      parent: OpenCode2Server.OpenCode2Connection,
+    ): Effect.Effect<
+      OpenCodeCreationPolicy.OpenCodeSessionAdoption | undefined,
+      OpenCodeRuntimeError
+    > =>
+      authority === undefined
+        ? Effect.succeed(undefined)
+        : OpenCodeCreationPolicy.adoptSession({
+            parent:
+              parent.ownedProcess?.incarnation !== undefined &&
+              parent.ownedProcess.isCurrent !== undefined
+                ? {
+                    incarnation: parent.ownedProcess.incarnation,
+                    isCurrent: parent.ownedProcess.isCurrent,
+                  }
+                : undefined,
+            authority,
+            providerInstanceId: instanceId,
+            session: input,
+          });
+    let adoption = yield* adopt(initial.connection);
     let connection = initial.connection;
     // Replaced when the session reconnects to a restarted server.
     let client = connection.client;
@@ -870,6 +905,39 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       lastError: null,
     };
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
+    const makeConnectionProducer = (captured = adoption) =>
+      ProviderEventOrigin.makeProviderEventProducer(
+        {
+          driver,
+          instanceId,
+          providerSessionId: input.providerSessionId,
+          ...(captured !== undefined
+            ? { runtimeGeneration: captured.capture.runtimeGeneration }
+            : {}),
+        },
+        captured?.isCurrent,
+      );
+    let eventProducer = makeConnectionProducer();
+    const bindAdoption = (providerThread: OrchestrationV2ProviderThread) => {
+      const captured = adoption;
+      const producer = eventProducer.origin;
+      return captured === undefined
+        ? Effect.succeed(providerThread)
+        : OpenCodeCreationPolicy.bindSessionAdoption(captured, input.runtimeLifecycle!, {
+            providerThread,
+            requested: ProviderAdapter.requestedRuntimeIdentity(input.modelSelection, driver),
+            observed: ProviderAdapter.unobservedRuntimeIdentity(),
+            producerOrigin: producer,
+          });
+    };
+    const requireAdoption = Effect.suspend(() =>
+      adoption === undefined
+        ? Effect.void
+        : OpenCodeCreationPolicy.requireCurrent({
+            incarnation: adoption.capture.parent,
+            isCurrent: adoption.isCurrent,
+          }).pipe(Effect.asVoid),
+    );
     // Thread sessions, and the sessions of their subagents.
     const threads = new Map<string, ThreadState>();
     // A subagent's session, by its id, to the thread whose session started it.
@@ -901,7 +969,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         return gate.withPermit(effect);
       };
     const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-      Queue.offer(events, event).pipe(Effect.asVoid);
+      Effect.gen(function* () {
+        const producer = (yield* OpenCode2EventProducerContext) ?? eventProducer.origin;
+        yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
+      }).pipe(Effect.asVoid);
     const ownerOf = (sessionId: string) => childOwners.get(sessionId) ?? threads.get(sessionId);
 
     const newThreadState = (
@@ -2824,16 +2895,39 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         Effect.provideService(Scope.Scope, scope),
         Effect.tapError(() => Scope.close(scope, Exit.void)),
       );
+      const nextAdoption = yield* adopt(next).pipe(
+        Effect.tapError(() => Scope.close(scope, Exit.void)),
+      );
       const stream = yield* next.events.pipe(Effect.tapError(() => Scope.close(scope, Exit.void)));
       const previous = currentScope;
+      eventProducer.retire();
+      adoption = nextAdoption;
+      eventProducer = makeConnectionProducer(nextAdoption);
+      const producer = eventProducer;
       connection = next;
       client = next.client;
       currentScope = scope;
       yield* Scope.close(previous, Exit.void);
       // A restarted server forgot T3's MCP servers; the next turn adds them again.
       for (const state of threads.values()) state.mcp = undefined;
-      yield* lock.withPermit(reconcile).pipe(Effect.timeout(RECONCILE_TIMEOUT));
-      return stream;
+      yield* lock
+        .withPermit(
+          Effect.gen(function* () {
+            if (adoption !== undefined) {
+              for (const state of threads.values()) {
+                if (state.providerThread.appThreadId === input.threadId) {
+                  state.providerThread = yield* bindAdoption(state.providerThread);
+                }
+              }
+            }
+            yield* reconcile;
+          }),
+        )
+        .pipe(
+          Effect.provideService(OpenCode2EventProducerContext, producer.origin),
+          Effect.timeout(RECONCILE_TIMEOUT),
+        );
+      return { stream, producer };
     }).pipe(
       Effect.retry({ times: RECONNECT_ATTEMPTS - 1, schedule: Schedule.spaced(RECONNECT_DELAY) }),
     );
@@ -2841,13 +2935,24 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     let currentScope = initial.scope;
     // The borrow in use when the session closes is returned with it, so a
     // spawned server can still reach its idle shutdown.
-    yield* Effect.addFinalizer(() => Scope.close(currentScope, Exit.void));
-    const follow = (stream: Stream.Stream<OpenCode2StreamEvent, unknown>): Effect.Effect<void> =>
+    yield* Effect.addFinalizer(() => {
+      eventProducer.drain();
+      return Scope.close(currentScope, Exit.void);
+    });
+    const follow = (
+      stream: Stream.Stream<OpenCode2StreamEvent, unknown>,
+      producer: ProviderEventOrigin.ProviderEventProducer,
+    ): Effect.Effect<void> =>
       stream.pipe(
-        Stream.runForEach((event) => lock.withPermit(handleEvent(event))),
+        Stream.runForEach((event) =>
+          lock
+            .withPermit(handleEvent(event))
+            .pipe(Effect.provideService(OpenCode2EventProducerContext, producer.origin)),
+        ),
         Effect.exit,
         Effect.flatMap(() =>
           Effect.gen(function* () {
+            producer.drain();
             streamFailure = "The OpenCode event stream was lost. Reconnecting.";
             yield* Effect.logWarning("Lost the OpenCode event stream; reconnecting.");
             // The last failure is kept for the log: it can carry the server's
@@ -2869,12 +2974,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             const done = reconnected;
             reconnected = yield* Deferred.make<void>();
             yield* Deferred.succeed(done, undefined);
-            return yield* follow(next.value);
+            return yield* follow(next.value.stream, next.value.producer);
           }),
         ),
       );
     // Subscribed before any session or prompt call, so no event of theirs is missed.
-    yield* follow(yield* connection.events).pipe(Effect.forkScoped);
+    yield* follow(yield* connection.events, eventProducer).pipe(Effect.forkScoped);
 
     // A server T3 did not start keeps running after T3 stops, so stop the turns
     // it would otherwise finish unseen. A spawned server stops with its owner.
@@ -3555,6 +3660,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       get providerSession() {
         return session;
       },
+      eventOriginMode: "captured",
       events: Stream.fromQueue(events),
       // A background subagent keeps its session busy after its parent's turn,
       // and a held wake still needs its turn: idle release must wait for both.
@@ -3572,6 +3678,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           : undefined,
       ensureThread: (threadInput) =>
         Effect.gen(function* () {
+          yield* requireAdoption;
           if (threadInput.existingProviderThread?.nativeThreadRef != null) {
             return yield* runtime.resumeThread({
               providerThread: threadInput.existingProviderThread,
@@ -3627,6 +3734,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             directory,
           );
           state.policy = policy;
+          state.providerThread = yield* bindAdoption(state.providerThread);
           return state.providerThread;
         }).pipe(
           Effect.mapError((cause) =>
@@ -3641,6 +3749,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         ),
       resumeThread: (threadInput) =>
         Effect.gen(function* () {
+          yield* requireAdoption;
           const sessionId = yield* sessionIdOf(threadInput.providerThread);
           if (threadInput.runtimePolicy !== undefined) {
             yield* readModelsOnce(threadInput.runtimePolicy.cwd);
@@ -3670,6 +3779,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               directory: AbsolutePath.make(cwd),
             });
           }
+          state.providerThread = yield* bindAdoption(state.providerThread);
           return state.providerThread;
         }).pipe(
           Effect.mapError((cause) =>
@@ -3707,6 +3817,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           // it does not hold the gate.
           const started = yield* exclusive(turnInput.providerThread)(
             Effect.gen(function* () {
+              yield* requireAdoption;
               const sessionId = yield* sessionIdOf(turnInput.providerThread);
               const state = threads.get(sessionId);
               if (state === undefined) {

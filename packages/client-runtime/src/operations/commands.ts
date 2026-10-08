@@ -1098,3 +1098,38 @@ export const unlinkThreadPullRequest = Effect.fn("EnvironmentCommands.unlinkThre
     });
   },
 );
+
+export const prepareImportedHistoryMessage = Effect.fn(
+  "EnvironmentCommands.prepareImportedHistoryMessage",
+)(function* (input: StartThreadTurnInput) {
+  const commandId = yield* allocateCommandId(input);
+  const attachments = yield* persistAttachments(
+    input.threadId,
+    input.message.messageId,
+    input.message.attachments,
+  );
+  const context = remapComposerContextAttachments(
+    input.message.context,
+    input.message.attachments,
+    attachments,
+  );
+  return {
+    type: "message.dispatch" as const,
+    commandId,
+    createdBy: "user" as const,
+    creationSource: input.creationSource ?? "web",
+    threadId: input.threadId,
+    messageId: input.message.messageId,
+    text: input.message.text,
+    attachments,
+    ...(context === undefined ? {} : { context }),
+    ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    ...(input.sourceProposedPlan === undefined ? {} : { sourcePlanRef: input.sourceProposedPlan }),
+    ...(input.manualContinuationOfRunId === undefined
+      ? {}
+      : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
+    dispatchMode: { type: "start_immediately" as const },
+  };
+});
