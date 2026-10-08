@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
   answer: vi.fn(),
   feedback: vi.fn(),
   updateSettings: vi.fn(),
+  prepareImportedHistory: vi.fn(),
+  getImportedHistoryChoice: vi.fn(),
   question: {
     id: "language",
     header: "Language",
@@ -44,6 +46,10 @@ vi.mock("react", () => ({
   ],
 }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "uuid" }));
+vi.mock("../jones/importedHistory/runtime", () => ({
+  mobileImportedHistoryCommands: { prepare: state.prepareImportedHistory },
+  getMobileImportedHistoryChoice: state.getImportedHistoryChoice,
+}));
 vi.mock("../lib/attachmentUpload", () => ({ prepareTurnAttachments: vi.fn() }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid" }));
 vi.mock("./queued-run-edit", () => ({
@@ -175,6 +181,8 @@ describe("mobile task permissions", () => {
     expect(await composer.onSendMessage()).toBeNull();
     expect(state.enqueue).not.toHaveBeenCalled();
     expect(state.clearDraft).not.toHaveBeenCalled();
+    expect(state.prepareImportedHistory).not.toHaveBeenCalled();
+    expect(state.getImportedHistoryChoice).not.toHaveBeenCalled();
     composer.onChangeDraftMessage("Edited locally");
     composer.onUpdateInteractionMode("plan");
     expect(state.draft.text).toBe("Edited locally");
@@ -190,6 +198,8 @@ describe("mobile task permissions", () => {
     expect(await composer.onSendMessage()).toBeNull();
     expect(state.clearDraft).not.toHaveBeenCalled();
     expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.prepareImportedHistory).not.toHaveBeenCalled();
+    expect(state.getImportedHistoryChoice).not.toHaveBeenCalled();
     state.grantedEnvironments.add("secondary");
     expect(await composer.onSendMessage()).toBe("message");
     expect(state.enqueue).toHaveBeenCalledWith(
