@@ -7,6 +7,7 @@ export * from "./acpRegistry.ts";
 export * from "./auth.ts";
 export * from "./environment.ts";
 export * from "./environmentHttp.ts";
+export * from "./voiceReview.ts";
 export * from "./relayClient.ts";
 export * from "./desktopBootstrap.ts";
 export * from "./desktopBrowser.ts";
@@ -18,6 +19,7 @@ export * from "./provider.ts";
 export * from "./providerInstance.ts";
 export * from "./providerSetup.ts";
 export * from "./providerRuntime.ts";
+export * from "./jones/providerRuntimeIdentity.ts";
 export * from "./providerUsageLimits.ts";
 export * from "./usageLimitSourceId.ts";
 export * from "./providerPolicy.ts";
@@ -34,6 +36,7 @@ export * from "./sourceControl.ts";
 export * from "./projectClone.ts";
 export * from "./pullRequest.ts";
 export * from "./orchestrationDispatch.ts";
+export * from "./nativeCreation.ts";
 export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
 export * from "./applicationEvent.ts";
@@ -57,10 +60,42 @@ export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";
+export * from "./tokenAccounting.ts";
 export * from "./scheduledTask.ts";
 export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+
+export * from "./providerQueue.ts";
+
+export * from "./queueDispatch.ts";
+export * from "./workstreams.ts";
+export * from "./workstreamPlacements.ts";
+export * from "./threadRegistry.ts";
+export * from "./queueProtocol.ts";
+export * from "./threadCorpusProtocol.ts";
+export {
+  ThreadTurnDispatchGuard,
+  OrchestrationCommandObservation,
+  OrchestrationShellSnapshot,
+  OrchestrationThreadDetailWindow,
+  OrchestrationThreadDetailSnapshot,
+} from "./legacyOrchestrationCompatibility.ts";
+export * from "./hostStatus.ts";
+export * from "./jones/workstreamAppearance.ts";
+
+export * from "./jones/organizationMetadata.ts";
+
+export * from "./jones/workQueueMetadata.ts";
+
+export * from "./jones/deviceMedia.ts";
+
+export * from "./jones/workstreamsNativeProvider.ts";
+export * from "./jones/workstreamsRegistrationContext.ts";
+export * from "./jones/jonesUpdates.ts";
+export * from "./jones/runtimeStop.ts";
+
+export * from "./jones/importedHistory.ts";
 export * from "./secretRequest.ts";
 export * from "./clientRpcPermissions.ts";

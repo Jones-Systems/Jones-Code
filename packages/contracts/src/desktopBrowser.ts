@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 
+import { PreviewAutomationRuntimeIdentity } from "./previewAutomation.ts";
+
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
@@ -20,7 +22,11 @@ const TabKey = {
 /** Desktop -> server. */
 export const DesktopBrowserEvent = Schema.Union([
   /** A desktop `<webview>` for this server tab is attached and can be driven. */
-  Schema.Struct({ type: Schema.Literal("attached"), ...TabKey }),
+  Schema.Struct({
+    type: Schema.Literal("attached"),
+    ...TabKey,
+    runtimeIdentity: Schema.optional(Schema.NullOr(PreviewAutomationRuntimeIdentity)),
+  }),
   /** Its `<webview>` went away: closed, crashed, swapped, or devtools took the debugger. */
   Schema.Struct({ type: Schema.Literal("detached"), ...TabKey }),
   /** One CDP message from the tab's relay. */

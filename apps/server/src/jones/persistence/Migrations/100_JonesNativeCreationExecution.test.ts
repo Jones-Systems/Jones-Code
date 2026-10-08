@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import migration from "./100_JonesNativeCreationExecution.ts";
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 it.effect("creates only owned execution schema and preserves foreign history and facts", () =>

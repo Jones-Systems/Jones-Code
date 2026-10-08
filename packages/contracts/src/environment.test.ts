@@ -14,6 +14,37 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("keeps queued tool delivery unsupported unless explicitly advertised", () => {
+    expect(decodeDescriptor(descriptor).capabilities.queuedToolBoundaryDelivery).toBeUndefined();
+    for (const enabled of [true, false])
+      expect(
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, queuedToolBoundaryDelivery: enabled },
+        }).capabilities.queuedToolBoundaryDelivery,
+      ).toBe(enabled);
+  });
+
+  it("omits saved accounting on older servers and preserves explicit support", () => {
+    expect(decodeDescriptor(descriptor).capabilities.savedTokenAccounting).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, savedTokenAccounting: true },
+      }).capabilities.savedTokenAccounting,
+    ).toBe(true);
+  });
+
+  it("preserves automatic worktree base capability while accepting older servers", () => {
+    expect(decodeDescriptor(descriptor).capabilities.worktreeDefaultBase).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, worktreeDefaultBase: true },
+      }).capabilities.worktreeDefaultBase,
+    ).toBe(true);
+  });
+
   it("decodes old, recognized and future manual installation descriptors", () => {
     expect(decodeDescriptor(descriptor).capabilities.serverInstallation).toBeUndefined();
     for (const installation of [{ kind: "npx" }, { kind: "npm-global", prefix: "/opt/node" }]) {
