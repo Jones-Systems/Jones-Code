@@ -31,7 +31,8 @@
     "packages/client-runtime/src/preview/serverBrowserStream.ts",
     "apps/desktop/src/app/DesktopLinuxUrlHandler.ts",
     "apps/desktop/src/app/DesktopClerk.ts",
-    "apps/desktop/src/app/DesktopPreReadyPlatform.ts"
+    "apps/desktop/src/app/DesktopPreReadyPlatform.ts",
+    "apps/desktop/vite.config.ts"
   ],
   "tombstones": [],
   "allowedImports": [
