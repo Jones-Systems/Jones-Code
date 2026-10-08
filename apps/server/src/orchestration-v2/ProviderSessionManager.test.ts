@@ -325,7 +325,9 @@ function makeProviderAdapter(
     >;
     readonly beforeOpen?: (input: ProviderAdapterV2OpenSessionInput) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+    readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
+    readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
@@ -421,9 +423,17 @@ function makeProviderAdapter(
           ...(options.hasPendingBackgroundWork === undefined
             ? {}
             : { hasPendingBackgroundWork: options.hasPendingBackgroundWork }),
+          ...(options.hasPendingBackgroundWorkForThread === undefined
+            ? {}
+            : {
+                hasPendingBackgroundWorkForThread: () => options.hasPendingBackgroundWorkForThread!,
+              }),
           ...(options.readThreadActivity === undefined
             ? {}
             : { readThreadActivity: options.readThreadActivity }),
+          ...(options.captureRuntimeStop === undefined
+            ? {}
+            : { captureRuntimeStop: options.captureRuntimeStop }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
             Ref.update(state, (current) => ({
@@ -477,7 +487,9 @@ function layerTest(input: {
     readonly paused: Deferred.Deferred<void>;
   };
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+  readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
   readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
+  readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
@@ -506,9 +518,15 @@ function layerTest(input: {
       ...(input.hasPendingBackgroundWork === undefined
         ? {}
         : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
+      ...(input.hasPendingBackgroundWorkForThread === undefined
+        ? {}
+        : { hasPendingBackgroundWorkForThread: input.hasPendingBackgroundWorkForThread }),
       ...(input.readThreadActivity === undefined
         ? {}
         : { readThreadActivity: input.readThreadActivity }),
+      ...(input.captureRuntimeStop === undefined
+        ? {}
+        : { captureRuntimeStop: input.captureRuntimeStop }),
       ...(input.hangSessionScopeClose === undefined
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
@@ -4476,6 +4494,336 @@ it.effect(
       yield* effect.pipe(
         Effect.provide(layerTest({ state, idleTimeoutMs: 1000, beforeUnload })),
         Effect.scoped,
+      );
+    }),
+);
+
+function runIdleThreadUnloadScenario<E>(
+  name: string,
+  scenario: (input: {
+    readonly state: Ref.Ref<TestProviderRuntimeState>;
+    readonly manager: ProviderSessionManager.ProviderSessionManagerV2Shape;
+    readonly providerSessionId: ProviderSessionId;
+    readonly threadA: ThreadId;
+    readonly threadB: ThreadId;
+    readonly providerThreadOf: (threadId: ThreadId) => OrchestrationV2ProviderThread;
+    /** Starts run `ordinal` on a thread and returns once the provider accepted it. */
+    readonly startTurn: (threadId: ThreadId, ordinal: number) => Effect.Effect<void>;
+    /** Ends run `ordinal` on a thread and waits for the session to process it. */
+    readonly endTurn: (threadId: ThreadId, ordinal: number) => Effect.Effect<void>;
+    readonly resume: (threadId: ThreadId) => Effect.Effect<void>;
+  }) => Effect.Effect<
+    void,
+    E,
+    ProjectionStore.ProjectionStoreV2 | ServerSettings.ServerSettingsService
+  >,
+  options: {
+    readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
+    readonly workMode?: boolean;
+    readonly beforeOpen?: (input: ProviderAdapterV2OpenSessionInput) => Effect.Effect<void>;
+    readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
+    readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
+  } = {},
+) {
+  return Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const fixture = workModeFixture();
+      const retained = options.workMode ? yield* openWorkModeRetentionSession() : undefined;
+      const threadA =
+        retained?.threadId ?? ThreadId.make(`thread-provider-session-manager-${name}-a`);
+      const threadB = ThreadId.make(`thread-provider-session-manager-${name}-b`);
+      const providerSessionId =
+        retained?.providerSessionId ??
+        idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+      yield* eventSink.write({
+        events: [
+          ...(retained
+            ? []
+            : [yield* makeThreadCreatedEvent({ idAllocator, threadId: threadA, now })]),
+          yield* makeThreadCreatedEvent({ idAllocator, threadId: threadB, now }),
+        ],
+      });
+      const runtime = yield* manager.open({
+        threadId: threadA,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* manager.open({ threadId: threadB, providerSessionId, modelSelection, runtimePolicy });
+      const providerThreadOf = (threadId: ThreadId) =>
+        retained && threadId === threadA
+          ? fixture.providerThreads[0]!
+          : makeProviderThread({
+              idAllocator,
+              threadId,
+              providerSessionId,
+              now,
+              nativeThreadId: `native-${threadId}`,
+            });
+      const resume = (threadId: ThreadId) =>
+        runtime
+          .resumeThread({
+            providerThread: providerThreadOf(threadId),
+            threadId,
+            modelSelection,
+            runtimePolicy,
+          })
+          .pipe(Effect.asVoid, Effect.orDie);
+      const startTurn = (threadId: ThreadId, ordinal: number) =>
+        Effect.gen(function* () {
+          yield* resume(threadId);
+          const runId = idAllocator.derive.run({ threadId, ordinal });
+          yield* runtime.startTurn({
+            appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
+            threadId,
+            runId,
+            runOrdinal: ordinal,
+            providerTurnOrdinal: ordinal,
+            attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+            rootNodeId: idAllocator.derive.rootNode({ runId }),
+            providerThread: providerThreadOf(threadId),
+            message: {
+              createdBy: "user",
+              creationSource: "web",
+              messageId: yield* idAllocator.allocate.message({ threadId, ordinal }),
+              text: "turn",
+              attachments: [],
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+        }).pipe(Effect.orDie);
+      const subscribe = runtime.subscribeEvents;
+      assert.isDefined(subscribe);
+      const endTurn = (threadId: ThreadId, ordinal: number) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            // The pump hands an event to subscribers only after the session
+            // has processed it, so receiving it is the receipt.
+            const subscription = yield* Effect.acquireRelease(subscribe!, (sub) => sub.close);
+            const received = yield* subscription.events.pipe(
+              Stream.filter((event) => event.type === "turn.terminal"),
+              Stream.runHead,
+              Effect.forkScoped,
+            );
+            const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+            assert.isDefined(queue);
+            yield* Queue.offer(queue!, {
+              type: "turn.terminal",
+              driver: CODEX_DRIVER,
+              providerThreadId: providerThreadOf(threadId).id,
+              providerTurnId: idAllocator.derive.providerTurn({
+                driver: CODEX_DRIVER,
+                nativeTurnId: `native-turn-${threadId}-${ordinal}`,
+              }),
+              runOrdinal: ordinal,
+              status: "completed",
+              failure: null,
+              threadDisposition: "reusable",
+            });
+            yield* Fiber.join(received);
+          }),
+        ).pipe(Effect.orDie);
+
+      // B's running turn keeps the shared runtime itself busy throughout.
+      yield* startTurn(threadB, 1);
+      yield* scenario({
+        state,
+        manager,
+        providerSessionId,
+        threadA,
+        threadB,
+        providerThreadOf,
+        startTurn,
+        endTurn,
+        resume,
+      });
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 1000,
+          ...(options.workMode
+            ? { serverSettingsLayer: ServerSettings.layerTest({ workModeEnabled: true }) }
+            : {}),
+          ...(options.beforeOpen === undefined ? {} : { beforeOpen: options.beforeOpen }),
+          ...(options.readThreadActivity === undefined
+            ? {}
+            : { readThreadActivity: options.readThreadActivity }),
+          ...(options.captureRuntimeStop === undefined
+            ? {}
+            : { captureRuntimeStop: options.captureRuntimeStop }),
+          ...(options.hasPendingBackgroundWorkForThread === undefined
+            ? {}
+            : { hasPendingBackgroundWorkForThread: options.hasPendingBackgroundWorkForThread }),
+        }),
+      ),
+    );
+  });
+}
+
+it.effect(
+  "ProviderSessionManagerV2 unloads a shared-runtime thread left idle, and reloads it on its next turn",
+  () =>
+    runIdleThreadUnloadScenario(
+      "idle-unload",
+      ({ state, manager, providerSessionId, threadA, startTurn, endTurn, resume }) =>
+        Effect.gen(function* () {
+          yield* startTurn(threadA, 1);
+          assert.equal((yield* Ref.get(state)).resumeCount, 2);
+          yield* endTurn(threadA, 1);
+
+          // A follow-up before the timeout keeps the thread loaded.
+          yield* TestClock.adjust("500 millis");
+          yield* startTurn(threadA, 2);
+          yield* TestClock.adjust("1 second");
+          assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+
+          // Idle for the full timeout after its last turn, A is unloaded while
+          // the runtime stays up for B.
+          yield* endTurn(threadA, 2);
+          yield* TestClock.adjust("1 second");
+          assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [`native-${threadA}`]);
+          assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+          assert.equal((yield* Ref.get(state)).closeCount, 0);
+
+          // The next turn's resume reaches the provider and reloads A.
+          const resumes = (yield* Ref.get(state)).resumeCount;
+          yield* resume(threadA);
+          assert.equal((yield* Ref.get(state)).resumeCount, resumes + 1);
+        }),
+    ),
+);
+
+it.effect.each(["disable", "settlement"] as const)(
+  "ProviderSessionManagerV2 retains only the eligible shared-runtime Work mode thread until %s",
+  (release) =>
+    runIdleThreadUnloadScenario(
+      `work-mode-unload-${release}`,
+      ({ state, threadA, threadB, startTurn, endTurn }) =>
+        Effect.gen(function* () {
+          const settings = yield* ServerSettings.ServerSettingsService;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          yield* startTurn(threadA, 2);
+          yield* endTurn(threadA, 2);
+          yield* endTurn(threadB, 1);
+          yield* TestClock.adjust("1 second");
+          assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [`native-${threadB}`]);
+          yield* TestClock.adjust("55 minutes");
+          assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [`native-${threadB}`]);
+          if (release === "disable") {
+            yield* settings.updateSettings({ workModeEnabled: false });
+          } else {
+            const now = yield* DateTime.now;
+            yield* projections.apply({
+              id: EventId.make("idle-unload:settle"),
+              type: "thread.settled",
+              threadId: threadA,
+              occurredAt: now,
+              payload: {
+                ...(yield* projections.getThread(threadA)),
+                settledAt: now,
+                updatedAt: now,
+              },
+            });
+          }
+          // Keep the process busy so this proves thread unload, not session eviction.
+          yield* startTurn(threadB, 2);
+          yield* TestClock.adjust("1 minute");
+          assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [
+            `native-${threadB}`,
+            workModeFixture().providerThreads[0]!.nativeThreadRef!.nativeId!,
+          ]);
+          assert.equal((yield* Ref.get(state)).closeCount, 0);
+        }),
+      { workMode: true },
+    ),
+);
+
+it.effect("ProviderSessionManagerV2 rejects unloaded runtime reads without native probes", () =>
+  Effect.gen(function* () {
+    const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+    const probes = yield* Ref.make(0);
+    yield* runIdleThreadUnloadScenario(
+      "unloaded-runtime-read",
+      ({ manager, threadA, providerThreadOf, startTurn, endTurn, resume }) =>
+        Effect.gen(function* () {
+          yield* startTurn(threadA, 1);
+          const lifecycle = yield* Ref.get(controller);
+          if (!lifecycle) return yield* Effect.die("Missing runtime lifecycle");
+          const generation = yield* lifecycle.reserve(threadA);
+          const provider = providerThreadOf(threadA);
+          yield* lifecycle.bind({
+            providerThread: provider,
+            runtimeGeneration: generation,
+            requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+            observed: unobservedRuntimeIdentity(),
+          });
+          const attachment = yield* manager.readCurrentThreadRuntimeAttachment!(threadA);
+          assert.equal(attachment.status, "attached");
+          yield* endTurn(threadA, 1);
+          yield* TestClock.adjust("1 second");
+          if (attachment.status === "attached") assert.isFalse(yield* attachment.isCurrent);
+          assert.equal(
+            (yield* manager.readCurrentThreadRuntimeAttachment!(threadA)).status,
+            "unknown",
+          );
+          assert.deepEqual(yield* manager.observeThreadActivity!(threadA), {
+            status: "unknown",
+            reason: "runtime_not_loaded",
+          });
+          assert.isNull(yield* manager.captureCurrentThreadRuntimeStop!(threadA));
+          assert.equal(yield* Ref.get(probes), 0);
+          yield* resume(threadA);
+          assert.equal(
+            (yield* manager.readCurrentThreadRuntimeAttachment!(threadA)).status,
+            "attached",
+          );
+          yield* manager.observeThreadActivity!(threadA);
+          yield* manager.captureCurrentThreadRuntimeStop!(threadA);
+          assert.equal(yield* Ref.get(probes), 2);
+        }),
+      {
+        beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+        readThreadActivity: () =>
+          Ref.update(probes, (count) => count + 1).pipe(
+            Effect.as({ status: "unknown", reason: "test-probe" } as const),
+          ),
+        captureRuntimeStop: () => Ref.update(probes, (count) => count + 1).pipe(Effect.as(null)),
+      },
+    );
+  }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 keeps an idle shared-runtime thread loaded while its background work runs",
+  () =>
+    Effect.gen(function* () {
+      const pendingWork = yield* Ref.make(true);
+      yield* runIdleThreadUnloadScenario(
+        "idle-unload-pinned",
+        ({ state, threadA, startTurn, endTurn }) =>
+          Effect.gen(function* () {
+            yield* startTurn(threadA, 1);
+            yield* endTurn(threadA, 1);
+            yield* TestClock.adjust("3 seconds");
+            assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+
+            yield* Ref.set(pendingWork, false);
+            yield* TestClock.adjust("1 second");
+            assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [
+              `native-${threadA}`,
+            ]);
+          }),
+        { hasPendingBackgroundWorkForThread: Ref.get(pendingWork) },
       );
     }),
 );
