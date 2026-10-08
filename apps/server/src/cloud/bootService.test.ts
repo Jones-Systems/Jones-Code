@@ -1118,7 +1118,7 @@ it.layer(NodeServices.layer)("qualified boot service setup boundary", (it) => {
 });
 
 it.layer(NodeServices.layer)("verified private artifact boot service", (it) => {
-  const version = "0.0.45-preview.20261008.101.1";
+  const version = "1.2.4-preview.20261008.101.1";
   const privateOptions = {
     identity: JONES_BOOT_SERVICE_IDENTITY,
     runtimeMode: "verified-private-artifact" as const,
