@@ -56,3 +56,44 @@ it.layer(NodeServices.layer)("DesktopBrowserChannel", (it) => {
     }).pipe(Effect.scoped),
   );
 });
+
+it.layer(NodeServices.layer)("DesktopBrowserChannel runtime evidence", (it) => {
+  it.effect.each(["legacy", "replacement", "detached"] as const)(
+    "keeps %s attachment evidence current without inventing runtime identity",
+    (mode) =>
+      Effect.gen(function* () {
+        const identity = {
+          schemaVersion: 1,
+          runtimeKind: "electron",
+          runtimeInstanceId: "native-runtime",
+          appVersion: "0.1.0",
+          buildCommit: null,
+        } as const;
+        const sentinel = { threadId: "sentinel-thread", tabId: "sentinel-tab" };
+        const channel = yield* channelOver([
+          { type: "attached", ...key, runtimeIdentity: identity },
+          ...(mode === "detached"
+            ? [{ type: "detached", ...key }]
+            : [
+                {
+                  type: "attached",
+                  ...key,
+                  ...(mode === "replacement" ? { runtimeIdentity: identity } : {}),
+                },
+              ]),
+          { type: "attached", ...sentinel },
+        ]);
+        // The sentinel follows the replacement/detach in the same owned fd stream.
+        expect(yield* channel.awaitAttached(sentinel, "5 seconds")).toBe(true);
+        const evidence = yield* channel.runtimeEvidence(key);
+        expect(evidence).toEqual(
+          mode === "detached"
+            ? null
+            : {
+                runtimeIdentity: mode === "legacy" ? null : identity,
+                attachmentGeneration: 2,
+              },
+        );
+      }).pipe(Effect.scoped),
+  );
+});

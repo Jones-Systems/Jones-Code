@@ -4331,4 +4331,37 @@ describe("PreviewOperationError", () => {
     expect(error.message).not.toContain(cause.message);
     expect(PreviewManager.PreviewOperationError.toTimelineMessage(error)).toBe(cause.message);
   });
+  effectIt.effect("hung control initialization on one tab does not block another tab", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const capture = vi.fn(async () => ({
+          toPNG: () => Buffer.from("png"),
+          toJPEG: () => Buffer.from("jpeg"),
+          getSize: () => ({ width: 100, height: 80 }),
+        }));
+        const first = makeTestPreviewWebContents(capture, 41);
+        const second = makeTestPreviewWebContents(capture, 42);
+        Object.assign(first, { isDevToolsOpened: () => false });
+        Object.assign(second, { isDevToolsOpened: () => false });
+        Object.assign(first.debugger, { sendCommand: vi.fn(() => new Promise<unknown>(() => {})) });
+        fromId.mockImplementation((id) => (id === 41 ? first : second));
+        const blocked = yield* Effect.exit(manager.prepareWebview(first)).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* TestClock.adjust(0);
+        Object.assign(second.debugger, {
+          sendCommand: vi.fn(async () => ({ result: { value: 42 } })),
+        });
+        yield* manager.prepareWebview(second);
+        expect(second.debugger.sendCommand).toHaveBeenCalledWith(
+          "Emulation.setDefaultBackgroundColorOverride",
+          { color: { r: 255, g: 255, b: 255, a: 1 } },
+        );
+        expect(second.debugger.attach).toHaveBeenCalledOnce();
+        expect(blocked.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust(5_000);
+        yield* Fiber.join(blocked);
+      }),
+    ),
+  );
 });

@@ -23,6 +23,8 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as DesktopAppIdentity from "../app/DesktopAppIdentity.ts";
+
 import { createCdpRelayConnection, type CdpRelayConnection } from "./CdpRelay.ts";
 
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(DesktopBrowserEvent));
@@ -85,6 +87,11 @@ export class DesktopBrowserHost extends Context.Service<
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
 export const make = Effect.gen(function* () {
+  const appIdentity = yield* Effect.serviceOption(DesktopAppIdentity.DesktopAppIdentity);
+  const runtimeIdentity = Option.isSome(appIdentity)
+    ? yield* appIdentity.value.previewAutomationRuntimeIdentity
+    : null;
+  const identityFields = runtimeIdentity === null ? {} : { runtimeIdentity };
   const outbox = yield* PubSub.unbounded<DesktopBrowserEventType>();
   const pointers = yield* PubSub.sliding<{
     readonly key: DesktopBrowserTabKey;
@@ -171,7 +178,7 @@ export const make = Effect.gen(function* () {
     };
     tabs.set(id, tab);
     debuggee.debugger.on("message", tab.onMessage);
-    emit({ type: "attached", ...key });
+    emit({ type: "attached", ...key, ...identityFields });
   };
 
   const handleCommandLine = (line: string) =>
@@ -199,7 +206,7 @@ export const make = Effect.gen(function* () {
       [...tabs.values()],
       (tab) => {
         tab.relay = null;
-        return PubSub.publish(outbox, { type: "attached", ...tab.key });
+        return PubSub.publish(outbox, { type: "attached", ...tab.key, ...identityFields });
       },
       { discard: true },
     ),

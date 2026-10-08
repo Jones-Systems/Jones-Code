@@ -13,6 +13,7 @@ import {
   DesktopBrowserCommand,
   DesktopBrowserEvent,
   type DesktopBrowserCommand as DesktopBrowserCommandType,
+  type PreviewAutomationRuntimeIdentity,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -54,6 +55,10 @@ export class DesktopBrowserChannel extends Context.Service<
     readonly awaitAttached: (key: DesktopTabKey, timeout: Duration.Input) => Effect.Effect<boolean>;
     /** Desktop tabs as they detach. */
     readonly detached: Stream.Stream<DesktopTabKey>;
+    readonly runtimeEvidence: (key: DesktopTabKey) => Effect.Effect<{
+      readonly runtimeIdentity: PreviewAutomationRuntimeIdentity | null;
+      readonly attachmentGeneration: number;
+    } | null>;
     readonly isAttached: (key: DesktopTabKey) => Effect.Effect<boolean>;
     /**
      * A one-connection CDP endpoint for an attached tab. Closing the scope
@@ -73,7 +78,14 @@ const make = Effect.gen(function* () {
   const inputFd = config.desktopBrowserFd;
   const controlFd = config.desktopBrowserControlFd;
   const changes = yield* PubSub.unbounded<{ key: DesktopTabKey; attached: boolean }>();
-  const attachedTabs = new Set<string>();
+  const attachedTabs = new Map<
+    string,
+    {
+      readonly runtimeIdentity: PreviewAutomationRuntimeIdentity | null;
+      readonly attachmentGeneration: number;
+    }
+  >();
+  let attachmentGeneration = 0;
   /** CDP frames from the desktop, per tab, for the endpoint connected to it. */
   const inbound = new Map<string, Queue.Queue<string>>();
   const writeLock = yield* Semaphore.make(1);
@@ -84,6 +96,7 @@ const make = Effect.gen(function* () {
       awaitAttached: () => Effect.succeed(false),
       detached: Stream.empty,
       isAttached: () => Effect.succeed(false),
+      runtimeEvidence: () => Effect.succeed(null),
       endpoint: () => Effect.die("No desktop app is attached to this server."),
       pointer: () => Effect.void,
     });
@@ -121,7 +134,10 @@ const make = Effect.gen(function* () {
           return queue ? Queue.offer(queue, event.message).pipe(Effect.asVoid) : Effect.void;
         }
         case "attached":
-          attachedTabs.add(id);
+          attachedTabs.set(id, {
+            runtimeIdentity: event.runtimeIdentity ?? null,
+            attachmentGeneration: ++attachmentGeneration,
+          });
           return PubSub.publish(changes, { key, attached: true });
         case "detached": {
           attachedTabs.delete(id);
@@ -217,6 +233,7 @@ const make = Effect.gen(function* () {
       Stream.map((change) => change.key),
     ),
     isAttached: (key) => Effect.sync(() => attachedTabs.has(keyOf(key))),
+    runtimeEvidence: (key) => Effect.sync(() => attachedTabs.get(keyOf(key)) ?? null),
     endpoint,
     pointer: (key, pointer) => command({ type: "pointer", ...key, ...pointer }),
   });

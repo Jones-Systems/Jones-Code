@@ -183,6 +183,13 @@ const asSession = (providerSessionId: string) => ({
   ...scope,
   thread: { ...testThread, providerSessionId },
 });
+const desktopRuntimeIdentity = {
+  schemaVersion: 1,
+  runtimeKind: "electron",
+  runtimeInstanceId: "desktop-fixture",
+  appVersion: "0.1.0",
+  buildCommit: null,
+} as const;
 const dependencies = Layer.mergeAll(
   Broker.layer,
   Manager.layer,
@@ -210,6 +217,12 @@ const dependencies = Layer.mergeAll(
       ),
     ),
     isAttached: (key) => Effect.sync(() => desktopRenders(key.tabId)),
+    runtimeEvidence: (key) =>
+      Effect.sync(() =>
+        desktopRenders(key.tabId)
+          ? { runtimeIdentity: desktopRuntimeIdentity, attachmentGeneration: 1 }
+          : null,
+      ),
     endpoint: (key) =>
       Effect.acquireRelease(Effect.succeed(`ws://desktop/${key.tabId}`), () =>
         Effect.sync(() => releasedDesktopTabs.push(key.tabId)),
@@ -709,6 +722,7 @@ it.live("a popup becomes the agent's own tab and keeps its opener page", () =>
         operation: "status",
         input: {},
       });
+      expect(status.selectedClient?.runtimeIdentity).toBeNull();
       expect(status.tabs).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ tabId }),
@@ -1054,7 +1068,10 @@ it.live("drives the desktop's own page for a tab the desktop renders", () =>
         input: {},
         tabId: PreviewTabId.make(opened.tabId),
       });
-      expect(evaluated).toMatchObject({ tabId: opened.tabId });
+      expect(evaluated).toMatchObject({
+        tabId: opened.tabId,
+        selectedClient: { runtimeIdentity: desktopRuntimeIdentity },
+      });
       // Closing the session lets go of the desktop's page without closing it.
       yield* manager.close({ threadId: scope.thread.threadId, tabId: opened.tabId });
       while (releasedDesktopTabs.length === 0) yield* Effect.yieldNow;
@@ -1089,4 +1106,111 @@ it.live("a desktop page the desktop takes back reconnects instead of closing", (
       expect(desktopConnections).toHaveLength(2);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.live("snapshot drains received controlled work while ping remains independent", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const started = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<Record<string, unknown>>();
+      const session = contexts[0]!.sessions[0]!;
+      const send = session.send.getMockImplementation()!;
+      session.send.mockImplementation(async (method, input) => {
+        if (method !== "Runtime.evaluate") return send(method, input);
+        started.resolve();
+        return finish.promise;
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => finish.resolve({ result: { value: true } })),
+      );
+      const action = yield* broker
+        .invoke({ scope, tabId, operation: "evaluate", input: { expression: "pending()" } })
+        .pipe(Effect.forkScoped);
+      yield* Effect.promise(() => started.promise);
+      let snapshotFinished = false;
+      const snapshot = yield* broker
+        .invoke({ scope, tabId, operation: "snapshot", input: {} })
+        .pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              snapshotFinished = true;
+            }),
+          ),
+          Effect.forkScoped,
+        );
+      yield* broker.invoke({ scope, tabId, operation: "ping", input: {}, timeoutMs: 1000 });
+      expect(snapshotFinished).toBe(false);
+      finish.resolve({ result: { value: true } });
+      yield* Fiber.join(action);
+      yield* Fiber.join(snapshot);
+      expect(snapshotFinished).toBe(true);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("does not replace a closed explicit reused tab with a new session", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      yield* manager.close({ threadId: scope.thread.threadId, tabId });
+      const before = contexts.length;
+      const result = yield* broker
+        .invoke({ scope, tabId, operation: "open", input: { show: false } })
+        .pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      expect(contexts.length).toBe(before);
+      yield* broker.invoke({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      expect(contexts.length).toBe(before + 1);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "a snapshot received before a control epoch change cannot act after its barrier drains",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { browser, broker, tabId } = yield* ready;
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        const started = Promise.withResolvers<void>();
+        const finish = Promise.withResolvers<Record<string, unknown>>();
+        const session = contexts[0]!.sessions[0]!;
+        const send = session.send.getMockImplementation()!;
+        session.send.mockImplementation(async (method, input) => {
+          if (method !== "Runtime.evaluate") return send(method, input);
+          started.resolve();
+          return finish.promise;
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => finish.resolve({ result: { value: true } })),
+        );
+        const running = yield* broker
+          .invoke({ scope, tabId, operation: "evaluate", input: { expression: "pending()" } })
+          .pipe(Effect.forkScoped);
+        yield* Effect.promise(() => started.promise);
+        const snapshot = yield* broker
+          .invoke({ scope, tabId, operation: "snapshot", input: {} })
+          .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+        // The later ping proves the snapshot was already received and registered.
+        yield* broker.invoke({ scope, tabId, operation: "ping", input: {} });
+        const takeover = yield* viewer.input({ type: "takeControl" }).pipe(Effect.forkScoped);
+        let control = yield* Queue.take(viewer.output);
+        while (control._tag !== "control" || control.controller !== "you")
+          control = yield* Queue.take(viewer.output);
+        const before = contexts[0]!.page.evaluate.mock.calls.length;
+        finish.resolve({ result: { value: true } });
+        yield* Fiber.join(running);
+        yield* Fiber.join(takeover);
+        expect(yield* Fiber.join(snapshot)).toMatchObject({
+          _tag: "PreviewAutomationControlInterruptedError",
+        });
+        expect(contexts[0]!.page.evaluate.mock.calls.length).toBe(before);
+      }),
+    ).pipe(Effect.provide(layer)),
 );

@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vite-plus/test";
+// @effect-diagnostics globalDate:off - Fake timers prove the native Promise queue deadline and permit lifecycle.
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
+import {
+  BrowserRequestDeadline,
+  BrowserActionNotStarted,
+  BrowserControlInterrupted,
+  SessionControl,
+} from "./SessionControl.ts";
 
 describe("SessionControl", () => {
   it("returns an action result before tracked navigation but drains it before already queued actions", async () => {
@@ -165,5 +171,88 @@ describe("SessionControl", () => {
       }),
     ).rejects.toThrow("navigation failed");
     await expect(control.agent("agent", async () => "recovered")).resolves.toBe("recovered");
+  });
+  it("expires a queued waiter without releasing active work or dispatching it later", async () => {
+    vi.useFakeTimers();
+    try {
+      const control = new SessionControl("agent");
+      const started = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const running = control.agent("agent", async () => {
+        started.resolve();
+        await finish.promise;
+      });
+      await started.promise;
+      let called = false;
+      const expired = expect(
+        control.agent(
+          "agent",
+          async () => {
+            called = true;
+          },
+          Date.now() + 10,
+        ),
+      ).rejects.toThrow(BrowserActionNotStarted);
+      await vi.advanceTimersByTimeAsync(10);
+      await expired;
+      let nextStarted = false;
+      const next = control.agent("agent", async () => {
+        nextStarted = true;
+      });
+      await Promise.resolve();
+      expect(nextStarted).toBe(false);
+      finish.resolve();
+      await Promise.all([running, next]);
+      expect(called).toBe(false);
+      expect(nextStarted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("BrowserRequestDeadline", () => {
+  it("bounds asynchronous preflight and snapshot waiting without allowing their late dispatch", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const stage of ["tab preflight", "snapshot barrier"]) {
+        const budget = new BrowserRequestDeadline(10);
+        const gate = Promise.withResolvers<void>();
+        let dispatched = false;
+        const work = gate.promise.then(() => {
+          budget.start();
+          dispatched = true;
+          return stage;
+        });
+        const response = expect(budget.response(work)).rejects.toThrow(BrowserActionNotStarted);
+        await vi.advanceTimersByTimeAsync(10);
+        await response;
+        expect(dispatched).toBe(false);
+        gate.resolve();
+        await expect(work).rejects.toThrow(BrowserActionNotStarted);
+        expect(dispatched).toBe(false);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("retains started work until it settles despite an elapsed deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const budget = new BrowserRequestDeadline(10);
+      const gate = Promise.withResolvers<string>();
+      const response = budget.response(gate.promise);
+      budget.start();
+      let settled = false;
+      void response.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(settled).toBe(false);
+      gate.resolve("settled");
+      await expect(response).resolves.toBe("settled");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

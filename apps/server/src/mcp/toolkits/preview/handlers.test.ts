@@ -11,6 +11,8 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { PreviewStandardToolkit } from "./tools.ts";
 
@@ -19,11 +21,7 @@ import {
   parseThreadSegmentFromAttachmentId,
 } from "../../../attachmentStore.ts";
 import * as ServerConfig from "../../../config.ts";
-import {
-  claimPreviewRecording,
-  normalizePreviewOpenInput,
-  PreviewStandardToolkitHandlersLive,
-} from "./handlers.ts";
+import { claimPreviewRecording, normalizePreviewOpenInput, layerStandard } from "./handlers.ts";
 
 describe("normalizePreviewOpenInput", () => {
   it("leaves an unstated visibility for the client preference to decide", () => {
@@ -169,11 +167,15 @@ describe("claimPreviewRecording", () => {
 it.effect("returns a successful click once when its decorative status never replies", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const scope: McpInvocationContext.McpInvocationScope = {
+      const scope: McpInvocationContext.McpThreadInvocationScope = {
         environmentId: EnvironmentId.make("handler-env"),
-        threadId: ThreadId.make("handler-thread"),
-        providerSessionId: "handler-session",
-        providerInstanceId: ProviderInstanceId.make("codex"),
+        requestNamespace: "handler-session",
+        thread: {
+          threadId: ThreadId.make("handler-thread"),
+          providerSessionId: "handler-session",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
         capabilities: new Set(["preview"]),
         issuedAt: 0,
       };
@@ -203,11 +205,14 @@ it.effect("returns a successful click once when its decorative status never repl
       ).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
       const dependencies = Layer.mergeAll(
+        McpToolAccessTestkit.liveThreadsLayer,
         Layer.succeed(PreviewAutomationBroker.PreviewAutomationBroker, broker),
         Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
       );
       const toolkit = yield* PreviewStandardToolkit.pipe(
-        Effect.provide(PreviewStandardToolkitHandlersLive.pipe(Layer.provide(dependencies))),
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(layerStandard).pipe(Layer.provide(dependencies)),
+        ),
       );
       const result = yield* toolkit
         .handle("preview_click", { x: 1, y: 1 })

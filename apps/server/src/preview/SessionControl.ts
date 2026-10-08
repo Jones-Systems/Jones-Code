@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off globalTimers:off - Native Promise queue deadlines share Playwright callback time and retain active work until settlement.
 import type { PreviewAutomationControlReason } from "@t3tools/contracts";
 
 export class BrowserControlInterrupted extends Error {
@@ -8,6 +9,43 @@ export class BrowserControlInterrupted extends Error {
   ) {
     super(message);
     this.reason = reason;
+  }
+}
+
+export class BrowserActionNotStarted extends Error {
+  constructor() {
+    super("The preview request deadline elapsed before its action started.");
+  }
+}
+
+export const assertBrowserActionDeadline = (deadlineMs?: number) => {
+  if (deadlineMs !== undefined && Date.now() >= deadlineMs) throw new BrowserActionNotStarted();
+};
+
+export class BrowserRequestDeadline {
+  readonly deadlineMs: number;
+  private started = false;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  constructor(timeoutMs: number) {
+    this.deadlineMs = Date.now() + timeoutMs;
+  }
+  start = () => {
+    assertBrowserActionDeadline(this.deadlineMs);
+    this.started = true;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+  };
+  response<A>(work: Promise<A>): Promise<A> {
+    const waiting = new Promise<never>((_, reject) => {
+      this.timer = setTimeout(
+        () => {
+          if (!this.started) reject(new BrowserActionNotStarted());
+        },
+        Math.max(0, this.deadlineMs - Date.now()),
+      );
+    });
+    return Promise.race([work, waiting]).finally(() => {
+      if (this.timer !== undefined) clearTimeout(this.timer);
+    });
   }
 }
 
@@ -62,18 +100,33 @@ export class SessionControl {
     this.onGenerationChange();
   }
 
-  private async action<A>(allowed: () => boolean, run: () => Promise<A>) {
+  private async action<A>(allowed: () => boolean, run: () => Promise<A>, deadlineMs?: number) {
+    assertBrowserActionDeadline(deadlineMs);
     this.assertOpen();
     if (!allowed()) throw new BrowserControlInterrupted("You do not control this browser tab.");
     const epoch = this.epoch;
-    return this.enqueue(async () => {
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const queued = this.enqueue(async () => {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      assertBrowserActionDeadline(deadlineMs);
       this.assertOpen();
       if (epoch !== this.epoch || !allowed()) throw new BrowserControlInterrupted();
       return run();
     });
+    if (deadlineMs === undefined) return queued;
+    const waiting = new Promise<never>((_, reject) => {
+      deadlineTimer = setTimeout(
+        () => reject(new BrowserActionNotStarted()),
+        Math.max(0, deadlineMs - Date.now()),
+      );
+    });
+    // Expiring a waiter does not release the running action's queue permit.
+    return Promise.race([queued, waiting]).finally(() => {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    });
   }
 
-  agent<A>(agentId: string, run: () => Promise<A>) {
+  agent<A>(agentId: string, run: () => Promise<A>, deadlineMs?: number) {
     if (this.agentId !== agentId)
       return Promise.reject(
         new BrowserControlInterrupted("This tab belongs to another agent.", "agentMismatch"),
@@ -82,7 +135,7 @@ export class SessionControl {
       return Promise.reject(
         new BrowserControlInterrupted("A human controls this tab.", "humanControl"),
       );
-    return this.action(() => this.agentId === agentId && this.owner === null, run);
+    return this.action(() => this.agentId === agentId && this.owner === null, run, deadlineMs);
   }
 
   /**

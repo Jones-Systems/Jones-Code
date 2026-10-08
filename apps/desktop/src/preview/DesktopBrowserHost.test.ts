@@ -7,6 +7,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as NodeEvents from "node:events";
 
+import * as DesktopAppIdentity from "../app/DesktopAppIdentity.ts";
+
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(DesktopBrowserEvent));
@@ -120,3 +122,25 @@ describe("DesktopBrowserHost", () => {
     }),
   );
 });
+
+it.effect("announces only the native runtime identity across backend restarts", () =>
+  Effect.gen(function* () {
+    const runtimeIdentity = {
+      schemaVersion: 1,
+      runtimeKind: "electron",
+      runtimeInstanceId: "native-fixture",
+      appVersion: "0.1.0",
+      buildCommit: null,
+    } as const;
+    const host = yield* DesktopBrowserHost.make.pipe(
+      Effect.provideService(DesktopAppIdentity.DesktopAppIdentity, {
+        previewAutomationRuntimeIdentity: Effect.succeed(runtimeIdentity),
+        resolveUserDataPath: Effect.die("unused"),
+        configure: Effect.void,
+      }),
+    );
+    host.attach(key, makeDebuggee().tab);
+    expect(yield* takeEvents(host, 1)).toEqual([{ type: "attached", ...key, runtimeIdentity }]);
+    expect(yield* takeEvents(host, 1)).toEqual([{ type: "attached", ...key, runtimeIdentity }]);
+  }),
+);

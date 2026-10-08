@@ -39,7 +39,7 @@ export const PREVIEW_AUTOMATION_V1_OPERATIONS = [
 ] as const;
 
 /** Advertised by current desktop hosts for mixed-version routing. */
-const PREVIEW_AUTOMATION_OPERATIONS = [
+export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
   "setColorScheme",
@@ -54,7 +54,10 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "select",
   "drag",
 ] as const;
-export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
+export const PreviewAutomationOperation = Schema.Literals([
+  ...PREVIEW_AUTOMATION_SERVER_OPERATIONS,
+  "ping",
+]);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
 
 const PreviewAutomationTabTargetFields = {
@@ -71,6 +74,15 @@ const PreviewAutomationTabTargetFields = {
 
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
+
+export const PreviewAutomationRuntimeIdentity = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  runtimeKind: Schema.Literal("electron"),
+  runtimeInstanceId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  appVersion: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  buildCommit: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/))),
+});
+export type PreviewAutomationRuntimeIdentity = typeof PreviewAutomationRuntimeIdentity.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
@@ -99,6 +111,15 @@ export const PreviewAutomationStatus = Schema.Struct({
   viewportSetting: Schema.optional(PreviewViewportSetting),
   /** Measured guest-page viewport in CSS pixels when a webview is ready. */
   viewport: Schema.optional(PreviewRenderedViewportSize),
+  selectedClient: Schema.optional(
+    Schema.Struct({
+      clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      connectionId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+      requestId: TrimmedNonEmptyString,
+      completedAt: Schema.String,
+      runtimeIdentity: Schema.NullOr(PreviewAutomationRuntimeIdentity),
+    }),
+  ),
   /** Server hosts: a file picker the page opened, answered with preview_upload. */
   fileChooser: Schema.optional(
     Schema.NullOr(Schema.Struct({ multiple: Schema.Boolean, accept: Schema.String })),
@@ -749,6 +770,11 @@ export const PreviewAutomationHost = Schema.Struct({
    * a newer server safely coexist with an older desktop during rollout.
    */
   supportedOperations: Schema.optional(Schema.Array(PreviewAutomationOperation)),
+  runtimeIdentity: Schema.optional(PreviewAutomationRuntimeIdentity),
+  /** Additive flags keep registration readable by servers with older operation enums. */
+  supportsPing: Schema.optional(Schema.Boolean),
+  /** Snapshot orders previously received controlled actions in this connection generation. */
+  supportsSnapshotBarrier: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationHost = typeof PreviewAutomationHost.Type;
 
@@ -805,6 +831,7 @@ export const PreviewAutomationResponse = Schema.Struct({
       _tag: TrimmedNonEmptyString,
       message: Schema.String,
       detail: Schema.optional(Schema.Unknown),
+      outcome: Schema.optional(Schema.Literals(["unknown", "reported", "not_started"])),
     }),
   ),
 });
@@ -856,6 +883,7 @@ const PreviewAutomationScopeErrorFields = {
 export const SERVER_BROWSER_AUTOMATION_CLIENT_ID = "server-browser";
 
 const PreviewAutomationRequestErrorFields = {
+  outcome: Schema.optional(Schema.Literals(["unknown", "reported", "not_started"])),
   ...PreviewAutomationScopeErrorFields,
   clientId: TrimmedNonEmptyString,
   connectionId: PreviewAutomationConnectionId,
@@ -886,6 +914,7 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
   "PreviewAutomationNoAvailableHostError",
   {
     ...PreviewAutomationScopeErrorFields,
+    reconnecting: Schema.optional(Schema.Boolean),
     clientId: Schema.optional(TrimmedNonEmptyString),
     connectionId: Schema.optional(PreviewAutomationConnectionId),
     requestId: Schema.optional(TrimmedNonEmptyString),
@@ -895,6 +924,8 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
   },
 ) {
   override get message(): string {
+    if (this.reconnecting)
+      return "The original browser host is reconnecting. This session will not migrate to another desktop during its 30-second affinity hold. Reconnect the same runtime or deliberately start a new provider session to rebind.";
     return `No preview automation host is available for ${this.operation} in environment ${this.environmentId}. Preview tools run in a T3 Code desktop app that is open and connected to this environment; a headless server has no browser of its own. Do not retry. To check a page, use a headless browser from the shell, such as Playwright, or curl, or ask the user to open this thread in the T3 Code desktop app.`;
   }
 }
@@ -930,11 +961,16 @@ export class PreviewAutomationTimeoutError extends Schema.TaggedError<PreviewAut
   {
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationOptionalRemoteDiagnosticFields,
+    unreconciled: Schema.optional(Schema.Boolean),
   },
 ) {
   override get message(): string {
+    if (this.unreconciled)
+      return "This browser tab has an earlier action with an unknown outcome. This action was not started. Reconcile controlled actions via preview_snapshot; other actions require their exact late reply.";
     const summary = `Preview automation ${this.operation} timed out after ${this.timeoutMs}ms.`;
-    return summary;
+    return this.outcome === "unknown"
+      ? `${summary} The action may have been applied; reconcile via preview_snapshot before repeating. A snapshot reconciles controlled page actions only; other actions require their late reply.`
+      : summary;
   }
 }
 

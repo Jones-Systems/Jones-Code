@@ -74,7 +74,13 @@ import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
-import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
+import {
+  BrowserRequestDeadline,
+  BrowserActionNotStarted,
+  assertBrowserActionDeadline,
+  BrowserControlInterrupted,
+  SessionControl,
+} from "./SessionControl.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
 const RENDER_SCALE = 2;
@@ -1457,9 +1463,36 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const runOperation = async (request: PreviewAutomationRequest): Promise<unknown> => {
+  const runOperation = async (
+    request: PreviewAutomationRequest,
+    deadlineMs: number,
+    connectionId: string,
+    onStart: () => void,
+    targetAtReceipt: { readonly tab: ServerTab; readonly generation: number } | undefined,
+  ): Promise<unknown> => {
+    const assertCurrentRequest = () => {
+      assertBrowserActionDeadline(deadlineMs);
+      if (hostConnectionId !== connectionId)
+        throw new BrowserControlInterrupted(
+          "The preview connection changed before this action started.",
+        );
+      if (
+        targetAtReceipt &&
+        (tabs.get(tabKey(targetAtReceipt.tab.threadId, targetAtReceipt.tab.tabId)) !==
+          targetAtReceipt.tab ||
+          targetAtReceipt.tab.closing ||
+          targetAtReceipt.tab.control.generation !== targetAtReceipt.generation)
+      )
+        throw new BrowserControlInterrupted(
+          "The preview target or its control changed before this action started.",
+          "interrupted",
+        );
+    };
+    assertCurrentRequest();
     const input = request.input;
     switch (request.operation) {
+      case "ping":
+        return {};
       case "status":
         return statusWithTitle(
           request.tabId === undefined
@@ -1498,11 +1531,18 @@ const make = Effect.gen(function* () {
                 ),
               )
             : undefined;
-        const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
+        assertCurrentRequest();
+        if (reuse && request.tabId !== undefined && !existing)
+          throw new BrowserControlInterrupted("The requested preview tab is closed.", "closed");
+        const navigationTimeout = Math.min(
+          Math.max(1, deadlineMs - Date.now()),
+          NAVIGATION_TIMEOUT_MS,
+        );
         if (!existing) {
           closeIdleAgentTabs();
           assertTabCapacity(request.agentSessionId);
         }
+        if (!existing) onStart();
         const tab =
           existing ??
           (await ensureTab(
@@ -1521,35 +1561,46 @@ const make = Effect.gen(function* () {
             "A browser dialog is pending. Read preview_status and use preview_dialog first.",
             "dialogPending",
           );
-        return tab.control.agent(request.agentSessionId, async () => {
-          if (tab.dialog)
-            throw new BrowserControlInterrupted(
-              "A browser dialog is pending. Read preview_status and use preview_dialog first.",
-              "dialogPending",
-            );
-          if (existing) {
-            if (url) await navigate(tab, url, "load", navigationTimeout);
-          } else {
-            // Await the original navigation failure even though background creation keeps the tab.
-            await tab.initialNavigation;
-          }
-          const reveal = open.open ?? open.show;
-          if (reveal !== false) {
-            await Effect.runPromise(
-              manager.requestReveal({
-                threadId: tab.threadId,
-                tabId: tab.tabId,
-                force: reveal === true,
-              }),
-            );
-          }
-          if (!existing && url) {
-            await tab.page
-              .waitForLoadState("load", { timeout: navigationTimeout })
-              .catch(constVoid);
-          }
-          return statusWithTitle(tab, request.agentSessionId);
-        });
+        return tab.control.agent(
+          request.agentSessionId,
+          async () => {
+            assertCurrentRequest();
+            if (tab.dialog)
+              throw new BrowserControlInterrupted(
+                "A browser dialog is pending. Read preview_status and use preview_dialog first.",
+                "dialogPending",
+              );
+            if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
+              throw new BrowserControlInterrupted(
+                "This browser tab is closed or replaced.",
+                "closed",
+              );
+            onStart();
+            if (existing) {
+              if (url) await navigate(tab, url, "load", navigationTimeout);
+            } else {
+              // Await the original navigation failure even though background creation keeps the tab.
+              await tab.initialNavigation;
+            }
+            const reveal = open.open ?? open.show;
+            if (reveal !== false) {
+              await Effect.runPromise(
+                manager.requestReveal({
+                  threadId: tab.threadId,
+                  tabId: tab.tabId,
+                  force: reveal === true,
+                }),
+              );
+            }
+            if (!existing && url) {
+              await tab.page
+                .waitForLoadState("load", { timeout: navigationTimeout })
+                .catch(constVoid);
+            }
+            return statusWithTitle(tab, request.agentSessionId);
+          },
+          deadlineMs,
+        );
       }
       case "recordingStop": {
         if (
@@ -1581,14 +1632,26 @@ const make = Effect.gen(function* () {
             "No recording is active for this thread.",
           );
         }
-        return tab.control.agent(request.agentSessionId ?? "", () => stopRecording(tab));
+        return tab.control.agent(
+          request.agentSessionId ?? "",
+          () => {
+            assertCurrentRequest();
+            onStart();
+            return stopRecording(tab);
+          },
+          deadlineMs,
+        );
       }
     }
     const tab = await requireTab(request);
+    assertCurrentRequest();
+    if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
+      throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
     // Closing must unblock an action waiting on a dialog, without queueing behind it.
     if (request.operation === "close") {
       if (tab.control.controller !== null)
         throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
+      onStart();
       void tab.control.close().catch(constVoid);
       await Effect.runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
       dropTab(tab, false);
@@ -1599,22 +1662,31 @@ const make = Effect.gen(function* () {
     if (request.operation === "dialog") {
       if (tab.control.controller !== null)
         throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
+      onStart();
       await resolveDialog(tab, input as PreviewAutomationDialogInput);
       return statusWithTitle(tab, request.agentSessionId);
     }
-    return tab.control.agent(request.agentSessionId!, async () => {
-      if (tab.dialog)
-        throw new BrowserControlInterrupted(
-          "A browser dialog is pending. Read preview_status and use preview_dialog first.",
-          "dialogPending",
-        );
-      const generation = tab.control.generation;
-      try {
-        return await executeTabOperation(tab, request);
-      } finally {
-        if (generation !== tab.control.generation) ServerBrowserPage.invalidateRefs(tab.page);
-      }
-    });
+    return tab.control.agent(
+      request.agentSessionId!,
+      async () => {
+        assertCurrentRequest();
+        if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
+          throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
+        if (tab.dialog)
+          throw new BrowserControlInterrupted(
+            "A browser dialog is pending. Read preview_status and use preview_dialog first.",
+            "dialogPending",
+          );
+        const generation = tab.control.generation;
+        onStart();
+        try {
+          return await executeTabOperation(tab, request);
+        } finally {
+          if (generation !== tab.control.generation) ServerBrowserPage.invalidateRefs(tab.page);
+        }
+      },
+      deadlineMs,
+    );
   };
 
   const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
@@ -1703,10 +1775,66 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
-    Effect.tryPromise({
-      try: () => runOperation(request).finally(() => markUsed(request)),
-      catch: ServerBrowserPage.toOperationError,
+  const receivedActions = new Map<string, Set<Promise<unknown>>>();
+  const controlledOperations = new Set(["click", "type", "press", "scroll", "evaluate"]);
+  const handleRequest = (connectionId: string, request: PreviewAutomationRequest) => {
+    const receivedTab =
+      request.operation === "ping" || request.operation === "status"
+        ? undefined
+        : request.operation === "open" &&
+            (request.input as PreviewAutomationOpenInput).reuseExistingTab === false
+          ? undefined
+          : request.tabId === undefined
+            ? latestThreadTab(request.threadId, request.agentSessionId)
+            : tabs.get(tabKey(request.threadId, request.tabId));
+    const targetAtReceipt =
+      receivedTab === undefined
+        ? undefined
+        : { tab: receivedTab, generation: receivedTab.control.generation };
+    const budget = new BrowserRequestDeadline(request.timeoutMs);
+    const deadlineMs = budget.deadlineMs;
+    const key = `${connectionId}\u0000${request.threadId}\u0000${request.tabId ?? ""}`;
+    const predecessors =
+      request.operation === "snapshot" ? Array.from(receivedActions.get(key) ?? []) : [];
+    // Register at receive time, before asynchronous tab resolution can reorder actions.
+    const work = Promise.resolve()
+      .then(async () => {
+        await Promise.allSettled(predecessors);
+        assertBrowserActionDeadline(deadlineMs);
+        return runOperation(request, deadlineMs, connectionId, budget.start, targetAtReceipt);
+      })
+      .finally(() => markUsed(request));
+    // Respond to preflight expiry while retaining the original work in the receive barrier.
+    const response = budget.response(work);
+    if (controlledOperations.has(request.operation)) {
+      const actions = receivedActions.get(key) ?? new Set<Promise<unknown>>();
+      actions.add(work);
+      receivedActions.set(key, actions);
+      const remove = () => {
+        actions.delete(work);
+        if (actions.size === 0) receivedActions.delete(key);
+      };
+      void work.then(remove, remove);
+    }
+    return Effect.tryPromise({
+      try: () => response,
+      catch: (cause) =>
+        cause instanceof BrowserActionNotStarted
+          ? {
+              tag: "PreviewAutomationTimeoutError",
+              message: cause.message,
+              detail: undefined,
+              outcome: "not_started" as const,
+            }
+          : (() => {
+              const error = ServerBrowserPage.toOperationError(cause);
+              return {
+                tag: error.tag,
+                message: error.message,
+                detail: error.detail,
+                outcome: undefined,
+              };
+            })(),
     }).pipe(
       Effect.match({
         onSuccess: (result) => ({ ok: true as const, result }),
@@ -1715,6 +1843,7 @@ const make = Effect.gen(function* () {
           error: {
             _tag: error.tag,
             message: error.message,
+            ...(error.outcome === undefined ? {} : { outcome: error.outcome }),
             ...(error.detail === undefined ? {} : { detail: error.detail }),
           },
         }),
@@ -1729,6 +1858,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.ignore,
     );
+  };
 
   const mirrorManagerEvent = (event: PreviewEvent) =>
     Effect.promise(async () => {
@@ -2153,8 +2283,20 @@ const make = Effect.gen(function* () {
         clientId: SERVER_HOST_CLIENT_ID,
         environmentId,
         supportedOperations: [...PREVIEW_AUTOMATION_SERVER_OPERATIONS],
+        supportsPing: true,
+        supportsSnapshotBarrier: true,
       },
-      { preferred: true },
+      {
+        preferred: true,
+        resolveRuntimeEvidence: ({ threadId, tabId }) =>
+          Effect.suspend(() => {
+            if (tabId === undefined) return Effect.succeed(null);
+            const tab = tabs.get(tabKey(threadId, tabId));
+            return tab?.desktop && !tab.closing && tab.threadId === threadId
+              ? desktopChannel.runtimeEvidence({ threadId, tabId })
+              : Effect.succeed(null);
+          }),
+      },
     )
     .pipe(
       Effect.flatMap((events) =>
