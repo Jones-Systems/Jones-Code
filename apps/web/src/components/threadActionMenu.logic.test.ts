@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  canStopThreadSession,
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
   type ThreadActionMenuState,
@@ -17,6 +18,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
+  canStopSession: false,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -39,7 +41,38 @@ function allIds(state: ThreadActionMenuState): string[] {
   return flatten(buildThreadActionMenuItems(state));
 }
 
+describe("canStopThreadSession", () => {
+  it("requires a non-stopped projected session, including an idle or errored attachment", () => {
+    expect(canStopThreadSession(null)).toBe(false);
+    expect(canStopThreadSession([])).toBe(false);
+    expect(canStopThreadSession([{ status: "stopped" }, { status: "stopped" }])).toBe(false);
+    for (const status of ["starting", "ready", "running", "waiting", "error"] as const) {
+      expect(canStopThreadSession([{ status: "stopped" }, { status }])).toBe(true);
+    }
+  });
+});
+
 describe("buildThreadActionMenuItems", () => {
+  it("places Stop after settlement and disables it after all sessions stop", () => {
+    const items = buildThreadActionMenuItems({ ...baseState, canStopSession: true });
+    expect(items[items.findIndex((item) => item.id === "settle") + 1]).toMatchObject({
+      id: "stop-thread",
+      label: "Stop thread",
+      icon: "square",
+      disabled: false,
+    });
+    expect(
+      buildThreadActionMenuItems(baseState).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: true });
+    expect(
+      buildThreadActionMenuItems({
+        ...baseState,
+        isPinned: true,
+        isSettled: true,
+        canStopSession: true,
+      }).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: false });
+  });
   it.each([false, true])(
     "disables both lifecycle directions without permission (reversed: %s)",
     (reversed) => {
@@ -54,6 +87,7 @@ describe("buildThreadActionMenuItems", () => {
         ? [
             "unpin",
             "unsettle",
+            "stop-thread",
             "unsnooze",
             "rename",
             "regenerate-title",
@@ -64,6 +98,7 @@ describe("buildThreadActionMenuItems", () => {
         : [
             "pin",
             "settle",
+            "stop-thread",
             "snooze",
             "rename",
             "regenerate-title",
@@ -87,11 +122,15 @@ describe("buildThreadActionMenuItems", () => {
       "copy",
       "project-settings",
     ]);
-    const allowed = buildThreadActionMenuItems({ ...baseState, canOperate: true });
+    const allowed = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: true,
+      canStopSession: true,
+    });
     expect(allowed.every((item) => !item.disabled)).toBe(true);
   });
 
-  it("hides lifecycle items when the environment lacks the capabilities", () => {
+  it("hides capability-gated items while keeping Stop available as a disabled action", () => {
     expect(
       ids({
         ...baseState,
@@ -103,7 +142,15 @@ describe("buildThreadActionMenuItems", () => {
           titleRegeneration: false,
         },
       }),
-    ).toEqual(["rename", "mark-unread", "copy", "project-settings", "archive", "delete"]);
+    ).toEqual([
+      "stop-thread",
+      "rename",
+      "mark-unread",
+      "copy",
+      "project-settings",
+      "archive",
+      "delete",
+    ]);
   });
 
   it("groups project settings with utility actions before archive", () => {

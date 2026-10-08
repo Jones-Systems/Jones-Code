@@ -186,13 +186,24 @@ const authorizeRequest = Effect.fn("EnvironmentRpc.authorize")(function* (
 
 export const requestGuarded = Effect.fn("EnvironmentRpc.request")(function* <
   TTag extends EnvironmentUnaryRpcTag,
->(tag: TTag, input: EnvironmentRpcInput<TTag>) {
+  E = never,
+  R = never,
+>(
+  tag: TTag,
+  input: EnvironmentRpcInput<TTag>,
+  options?: {
+    readonly validateSession: (session: RpcSession) => Effect.Effect<void, E, R>;
+  },
+) {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   yield* Effect.annotateCurrentSpan({
     "environment.id": supervisor.target.environmentId,
     "rpc.method": tag,
   });
   const session = yield* currentSession();
+  if (options !== undefined) {
+    yield* options.validateSession(session);
+  }
   yield* authorizeRequest(tag, input);
   const observer = yield* EnvironmentRpcRequestObserver;
   const method = session.client[tag] as (
@@ -437,10 +448,17 @@ export function subscribe<TTag extends EnvironmentSubscriptionRpcTag>(
 }
 
 /** Protected writes must go through the permission-aware command layer. */
-export const request = <TTag extends Exclude<EnvironmentUnaryRpcTag, ClientGuardedRpcTag>>(
+export const request = <
+  TTag extends Exclude<EnvironmentUnaryRpcTag, ClientGuardedRpcTag>,
+  E = never,
+  R = never,
+>(
   tag: TTag,
   input: EnvironmentRpcInput<TTag>,
-) => requestGuarded(tag, input);
+  options?: {
+    readonly validateSession: (session: RpcSession) => Effect.Effect<void, E, R>;
+  },
+) => requestGuarded(tag, input, options);
 
 export const runStream = <
   TTag extends Exclude<EnvironmentStreamCommandRpcTag, ClientGuardedRpcTag>,

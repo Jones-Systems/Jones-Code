@@ -21,6 +21,7 @@ const state = vi.hoisted(() => ({
   granted: new Set<string>(),
   effects: [] as string[],
   completed: deferred<void>(),
+  shown: deferred<void>(),
   show: vi.fn<
     (
       items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
@@ -35,7 +36,8 @@ function recordEffect(action: string) {
 }
 
 vi.mock("../components/CustomSnoozeDialog", () => ({ requestCustomSnooze: vi.fn() }));
-vi.mock("react", () => ({
+vi.mock("react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react")>()),
   useCallback: (callback: unknown) => callback,
   useMemo: (factory: () => unknown) => factory(),
 }));
@@ -65,7 +67,19 @@ vi.mock("../state/entities", () => ({
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
 }));
 vi.mock("../state/environments", () => ({ usePrimaryEnvironmentId: () => "primary" }));
-vi.mock("../state/threads", () => ({ threadEnvironment: { updateMetadata: "metadata" } }));
+vi.mock("../state/threads", () => ({
+  threadEnvironment: { updateMetadata: "metadata", stopSession: "stop-session" },
+}));
+vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: {} }));
+vi.mock("../state/orchestration", () => ({
+  orchestrationEnvironment: {
+    v2: { threadProjection: () => "thread-projection" },
+  },
+}));
+vi.mock("@t3tools/client-runtime/state/runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@t3tools/client-runtime/state/runtime")>()),
+  executeAtomQuery: async () => AsyncResult.success({ providerSessions: [] }),
+}));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: () => async () => {
     recordEffect("metadata");
@@ -74,7 +88,14 @@ vi.mock("../state/use-atom-command", () => ({
 }));
 vi.mock("../localApi", () => ({
   readLocalApi: () => ({
-    contextMenu: { show: state.show, close: () => {} },
+    contextMenu: {
+      show: (...args: Parameters<typeof state.show>) => {
+        const choice = state.show(...args);
+        state.shown.resolve();
+        return choice;
+      },
+      close: () => {},
+    },
     dialogs: {
       confirm: async () => {
         recordEffect("confirm");
@@ -162,32 +183,38 @@ beforeEach(() => {
   state.granted = new Set(["primary"]);
   state.effects = [];
   state.completed = deferred<void>();
+  state.shown = deferred<void>();
   state.show.mockReset().mockResolvedValue(null);
 });
 
 describe("thread menu permissions", () => {
-  it("disables mutations for a denied secondary environment", () => {
+  it("disables mutations for a denied secondary environment", async () => {
     createMenu().openMenu(position);
+    await state.shown.promise;
     const items = state.show.mock.calls[0]![0];
     expect(items.find((item) => item.id === "rename")?.disabled).toBe(true);
     expect(items.find((item) => item.id === "delete")?.disabled).toBe(true);
     expect(items.find((item) => item.id === "copy")?.disabled).not.toBe(true);
   });
 
-  it("allows the target grant even when the primary environment is denied", () => {
+  it("allows the target grant even when the primary environment is denied", async () => {
     state.granted = new Set(["secondary"]);
     createMenu().openMenu(position);
+    await state.shown.promise;
     expect(state.show.mock.calls[0]![0].find((item) => item.id === "rename")?.disabled).not.toBe(
       true,
     );
   });
 
-  it("refreshes availability when a retained menu opener gains permission", () => {
+  it("refreshes availability when a retained menu opener gains permission", async () => {
     const menu = createMenu();
     menu.openMenu(position);
+    await state.shown.promise;
     expect(state.show.mock.calls[0]![0].find((item) => item.id === "rename")?.disabled).toBe(true);
     state.granted.add("secondary");
+    state.shown = deferred<void>();
     menu.openMenu(position);
+    await state.shown.promise;
     expect(state.show.mock.calls[1]![0].find((item) => item.id === "rename")?.disabled).not.toBe(
       true,
     );
@@ -200,6 +227,7 @@ describe("thread menu permissions", () => {
       const choice = deferred<ThreadActionMenuId | null>();
       state.show.mockReturnValue(choice.promise);
       createMenu().openMenu(position);
+      await state.shown.promise;
       state.granted.delete("secondary");
       choice.resolve(action);
       await state.completed.promise;

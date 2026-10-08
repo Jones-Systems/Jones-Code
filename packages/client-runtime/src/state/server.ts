@@ -42,6 +42,7 @@ import {
   isRpcClientError,
   EnvironmentRpcUnavailableError,
   request,
+  requestGuarded,
   runStream,
   subscribe,
   subscribeDynamicWithSession,
@@ -1135,7 +1136,7 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:read-token-accounting",
       tag: WS_METHODS.serverReadTokenAccounting,
       execute: (input) =>
-        request(WS_METHODS.serverReadTokenAccounting, input, {
+        requestGuarded(WS_METHODS.serverReadTokenAccounting, input, {
           validateSession: (session) =>
             Effect.gen(function* () {
               const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;

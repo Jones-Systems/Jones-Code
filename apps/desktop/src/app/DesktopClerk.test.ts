@@ -172,7 +172,7 @@ describe("DesktopClerk", () => {
       return Effect.gen(function* () {
         yield* Effect.scoped(
           Layer.build(
-            makeDesktopClerkLayer(
+            layerDesktopClerk(
               false,
               events,
               "win32",

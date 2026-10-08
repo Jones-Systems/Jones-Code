@@ -57,6 +57,7 @@ import * as DesktopAppSettings from "./settings/DesktopAppSettings.ts";
 import * as DesktopPreReadyFileSystem from "./app/DesktopPreReadyFileSystem.ts";
 import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
+import * as DesktopDeviceMediaTunnel from "./jones/deviceMedia/DesktopDeviceMediaTunnel.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
 import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopState from "./app/DesktopState.ts";
@@ -162,7 +163,7 @@ const layerDesktopServerExposure = DesktopServerExposure.layer.pipe(
 );
 
 const layerDesktopPreview = PreviewManager.layer.pipe(
-  Layer.provideMerge(DesktopBrowserHost.layer),
+  Layer.provideMerge(DesktopBrowserHost.layer.pipe(Layer.provide(DesktopAppIdentity.layer))),
   // Merged rather than provided so the IPC handlers can reach the import
   // service alongside the manager; both sit on the same BrowserSession.
   Layer.provideMerge(BrowserImport.layer.pipe(Layer.provide(LinuxBrowserSecret.layer))),
@@ -215,6 +216,7 @@ const layerDesktopApplication = Layer.mergeAll(
   DesktopLinuxUrlHandler.layer,
   DesktopShellEnvironment.layer,
   layerDesktopSsh,
+  DesktopDeviceMediaTunnel.layer,
 ).pipe(
   Layer.provideMerge(layerDesktopSnapShot),
   Layer.provideMerge(DesktopUpdates.layer),

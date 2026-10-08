@@ -3,6 +3,7 @@ import { followStreamInEnvironment } from "./environmentStreams.ts";
 export { runStreamInEnvironment, followStreamInEnvironment } from "./environmentStreams.ts";
 import {
   type ClientGuardedRpcTag,
+  type EnvironmentAuthorizationError,
   EnvironmentId,
   type EnvironmentId as EnvironmentIdType,
 } from "@t3tools/contracts";
@@ -721,6 +722,7 @@ export function createEnvironmentRpcCommand<
   R,
   ER,
   TTag extends EnvironmentUnaryRpcTag,
+  E = never,
   Input extends EnvironmentRpcInput<TTag> = EnvironmentRpcInput<TTag>,
 >(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
@@ -731,7 +733,7 @@ export function createEnvironmentRpcCommand<
       input: Input,
     ) => Effect.Effect<
       EnvironmentRpcSuccess<TTag>,
-      EnvironmentRpcFailure<TTag> | EnvironmentRpcUnavailableError,
+      EnvironmentRpcFailure<TTag> | EnvironmentRpcUnavailableError | E,
       EnvironmentSupervisor.EnvironmentSupervisor | EnvironmentRegistry.EnvironmentRegistry
     >;
     readonly scheduler?: AtomCommandScheduler;
@@ -767,8 +769,16 @@ export function createEnvironmentRpcCommand<
       };
       // Routing requires consent on the origin as well as the actual destination.
       // The transport check below deliberately checks the destination again.
+      const execute = (): Effect.Effect<
+        EnvironmentRpcSuccess<TTag>,
+        | EnvironmentRpcFailure<TTag>
+        | EnvironmentRpcUnavailableError
+        | EnvironmentAuthorizationError
+        | E,
+        EnvironmentSupervisor.EnvironmentSupervisor | EnvironmentRegistry.EnvironmentRegistry
+      > => options.execute?.(input) ?? requestGuarded(options.tag, input);
       return permissions.authorize(registry, environmentId, input).pipe(
-        Effect.andThen(() => options.execute?.(input) ?? requestGuarded(options.tag, input)),
+        Effect.andThen(execute),
         Effect.provideService(RpcPermissionGuard, {
           authorize: (id, method, payload) =>
             createCommandPermissions(runtime, method).authorize(registry, id, payload),

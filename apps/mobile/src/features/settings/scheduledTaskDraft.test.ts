@@ -6,7 +6,7 @@ import {
   ProviderInstanceId,
   ProjectId,
   ScheduledTaskId,
-  type ScheduledTask,
+  ScheduledTask,
   ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import {
@@ -364,6 +364,48 @@ describe("scheduled task model defaults", () => {
 });
 
 describe("scheduled-task form save and reopen", () => {
+  it.each([true, false])(
+    "saves the current webhook signature while keeping automatic base and origin %s",
+    (startFromOrigin) => {
+      const staleSignature = {
+        header: "x-old-signature",
+        encoding: "hex" as const,
+        prefix: "old=",
+      };
+      const currentSignature = {
+        header: "x-current-signature",
+        encoding: "hex" as const,
+        prefix: "sha256=",
+      };
+      const task: ScheduledTask = {
+        ...legacyTask,
+        workspaceStrategy: { type: "worktree", startFromOrigin },
+        schedule: { type: "webhook", signature: staleSignature, maxDeliveryAgeMinutes: 45 },
+      };
+      const draft = editDraft(task);
+      const currentSchedule = scheduleFromDraft({
+        ...draft.schedule,
+        signature: currentSignature,
+      });
+      const saved = Schema.decodeUnknownSync(ScheduledTaskUpsertInput)(
+        scheduledTaskUpsertInputFromDraft(draft, currentSchedule),
+      );
+
+      expect(saved.schedule).toEqual({
+        type: "webhook",
+        signature: currentSignature,
+        maxDeliveryAgeMinutes: 45,
+      });
+      expect(saved.workspaceStrategy).toEqual({ type: "worktree", startFromOrigin });
+      expect(saved.workspaceStrategy).not.toHaveProperty("baseRef");
+      expect(draft.schedule.signature).toEqual(staleSignature);
+      const reopened = editDraft(Schema.decodeUnknownSync(ScheduledTask)({ ...task, ...saved }));
+      expect(reopened.schedule.signature).toEqual(currentSignature);
+      expect(reopened.baseRef).toBe("");
+      expect(reopened.startFromOrigin).toBe(startFromOrigin);
+    },
+  );
+
   it.each([true, false])("keeps automatic base omitted with origin %s", (startFromOrigin) => {
     const task: ScheduledTask = {
       ...legacyTask,
@@ -389,7 +431,7 @@ describe("scheduled-task form save and reopen", () => {
       interactionMode: task.interactionMode,
       creationSource: task.creationSource,
     });
-    const reopened = editDraft({ ...task, ...saved });
+    const reopened = editDraft(Schema.decodeUnknownSync(ScheduledTask)({ ...task, ...saved }));
     expect(reopened.baseRef).toBe("");
     expect(reopened.startFromOrigin).toBe(startFromOrigin);
     expect(hasScheduledTaskDraftChanges(draft, reopened)).toBe(false);
@@ -405,7 +447,9 @@ describe("scheduled-task form save and reopen", () => {
       baseRef: "release/stable",
       startFromOrigin,
     });
-    const reopened = editDraft({ ...legacyTask, ...saved });
+    const reopened = editDraft(
+      Schema.decodeUnknownSync(ScheduledTask)({ ...legacyTask, ...saved }),
+    );
     expect(reopened.baseRef).toBe("release/stable");
     expect(reopened.startFromOrigin).toBe(startFromOrigin);
     expect(reopened.prompt).toBe(legacyTask.prompt);

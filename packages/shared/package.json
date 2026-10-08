@@ -3,6 +3,18 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/importedHistoryCanonical": {
+      "types": "./src/jones/importedHistoryCanonical.ts",
+      "import": "./src/jones/importedHistoryCanonical.ts"
+    },
+    "./jones/workMode": {
+      "types": "./src/jones/workMode.ts",
+      "import": "./src/jones/workMode.ts"
+    },
+    "./conversationLibrary": {
+      "types": "./src/conversationLibrary.ts",
+      "import": "./src/conversationLibrary.ts"
+    },
     "./orchestrationV2ThreadError": {
       "types": "./src/orchestrationV2ThreadError.ts",
       "import": "./src/orchestrationV2ThreadError.ts"
@@ -402,6 +414,10 @@
     "./codexAuthHandoff": {
       "types": "./src/codexAuthHandoff.ts",
       "import": "./src/codexAuthHandoff.ts"
+    },
+    "./jones/jonesActions": {
+      "types": "./src/jones/jonesActions.ts",
+      "import": "./src/jones/jonesActions.ts"
     },
     "./mcpApp": {
       "types": "./src/mcpApp.ts",

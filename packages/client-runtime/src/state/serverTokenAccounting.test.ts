@@ -1,11 +1,15 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  AuthDiagnosticsReadScope,
+  AuthOrchestrationReadScope,
+  type AuthSessionState,
   EnvironmentId,
   type ServerConfig,
   type TokenAccountingReadResult,
   WS_METHODS,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -14,7 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -28,6 +32,13 @@ import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { createServerEnvironmentAtoms } from "./server.ts";
+
+vi.mock("./session.ts", () => ({
+  createEnvironmentSessionAtoms: () => ({ sessionStateAtom: grantedSessions }),
+}));
+const grantedSessions = Atom.family((_id: EnvironmentId) =>
+  Atom.make<AsyncResult.AsyncResult<AuthSessionState>>(AsyncResult.initial()),
+);
 
 const target = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("accounting-environment"),
@@ -46,6 +57,7 @@ const result: TokenAccountingReadResult = {
 const makeHarness = Effect.fn("ServerTokenAccountingTest.makeHarness")(function* (
   supported = true,
   connected = true,
+  diagnosticsGranted = true,
 ) {
   const config = {
     settings: DEFAULT_SERVER_SETTINGS,
@@ -117,6 +129,25 @@ const makeHarness = Effect.fn("ServerTokenAccountingTest.makeHarness")(function*
   });
   const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
     Effect.sync(() => registry.dispose()),
+  );
+  const sessionState = grantedSessions(target.environmentId);
+  yield* Effect.acquireRelease(
+    Effect.sync(() => registry.mount(sessionState)),
+    (unmount) => Effect.sync(unmount),
+  );
+  registry.set(
+    sessionState,
+    AsyncResult.success({
+      authenticated: true,
+      auth: {
+        policy: "remote-reachable",
+        bootstrapMethods: [],
+        sessionMethods: [],
+        sessionCookieName: "test",
+      },
+      scopes: diagnosticsGranted ? [AuthDiagnosticsReadScope] : [AuthOrchestrationReadScope],
+      permissions: diagnosticsGranted ? [AuthDiagnosticsReadScope] : [AuthOrchestrationReadScope],
+    }),
   );
   return { atoms, registry, sessionRef, session, config, reads: () => reads };
 });
@@ -245,6 +276,25 @@ it.effect("keeps a disconnected reader failure local without dispatch", () =>
         }),
       );
       expect(read._tag).toBe("Failure");
+      expect(harness.reads()).toBe(0);
+    }),
+  ),
+);
+
+it.effect("refuses saved accounting without diagnostics access before dispatch", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(true, true, false);
+      const read = yield* Effect.promise(() =>
+        harness.atoms.readTokenAccounting.run(harness.registry, {
+          environmentId: target.environmentId,
+          input: {},
+        }),
+      );
+      expect(read._tag).toBe("Failure");
+      if (read._tag === "Failure") {
+        expect(Cause.pretty(read.cause)).toContain(`requires ${AuthDiagnosticsReadScope}`);
+      }
       expect(harness.reads()).toBe(0);
     }),
   ),

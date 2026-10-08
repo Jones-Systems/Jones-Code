@@ -16,9 +16,8 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { jonesUpdates } from "~/jones/updates/jonesUpdates";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
 import { CircleArrowUpIcon } from "lucide-react";

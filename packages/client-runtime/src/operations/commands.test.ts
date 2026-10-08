@@ -1046,7 +1046,7 @@ describe("V2 environment commands", () => {
           })),
         );
         expect(result).toEqual({ sequence: 2 });
-      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+      }).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect("does not dispatch any lifecycle command when no provider sessions remain", () =>
@@ -1063,7 +1063,7 @@ describe("V2 environment commands", () => {
       }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
       expect(commands).toEqual([]);
       expect(result).toEqual({ sequence: 0 });
-    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+    }).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect("dispatches settle and unsettle commands without timestamps", () =>
@@ -1253,7 +1253,7 @@ it.effect.each([true, false, undefined] as const)(
           expect(commands.at(-1)).not.toHaveProperty("queuedToolBoundaryEligible");
         }
       }
-    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+    }).pipe(Effect.provide(layerTestCrypto)),
 );
 
 const automaticWorktreeTurn = {
@@ -1367,7 +1367,7 @@ describe("v2 worktree start compatibility", () => {
       expect(launches).toEqual([withBaseRef("origin/develop")]);
       expect(commands).toEqual([]);
       expect(automaticWorktreeTurn.bootstrap.prepareWorktree).not.toHaveProperty("baseBranch");
-    }).pipe(Effect.provide(TEST_CRYPTO_LAYER), Effect.scoped),
+    }).pipe(Effect.provide(layerTestCrypto), Effect.scoped),
   );
 
   it.effect("passes automatic intent directly to capable servers without the client hint", () =>
@@ -1391,7 +1391,7 @@ describe("v2 worktree start compatibility", () => {
       expect(lookups).toEqual([]);
       expect(launches).toEqual([automaticWorktreeLaunch]);
       expect(commands).toEqual([]);
-    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+    }).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect(
@@ -1443,7 +1443,7 @@ describe("v2 worktree start compatibility", () => {
             workspaceStrategy: { type: "worktree", startFromOrigin: true },
           })),
         );
-      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+      }).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect("preserves an explicit base and skips lookup for current-checkout launches", () =>
@@ -1483,7 +1483,7 @@ describe("v2 worktree start compatibility", () => {
         { ...automaticWorktreeLaunch, workspaceStrategy: { type: "root" } },
       ]);
       expect(commands).toEqual([]);
-    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+    }).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect("uses the current local branch when an older server reports no default", () =>
@@ -1504,7 +1504,7 @@ describe("v2 worktree start compatibility", () => {
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
       );
       expect(launches).toEqual([withBaseRef("feature/local")]);
-    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+    }).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect("fails clearly without launching when no valid automatic base exists", () =>
@@ -1527,7 +1527,7 @@ describe("v2 worktree start compatibility", () => {
       }
       expect(launches).toEqual([]);
       expect(commands).toEqual([]);
-    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+    }).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect("propagates lookup failure without launching or retrying", () =>
@@ -1559,6 +1559,6 @@ describe("v2 worktree start compatibility", () => {
       expect(lookupCount).toBe(1);
       expect(launches).toEqual([]);
       expect(commands).toEqual([]);
-    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+    }).pipe(Effect.provide(layerTestCrypto)),
   );
 });

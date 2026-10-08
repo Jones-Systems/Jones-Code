@@ -1,5 +1,7 @@
 "use client";
 
+import { useCurrentRuntimeStop } from "../hooks/useCurrentRuntimeStop";
+
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -732,9 +734,7 @@ function OpenCommandPaletteDialog(props: {
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
-  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
-    reportFailure: false,
-  });
+  const restartCurrentRuntime = useCurrentRuntimeStop();
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1981,37 +1981,41 @@ function OpenCommandPaletteDialog(props: {
       searchTerms: ["restart", "reset", "reload", "agent", "session", "skills", "plugins", "mcp"],
       title: "Restart agent session",
       icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
-      // Stopping the provider process keeps the conversation: the next message
-      // spawns a fresh one that resumes it and reloads skills, plugins, and MCP
-      // servers. The fresh workspace scan updates the composer's slash menu.
-      // Failures throw into executeItem's error toast.
       run: async () => {
         const { environmentId } = thread;
-        if (thread.runtime !== null) {
-          const stopped = await stopThreadSession({
-            environmentId,
-            input: { threadId: thread.id },
-          });
-          if (stopped._tag === "Failure") throw squashAtomCommandFailure(stopped);
-        }
-        // The server stops the process after accepting the command. A failed
-        // stop shows in the thread.
-        toastManager.add({
-          type: "success",
-          title: "Agent session will restart",
-          description: "Your next message starts a fresh session.",
-        });
-        const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
-        if (!project) return;
-        const refreshed = await refreshProviders({
-          environmentId,
-          input: {
-            instanceId: thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
-            cwd: thread.worktreePath ?? project.workspaceRoot,
-            fresh: true,
+        const result = await restartCurrentRuntime(
+          scopeThreadRef(environmentId, thread.id),
+          activeThreadServerConfig?.environment.capabilities.currentRuntimeStop,
+          async (target) => {
+            const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
+            if (!project)
+              throw new Error("The thread project is unavailable for provider refresh.");
+            const refreshed = await refreshProviders({
+              environmentId,
+              input: {
+                instanceId: target.binding.providerInstanceId,
+                cwd: thread.worktreePath ?? project.workspaceRoot,
+                fresh: true,
+              },
+            });
+            if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
           },
+        );
+        toastManager.add({
+          type:
+            result.status === "stopped"
+              ? "success"
+              : result.status === "accepted"
+                ? "info"
+                : "error",
+          title:
+            result.status === "stopped"
+              ? "Agent session stopped"
+              : result.status === "accepted"
+                ? "Agent stop accepted"
+                : "Agent stop not confirmed",
+          description: result.reason,
         });
-        if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
       },
     });
   }

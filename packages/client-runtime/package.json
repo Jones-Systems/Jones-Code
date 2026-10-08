@@ -3,6 +3,26 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/imported-history/commands": {
+      "types": "./src/jones/importedHistory/commands.ts",
+      "default": "./src/jones/importedHistory/commands.ts"
+    },
+    "./jones/imported-history/continuation": {
+      "types": "./src/jones/importedHistory/continuation.ts",
+      "default": "./src/jones/importedHistory/continuation.ts"
+    },
+    "./voice-review/fixtures": {
+      "types": "./src/voiceReview/fixtures.ts",
+      "default": "./src/voiceReview/fixtures.ts"
+    },
+    "./conversations": {
+      "types": "./src/conversations/index.ts",
+      "default": "./src/conversations/index.ts"
+    },
+    "./voice-review": {
+      "types": "./src/voice-review.ts",
+      "default": "./src/voice-review.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"
@@ -275,6 +295,10 @@
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
     },
+    "./state/workstreams": {
+      "types": "./src/state/workstreams/index.ts",
+      "default": "./src/state/workstreams/index.ts"
+    },
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"
@@ -390,6 +414,14 @@
     "./device/duo-control": {
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
+    },
+    "./jones/updates": {
+      "types": "./src/jones/updates/jonesUpdates.ts",
+      "default": "./src/jones/updates/jonesUpdates.ts"
+    },
+    "./work-queue-metadata": {
+      "types": "./src/jones/workQueueMetadata.ts",
+      "default": "./src/jones/workQueueMetadata.ts"
     },
     "./mcp-apps": {
       "types": "./src/mcpApps/host.ts",

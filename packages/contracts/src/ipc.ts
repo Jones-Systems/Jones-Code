@@ -1,5 +1,22 @@
 import * as Schema from "effect/Schema";
 
+import { JonesUpdateState } from "./jones/jonesUpdates.ts";
+import type {
+  DesktopDeviceMediaTunnelInput,
+  DesktopDeviceMediaTunnel,
+} from "./jones/deviceMedia.ts";
+
+import {
+  PreviewAutomationClickInput,
+  PreviewAutomationEvaluateInput,
+  PreviewAutomationPressInput,
+  PreviewAutomationRuntimeIdentity,
+  PreviewAutomationScrollInput,
+  PreviewAutomationSnapshot,
+  PreviewAutomationStatus,
+  PreviewAutomationTypeInput,
+  PreviewAutomationWaitForInput,
+} from "./previewAutomation.ts";
 import { SnapShotSource } from "./chatAttachment.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
@@ -284,6 +301,7 @@ export interface DesktopUpdateState {
   message: string | null;
   errorContext: "check" | "download" | "install" | null;
   canRetry: boolean;
+  jones?: JonesUpdateState;
 }
 
 export interface DesktopUpdateReleaseNote {
@@ -315,6 +333,7 @@ export const DesktopUpdateStateSchema = Schema.Struct({
   message: Schema.NullOr(Schema.String),
   errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
   canRetry: Schema.Boolean,
+  jones: Schema.optionalKey(JonesUpdateState),
 });
 
 export interface DesktopUpdateActionResult {
@@ -637,6 +656,12 @@ export interface DesktopPreviewTabState {
 export const DesktopPreviewTabIdSchema = Schema.String.check(Schema.isTrimmed()).check(
   Schema.isNonEmpty(),
 );
+
+export const DesktopPreviewAutomationStatusSchema = Schema.Struct({
+  ...PreviewAutomationStatus.fields,
+  tabId: Schema.NullOr(DesktopPreviewTabIdSchema),
+});
+export type DesktopPreviewAutomationStatus = typeof DesktopPreviewAutomationStatusSchema.Type;
 
 export interface DesktopPreviewPointerEvent {
   tabId: string;
@@ -998,6 +1023,7 @@ export const PreviewAnnotationSubmissionResultSchema: Schema.Codec<PreviewAnnota
 
 export const DesktopPreviewTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
 });
 
 /**
@@ -1084,6 +1110,42 @@ export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
   data: Schema.Uint8Array,
 });
 
+export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationClickInput,
+});
+
+export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationTypeInput,
+});
+
+export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationPressInput,
+});
+
+export const DesktopPreviewAutomationScrollInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationScrollInput,
+});
+
+export const DesktopPreviewAutomationEvaluateInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationEvaluateInput,
+});
+
+export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationWaitForInput,
+});
+
 /**
  * A System Settings pane the app can deep-link to. The identifier crosses IPC
  * rather than a URL, so the renderer can only reach these known destinations.
@@ -1093,6 +1155,7 @@ export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
+  getPreviewAutomationRuntimeIdentity?: () => Promise<PreviewAutomationRuntimeIdentity>;
   /** Absolute path of a dropped or picked file; absent on desktop builds predating it. */
   getPathForFile?: (file: File) => string;
   /** The desktop client's OS platform, read from Electron's preload process. */
@@ -1145,6 +1208,11 @@ export interface DesktopBridge {
     options?: { issuePairingToken?: boolean },
   ) => Promise<DesktopSshEnvironmentBootstrap>;
   disconnectSshEnvironment: (target: DesktopSshEnvironmentTarget) => Promise<void>;
+  openDeviceMediaTunnel?: (
+    input: DesktopDeviceMediaTunnelInput,
+  ) => Promise<DesktopDeviceMediaTunnel>;
+  closeDeviceMediaTunnel?: (id: string) => Promise<void>;
+
   fetchSshEnvironmentDescriptor: (httpBaseUrl: string) => Promise<ExecutionEnvironmentDescriptor>;
   bootstrapSshBearerSession: (
     httpBaseUrl: string,
@@ -1213,7 +1281,7 @@ export interface DesktopBridge {
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
-  installUpdate: () => Promise<DesktopUpdateActionResult>;
+  installUpdate: (stagedHandle?: string) => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /** Present when the desktop shell accepts `t3 app` activation requests. */
   appActivation?: {
@@ -1311,6 +1379,37 @@ export interface DesktopPreviewBridge {
       data: Uint8Array,
     ) => Promise<DesktopPreviewRecordingArtifact>;
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
+  };
+  /** Legacy desktop builds expose this capability; current server-driven tabs omit it. */
+  automation?: {
+    status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
+    snapshot: (tabId: string, deadlineMs?: number) => Promise<PreviewAutomationSnapshot>;
+    click: (
+      tabId: string,
+      input: PreviewAutomationClickInput,
+      deadlineMs?: number,
+    ) => Promise<void>;
+    type: (tabId: string, input: PreviewAutomationTypeInput, deadlineMs?: number) => Promise<void>;
+    press: (
+      tabId: string,
+      input: PreviewAutomationPressInput,
+      deadlineMs?: number,
+    ) => Promise<void>;
+    scroll: (
+      tabId: string,
+      input: PreviewAutomationScrollInput,
+      deadlineMs?: number,
+    ) => Promise<void>;
+    evaluate: (
+      tabId: string,
+      input: PreviewAutomationEvaluateInput,
+      deadlineMs?: number,
+    ) => Promise<unknown>;
+    waitFor: (
+      tabId: string,
+      input: PreviewAutomationWaitForInput,
+      deadlineMs?: number,
+    ) => Promise<void>;
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;

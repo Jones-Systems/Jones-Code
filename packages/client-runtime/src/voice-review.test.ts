@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import { RelayConnectionTarget, type PreparedConnection } from "./connection/model.ts";
 import { RemoteEnvironmentAuthorization } from "./authorization/service.ts";
 import { ManagedRelayDpopSigner, type ManagedRelayDpopProofInput } from "./relay/managedRelay.ts";
-import { remoteHttpClientLayer } from "./rpc/http.ts";
+import { layerRemoteHttpClient } from "./rpc/http.ts";
 import {
   fetchVoiceReviewDrafts,
   fetchVoiceReviewDraft,
@@ -48,7 +48,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const calls: Array<{ url: string; init: RequestInit }> = [];
-      const layer = remoteHttpClientLayer(async (url, init) => {
+      const layer = layerRemoteHttpClient(async (url, init) => {
         calls.push({ url: String(url), init: init ?? {} });
         if (String(url).includes("?"))
           return Response.json({ server_now: draft.server_now, drafts: [draft] });
@@ -88,12 +88,12 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const input = { prepared, signer: Option.none<ManagedRelayDpopSigner["Service"]>() };
-      const closed = remoteHttpClientLayer(async () =>
+      const closed = layerRemoteHttpClient(async () =>
         Response.json({ _tag: "VoiceReviewNotConfiguredError" }, { status: 503 }),
       );
       const error = yield* fetchVoiceReviewDrafts(input).pipe(Effect.flip, Effect.provide(closed));
       expect(error).toBeInstanceOf(VoiceReviewNotConfiguredError);
-      const old = remoteHttpClientLayer(async () => new Response("Missing", { status: 404 }));
+      const old = layerRemoteHttpClient(async () => new Response("Missing", { status: 404 }));
       const oldError = yield* fetchVoiceReviewDrafts(input).pipe(Effect.flip, Effect.provide(old));
       expect(oldError).toMatchObject({
         _tag: "RemoteEnvironmentAuthUndeclaredStatusError",
@@ -130,7 +130,7 @@ it.effect(
             },
           }),
       });
-      const layer = remoteHttpClientLayer(async (_url, init) => {
+      const layer = layerRemoteHttpClient(async (_url, init) => {
         calls++;
         expect(new Headers(init?.headers).get("authorization")).toBe("DPoP fresh-token");
         expect(new Headers(init?.headers).get("dpop")).toBe("fixture-proof");

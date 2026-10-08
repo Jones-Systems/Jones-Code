@@ -12,9 +12,40 @@ const testState = vi.hoisted(() => ({
   toast: vi.fn(),
   clipboard: vi.fn(),
   continueThreadsAfterServerUpdate: false,
+  jonesEnvironmentIds: new Set<string>(),
   session: null as AsyncResult.AsyncResult<AuthSessionState, Error> | null,
   sessionAtom: Symbol("session"),
 }));
+
+// Existing single-action tests invoke the component directly; evaluate its atoms
+// without React hooks while retaining the real atom derivation used by batch tests.
+vi.mock("@effect/atom-react", async () => {
+  const { AtomRegistry } = await import("effect/reactivity");
+  const registry = AtomRegistry.make();
+  return {
+    useAtomValue: (atom: Parameters<typeof registry.get>[0]) =>
+      atom === (testState.sessionAtom as unknown) ? testState.session : registry.get(atom),
+  };
+});
+vi.mock("~/jones/updates/jonesUpdates", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    jonesUpdates: {
+      value: (environmentId: string) =>
+        Atom.make(
+          testState.jonesEnvironmentIds.has(environmentId)
+            ? {
+                source: "jones-actions",
+                channel: "jones-main",
+                phase: "blocked",
+                capability: { check: false, download: false, install: false },
+              }
+            : null,
+        ),
+    },
+  };
+});
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 
 vi.mock("~/hooks/useCopyToClipboard", () => ({
   useCopyToClipboard: (options: { onCopy: (context: { command: string }) => void }) => ({
@@ -30,7 +61,6 @@ vi.mock("~/hooks/useSettings", () => ({
     selector: (settings: { continueThreadsAfterServerUpdate: boolean }) => unknown,
   ) => selector({ continueThreadsAfterServerUpdate: testState.continueThreadsAfterServerUpdate }),
 }));
-vi.mock("@effect/atom-react", () => ({ useAtomValue: () => testState.session }));
 vi.mock("~/rpc/atomRegistry", () => ({
   appAtomRegistry: { get: () => testState.session },
 }));
@@ -98,6 +128,7 @@ const currentSession = {
 
 describe("ServerUpdateAction", () => {
   beforeEach(() => {
+    testState.jonesEnvironmentIds.clear();
     testState.updateServer.mockReset();
     testState.toast.mockReset();
     testState.clipboard.mockReset();
@@ -377,8 +408,10 @@ describe("ServerUpdatesAction", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    testState.jonesEnvironmentIds.clear();
     testState.updateServer.mockReset();
     testState.toast.mockReset();
+    testState.session = AsyncResult.success(currentSession);
     resetConfirmDialogForTests();
   });
   afterEach(async () => {
@@ -407,6 +440,18 @@ describe("ServerUpdatesAction", () => {
     expect(testState.toast.mock.calls.map(([toast]) => toast.title)).toEqual([
       "Laptop updated",
       "Office updated",
+    ]);
+  });
+
+  it("keeps a Jones host out of bulk release updates even when it reports no update capabilities", async () => {
+    testState.jonesEnvironmentIds.add("batch-a");
+    testState.updateServer.mockResolvedValue(success);
+    const button = await mount();
+    await act(async () => {
+      button.props.onClick();
+    });
+    expect(testState.updateServer.mock.calls.map(([target]) => target)).toEqual([
+      { environmentId: "batch-b", input: { targetVersion: "0.0.31" } },
     ]);
   });
 
