@@ -65,24 +65,42 @@ separate operations that can interrupt active work; see the
 [update protocol](./server-updates.md) and
 [background service](../user/background-service.md).
 
-For persistent Jones hosts, prefer a host service with direct private-network
-or Tailscale pairing. The server must be a verified Jones build on the intended
-host and base directory. The default SSH archive resolver still downloads from
-`pingdotgg/t3code`; changing tunnel lifetime does not provision Jones Code.
-Connecting can resolve and install the requested CLI helper archive before
-discovering an existing server, without replacing that server's running version.
-Service installation also resolves a release archive, so a Jones source CLI
-alone does not prove the service runs Jones: use a verified Jones-built pinned
-artifact or mirror, or an approved exact Jones launcher. The default SSH
-discovery path uses `~/.t3`; use direct private pairing for a custom base
-directory, and do not start a second foreground or SSH-launched server for the
-same base.
+For persistent Jones hosts, use a host-owned Jones service on a stable loopback
+port, reached through the existing direct pairing protocol over Tailscale HTTPS.
+The systemd unit `jones-code.service` and macOS LaunchAgent
+`com.jones-systems.jones-code.service` are separate from upstream T3 identities.
+Local artifact staging verifies Jones repository/source provenance as well as
+archive and extracted-entry checksums. The default upstream runtime download is
+refused; an explicit network mirror permits checksum-based downloads but does
+not establish Jones provenance. Cached reuse requires matching local provenance.
+See the [persistent-host rollout guide](../operations/persistent-hosts.md).
 
-Host availability remains separate from client connectivity. Linux systemd
-user services need lingering to survive host logout and start at boot. The
-current macOS user LaunchAgent needs the Mac logged in and awake. A laptop
-disconnect is not a Mac Mini logout; persistence does not guarantee active work
-survives host sleep, logout, or reboot.
+The route and server have different lifecycle owners. Host setup records the
+ports and disables server-owned Serve; guarded `t3 pair --tailscale` creates or
+reuses the persistent tailscaled mapping. A Jones server that finds a pre-existing
+exact mapping does not adopt it for shutdown cleanup. Jones writers refuse
+conflicting or unknown ownership, except the existing development repoint proven
+by a same-environment probe. Guarded removal acts only on the exact recorded
+claim. CLI inspection and writes have no compare-and-swap, so a concurrent route
+change remains possible and post-write readback detects it after the fact.
+Upstream binaries and `dev-share` do not use this guard: reserve a separate
+Serve port, distinct from 443 and their configured ports, and inspect drift.
+A failed endpoint probe alone never proves a mapping is free to overwrite.
+
+Desktop, web, and mobile still use ordinary pairing, saved connections, and the
+existing reconnect supervisor; there is no new client protocol. The SSH fallback
+retains its default `~/.t3` discovery and Node-free helper download from
+`pingdotgg/t3code`. It can install that helper before discovering a running
+server, without replacing the server. It does not provision a Jones service or
+discover a custom Jones base directory. Prefer direct private pairing for that
+base and do not start a second foreground or SSH-launched server against it.
+
+Host availability remains separate from client connectivity. Linux needs linger
+for startup at boot and survival after logout. The macOS user LaunchAgent starts
+at GUI login; a pre-login boot service needs a separate operational choice.
+A laptop disconnect does not stop host-owned providers, but host sleep, logout,
+reboot, and service restart can interrupt them. Source support does not prove
+that a host has adopted the runtime or that a peer can reach its endpoint.
 
 ### Desktop without a local environment
 

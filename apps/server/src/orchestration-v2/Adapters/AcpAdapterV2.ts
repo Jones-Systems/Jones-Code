@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as Context from "effect/Context";
+import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
 import * as NodePath from "node:path";
 
 import {
@@ -1426,6 +1428,10 @@ function acpSubagentHasPendingBackgroundWork(subagent: ActiveAcpSubagent): boole
   );
 }
 
+class AcpEventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
+>("t3/AcpAdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
+
 type AcpCarryoverSubagents = {
   readonly sessionId: string;
   readonly rootTerminalStatus: "completed" | "interrupted" | "failed" | "cancelled";
@@ -1666,12 +1672,43 @@ export function makeAcpAdapterV2(
         const runtimeTeardownState = yield* Ref.make<AcpRuntimeTeardownState>({ _tag: "Idle" });
         const runtimeCallbackGeneration = yield* Ref.make(0);
         const runtimeCallbackGenerationCounter = yield* Ref.make(0);
+        const sessionEventProducer = ProviderEventOrigin.makeProviderEventProducer({
+          driver,
+          instanceId: options.instanceId,
+          providerSessionId: input.providerSessionId,
+        });
+        const callbackProducers = new Map<number, ProviderEventOrigin.ProviderEventProducer>();
+        const producerAtGeneration = (generation: number) => {
+          let producer = callbackProducers.get(generation);
+          if (producer === undefined) {
+            producer = ProviderEventOrigin.makeProviderEventProducer({
+              driver,
+              instanceId: options.instanceId,
+              providerSessionId: input.providerSessionId,
+            });
+            callbackProducers.set(generation, producer);
+          }
+          return producer;
+        };
+        const commitCallbackProducer = (generation: number) => {
+          for (const [previous, producer] of callbackProducers) {
+            if (previous === generation) continue;
+            producer.retire();
+            callbackProducers.delete(previous);
+          }
+        };
         const allocateRuntimeCallbackGeneration = Ref.updateAndGet(
           runtimeCallbackGenerationCounter,
           (generation) => generation + 1,
         );
         const advanceRuntimeCallbackGeneration = allocateRuntimeCallbackGeneration.pipe(
-          Effect.tap((generation) => Ref.set(runtimeCallbackGeneration, generation)),
+          Effect.tap((generation) =>
+            Ref.getAndSet(runtimeCallbackGeneration, generation).pipe(
+              Effect.tap((previous) =>
+                Effect.sync(() => callbackProducers.get(previous)?.retire()),
+              ),
+            ),
+          ),
         );
         const runtimeCallbackPermit = yield* Semaphore.make(1);
         const runtimeTransitionPermit = yield* Semaphore.make(1);
@@ -1717,7 +1754,14 @@ export function makeAcpAdapterV2(
               if ((yield* Ref.get(runtimeCallbackGeneration)) !== generation) {
                 return Option.none<A>();
               }
-              return Option.some(yield* effect);
+              return Option.some(
+                yield* effect.pipe(
+                  Effect.provideService(
+                    AcpEventProducerContext,
+                    producerAtGeneration(generation).origin,
+                  ),
+                ),
+              );
             }),
           );
         const registerNativeResponseAcknowledgement = (
@@ -1875,7 +1919,12 @@ export function makeAcpAdapterV2(
         });
         const closeNativeTransport = runtimeCallbackPermit.withPermit(
           Effect.gen(function* () {
-            yield* advanceRuntimeCallbackGeneration;
+            const previousGeneration = yield* Ref.get(runtimeCallbackGeneration);
+            producerAtGeneration(previousGeneration).drain();
+            sessionEventProducer.drain();
+            yield* allocateRuntimeCallbackGeneration.pipe(
+              Effect.flatMap((generation) => Ref.set(runtimeCallbackGeneration, generation)),
+            );
             const acknowledgements = yield* Ref.getAndSet(
               nativeResponseAcknowledgements,
               new Map(),
@@ -2038,7 +2087,10 @@ export function makeAcpAdapterV2(
           });
 
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+          Effect.gen(function* () {
+            const producer = (yield* AcpEventProducerContext) ?? sessionEventProducer.origin;
+            yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
+          }).pipe(Effect.asVoid);
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 
@@ -2055,6 +2107,7 @@ export function makeAcpAdapterV2(
           onTermination: AcpAdapterV2RuntimeInput["onTermination"] = () =>
             handleRuntimeTerminationAtGeneration(runtimeGeneration),
         ): AcpAdapterV2RuntimeInput => {
+          producerAtGeneration(runtimeGeneration);
           const mcpContext = acpMcpContext(threadId, self);
           return {
             cwd: input.runtimePolicy.cwd ?? process.cwd(),
@@ -5939,6 +5992,7 @@ export function makeAcpAdapterV2(
               Effect.provideService(Scope.Scope, runtimeScope),
               Effect.provideService(Crypto.Crypto, options.crypto),
             );
+          commitCallbackProducer(runtimeGeneration);
         });
 
         const startAcpRuntime = Effect.fnUntraced(function* (
@@ -6034,6 +6088,8 @@ export function makeAcpAdapterV2(
             ),
           );
           if (Exit.isFailure(replacementExit)) {
+            callbackProducers.get(replacementGeneration)?.retire();
+            callbackProducers.delete(replacementGeneration);
             yield* runtimeCallbackPermit.withPermit(
               quarantineNativeTransportAtGeneration(replacementGeneration),
             );
@@ -6067,6 +6123,7 @@ export function makeAcpAdapterV2(
                   runtime = replacementExit.value.replacementRuntime;
                   runtimeScope = replacementScope;
                   runtimeMcpBridge = replacementMcpBridge;
+                  commitCallbackProducer(replacementGeneration);
                   yield* Ref.set(runtimeCallbackGeneration, replacementGeneration);
                   prepareTerminalEnvironment(threadId, replacementExit.value.started.sessionId);
                   yield* wireAcpRuntimeTerminalHandlers(replacementExit.value.replacementRuntime);
@@ -7232,6 +7289,7 @@ export function makeAcpAdapterV2(
           driver,
           providerSessionId: input.providerSessionId,
           providerSession,
+          eventOriginMode: "captured",
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ...(postSettleContinuationEnabled
             ? {

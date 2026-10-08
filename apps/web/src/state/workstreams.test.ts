@@ -3,12 +3,15 @@ import {
   T3_PLACEMENT_MAX_REQUEST_BYTES,
   type WorkstreamDetail,
   type WorkstreamReadContext,
+  type WorkstreamReceipt,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   loadCompleteWorkstreamDetail,
   loadCompleteWorkstreamList,
+  loadCompleteWorkstreamReferences,
+  reconcileWorkstreamCommands,
   nativePlacementInventory,
   nativePlacementInventoryJson,
   reuseNativePlacementIdentitySnapshot,
@@ -414,5 +417,56 @@ describe("complete Workstream detail loading", () => {
     ] as const)
       expect(calls[name]).toHaveLength(1);
     expect(wait).not.toHaveBeenCalled();
+  });
+});
+
+describe("Workstream reference action reads", () => {
+  it("collects every reference page and refuses mixed registry versions", async () => {
+    const load = vi.fn(async (cursor?: string) =>
+      cursor === undefined ? { ...emptyPage, items: [], next_cursor: "next-page" } : emptyPage,
+    );
+    await expect(loadCompleteWorkstreamReferences(load)).resolves.toEqual(emptyPage);
+    expect(load.mock.calls).toEqual([[], ["next-page"]]);
+    const mixed = vi.fn(async (cursor?: string) =>
+      cursor === undefined
+        ? { ...emptyPage, next_cursor: "next-page" }
+        : { ...emptyPage, context: { ...context, registry_version: 12 } },
+    );
+    await expect(loadCompleteWorkstreamReferences(mixed)).rejects.toThrow();
+  });
+  it("removes only terminal observed IDs and retains unknown effects without replay", async () => {
+    const retained = new Set(["committed-command", "unknown-command", "unprocessed-command"]);
+    const observe = vi.fn(
+      async (id: string): Promise<WorkstreamReceipt> =>
+        ({ state: id === "committed-command" ? "committed" : "unresolved" }) as WorkstreamReceipt,
+    );
+    await expect(
+      reconcileWorkstreamCommands({
+        commandIds: [...retained],
+        observe,
+        resolved: (id) => retained.delete(id),
+      }),
+    ).rejects.toMatchObject({ reason: "unknown" });
+    expect([...retained]).toEqual(["unknown-command", "unprocessed-command"]);
+    expect(observe.mock.calls).toEqual([["committed-command"], ["unknown-command"]]);
+    observe.mockResolvedValue({ state: "rejected" } as WorkstreamReceipt);
+    await reconcileWorkstreamCommands({
+      commandIds: [...retained],
+      observe,
+      resolved: (id) => retained.delete(id),
+    });
+    expect(retained.size).toBe(0);
+    expect(observe.mock.calls.slice(2)).toEqual([["unknown-command"], ["unprocessed-command"]]);
+  });
+  it("retains the command when GET observation loses its response", async () => {
+    const resolved = vi.fn();
+    const observe = vi.fn(async () => {
+      throw new Error("lost-read-response");
+    });
+    await expect(
+      reconcileWorkstreamCommands({ commandIds: ["exact-command"], observe, resolved }),
+    ).rejects.toThrow("lost-read-response");
+    expect(observe).toHaveBeenCalledExactlyOnceWith("exact-command");
+    expect(resolved).not.toHaveBeenCalled();
   });
 });

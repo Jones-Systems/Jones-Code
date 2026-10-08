@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { JonesUpdateState } from "./jones/jonesUpdates.ts";
 import type {
   DesktopDeviceMediaTunnelInput,
   DesktopDeviceMediaTunnel,
@@ -298,6 +299,7 @@ export interface DesktopUpdateState {
   message: string | null;
   errorContext: "check" | "download" | "install" | null;
   canRetry: boolean;
+  jones?: JonesUpdateState;
 }
 
 export interface DesktopUpdateReleaseNote {
@@ -329,6 +331,7 @@ export const DesktopUpdateStateSchema = Schema.Struct({
   message: Schema.NullOr(Schema.String),
   errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
   canRetry: Schema.Boolean,
+  jones: Schema.optionalKey(JonesUpdateState),
 });
 
 export interface DesktopUpdateActionResult {
@@ -1261,7 +1264,7 @@ export interface DesktopBridge {
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
-  installUpdate: () => Promise<DesktopUpdateActionResult>;
+  installUpdate: (stagedHandle?: string) => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /** Present when the desktop shell accepts `t3 app` activation requests. */
   appActivation?: {

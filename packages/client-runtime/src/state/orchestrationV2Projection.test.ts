@@ -501,3 +501,20 @@ it("replays explicit provider settlement without inferring it from availability,
   });
   expect(projection.attempts[0]?.providerSettlement).toBeNull();
 });
+
+it("requested runtime stop preserves active attachment and projection until its completion owner acts", () => {
+  const activeProviderThreadId = ProviderThreadId.make("provider-thread:captured-stop");
+  const projection = {
+    ...emptyProjection,
+    thread: { ...emptyProjection.thread, activeProviderThreadId },
+  };
+  const next = applyOrchestrationV2ProjectionEvent(projection, {
+    id: EventId.make("event:stop:request"),
+    type: "provider-session.detach-requested",
+    threadId,
+    occurredAt: DateTime.makeUnsafe("2026-10-07T12:00:00Z"),
+    payload: { providerSessionId: ProviderSessionId.make("session:captured-stop") },
+  });
+  expect(next).toBe(projection);
+  expect(next?.thread.activeProviderThreadId).toBe(activeProviderThreadId);
+});

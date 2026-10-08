@@ -3,10 +3,12 @@ import { expect, it } from "@effect/vitest";
 import { ServerSelfUpdateError, ThreadId } from "@t3tools/contracts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -20,6 +22,7 @@ import * as ServerSelfUpdate from "./selfUpdate.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
+  readonly releaseBaseUrl?: string | null;
   readonly managed?: boolean;
   readonly preflight?: "ready" | "blocked";
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
@@ -98,6 +101,8 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
   });
   const launcher = ServiceLauncherClient.ServiceLauncherClient.of({
     managed: options.managed ?? true,
+    requiresQualifiedTrialGate: false,
+    prepareQualifiedTrial: () => Effect.die("ordinary release must not use qualified startup"),
     requestUpdate:
       options.requestUpdate ??
       (() =>
@@ -123,7 +128,22 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
     Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order)),
     Effect.provideService(HostProcessPlatform, "linux"),
     Effect.provideService(HostProcessArchitecture, "x64"),
-    Effect.provide(ServerConfig.layer({ ...config, mode: options.mode ?? "web" })),
+    Effect.provide(
+      Layer.mergeAll(
+        ServerConfig.layer({ ...config, mode: options.mode ?? "web" }),
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env:
+              options.releaseBaseUrl === null
+                ? {}
+                : {
+                    T3CODE_RELEASE_BASE_URL:
+                      options.releaseBaseUrl ?? "https://releases.example/download",
+                  },
+          }),
+        ),
+      ),
+    ),
   );
   return { selfUpdate, order };
 });
@@ -344,6 +364,15 @@ it.layer(NodeServices.layer)("server self update", (it) => {
     }),
   );
 
+  it.effect("refuses the implicit upstream origin with an actionable staging message", () =>
+    Effect.gen(function* () {
+      const { selfUpdate, order } = yield* makeHarness({ releaseBaseUrl: null });
+      const error = yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip);
+      expect(error.reason).toContain("t3 jones host stage-runtime");
+      expect(order).toEqual([]);
+    }),
+  );
+
   it.effect("stages and preflights before asking the launcher for an update ID", () =>
     Effect.gen(function* () {
       const { selfUpdate, order } = yield* makeHarness();
@@ -424,3 +453,81 @@ it.layer(NodeServices.layer)("server self update", (it) => {
     }),
   );
 });
+
+it.effect(
+  "preserves native continuations and blocks duplicate Install after an uncertain handoff",
+  () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const wrapped = yield* ServerSelfUpdate.withRunningThreadContinuation({
+        mode: "web",
+        selfUpdate: {
+          update: () => Effect.die("legacy update must not run"),
+          commitDesktopUpdate: () => Effect.never,
+          installQualified: () =>
+            Effect.fail(
+              new ServerSelfUpdateError({
+                reason: "handoff uncertain",
+                cause: new ServiceLauncherClient.ServiceLauncherClientError({
+                  operation: "timeout",
+                }),
+              }),
+            ),
+        },
+        prepare: Effect.sync(() => {
+          events.push("prepare");
+          return [ThreadId.make("running-native")];
+        }),
+        clear: () =>
+          Effect.sync(() => {
+            events.push("clear");
+          }),
+      });
+      const install = wrapped.installQualified;
+      if (install === undefined) return yield* Effect.die("missing qualified Install");
+      const request = { stagedHandle: "fixed-candidate", continueRunningThreads: true };
+      yield* install(request).pipe(Effect.flip);
+      const duplicate = yield* install(request).pipe(Effect.flip);
+      expect(duplicate.reason).toContain("needs reconciliation");
+      expect(events).toEqual(["prepare"]);
+    }),
+);
+
+it.effect(
+  "clears continuation preparation after a definite qualified rejection and permits retry",
+  () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const wrapped = yield* ServerSelfUpdate.withRunningThreadContinuation({
+        mode: "web",
+        selfUpdate: {
+          update: () => Effect.die("legacy update must not run"),
+          commitDesktopUpdate: () => Effect.never,
+          installQualified: () =>
+            Effect.fail(
+              new ServerSelfUpdateError({
+                reason: "stale binding",
+                cause: new ServiceLauncherClient.ServiceLauncherRejectedError({
+                  targetVersion: "0.0.0-preview.20261002.101.1",
+                  reason: "stale binding",
+                }),
+              }),
+            ),
+        },
+        prepare: Effect.sync(() => {
+          events.push("prepare");
+          return [ThreadId.make("running-native")];
+        }),
+        clear: () =>
+          Effect.sync(() => {
+            events.push("clear");
+          }),
+      });
+      const install = wrapped.installQualified;
+      if (install === undefined) return yield* Effect.die("missing qualified Install");
+      const request = { stagedHandle: "fixed-candidate", continueRunningThreads: true };
+      yield* install(request).pipe(Effect.flip);
+      yield* install(request).pipe(Effect.flip);
+      expect(events).toEqual(["prepare", "clear", "prepare", "clear"]);
+    }),
+);

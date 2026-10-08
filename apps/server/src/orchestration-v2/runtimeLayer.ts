@@ -1,5 +1,11 @@
+import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeCreationRepositorySqlite.ts";
+import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
+import * as NativeCreationProviderExecutor from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
+import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as NativeWorkstreams from "../jones/workstreams/runtimeIntegration/native.ts";
 import * as Layer from "effect/Layer";
 import * as OrchestrationCommandReceipts from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as OrchestrationEventStore from "../persistence/Layers/OrchestrationEventStore.ts";
@@ -56,6 +62,13 @@ import { layer as scheduledTaskServiceLayer } from "../scheduledTasks/ScheduledT
 export const OrchestrationEventInfrastructureLayerLive = Layer.mergeAll(
   OrchestrationEventStore.OrchestrationEventStoreLive,
   OrchestrationCommandReceipts.OrchestrationCommandReceiptRepositoryLive,
+);
+
+const nativeCreationOwnersProvided = Layer.merge(
+  NativeCreationRepositorySqlite.layer,
+  NativeCreationAuthority.NativeCreationAuthorityUnavailable.pipe(
+    Layer.provide(Layer.merge(NativeCreationRepositorySqlite.layer, AuthSessions.layer)),
+  ),
 );
 
 const runtimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
@@ -131,6 +144,17 @@ const providerSessionManagerProvided = providerSessionManagerLayer.pipe(
   ),
 );
 
+const currentRuntimeStopProvided = RuntimeStop.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      eventSinkProvided,
+      providerSessionManagerProvided,
+      projectionStoreLayer,
+      AuthSessions.layer,
+    ),
+  ),
+);
+
 const providerAuthServiceProvided = ProviderAuthServiceLive.pipe(
   Layer.provide(Layer.merge(projectionStoreLayer, providerSessionManagerProvided)),
 );
@@ -157,6 +181,16 @@ const providerTurnStartServiceProvided = providerTurnStartServiceLayer.pipe(
       providerAuthServiceProvided,
       runExecutionServiceProvided,
       runtimePolicyProvided,
+    ),
+  ),
+);
+
+const nativeCreationProviderExecutorProvided = NativeCreationProviderExecutor.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      providerTurnStartServiceProvided,
+      providerAdapterRegistryLayerFromProviderInstances,
+      nativeCreationOwnersProvided,
     ),
   ),
 );
@@ -195,6 +229,7 @@ const runFinalizationServiceProvided = runFinalizationServiceLayer.pipe(
 );
 
 const orchestratorProvided = orchestratorLayer.pipe(
+  Layer.provide(nativeCreationOwnersProvided),
   Layer.provide(
     Layer.mergeAll(
       checkpointServiceProvided,
@@ -215,6 +250,7 @@ const orchestratorProvided = orchestratorLayer.pipe(
       providerSwitchServiceProvided,
       runExecutionServiceProvided,
       threadForkServiceLayer,
+      currentRuntimeStopProvided,
     ),
   ),
 );
@@ -233,7 +269,13 @@ const agentSessionImporterProvided = agentSessionImporterLayer.pipe(
 );
 
 const threadManagementProvided = threadManagementServiceLayer.pipe(
-  Layer.provide(Layer.merge(orchestratorProvided, legacyV1ThreadImporterProvided)),
+  Layer.provide(
+    Layer.mergeAll(
+      orchestratorProvided,
+      legacyV1ThreadImporterProvided,
+      providerSessionManagerProvided,
+    ),
+  ),
 );
 export const ProjectSetupScriptRunnerLayerLive = projectSetupScriptRunnerLayer.pipe(
   Layer.provide(ProjectServiceLayerLive),
@@ -244,6 +286,8 @@ const managedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
 const threadLaunchProvided = threadLaunchServiceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      nativeCreationProviderExecutorProvided.pipe(Layer.provide(ProjectServiceLayerLive)),
+      nativeCreationOwnersProvided,
       ProjectServiceLayerLive,
       ProjectSetupScriptRunnerLayerLive,
       managedProjectFoldersProvided,
@@ -280,12 +324,20 @@ const effectExecutorProvided = effectExecutorLayer.pipe(
       providerTurnStartServiceProvided,
       runtimeRequestServiceProvided,
       threadTitleRegenerationProvided,
+      currentRuntimeStopProvided,
       threadManagementProvided,
     ),
   ),
 );
 const effectWorkerProvided = effectWorkerLayer.pipe(
-  Layer.provide(Layer.merge(storesLayer, effectExecutorProvided)),
+  Layer.provide(
+    Layer.mergeAll(
+      storesLayer,
+      effectExecutorProvided,
+      nativeCreationProviderExecutorProvided,
+      nativeCreationOwnersProvided,
+    ),
+  ),
 );
 const providerRuntimeRecoveryProvided = providerRuntimeRecoveryLayer.pipe(
   Layer.provide(
@@ -303,6 +355,7 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
   storesLayer,
   eventSinkProvided,
   orchestratorProvided,
+  currentRuntimeStopProvided,
   threadManagementProvided,
   effectWorkerProvided,
   providerSessionManagerProvided,
@@ -312,7 +365,12 @@ export const OrchestrationV2LayerLive = Layer.mergeAll(
   legacyV1ThreadImporterProvided,
 );
 
+const nativeWorkstreamsRuntimeProvided = NativeWorkstreams.nativeWorkstreamsRuntimeLayer.pipe(
+  Layer.provide(AuthSessions.layer),
+);
+
 export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
+  nativeWorkstreamsRuntimeProvided,
   ProjectServiceLayerLive,
   managedProjectFoldersProvided,
   threadLaunchProvided,

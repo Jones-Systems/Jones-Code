@@ -38,12 +38,17 @@ import {
   PinnedRuntimeInstallError,
   pinnedRuntimePaths,
 } from "../cloud/pinnedRuntime.ts";
-import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/serviceProtocol.ts";
+import {
+  parseServiceState,
+  compareExactServiceVersions,
+  isExactServiceVersion,
+} from "../cloud/serviceProtocol.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { createUpdateProgress } from "./updateProgress.ts";
-import { bootServiceLayer } from "./service.ts";
+import { bootServiceLayer, jonesBootServiceLayer } from "./service.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 
 export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpdateError", {
   reason: Schema.String,
@@ -292,6 +297,45 @@ export const updateCommand = Command.make("update", {
   ),
 );
 
+/** Release updates cannot replace a source-qualified Jones runtime through a version-only request. */
+export const assertReleaseUpdateAllowed = Effect.fn("cli.update.assert_release_update_allowed")(
+  function* (baseDir: string, version: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const managed = yield* fs.exists(path.join(baseDir, "runtime", "jones-active-install.json"));
+    const receipt = yield* fs.exists(
+      path.join(baseDir, "runtime", "versions", version, ".jones-runtime-receipt.json"),
+    );
+    const statePath = path.join(baseDir, "runtime", "service-state.json");
+    let serviceQualified = false;
+    if (yield* fs.exists(statePath)) {
+      const state = parseServiceState(yield* fs.readFileString(statePath));
+      if (state === undefined)
+        return yield* new CliUpdateError({
+          reason:
+            "The existing native service state requires reconciliation before a version-only update.",
+        });
+      serviceQualified =
+        cliReleaseChannelOf(state.activeVersion) === "preview" ||
+        (yield* fs.exists(
+          path.join(
+            baseDir,
+            "runtime",
+            "versions",
+            state.activeVersion,
+            ".jones-runtime-receipt.json",
+          ),
+        ));
+    }
+    if (managed || receipt || serviceQualified || cliReleaseChannelOf(version) === "preview") {
+      return yield* new CliUpdateError({
+        reason:
+          "This Jones runtime requires source-qualified staging and an explicit Install through its host updater. A version-only release update is unavailable.",
+      });
+    }
+  },
+);
+
 /**
  * A `t3 serve` or `t3` someone started by hand, as opposed to the one the
  * background service supervises. The server records its pid on startup; a
@@ -314,6 +358,19 @@ const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(func
   return state.value;
 });
 
+export function isJonesBootServiceCgroup(contents: string): boolean {
+  return contents
+    .split("\n")
+    .some((line) =>
+      line
+        .split(":")
+        .slice(2)
+        .join(":")
+        .split("/")
+        .includes(JONES_BOOT_SERVICE_IDENTITY.systemdUnitFile),
+    );
+}
+
 const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(function* (
   pid: number,
 ) {
@@ -322,7 +379,7 @@ const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(fun
   const runner = yield* ProcessRunner.ProcessRunner;
   if (platform === "linux") {
     const cgroup = yield* fs.readFileString(`/proc/${pid}/cgroup`).pipe(Effect.option);
-    return Option.isSome(cgroup) && cgroup.value.includes("/t3code.service");
+    return Option.isSome(cgroup) && isJonesBootServiceCgroup(cgroup.value);
   }
   if (platform === "darwin") {
     // The service server's parent is the launcher process.
@@ -365,6 +422,7 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   const service = yield* BootService.BootService;
 
   const currentVersion = packageJson.version;
+  yield* assertReleaseUpdateAllowed(input.baseDir, currentVersion);
   const channel = input.channel ?? cliReleaseChannelOf(currentVersion);
   if (input.requestedVersion !== undefined && !isExactServiceVersion(input.requestedVersion)) {
     return yield* new CliUpdateError({
@@ -574,7 +632,7 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
         target.install({ allowDowngrade: input.allowDowngrade, start: restartService }),
       ),
       Effect.provide(
-        BootService.layer({
+        jonesBootServiceLayer({
           baseDir: input.baseDir,
           logsDir: input.logsDir,
           cliVersion: targetVersion,

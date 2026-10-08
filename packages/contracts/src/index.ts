@@ -88,3 +88,10 @@ export * from "./jones/organizationMetadata.ts";
 export * from "./jones/workQueueMetadata.ts";
 
 export * from "./jones/deviceMedia.ts";
+
+export * from "./jones/workstreamsNativeProvider.ts";
+export * from "./jones/workstreamsRegistrationContext.ts";
+export * from "./jones/jonesUpdates.ts";
+export * from "./jones/runtimeStop.ts";
+
+export * from "./jones/importedHistory.ts";

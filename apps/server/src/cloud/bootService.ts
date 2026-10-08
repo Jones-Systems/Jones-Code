@@ -19,6 +19,11 @@ import * as Schema from "effect/Schema";
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { verifyPrivateServiceRuntimeCache } from "../jones/hostService/privateRuntime.ts";
+import {
+  QUALIFIED_RUNTIME_RECEIPT,
+  readQualifiedRuntimeReceipt,
+} from "../jones/cloud/qualifiedRuntime.ts";
 import {
   ensurePinnedRuntimeInstalled,
   pinnedRuntimeCommand,
@@ -41,7 +46,18 @@ const BOOT_SERVICE_UNIT_FILE = `${BOOT_SERVICE_NAME}.service`;
 // `.service` suffix keeps the label distinct from the desktop app's bundle id
 // (com.t3tools.t3code), so launchd and TCC records never collide.
 const BOOT_SERVICE_LAUNCHD_LABEL = "com.t3tools.t3code.service";
-const BOOT_SERVICE_PLIST_FILE = `${BOOT_SERVICE_LAUNCHD_LABEL}.plist`;
+export interface BootServiceIdentity {
+  readonly systemdUnitFile: string;
+  readonly launchdLabel: string;
+  readonly description: string;
+}
+
+const DEFAULT_BOOT_SERVICE_IDENTITY: BootServiceIdentity = {
+  systemdUnitFile: BOOT_SERVICE_UNIT_FILE,
+  launchdLabel: BOOT_SERVICE_LAUNCHD_LABEL,
+  description: "T3 Code server",
+};
+
 const BOOT_SERVICE_UNIT_ENV = "T3_BOOT_SERVICE_UNIT";
 /** File in the logs dir that receives the service's stdout and stderr. `t3 triage` points agents at it. */
 export const BOOT_SERVICE_LOG_FILE = "boot-service.log";
@@ -91,14 +107,18 @@ export interface BootServicePlan {
   readonly baseDir: string;
   readonly logPath: string;
   readonly unitPath: string;
+  readonly environment?: Readonly<Record<string, string>>;
 }
 
 /** Pure renderer: service units cannot rely on the user's shell or PATH. */
-export function renderBootServiceUnit(plan: BootServicePlan): string {
+export function renderBootServiceUnit(
+  plan: BootServicePlan,
+  identity: BootServiceIdentity = DEFAULT_BOOT_SERVICE_IDENTITY,
+): string {
   // The user manager has no reliable network-online target; server networking retries itself.
   return [
     "[Unit]",
-    "Description=T3 Code server",
+    `Description=${escapeSystemdSpecifiers(identity.description)}`,
     "StartLimitIntervalSec=300",
     "StartLimitBurst=5",
     "",
@@ -106,7 +126,10 @@ export function renderBootServiceUnit(plan: BootServicePlan): string {
     "Type=simple",
     "WorkingDirectory=%h",
     `Environment=T3CODE_HOME=${quoteSystemdValue(plan.baseDir)}`,
-    `Environment=${BOOT_SERVICE_UNIT_ENV}=${BOOT_SERVICE_UNIT_FILE}`,
+    `Environment=${BOOT_SERVICE_UNIT_ENV}=${identity.systemdUnitFile}`,
+    ...Object.entries(plan.environment ?? {})
+      .sort(([left], [right]) => left.localeCompare(right, "en"))
+      .map(([key, value]) => `Environment=${key}=${quoteSystemdValue(value)}`),
     `ExecStart=${plan.program.map(quoteSystemdValue).join(" ")}`,
     // Let the launcher mark an explicit stop before it signals the server.
     // systemd still SIGKILLs the whole cgroup if graceful shutdown times out.
@@ -136,6 +159,7 @@ function escapeXmlText(value: string): string {
 export function renderBootServicePlist(
   plan: BootServicePlan,
   options: { readonly homeDir: string; readonly environmentPath: string },
+  identity: BootServiceIdentity = DEFAULT_BOOT_SERVICE_IDENTITY,
 ): string {
   // KeepAlive + ThrottleInterval mirror Restart=always + RestartSec=5. launchd
   // has no StartLimitBurst analog; a hard crash loop respawns every 5s forever.
@@ -155,7 +179,7 @@ export function renderBootServicePlist(
     `<plist version="1.0">`,
     `<dict>`,
     `  <key>Label</key>`,
-    `  <string>${BOOT_SERVICE_LAUNCHD_LABEL}</string>`,
+    `  <string>${escapeXmlText(identity.launchdLabel)}</string>`,
     `  <key>ProgramArguments</key>`,
     `  <array>`,
     ...plan.program.map((argument) => `    <string>${escapeXmlText(argument)}</string>`),
@@ -167,7 +191,13 @@ export function renderBootServicePlist(
     `    <key>T3CODE_HOME</key>`,
     `    <string>${escapeXmlText(plan.baseDir)}</string>`,
     `    <key>${BOOT_SERVICE_UNIT_ENV}</key>`,
-    `    <string>${BOOT_SERVICE_PLIST_FILE}</string>`,
+    `    <string>${escapeXmlText(`${identity.launchdLabel}.plist`)}</string>`,
+    ...Object.entries(plan.environment ?? {})
+      .sort(([left], [right]) => left.localeCompare(right, "en"))
+      .flatMap(([key, value]) => [
+        `    <key>${escapeXmlText(key)}</key>`,
+        `    <string>${escapeXmlText(value)}</string>`,
+      ]),
     `  </dict>`,
     `  <key>WorkingDirectory</key>`,
     `  <string>${escapeXmlText(options.homeDir)}</string>`,
@@ -237,23 +267,24 @@ export interface BootServiceManager {
 function systemdManager(input: {
   readonly path: Path.Path;
   readonly homeDir: string;
+  readonly identity: BootServiceIdentity;
 }): BootServiceManager {
   const unitPath = input.path.join(
     input.homeDir,
     ".config",
     "systemd",
     "user",
-    BOOT_SERVICE_UNIT_FILE,
+    input.identity.systemdUnitFile,
   );
   return {
     kind: "systemd",
     unitPath,
-    render: renderBootServiceUnit,
+    render: (plan) => renderBootServiceUnit(plan, input.identity),
     stop: [
       {
         step: "stopping the installed service",
         command: "systemctl",
-        args: ["--user", "stop", BOOT_SERVICE_UNIT_FILE],
+        args: ["--user", "stop", input.identity.systemdUnitFile],
         timeout: STOP_STEP_TIMEOUT,
       },
     ],
@@ -266,27 +297,27 @@ function systemdManager(input: {
       {
         step: "enabling the service",
         command: "systemctl",
-        args: ["--user", "enable", BOOT_SERVICE_UNIT_FILE],
+        args: ["--user", "enable", input.identity.systemdUnitFile],
       },
       // Start last. No administrative state write occurs after this succeeds.
       {
         step: "starting the service",
         command: "systemctl",
-        args: ["--user", "restart", BOOT_SERVICE_UNIT_FILE],
+        args: ["--user", "restart", input.identity.systemdUnitFile],
       },
     ],
     restart: [
       {
         step: "restarting the service after a failed update",
         command: "systemctl",
-        args: ["--user", "restart", BOOT_SERVICE_UNIT_FILE],
+        args: ["--user", "restart", input.identity.systemdUnitFile],
       },
     ],
     deactivate: [
       {
         step: "stopping the service",
         command: "systemctl",
-        args: ["--user", "disable", "--now", BOOT_SERVICE_UNIT_FILE],
+        args: ["--user", "disable", "--now", input.identity.systemdUnitFile],
         timeout: STOP_STEP_TIMEOUT,
       },
     ],
@@ -305,15 +336,16 @@ function launchdManager(input: {
   readonly homeDir: string;
   readonly uid: number;
   readonly environmentPath: string;
+  readonly identity: BootServiceIdentity;
 }): BootServiceManager {
   const unitPath = input.path.join(
     input.homeDir,
     "Library",
     "LaunchAgents",
-    BOOT_SERVICE_PLIST_FILE,
+    `${input.identity.launchdLabel}.plist`,
   );
   const domainTarget = `gui/${input.uid}`;
-  const serviceTarget = `${domainTarget}/${BOOT_SERVICE_LAUNCHD_LABEL}`;
+  const serviceTarget = `${domainTarget}/${input.identity.launchdLabel}`;
   // bootout/enable are optional: they fail on not-loaded states that are fine
   // to proceed from. The strict `bootstrap` runs last and is also the start:
   // loading a RunAtLoad/KeepAlive plist starts the job, so a separate
@@ -325,10 +357,14 @@ function launchdManager(input: {
     kind: "launchd",
     unitPath,
     render: (plan) =>
-      renderBootServicePlist(plan, {
-        homeDir: input.homeDir,
-        environmentPath: input.environmentPath,
-      }),
+      renderBootServicePlist(
+        plan,
+        {
+          homeDir: input.homeDir,
+          environmentPath: input.environmentPath,
+        },
+        input.identity,
+      ),
     // Without --wait, bootout returns in milliseconds while the job drains
     // for up to ExitTimeOut, and a bootstrap during the drain fails EIO.
     // --wait (present on modern macOS, absent from the man page) blocks until
@@ -388,12 +424,13 @@ function selectBootServiceManager(input: {
   readonly uid: number | undefined;
   readonly path: Path.Path;
   readonly environmentPath: string;
+  readonly identity: BootServiceIdentity;
 }): BootServiceManager | undefined {
   if (input.homeDir === "") {
     return undefined;
   }
   if (input.platform === "linux") {
-    return systemdManager({ path: input.path, homeDir: input.homeDir });
+    return systemdManager({ path: input.path, homeDir: input.homeDir, identity: input.identity });
   }
   if (input.platform === "darwin" && input.uid !== undefined) {
     return launchdManager({
@@ -401,6 +438,7 @@ function selectBootServiceManager(input: {
       homeDir: input.homeDir,
       uid: input.uid,
       environmentPath: input.environmentPath,
+      identity: input.identity,
     });
   }
   return undefined;
@@ -434,10 +472,10 @@ export class BootServiceCommandError extends Schema.TaggedError<BootServiceComma
 
 export class BootServiceInstallError extends Schema.TaggedError<BootServiceInstallError>()(
   "BootServiceInstallError",
-  { cause: Schema.Defect() },
+  { cause: Schema.Defect(), reason: Schema.optional(Schema.String) },
 ) {
   override get message(): string {
-    return "Could not set up the T3 Code background service.";
+    return this.reason ?? "Could not set up the T3 Code background service.";
   }
 }
 
@@ -499,13 +537,31 @@ export class BootServiceDowngradeRefusedError extends Schema.TaggedError<BootSer
   }
 }
 
+export class BootServiceBootstrapRequiredError extends Schema.TaggedError<BootServiceBootstrapRequiredError>()(
+  "BootServiceBootstrapRequiredError",
+  {
+    reason: Schema.Literals([
+      "desktop-owned-home",
+      "qualified-activation-required",
+      "source-unqualified",
+    ]),
+  },
+) {
+  override get message(): string {
+    return this.reason === "desktop-owned-home"
+      ? "bootstrap-required: This native home is desktop-owned; activate its qualified app through the desktop installer."
+      : "bootstrap-required: Version-only service setup cannot repoint a Jones installation. Use qualified staging and explicit Install, or complete source-qualified launcher bootstrap on this host.";
+  }
+}
+
 export type BootServiceError =
   | BootServiceUnsupportedError
   | BootServiceCommandError
   | BootServiceInstallError
   | BootServicePrerequisiteError
   | BootServiceUpdatePendingError
-  | BootServiceDowngradeRefusedError;
+  | BootServiceDowngradeRefusedError
+  | BootServiceBootstrapRequiredError;
 
 export interface BootServiceStatus {
   readonly supported: boolean;
@@ -557,6 +613,10 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   readonly logsDir: string;
   readonly cliVersion: string;
   readonly host?: BootServiceHost;
+  readonly identity?: BootServiceIdentity;
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly allowEnableLinger?: boolean;
+  readonly runtimeMode?: "verified-private-artifact";
 }) {
   const hostExecPath = yield* HostProcessExecutablePath;
   const platform = yield* HostProcessPlatform;
@@ -572,6 +632,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const path = yield* Path.Path;
   const runner = yield* ProcessRunner.ProcessRunner;
   const host = input.host ?? { execPath: hostExecPath };
+  const identity = input.identity ?? DEFAULT_BOOT_SERVICE_IDENTITY;
   const xmlSafeInstallerDirectories = installerPath.split(":").filter(
     (directory) =>
       directory.length > 0 &&
@@ -599,6 +660,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     uid,
     path,
     environmentPath,
+    identity,
   });
   const unitPath = detectedManager?.unitPath ?? "";
   const logPath = path.join(input.logsDir, BOOT_SERVICE_LOG_FILE);
@@ -631,6 +693,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     baseDir: input.baseDir,
     logPath,
     unitPath,
+    ...(input.environment === undefined ? {} : { environment: input.environment }),
   };
 
   const requireManager = Effect.suspend(() =>
@@ -712,8 +775,8 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     if (includeService && succeeded(manager)) {
       const [enabled, active] = yield* Effect.all(
         [
-          probe("systemctl", ["--user", "is-enabled", BOOT_SERVICE_UNIT_FILE]),
-          probe("systemctl", ["--user", "is-active", BOOT_SERVICE_UNIT_FILE]),
+          probe("systemctl", ["--user", "is-enabled", identity.systemdUnitFile]),
+          probe("systemctl", ["--user", "is-active", identity.systemdUnitFile]),
         ],
         { concurrency: "unbounded" },
       );
@@ -733,6 +796,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     const unavailable = problems.find((problem) => problem !== "linger-disabled");
     if (unavailable) return yield* new BootServicePrerequisiteError({ problem: unavailable });
     if (!problems.includes("linger-disabled")) return;
+    if (input.allowEnableLinger === false) {
+      return yield* new BootServicePrerequisiteError({ problem: "linger-disabled" });
+    }
     yield* runStep("enabling lingering for this user", "loginctl", [
       "enable-linger",
       "--no-ask-password",
@@ -751,6 +817,80 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     readonly start?: boolean;
   }) {
     const manager = yield* requireManager;
+    const exists = (file: string) =>
+      fs.exists(file).pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
+    // Qualification is checked before administrative probes, downloads or
+    // stops. A generic version request must never replace the native pointer.
+    if (yield* exists(path.join(input.baseDir, "runtime", "jones-active-install.json"))) {
+      return yield* new BootServiceBootstrapRequiredError({ reason: "desktop-owned-home" });
+    }
+    const priorState = yield* fs.readFileString(statePath).pipe(Effect.option);
+    const activeVersion = Option.isSome(priorState)
+      ? serviceStateActiveVersion(priorState.value)
+      : undefined;
+    const privateRuntime = input.runtimeMode === "verified-private-artifact";
+    const qualified =
+      (!privateRuntime &&
+        (input.cliVersion.includes("-preview.") ||
+          activeVersion?.includes("-preview.") === true)) ||
+      (yield* exists(path.join(runtimePaths.versionDir, QUALIFIED_RUNTIME_RECEIPT))) ||
+      (activeVersion === undefined
+        ? false
+        : yield* exists(
+            path.join(
+              input.baseDir,
+              "runtime",
+              "versions",
+              activeVersion,
+              QUALIFIED_RUNTIME_RECEIPT,
+            ),
+          ));
+    if (qualified) {
+      const state = Option.isSome(priorState) ? parseServiceState(priorState.value) : undefined;
+      const unit = yield* fs.readFileString(unitPath).pipe(Effect.option);
+      if (
+        options?.start === false &&
+        state?.activeVersion === input.cliVersion &&
+        state.update?.status !== "pending" &&
+        Option.isSome(unit) &&
+        unit.value === manager.render(plan)
+      ) {
+        yield* Effect.tryPromise({
+          try: () =>
+            readQualifiedRuntimeReceipt(input.baseDir, input.cliVersion, {
+              platform,
+              architecture: arch,
+            }),
+          catch: () => new BootServiceBootstrapRequiredError({ reason: "source-unqualified" }),
+        });
+        return plan;
+      }
+      return yield* new BootServiceBootstrapRequiredError({
+        reason: "qualified-activation-required",
+      });
+    }
+    const verifyPrivateCache = (installedVersion: string | undefined) =>
+      verifyPrivateServiceRuntimeCache({
+        baseDir: input.baseDir,
+        version: input.cliVersion,
+        activeVersion: installedVersion,
+        fs,
+        path,
+        runner,
+        platform,
+        arch,
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new BootServiceInstallError({
+              cause,
+              ...(cause._tag === "JonesRuntimePolicyError" ? { reason: cause.message } : {}),
+            }),
+        ),
+      );
+    if (privateRuntime) {
+      yield* verifyPrivateCache(activeVersion);
+    }
     yield* fs
       .makeDirectory(input.logsDir, { recursive: true })
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -761,58 +901,63 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     }
 
     // Prepare every immutable artifact before stopping the installed unit.
-    yield* ensurePinnedRuntimeInstalled({
-      baseDir: input.baseDir,
-      version: input.cliVersion,
-      fs,
-      path,
-      runner,
-      httpClient,
-      platform,
-      arch,
-      releaseBaseUrl,
-      validate: (runtime) =>
-        runner
-          .run({
-            command: pinnedRuntimeCommand(runtime).command,
-            args: [...pinnedRuntimeCommand(runtime).args, "--version"],
-            timeout: Duration.seconds(30),
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new PinnedRuntimeInstallError({
-                  step: "verifying the pinned t3 runtime",
-                  cause,
-                }),
-            ),
-            Effect.flatMap((result) => {
-              const reportedVersion = /\bv(\S+)\s*$/.exec(result.stdout)?.[1];
-              return result.code === 0 && reportedVersion === input.cliVersion
-                ? Effect.void
-                : Effect.fail(
-                    new PinnedRuntimeInstallError({
-                      step: "verifying the pinned t3 runtime",
-                      exitCode: Number(result.code),
-                      stdoutLength: result.stdout.length,
-                      stderrLength: result.stderr.length,
-                    }),
-                  );
-            }),
-          ),
-    }).pipe(
-      Effect.mapError((error) =>
-        error._tag === "PinnedRuntimeInstallError"
-          ? new BootServiceCommandError({
-              step: error.step,
-              exitCode: error.exitCode,
-              stdoutLength: error.stdoutLength,
-              stderrLength: error.stderrLength,
-              cause: error,
+    if (!privateRuntime) {
+      yield* ensurePinnedRuntimeInstalled({
+        baseDir: input.baseDir,
+        version: input.cliVersion,
+        fs,
+        path,
+        runner,
+        httpClient,
+        platform,
+        arch,
+        releaseBaseUrl,
+        validate: (runtime) =>
+          runner
+            .run({
+              command: pinnedRuntimeCommand(runtime).command,
+              args: [...pinnedRuntimeCommand(runtime).args, "--version"],
+              timeout: Duration.seconds(30),
             })
-          : new BootServiceInstallError({ cause: error }),
-      ),
-    );
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PinnedRuntimeInstallError({
+                    step: "verifying the pinned t3 runtime",
+                    cause,
+                  }),
+              ),
+              Effect.flatMap((result) => {
+                const reportedVersion = /\bv(\S+)\s*$/.exec(result.stdout)?.[1];
+                return result.code === 0 && reportedVersion === input.cliVersion
+                  ? Effect.void
+                  : Effect.fail(
+                      new PinnedRuntimeInstallError({
+                        step: "verifying the pinned t3 runtime",
+                        exitCode: Number(result.code),
+                        stdoutLength: result.stdout.length,
+                        stderrLength: result.stderr.length,
+                      }),
+                    );
+              }),
+            ),
+      }).pipe(
+        Effect.mapError((error) =>
+          error._tag === "PinnedRuntimeInstallError"
+            ? new BootServiceCommandError({
+                step: error.step,
+                exitCode: error.exitCode,
+                stdoutLength: error.stdoutLength,
+                stderrLength: error.stderrLength,
+                cause: error,
+              })
+            : new BootServiceInstallError({
+                cause: error,
+                ...(error._tag === "JonesRuntimePolicyError" ? { reason: error.message } : {}),
+              }),
+        ),
+      );
+    }
     const installed = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -838,6 +983,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           // A remote update can finish after the CLI checks status. Read its
           // final version after the launcher stops and before changing files.
           const installedVersion = serviceStateActiveVersion(previousStateText.value);
+          if (privateRuntime && installedVersion !== activeVersion) {
+            yield* verifyPrivateCache(installedVersion);
+          }
           if (
             installedVersion !== undefined &&
             options?.allowDowngrade !== true &&
@@ -998,4 +1146,7 @@ export const layer = (input: {
   readonly logsDir: string;
   readonly cliVersion: string;
   readonly host?: BootServiceHost;
+  readonly identity?: BootServiceIdentity;
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly allowEnableLinger?: boolean;
 }) => Layer.effect(BootService, make(input));

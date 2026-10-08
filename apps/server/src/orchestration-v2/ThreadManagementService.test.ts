@@ -1,3 +1,4 @@
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import { expect, it } from "@effect/vitest";
 import {
   CommandId,
@@ -6,6 +7,8 @@ import {
   type OrchestrationV2Command,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
+  ProviderThreadId,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -418,4 +421,43 @@ it.effect.each([
       });
     }
   }),
+);
+
+it.effect.each([false, true])(
+  "preserves foreground when native activity is unavailable (owner provided: %s)",
+  (ownerProvided) => {
+    const threadId = ThreadId.make("thread:activity-unavailable");
+    const shell = {
+      id: threadId,
+      activeProviderThreadId: ProviderThreadId.make("provider:activity-unavailable"),
+      activityRunStatus: "running",
+      archivedAt: null,
+      deletedAt: null,
+      interactionMode: "default",
+      pendingRuntimeRequest: null,
+      hasActionableProposedPlan: false,
+      latestRunCompletedAt: null,
+    } as OrchestrationV2ThreadShell;
+    const dependencies = Layer.mergeAll(
+      Layer.mock(Orchestrator.OrchestratorV2)({ getThreadShell: () => Effect.succeed(shell) }),
+      ...(ownerProvided
+        ? [
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+              observeThreadActivity: () =>
+                Effect.succeed({ status: "unknown", reason: "native_activity_unsupported" }),
+            }),
+          ]
+        : []),
+    );
+    return Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      if (service.observeThreadActivity === undefined)
+        return yield* Effect.die("Missing activity read method");
+      const result = yield* service.observeThreadActivity(threadId);
+      expect(result.foreground).toBe("working");
+      expect(result.background).toBeNull();
+      expect(result.backgroundStatus).toBe("unknown");
+      expect((yield* service.getThreadShell(threadId))?.activityRunStatus).toBe("running");
+    }).pipe(Effect.provide(ThreadManagementService.layer.pipe(Layer.provide(dependencies))));
+  },
 );
