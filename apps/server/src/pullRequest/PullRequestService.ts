@@ -79,7 +79,7 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
 
-import { AllowGitHubReserve } from "../sourceControl/GitHubCli.ts";
+import { AllowGitHubReserve } from "../sourceControl/GitHubApi.ts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as PullRequestCiStatus from "../jones/pullRequestCi/PullRequestCiStatus.ts";
