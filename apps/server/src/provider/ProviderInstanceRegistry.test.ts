@@ -60,6 +60,7 @@ import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver
 import * as ModelManifest from "./ModelManifest.ts";
 import * as OpenCodeRuntime from "./opencodeRuntime.ts";
 import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistry.ts";
@@ -229,6 +230,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     ),
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
+    Layer.provideMerge(ProcessAttribution.layer),
   );
   const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
     Layer.provideMerge(layerBase),
@@ -609,6 +611,7 @@ describe("ProviderInstanceRegistry — all drivers slice", () => {
     ),
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
+    Layer.provideMerge(ProcessAttribution.layer),
   );
   const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
     Layer.provideMerge(layerBase),

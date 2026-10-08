@@ -40,6 +40,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -2697,7 +2698,11 @@ it.layer(
         const scope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
-          Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+          Layer.provideMerge(
+            ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provideMerge(ProcessAttribution.layer),
+            ),
+          ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -2799,7 +2804,11 @@ it.layer(
         const scope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
-          Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+          Layer.provideMerge(
+            ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provideMerge(ProcessAttribution.layer),
+            ),
+          ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -2918,7 +2927,11 @@ it.layer(
         const scope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
-          Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+          Layer.provideMerge(
+            ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provideMerge(ProcessAttribution.layer),
+            ),
+          ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -2983,7 +2996,11 @@ it.layer(
           const scope = yield* Scope.make();
           yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
           const layerProviderRegistry = ProviderRegistry.layer.pipe(
-            Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+            Layer.provideMerge(
+              ProviderInstanceRegistryHydration.layer.pipe(
+                Layer.provideMerge(ProcessAttribution.layer),
+              ),
+            ),
             Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
             Layer.provideMerge(
               Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),

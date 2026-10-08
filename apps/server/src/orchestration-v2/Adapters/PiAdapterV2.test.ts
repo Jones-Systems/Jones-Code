@@ -1317,6 +1317,12 @@ describe("PiAdapterV2", () => {
       // settles the turn as completed.
       const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
       assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+      if (terminal.type === "turn.terminal") {
+        assert.equal(terminal.evidenceKind, "provider_result");
+        assert.equal(terminal.providerTurn?.id, terminal.providerTurnId);
+        assert.equal(terminal.providerTurn?.status, "completed");
+        assert.isNotNull(terminal.providerTurn?.completedAt);
+      }
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 

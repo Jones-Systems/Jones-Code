@@ -18,7 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as CheckpointService from "../../orchestration-v2/CheckpointService.ts";
@@ -63,7 +63,7 @@ const runtime: ProviderAdapterV2SessionRuntime = {
   forkThread: unexpected,
 };
 
-const database = SqlitePersistenceMemory;
+const database = SqlitePersistence.layerMemory;
 const stores = Layer.mergeAll(
   EventStore.layer,
   ProjectionStore.layer,
@@ -100,7 +100,7 @@ const dependencies = Layer.mergeAll(
       }),
     ensureScope: (scope) => Effect.succeed(scope),
   }),
-  ProviderAdapters.makeLayer([
+  ProviderAdapters.layerFromAdapters([
     {
       instanceId: session.providerInstanceId,
       driver: session.driver,

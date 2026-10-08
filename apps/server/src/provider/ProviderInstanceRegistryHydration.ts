@@ -58,6 +58,7 @@ import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMuta
 import * as ProviderOrchestrationAdapterInfrastructure from "./ProviderOrchestrationAdapterInfrastructure.ts";
 import * as AcpRegistrySupport from "./acp/AcpRegistrySupport.ts";
 import * as AcpRegistryCatalog from "./AcpRegistryCatalog.ts";
+import type * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 
 type ProviderInstanceRegistryHydrationEnv =
   | Exclude<
@@ -65,7 +66,8 @@ type ProviderInstanceRegistryHydrationEnv =
       | ProviderOrchestrationAdapterInfrastructure.ProviderOrchestrationAdapterInfrastructure
       | AcpRegistrySupport.AcpRegistryCatalog
     >
-  | Settings.ServerSettingsService;
+  | Settings.ServerSettingsService
+  | ProcessAttribution.ProcessAttribution;
 
 /**
  * Synthesize a `ProviderInstanceConfigMap` from a `ServerSettings` snapshot.

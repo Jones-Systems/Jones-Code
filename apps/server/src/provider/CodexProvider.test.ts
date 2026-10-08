@@ -2,7 +2,7 @@ import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as CodexErrors from "effect-codex-app-server/errors";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import { assert, it } from "@effect/vitest";

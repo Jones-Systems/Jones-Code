@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Inventory hashing is synchronous and queue attempt IDs share this module boundary.
 import * as NodeCrypto from "node:crypto";
 import {
   QualifiedQuota,
@@ -15,7 +16,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { ServerConfig } from "../config.ts";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
-import type { ProviderRegistryShape } from "./Services/ProviderRegistry.ts";
+import type { ProviderRegistry } from "./ProviderRegistry.ts";
 import {
   quotaResetCrossed,
   PrivateQuotaProof,
@@ -167,7 +168,7 @@ export function projectQueueInventory(
 }
 
 export const makeProviderQueue = Effect.fn("makeProviderQueue")(function* (
-  registry: Pick<ProviderRegistryShape, "getProviders" | "refreshInstance">,
+  registry: Pick<ProviderRegistry["Service"], "getProviders" | "refreshInstance">,
   storage: ProviderQueueStorage,
   currentTime: Effect.Effect<number> = Clock.currentTimeMillis,
 ) {
