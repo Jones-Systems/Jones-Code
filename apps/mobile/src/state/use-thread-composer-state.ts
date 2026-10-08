@@ -1,8 +1,5 @@
-import {
-  getMobileImportedHistoryChoice,
-  mobileImportedHistoryCommands,
-} from "../jones/importedHistory/runtime";
-import { serializeLegacyContextMessage } from "@t3tools/shared/composerContextLegacySend";
+import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
+import { readEnvironmentScope } from "./session";
 import type { ComposerTextPaste } from "../native/T3ComposerEditor.types";
 import { useAtomValue } from "@effect/atom-react";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
@@ -38,11 +35,7 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
-import {
-  composerContextSendBlockReason,
-  uploadedComposerContext,
-  reidentifyComposerContext,
-} from "../lib/composerContext";
+import { composerContextSendBlockReason, reidentifyComposerContext } from "../lib/composerContext";
 import { uuidv4 } from "../lib/uuid";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
@@ -79,9 +72,6 @@ import {
   composerContextImportsAtom,
   ensureComposerDraftsLoaded,
   getComposerDraftSnapshot,
-  flushComposerDrafts,
-  replaceComposerDraftAttachments,
-  sameComposerDraftState,
   mergeComposerDraftContent,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
@@ -93,8 +83,8 @@ import {
   resolveComposerDispatchMode,
   type ActiveTurnComposerAction,
 } from "@t3tools/client-runtime/state/composer-dispatch";
-import { Atom } from "effect/unstable/reactivity";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { prepareTurnAttachments } from "../lib/attachmentUpload";
 import { DEFAULT_FOLLOW_UP_BEHAVIOR } from "../lib/followUpBehavior";
 import { mobilePreferencesAtom } from "./preferences";
@@ -108,6 +98,7 @@ import {
   useQueuedRunEdit,
 } from "./queued-run-edit";
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
+import { clearThreadComposerError, setThreadComposerError } from "./thread-composer-error";
 import {
   useSelectedThreadProjection,
   useSelectedThreadVisibleTurnItems,
@@ -231,15 +222,9 @@ export function useThreadComposerState() {
     ensureComposerDraftsLoaded();
   }, []);
 
-  const importedPreparationRef = useRef(false);
-  const prepareImportedHistoryMessage = useAtomCommand(mobileImportedHistoryCommands.prepare, {
-    reportFailure: false,
-  });
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
-  const currentImportedThreadKeyRef = useRef(selectedThreadKey);
-  currentImportedThreadKeyRef.current = selectedThreadKey;
   // The creation entry is the thread itself (rendered as the first message),
   // not a follow-up waiting behind it.
   const selectedThreadQueuedMessages = useMemo(
@@ -470,7 +455,8 @@ export function useThreadComposerState() {
       });
     }
     endQueuedRunEdit(selectedThreadKey, { deferAttachmentCleanup: keepable });
-    setPendingConnectionError(
+    setThreadComposerError(
+      selectedThreadKey,
       keepable
         ? "That message already started. Your edit is back in the composer."
         : "That message already started, so the edit was discarded.",
@@ -564,6 +550,12 @@ export function useThreadComposerState() {
 
   const onSendMessage = useCallback(
     async (followUpOverride?: ActiveTurnComposerAction) => {
+      if (
+        selectedThreadShell &&
+        selectedEnvironmentRuntime?.connectionState === "connected" &&
+        !readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope)
+      )
+        return null;
       if (!selectedThreadShell) {
         return null;
       }
@@ -640,6 +632,8 @@ export function useThreadComposerState() {
           ? parseCodexFeedbackCommand(text)
           : null;
       if (feedbackCommand) {
+        if (!readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope))
+          return null;
         if (thread.activeProviderThreadId === null) {
           Alert.alert("Start a Codex thread first", "Send a message before you submit feedback.");
           return null;
@@ -686,95 +680,10 @@ export function useThreadComposerState() {
       const followUpDispatchMode =
         followUpAction === "auto" ? null : followUpAction === "queue" ? "queue" : "auto";
 
-      if (
-        selectedThreadProjection?.projection.thread.historyOrigin === "v1_import" &&
-        followUpDispatchMode !== "queue"
-      ) {
-        if (importedPreparationRef.current) return null;
-        importedPreparationRef.current = true;
-        const choice = getMobileImportedHistoryChoice(thread.environmentId, thread.id);
-        let reviewDraft = draft;
-        const unchanged = () =>
-          currentImportedThreadKeyRef.current === threadKey &&
-          sameComposerDraftState(getComposerDraftSnapshot(threadKey), reviewDraft) &&
-          getQueuedRunEdit(threadKey) === null;
-        try {
-          await choice.hydrate();
-          if (choice.snapshot().pending) {
-            await choice.observe();
-            return null;
-          }
-          const preparedAttachments = await prepareTurnAttachments({
-            environmentId: thread.environmentId,
-            attachments,
-            supportsImageUploads: serverConfig?.environment.capabilities.attachmentUploads === true,
-            persistUploadedReferences: async (updated) => {
-              if (!unchanged()) return "abandon";
-              replaceComposerDraftAttachments(threadKey, updated);
-              reviewDraft = getComposerDraftSnapshot(threadKey);
-              await flushComposerDrafts();
-              return unchanged() ? "persisted" : "abandon";
-            },
-          });
-          if (preparedAttachments.status !== "ready" || !unchanged()) return null;
-          const context = uploadedComposerContext(
-            draft.context,
-            attachments,
-            preparedAttachments.attachments,
-          );
-          const inlineContext =
-            serverConfig?.environment.capabilities.inlineMessageContext === true;
-          const metadata = makeQueuedMessageMetadata();
-          const messageId = MessageId.make(metadata.messageId);
-          const prepared = await prepareImportedHistoryMessage({
-            environmentId: thread.environmentId,
-            input: {
-              commandId: CommandId.make(metadata.commandId),
-              threadId: thread.id,
-              creationSource: "mobile",
-              message: {
-                messageId,
-                role: "user",
-                text:
-                  context && !inlineContext
-                    ? serializeLegacyContextMessage({ text, records: context.records })
-                    : text,
-                attachments: preparedAttachments.attachments,
-                ...(context && inlineContext ? { context } : {}),
-              },
-              modelSelection,
-              runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
-              interactionMode: resolveProviderInteractionMode(
-                provider,
-                draft.interactionMode ?? thread.interactionMode,
-              ),
-            },
-          });
-          if (prepared._tag !== "Success") {
-            Alert.alert(
-              "Imported history unavailable",
-              "The message could not be prepared. Your draft is unchanged.",
-            );
-            return null;
-          }
-          await choice.review(
-            { type: "message", command: prepared.value },
-            `${threadKey}:${messageId}`,
-            unchanged,
-          );
-        } catch {
-          Alert.alert(
-            "Imported history unavailable",
-            "Review or persistence is unavailable. Your draft is unchanged.",
-          );
-        } finally {
-          importedPreparationRef.current = false;
-        }
-        return null;
-      }
-
       const metadata = makeQueuedMessageMetadata();
       const messageId = MessageId.make(metadata.messageId);
+      // A new send supersedes the reason the previous one bounced back.
+      clearThreadComposerError(threadKey);
       // Enqueue publishes the queued atom synchronously (the durable write
       // happens behind it), so clearing the draft here gives send feedback on
       // the tap frame instead of after file I/O. If the write fails the message
@@ -811,7 +720,8 @@ export function useThreadComposerState() {
             attachments: [],
           });
           appendComposerDraftAttachments(threadKey, attachments, { allowOverflow: true });
-          setPendingConnectionError(
+          setThreadComposerError(
+            threadKey,
             error instanceof Error ? error.message : "Failed to save the queued message.",
           );
         },
@@ -828,8 +738,6 @@ export function useThreadComposerState() {
       selectedThreadCreation,
       selectedThreadShell,
       uploadThreadFeedback,
-      prepareImportedHistoryMessage,
-      selectedThreadProjection,
     ],
   );
 

@@ -1,11 +1,15 @@
-import { ChatAttachmentId, ThreadId, type WorktreeSetupSnapshot } from "@t3tools/contracts";
+import { ThreadId, type WorktreeSetupSnapshot } from "@t3tools/contracts";
 import {
   CheckpointRef,
   NodeId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderTurnId,
   RunAttemptId,
   TurnItemId,
   RuntimeRequestId,
   type OrchestrationV2ProjectedTurnItem,
+  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import {
@@ -14,25 +18,7 @@ import {
   workEntryDisplayIndicatesToolFailure,
   type TimelineEntry,
 } from "../../session-logic";
-import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "../../test-fixtures";
-import {
-  EnvironmentId,
-  EventId,
-  ProviderInstanceId,
-  ProviderThreadId,
-  ProviderTurnId,
-  type OrchestrationV2ThreadProjection,
-  type OrchestrationV2DomainEvent,
-} from "@t3tools/contracts";
-import { applyOrchestrationV2ProjectionEvent } from "@t3tools/client-runtime/state/orchestration-v2-projection";
-import { deriveThreadActivityRun } from "@t3tools/client-runtime/state/thread-execution";
-import {
-  createEnvironmentThreadDetailAtoms,
-  EMPTY_ENVIRONMENT_THREAD_STATE,
-  type EnvironmentThreadState,
-} from "@t3tools/client-runtime/state/threads";
-import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
-import * as Option from "effect/Option";
+import { makeStreamingTimelineFixture } from "../../test-fixtures";
 import type { TurnDiffSummary } from "../../types";
 import { describe, expect, it } from "vite-plus/test";
 import { MessageId, RunId } from "@t3tools/contracts";
@@ -4122,254 +4108,6 @@ describe("streaming v2 row projection", () => {
     },
   );
 
-  it("reuses long-thread rows through detail events, selectors, and attachment previews", () => {
-    const initial = fixture("Partial");
-    const attemptId = RunAttemptId.make("attempt:timeline-settlement");
-    const providerTurnId = ProviderTurnId.make("provider-turn:timeline-settlement");
-    const providerThreadId = ProviderThreadId.make("provider-thread:timeline-settlement");
-    const rootNodeId = NodeId.make("node:timeline-settlement");
-    const image = {
-      type: "image" as const,
-      id: "settlement-image",
-      name: "image.png",
-      mimeType: "image/png",
-      sizeBytes: 42,
-    };
-    const history = Array.from({ length: 120 }, (_, index) =>
-      initial.visibleTurnItems.slice(0, 3).map((row) => ({
-        ...row,
-        sourceItemId: TurnItemId.make(`${row.sourceItemId}:${index}`),
-        item: {
-          ...row.item,
-          id: TurnItemId.make(`${row.item.id}:${index}`),
-          ...(row.item.type === "user_message" || row.item.type === "assistant_message"
-            ? { messageId: MessageId.make(`${row.item.messageId}:${index}`), attachments: [image] }
-            : {}),
-        },
-      })),
-    );
-    const visibleTurnItems = [...history.flat(), ...initial.visibleTurnItems.slice(3)].map(
-      (row, position) => ({
-        ...row,
-        position,
-        item: { ...row.item, ordinal: position + 1 },
-      }),
-    );
-    const now = DateTime.makeUnsafe(initial.time(5));
-    const providerInstanceId = ProviderInstanceId.make("codex");
-    const modelSelection = { instanceId: providerInstanceId, model: "test-model" };
-    const activeRun = {
-      id: initial.runId,
-      threadId: initial.threadId,
-      ordinal: 2,
-      providerInstanceId,
-      modelSelection,
-      providerThreadId,
-      userMessageId: MessageId.make("live-user"),
-      rootNodeId,
-      activeAttemptId: attemptId,
-      status: "running" as const,
-      requestedAt: now,
-      startedAt: now,
-      completedAt: null,
-      checkpointId: null,
-      contextHandoffId: null,
-    };
-    const attempt = {
-      id: attemptId,
-      runId: activeRun.id,
-      attemptOrdinal: 1,
-      rootNodeId,
-      providerInstanceId,
-      providerThreadId,
-      providerTurnId,
-      reason: "initial" as const,
-      status: "running" as const,
-      startedAt: now,
-      completedAt: null,
-      providerSettlement: null,
-    };
-    const base = makeThreadProjectionFixture();
-    let projection: OrchestrationV2ThreadProjection = {
-      ...base,
-      thread: { ...base.thread, id: initial.threadId },
-      runs: [
-        {
-          ...activeRun,
-          id: initial.historyRunId,
-          ordinal: 1,
-          activeAttemptId: null,
-          status: "completed",
-          completedAt: now,
-        },
-        activeRun,
-      ],
-      attempts: [attempt],
-      turnItems: visibleTurnItems.map((row) => row.item),
-      visibleTurnItems,
-    };
-    const state = (value: OrchestrationV2ThreadProjection): EnvironmentThreadState => ({
-      ...EMPTY_ENVIRONMENT_THREAD_STATE,
-      status: "live",
-      data: Option.some(value),
-    });
-    const source = Atom.make(AsyncResult.success(state(projection)));
-    const details = createEnvironmentThreadDetailAtoms(() => source);
-    const registry = AtomRegistry.make();
-    const ref = {
-      environmentId: EnvironmentId.make("environment:timeline-settlement"),
-      threadId: initial.threadId,
-    };
-    const releaseThread = registry.mount(details.threadAtom(ref));
-    const releaseItems = registry.mount(details.visibleTurnItemsAtom(ref));
-    try {
-      let previous: ReturnType<typeof deriveMessagesTimelineRowsWithState> | undefined;
-      let timelineState:
-        | ReturnType<typeof deriveTimelineEntriesFromVisibleTurnItemsWithState>
-        | undefined;
-      const attachmentUrlById = new Map([[image.id, "https://synthetic.test/image"]]);
-      const render = () => {
-        const detail = registry.get(details.threadAtom(ref))!.projection;
-        timelineState = deriveTimelineEntriesFromVisibleTurnItemsWithState(
-          {
-            visibleTurnItems: registry.get(details.visibleTurnItemsAtom(ref)),
-            optimisticMessages: [],
-            attachmentUrlById,
-          },
-          timelineState,
-        );
-        const timeline = timelineState.entries;
-        const latestRun = deriveThreadActivityRun(detail);
-        const input = {
-          ...initial.input,
-          timelineEntries: timeline,
-          latestRun,
-          runningRunId: latestRun?.status === "running" ? initial.runId : null,
-          isWorking: latestRun?.status === "running",
-        };
-        const next = deriveMessagesTimelineRowsWithState(input, previous);
-        expect(next.rows).toEqual(deriveMessagesTimelineRows(input));
-        if (previous !== undefined)
-          expect(previous.rows).toEqual(deriveMessagesTimelineRows(previous.input));
-        previous = next;
-        return next;
-      };
-      const apply = (event: OrchestrationV2DomainEvent) => {
-        const next = applyOrchestrationV2ProjectionEvent(projection, event);
-        expect(next).not.toBeNull();
-        projection = next!;
-        registry.set(source, AsyncResult.success(state(projection)));
-      };
-      const event = {
-        id: EventId.make("event:timeline-settlement"),
-        threadId: initial.threadId,
-        occurredAt: now,
-      };
-      const before = render();
-      const finalItem = projection.turnItems.find(
-        (item) => item.type === "assistant_message" && item.messageId === "live-assistant",
-      )!;
-      if (finalItem.type !== "assistant_message") return expect.fail("Missing assistant fixture");
-      apply({
-        ...event,
-        type: "turn-item.updated",
-        payload: {
-          ...finalItem,
-          text: "More partial",
-          updatedAt: DateTime.makeUnsafe(initial.time(8)),
-        },
-      });
-      const streaming = render();
-      expect(streaming.rows.find((row) => row.id === "history-user:0")).toBe(
-        before.rows.find((row) => row.id === "history-user:0"),
-      );
-      expect(streaming.rows.find((row) => row.id === "live-assistant")).toMatchObject({
-        assistantCopyStreaming: true,
-        message: { text: "More partial" },
-      });
-      apply({
-        ...event,
-        type: "turn-item.updated",
-        payload: {
-          ...finalItem,
-          text: "Complete",
-          streaming: false,
-          status: "completed",
-          updatedAt: DateTime.makeUnsafe(initial.time(9)),
-        },
-      });
-      const finalizedText = render();
-      expect(finalizedText.rows.find((row) => row.id === "live-assistant")).toMatchObject({
-        assistantCopyStreaming: true,
-      });
-      expect(before.rows.find((row) => row.id === "live-assistant")).toMatchObject({
-        message: { text: "Partial" },
-      });
-      const completedAt = DateTime.makeUnsafe(initial.time(9));
-      apply({
-        ...event,
-        type: "run-attempt.updated",
-        payload: {
-          ...attempt,
-          status: "completed",
-          completedAt,
-          providerSettlement: {
-            runAttemptId: attemptId,
-            providerTurnId,
-            status: "completed",
-            completedAt,
-          },
-        },
-      });
-      apply({ ...event, type: "run.updated", payload: { ...activeRun, status: "waiting" } });
-      const settled = render();
-      expect(settled.rows.find((row) => row.id === "live-assistant")).toMatchObject({
-        assistantCopyStreaming: false,
-      });
-      expect(settled.rows.find((row) => row.id === "history-user:0")).toMatchObject({
-        message: { attachments: [{ ...image, previewUrl: "https://synthetic.test/image" }] },
-      });
-      const providerFolds = settled.rows.filter(
-        (row) => row.kind === "turn-fold" && row.runId === activeRun.id,
-      );
-      expect(providerFolds.length).toBeGreaterThan(0);
-      expect(providerFolds[0]).toMatchObject({ label: "Worked for 4.0s" });
-      apply({
-        ...event,
-        type: "run.updated",
-        payload: {
-          ...activeRun,
-          status: "completed",
-          completedAt: DateTime.makeUnsafe(initial.time(59)),
-        },
-      });
-      const captured = render();
-      expect(captured.rows.find((row) => row.id === "live-assistant")).toMatchObject({
-        assistantCopyStreaming: false,
-      });
-      expect(
-        captured.rows.find((row) => row.kind === "turn-fold" && row.runId === activeRun.id),
-      ).toMatchObject({ label: "Worked for 4.0s" });
-      expect(finalizedText.rows.find((row) => row.id === "live-assistant")).toMatchObject({
-        assistantCopyStreaming: true,
-      });
-      apply({
-        ...event,
-        type: "run-attempt.updated",
-        payload: { ...attempt, status: "completed", completedAt, providerSettlement: null },
-      });
-      const restored = render();
-      expect(restored.rows.find((row) => row.id === "live-assistant")).toMatchObject({
-        assistantCopyStreaming: true,
-      });
-      expect(projection.runs.at(-1)?.status).toBe("completed");
-    } finally {
-      releaseItems();
-      releaseThread();
-      registry.dispose();
-    }
-  });
-
   it("leaves emitted rows immutable when a projection branches", () => {
     const initial = fixture("Initial");
     const previous = deriveMessagesTimelineRowsWithState(initial.input);
@@ -5156,86 +4894,171 @@ describe("failed turn transcript", () => {
   );
 });
 
-describe("work mode history", () => {
-  function entry(
-    role: "user" | "assistant",
-    text: string,
-    id: string = role,
-  ): Extract<TimelineEntry, { kind: "message" }> {
-    return {
-      kind: "message",
-      id,
-      createdAt: "2026-01-01T00:00:00Z",
-      message: {
-        id: MessageId.make(id),
-        role,
-        text,
-        runId: role === "assistant" ? RunId.make("warm") : null,
-        streaming: false,
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
+describe("live subagents after their parent turn settles", () => {
+  const runId = RunId.make("parent-run");
+  const threadId = ThreadId.make("parent-thread");
+  const providerTurnId = ProviderTurnId.make("parent-provider-turn");
+  const at = (second: number) =>
+    DateTime.makeUnsafe(`2026-10-06T10:00:${String(second).padStart(2, "0")}Z`);
+  const base = (id: string, second: number) => ({
+    id: TurnItemId.make(id),
+    threadId,
+    runId,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: second,
+    title: null,
+    startedAt: at(second),
+    completedAt: at(second),
+    updatedAt: at(second),
+  });
+  const projected = (item: OrchestrationV2TurnItem): OrchestrationV2ProjectedTurnItem => ({
+    position: item.ordinal,
+    visibility: "local",
+    sourceThreadId: threadId,
+    sourceItemId: item.id,
+    item,
+  });
+  const child = (
+    id: string,
+    second: number,
+    status: OrchestrationV2TurnItem["status"],
+    origin: "app_owned" | "provider_native" = "app_owned",
+  ): OrchestrationV2TurnItem => ({
+    ...base(id, second),
+    status,
+    completedAt: status === "running" ? null : at(second),
+    type: "subagent",
+    subagentId: NodeId.make(id),
+    origin,
+    driver: ProviderDriverKind.make("codex"),
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    childThreadId: origin === "app_owned" ? ThreadId.make(`${id}-thread`) : null,
+    prompt: `Inspect ${id}`,
+    result: null,
+  });
+  const rowsFor = (children: ReadonlyArray<OrchestrationV2TurnItem>) =>
+    deriveMessagesTimelineRows({
+      timelineEntries: deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: (
+          [
+            {
+              ...base("user", 0),
+              status: "completed",
+              type: "user_message",
+              messageId: MessageId.make("user"),
+              createdBy: "user",
+              creationSource: "web",
+              inputIntent: "turn_start",
+              text: "Delegate the review",
+              attachments: [],
+            },
+            {
+              ...base("reasoning", 1),
+              status: "completed",
+              type: "reasoning",
+              text: "Two children can split this.",
+              streaming: false,
+            },
+            {
+              ...base("command", 2),
+              status: "completed",
+              type: "command_execution",
+              input: "pwd",
+              output: "/repo",
+              exitCode: 0,
+            },
+            ...children,
+            {
+              ...base("assistant", 8),
+              status: "completed",
+              type: "assistant_message",
+              messageId: MessageId.make("assistant"),
+              text: "Both children are running.",
+              streaming: false,
+            },
+          ] satisfies OrchestrationV2TurnItem[]
+        ).map(projected),
+        optimisticMessages: [],
+      }),
+      latestRun: {
+        runId,
+        status: "completed",
+        startedAt: DateTime.formatIso(at(0)),
+        completedAt: DateTime.formatIso(at(8)),
       },
-    };
-  }
-  function input(timelineEntries: TimelineEntry[]) {
-    return {
-      timelineEntries,
       isWorking: false,
       turnDiffSummaries: [],
       supportsConversationRollback: false,
-    };
-  }
-  it("hides persisted sentinel pairs and their live header noise without changing history", () => {
-    const history = [entry("user", "@@@@@"), entry("assistant", "@@@@@")];
-    expect(deriveMessagesTimelineRows({ ...input(history), isWorking: true })).toEqual([]);
-    expect(history).toHaveLength(2);
-    expect(history[1]?.message.text).toBe("@@@@@");
-  });
-  it("keeps unexpected replies and real content in the same turn", () => {
-    for (const text of ["@@@@", "@@@@@ plus text", " @@@@@", "@@@@@\n", "Failed to respond"]) {
-      const rows = deriveMessagesTimelineRows(
-        input([
-          entry("user", "@@@@@"),
-          entry("assistant", text),
-          entry("assistant", "@@@@@", "sentinel"),
-        ]),
-      );
-      expect(rows.filter((row) => row.kind === "message").map((row) => row.message.text)).toEqual([
-        text,
+    });
+
+  it.each(["app_owned", "provider_native"] as const)(
+    "keeps a running %s child visible while the rest of the settled turn folds",
+    (origin) => {
+      const rows = rowsFor([child("child", 3, "running", origin)]);
+      // The reasoning and command still fold; only the live card stays out.
+      expect(rows.map((row) => row.id)).toEqual([
+        "user",
+        `turn-fold:${runId}`,
+        "child",
+        "assistant",
       ]);
-    }
+    },
+  );
+
+  it.each(["completed", "failed"] as const)("folds a %s child with its settled turn", (status) => {
+    const rows = rowsFor([child("child", 3, status)]);
+    expect(rows.some((row) => row.id === "child")).toBe(false);
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
   });
-  it("keeps attachment messages and invalidates streaming projections across the sentinel boundary", () => {
-    const attached = entry("user", "@@@@@");
-    const withAttachment = {
-      ...attached,
-      message: {
-        ...attached.message,
-        attachments: [
+
+  it("keeps a launch batch visible while any member is still running", () => {
+    const rows = rowsFor([child("done", 3, "completed"), child("live", 4, "running")]);
+    expect(rows.map((row) => row.id)).toEqual(["user", `turn-fold:${runId}`, "done", "assistant"]);
+    expect(rows.find((row) => row.id === "done")).toMatchObject({
+      subagents: [{ item: { id: "done" } }, { item: { id: "live" } }],
+    });
+  });
+
+  it("keeps a running child visible when a steer supersedes its attempt", () => {
+    const attempt = {
+      id: RunAttemptId.make("superseded-attempt"),
+      runId,
+      attemptOrdinal: 1,
+      rootNodeId: NodeId.make("superseded-root"),
+      status: "superseded" as const,
+    };
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: (
+        [
           {
-            type: "image",
-            id: ChatAttachmentId.make("image"),
-            name: "photo",
-            mimeType: "image/png",
-            sizeBytes: 1,
+            ...base("command", 2),
+            status: "completed",
+            type: "command_execution",
+            input: "pwd",
+            output: "/repo",
+            exitCode: 0,
           },
-        ],
+          child("child", 3, "running"),
+        ] satisfies OrchestrationV2TurnItem[]
+      ).map(projected),
+      optimisticMessages: [],
+    }).map((entry) => ({ ...entry, attempt }));
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: entries,
+      latestRun: {
+        runId,
+        status: "running",
+        startedAt: DateTime.formatIso(at(0)),
+        completedAt: null,
       },
-    } satisfies Extract<TimelineEntry, { kind: "message" }>;
-    expect(
-      deriveMessagesTimelineRows(input([withAttachment])).some((row) => row.kind === "message"),
-    ).toBe(true);
-    const partial = entry("assistant", "@@@@");
-    const streaming = { ...partial, message: { ...partial.message, streaming: true } };
-    const previous = deriveMessagesTimelineRowsWithState(input([streaming]));
-    const completed = { ...streaming, message: { ...streaming.message, text: "@@@@@" } };
-    const hidden = deriveMessagesTimelineRowsWithState(input([completed]), previous);
-    expect(hidden.rows).toEqual([]);
-    const unexpected = { ...completed, message: { ...completed.message, text: "@@@@@ extra" } };
-    expect(
-      deriveMessagesTimelineRowsWithState(input([unexpected]), hidden).rows.some(
-        (row) => row.kind === "message",
-      ),
-    ).toBe(true);
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.map((row) => row.id)).toEqual([`attempt-fold:${attempt.id}`, "child"]);
   });
 });

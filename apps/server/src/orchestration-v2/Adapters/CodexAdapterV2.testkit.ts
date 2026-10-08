@@ -3,6 +3,7 @@ import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type ProviderReplayTranscript } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
+import type * as CodexError from "effect-codex-app-server/errors";
 import * as CodexReplay from "effect-codex-app-server/replay";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -45,7 +46,10 @@ export type CodexOrchestratorReplayHarnessError = typeof CodexOrchestratorReplay
 export function withCodexReplayChildMetadata(
   client: CodexClient.CodexAppServerClient["Service"],
   transcript: CodexReplay.CodexAppServerReplayTranscript,
-  readMetadata: (threadId: string) => Effect.Effect<unknown> = (threadId) =>
+  readMetadata: (
+    threadId: string,
+    method: "thread/read" | "thread/resume",
+  ) => Effect.Effect<unknown, CodexError.CodexAppServerError> = (threadId) =>
     Effect.succeed({ thread: { id: threadId }, model: null }),
 ): CodexClient.CodexAppServerClient["Service"] {
   const childThreadIds = new Set(
@@ -67,12 +71,12 @@ export function withCodexReplayChildMetadata(
     raw: {
       ...client.raw,
       request: (method, params) =>
-        method === "thread/resume" &&
+        (method === "thread/read" || method === "thread/resume") &&
         Predicate.isObject(params) &&
-        params.excludeTurns === true &&
+        (method === "thread/read" ? params.includeTurns === false : params.excludeTurns === true) &&
         typeof params.threadId === "string" &&
         childThreadIds.has(params.threadId)
-          ? readMetadata(params.threadId)
+          ? readMetadata(params.threadId, method)
           : client.raw.request(method, params),
     },
   };
@@ -155,7 +159,6 @@ export function makeReplayServerConfig(
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       stateDir,
-      authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
@@ -178,24 +181,18 @@ export function makeReplayServerConfig(
   });
 }
 
-export function makeCodexReplayClientFactory(input: {
+export function layer(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
-}): CodexAdapterV2.CodexAppServerClientFactoryShape {
-  const replayLayer =
+}) {
+  const layerReplay =
     input.driver === undefined
       ? CodexReplay.layerReplay(input.transcript)
       : CodexReplay.layerReplayWithDriver(input.driver);
-  const recordedGoalControl = input.transcript.entries.some(
-    (entry) =>
-      entry.type === "expect_outbound" &&
-      Predicate.isObject(entry.frame) &&
-      (entry.frame.method === "thread/goal/get" || entry.frame.method === "thread/goal/set"),
-  );
-  return {
+  const layerReplayClientFactory = Layer.succeed(CodexAdapterV2.CodexAppServerClientFactory, {
     open: (openInput) =>
       Effect.gen(function* () {
-        const context = yield* Layer.build(replayLayer).pipe(
+        const context = yield* Layer.build(layerReplay).pipe(
           Effect.mapError(
             (cause) =>
               new ProviderAdapterOpenSessionError({
@@ -206,40 +203,16 @@ export function makeCodexReplayClientFactory(input: {
           ),
         );
         return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
-          Effect.map((replayClient): CodexClient.CodexAppServerClient["Service"] => {
-            const client = withCodexReplayChildMetadata(replayClient, input.transcript);
-            return {
-              ...client,
-              raw: {
-                ...client.raw,
-                request: (method, params) =>
-                  // Older fixtures model no active goal. Recorded goal control and all writes
-                  // stay on strict replay so compatibility cannot hide an unexpected mutation.
-                  !recordedGoalControl && method === "thread/goal/get"
-                    ? Effect.succeed({ goal: null })
-                    : client.raw.request(method, params),
-              },
-            };
-          }),
+          Effect.map((client) => withCodexReplayChildMetadata(client, input.transcript)),
           Effect.provide(context),
         );
       }),
-  };
-}
-
-export function makeCodexProviderAdapterRegistryReplayLayer(input: {
-  readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
-  readonly driver?: CodexReplay.CodexAppServerReplayDriver;
-}) {
-  const replayClientFactoryLayer = Layer.succeed(
-    CodexAdapterV2.CodexAppServerClientFactory,
-    makeCodexReplayClientFactory(input),
-  );
-  const serverConfigLayer = Layer.effect(
+  });
+  const layerServerConfig = Layer.effect(
     ServerConfig.ServerConfig,
     makeReplayServerConfig(input.transcript.scenario).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
-  const registryLayer = ProviderAdapterRegistry.makeDriverLayer({
+  const layerRegistry = ProviderAdapterRegistry.layerFromDrivers({
     drivers: [CodexAdapterV2.CodexAdapterV2Driver],
     configMap: {
       [CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID]: {
@@ -249,15 +222,15 @@ export function makeCodexProviderAdapterRegistryReplayLayer(input: {
   }).pipe(
     Layer.provide(
       Layer.mergeAll(
-        replayClientFactoryLayer,
-        serverConfigLayer,
+        layerReplayClientFactory,
+        layerServerConfig,
         NodeServices.layer,
         IdAllocator.layer,
       ),
     ),
   );
 
-  return registryLayer;
+  return layerRegistry;
 }
 
 const decodeCodexAppServerReplayTranscript = Schema.decodeUnknownEffect(
@@ -298,9 +271,7 @@ export const CodexOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness
                   Effect.promise((signal) => replayGate.beforeEmit(entry.label, signal)),
               },
         );
-        return yield* Layer.build(
-          makeCodexProviderAdapterRegistryReplayLayer({ transcript, driver }),
-        );
+        return yield* Layer.build(layer({ transcript, driver }));
       }),
     );
   },

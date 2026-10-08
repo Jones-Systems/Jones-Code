@@ -1,4 +1,3 @@
-import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
 /**
  * The OpenCode 2 runtime behind the `opencode` driver. It talks to the
  * instance's `opencode serve` process through the HTTP client and reads that
@@ -22,8 +21,7 @@ import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeC
  *
  * @module orchestration-v2/Adapters/OpenCode2AdapterV2
  */
-import * as Context from "effect/Context";
-import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
+
 import {
   AbsolutePath,
   Agent,
@@ -60,7 +58,9 @@ import {
 import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Hex from "effect/encoding/Hex";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -81,6 +81,7 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import { t3OrchestrationSystemPrompt } from "../../provider/T3OrchestrationInstructions.ts";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
 import { causeErrorTag } from "@t3tools/shared/observability";
 
@@ -449,9 +450,19 @@ const rule = (action: string, effect: Rule["effect"]): Rule => ({ action, resour
  * T3's MCP server is registered per directory, not per session, so each thread
  * gets its own `t3-code-<thread>` entry with its own credential. OpenCode names
  * an MCP tool's permission `<server>_<tool>` (non-alphanumerics become `_`).
+ * OpenCode skips every tool of a server whose name is over 64 characters (its
+ * tool namespace limit), and its router rejects adding one over 100, so a
+ * thread id that does not fit is replaced by a digest of it.
  */
-const t3McpServerName = (threadId: string) =>
-  `t3-code-${threadId.replaceAll(/[^a-zA-Z0-9_-]/g, "_")}`;
+export const t3McpServerName = Effect.fn("t3McpServerName")(function* (threadId: string) {
+  const name = `t3-code-${threadId.replaceAll(/[^a-zA-Z0-9_-]/g, "_")}`;
+  if (name.length <= 64) return name;
+  const crypto = yield* Crypto.Crypto;
+  const digest = yield* crypto
+    .digest("SHA-256", new TextEncoder().encode(threadId))
+    .pipe(Effect.orDie);
+  return `t3-code-${Hex.encode(digest).slice(0, 16)}`;
+});
 
 /**
  * The rules that keep T3's MCP servers to their own thread, after the mode's:
@@ -459,19 +470,19 @@ const t3McpServerName = (threadId: string) =>
  * this thread's own is allowed again, in every mode. A subagent's session
  * inherits the thread's.
  */
-const mcpRules = (threadId: string | null): ReadonlyArray<Rule> =>
-  threadId === null
+const mcpRules = (mcpServerName: string | null): ReadonlyArray<Rule> =>
+  mcpServerName === null
     ? []
     : [
         { action: "t3-code-*", resource: "*", effect: "deny" },
-        { action: `${t3McpServerName(threadId)}_*`, resource: "*", effect: "allow" },
+        { action: `${mcpServerName}_*`, resource: "*", effect: "allow" },
       ];
 
 const sessionRules = (
   policy: RulesPolicy,
   paths: ReadonlyArray<Rule>,
   grants: ReadonlyArray<Rule>,
-  threadId: string | null,
+  mcpServerName: string | null,
 ): ReadonlyArray<Rule> => [
   ...(policy.runtimeMode === "full-access"
     ? [rule("*", "allow")]
@@ -485,7 +496,7 @@ const sessionRules = (
   // are never denied: the free tier refuses sessions whose rules deny them.
   ...(policy.interactionMode === "plan" ? [rule("edit", "deny")] : []),
   ...paths,
-  ...mcpRules(threadId),
+  ...mcpRules(mcpServerName),
 ];
 
 const sameRules = (left: ReadonlyArray<Rule> | undefined, right: ReadonlyArray<Rule>) =>
@@ -666,10 +677,6 @@ const CLEAR_PROMPT_REJECTIONS: ReadonlySet<string> = new Set([
   "SkillNotFoundError",
 ]);
 
-class OpenCode2EventProducerContext extends Context.Reference<
-  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
->("t3/OpenCode2AdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
-
 export const OPENCODE_2_STILL_STOPPING =
   "OpenCode is still stopping the previous turn. Send the message again in a moment.";
 const REQUEST_REPLY_TIMEOUT = "10 seconds";
@@ -821,15 +828,14 @@ const turnTokenUsage = (turn: ActiveTurn, status: OrchestrationV2ProviderTurn["s
  * {@link OpenCode2Server.OpenCode2Server}, which the driver builds from the instance's settings.
  */
 export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: ProviderInstanceId) {
-  const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
-  const authority = Option.isSome(authorityOption)
-    ? authorityOption.value.forInstance(instanceId)
-    : undefined;
   const server = yield* OpenCode2Server.OpenCode2Server;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+  const crypto = yield* Crypto.Crypto;
   const driver = OPENCODE_PROVIDER;
+  const mcpServerNameFor = (threadId: string) =>
+    t3McpServerName(threadId).pipe(Effect.provideService(Crypto.Crypto, crypto));
 
   /**
    * Lends the instance's server to a session until its scope closes. A spawned
@@ -838,10 +844,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
   const borrow = Effect.gen(function* () {
     const lent = yield* Deferred.make<OpenCode2Server.OpenCode2Connection, OpenCodeRuntimeError>();
     yield* server
-      .withConnection(
-        (connection) => Deferred.succeed(lent, connection).pipe(Effect.andThen(Effect.never)),
-        undefined,
-        "session",
+      .withConnection((connection) =>
+        Deferred.succeed(lent, connection).pipe(Effect.andThen(Effect.never)),
       )
       .pipe(
         Effect.catch((error) => Deferred.fail(lent, error)),
@@ -857,28 +861,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       readonly scope: Scope.Closeable;
     },
   ) {
-    const adopt = (
-      parent: OpenCode2Server.OpenCode2Connection,
-    ): Effect.Effect<
-      OpenCodeCreationPolicy.OpenCodeSessionAdoption | undefined,
-      OpenCodeRuntimeError
-    > =>
-      authority === undefined
-        ? Effect.succeed(undefined)
-        : OpenCodeCreationPolicy.adoptSession({
-            parent:
-              parent.ownedProcess?.incarnation !== undefined &&
-              parent.ownedProcess.isCurrent !== undefined
-                ? {
-                    incarnation: parent.ownedProcess.incarnation,
-                    isCurrent: parent.ownedProcess.isCurrent,
-                  }
-                : undefined,
-            authority,
-            providerInstanceId: instanceId,
-            session: input,
-          });
-    let adoption = yield* adopt(initial.connection);
     let connection = initial.connection;
     // Replaced when the session reconnects to a restarted server.
     let client = connection.client;
@@ -905,39 +887,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       lastError: null,
     };
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
-    const makeConnectionProducer = (captured = adoption) =>
-      ProviderEventOrigin.makeProviderEventProducer(
-        {
-          driver,
-          instanceId,
-          providerSessionId: input.providerSessionId,
-          ...(captured !== undefined
-            ? { runtimeGeneration: captured.capture.runtimeGeneration }
-            : {}),
-        },
-        captured?.isCurrent,
-      );
-    let eventProducer = makeConnectionProducer();
-    const bindAdoption = (providerThread: OrchestrationV2ProviderThread) => {
-      const captured = adoption;
-      const producer = eventProducer.origin;
-      return captured === undefined
-        ? Effect.succeed(providerThread)
-        : OpenCodeCreationPolicy.bindSessionAdoption(captured, input.runtimeLifecycle!, {
-            providerThread,
-            requested: ProviderAdapter.requestedRuntimeIdentity(input.modelSelection, driver),
-            observed: ProviderAdapter.unobservedRuntimeIdentity(),
-            producerOrigin: producer,
-          });
-    };
-    const requireAdoption = Effect.suspend(() =>
-      adoption === undefined
-        ? Effect.void
-        : OpenCodeCreationPolicy.requireCurrent({
-            incarnation: adoption.capture.parent,
-            isCurrent: adoption.isCurrent,
-          }).pipe(Effect.asVoid),
-    );
     // Thread sessions, and the sessions of their subagents.
     const threads = new Map<string, ThreadState>();
     // A subagent's session, by its id, to the thread whose session started it.
@@ -955,24 +904,16 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     const stagedReverts = new Set<string>();
     // Starting a turn and cutting the history take turns on a session: each
     // checks that the other is not running before its own requests yield.
-    const sessionGates = new Map<string, Semaphore.Semaphore>();
+    const sessionGates = yield* KeyedLock.make<string>();
     const exclusive =
       (providerThread: OrchestrationV2ProviderThread) =>
       <A, E, R>(effect: Effect.Effect<A, E, R>) => {
         const sessionId = providerThread.nativeThreadRef?.nativeId;
         if (sessionId == null) return effect;
-        let gate = sessionGates.get(sessionId);
-        if (gate === undefined) {
-          gate = Semaphore.makeUnsafe(1);
-          sessionGates.set(sessionId, gate);
-        }
-        return gate.withPermit(effect);
+        return sessionGates.withLock(sessionId, effect);
       };
     const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-      Effect.gen(function* () {
-        const producer = (yield* OpenCode2EventProducerContext) ?? eventProducer.origin;
-        yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
-      }).pipe(Effect.asVoid);
+      Queue.offer(events, event).pipe(Effect.asVoid);
     const ownerOf = (sessionId: string) => childOwners.get(sessionId) ?? threads.get(sessionId);
 
     const newThreadState = (
@@ -1734,7 +1675,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       state: ThreadState,
       terminal: TurnTerminal,
       threadDisposition: "reusable" | "broken" = "reusable",
-      evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "local_failure",
     ) {
       const turn = state.active;
       if (turn === undefined) return;
@@ -1845,13 +1785,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       yield* setSessionStatus(pending.size > 0 ? "waiting" : anyActive ? "running" : "ready", null);
       const base = {
         type: "turn.terminal" as const,
-        providerTurn: state.providerTurns.get(String(turn.providerTurn.id))!,
-        evidenceKind:
-          terminal.status === "interrupted" && evidenceKind === "provider_result"
-            ? "attributed_abort"
-            : evidenceKind,
         driver,
-        providerThreadId: state.providerThread.id,
+        // The provider thread the turn started on. After a native fork the
+        // session's own thread has a fresh id, and the terminal must name the
+        // thread the start was recorded against.
+        providerThreadId: turn.providerTurn.providerThreadId,
         providerTurnId: turn.providerTurn.id,
         runOrdinal: turn.input.runOrdinal,
         threadDisposition,
@@ -2493,13 +2431,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         turn.heldEnd = end;
         return;
       }
-      yield* finishTurn(state, end, "reusable", "provider_result");
+      yield* finishTurn(state, end);
     });
 
     /** Ends a turn held for its steers once none is left to deliver. */
     const endIfSettled = (state: ThreadState, turn: ActiveTurn) =>
       turn.heldEnd !== undefined && turn.steers.size === 0
-        ? finishTurn(state, turn.heldEnd, "reusable", "provider_result")
+        ? finishTurn(state, turn.heldEnd)
         : Effect.void;
 
     const handleEvent = Effect.fnUntraced(function* (event: OpenCode2StreamEvent) {
@@ -2890,44 +2828,22 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
      * reconciles. Retried a few times; the caller fails everything after that.
      */
     const reconnect = Effect.gen(function* () {
+      // Returned on any failure, including the interrupt a closing session
+      // sends a reconnect still in flight, so a spawned server can idle-stop.
       const scope = yield* Scope.make();
-      const next = yield* borrow.pipe(
-        Effect.provideService(Scope.Scope, scope),
-        Effect.tapError(() => Scope.close(scope, Exit.void)),
-      );
-      const nextAdoption = yield* adopt(next).pipe(
-        Effect.tapError(() => Scope.close(scope, Exit.void)),
-      );
-      const stream = yield* next.events.pipe(Effect.tapError(() => Scope.close(scope, Exit.void)));
+      const { next, stream } = yield* Effect.gen(function* () {
+        const next = yield* borrow.pipe(Effect.provideService(Scope.Scope, scope));
+        return { next, stream: yield* next.events };
+      }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       const previous = currentScope;
-      eventProducer.retire();
-      adoption = nextAdoption;
-      eventProducer = makeConnectionProducer(nextAdoption);
-      const producer = eventProducer;
       connection = next;
       client = next.client;
       currentScope = scope;
       yield* Scope.close(previous, Exit.void);
       // A restarted server forgot T3's MCP servers; the next turn adds them again.
       for (const state of threads.values()) state.mcp = undefined;
-      yield* lock
-        .withPermit(
-          Effect.gen(function* () {
-            if (adoption !== undefined) {
-              for (const state of threads.values()) {
-                if (state.providerThread.appThreadId === input.threadId) {
-                  state.providerThread = yield* bindAdoption(state.providerThread);
-                }
-              }
-            }
-            yield* reconcile;
-          }),
-        )
-        .pipe(
-          Effect.provideService(OpenCode2EventProducerContext, producer.origin),
-          Effect.timeout(RECONCILE_TIMEOUT),
-        );
-      return { stream, producer };
+      yield* lock.withPermit(reconcile).pipe(Effect.timeout(RECONCILE_TIMEOUT));
+      return stream;
     }).pipe(
       Effect.retry({ times: RECONNECT_ATTEMPTS - 1, schedule: Schedule.spaced(RECONNECT_DELAY) }),
     );
@@ -2935,24 +2851,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     let currentScope = initial.scope;
     // The borrow in use when the session closes is returned with it, so a
     // spawned server can still reach its idle shutdown.
-    yield* Effect.addFinalizer(() => {
-      eventProducer.drain();
-      return Scope.close(currentScope, Exit.void);
-    });
-    const follow = (
-      stream: Stream.Stream<OpenCode2StreamEvent, unknown>,
-      producer: ProviderEventOrigin.ProviderEventProducer,
-    ): Effect.Effect<void> =>
+    yield* Effect.addFinalizer(() => Scope.close(currentScope, Exit.void));
+    const follow = (stream: Stream.Stream<OpenCode2StreamEvent, unknown>): Effect.Effect<void> =>
       stream.pipe(
-        Stream.runForEach((event) =>
-          lock
-            .withPermit(handleEvent(event))
-            .pipe(Effect.provideService(OpenCode2EventProducerContext, producer.origin)),
-        ),
+        Stream.runForEach((event) => lock.withPermit(handleEvent(event))),
         Effect.exit,
         Effect.flatMap(() =>
           Effect.gen(function* () {
-            producer.drain();
             streamFailure = "The OpenCode event stream was lost. Reconnecting.";
             yield* Effect.logWarning("Lost the OpenCode event stream; reconnecting.");
             // The last failure is kept for the log: it can carry the server's
@@ -2974,12 +2879,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             const done = reconnected;
             reconnected = yield* Deferred.make<void>();
             yield* Deferred.succeed(done, undefined);
-            return yield* follow(next.value.stream, next.value.producer);
+            return yield* follow(next.value);
           }),
         ),
       );
     // Subscribed before any session or prompt call, so no event of theirs is missed.
-    yield* follow(yield* connection.events, eventProducer).pipe(Effect.forkScoped);
+    yield* follow(yield* connection.events).pipe(Effect.forkScoped);
 
     // A server T3 did not start keeps running after T3 stops, so stop the turns
     // it would otherwise finish unseen. A spawned server stops with its owner.
@@ -3083,7 +2988,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         policy,
         paths,
         policy.runtimeMode === "full-access" ? [] : thread.grants,
-        appThreadId,
+        appThreadId === null ? null : yield* mcpServerNameFor(appThreadId),
       );
     });
 
@@ -3340,7 +3245,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     ) {
       const mcpSession = McpProviderSession.readMcpProviderSession(turnInput.threadId);
       const directory = turnInput.runtimePolicy.cwd ?? serverConfig.cwd;
-      const name = t3McpServerName(turnInput.threadId);
+      const name = yield* mcpServerNameFor(turnInput.threadId);
       // An external server may not reach T3's MCP endpoint, as with 1.x.
       const wanted =
         mcpSession === undefined || connection.external
@@ -3660,7 +3565,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       get providerSession() {
         return session;
       },
-      eventOriginMode: "captured",
       events: Stream.fromQueue(events),
       // A background subagent keeps its session busy after its parent's turn,
       // and a held wake still needs its turn: idle release must wait for both.
@@ -3678,7 +3582,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           : undefined,
       ensureThread: (threadInput) =>
         Effect.gen(function* () {
-          yield* requireAdoption;
           if (threadInput.existingProviderThread?.nativeThreadRef != null) {
             return yield* runtime.resumeThread({
               providerThread: threadInput.existingProviderThread,
@@ -3734,7 +3637,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             directory,
           );
           state.policy = policy;
-          state.providerThread = yield* bindAdoption(state.providerThread);
           return state.providerThread;
         }).pipe(
           Effect.mapError((cause) =>
@@ -3749,7 +3651,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         ),
       resumeThread: (threadInput) =>
         Effect.gen(function* () {
-          yield* requireAdoption;
           const sessionId = yield* sessionIdOf(threadInput.providerThread);
           if (threadInput.runtimePolicy !== undefined) {
             yield* readModelsOnce(threadInput.runtimePolicy.cwd);
@@ -3779,7 +3680,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               directory: AbsolutePath.make(cwd),
             });
           }
-          state.providerThread = yield* bindAdoption(state.providerThread);
           return state.providerThread;
         }).pipe(
           Effect.mapError((cause) =>
@@ -3817,7 +3717,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           // it does not hold the gate.
           const started = yield* exclusive(turnInput.providerThread)(
             Effect.gen(function* () {
-              yield* requireAdoption;
               const sessionId = yield* sessionIdOf(turnInput.providerThread);
               const state = threads.get(sessionId);
               if (state === undefined) {
@@ -3832,9 +3731,6 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   detail: `OpenCode session ${sessionId} already has an active turn`,
                 });
               }
-              // Orchestration can rebind a native fork to its own thread ID.
-              // Adopt it before setup can emit updates, retaining native session state.
-              state.providerThread = { ...state.providerThread, id: turnInput.providerThread.id };
               // OpenCode already ran this turn on its own; it prompts nothing.
               if (isContinuation(turnInput)) return yield* runWake(state, turnInput);
               // After a timed-out Stop the server says whether that run is gone. A

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  canStopThreadSession,
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
   type ThreadActionMenuState,
 } from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
+  canOperate: true,
   branch: null,
   projectFilter: null,
   isPinned: false,
@@ -17,7 +17,6 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
-  canStopSession: false,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -40,39 +39,59 @@ function allIds(state: ThreadActionMenuState): string[] {
   return flatten(buildThreadActionMenuItems(state));
 }
 
-describe("canStopThreadSession", () => {
-  it("requires a non-stopped projected session, including an idle or errored attachment", () => {
-    expect(canStopThreadSession(null)).toBe(false);
-    expect(canStopThreadSession([])).toBe(false);
-    expect(canStopThreadSession([{ status: "stopped" }, { status: "stopped" }])).toBe(false);
-    for (const status of ["starting", "ready", "running", "waiting", "error"] as const) {
-      expect(canStopThreadSession([{ status: "stopped" }, { status }])).toBe(true);
-    }
-  });
-});
-
 describe("buildThreadActionMenuItems", () => {
-  it("places Stop after settlement and disables it after all sessions stop", () => {
-    const items = buildThreadActionMenuItems({ ...baseState, canStopSession: true });
-    expect(items[items.findIndex((item) => item.id === "settle") + 1]).toMatchObject({
-      id: "stop-thread",
-      label: "Stop thread",
-      icon: "square",
-      disabled: false,
-    });
-    expect(
-      buildThreadActionMenuItems(baseState).find((item) => item.id === "stop-thread"),
-    ).toMatchObject({ disabled: true });
-    expect(
-      buildThreadActionMenuItems({
+  it.each([false, true])(
+    "disables both lifecycle directions without permission (reversed: %s)",
+    (reversed) => {
+      const items = buildThreadActionMenuItems({
         ...baseState,
-        isPinned: true,
-        isSettled: true,
-        canStopSession: true,
-      }).find((item) => item.id === "stop-thread"),
-    ).toMatchObject({ disabled: false });
+        canOperate: false,
+        isPinned: reversed,
+        isSettled: reversed,
+        isSnoozed: reversed,
+      });
+      const expected = reversed
+        ? [
+            "unpin",
+            "unsettle",
+            "unsnooze",
+            "rename",
+            "regenerate-title",
+            "auto-settle",
+            "archive",
+            "delete",
+          ]
+        : [
+            "pin",
+            "settle",
+            "snooze",
+            "rename",
+            "regenerate-title",
+            "auto-settle",
+            "archive",
+            "delete",
+          ];
+      expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(expected);
+      expect(
+        items.find((item) => item.id === "snooze")?.children?.every((child) => child.disabled) ??
+          true,
+      ).toBe(true);
+    },
+  );
+
+  it("preserves local actions and restores mutations after a grant", () => {
+    const denied = buildThreadActionMenuItems({ ...baseState, canOperate: false, branch: "main" });
+    expect(denied.filter((item) => !item.disabled).map((item) => item.id)).toEqual([
+      "new-thread-on-branch",
+      "mark-unread",
+      "copy",
+      "project-settings",
+    ]);
+    const allowed = buildThreadActionMenuItems({ ...baseState, canOperate: true });
+    expect(allowed.every((item) => !item.disabled)).toBe(true);
   });
-  it("hides capability-gated items while keeping Stop available as a disabled action", () => {
+
+  it("hides lifecycle items when the environment lacks the capabilities", () => {
     expect(
       ids({
         ...baseState,
@@ -84,15 +103,7 @@ describe("buildThreadActionMenuItems", () => {
           titleRegeneration: false,
         },
       }),
-    ).toEqual([
-      "stop-thread",
-      "rename",
-      "mark-unread",
-      "copy",
-      "project-settings",
-      "archive",
-      "delete",
-    ]);
+    ).toEqual(["rename", "mark-unread", "copy", "project-settings", "archive", "delete"]);
   });
 
   it("groups project settings with utility actions before archive", () => {

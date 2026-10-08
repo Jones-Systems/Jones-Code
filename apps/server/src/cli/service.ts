@@ -2,46 +2,19 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Terminal from "effect/Terminal";
-import { Command, Flag, GlobalFlag, Prompt } from "effect/unstable/cli";
-import { FetchHttpClient } from "effect/unstable/http";
+import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
+import { FetchHttpClient } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
 import { compareExactServiceVersions } from "../cloud/serviceProtocol.ts";
 import type * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import * as HostServiceConfig from "../jones/hostService/HostServiceConfig.ts";
-import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
-export const jonesBootServiceLayer = (input: {
-  readonly baseDir: string;
-  readonly logsDir: string;
-  readonly cliVersion: string;
-  readonly allowEnableLinger?: boolean;
-  readonly runtimeMode?: "verified-private-artifact";
-}) =>
-  Layer.unwrap(
-    Effect.gen(function* () {
-      const configService = yield* HostServiceConfig.HostServiceConfig;
-      const config = yield* configService
-        .read(input.baseDir)
-        .pipe(Effect.mapError((cause) => new BootService.BootServiceInstallError({ cause })));
-      return BootService.layer({
-        ...input,
-        identity: JONES_BOOT_SERVICE_IDENTITY,
-        allowEnableLinger: input.allowEnableLinger === true,
-        ...(Option.isNone(config)
-          ? {}
-          : { environment: HostServiceConfig.configEnvironment(config.value) }),
-      });
-    }),
-  ).pipe(Layer.provide(HostServiceConfig.layer));
-
-export const bootServiceLayer = (config: ServerConfig.ServerConfig["Service"]) =>
-  jonesBootServiceLayer({
+export const layer = (config: ServerConfig.ServerConfig["Service"]) =>
+  BootService.layer({
     baseDir: config.baseDir,
     logsDir: config.logsDir,
     cliVersion: packageJson.version,
@@ -134,7 +107,7 @@ const runServiceCommand = Effect.fn("cli.service.run")(function* <A, E>(
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel);
-  return yield* run.pipe(Effect.provide(bootServiceLayer(config)));
+  return yield* run.pipe(Effect.provide(layer(config)));
 });
 
 const serviceReconcileFlags = {
@@ -307,8 +280,6 @@ export const recoverServiceOnboardingOffer = <R>(
         Console.warn(`Background setup did not finish: ${error.message}`).pipe(Effect.as(false)),
       BootServicePrerequisiteError: (error) =>
         Console.warn(`Background setup did not finish: ${error.message}`).pipe(Effect.as(false)),
-      BootServiceBootstrapRequiredError: (error) =>
-        Console.warn(error.message).pipe(Effect.as(false)),
       BootServiceUpdatePendingError: (error) =>
         Console.warn(`Background setup did not finish: ${error.message}`).pipe(Effect.as(false)),
       BootServiceDowngradeRefusedError: (error) =>

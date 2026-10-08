@@ -1,17 +1,9 @@
-import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
-import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
-import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
   CheckpointId,
   MessageId,
   ModelSelection,
-  ObservedRuntimeIdentity,
-  ProviderRuntimeBinding,
-  ProviderRuntimeEvidenceCapture,
-  RequestedRuntimeIdentity,
-  RuntimeIdentityAttestation,
   NodeId,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
@@ -51,7 +43,6 @@ import type {
   ProviderSelectionTransitionInput,
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
-import type { ProviderEventProducerOrigin } from "../jones/orchestration/ProviderEventOrigin.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
@@ -86,82 +77,60 @@ export type ProviderAdapterV2SessionStatus = typeof ProviderAdapterV2SessionStat
 
 export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
-    type: Schema.Literal("runtime_identity.observed"),
-    driver: ProviderDriverKind,
-    binding: ProviderRuntimeBinding,
-    requested: RequestedRuntimeIdentity,
-    observed: ObservedRuntimeIdentity,
-  }),
-  Schema.Struct({
     type: Schema.Literal("app_thread.created"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     appThread: OrchestrationV2AppThread,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_session.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerSession: OrchestrationV2ProviderSession,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_thread.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThread: OrchestrationV2ProviderThread,
   }),
   Schema.Struct({
     type: Schema.Literal("provider_turn.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: Schema.optional(ThreadId),
     providerTurn: OrchestrationV2ProviderTurn,
   }),
   Schema.Struct({
     type: Schema.Literal("node.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     node: OrchestrationV2ExecutionNode,
   }),
   Schema.Struct({
     type: Schema.Literal("subagent.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     subagent: OrchestrationV2Subagent,
   }),
   Schema.Struct({
     type: Schema.Literal("message.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     message: OrchestrationV2ConversationMessage,
   }),
   Schema.Struct({
     type: Schema.Literal("turn_item.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     turnItem: OrchestrationV2TurnItem,
   }),
   Schema.Struct({
     type: Schema.Literal("runtime_request.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: Schema.optional(ThreadId),
     runtimeRequest: OrchestrationV2RuntimeRequest,
   }),
   Schema.Struct({
     type: Schema.Literal("plan.updated"),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     plan: OrchestrationV2PlanArtifact,
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
-    providerTurn: Schema.optional(OrchestrationV2ProviderTurn),
-    evidenceKind: Schema.optional(
-      Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
-    ),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
@@ -171,12 +140,7 @@ export const ProviderAdapterV2Event = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("turn.terminal"),
-    providerTurn: Schema.optional(OrchestrationV2ProviderTurn),
-    evidenceKind: Schema.optional(
-      Schema.Literals(["provider_result", "attributed_abort", "local_failure"]),
-    ),
     driver: ProviderDriverKind,
-    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
@@ -390,22 +354,7 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
   }
 }
 
-export class ProviderRuntimeBindingError extends Schema.TaggedError<ProviderRuntimeBindingError>()(
-  "ProviderRuntimeBindingError",
-  { driver: ProviderDriverKind, detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
-) {}
-
-export function hasUnknownRuntimeBinding(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth += 1) {
-    if (Reflect.get(current, "_tag") === "ProviderRuntimeBindingError") return true;
-    current = Reflect.get(current, "cause");
-  }
-  return false;
-}
-
 export const ProviderAdapterV2Error = Schema.Union([
-  ProviderRuntimeBindingError,
   ProviderAdapterCapabilitiesError,
   ProviderAdapterOpenSessionError,
   ProviderAdapterCloseSessionError,
@@ -424,94 +373,7 @@ export const ProviderAdapterV2Error = Schema.Union([
 ]);
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
-export interface ProviderRuntimeLifecycle {
-  readonly reserve: (threadId: ThreadId) => Effect.Effect<string, ProviderAdapterV2Error>;
-  readonly bind: (input: {
-    readonly providerThread: OrchestrationV2ProviderThread;
-    readonly runtimeGeneration: string;
-    readonly requested: RequestedRuntimeIdentity;
-    readonly observed: ObservedRuntimeIdentity;
-    readonly producerOrigin?: ProviderEventProducerOrigin;
-  }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
-  readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
-  readonly invalidate: (
-    binding: ProviderRuntimeBinding,
-  ) => Effect.Effect<void, ProviderAdapterV2Error>;
-}
-
-export function requestedRuntimeIdentity(
-  selection: ModelSelection,
-  driver: ProviderDriverKind,
-): RequestedRuntimeIdentity {
-  const tier = selection.options?.find((option) => option.id === "serviceTier")?.value;
-  return {
-    providerInstanceId: selection.instanceId,
-    providerDriver: driver,
-    model: selection.model,
-    serviceTier: typeof tier === "string" ? tier : null,
-  };
-}
-
-export function unobservedRuntimeIdentity(): ObservedRuntimeIdentity {
-  return {
-    backend: { status: "unknown" },
-    model: { status: "unknown" },
-    account: {
-      status: "unavailable",
-      reason: "No supported provider event safely binds an account to this runtime.",
-    },
-    serviceTier: { status: "unknown" },
-  };
-}
-
-export function runtimeBinding(
-  thread: OrchestrationV2ProviderThread,
-  runtimeGeneration: string,
-): ProviderRuntimeBinding | undefined {
-  if (
-    thread.appThreadId === null ||
-    thread.providerSessionId === null ||
-    thread.nativeThreadRef === null ||
-    thread.nativeThreadRef.nativeId === null
-  )
-    return undefined;
-  return {
-    threadId: thread.appThreadId,
-    providerThreadId: thread.id,
-    providerSessionId: thread.providerSessionId,
-    providerInstanceId: thread.providerInstanceId,
-    driver: thread.driver,
-    nativeThreadId: thread.nativeThreadRef.nativeId,
-    runtimeGeneration,
-  };
-}
-
-export function identityForRequest(
-  requested: RequestedRuntimeIdentity,
-  previous?: RuntimeIdentityAttestation,
-): RuntimeIdentityAttestation {
-  const sameOwner =
-    previous?.requested.providerInstanceId === requested.providerInstanceId &&
-    previous.requested.providerDriver === requested.providerDriver;
-  const sameRequest =
-    sameOwner &&
-    previous.requested.model === requested.model &&
-    previous.requested.serviceTier === requested.serviceTier;
-  return {
-    ...(sameOwner && previous.runtimeGeneration !== undefined
-      ? { runtimeGeneration: previous.runtimeGeneration }
-      : {}),
-    ...(sameOwner && previous.evidenceRevision !== undefined
-      ? { evidenceRevision: previous.evidenceRevision }
-      : {}),
-    requested,
-    observed: sameRequest ? previous.observed : unobservedRuntimeIdentity(),
-  };
-}
-
 export interface ProviderAdapterV2OpenSessionInput {
-  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
-  readonly runtimeLifecycle?: ProviderRuntimeLifecycle;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
@@ -524,7 +386,6 @@ export interface ProviderAdapterV2OpenSessionInput {
 }
 
 export interface ProviderAdapterV2EnsureThreadInput {
-  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   readonly threadId: ThreadId;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
@@ -533,12 +394,12 @@ export interface ProviderAdapterV2EnsureThreadInput {
 }
 
 export interface ProviderAdapterV2TurnInput {
-  readonly nativeCreationGuard?: NativeProviderExecutionGuard;
-  readonly revalidateStartAdmission?: Effect.Effect<void, ProviderAdapterV2Error>;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
   readonly runOrdinal: number;
+  /** Whether the current native session has an accepted turn; omitted when unknown. */
+  readonly nativeThreadHasTurns?: boolean;
   readonly providerTurnOrdinal: number;
   readonly restartContinuationOfRunId?: RunId;
   readonly attemptId: RunAttemptId;
@@ -546,9 +407,13 @@ export interface ProviderAdapterV2TurnInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly message: ProviderAdapterV2TurnMessage;
   readonly modelSelection: ModelSelection;
-  /** Dispatch-only default; never changes durable requested model options. */
-  readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
+  /**
+   * What the thread's MCP Apps want the agent to know (`ui/update-model-context`),
+   * latest per app, keyed stably per app. Adapters that host apps deliver it as
+   * application context; others never receive any.
+   */
+  readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
 }
 
 export interface ProviderAdapterV2SteerInput {
@@ -624,17 +489,40 @@ export interface ProviderAdapterV2HistoricalContext {
   readonly context: string;
 }
 
-export interface CapturedRuntimeStop {
-  readonly binding: ProviderRuntimeBinding;
-  readonly evidenceRevision: number;
-  readonly isCurrent: Effect.Effect<boolean>;
-  readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
+/** An MCP tool as the provider's MCP client lists it. */
+export interface ProviderAdapterV2McpTool {
+  readonly name: string;
+  readonly _meta?: unknown;
+  readonly annotations?: unknown;
 }
+
+/** MCP `CallToolResult` / `ReadResourceResult` shapes, passed through unchanged. */
+export interface ProviderAdapterV2McpCallToolResult {
+  readonly content: ReadonlyArray<unknown>;
+  readonly structuredContent?: unknown;
+  readonly isError?: boolean;
+  readonly _meta?: unknown;
+}
+
+export interface ProviderAdapterV2McpApps {
+  readonly listTools: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly server: string;
+  }) => Effect.Effect<ReadonlyArray<ProviderAdapterV2McpTool>, ProviderAdapterV2Error>;
+  readonly callTool: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly server: string;
+    readonly tool: string;
+    readonly arguments: Record<string, unknown>;
+  }) => Effect.Effect<ProviderAdapterV2McpCallToolResult, ProviderAdapterV2Error>;
+  readonly readResource: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly server: string;
+    readonly uri: string;
+  }) => Effect.Effect<{ readonly contents: ReadonlyArray<unknown> }, ProviderAdapterV2Error>;
+}
+
 export interface ProviderAdapterV2SessionRuntime {
-  readonly captureRuntimeStop?: (
-    providerThread: OrchestrationV2ProviderThread,
-  ) => Effect.Effect<CapturedRuntimeStop | null, ProviderAdapterV2Error>;
-  readonly eventOriginMode?: "captured";
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
@@ -652,9 +540,6 @@ export interface ProviderAdapterV2SessionRuntime {
    * here so the session manager defers idle release while it is pending.
    */
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
-  readonly readThreadActivity?: (
-    providerThread: OrchestrationV2ProviderThread,
-  ) => Effect.Effect<RuntimeObservation.ProviderRuntimeObservation>;
   /**
    * Per-provider-thread pending work for root-run ingestion stop gates. When
    * present, RunExecutionService uses only this probe (never the session-wide
@@ -715,9 +600,6 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
-  readonly readGoalState?: (
-    providerThread: OrchestrationV2ProviderThread,
-  ) => Effect.Effect<ProviderGoalReadResult>;
   readonly readThreadSnapshot: (
     input: ProviderAdapterV2ReadThreadSnapshotInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;
@@ -729,6 +611,12 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly reason?: string;
   }) => Effect.Effect<{ readonly feedbackId: string }, ProviderAdapterV2Error>;
+  /**
+   * MCP Apps host operations through the provider's own MCP client, for
+   * drivers whose protocol exposes them (Codex). Absent means apps from this
+   * provider are not interactive and their tool calls stay plain tool rows.
+   */
+  readonly mcpApps?: ProviderAdapterV2McpApps;
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;
@@ -738,7 +626,6 @@ export interface ProviderAdapterV2SessionRuntime {
 }
 
 export interface ProviderAdapterV2Shape {
-  readonly nativeCreationExecution?: boolean;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly getCapabilities: () => Effect.Effect<

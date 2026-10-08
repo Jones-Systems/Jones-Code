@@ -22,13 +22,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { Argument, Command, Flag, GlobalFlag, Prompt } from "effect/unstable/cli";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { Argument, Command, Flag, GlobalFlag, Prompt } from "effect/cli";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
@@ -38,17 +33,12 @@ import {
   PinnedRuntimeInstallError,
   pinnedRuntimePaths,
 } from "../cloud/pinnedRuntime.ts";
-import {
-  parseServiceState,
-  compareExactServiceVersions,
-  isExactServiceVersion,
-} from "../cloud/serviceProtocol.ts";
+import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/serviceProtocol.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { createUpdateProgress } from "./updateProgress.ts";
-import { bootServiceLayer, jonesBootServiceLayer } from "./service.ts";
-import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
+import * as CliService from "./service.ts";
 
 export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpdateError", {
   reason: Schema.String,
@@ -72,50 +62,37 @@ const RELEASE_INDEX_TIMEOUT = Duration.seconds(30);
 const RELEASE_INDEX_MAX_PAGES = 10;
 
 /** Asks GitHub for the newest published version on a channel, page by page. */
-export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(function* (
+const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(function* (
   channel: CliReleaseChannel,
 ) {
   const httpClient = yield* HttpClient.HttpClient;
   for (let page = 1; page <= RELEASE_INDEX_MAX_PAGES; page += 1) {
-    const releaseIndexUrl = cliReleaseIndexPageUrl(page);
     const body = yield* httpClient
       .execute(
-        HttpClientRequest.get(releaseIndexUrl).pipe(
+        HttpClientRequest.get(cliReleaseIndexPageUrl(page)).pipe(
           HttpClientRequest.setHeader("Accept", "application/vnd.github+json"),
         ),
       )
       .pipe(
         Effect.flatMap(HttpClientResponse.filterStatusOk),
         Effect.flatMap((response) => response.text),
-        Effect.mapError(
-          () =>
-            new CliUpdateError({ reason: `Could not list t3 releases from ${releaseIndexUrl}.` }),
-        ),
+        Effect.mapError(() => new CliUpdateError({ reason: "Could not list t3 releases." })),
         Effect.timeoutOrElse({
           duration: RELEASE_INDEX_TIMEOUT,
           orElse: () =>
-            Effect.fail(
-              new CliUpdateError({
-                reason: `Timed out listing t3 releases from ${releaseIndexUrl}.`,
-              }),
-            ),
+            Effect.fail(new CliUpdateError({ reason: "Timed out listing t3 releases." })),
         }),
       );
     const releases = yield* decodeReleaseIndex(body).pipe(
       Effect.mapError(
-        () =>
-          new CliUpdateError({
-            reason: `The t3 release index from ${releaseIndexUrl} had an unexpected shape.`,
-          }),
+        () => new CliUpdateError({ reason: "The t3 release index had an unexpected shape." }),
       ),
     );
     const version = newestCliReleaseVersion(releases, channel);
     if (version !== undefined) return version;
     if (releases.length === 0) break;
   }
-  return yield* new CliUpdateError({
-    reason: `No published ${channel} release was found in ${cliReleaseIndexPageUrl(1)}.`,
-  });
+  return yield* new CliUpdateError({ reason: `No published ${channel} release was found.` });
 });
 
 /** Whether a launcher target lives inside `<baseDir>/runtime/versions`. */
@@ -290,50 +267,11 @@ export const updateCommand = Command.make("update", {
         assumeYes: flags.yes,
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(bootServiceLayer(config), ProcessRunner.layer, FetchHttpClient.layer),
+          Layer.mergeAll(CliService.layer(config), ProcessRunner.layer, FetchHttpClient.layer),
         ),
       );
     }),
   ),
-);
-
-/** Release updates cannot replace a source-qualified Jones runtime through a version-only request. */
-export const assertReleaseUpdateAllowed = Effect.fn("cli.update.assert_release_update_allowed")(
-  function* (baseDir: string, version: string) {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const managed = yield* fs.exists(path.join(baseDir, "runtime", "jones-active-install.json"));
-    const receipt = yield* fs.exists(
-      path.join(baseDir, "runtime", "versions", version, ".jones-runtime-receipt.json"),
-    );
-    const statePath = path.join(baseDir, "runtime", "service-state.json");
-    let serviceQualified = false;
-    if (yield* fs.exists(statePath)) {
-      const state = parseServiceState(yield* fs.readFileString(statePath));
-      if (state === undefined)
-        return yield* new CliUpdateError({
-          reason:
-            "The existing native service state requires reconciliation before a version-only update.",
-        });
-      serviceQualified =
-        cliReleaseChannelOf(state.activeVersion) === "preview" ||
-        (yield* fs.exists(
-          path.join(
-            baseDir,
-            "runtime",
-            "versions",
-            state.activeVersion,
-            ".jones-runtime-receipt.json",
-          ),
-        ));
-    }
-    if (managed || receipt || serviceQualified || cliReleaseChannelOf(version) === "preview") {
-      return yield* new CliUpdateError({
-        reason:
-          "This Jones runtime requires source-qualified staging and an explicit Install through its host updater. A version-only release update is unavailable.",
-      });
-    }
-  },
 );
 
 /**
@@ -358,19 +296,6 @@ const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(func
   return state.value;
 });
 
-export function isJonesBootServiceCgroup(contents: string): boolean {
-  return contents
-    .split("\n")
-    .some((line) =>
-      line
-        .split(":")
-        .slice(2)
-        .join(":")
-        .split("/")
-        .includes(JONES_BOOT_SERVICE_IDENTITY.systemdUnitFile),
-    );
-}
-
 const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(function* (
   pid: number,
 ) {
@@ -379,7 +304,7 @@ const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(fun
   const runner = yield* ProcessRunner.ProcessRunner;
   if (platform === "linux") {
     const cgroup = yield* fs.readFileString(`/proc/${pid}/cgroup`).pipe(Effect.option);
-    return Option.isSome(cgroup) && isJonesBootServiceCgroup(cgroup.value);
+    return Option.isSome(cgroup) && cgroup.value.includes("/t3code.service");
   }
   if (platform === "darwin") {
     // The service server's parent is the launcher process.
@@ -422,7 +347,6 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   const service = yield* BootService.BootService;
 
   const currentVersion = packageJson.version;
-  yield* assertReleaseUpdateAllowed(input.baseDir, currentVersion);
   const channel = input.channel ?? cliReleaseChannelOf(currentVersion);
   if (input.requestedVersion !== undefined && !isExactServiceVersion(input.requestedVersion)) {
     return yield* new CliUpdateError({
@@ -460,7 +384,7 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     }
     const confirmed = yield* Prompt.run(
       Prompt.Confirm({ message: "Install the preview build anyway?", initial: false }),
-    ).pipe(Effect.catchTag("QuitError", () => Effect.succeed(false)));
+    ).pipe(Effect.catchTags({ QuitError: () => Effect.succeed(false) }));
     if (!confirmed) {
       yield* Console.log("Left as is.");
       return;
@@ -549,7 +473,7 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
           message: "Restart the background service once the download is verified?",
           initial: true,
         }),
-      ).pipe(Effect.catchTag("QuitError", () => Effect.succeed(false)));
+      ).pipe(Effect.catchTags({ QuitError: () => Effect.succeed(false) }));
     } else {
       yield* Console.log(
         "  Not a terminal, so the service keeps running its current version. Rerun with --yes to restart it now, or run `t3 service restart` later.",
@@ -632,7 +556,7 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
         target.install({ allowDowngrade: input.allowDowngrade, start: restartService }),
       ),
       Effect.provide(
-        jonesBootServiceLayer({
+        BootService.layer({
           baseDir: input.baseDir,
           logsDir: input.logsDir,
           cliVersion: targetVersion,

@@ -5,21 +5,14 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
-import * as Fiber from "effect/Fiber";
-import * as Sink from "effect/Sink";
-import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as TestConsole from "effect/testing/TestConsole";
-import { Command } from "effect/unstable/cli";
+import { Command, CliError } from "effect/cli";
 
 import { cli } from "../binCli.ts";
 import {
@@ -36,12 +29,11 @@ import {
   DevServerNotProxiableError,
   resolveDirectPairingBaseUrl,
   resolveTailscaleLocalTarget,
-  resolveTailscalePairingBase,
 } from "./pair.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
 
-const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
+const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
 const baseState = {
   version: 1,
@@ -103,7 +95,7 @@ describe("pair tailscale local target", () => {
 const runCli = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "0.0.0" })(args);
 
 const provideCliTestLayers = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.provide(effect, Layer.mergeAll(CliRuntimeLayer, TestConsole.layer));
+  Effect.provide(effect, Layer.mergeAll(layerCliRuntime, TestConsole.layer));
 
 // Console output accumulates across CLI runs within a test, and each
 // Console.log call is one entry — so the latest command's output is the last
@@ -182,10 +174,13 @@ describe("t3 pair", () => {
         const listed = yield* captureStdout(
           runCli(["auth", "pairing", "list", "--base-dir", baseDir, "--json"]),
         );
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - CLI JSON output is decoded as a presentation DTO.
-        const credentials = JSON.parse(listed) as ReadonlyArray<{ readonly label?: string }>;
+        const credentials = JSON.parse(listed) as ReadonlyArray<{
+          readonly label?: string;
+          readonly scopes: ReadonlyArray<string>;
+        }>;
         assert.equal(credentials.length, 1);
         assert.equal(credentials[0]?.label, "t3 pair");
+        assert.deepEqual(credentials[0]?.scopes, AuthStandardClientScopes);
       }),
     ).pipe(
       Effect.provide(NodeServices.layer),
@@ -203,6 +198,43 @@ describe("t3 pair", () => {
         off: () => undefined,
       }),
     ),
+  );
+
+  it.effect("mints a pairing grant with only the selected scopes", () =>
+    withDescriptorServer((origin) =>
+      Effect.gen(function* () {
+        const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-scopes-test-"));
+        yield* persistServerRuntimeState({
+          path: NodePath.join(baseDir, "userdata", "server-runtime.json"),
+          state: yield* makePersistedServerRuntimeState({
+            config: { host: "127.0.0.1", devUrl: undefined },
+            port: Number(new URL(origin).port),
+          }),
+        });
+
+        yield* captureStdout(
+          runCli([
+            "pair",
+            "--base-dir",
+            baseDir,
+            "--scope",
+            "orchestration:read",
+            "--scope",
+            "relay:read",
+            "--scope",
+            "orchestration:read",
+          ]),
+        );
+        const listed = yield* captureStdout(
+          runCli(["auth", "pairing", "list", "--base-dir", baseDir, "--json"]),
+        );
+        const credentials = JSON.parse(listed) as ReadonlyArray<{
+          readonly scopes: ReadonlyArray<string>;
+        }>;
+        assert.lengthOf(credentials, 1);
+        assert.deepEqual(credentials[0]?.scopes, ["orchestration:read", "relay:read"]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("pairs through the recorded dev web URL for dev servers", () =>
@@ -299,231 +331,72 @@ describe("t3 pair", () => {
   );
 });
 
-const guardedPairClaim = { servePort: 8443, localPort: baseState.port };
-const guardedServeConfig = (
-  localPort: number = guardedPairClaim.localPort,
-  extraHandlers = false,
-) =>
-  JSON.stringify({
-    TCP: { "8443": { HTTPS: true } },
-    Web: {
-      "pair.tail.ts.net:8443": {
-        Handlers: {
-          "/": { Proxy: `http://127.0.0.1:${String(localPort)}` },
-          ...(extraHandlers ? { "/api": { Proxy: "http://127.0.0.1:1" } } : {}),
-        },
-      },
-    },
-  });
-const pairEncoder = new TextEncoder();
-const pairStatusArgs = ["serve", "status", "--json"];
-
-function guardedPairLayers(input: {
-  readonly serveReads: ReadonlyArray<string>;
-  readonly probe: "same" | "different" | "502";
-  readonly writeTimeout?: boolean;
-}) {
-  const commands: Array<ReadonlyArray<string>> = [];
-  let readIndex = 0;
-  const spawner = ChildProcessSpawner.make((command) => {
-    const child = command as unknown as { readonly args: ReadonlyArray<string> };
-    commands.push(child.args);
-    const isStatus = child.args[0] === "status";
-    const isServeRead = child.args[1] === "status";
-    const stdout = isStatus
-      ? '{"Self":{"DNSName":"pair.tail.ts.net."}}'
-      : isServeRead
-        ? input.serveReads[readIndex++]
-        : "";
-    if (stdout === undefined) return Effect.die(new Error("Unexpected Serve read"));
-    return Effect.succeed(
-      ChildProcessSpawner.makeHandle({
-        pid: ChildProcessSpawner.ProcessId(1),
-        exitCode:
-          input.writeTimeout && child.args.includes("--bg")
-            ? Effect.never
-            : Effect.succeed(ChildProcessSpawner.ExitCode(0)),
-        isRunning: Effect.succeed(false),
-        kill: () => Effect.void,
-        unref: Effect.succeed(Effect.void),
-        stdin: Sink.drain,
-        stdout: Stream.make(pairEncoder.encode(stdout)),
-        stderr: Stream.empty,
-        all: Stream.empty,
-        getInputFd: () => Sink.drain,
-        getOutputFd: () => Stream.empty,
-      }),
-    );
-  });
-  let probes = 0;
-  const client = HttpClient.make((request) => {
-    probes += 1;
-    const response =
-      input.probe === "502" && probes === 1
-        ? new Response("", { status: 502 })
-        : new Response(
-            JSON.stringify({
-              ...testDescriptor,
-              environmentId:
-                input.probe === "different" ? "another-environment" : testDescriptor.environmentId,
-            }),
-            { headers: { "content-type": "application/json" } },
-          );
-    return Effect.succeed(HttpClientResponse.fromWeb(request, response));
-  });
-  return {
-    commands,
-    layer: Layer.mergeAll(
-      Layer.succeed(HostProcessPlatform, "linux"),
-      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      Layer.succeed(HttpClient.HttpClient, client),
-    ),
-  };
-}
-
-const decodePairDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
-
-const guardedPairTarget = (dev = false) => ({
-  baseDir: "/synthetic-pair-base",
-  variant: dev ? ("dev" as const) : ("userdata" as const),
-  state: dev ? { ...baseState, devUrl: "http://localhost:5733/" } : baseState,
-  descriptor: decodePairDescriptor(testDescriptor),
-});
-
-describe("guarded Tailscale pairing", () => {
-  it.effect("refuses a conflicting route even when it returns 502", () => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: [guardedServeConfig(9999)],
-      probe: "502",
-    });
-    return Effect.gen(function* () {
-      const error = yield* resolveTailscalePairingBase({
-        target: guardedPairTarget(),
-        servePort: 8443,
-      }).pipe(Effect.flip);
-      assert.equal(error._tag, "ServePortClaimedError");
-      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect(
-    "writes an absent mapping and requires exact readback before returning a pairing URL",
-    () => {
-      const { commands, layer } = guardedPairLayers({
-        serveReads: ["{}", guardedServeConfig()],
-        probe: "502",
-      });
-      return Effect.gen(function* () {
-        const resolved = yield* resolveTailscalePairingBase({
-          target: guardedPairTarget(),
-          servePort: 8443,
-        });
-        assert.equal(resolved.baseUrl, "https://pair.tail.ts.net:8443/");
-        assert.deepEqual(commands, [
-          ["status", "--json"],
-          pairStatusArgs,
-          ["serve", "--bg", "--https=8443", "http://127.0.0.1:3773"],
-          pairStatusArgs,
-        ]);
-      }).pipe(Effect.provide(layer));
-    },
-  );
-
-  it.effect("reuses an exact route without writing", () => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: [guardedServeConfig()],
-      probe: "same",
-    });
-    return Effect.gen(function* () {
-      yield* resolveTailscalePairingBase({ target: guardedPairTarget(), servePort: 8443 });
-      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("stops on unknown configuration without writing", () => {
-    const { commands, layer } = guardedPairLayers({ serveReads: [""], probe: "same" });
-    return Effect.gen(function* () {
-      const error = yield* resolveTailscalePairingBase({
-        target: guardedPairTarget(),
-        servePort: 8443,
-      }).pipe(Effect.flip);
-      assert.equal(error._tag, "TailscaleServeStateUnknownError");
-      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect(
-    "returns unknown after mismatching postwrite readback and never removes the route",
-    () => {
-      const { commands, layer } = guardedPairLayers({
-        serveReads: ["{}", guardedServeConfig(9999)],
-        probe: "502",
-      });
-      return Effect.gen(function* () {
-        const error = yield* resolveTailscalePairingBase({
-          target: guardedPairTarget(),
-          servePort: 8443,
-        }).pipe(Effect.flip);
-        assert.equal(error._tag, "TailscaleServeStateUnknownError");
-        assert.equal(commands.length, 4);
-        assert.isFalse(commands.some((args) => args.includes("off")));
-      }).pipe(Effect.provide(layer));
-    },
-  );
-
-  it.effect("returns unknown on ensure timeout without readback, cleanup or retry", () => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: ["{}"],
-      probe: "502",
-      writeTimeout: true,
-    });
-    return Effect.gen(function* () {
-      const fiber = yield* resolveTailscalePairingBase({
-        target: guardedPairTarget(),
-        servePort: 8443,
-      }).pipe(Effect.flip, Effect.forkChild);
-      yield* TestClock.adjust("10 seconds");
-      assert.equal((yield* Fiber.join(fiber))._tag, "TailscaleServeStateUnknownError");
-      assert.equal(commands.length, 3);
-      assert.isFalse(commands.some((args) => args.includes("off")));
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("repoints only a dev target proved to be the same environment", () => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: [guardedServeConfig(), guardedServeConfig(5733)],
-      probe: "same",
-    });
-    return Effect.gen(function* () {
-      yield* resolveTailscalePairingBase({ target: guardedPairTarget(true), servePort: 8443 });
-      assert.deepEqual(commands, [
-        ["status", "--json"],
-        pairStatusArgs,
-        ["serve", "--bg", "--https=8443", "http://127.0.0.1:5733"],
-        pairStatusArgs,
-      ]);
-    }).pipe(Effect.provide(layer));
-  });
-
+describe("auth scope options", () => {
   it.effect.each([
-    { label: "a different environment", probe: "different", extraHandlers: false },
-    {
-      label: "a route with extra handlers despite the same environment",
-      probe: "same",
-      extraHandlers: true,
-    },
-  ] as const)("does not repoint $label", ({ probe, extraHandlers }) => {
-    const { commands, layer } = guardedPairLayers({
-      serveReads: [guardedServeConfig(3773, extraHandlers)],
-      probe,
-    });
-    return Effect.gen(function* () {
-      const error = yield* resolveTailscalePairingBase({
-        target: guardedPairTarget(true),
-        servePort: 8443,
-      }).pipe(Effect.flip);
-      assert.equal(error._tag, "ServePortClaimedError");
-      assert.deepEqual(commands, [["status", "--json"], pairStatusArgs]);
-    }).pipe(Effect.provide(layer));
-  });
+    { group: "pairing", action: "create" },
+    { group: "session", action: "issue" },
+  ] as const)(
+    "issues and persists only the selected scopes for auth $group $action",
+    ({ group, action }) =>
+      Effect.gen(function* () {
+        const baseDir = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-cli-auth-scopes-test-"),
+        );
+        const output = yield* captureStdout(
+          runCli([
+            "auth",
+            group,
+            action,
+            "--base-dir",
+            baseDir,
+            "--json",
+            "--scope",
+            "orchestration:read",
+            "--scope",
+            "access:read",
+            "--scope",
+            "orchestration:read",
+          ]),
+        );
+        const issued = JSON.parse(output) as { readonly scopes: ReadonlyArray<string> };
+        const listOutput = yield* captureStdout(
+          runCli(["auth", group, "list", "--base-dir", baseDir, "--json"]),
+        );
+        const listed = JSON.parse(listOutput) as ReadonlyArray<{
+          readonly scopes: ReadonlyArray<string>;
+        }>;
+
+        assert.deepEqual(issued.scopes, ["orchestration:read", "access:read"]);
+        assert.lengthOf(listed, 1);
+        assert.deepEqual(listed[0]?.scopes, issued.scopes);
+      }),
+  );
+
+  it.effect.each(
+    [["pair"], ["auth", "pairing", "create"], ["auth", "session", "issue"]].map((command) => ({
+      command,
+      label: command.join(" "),
+    })),
+  )("rejects invalid scopes before running $label", ({ command }) =>
+    Effect.gen(function* () {
+      const error = yield* runCli([
+        ...command,
+        "--scope",
+        "orchestration:read",
+        "--scope",
+        "admin",
+      ]).pipe(Effect.provide(layerCliRuntime), Effect.flip);
+
+      if (!CliError.isCliError(error) || error._tag !== "ShowHelp") {
+        assert.fail(`Expected ShowHelp, got ${String(error)}`);
+      }
+      assert.deepEqual(error.commandPath, ["t3", ...command]);
+      const scopeError = error.errors[0];
+      if (scopeError?._tag !== "InvalidValue") {
+        assert.fail(`Expected InvalidValue, got ${String(scopeError?._tag)}`);
+      }
+      assert.equal(scopeError.option, "scope");
+      assert.equal(scopeError.value, "admin");
+    }),
+  );
 });

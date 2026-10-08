@@ -7,8 +7,6 @@ import {
   ProviderSessionId,
   ProviderDriverKind,
   RunId,
-  RunAttemptId,
-  ProviderTurnId,
   ThreadId,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2RunStatus,
@@ -20,6 +18,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
   presentPendingBackgroundWork,
+  presentProviderGoal,
   deriveReportedModelSelection,
   deriveLatestThreadRun,
   deriveProviderSubagentStatus,
@@ -680,71 +679,42 @@ describe("provider-reported model selection", () => {
   });
 });
 
-describe("provider response settlement and operational activity", () => {
-  it.each([undefined, null, "completed", "interrupted", "failed", "cancelled"] as const)(
-    "keeps %s provider evidence independent from checkpoint-wait and Stop",
-    (outcome) => {
-      const attemptId = RunAttemptId.make("attempt:presentation");
-      const providerTurnId = ProviderTurnId.make("provider-turn:presentation");
-      const completedAt = DateTime.add(now, { seconds: 5 });
-      const current = { ...run("run-presentation", 1, "waiting"), activeAttemptId: attemptId };
-      const providerSettlement =
-        outcome === undefined
-          ? undefined
-          : outcome === null
-            ? null
-            : {
-                runAttemptId: attemptId,
-                providerTurnId,
-                status: outcome,
-                completedAt,
-              };
-      const attempt = {
-        id: attemptId,
-        runId: current.id,
-        attemptOrdinal: 1,
-        rootNodeId: NodeId.make("node:presentation"),
-        providerInstanceId: current.providerInstanceId,
-        providerThreadId: ProviderThreadId.make("provider-thread:presentation"),
-        providerTurnId,
-        reason: "initial" as const,
-        status: "completed" as const,
-        startedAt: now,
-        completedAt,
-        ...(outcome === undefined ? {} : { providerSettlement }),
-      };
-      const projection = { ...v2Projection, runs: [current], attempts: [attempt] };
-      const summary = deriveLatestThreadRun(projection);
-      expect(summary?.status).toBe("waiting");
-      expect(summary?.completedAt).toBeNull();
-      expect(summary?.providerSettlement).toEqual(
-        providerSettlement == null
-          ? providerSettlement
-          : { ...providerSettlement, completedAt: DateTime.formatIso(completedAt) },
-      );
-      expect(Object.hasOwn(summary!, "providerSettlement")).toBe(outcome !== undefined);
-      expect(deriveThreadActivityRun(projection)).toEqual(summary);
-      expect(threadRuntimeHasInterruptibleRun(deriveThreadRuntime(projection))).toBe(false);
-      const afterCheckpoint = {
-        ...projection,
-        runs: [
-          {
-            ...current,
-            status: "completed" as const,
-            completedAt: DateTime.add(completedAt, { minutes: 1 }),
-          },
-        ],
-      };
-      expect(deriveLatestThreadRun(afterCheckpoint)?.providerSettlement).toEqual(
-        summary?.providerSettlement,
-      );
-      const newer = {
-        ...run("newer", 2, "running"),
-        activeAttemptId: RunAttemptId.make("newer-attempt"),
-      };
-      expect(
-        deriveLatestThreadRun({ ...projection, runs: [current, newer] })?.providerSettlement,
-      ).toBeUndefined();
-    },
-  );
+describe("presentProviderGoal", () => {
+  it("summarizes Codex accounting and offers resume once the goal stops short", () => {
+    expect(
+      presentProviderGoal(
+        {
+          objective: "Ship the feature",
+          status: "paused",
+          tokensUsed: 12_400,
+          tokenBudget: 50_000,
+          timeUsedSeconds: 245,
+        },
+        false,
+      ),
+    ).toEqual({
+      title: "Goal paused",
+      objective: "Ship the feature",
+      usage: "12k / 50k tokens · 4m 5s",
+      canResume: true,
+    });
+  });
+
+  it("counts Claude evaluator checks and never offers resume", () => {
+    expect(
+      presentProviderGoal({ objective: "All tests pass", status: "active", checks: 1 }, true),
+    ).toEqual({
+      title: "Pursuing goal",
+      objective: "All tests pass",
+      usage: "1 check",
+      canResume: false,
+    });
+    expect(
+      presentProviderGoal({ objective: "All tests pass", status: "complete", checks: 0 }, false)
+        .usage,
+    ).toBeNull();
+    expect(
+      presentProviderGoal({ objective: "All tests pass", status: "active" }, false).title,
+    ).toBe("Goal set");
+  });
 });

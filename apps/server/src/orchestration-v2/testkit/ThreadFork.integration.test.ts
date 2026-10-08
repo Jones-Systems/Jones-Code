@@ -11,12 +11,14 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Predicate from "effect/Predicate";
+import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
 import * as IdAllocator from "../IdAllocator.ts";
-import { unobservedRuntimeIdentity } from "../ProviderAdapter.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
   THREAD_FORK_NATIVE_PRIOR_TURN_ALPHA_PROMPT,
@@ -26,7 +28,6 @@ import {
   THREAD_FORK_NATIVE_TARGET_PROMPT,
 } from "./fixtures/shared.ts";
 import { runOrchestratorV2ProviderReplayScenario } from "./ProviderReplayHarness.ts";
-import { makeCheckpointWorkspace as createCheckpointWorkspace } from "./ReplayFixtureWorkspace.ts";
 import {
   decodeProviderReplayNdjson,
   materializeReplayTranscriptWorkspace,
@@ -54,9 +55,50 @@ const CODEX_READ_ONLY_NEVER_POLICY = {
   },
 } as const;
 
-const makeCheckpointWorkspace = Effect.promise(() =>
-  createCheckpointWorkspace("thread-fork", { "README.md": "# thread fork\n" }),
-);
+class ThreadForkGitCommandError extends Schema.TaggedError<ThreadForkGitCommandError>()(
+  "ThreadForkGitCommandError",
+  {
+    command: Schema.String,
+    exitCode: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `${this.command} failed with exit ${this.exitCode}.`;
+  }
+}
+
+function runGit(
+  cwd: string,
+  args: ReadonlyArray<string>,
+): Effect.Effect<
+  void,
+  ThreadForkGitCommandError | PlatformError.PlatformError,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  return Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const exitCode = yield* spawner.exitCode(ChildProcess.make("git", args, { cwd }));
+    if (Number(exitCode) !== 0) {
+      return yield* new ThreadForkGitCommandError({
+        command: `git ${args.join(" ")}`,
+        exitCode: Number(exitCode),
+      });
+    }
+  });
+}
+
+const makeCheckpointWorkspace = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const cwd = yield* fs.makeTempDirectory({ prefix: "t3-orchestrator-v2-thread-fork-" });
+  yield* runGit(cwd, ["init"]);
+  yield* runGit(cwd, ["config", "user.name", "T3 Code Test"]);
+  yield* runGit(cwd, ["config", "user.email", "t3code-test@example.com"]);
+  yield* fs.writeFileString(path.join(cwd, "README.md"), "# thread fork\n");
+  yield* runGit(cwd, ["add", "README.md"]);
+  yield* runGit(cwd, ["commit", "-m", "initial"]);
+  return cwd;
+});
 
 function readTranscript(transcriptPath: string = TRANSCRIPT_PATH) {
   return Effect.gen(function* () {
@@ -223,16 +265,6 @@ describe("orchestration V2 thread fork", () => {
         const targetProjection = result.projections.get(materialized.targetThreadId);
         assert.isDefined(sourceProjection);
         assert.isDefined(targetProjection);
-        assert.isString(sourceProjection.providerThreads[0]?.runtimeIdentity?.runtimeGeneration);
-        assert.isString(targetProjection.providerThreads[0]?.runtimeIdentity?.runtimeGeneration);
-        assert.notEqual(
-          targetProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
-          sourceProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
-        );
-        assert.equal(
-          targetProjection.providerThreads[0]?.runtimeIdentity?.requested.providerInstanceId,
-          targetProjection.thread.modelSelection.instanceId,
-        );
         assert.equal(targetProjection.thread.lineage.parentThreadId, materialized.sourceThreadId);
         assert.equal(targetProjection.thread.lineage.relationshipToParent, "fork");
         assert.lengthOf(targetProjection.providerSessions, 1);
@@ -398,98 +430,6 @@ describe("orchestration V2 thread fork", () => {
         const targetProjection = result.projections.get(materialized.targetThreadId);
         assert.isDefined(sourceProjection);
         assert.isDefined(targetProjection);
-        const nativeInitModels = transcript.entries.flatMap((entry) =>
-          entry.type === "emit_inbound" &&
-          Predicate.isObject(entry.frame) &&
-          entry.frame.type === "system" &&
-          entry.frame.subtype === "init" &&
-          typeof entry.frame.model === "string"
-            ? [entry.frame.model]
-            : [],
-        );
-        assert.lengthOf(
-          nativeInitModels,
-          2,
-          "the unchanged replay reports source and target query init models",
-        );
-        const sourceIdentityEvents = result.domainEvents.flatMap((event, index) =>
-          event.type === "provider-thread.updated" &&
-          event.threadId === materialized.sourceThreadId &&
-          event.payload.id === sourceProjection.providerThreads[0]?.id
-            ? [{ index, providerThread: event.payload }]
-            : [],
-        );
-        const sourceObservation = sourceIdentityEvents.find(
-          ({ providerThread }) =>
-            providerThread.runtimeIdentity?.runtimeGeneration !== undefined &&
-            providerThread.runtimeIdentity.observed.model.status === "observed",
-        );
-        assert.isDefined(
-          sourceObservation,
-          "the source query must bind native model evidence before fork",
-        );
-        if (sourceObservation === undefined) return assert.fail("Missing source query observation");
-        assert.isString(sourceObservation.providerThread.runtimeIdentity?.runtimeGeneration);
-        assert.equal(
-          sourceObservation.providerThread.runtimeIdentity?.observed.model.status,
-          "observed",
-        );
-        if (
-          sourceObservation.providerThread.runtimeIdentity?.observed.model.status === "observed"
-        ) {
-          assert.equal(
-            sourceObservation.providerThread.runtimeIdentity.observed.model.sourceEvent,
-            "claude.system:init",
-          );
-          assert.equal(
-            sourceObservation.providerThread.runtimeIdentity.observed.model.value,
-            nativeInitModels[0],
-          );
-        }
-        const abandonment = sourceIdentityEvents.find(
-          ({ index, providerThread }) =>
-            index > sourceObservation.index &&
-            providerThread.runtimeIdentity !== undefined &&
-            providerThread.runtimeIdentity.runtimeGeneration === undefined,
-        );
-        assert.isDefined(abandonment, "fork must invalidate the closed source query");
-        if (abandonment === undefined) return assert.fail("Missing source query abandonment");
-        const targetBindingIndex = result.domainEvents.findIndex(
-          (event) =>
-            event.type === "provider-thread.updated" &&
-            event.threadId === materialized.targetThreadId &&
-            event.payload.id === targetProjection.providerThreads[0]?.id &&
-            event.payload.runtimeIdentity?.runtimeGeneration !== undefined,
-        );
-        assert.isAbove(
-          targetBindingIndex,
-          abandonment.index,
-          "the source query closes before the target query binds",
-        );
-        const finalSourceIdentity = sourceProjection.providerThreads[0]?.runtimeIdentity;
-        assert.isDefined(finalSourceIdentity);
-        assert.isUndefined(finalSourceIdentity?.runtimeGeneration);
-        assert.deepEqual(
-          finalSourceIdentity?.requested,
-          sourceObservation.providerThread.runtimeIdentity?.requested,
-        );
-        assert.deepEqual(finalSourceIdentity?.observed, unobservedRuntimeIdentity());
-        const targetObservedModel =
-          targetProjection.providerThreads[0]?.runtimeIdentity?.observed.model;
-        assert.equal(targetObservedModel?.status, "observed");
-        if (targetObservedModel?.status === "observed") {
-          assert.equal(targetObservedModel.sourceEvent, "claude.system:init");
-          assert.equal(targetObservedModel.value, nativeInitModels[1]);
-        }
-        assert.isString(targetProjection.providerThreads[0]?.runtimeIdentity?.runtimeGeneration);
-        assert.notEqual(
-          targetProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
-          sourceProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
-        );
-        assert.equal(
-          targetProjection.providerThreads[0]?.runtimeIdentity?.requested.providerInstanceId,
-          targetProjection.thread.modelSelection.instanceId,
-        );
         assert.equal(
           targetProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
           forkedNativeSessionId,

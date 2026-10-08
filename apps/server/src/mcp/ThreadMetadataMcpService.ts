@@ -57,7 +57,7 @@ function commandId(input: {
     [
       "command",
       "mcp",
-      stablePart(input.scope.providerSessionId),
+      stablePart(input.scope.requestNamespace),
       "thread-update",
       stablePart(input.threadId),
       stablePart(input.action),
@@ -73,14 +73,6 @@ function metadataCommand(input: {
   readonly update: ThreadMetadataMcpUpdateInput;
 }): Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }> {
   switch (input.update.action) {
-    case "block_thread_messages":
-    case "allow_thread_messages":
-      return {
-        type: "thread.metadata.update",
-        commandId: input.commandId,
-        threadId: input.threadId,
-        threadMessagesBlocked: input.update.action === "block_thread_messages",
-      };
     case "rename":
       return {
         type: "thread.metadata.update",
@@ -127,7 +119,6 @@ function resultFromThread(input: {
     commandId: input.commandId,
     sequence: input.sequence,
     title: input.thread.title,
-    threadMessagesBlocked: input.thread.threadMessagesBlocked ?? false,
     titleRegeneration:
       input.thread.titleRegeneration === undefined || input.thread.titleRegeneration === null
         ? null
@@ -155,42 +146,29 @@ const make = Effect.gen(function* () {
       );
     }
 
-    const parentShell = yield* threadManagement
-      .getThreadShell(scope.threadId)
-      .pipe(
-        Effect.mapError((error) =>
-          failure(
-            "orchestration_error",
-            `Unable to locate calling thread ${scope.threadId}: ${errorMessage(error)}`,
-          ),
-        ),
-      );
-    if (parentShell === null) {
-      return yield* failure("thread_not_found", `Calling thread ${scope.threadId} was not found.`);
-    }
-    const parent = yield* threadManagement
-      .getThreadRecords(scope.threadId, [])
-      .pipe(
-        Effect.mapError((error) =>
-          failure(
-            "orchestration_error",
-            `Unable to read calling thread ${scope.threadId}: ${errorMessage(error)}`,
-          ),
-        ),
-      );
-    const threadId = input.threadId ?? scope.threadId;
-    const target =
-      threadId === scope.threadId
-        ? parent
-        : yield* threadManagement
-            .getProjectThreadRecords({ projectId: parent.thread.projectId, threadId }, [])
-            .pipe(Effect.mapError(threadLookupFailure));
-    if (input.action === "allow_thread_messages" && threadId !== scope.threadId) {
+    const threadId = input.threadId ?? scope.thread?.threadId;
+    if (threadId === undefined) {
       return yield* failure(
-        "capability_denied",
-        "Only the calling thread can allow incoming thread messages for itself.",
+        "target_required",
+        "Pass threadId: this MCP client is not running inside a T3 thread.",
       );
     }
+    const shell = yield* threadManagement
+      .getThreadShell(threadId)
+      .pipe(
+        Effect.mapError((error) =>
+          failure(
+            "orchestration_error",
+            `Unable to locate thread ${threadId}: ${errorMessage(error)}`,
+          ),
+        ),
+      );
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* failure("thread_not_found", `Thread ${threadId} was not found.`);
+    }
+    const target = yield* threadManagement
+      .getProjectThreadRecords({ projectId: shell.projectId, threadId }, [])
+      .pipe(Effect.mapError(threadLookupFailure));
     const requestKey =
       input.clientRequestId === undefined
         ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)

@@ -1,12 +1,3 @@
-import * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
-import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import {
-  type LegacyGuardRejectionDeleteCommand,
-  type LegacyFailureDeleteCommand,
-  type RecordedServerCommand as OrchestrationV2ServerCommand,
-  type RecordedRun as OrchestrationV2Run,
-  type RecordedThreadProjection as OrchestrationV2ThreadProjection,
-} from "./RecordedTypes.ts";
 import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
@@ -14,15 +5,18 @@ import type {
 } from "./ProjectionStore.ts";
 import {
   type ChatAttachment,
-  type CommandId,
+  CommandId,
   MessageId,
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2Run,
   type OrchestrationV2ThreadShellSnapshot,
+  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   ProjectId,
@@ -32,13 +26,13 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as Orchestrator from "./Orchestrator.ts";
 import { projectTurnItemForDetail } from "./WireProjection.ts";
@@ -138,7 +132,6 @@ export interface ThreadManagementWaitInput {
   readonly threadId: ThreadId;
   readonly runId?: RunId;
   readonly timeoutMs: number;
-  readonly pollIntervalMs?: number;
 }
 
 export interface ThreadManagementWaitResult {
@@ -278,23 +271,11 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
-  readonly stopCurrentThreadRuntime?: import("./Orchestrator.ts").OrchestratorV2Shape["stopCurrentThreadRuntime"];
-  readonly reviewImportedHistory?: Orchestrator.OrchestratorV2["Service"]["reviewImportedHistory"];
-  readonly startWithImportedHistory?: Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"];
-  readonly observeImportedHistoryStart?: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
-
-  readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
-  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
-  readonly dispatchLegacyFailureDelete?: (
-    command: LegacyFailureDeleteCommand,
-  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
-  readonly dispatchLegacyGuardRejectionDelete?: (
-    command: LegacyGuardRejectionDeleteCommand,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
@@ -329,9 +310,6 @@ export interface ThreadManagementServiceShape {
     readonly location?: "active" | "archive";
   }) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, Orchestrator.OrchestratorV2Error>;
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
-  readonly observeThreadActivity?: (
-    threadId: ThreadId,
-  ) => Effect.Effect<RuntimeObservation.ProviderThreadActivityObservation>;
   readonly listProjectThreads: (input: {
     readonly projectId: ProjectId;
     readonly includeSubagents: boolean;
@@ -345,6 +323,16 @@ export interface ThreadManagementServiceShape {
   readonly interruptThread: (
     input: ThreadManagementInterruptInput,
   ) => Effect.Effect<ThreadManagementInterruptResult, ThreadManagementFailure>;
+  /**
+   * Sends `thread.stop` to every delegated task under a thread, depth first. Their command IDs
+   * derive from `commandId`, so a retry repeats nothing that already stopped. A task that
+   * cannot be stopped does not keep the others running: all are tried, then it fails.
+   */
+  readonly stopDelegatedTasks: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly reason?: string | undefined;
+  }) => Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
@@ -411,56 +399,6 @@ function latestSteerableRun(
 const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
-  const sessions = yield* Effect.serviceOption(ProviderSessionManager.ProviderSessionManagerV2);
-  const observeThreadActivity = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const shell = yield* orchestrator.getThreadShell(threadId);
-      if (shell === null)
-        return {
-          foreground: null,
-          background: null,
-          backgroundStatus: "unknown" as const,
-          reason: "thread_unavailable",
-        };
-      if (shell.archivedAt !== null || shell.deletedAt !== null)
-        return { foreground: null, background: null, backgroundStatus: "known" as const };
-      const sampledAt = yield* Clock.currentTimeMillis;
-      const native =
-        Option.isSome(sessions) &&
-        Object.hasOwn(sessions.value, "observeThreadActivity") &&
-        sessions.value.observeThreadActivity !== undefined
-          ? yield* sessions.value.observeThreadActivity(threadId)
-          : null;
-      const current = yield* orchestrator.getThreadShell(threadId);
-      if (current === null)
-        return {
-          foreground: null,
-          background: null,
-          backgroundStatus: "unknown" as const,
-          reason: "thread_unavailable",
-        };
-      const activity = RuntimeObservation.providerThreadActivityObservation(
-        current,
-        native,
-        sampledAt,
-      );
-      return {
-        ...activity,
-        foreground:
-          native === null || native.status === "unknown"
-            ? RuntimeObservation.providerThreadForegroundActivity(current)
-            : activity.foreground,
-      };
-    }).pipe(
-      Effect.catchCause(() =>
-        Effect.succeed({
-          foreground: null,
-          background: null,
-          backgroundStatus: "unknown" as const,
-          reason: "native_activity_unavailable",
-        }),
-      ),
-    );
 
   const ensureLegacyTranscript = Effect.fn(
     "orchestrationV2.threadManagement.ensureLegacyTranscript",
@@ -694,6 +632,17 @@ const make = Effect.gen(function* () {
 
   const waitForThread: ThreadManagementServiceShape["waitForThread"] = (input) =>
     Effect.gen(function* () {
+      const loadError = (cause: unknown) =>
+        new ThreadManagementProjectionLoadError({
+          projectId: input.projectId,
+          threadId: input.threadId,
+          cause,
+        });
+      // Taken before the first read, so a run update between that read and
+      // the subscription below still replays.
+      const afterSequence = yield* orchestrator
+        .getThreadEventSequence(input.threadId)
+        .pipe(Effect.mapError(loadError));
       const target = yield* getProjectThreadRecords(input, ["runs"]);
       const selectedRun =
         input.runId === undefined
@@ -712,23 +661,46 @@ const make = Effect.gen(function* () {
         return { threadId: input.threadId, run: selectedRun, timedOut: false };
       }
 
-      const wait = Effect.gen(function* () {
-        while (true) {
-          const current = yield* getProjectThreadRecords(input, ["runs"], {
-            runIds: [selectedRun.id],
-          });
-          const run = current.runs.find((candidate) => candidate.id === selectedRun.id);
-          if (run === undefined) {
-            return yield* new ThreadManagementRunNotFoundError({
-              threadId: input.threadId,
-              runId: selectedRun.id,
-            });
-          }
-          if (isTerminalRunStatus(run.status)) return run;
-          yield* Effect.sleep(Duration.millis(Math.max(1, input.pollIntervalMs ?? 250)));
-        }
-      }).pipe(Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))));
-      const waited = yield* wait;
+      // Re-read the run only when the thread records a run update or its
+      // deletion, instead of polling the projection for up to an hour. Each
+      // stream keeps one event type, so transcript events never fill its buffer.
+      const wait = Stream.merge(
+        orchestrator.streamStoredEventsFrom({
+          threadId: input.threadId,
+          afterSequence,
+          eventType: "run.updated",
+        }),
+        orchestrator.streamStoredEventsFrom({
+          threadId: input.threadId,
+          afterSequence,
+          eventType: "thread.deleted",
+        }),
+      ).pipe(
+        Stream.mapError(loadError),
+        Stream.filter(
+          (stored) =>
+            stored.event.type !== "run.updated" || stored.event.payload.id === selectedRun.id,
+        ),
+        Stream.mapEffect(() =>
+          getProjectThreadRecords(input, ["runs"], { runIds: [selectedRun.id] }).pipe(
+            Effect.flatMap((current) => {
+              const run = current.runs.find((candidate) => candidate.id === selectedRun.id);
+              return run === undefined
+                ? Effect.fail(
+                    new ThreadManagementRunNotFoundError({
+                      threadId: input.threadId,
+                      runId: selectedRun.id,
+                    }),
+                  )
+                : Effect.succeed(run);
+            }),
+          ),
+        ),
+        Stream.filter((run) => isTerminalRunStatus(run.status)),
+        Stream.runHead,
+        Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
+      );
+      const waited = Option.flatten(yield* wait);
       if (Option.isSome(waited)) {
         return { threadId: input.threadId, run: waited.value, timedOut: false };
       }
@@ -793,40 +765,35 @@ const make = Effect.gen(function* () {
       return { type: "interrupt_requested", run: interruptibleRun, dispatch } as const;
     });
 
-  const reviewImported = orchestrator.reviewImportedHistory;
-  const reviewImportedHistory =
-    reviewImported === undefined
-      ? undefined
-      : (
-          input: Parameters<NonNullable<ThreadManagementServiceShape["reviewImportedHistory"]>>[0],
-        ) =>
-          ensureLegacyTranscript(input.threadId).pipe(
-            Effect.mapError(
-              (cause) =>
-                new Orchestrator.OrchestratorProjectionError({ threadId: input.threadId, cause }),
-            ),
-            Effect.andThen(reviewImported(input)),
-          );
+  const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = (input) =>
+    Effect.gen(function* () {
+      const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
+      const failures: Array<Orchestrator.OrchestratorV2Error> = [];
+      for (const task of subagents) {
+        if (task.origin !== "app_owned" || task.childThreadId === null) continue;
+        const threadId = task.childThreadId;
+        yield* dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
+          threadId,
+          ...(input.reason === undefined ? {} : { reason: input.reason }),
+        }).pipe(
+          Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
+          Effect.catch((error) =>
+            Effect.logWarning("Unable to stop a delegated task", {
+              parentThreadId: input.threadId,
+              threadId,
+              error,
+            }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
+          ),
+        );
+      }
+      if (failures[0] !== undefined) return yield* Effect.fail(failures[0]);
+    });
+
   return ThreadManagementService.of({
-    ...(orchestrator.stopCurrentThreadRuntime === undefined
-      ? {}
-      : { stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime }),
-    reviewImportedHistory,
-    startWithImportedHistory: orchestrator.startWithImportedHistory,
-    observeImportedHistoryStart: orchestrator.observeImportedHistoryStart,
-    requestSelfSettlement: orchestrator.requestSelfSettlement,
     ensureLegacyTranscript,
     dispatch,
-    ...(orchestrator.dispatchLegacyFailureDelete === undefined
-      ? {}
-      : {
-          dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete,
-        }),
-    ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
-      ? {}
-      : {
-          dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete,
-        }),
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getTimelinePage(threadId, options)),
@@ -852,11 +819,11 @@ const make = Effect.gen(function* () {
     getProjectThread,
     getShellSnapshot: orchestrator.getShellSnapshot,
     getThreadShell: orchestrator.getThreadShell,
-    observeThreadActivity,
     listProjectThreads,
     sendToThread,
     waitForThread,
     interruptThread,
+    stopDelegatedTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
@@ -866,7 +833,7 @@ const make = Effect.gen(function* () {
   });
 });
 
-const legacyV1ThreadImporterNoopLayer = Layer.succeed(
+const layerLegacyV1ThreadImporterNoop = Layer.succeed(
   LegacyV1ThreadImporter.LegacyV1ThreadImporter,
   LegacyV1ThreadImporter.LegacyV1ThreadImporter.of({
     pendingThreadCount: Effect.succeed(0),
@@ -877,7 +844,7 @@ const legacyV1ThreadImporterNoopLayer = Layer.succeed(
 );
 
 export const layer: Layer.Layer<ThreadManagementService, never, Orchestrator.OrchestratorV2> =
-  Layer.effect(ThreadManagementService, make).pipe(Layer.provide(legacyV1ThreadImporterNoopLayer));
+  Layer.effect(ThreadManagementService, make).pipe(Layer.provide(layerLegacyV1ThreadImporterNoop));
 
 export const layerWithLegacyImporter: Layer.Layer<
   ThreadManagementService,

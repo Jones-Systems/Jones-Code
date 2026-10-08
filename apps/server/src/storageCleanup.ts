@@ -1,11 +1,9 @@
-import * as DeletionWorktreeRemoval from "./jones/cleanup/DeletionWorktreeRemoval.ts";
-import * as EventSink from "./orchestration-v2/EventSink.ts";
 import {
   OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderSessionJson,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import type {
   OrchestrationV2ThreadShell,
   ProjectId,
@@ -20,7 +18,6 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -38,6 +35,7 @@ import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementSer
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 
@@ -49,8 +47,6 @@ const decodeCleanupSession = Schema.decodeUnknownEffect(
 );
 
 const DAY_MS = 86_400_000;
-const overlapsCleanupPath = (left: string, right: string) =>
-  left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 
 const worktreeCleanupEnabled = (rules: WorktreeCleanupRules) =>
   rules.worktreeAfterDays !== null ||
@@ -90,7 +86,12 @@ export function storageCleanupThreadIdle(thread: OrchestrationV2ThreadShell, now
     thread.branch !== null &&
     thread.worktreePath !== null &&
     thread.activeRunId === null &&
-    (thread.status === "idle" || thread.status === "failed") &&
+    (thread.status === "idle" ||
+      thread.status === "completed" ||
+      thread.status === "interrupted" ||
+      thread.status === "failed" ||
+      thread.status === "cancelled" ||
+      thread.status === "rolled_back") &&
     (thread.pendingBackgroundTasks?.length ?? 0) === 0 &&
     thread.pendingRuntimeRequest === null &&
     !threadHasQueuedTurnStart(thread, now)
@@ -110,6 +111,32 @@ export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): nu
   );
 }
 
+/**
+ * Whether the host's pull request proves this worktree's head was merged. A
+ * squash or rebase merge leaves the head outside the default branch, so the
+ * merged pull request then has to name this exact commit.
+ */
+export function storageCleanupPullRequestMerged(
+  pullRequest: Pick<
+    GitManager.GitBranchPullRequest,
+    "state" | "headRef" | "baseRef" | "headSha"
+  > | null,
+  worktree: {
+    readonly branch: string;
+    readonly defaultBranch: string;
+    readonly headSha: string;
+    readonly integrated: boolean;
+  },
+): boolean {
+  return (
+    pullRequest?.state === "merged" &&
+    (worktree.integrated ||
+      (pullRequest.headRef === worktree.branch &&
+        pullRequest.baseRef === worktree.defaultBranch &&
+        pullRequest.headSha === worktree.headSha))
+  );
+}
+
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const settingsService = yield* Settings.ServerSettingsService;
@@ -117,18 +144,6 @@ export const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const sql = yield* SqlClient.SqlClient;
-  const sink = yield* EventSink.EventSinkV2;
-  const deletionRemoval = yield* DeletionWorktreeRemoval.QualifiedDeletionWorktreeRemoval.pipe(
-    Effect.provide(
-      DeletionWorktreeRemoval.layer.pipe(
-        Layer.provide(
-          DeletionWorktreeRemoval.producerLayer.pipe(
-            Layer.provide(DeletionWorktreeRemoval.gitLayer),
-          ),
-        ),
-      ),
-    ),
-  );
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
@@ -193,7 +208,20 @@ export const make = Effect.gen(function* () {
     now: number,
   ) {
     if (!anyWorktreePolicy(serverSettings, worktreeCleanupEnabled)) return;
-    if (!(yield* fs.exists(config.worktreesDir))) return;
+    const roots: Array<string> = [];
+    for (const directory of managedWorktreesDirectories(
+      serverSettings,
+      config.worktreesDir,
+      path,
+    )) {
+      // An unmounted drive only skips its own worktrees.
+      const root = yield* fs.exists(directory).pipe(
+        Effect.flatMap((exists) => (exists ? fs.realPath(directory) : Effect.succeed(null))),
+        Effect.orElseSucceed(() => null),
+      );
+      if (root !== null && !isFilesystemRoot(root, path)) roots.push(root);
+    }
+    if (roots.length === 0) return;
     const hasDeleteRule = anyWorktreePolicy(serverSettings, (rules) => rules.worktreeOnDelete);
     const deletedRows = hasDeleteRule
       ? yield* sql<{ payload_json: string; workspaceRoot: string }>`
@@ -214,7 +242,6 @@ export const make = Effect.gen(function* () {
         resolveWorktreeCleanup(serverSettings, thread.projectId).worktreeOnDelete,
     );
     const snapshot = yield* readThreads();
-    const root = yield* fs.realPath(config.worktreesDir);
     const refreshedDefaultRefs = new Map<string, Set<string>>();
     const groups = Map.groupBy(
       snapshot.threads.filter((thread) => thread.worktreePath !== null),
@@ -239,24 +266,13 @@ export const make = Effect.gen(function* () {
       )
         continue;
       yield* Effect.gen(function* () {
-        if (!inside(root, worktreePath)) return;
-        if (deleted && sink.readDeletionWorktreeRemovalStartForTarget !== undefined) {
-          const original = yield* sink.readDeletionWorktreeRemovalStartForTarget(thread.id, {
-            projectId: thread.projectId,
-            projectRoot: project.workspaceRoot,
-            path: worktreePath,
-            branch: thread.branch,
-            force: false,
-          });
-          if (original !== null) {
-            // An issued start survives crashes, policy changes and path absence.
-            // Recovery observes its original operation and never invokes removal.
-            yield* deletionRemoval.observe(original.start.effectId);
-            return;
-          }
-        }
         if (!(yield* fs.exists(worktreePath))) return;
-        if ((yield* fs.realPath(worktreePath)) !== worktreePath) return;
+        // Roots are canonical, so compare canonical paths. A symlinked parent
+        // (a linked drive) is fine; a symlinked worktree directory is not.
+        const realPath = yield* fs.realPath(worktreePath);
+        const realParent = yield* fs.realPath(path.dirname(worktreePath));
+        if (realPath !== path.join(realParent, path.basename(worktreePath))) return;
+        if (!roots.some((root) => inside(root, realPath))) return;
         if (yield* containsProjectRoot(worktreePath, [project, ...snapshot.projects])) return;
         // A linked worktree has a .git file. Never remove a main checkout.
         if ((yield* fs.stat(path.join(worktreePath, ".git"))).type !== "File") return;
@@ -310,14 +326,19 @@ export const make = Effect.gen(function* () {
             args: ["merge-base", "--is-ancestor", head.commitSha, base.commitSha],
             allowNonZeroExit: true,
           });
-          if (ancestor.exitCode !== 0) return;
-          eligible = settings.worktreeUnchanged;
+          const integrated = ancestor.exitCode === 0;
+          eligible = integrated && settings.worktreeUnchanged;
           if (!eligible && settings.worktreeOnMerge && thread.branch !== null) {
             const pullRequest = yield* gitManager.branchPullRequest(
               { cwd: worktreePath, branch: thread.branch },
               { refresh: true },
             );
-            eligible = pullRequest?.state === "merged";
+            eligible = storageCleanupPullRequestMerged(pullRequest, {
+              branch: thread.branch,
+              defaultBranch: branch,
+              headSha: head.commitSha,
+              integrated,
+            });
           }
         }
         if (!eligible) return;
@@ -402,45 +423,7 @@ export const make = Effect.gen(function* () {
           )
         )
           return;
-        if (deleted) {
-          if (sink.startDeletionWorktreeRemoval === undefined) return;
-          const currentRules = settingsService.getSettings.pipe(
-            Effect.map((server) => resolveWorktreeCleanup(server, thread.projectId)),
-          );
-          const currentLive = Effect.gen(function* () {
-            const current = yield* readThreads();
-            return (
-              !hasTerminal(worktreePath) &&
-              !current.threads.some(
-                (entry) =>
-                  entry.worktreePath !== null &&
-                  overlapsCleanupPath(path.resolve(entry.worktreePath), worktreePath),
-              )
-            );
-          }).pipe(Effect.orElseSucceed(() => false));
-          const admission = yield* sink.startDeletionWorktreeRemoval({
-            threadId: thread.id,
-            target: {
-              projectId: thread.projectId,
-              projectRoot: project.workspaceRoot,
-              path: worktreePath,
-              branch: thread.branch,
-              force: false,
-            },
-            rules: settings,
-            currentRules,
-            currentLive,
-          });
-          if (admission.status === "start_now")
-            yield* deletionRemoval.execute(admission.start.effectId, currentRules, currentLive);
-          else yield* deletionRemoval.observe(admission.start.effectId);
-        } else {
-          yield* git.removeWorktree({
-            cwd: project.workspaceRoot,
-            path: worktreePath,
-            force: false,
-          });
-        }
+        yield* git.removeWorktree({ cwd: project.workspaceRoot, path: worktreePath, force: false });
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch and path: ProviderTurnStartService recreates the checkout
         // from that branch when the thread is resumed.

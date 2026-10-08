@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
@@ -13,18 +14,15 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   RunId,
-  RunAttemptId,
-  ProviderTurnId,
   ThreadId,
-  VcsPrimaryCheckoutCheckpointError,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import { VcsProcessTimeoutError } from "@t3tools/contracts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -33,9 +31,9 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
-const ProjectionStoreTestLayer = Layer.mergeAll(
-  ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
-  SqlitePersistenceMemory,
+const layerProjectionStoreTest = Layer.mergeAll(
+  ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+  SqlitePersistence.layerMemory,
 );
 
 const threadId = ThreadId.make("thread:checkpoint-capture-delegated");
@@ -53,24 +51,14 @@ const modelSelection = {
   model: "gpt-5.4",
 } as const;
 
-it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
-  it.effect.each([false, true, "primary checkout refusal"] as const)(
+it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
+  it.effect.each([false, true])(
     "captures without decoding history or losing newer delegated completion, ref lookup fails=%s",
-    (captureCase) =>
+    (refLookupFails) =>
       Effect.gen(function* () {
-        const refLookupFails = captureCase === true;
-        const primaryCheckout = captureCase === "primary checkout refusal";
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const now = yield* DateTime.now;
         const later = DateTime.add(now, { seconds: 1 });
-        const attemptId = RunAttemptId.make("attempt:checkpoint-capture-provider");
-        const providerTurnId = ProviderTurnId.make("provider-turn:checkpoint-capture-provider");
-        const providerSettlement = {
-          runAttemptId: attemptId,
-          providerTurnId,
-          status: "completed" as const,
-          completedAt: now,
-        };
 
         const staleDelegatedCompletion = {
           disposition: "open" as const,
@@ -95,7 +83,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           providerThreadId,
           userMessageId: MessageId.make("message:checkpoint-capture-user"),
           rootNodeId,
-          activeAttemptId: attemptId,
+          activeAttemptId: null,
           status: "waiting",
           requestedAt: now,
           startedAt: now,
@@ -178,7 +166,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           ref: CheckpointRef.make("checkpoint-ref:captured-1"),
           status: "ready" as const,
           files: [],
-          capturedAt: later,
+          capturedAt: now,
         };
 
         yield* projectionStore.apply({
@@ -263,27 +251,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           occurredAt: now,
           payload: readyBaseline,
         });
-        yield* projectionStore.apply({
-          id: EventId.make("event:checkpoint-capture:provider-settlement"),
-          type: "run-attempt.updated",
-          threadId,
-          runId,
-          occurredAt: now,
-          payload: {
-            id: attemptId,
-            runId,
-            attemptOrdinal: 1,
-            rootNodeId,
-            providerInstanceId,
-            providerThreadId,
-            providerTurnId,
-            providerSettlement,
-            reason: "initial",
-            status: "completed",
-            startedAt: now,
-            completedAt: now,
-          },
-        });
         const sql = yield* SqlClient.SqlClient;
         yield* sql`INSERT OR REPLACE INTO orchestration_v2_projection_turn_items
           (turn_item_id, thread_id, run_id, node_id, provider_thread_id, provider_turn_id,
@@ -299,26 +266,19 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         );
 
         const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
-        const captureLayer = CheckpointCaptureService.layer.pipe(
+        const layerCapture = CheckpointCaptureService.layer.pipe(
           Layer.provide(
             Layer.mergeAll(
               IdAllocator.layer,
-              refLookupFails || primaryCheckout
+              refLookupFails
                 ? CheckpointService.layer.pipe(
                     Layer.provide(
                       Layer.mergeAll(
                         IdAllocator.layer,
+                        NodeCrypto.layer,
                         Layer.mock(CheckpointStore.CheckpointStore)({
                           isGitRepository: () => Effect.succeed(true),
-                          captureCheckpoint: () =>
-                            primaryCheckout
-                              ? Effect.fail(
-                                  new VcsPrimaryCheckoutCheckpointError({
-                                    operation: "test.primaryCheckoutCapture",
-                                    cwd: "/repo",
-                                  }),
-                                )
-                              : Effect.void,
+                          captureCheckpoint: () => Effect.void,
                           hasCheckpointRef: () =>
                             Effect.fail(
                               new VcsProcessTimeoutError({
@@ -374,13 +334,10 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           const capturedEvent = events.find((event) => event.type === "checkpoint.captured");
           assert.equal(
             runUpdated.payload.checkpointId,
-            refLookupFails || primaryCheckout ? capturedEvent?.payload.id : captured.id,
+            refLookupFails ? capturedEvent?.payload.id : captured.id,
           );
-          if (
-            (refLookupFails || primaryCheckout) &&
-            capturedEvent?.type === "checkpoint.captured"
-          ) {
-            assert.equal(capturedEvent.payload.status, primaryCheckout ? "error" : "ready");
+          if (refLookupFails && capturedEvent?.type === "checkpoint.captured") {
+            assert.equal(capturedEvent.payload.status, "ready");
             assert.deepEqual(capturedEvent.payload.files, []);
           }
           assert.isUndefined(
@@ -413,15 +370,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           })).run;
           assert.isDefined(projectedRun);
           assert.equal(projectedRun?.status, "completed");
-          assert.deepEqual(
-            (yield* projectionStore.getThreadRecords(threadId, ["attempts"])).attempts[0]
-              ?.providerSettlement,
-            providerSettlement,
-          );
-          assert.deepEqual(
-            (yield* projectionStore.getThreadShell(threadId))?.latestRunProviderSettlement,
-            providerSettlement,
-          );
           assert.equal(projectedRun?.checkpointId, runUpdated.payload.checkpointId);
           assert.deepEqual(projectedRun?.delegatedCompletion, newerCohort);
           assert.equal(projectedRun?.delegatedCompletion?.delivery?.messageId, deliveryMessageId);
@@ -430,7 +378,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           yield* Ref.set(committed, []);
           yield* service.execute({ threadId, runId, scopeId });
           assert.deepEqual(yield* Ref.get(committed), []);
-        }).pipe(Effect.provide(captureLayer));
+        }).pipe(Effect.provide(layerCapture));
       }),
   );
 
@@ -505,7 +453,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
       });
 
       const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
-      const captureLayer = CheckpointCaptureService.layer.pipe(
+      const layerCapture = CheckpointCaptureService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
             IdAllocator.layer,
@@ -526,7 +474,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         Effect.flatMap((service) =>
           service.execute({ threadId: stoppedThreadId, runId: stoppedRunId, scopeId }),
         ),
-        Effect.provide(captureLayer),
+        Effect.provide(layerCapture),
       );
 
       assert.deepEqual(yield* Ref.get(committed), []);
@@ -539,32 +487,22 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
     }),
   );
 
-  // A stopped run's checkpoint is the rollback point for the message after
+  // A cancelled run's checkpoint is the rollback point for the message after
   // it, so capture records it without reporting the run as completed.
-  const captureStoppedRun = (terminalStatus: "cancelled" | "interrupted") =>
+  it.effect("records the checkpoint of a cancelled run and keeps it cancelled", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
       const cancelledAt = DateTime.add(now, { seconds: 1 });
-      const attemptId = RunAttemptId.make(`attempt:checkpoint-capture-${terminalStatus}`);
-      const terminalTurnId = ProviderTurnId.make(
-        `provider-turn:checkpoint-capture-${terminalStatus}`,
-      );
-      const providerSettlement = {
-        runAttemptId: attemptId,
-        providerTurnId: terminalTurnId,
-        status: terminalStatus,
-        completedAt: cancelledAt,
-      };
-      const cancelledThreadId = ThreadId.make(`thread:checkpoint-capture-${terminalStatus}`);
-      const cancelledRunId = RunId.make(`run:checkpoint-capture-${terminalStatus}`);
-      const cancelledScopeId = CheckpointScopeId.make(`scope:checkpoint-capture-${terminalStatus}`);
-      const cancelledRootNodeId = NodeId.make(`node:checkpoint-capture-${terminalStatus}-root`);
+      const cancelledThreadId = ThreadId.make("thread:checkpoint-capture-cancelled");
+      const cancelledRunId = RunId.make("run:checkpoint-capture-cancelled");
+      const cancelledScopeId = CheckpointScopeId.make("scope:checkpoint-capture-cancelled");
+      const cancelledRootNodeId = NodeId.make("node:checkpoint-capture-cancelled-root");
       const cancelledProviderThreadId = ProviderThreadId.make(
-        `provider-thread:checkpoint-capture-${terminalStatus}`,
+        "provider-thread:checkpoint-capture-cancelled",
       );
       yield* projectionStore.apply({
-        id: EventId.make(`event:checkpoint-capture-${terminalStatus}:thread`),
+        id: EventId.make("event:checkpoint-capture-cancelled:thread"),
         type: "thread.created",
         threadId: cancelledThreadId,
         occurredAt: now,
@@ -603,9 +541,9 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         providerInstanceId,
         modelSelection,
         providerThreadId: cancelledProviderThreadId,
-        userMessageId: MessageId.make(`message:checkpoint-capture-${terminalStatus}`),
+        userMessageId: MessageId.make("message:checkpoint-capture-cancelled"),
         rootNodeId: cancelledRootNodeId,
-        activeAttemptId: attemptId,
+        activeAttemptId: null,
         status: "running",
         requestedAt: now,
         startedAt: now,
@@ -644,7 +582,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         createdAt: now,
       };
       yield* projectionStore.apply({
-        id: EventId.make(`event:checkpoint-capture-${terminalStatus}:provider-thread`),
+        id: EventId.make("event:checkpoint-capture-cancelled:provider-thread"),
         type: "provider-thread.updated",
         threadId: cancelledThreadId,
         nodeId: cancelledRootNodeId,
@@ -670,7 +608,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         },
       });
       yield* projectionStore.apply({
-        id: EventId.make(`event:checkpoint-capture-${terminalStatus}:scope`),
+        id: EventId.make("event:checkpoint-capture-cancelled:scope"),
         type: "checkpoint-scope.created",
         threadId: cancelledThreadId,
         runId: cancelledRunId,
@@ -679,7 +617,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         payload: scope,
       });
       yield* projectionStore.apply({
-        id: EventId.make(`event:checkpoint-capture-${terminalStatus}:baseline`),
+        id: EventId.make("event:checkpoint-capture-cancelled:baseline"),
         type: "checkpoint.captured",
         threadId: cancelledThreadId,
         nodeId: cancelledRootNodeId,
@@ -687,7 +625,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         providerInstanceId,
         occurredAt: now,
         payload: {
-          id: CheckpointId.make(`checkpoint:${terminalStatus}-baseline-0`),
+          id: CheckpointId.make("checkpoint:cancelled-baseline-0"),
           threadId: cancelledThreadId,
           scopeId: cancelledScopeId,
           runId: null,
@@ -695,20 +633,20 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           parentCheckpointId: null,
           ordinalWithinScope: 0,
           appRunOrdinal: null,
-          ref: CheckpointRef.make(`checkpoint-ref:${terminalStatus}-baseline-0`),
+          ref: CheckpointRef.make("checkpoint-ref:cancelled-baseline-0"),
           status: "ready",
           files: [],
           capturedAt: now,
         },
       });
-      // The turn runs, then finalizes as stopped the way RunExecutionService
+      // The turn runs, then finalizes as cancelled the way RunExecutionService
       // writes it, which also enqueues this capture.
       for (const [status, completedAt] of [
         ["running", null],
-        [terminalStatus, cancelledAt],
+        ["cancelled", cancelledAt],
       ] as const) {
         yield* projectionStore.apply({
-          id: EventId.make(`event:checkpoint-capture-${terminalStatus}:run-${status}`),
+          id: EventId.make(`event:checkpoint-capture-cancelled:run-${status}`),
           type: "run.updated",
           threadId: cancelledThreadId,
           runId: cancelledRunId,
@@ -718,7 +656,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           payload: { ...runningRun, status, completedAt },
         });
         yield* projectionStore.apply({
-          id: EventId.make(`event:checkpoint-capture-${terminalStatus}:node-${status}`),
+          id: EventId.make(`event:checkpoint-capture-cancelled:node-${status}`),
           type: "node.updated",
           threadId: cancelledThreadId,
           runId: cancelledRunId,
@@ -729,43 +667,22 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         });
       }
 
-      yield* projectionStore.apply({
-        id: EventId.make(`event:checkpoint-capture-${terminalStatus}:provider-settlement`),
-        type: "run-attempt.updated",
-        threadId: cancelledThreadId,
-        runId: cancelledRunId,
-        occurredAt: cancelledAt,
-        payload: {
-          id: attemptId,
-          runId: cancelledRunId,
-          attemptOrdinal: 1,
-          rootNodeId: cancelledRootNodeId,
-          providerInstanceId,
-          providerThreadId: cancelledProviderThreadId,
-          providerTurnId: terminalTurnId,
-          providerSettlement,
-          reason: "initial",
-          status: terminalStatus,
-          startedAt: now,
-          completedAt: cancelledAt,
-        },
-      });
       const captured = {
-        id: CheckpointId.make(`checkpoint:${terminalStatus}-captured-1`),
+        id: CheckpointId.make("checkpoint:cancelled-captured-1"),
         threadId: cancelledThreadId,
         scopeId: cancelledScopeId,
         runId: cancelledRunId,
         nodeId: cancelledRootNodeId,
-        parentCheckpointId: CheckpointId.make(`checkpoint:${terminalStatus}-baseline-0`),
+        parentCheckpointId: CheckpointId.make("checkpoint:cancelled-baseline-0"),
         ordinalWithinScope: 1,
         appRunOrdinal: 1,
-        ref: CheckpointRef.make(`checkpoint-ref:${terminalStatus}-captured-1`),
+        ref: CheckpointRef.make("checkpoint-ref:cancelled-captured-1"),
         status: "ready" as const,
         files: [],
-        capturedAt: DateTime.add(cancelledAt, { minutes: 1 }),
+        capturedAt: cancelledAt,
       };
       const commits = yield* Ref.make(0);
-      const captureLayer = CheckpointCaptureService.layer.pipe(
+      const layerCapture = CheckpointCaptureService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
             IdAllocator.layer,
@@ -801,37 +718,22 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           runId: cancelledRunId,
           scopeId: cancelledScopeId,
         });
-      }).pipe(Effect.provide(captureLayer));
+      }).pipe(Effect.provide(layerCapture));
 
       assert.equal(yield* Ref.get(commits), 1);
       const projected = yield* projectionStore.getCheckpointCaptureContext(cancelledThreadId, {
         runId: cancelledRunId,
         scopeId: cancelledScopeId,
       });
-      assert.equal(projected.run?.status, terminalStatus);
+      assert.equal(projected.run?.status, "cancelled");
       assert.equal(projected.run?.checkpointId, captured.id);
       const completedAt = projected.run?.completedAt;
       assert.equal(
         completedAt ? DateTime.formatIso(completedAt) : completedAt,
         DateTime.formatIso(cancelledAt),
       );
-      assert.equal(projected.rootNode?.status, terminalStatus);
-      assert.deepEqual(
-        (yield* projectionStore.getThreadRecords(cancelledThreadId, ["attempts"])).attempts[0]
-          ?.providerSettlement,
-        providerSettlement,
-      );
-      assert.deepEqual(
-        (yield* projectionStore.getThreadShell(cancelledThreadId))?.latestRunProviderSettlement,
-        providerSettlement,
-      );
+      assert.equal(projected.rootNode?.status, "cancelled");
       assert.deepEqual([...projected.readyCheckpointOrdinals].toSorted(), [0, 1]);
-    });
-  it.effect("records the checkpoint of a cancelled run and keeps it cancelled", () =>
-    captureStoppedRun("cancelled"),
-  );
-  it.effect(
-    "records the checkpoint of an interrupted run and keeps its provider settlement fixed",
-    () => captureStoppedRun("interrupted"),
+    }),
   );
 });

@@ -10,27 +10,16 @@ import { vi } from "vite-plus/test";
 
 import type * as Electron from "electron";
 
-const { focusedWebContents, ownerWindow, exposeInMainWorld, invoke } = vi.hoisted(() => ({
+const { focusedWebContents, ownerWindow } = vi.hoisted(() => ({
   focusedWebContents: vi.fn(),
   ownerWindow: vi.fn(),
-  exposeInMainWorld: vi.fn(),
-  invoke: vi.fn(),
 }));
 vi.mock("electron", () => ({
   webContents: { getFocusedWebContents: focusedWebContents },
   BrowserWindow: { fromWebContents: ownerWindow },
-  contextBridge: { exposeInMainWorld },
-  ipcRenderer: { invoke },
-  webFrame: {},
-  webUtils: {},
 }));
 
-vi.mock("@clerk/electron/preload", () => ({ exposeClerkBridge: vi.fn() }));
-
-import type { DesktopBridge } from "@t3tools/contracts";
-import * as DesktopAppIdentity from "../../app/DesktopAppIdentity.ts";
-import * as DesktopIpc from "../DesktopIpc.ts";
-import * as IpcChannels from "../channels.ts";
+import * as DesktopBackendConfiguration from "../../backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
@@ -38,7 +27,6 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
 import {
   getLocalEnvironmentBootstraps,
-  getPreviewAutomationRuntimeIdentity,
   getWindowFullscreenState,
   pasteAsText,
   pickProjectFavicon,
@@ -84,6 +72,19 @@ const defaultWslInstance: DesktopBackendManager.DesktopBackendInstance = {
   waitForReady: () => Effect.succeed(true),
 };
 
+const backendConfigurationLayer = Layer.succeed(
+  DesktopBackendConfiguration.DesktopBackendConfiguration,
+  {
+    resolvePrimary: Effect.die("unexpected resolvePrimary"),
+    resolvePrimaryLabel: Effect.succeed("Windows"),
+    resolveWsl: () => Effect.die("unexpected resolveWsl"),
+    currentBootstrapToken: Effect.succeed("current-window-token"),
+  } satisfies DesktopBackendConfiguration.DesktopBackendConfiguration["Service"],
+);
+
+const bootstrapsLayer = (instances: ReadonlyArray<DesktopBackendManager.DesktopBackendInstance>) =>
+  Layer.merge(DesktopBackendPool.layerTest([...instances]), backendConfigurationLayer);
+
 describe("getLocalEnvironmentBootstraps", () => {
   it.effect("publishes the concrete running distro without replacing the stable instance id", () =>
     Effect.gen(function* () {
@@ -99,7 +100,39 @@ describe("getLocalEnvironmentBootstraps", () => {
           bootstrapToken: "bootstrap-token",
         },
       ]);
-    }).pipe(Effect.provide(DesktopBackendPool.layerTest([defaultWslInstance]))),
+    }).pipe(Effect.provide(bootstrapsLayer([defaultWslInstance]))),
+  );
+
+  it.effect("hands out the current window's token to a backend launched with the secret", () =>
+    Effect.gen(function* () {
+      const result = yield* getLocalEnvironmentBootstraps.handler();
+
+      assert.deepEqual(result, [
+        {
+          id: "wsl:default",
+          label: "WSL (Ubuntu)",
+          runningDistro: "Ubuntu",
+          httpBaseUrl: "http://127.0.0.1:3774/",
+          wsBaseUrl: "ws://127.0.0.1:3774/",
+          bootstrapToken: "current-window-token",
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        bootstrapsLayer([
+          {
+            ...defaultWslInstance,
+            currentConfig: Effect.succeedSome({
+              ...readyWslConfig,
+              bootstrap: {
+                ...readyWslConfig.bootstrap,
+                desktopBootstrapSecret: "desktop-secret",
+              },
+            }),
+          },
+        ]),
+      ),
+    ),
   );
 
   it.effect("publishes a pending bootstrap only while a transient retry is scheduled", () => {
@@ -134,7 +167,7 @@ describe("getLocalEnvironmentBootstraps", () => {
           wsBaseUrl: null,
         },
       ]);
-    }).pipe(Effect.provide(DesktopBackendPool.layerTest([retryingInstance])));
+    }).pipe(Effect.provide(bootstrapsLayer([retryingInstance])));
   });
 
   it.effect("omits a bounded transient bootstrap after retries stop", () => {
@@ -160,7 +193,7 @@ describe("getLocalEnvironmentBootstraps", () => {
     return Effect.gen(function* () {
       const result = yield* getLocalEnvironmentBootstraps.handler();
       assert.deepEqual(result, []);
-    }).pipe(Effect.provide(DesktopBackendPool.layerTest([stoppedInstance])));
+    }).pipe(Effect.provide(bootstrapsLayer([stoppedInstance])));
   });
 });
 
@@ -311,76 +344,3 @@ it.effect.skipIf(HostProcessPlatform.defaultValue() === "win32")(
       assert.notInclude(editors, "webstorm");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
-
-describe("getPreviewAutomationRuntimeIdentity", () => {
-  const descriptor = {
-    schemaVersion: 1,
-    runtimeKind: "electron",
-    runtimeInstanceId: "synthetic-runtime",
-    appVersion: "1.2.3",
-    buildCommit: "a".repeat(40),
-  } as const;
-
-  it.effect("returns the service descriptor through the registered async IPC method", () =>
-    Effect.gen(function* () {
-      let listener: DesktopIpc.DesktopIpcHandleListener | undefined;
-      const ipc = DesktopIpc.make({
-        removeHandler: vi.fn(),
-        removeAllListeners: vi.fn(),
-        on: vi.fn(),
-        handle: (channel, registered) => {
-          assert.equal(channel, IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL);
-          listener = registered;
-        },
-      });
-      yield* ipc.handle(getPreviewAutomationRuntimeIdentity);
-      assert.deepEqual(
-        yield* Effect.promise(async () => listener!({ sender: { id: 1 } }, undefined)),
-        descriptor,
-      );
-      const invalidPayload = yield* Effect.exit(
-        getPreviewAutomationRuntimeIdentity.handler("unexpected"),
-      );
-      assert.equal(invalidPayload._tag, "Failure");
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mock(DesktopAppIdentity.DesktopAppIdentity)({
-          previewAutomationRuntimeIdentity: Effect.succeed(descriptor),
-        }),
-      ),
-    ),
-  );
-
-  it.effect("rejects a descriptor that violates the IPC result schema", () =>
-    getPreviewAutomationRuntimeIdentity.handler(undefined).pipe(
-      Effect.provide(
-        Layer.mock(DesktopAppIdentity.DesktopAppIdentity)({
-          previewAutomationRuntimeIdentity: Effect.succeed({
-            ...descriptor,
-            schemaVersion: 2,
-          } as unknown as typeof descriptor),
-        }),
-      ),
-      Effect.exit,
-      Effect.tap((exit) => Effect.sync(() => assert.equal(exit._tag, "Failure"))),
-    ),
-  );
-
-  it("exposes an async preload getter using the identity channel", async () => {
-    vi.stubGlobal("window", { addEventListener: vi.fn() });
-    try {
-      await import("../../preload.ts");
-      const bridge = exposeInMainWorld.mock.calls.find(
-        ([name]) => name === "desktopBridge",
-      )?.[1] as DesktopBridge;
-      invoke.mockResolvedValueOnce(descriptor);
-      assert.deepEqual(await bridge.getPreviewAutomationRuntimeIdentity!(), descriptor);
-      assert.deepEqual(invoke.mock.calls.at(-1), [
-        IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL,
-      ]);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-});

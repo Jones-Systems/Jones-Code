@@ -3,39 +3,28 @@
  *
  * The hub binds loopback and is never reachable directly: serve-sim exposes a
  * shell-exec route and serve-emu's action routes are unauthenticated, so the
- * proxy and restricted direct gateway require an environment session with read
- * scope (operate scope for input and tuning). Reusing the T3
+ * only way to a device stream is through this route, which requires an
+ * environment session with read scope (operate scope for input and tuning). Reusing the T3
  * origin is also what makes remote connections work unchanged — Tailscale and
  * T3 Connect already carry `/api/*` and WebSocket upgrades for the app itself.
  *
  * Only the routes the Device panel needs are forwarded. Anything under the
  * hub's dashboard, exec, or WebRTC surface is rejected here.
  */
-import {
-  AuthOrchestrationReadScope,
-  AuthOrchestrationOperateScope,
-  type AuthEnvironmentScope,
-} from "@t3tools/contracts";
+import { AuthOrchestrationReadScope, AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Layer from "effect/Layer";
-import { directAccess } from "../jones/device/directAccess.ts";
 import {
   HttpClient,
   HttpClientRequest,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import * as Socket from "effect/unstable/socket/Socket";
+} from "effect/http";
+import * as Socket from "effect/socket/Socket";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 
-import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
-import {
-  failEnvironmentAuthInvalid,
-  failEnvironmentInternal,
-  failEnvironmentScopeRequired,
-} from "../auth/http.ts";
+import { authenticateMediaRequest } from "../auth/http.ts";
 import * as DeviceService from "./DeviceService.ts";
 
 const ALLOWED_PATHS: ReadonlyArray<RegExp> = [
@@ -77,62 +66,15 @@ const DROPPED_REQUEST_HEADERS = new Set([
   "dpop",
   "content-length",
   "accept-encoding",
-  "proxy-authorization",
-  "proxy-authenticate",
-  "keep-alive",
-  "te",
-  "trailer",
-  "transfer-encoding",
 ]);
 
 const isWebSocketUpgrade = (request: HttpServerRequest.HttpServerRequest) =>
   request.headers.upgrade?.toLowerCase() === "websocket";
 
-/**
- * `<img>` and WebSocket cannot set headers, so every proxied request
- * authenticates the way the `/ws` upgrade does: a cookie for browser
- * sessions, or a short-lived `wsTicket` minted over authenticated HTTP for
- * bearer and DPoP clients. The upgrade authenticator already implements that
- * fallback order, so it is used for plain requests as well.
- */
-const authenticate = (requiredScope: AuthEnvironmentScope) =>
-  Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
-    const session = yield* serverAuth.authenticateWebSocketUpgrade(request).pipe(
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          if (EnvironmentAuth.isServerAuthCredentialError(error)) {
-            return yield* failEnvironmentAuthInvalid(
-              EnvironmentAuth.serverAuthCredentialReason(error),
-              EnvironmentAuth.serverAuthDpopFailureReason(error),
-            );
-          }
-          return yield* failEnvironmentInternal("internal_error", error);
-        }),
-      ),
-    );
-    if (!session.scopes.includes(requiredScope)) {
-      return yield* failEnvironmentScopeRequired(requiredScope);
-    }
-    return session;
-  });
-
 const forwardHeaders = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
   const headers: Record<string, string> = {};
-  const connection = new Set(
-    String(request.headers.connection ?? "")
-      .toLowerCase()
-      .split(",")
-      .map((name) => name.trim()),
-  );
   for (const [name, value] of Object.entries(request.headers)) {
-    if (
-      DROPPED_REQUEST_HEADERS.has(name.toLowerCase()) ||
-      connection.has(name.toLowerCase()) ||
-      value === undefined
-    )
-      continue;
+    if (DROPPED_REQUEST_HEADERS.has(name) || value === undefined) continue;
     headers[name] = value;
   }
   // serve-emu refuses mutations whose Origin differs from the request origin.
@@ -191,11 +133,7 @@ const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
   const response = yield* httpClient.execute(upstreamRequest);
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(response.headers)) {
-    if (
-      ["content-encoding", "transfer-encoding", "connection", "set-cookie", "location"].includes(
-        name,
-      )
-    ) {
+    if (name === "content-encoding" || name === "transfer-encoding" || name === "connection") {
       continue;
     }
     if (value !== undefined) headers[name] = value;
@@ -216,8 +154,6 @@ const handler = Effect.gen(function* () {
     return HttpServerResponse.text("Bad Request", { status: 400 });
   }
   const hubPath = url.value.pathname.slice(DeviceService.DEVICE_HUB_ROUTE_PREFIX.length) || "/";
-  if (hubPath === "/direct-access")
-    return yield* directAccess(request, url.value, authenticate(AuthOrchestrationReadScope));
   const upgrade = isWebSocketUpgrade(request);
   const allowed = (upgrade ? ALLOWED_WS_PATHS : ALLOWED_PATHS).some((pattern) =>
     pattern.test(hubPath),
@@ -232,7 +168,9 @@ const handler = Effect.gen(function* () {
   const controlsDevice =
     (upgrade && hubPath !== "/api/devices/ws") ||
     (!readOnly && /\/api\/(stream-(mode|settings)|fold)$/.test(hubPath));
-  yield* authenticate(controlsDevice ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope);
+  yield* authenticateMediaRequest(
+    controlsDevice ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope,
+  );
   const devices = yield* DeviceService.DeviceService;
   const ready = yield* devices.currentReadiness(url.value.searchParams.get("hostId") ?? undefined);
   if (!ready) {
@@ -241,12 +179,10 @@ const handler = Effect.gen(function* () {
   // The hub runs in standalone mode at its origin root; the panel builds every
   // stream and socket URL itself, so nothing depends on the hub knowing the
   // T3 prefix.
-  // Authentication and routing hints must not travel on to the hub.
+  // The ticket authenticates here and must not travel on to the hub.
   const upstreamSearch = new URLSearchParams(url.value.search);
   upstreamSearch.delete("wsTicket");
   upstreamSearch.delete("hostId");
-  upstreamSearch.delete("grant");
-  upstreamSearch.delete("clientOrigin");
   const search = upstreamSearch.size > 0 ? `?${upstreamSearch.toString()}` : "";
   const upstreamPath = `${hubPath}${search}`;
   if (upgrade) {
@@ -258,6 +194,4 @@ const handler = Effect.gen(function* () {
   return yield* proxyHttp(request, `${ready.hub.origin}${upstreamPath}`, ready.hub.origin);
 });
 
-export const deviceHubProxyRouteLayer = Layer.unwrap(
-  Effect.sync(() => HttpRouter.add("*", `${DeviceService.DEVICE_HUB_ROUTE_PREFIX}/*`, handler)),
-);
+export const layer = HttpRouter.add("*", `${DeviceService.DEVICE_HUB_ROUTE_PREFIX}/*`, handler);
