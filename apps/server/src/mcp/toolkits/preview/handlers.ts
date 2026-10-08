@@ -85,6 +85,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
       input: {},
       timeoutMs: 500,
       updateCurrentTab: false,
+      failurePolicy: "request_only",
       ...(statusTabId === undefined ? {} : { tabId: statusTabId }),
     })
     .pipe(Effect.orElseSucceed(() => null));

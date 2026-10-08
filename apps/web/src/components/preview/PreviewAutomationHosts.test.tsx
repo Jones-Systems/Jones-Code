@@ -6,7 +6,9 @@ import {
   type PreviewAutomationResponse,
   type PreviewAutomationRuntimeIdentity,
   type PreviewAutomationHost,
+  type PreviewAutomationRequest,
   type PreviewAutomationStreamEvent,
+  type PreviewListResult,
   type PreviewOpenInput,
   type PreviewSessionSnapshot,
 } from "@t3tools/contracts";
@@ -25,6 +27,7 @@ import {
   readThreadPreviewState,
   resetPreviewStateForTests,
   applyPreviewDesktopState,
+  reconcilePreviewServerSessions,
 } from "~/previewStateStore";
 import { appAtomRegistry, AppAtomRegistryProvider } from "~/rpc/atomRegistry";
 
@@ -44,11 +47,18 @@ const mocks = vi.hoisted(() => ({
   open: vi.fn(async (_target: { environmentId: EnvironmentId; input: PreviewOpenInput }) =>
     AsyncResult.success(snapshot),
   ),
-  list: vi.fn(async () => AsyncResult.success(emptyList)),
+  list: vi.fn<() => Promise<AtomCommandResult<PreviewListResult, Error>>>(),
+  status: vi.fn(async () => ({ available: true, tabId: snapshot.tabId, loading: false })),
+  type: vi.fn(async () => ({ typed: true })),
+  activeRecordings: vi.fn<() => Array<{ runtimeTabId: string; serverTabId: string }>>(),
+  stopRecording: vi.fn(async () => ({ path: "synthetic-recording.webm" })),
   resize: vi.fn(),
   respond:
     vi.fn<
-      (target: { environmentId: EnvironmentId; input: PreviewAutomationResponse }) => Promise<void>
+      (target: {
+        environmentId: EnvironmentId;
+        input: PreviewAutomationResponse;
+      }) => Promise<void | AtomCommandResult<void, Error>>
     >(),
   focus: vi.fn<() => Promise<AtomCommandResult<void, Error>>>(),
 }));
@@ -76,7 +86,15 @@ vi.mock("~/state/use-atom-command", () => ({
 vi.mock("~/state/use-atom-query-runner", () => ({
   useAtomQueryRunner: () => mocks.list,
 }));
-vi.mock("./previewBridge", () => ({ previewBridge: { automation: {} } }));
+vi.mock("./previewBridge", () => ({
+  previewBridge: { automation: { status: mocks.status, type: mocks.type } },
+}));
+vi.mock("~/browser/browserRecording", () => ({
+  readActiveBrowserRecordingTargets: mocks.activeRecordings,
+  startBrowserRecording: vi.fn(),
+  stopBrowserRecording: mocks.stopRecording,
+  stopBrowserRecordingForUpload: vi.fn(),
+}));
 
 const environmentId = EnvironmentId.make("automation-environment");
 const threadId = ThreadId.make("automation-thread");
@@ -87,6 +105,7 @@ const savedSettings: ClientSettings = {
   browserDefaultViewport: viewport,
   browserDefaultProfileId: "work",
   browserProfiles: [{ id: "work", name: "Work", kind: "persistent" }],
+  browserAutoShowFloatingPreview: false,
 };
 const snapshot: PreviewSessionSnapshot = {
   threadId,
@@ -100,7 +119,7 @@ const snapshot: PreviewSessionSnapshot = {
 };
 const emptyList = { sessions: [], serverEpoch: "test-server", revision: 0 };
 const listAtom = Atom.make(AsyncResult.success(emptyList));
-const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+let requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
   AsyncResult.initial(false),
 );
 const requestEvent: PreviewAutomationStreamEvent = {
@@ -127,14 +146,27 @@ let renderer: ReactTestRenderer | null = null;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+    AsyncResult.initial(false),
+  );
   mocks.environments = [{ environmentId }];
   mocks.automationRequests.mockReset().mockReturnValue(requestsAtom);
   mocks.getClientSettings.mockReset().mockResolvedValue(savedSettings);
+  mocks.open.mockReset().mockResolvedValue(AsyncResult.success(snapshot));
+  mocks.list.mockReset().mockResolvedValue(AsyncResult.success(emptyList));
+  mocks.status.mockReset().mockResolvedValue({
+    available: true,
+    tabId: snapshot.tabId,
+    loading: false,
+  });
+  mocks.type.mockReset().mockResolvedValue({ typed: true });
+  mocks.activeRecordings.mockReset().mockReturnValue([]);
+  mocks.stopRecording.mockReset().mockResolvedValue({ path: "synthetic-recording.webm" });
   mocks.respond.mockReset();
   mocks.focus.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   __resetClientSettingsPersistenceForTests();
   resetPreviewStateForTests();
-  useBrowserSurfaceStore.setState({ byTabId: {} });
+  useBrowserSurfaceStore.setState({ byTabId: {}, activityByTabId: {} });
   appAtomRegistry.set(requestsAtom, AsyncResult.initial(false));
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
@@ -156,15 +188,319 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await act(() => renderer?.unmount());
+  await act(async () => {
+    renderer?.unmount();
+    if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
+  });
   renderer = null;
   resetPreviewStateForTests();
   __resetClientSettingsPersistenceForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+const liveList: PreviewListResult = {
+  sessions: [snapshot],
+  serverEpoch: "test-server",
+  revision: 1,
+};
+
+function retainBackgroundPreview() {
+  reconcilePreviewServerSessions(threadRef, liveList);
+  applyPreviewDesktopState(threadRef, snapshot.tabId, {
+    hasWebContents: true,
+    canGoBack: false,
+    canGoForward: false,
+    loading: false,
+    zoomFactor: 1,
+    pictureInPicture: false,
+    colorScheme: "system",
+    audioMuted: false,
+    audible: false,
+    controller: "none",
+    favicon: null,
+  });
+  const runtimeTabId = previewRuntimeTabId(threadRef, liveList.serverEpoch, snapshot.tabId);
+  Object.assign(document, {
+    querySelectorAll: () => [
+      {
+        getAttribute: (name: string) => (name === "data-preview-tab" ? runtimeTabId : null),
+        closest: () => ({ getAttribute: () => "active" }),
+        executeJavaScript: async () => ({ width: viewport.width, height: viewport.height }),
+      },
+    ],
+  });
+  return runtimeTabId;
+}
+
+const targetedRequest = (
+  overrides: Partial<PreviewAutomationRequest> = {},
+): PreviewAutomationStreamEvent => ({
+  ...requestEvent,
+  request: {
+    ...requestEvent.request,
+    requestId: "background-request",
+    operation: "type",
+    input: { text: "synthetic input" },
+    tabId: snapshot.tabId,
+    tabIdExplicit: true,
+    ...overrides,
+  },
+});
+
+async function sendRequest(event: PreviewAutomationStreamEvent) {
+  const response = deferred<PreviewAutomationResponse>();
+  mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+  await act(async () => {
+    appAtomRegistry.set(requestsAtom, AsyncResult.success(event));
+    await response.promise;
+  });
+  return response.promise;
+}
+
+describe("PreviewAutomationHosts background target freshness", () => {
+  it.each([true, false])(
+    "rejects a cached closed tab before dispatch (explicit target: %s)",
+    async (tabIdExplicit) => {
+      await act(() => retainBackgroundPreview());
+      const response = await sendRequest(targetedRequest({ tabIdExplicit }));
+
+      expect(response).toMatchObject({
+        ok: false,
+        error: { _tag: "PreviewAutomationTabNotFoundError", outcome: "not_started" },
+      });
+      expect(mocks.list).toHaveBeenCalledExactlyOnceWith({
+        environmentId,
+        input: { threadId },
+      });
+      expect(mocks.status).not.toHaveBeenCalled();
+      expect(mocks.type).not.toHaveBeenCalled();
+      expect(mocks.open).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects the same textual tab id from a new server epoch before dispatch", async () => {
+    await act(() => retainBackgroundPreview());
+    mocks.list.mockResolvedValueOnce(
+      AsyncResult.success({ ...liveList, serverEpoch: "replacement-server" }),
+    );
+    const response = await sendRequest(targetedRequest());
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { _tag: "PreviewAutomationTabNotFoundError", outcome: "not_started" },
+    });
+    expect(mocks.status).not.toHaveBeenCalled();
+    expect(mocks.type).not.toHaveBeenCalled();
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+
+  it("dispatches once to a fresh valid background target", async () => {
+    vi.useFakeTimers();
+    let runtimeTabId = "";
+    await act(() => {
+      runtimeTabId = retainBackgroundPreview();
+    });
+    mocks.list.mockResolvedValueOnce(AsyncResult.success(liveList));
+    const response = await sendRequest(targetedRequest());
+
+    expect(response).toMatchObject({ ok: true, result: { typed: true } });
+    expect(mocks.list).toHaveBeenCalledOnce();
+    expect(mocks.type).toHaveBeenCalledExactlyOnceWith(
+      runtimeTabId,
+      { text: "synthetic input" },
+      expect.any(Number),
+    );
+    expect(useBrowserSurfaceStore.getState().activityByTabId).toEqual({});
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reports a rejected freshness read before any browser call", async () => {
+    vi.useFakeTimers();
+    await act(() => retainBackgroundPreview());
+    mocks.list.mockRejectedValueOnce(new Error("Synthetic freshness read failed"));
+    const response = await sendRequest(targetedRequest());
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { _tag: "PreviewAutomationExecutionError", outcome: "not_started" },
+    });
+    expect(mocks.status).not.toHaveBeenCalled();
+    expect(mocks.type).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([undefined, true])(
+    "does not create a replacement for an uncached requested tab (reuse: %s)",
+    async (reuseExistingTab) => {
+      mocks.list.mockResolvedValueOnce(AsyncResult.success(liveList));
+      const response = await sendRequest(
+        targetedRequest({
+          operation: "open",
+          tabId: "missing-tab",
+          input: { open: false, ...(reuseExistingTab === undefined ? {} : { reuseExistingTab }) },
+        }),
+      );
+      expect(response).toMatchObject({
+        ok: false,
+        error: { _tag: "PreviewAutomationTabNotFoundError", outcome: "not_started" },
+      });
+      expect(mocks.open).not.toHaveBeenCalled();
+      expect(mocks.status).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports unavailable status when there is no previous or requested target", async () => {
+    const response = await sendRequest(
+      targetedRequest({ operation: "status", input: {}, tabId: undefined }),
+    );
+    expect(response).toMatchObject({ ok: true, result: { available: false, tabId: null } });
+    expect(mocks.list).toHaveBeenCalledOnce();
+    expect(mocks.status).not.toHaveBeenCalled();
+  });
+
+  it.each(["closed", "replaced"])(
+    "preserves newer %s state that arrives while freshness is in flight",
+    async (change) => {
+      await act(() => retainBackgroundPreview());
+      const pending = deferred<AtomCommandResult<PreviewListResult, Error>>();
+      mocks.list.mockReturnValueOnce(pending.promise);
+      const response = deferred<PreviewAutomationResponse>();
+      mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+      await act(async () => {
+        appAtomRegistry.set(requestsAtom, AsyncResult.success(targetedRequest()));
+      });
+      expect(mocks.list).toHaveBeenCalledOnce();
+      const currentList: PreviewListResult =
+        change === "closed"
+          ? { ...liveList, sessions: [], revision: 2 }
+          : { ...liveList, serverEpoch: "replacement-server" };
+      await act(async () => {
+        reconcilePreviewServerSessions(threadRef, currentList);
+        pending.resolve(AsyncResult.success(liveList));
+        await response.promise;
+      });
+      await expect(response.promise).resolves.toMatchObject({
+        ok: false,
+        error: { _tag: "PreviewAutomationTabNotFoundError", outcome: "not_started" },
+      });
+      expect(readThreadPreviewState(threadRef).serverEpoch).toBe(currentList.serverEpoch);
+      expect(readThreadPreviewState(threadRef).serverRevision).toBe(currentList.revision);
+      expect(mocks.type).not.toHaveBeenCalled();
+      expect(mocks.status).not.toHaveBeenCalled();
+    },
+  );
+
+  it("bounds a delayed freshness read and never dispatches when it later resolves", async () => {
+    vi.useFakeTimers();
+    await act(() => retainBackgroundPreview());
+    const pending = deferred<AtomCommandResult<PreviewListResult, Error>>();
+    mocks.list.mockReturnValueOnce(pending.promise);
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+    await act(async () => {
+      appAtomRegistry.set(requestsAtom, AsyncResult.success(targetedRequest({ timeoutMs: 100 })));
+    });
+    expect(mocks.list).toHaveBeenCalledOnce();
+    expect(mocks.type).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(80);
+      await response.promise;
+    });
+    await expect(response.promise).resolves.toMatchObject({
+      ok: false,
+      error: { _tag: "PreviewAutomationTimeoutError", outcome: "not_started" },
+    });
+    await act(async () => {
+      pending.resolve(AsyncResult.success({ ...liveList, serverEpoch: "late-server" }));
+      await pending.promise;
+    });
+    expect(mocks.type).not.toHaveBeenCalled();
+    expect(mocks.status).not.toHaveBeenCalled();
+    expect(readThreadPreviewState(threadRef).serverEpoch).toBe(liveList.serverEpoch);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not dispatch a freshness read completed after a connection change", async () => {
+    await act(() => retainBackgroundPreview());
+    const pending = deferred<AtomCommandResult<PreviewListResult, Error>>();
+    mocks.list.mockReturnValueOnce(pending.promise);
+    await act(async () => {
+      appAtomRegistry.set(requestsAtom, AsyncResult.success(targetedRequest()));
+    });
+    expect(mocks.list).toHaveBeenCalledOnce();
+    await act(async () => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({ type: "connected", connectionId: "replacement-connection" }),
+      );
+      pending.resolve(AsyncResult.success(liveList));
+      await pending.promise;
+    });
+    expect(mocks.type).not.toHaveBeenCalled();
+    expect(mocks.status).not.toHaveBeenCalled();
+    for (const [target] of mocks.respond.mock.calls) {
+      expect(target.input).toMatchObject({
+        ok: false,
+        error: { outcome: "not_started" },
+      });
+    }
+  });
+
+  it("answers ping without depending on the session list", async () => {
+    mocks.list.mockImplementationOnce(() => new Promise(() => {}));
+    const response = await sendRequest(targetedRequest({ operation: "ping", input: {} }));
+    expect(response).toMatchObject({ ok: true, result: { alive: true } });
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it("creates a deliberate new tab despite a stale remembered target", async () => {
+    await act(() => retainBackgroundPreview());
+    const response = await sendRequest(
+      targetedRequest({
+        operation: "open",
+        input: { open: false, reuseExistingTab: false },
+        tabIdExplicit: false,
+      }),
+    );
+    expect(response).toMatchObject({ ok: true, result: { tabId: snapshot.tabId } });
+    expect(mocks.open).toHaveBeenCalledOnce();
+    expect(mocks.type).not.toHaveBeenCalled();
+  });
+
+  it("finalizes a recorded target without depending on its server session", async () => {
+    const runtimeTabId = previewRuntimeTabId(threadRef, "closed-server", snapshot.tabId);
+    mocks.activeRecordings.mockReturnValueOnce([{ runtimeTabId, serverTabId: snapshot.tabId }]);
+    mocks.list.mockRejectedValueOnce(new Error("Synthetic unavailable session list"));
+    const response = await sendRequest(
+      targetedRequest({ operation: "recordingStop", input: {}, tabIdExplicit: false }),
+    );
+    expect(response).toMatchObject({
+      ok: true,
+      result: { path: "synthetic-recording.webm", tabId: snapshot.tabId },
+    });
+    expect(mocks.stopRecording).toHaveBeenCalledExactlyOnceWith(runtimeTabId);
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
 });
 
 describe("PreviewAutomationHosts open", () => {
+  it("retries a settled RPC failure without executing the browser operation again", async () => {
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("Response RPC failed"))))
+      .mockImplementationOnce(async ({ input }) => response.resolve(input));
+    await act(async () => {
+      appAtomRegistry.set(requestsAtom, AsyncResult.success(requestEvent));
+      await response.promise;
+    });
+    expect(mocks.respond).toHaveBeenCalledTimes(2);
+    expect(mocks.respond.mock.calls[0]![0].input).toEqual(mocks.respond.mock.calls[1]![0].input);
+    expect(mocks.open).toHaveBeenCalledOnce();
+    await expect(response.promise).resolves.toMatchObject({ ok: true, requestId: "open-request" });
+  });
   it("waits for saved settings before opening a tab with the configured profile and viewport", async () => {
     const readStarted = deferred<void>();
     const read = deferred<ClientSettings>();
@@ -349,10 +685,11 @@ describe("PreviewAutomationHosts ownership", () => {
   );
 
   it("does not claim an available runtime from a server snapshot alone", async () => {
+    mocks.list.mockResolvedValueOnce(AsyncResult.success(liveList));
     const response = deferred<PreviewAutomationResponse>();
     mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
     await act(async () => {
-      applyPreviewServerSnapshot(threadRef, snapshot);
+      reconcilePreviewServerSessions(threadRef, liveList);
       appAtomRegistry.set(
         requestsAtom,
         AsyncResult.success({

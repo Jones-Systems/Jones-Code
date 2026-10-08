@@ -1021,6 +1021,7 @@ export const PreviewAnnotationSubmissionResultSchema: Schema.Codec<PreviewAnnota
 
 export const DesktopPreviewTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
 });
 
 /**
@@ -1094,31 +1095,37 @@ export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
 
 export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
   input: PreviewAutomationClickInput,
 });
 
 export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
   input: PreviewAutomationTypeInput,
 });
 
 export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
   input: PreviewAutomationPressInput,
 });
 
 export const DesktopPreviewAutomationScrollInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
   input: PreviewAutomationScrollInput,
 });
 
 export const DesktopPreviewAutomationEvaluateInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
   input: PreviewAutomationEvaluateInput,
 });
 
 export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
   input: PreviewAutomationWaitForInput,
 });
 
@@ -1353,13 +1360,33 @@ export interface DesktopPreviewBridge {
   };
   automation: {
     status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
-    snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
-    click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
-    type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
-    press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
-    scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
-    evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;
-    waitFor: (tabId: string, input: PreviewAutomationWaitForInput) => Promise<void>;
+    snapshot: (tabId: string, deadlineMs?: number) => Promise<PreviewAutomationSnapshot>;
+    click: (
+      tabId: string,
+      input: PreviewAutomationClickInput,
+      deadlineMs?: number,
+    ) => Promise<void>;
+    type: (tabId: string, input: PreviewAutomationTypeInput, deadlineMs?: number) => Promise<void>;
+    press: (
+      tabId: string,
+      input: PreviewAutomationPressInput,
+      deadlineMs?: number,
+    ) => Promise<void>;
+    scroll: (
+      tabId: string,
+      input: PreviewAutomationScrollInput,
+      deadlineMs?: number,
+    ) => Promise<void>;
+    evaluate: (
+      tabId: string,
+      input: PreviewAutomationEvaluateInput,
+      deadlineMs?: number,
+    ) => Promise<unknown>;
+    waitFor: (
+      tabId: string,
+      input: PreviewAutomationWaitForInput,
+      deadlineMs?: number,
+    ) => Promise<void>;
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;

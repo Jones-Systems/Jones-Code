@@ -7,6 +7,7 @@ import {
 import { isCurrentPreviewRuntimeTab } from "~/browser/previewRuntimeTabId";
 import { readThreadPreviewState } from "~/previewStateStore";
 
+import { waitForHostReadiness } from "./previewAutomationHostBudget";
 import { previewBridge } from "./previewBridge";
 import {
   PreviewAutomationNavigationTimeoutError,
@@ -46,23 +47,27 @@ export async function waitForNavigationReadiness(
   timeoutMs: number,
 ): Promise<void> {
   const targetReadiness = readiness ?? "load";
-  if (!previewBridge) return;
+  const bridge = previewBridge;
+  if (!bridge) return;
   assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, { operation, requestId });
   if (targetReadiness === "none") return;
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
+  const ready = await waitForHostReadiness(deadline, async () => {
     assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, { operation, requestId });
     if (targetReadiness === "domContentLoaded") {
-      const readyState = await previewBridge.automation.evaluate(runtimeTabId, {
-        expression: "document.readyState",
-      });
-      if (readyState === "interactive" || readyState === "complete") return;
-    } else {
-      const status = await previewBridge.automation.status(runtimeTabId);
-      if (status.available && !status.loading) return;
+      const readyState = await bridge.automation.evaluate(
+        runtimeTabId,
+        {
+          expression: "document.readyState",
+        },
+        deadline,
+      );
+      return readyState === "interactive" || readyState === "complete";
     }
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
-  }
+    const status = await bridge.automation.status(runtimeTabId);
+    return status.available && !status.loading;
+  });
+  if (ready) return;
   throw new PreviewAutomationNavigationTimeoutError({
     requestId,
     environmentId: threadRef.environmentId,

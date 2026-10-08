@@ -9,6 +9,7 @@ import type {
 import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
+import { unwrapPreviewAutomationResult } from "./preview/AutomationResult.ts";
 import * as IpcChannels from "./ipc/channels.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
@@ -376,20 +377,34 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     automation: {
       status: (tabId) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_STATUS_CHANNEL, { tabId }),
-      snapshot: (tabId) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, { tabId }),
-      click: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL, { tabId, input }),
-      type: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL, { tabId, input }),
-      press: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL, { tabId, input }),
-      scroll: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_SCROLL_CHANNEL, { tabId, input }),
-      evaluate: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_EVALUATE_CHANNEL, { tabId, input }),
-      waitFor: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL, { tabId, input }),
+      snapshot: (tabId, deadlineMs) =>
+        ipcRenderer
+          .invoke(IpcChannels.PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, { tabId, deadlineMs })
+          .then((result) => unwrapPreviewAutomationResult(result, deadlineMs)),
+      click: (tabId, input, deadlineMs) =>
+        ipcRenderer
+          .invoke(IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL, { tabId, input, deadlineMs })
+          .then((result) => unwrapPreviewAutomationResult(result, deadlineMs)),
+      type: (tabId, input, deadlineMs) =>
+        ipcRenderer
+          .invoke(IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL, { tabId, input, deadlineMs })
+          .then((result) => unwrapPreviewAutomationResult(result, deadlineMs)),
+      press: (tabId, input, deadlineMs) =>
+        ipcRenderer
+          .invoke(IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL, { tabId, input, deadlineMs })
+          .then((result) => unwrapPreviewAutomationResult(result, deadlineMs)),
+      scroll: (tabId, input, deadlineMs) =>
+        ipcRenderer
+          .invoke(IpcChannels.PREVIEW_AUTOMATION_SCROLL_CHANNEL, { tabId, input, deadlineMs })
+          .then((result) => unwrapPreviewAutomationResult(result, deadlineMs)),
+      evaluate: (tabId, input, deadlineMs) =>
+        ipcRenderer
+          .invoke(IpcChannels.PREVIEW_AUTOMATION_EVALUATE_CHANNEL, { tabId, input, deadlineMs })
+          .then((result) => unwrapPreviewAutomationResult(result, deadlineMs)),
+      waitFor: (tabId, input, deadlineMs) =>
+        ipcRenderer
+          .invoke(IpcChannels.PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL, { tabId, input, deadlineMs })
+          .then((result) => unwrapPreviewAutomationResult(result, deadlineMs)),
     },
     onStateChange: (listener) => {
       const wrappedListener = (

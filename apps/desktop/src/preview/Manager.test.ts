@@ -7,6 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -2739,6 +2740,88 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("hung control initialization on one tab does not block another tab", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const capture = vi.fn(async () => ({
+          toPNG: () => Buffer.from("png"),
+          toJPEG: () => Buffer.from("jpeg"),
+          getSize: () => ({ width: 100, height: 80 }),
+        }));
+        const first = makeTestPreviewWebContents(capture, 41);
+        const second = makeTestPreviewWebContents(capture, 42);
+        Object.assign(first, { isDevToolsOpened: () => false });
+        Object.assign(second, { isDevToolsOpened: () => false });
+        Object.assign(first.debugger, { sendCommand: vi.fn(() => new Promise<unknown>(() => {})) });
+        fromId.mockImplementation((id) => (id === 41 ? first : second));
+        yield* manager.createTab("tab_x");
+        yield* manager.createTab("tab_y");
+        yield* manager.registerWebview("tab_x", 41);
+        yield* manager.registerWebview("tab_y", 42);
+        const blocked = yield* Effect.exit(
+          manager.automationEvaluate("tab_x", { expression: "42" }),
+        ).pipe(Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust(0);
+        Object.assign(second.debugger, {
+          sendCommand: vi.fn(async () => ({ result: { value: 42 } })),
+        });
+        expect(yield* manager.automationEvaluate("tab_y", { expression: "42" })).toBe(42);
+        expect(second.debugger.attach).toHaveBeenCalledOnce();
+        expect(blocked.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust(5_000);
+        yield* Fiber.join(blocked);
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "an interrupted evaluate retains its permit until detach while waiters report not started",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const capture = vi.fn(async () => ({
+            toPNG: () => Buffer.from("png"),
+            toJPEG: () => Buffer.from("jpeg"),
+            getSize: () => ({ width: 100, height: 80 }),
+          }));
+          const wc = makeTestPreviewWebContents(capture);
+          Object.assign(wc, { isDevToolsOpened: () => false });
+          const dispatched = yield* Deferred.make<void>();
+          const send = vi.fn((method: string, params?: Record<string, unknown>) => {
+            if (method === "Runtime.evaluate" && params?.["expression"] === "never") {
+              Deferred.doneUnsafe(dispatched, Effect.void);
+              return new Promise<unknown>(() => {});
+            }
+            return Promise.resolve({ result: { value: 42 } });
+          });
+          Object.assign(wc.debugger, { sendCommand: send });
+          fromId.mockReturnValue(wc);
+          yield* manager.createTab("tab_1");
+          yield* manager.registerWebview("tab_1", 42);
+          const caller = yield* manager
+            .automationEvaluate("tab_1", { expression: "never" })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(dispatched);
+          yield* Fiber.interrupt(caller);
+          const deadline = (yield* Clock.currentTimeMillis) + 100;
+          const waiting = yield* Effect.exit(
+            manager.automationEvaluate("tab_1", { expression: "42" }, deadline),
+          ).pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(100);
+          const exit = yield* Fiber.join(waiting);
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (Exit.isFailure(exit))
+            expect(Option.getOrNull(Cause.findErrorOption(exit.cause))).toMatchObject({
+              _tag: "PreviewAutomationNotStartedError",
+            });
+          expect(send.mock.calls.filter(([method]) => method === "Runtime.evaluate")).toHaveLength(
+            1,
+          );
+          yield* manager.closeTab("tab_1");
+        }),
+      ),
+  );
+
   effectIt.effect("releases snapshot control when every capture attempt stalls", () =>
     withManager((manager) =>
       Effect.gen(function* () {
@@ -4685,6 +4768,7 @@ describe("PreviewManager", () => {
             if (channel === "preview:human-input") humanInput = listener;
           }),
         });
+        const evaluateDispatched = yield* Deferred.make<void>();
         let holdEvaluate = false;
         let releaseEvaluate: (() => void) | undefined;
         Object.assign(wc.debugger, {
@@ -4696,6 +4780,7 @@ describe("PreviewManager", () => {
               holdEvaluate = false;
               await new Promise<void>((resolve) => {
                 releaseEvaluate = resolve;
+                Deferred.doneUnsafe(evaluateDispatched, Effect.void);
               });
             }
             return { result: { value: 42 } };
@@ -4762,7 +4847,7 @@ describe("PreviewManager", () => {
         const running = yield* manager
           .automationEvaluate("tab_1", { expression: "42" })
           .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* settle(() => releaseEvaluate !== undefined);
+        yield* Deferred.await(evaluateDispatched);
         const queued = yield* manager
           .automationEvaluate("tab_1", { expression: "42" })
           .pipe(Effect.forkChild({ startImmediately: true }));

@@ -88,6 +88,7 @@ export class PreviewAutomationTargetUnavailableError extends Schema.TaggedError<
     threadId: ThreadId,
     tabId: Schema.NullOr(PreviewTabId),
     bridgeAvailable: Schema.Boolean,
+    outcome: Schema.optional(Schema.Literal("not_started")),
   },
 ) {
   get responseTag() {
@@ -172,6 +173,24 @@ const targetNotEditableDiagnostics = (
   };
 };
 
+export class PreviewAutomationNotStartedHostError extends Schema.TaggedError<PreviewAutomationNotStartedHostError>()(
+  "PreviewAutomationNotStartedHostError",
+  {
+    requestId: TrimmedNonEmptyString,
+    operation: PreviewAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: Schema.NullOr(PreviewTabId),
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationTimeoutError" as const;
+  }
+  override get message(): string {
+    return "The browser action did not start within its request budget.";
+  }
+}
+
 export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewAutomationOperationError>()(
   "PreviewAutomationOperationError",
   {
@@ -181,12 +200,24 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
     threadId: ThreadId,
     tabId: Schema.NullOr(PreviewTabId),
     cause: Schema.Defect(),
+    outcome: Schema.optional(Schema.Literal("not_started")),
   },
 ) {
   static fromCause(
-    input: PreviewAutomationOperationContext & { readonly cause: unknown },
+    input: PreviewAutomationOperationContext & {
+      readonly cause: unknown;
+      readonly outcome?: "not_started";
+    },
   ): PreviewAutomationHostError {
     if (isPreviewAutomationHostError(input.cause)) return input.cause;
+    if (
+      typeof input.cause === "object" &&
+      input.cause !== null &&
+      "_tag" in input.cause &&
+      input.cause._tag === "PreviewAutomationNotStartedError"
+    ) {
+      return new PreviewAutomationNotStartedHostError(input);
+    }
     const diagnostics = targetNotEditableDiagnostics(input.cause);
     return diagnostics
       ? new PreviewAutomationTargetNotEditableHostError({
@@ -220,11 +251,13 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetNotEditableHostError,
+  PreviewAutomationNotStartedHostError,
   PreviewAutomationOperationError,
 ]);
 export type PreviewAutomationHostError = typeof PreviewAutomationHostError.Type;
 
 const isPreviewAutomationHostError = Schema.is(PreviewAutomationHostError);
+const isPreviewAutomationNotStartedHostError = Schema.is(PreviewAutomationNotStartedHostError);
 
 export function serializePreviewAutomationHostError(
   error: PreviewAutomationHostError,
@@ -232,12 +265,21 @@ export function serializePreviewAutomationHostError(
   const detail = Object.fromEntries(
     Object.entries(error).filter(
       ([key]) =>
-        key !== "_tag" && key !== "cause" && key !== "name" && key !== "message" && key !== "stack",
+        key !== "_tag" &&
+        key !== "cause" &&
+        key !== "name" &&
+        key !== "message" &&
+        key !== "stack" &&
+        key !== "outcome",
     ),
   );
   return {
     _tag: "responseTag" in error ? error.responseTag : error._tag,
     message: error.message,
+    ...(isPreviewAutomationNotStartedHostError(error) ||
+    ("outcome" in error && error.outcome === "not_started")
+      ? { outcome: "not_started" as const }
+      : {}),
     ...(Object.keys(detail).length === 0 ? {} : { detail }),
   };
 }
