@@ -59,7 +59,10 @@ const make = Effect.gen(function* () {
   const net = yield* NetService.NetService;
   const shutdown = yield* DesktopShutdown.DesktopShutdown;
   const sshCommand = yield* resolveSshCommand;
-  const entries = new Map<string, { readonly scope: Scope.Scope; readonly rendererId: number }>();
+  const entries = new Map<
+    string,
+    { readonly scope: Scope.Closeable; readonly rendererId: number }
+  >();
   let sequence = 0;
   let stopped = false;
 

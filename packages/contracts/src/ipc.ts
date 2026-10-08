@@ -1372,7 +1372,8 @@ export interface DesktopPreviewBridge {
     ) => Promise<DesktopPreviewRecordingArtifact>;
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
   };
-  automation: {
+  /** Legacy desktop builds expose this capability; current server-driven tabs omit it. */
+  automation?: {
     status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;

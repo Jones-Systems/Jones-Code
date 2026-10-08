@@ -18,6 +18,14 @@
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/organizationMetadata.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/organizationMetadata/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts"
     }
   ]
 }

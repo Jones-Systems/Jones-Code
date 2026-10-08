@@ -178,6 +178,30 @@
       "reason": "Upstream subprocess fixture imports the fixed local tracing implementation from a caller-supplied root; this exact target still receives boundary checking.",
       "anchors": [],
       "targets": ["packages/shared/src/observability.ts"]
+    },
+    {
+      "from": "apps/mobile/src/features/browser/PreviewStreamWebView.tsx",
+      "sourceSha256": "2382e9b5383182fbf0ec242656c9489d6da23f091864b8c8a9350a9ec700eb24",
+      "expression": "\"@t3tools/mobile-preview-stream\"",
+      "reason": "Metro supplies this generated browser-script module from the pinned generator; generated output is not read or claimed verified.",
+      "anchors": [
+        {
+          "path": "apps/mobile/metro.config.js",
+          "sha256": "96d13349fde397b14420e8f132e25ae2bf995984c5ebf90ac9c7b3f304a1215a"
+        },
+        {
+          "path": "apps/mobile/scripts/generate-device-stream.mts",
+          "sha256": "9f2e57d5797889956287cbd94177370246a2e3f64e31a6477778b23a90c2a426"
+        },
+        {
+          "path": "apps/mobile/src/features/browser/preview-stream.browser.ts",
+          "sha256": "d2a3c8d7de956157cd27b338aa2c71698f5e2dc82442a1cafaef27375608f106"
+        }
+      ],
+      "targets": [
+        "apps/mobile/scripts/generate-device-stream.mts",
+        "apps/mobile/src/features/browser/preview-stream.browser.ts"
+      ]
     }
   ]
 }

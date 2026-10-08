@@ -398,7 +398,6 @@ if (context.update?.status === "pending") {
         "environment-launcher\n",
       );
       initializeNativeStoreAuthority(authorityStateDir, "environment-launcher");
-      // @effect-diagnostics-next-line preferSchemaOverJson:off - embeds a path in fake child source.
       const encodedDatabasePath = JSON.stringify(databasePath);
       const childSource = `
 import { writeFileSync } from "node:fs";
@@ -625,7 +624,6 @@ if (context.update?.status === "pending") {
 
       const versionDir = path.join(root, "runtime", "versions", "1.0.0");
       const previousStarted = path.join(root, "previous-runtime-started");
-      // @effect-diagnostics-next-line preferSchemaOverJson:off - path embedded in a fixture executable.
       const previousStartedLiteral = JSON.stringify(previousStarted);
       yield* writeFakeRuntime(
         fs,
