@@ -4498,7 +4498,7 @@ it.effect(
     }),
 );
 
-function runIdleThreadUnloadScenario(
+function runIdleThreadUnloadScenario<E>(
   name: string,
   scenario: (input: {
     readonly state: Ref.Ref<TestProviderRuntimeState>;
@@ -4514,7 +4514,7 @@ function runIdleThreadUnloadScenario(
     readonly resume: (threadId: ThreadId) => Effect.Effect<void>;
   }) => Effect.Effect<
     void,
-    ProviderSessionManager.ProviderSessionManagerV2Error,
+    E,
     ProjectionStore.ProjectionStoreV2 | ServerSettings.ServerSettingsService
   >,
   options: {
