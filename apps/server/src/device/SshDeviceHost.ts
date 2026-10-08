@@ -220,7 +220,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     activated = true;
     const scope = yield* Scope.make();
     connectionScope = scope;
-    const generation = NodeCrypto.randomUUID();
+    const generation = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     let active = true;
     yield* registerDirectRetirement({
       scope,

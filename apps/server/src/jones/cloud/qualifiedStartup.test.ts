@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NetAddress from "effect/unstable/net/NetAddress";
+import * as NetAddress from "effect/net/NetAddress";
 import {
   assertQualifiedTrialBinding,
   decodeQualifiedTrialReceipt,

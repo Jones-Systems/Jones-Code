@@ -13,18 +13,18 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import { unobservedRuntimeIdentity } from "../../orchestration-v2/ProviderAdapter.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 
 const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
-  Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(SqlitePersistence.layerMemory),
 );
 const testLayer = Layer.mergeAll(
   stores,
-  EventSink.layer.pipe(Layer.provide(Layer.merge(stores, SqlitePersistenceMemory))),
+  EventSink.layer.pipe(Layer.provide(Layer.merge(stores, SqlitePersistence.layerMemory))),
 );
 const decodeThread = Schema.decodeUnknownSync(OrchestrationV2AppThread);
 const decodeProviderThread = Schema.decodeUnknownSync(OrchestrationV2ProviderThread);

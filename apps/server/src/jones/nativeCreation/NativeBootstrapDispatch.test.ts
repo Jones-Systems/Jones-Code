@@ -14,13 +14,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Adapters from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Repository from "./NativeCreationRepository.ts";
 import * as RepositorySqlite from "./NativeCreationRepositorySqlite.ts";
 import * as Authority from "./NativeCreationAuthority.ts";
@@ -36,7 +36,7 @@ import {
   nativePreparationCommand,
   validateNativeCreationPreparation,
 } from "./NativeCreationPreparation.ts";
-const database = SqlitePersistenceMemory;
+const database = SqlitePersistence.layerMemory;
 const ownerLayer = RepositorySqlite.layer.pipe(Layer.provideMerge(database));
 const actor = AuthSessionId.make("synthetic-bootstrap-actor");
 const principal = {
@@ -194,7 +194,7 @@ const configure = Effect.fnUntraced(function* (
       executeWholeOperation: () => Effect.die("Acceptance must not execute a provider"),
     }),
   );
-  const adapters = Adapters.makeLayer([
+  const adapters = Adapters.layerFromAdapters([
     {
       instanceId: ProviderInstanceId.make("codex"),
       driver: ProviderDriverKind.make("codex"),
@@ -203,11 +203,10 @@ const configure = Effect.fnUntraced(function* (
       openSession: () => Effect.die("No provider process in bootstrap acceptance proof"),
     },
   ]);
-  const runtime = makeOrchestratorV2ReplayLayerWithRegistry(
-    { name: "native-bootstrap" },
-    adapters,
-    { databaseLayer: database, runEffectWorker: false },
-  ).pipe(Layer.provideMerge(external));
+  const runtime = ProviderReplayHarness.layerWithRegistry({ name: "native-bootstrap" }, adapters, {
+    databaseLayer: database,
+    runEffectWorker: false,
+  }).pipe(Layer.provideMerge(external));
   yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES('synthetic-project','Synthetic','/synthetic/project','[]','2026-10-02T12:34:56Z','2026-10-02T12:34:56Z')`;
   return { runtime, events, repository, sql };
 });

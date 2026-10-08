@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import conformance from "../../../../../../packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/conformance.json" with { type: "json" };
 import migration from "../../persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts";

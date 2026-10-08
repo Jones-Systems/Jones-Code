@@ -873,9 +873,13 @@ if __name__ == '__main__':
               Effect.provide(dependencies),
               Effect.provideService(McpInvocationContext, {
                 environmentId: EnvironmentId.make("fixture-environment"),
-                threadId: ThreadId.make("fixture-thread"),
-                providerSessionId: "fixture-session",
-                providerInstanceId: ProviderInstanceId.make("codex"),
+                requestNamespace: "fixture-session",
+                thread: {
+                  threadId: ThreadId.make("fixture-thread"),
+                  providerSessionId: "fixture-session",
+                  providerInstanceId: ProviderInstanceId.make("codex"),
+                },
+                client: undefined,
                 capabilities: new Set(["decision-snapshot"] as const),
                 issuedAt: 1,
               }),

@@ -1,6 +1,16 @@
+import * as WsDirectEndpoints from "../environment/DirectEndpoints.ts";
+import * as WsMcpAppRequests from "../mcpApps/McpAppRequests.ts";
+import * as WsSecretRequests from "../secrets/SecretRequests.ts";
+import * as WsServerBrowser from "../preview/ServerBrowser.ts";
+import * as OrchestrationHttpApi from "./http.ts";
+import * as EnvironmentAuth from "../auth/http.ts";
+import * as WebSocketRpc from "../ws.ts";
+import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Sink from "effect/Sink";
 import { projectThreadProjectionForWire } from "./WireProjection.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
@@ -17,8 +27,7 @@ import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
-import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
+
 import {
   legacyBootstrapCreateCommandId,
   legacyNeverInvokedSetupOpen,
@@ -27,10 +36,10 @@ import {
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as WsFileSystem from "effect/FileSystem";
 import { it as effectIt } from "@effect/vitest";
-import * as WsSocket from "effect/unstable/socket/Socket";
+import * as WsSocket from "effect/socket/Socket";
 import * as WsQueue from "effect/Queue";
 import * as WsFiber from "effect/Fiber";
-import * as WsHttpServerRequest from "effect/unstable/http/HttpServerRequest";
+import * as WsHttpServerRequest from "effect/http/HttpServerRequest";
 import {
   DEFAULT_SERVER_SETTINGS,
   ORCHESTRATION_V2_WS_METHODS,
@@ -42,12 +51,12 @@ import * as WsTraceDiagnostics from "../diagnostics/TraceDiagnostics.ts";
 import * as WsProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WsEffectOutbox from "./EffectOutbox.ts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import * as WsHttpClient from "effect/unstable/http/HttpClient";
+import * as WsHttpClient from "effect/http/HttpClient";
 import * as WsWorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as WsVcsProcess from "../vcs/VcsProcess.ts";
 import * as WsCodexInstallation from "../provider/CodexInstallation.ts";
 import * as WsAntigravityInstallation from "../provider/AntigravityInstallation.ts";
-import * as WsApplicationEventStore from "../persistence/Services/OrchestrationEventStore.ts";
+import * as WsApplicationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as WsProjectService from "../project/ProjectService.ts";
 import * as WsManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as WsThreadSearch from "../orchestration-v2/ThreadSearch.ts";
@@ -79,13 +88,13 @@ import * as WsVcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WsTerminalManager from "../terminal/Manager.ts";
 import * as WsPreviewManager from "../preview/Manager.ts";
 import * as WsPortScanner from "../preview/PortScanner.ts";
-import * as WsProviderRegistry from "../provider/Services/ProviderRegistry.ts";
+import * as WsProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as WsModelManifest from "../provider/ModelManifest.ts";
 import * as WsProviderMaintenance from "../provider/providerMaintenance.ts";
-import * as WsProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import * as WsProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as WsAcpRegistrySupport from "../provider/acp/AcpRegistrySupport.ts";
 import * as WsAcpRegistryRuntimeCoordinator from "../provider/acp/AcpRegistryRuntimeCoordinator.ts";
-import * as WsProviderAuthService from "../provider/Services/ProviderAuthService.ts";
+import * as WsProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as WsServerSelfUpdate from "../cloud/selfUpdate.ts";
 import * as WsServerConfig from "../config.ts";
 import * as WsServerLifecycleEvents from "../serverLifecycleEvents.ts";
@@ -104,7 +113,7 @@ import * as WsResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts"
 import * as WsRelayClient from "@t3tools/shared/relayClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { websocketRpcRouteLayer } from "../ws.ts";
+
 import { ORCHESTRATION_PROTOCOL_QUERY_PARAM } from "@t3tools/contracts";
 import * as WsPreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 
@@ -126,18 +135,14 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as HttpApi from "effect/unstable/httpapi/HttpApi";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import { environmentAuthenticatedAuthLayer } from "../auth/http.ts";
-import {
-  SqlitePersistenceMemory,
-  makeSqlitePersistenceLive,
-} from "../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServer from "effect/http/HttpServer";
+
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
-import * as ApplicationEvents from "../persistence/Layers/OrchestrationEventStore.ts";
+import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
 import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
 import * as Receipts from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
@@ -152,7 +157,6 @@ import {
   RecordedAppThreadJson,
   RecordedRunJson,
 } from "./RecordedTypes.ts";
-import { orchestrationHttpApiLayer } from "./http.ts";
 
 const decodeThread = Schema.decodeUnknownSync(RecordedAppThreadJson);
 const decodeRun = Schema.decodeUnknownSync(RecordedRunJson);
@@ -242,7 +246,7 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
   let fixtureToken = "";
   let serveFailureFixture = false;
   const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, Receipts.layer).pipe(
-    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
   );
   const persistence = Layer.mergeAll(stores, EventSink.layer.pipe(Layer.provide(stores)));
   const readers = Layer.unwrap(
@@ -398,9 +402,9 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
   ).pipe(Layer.provideMerge(persistence));
   const config = WsServerConfig.layerTest(process.cwd(), { prefix: "legacy-wire-http-auth-" });
   const authOwners = WsEnvironmentAuth.layer.pipe(
-    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSecretStore.layer),
-    Layer.provideMerge(WsServerEnvironment.identityLayer),
+    Layer.provideMerge(WsServerEnvironment.layerIdentity),
     Layer.provide(config),
     Layer.provide(NodeServices.layer),
   );
@@ -409,19 +413,19 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
       const owner = yield* WsEnvironmentAuth.EnvironmentAuth;
       const issued = yield* owner.issueSession({ scopes: ["orchestration:read"] });
       fixtureToken = issued.token;
-      return environmentAuthenticatedAuthLayer;
+      return EnvironmentAuth.layerAuthenticatedAuth;
     }),
   ).pipe(Layer.provideMerge(authOwners));
   const dependencies = Layer.mergeAll(
     readers,
     Layer.mock(ProjectStore.ProjectStoreV2)({ listShells: () => Effect.succeed([]) }),
     Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
-    ApplicationEvents.OrchestrationEventStoreLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+    ApplicationEvents.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
   );
   const routes = HttpApiBuilder.layer(
     HttpApi.make("environment").add(EnvironmentOrchestrationHttpApi),
   ).pipe(
-    Layer.provide(orchestrationHttpApiLayer.pipe(Layer.provide(dependencies))),
+    Layer.provide(OrchestrationHttpApi.layer.pipe(Layer.provide(dependencies))),
     Layer.provide(auth),
     Layer.provide(HttpServer.layerServices),
   );
@@ -496,14 +500,18 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     }).pipe(Effect.andThen(Effect.die("Unauthenticated request reached an RPC owner.")));
   const config = WsServerConfig.layerTest(process.cwd(), { prefix: "legacy-wire-ws-gate-" });
   const auth = WsEnvironmentAuth.layer.pipe(
-    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSecretStore.layer),
-    Layer.provideMerge(WsServerEnvironment.identityLayer),
+    Layer.provideMerge(WsServerEnvironment.layerIdentity),
     Layer.provide(config),
     Layer.provide(NodeServices.layer),
   );
   // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
   const deniedRpcOwners = Layer.mergeAll(
+    Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
+    Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
+    Layer.mock(WsSecretRequests.SecretRequests)({}),
+    Layer.mock(WsServerBrowser.ServerBrowser)({}),
     WsTokenAccountingService.layer,
     Layer.mock(Threads.ThreadManagementService)({ getThreadSnapshot: denyRpcWork }),
     Layer.mock(WsApplicationEventStore.OrchestrationEventStore)({}),
@@ -586,7 +594,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.provideMerge(config),
     Layer.provideMerge(NodeServices.layer),
   );
-  const routes = websocketRpcRouteLayer.pipe(Layer.provideMerge(dependencies));
+  const routes = WebSocketRpc.layer.pipe(Layer.provideMerge(dependencies));
   const http = HttpRouter.toWebHandler(routes, { disableLogger: true });
   try {
     const url = `http://test/ws?${ORCHESTRATION_PROTOCOL_QUERY_PARAM}=${ORCHESTRATION_PROTOCOL_VERSION_TEXT}`;
@@ -657,15 +665,15 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         const fs = yield* WsFileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-ws-forwarding-" });
         const receivingDatabase = scenario.startsWith("actual_input_")
-          ? makeSqlitePersistenceLive(`${cwd}/lexical.sqlite`).pipe(
+          ? SqlitePersistence.layerFromPath(`${cwd}/lexical.sqlite`).pipe(
               Layer.provide(NodeServices.layer),
             )
-          : SqlitePersistenceMemory;
+          : SqlitePersistence.layerMemory;
         const config = WsServerConfig.layerTest(cwd, `${cwd}/state`);
         const auth = WsEnvironmentAuth.layer.pipe(
           Layer.provideMerge(receivingDatabase),
           Layer.provideMerge(ServerSecretStore.layer),
-          Layer.provideMerge(WsServerEnvironment.identityLayer),
+          Layer.provideMerge(WsServerEnvironment.layerIdentity),
           Layer.provide(config),
           Layer.provide(NodeServices.layer),
         );
@@ -877,7 +885,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   ),
                 ),
               );
-              const registry = ProviderAdapterRegistry.makeLayer([
+              const registry = ProviderAdapterRegistry.layerFromAdapters([
                 {
                   instanceId: modelSelection.instanceId,
                   driver: ProviderDriverKind.make("codex"),
@@ -887,7 +895,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   openSession: () => Effect.die("No provider entry in receiving RPC fixture"),
                 } as ProviderAdapterV2Shape,
               ]);
-              const orchestrator = makeOrchestratorV2ReplayLayerWithRegistry(
+              const orchestrator = ProviderReplayHarness.layerWithRegistry(
                 { name: "legacy-authenticated-receiving" },
                 registry,
                 { databaseLayer: receivingDatabase, runEffectWorker: false },
@@ -1116,7 +1124,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     Effect.die("No generated branch in receiving RPC fixture"),
                 }),
                 WsServerSettings.layerTest(),
-                makeProviderRegistryLayer(),
+                ProviderRegistryMock.layer(),
                 Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
                   namedProjectsRoot: `${cwd}/unused-projects`,
                   folderForThread: () => Effect.succeed(Option.none()),
@@ -1171,9 +1179,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 external,
                 ProjectStore.layer.pipe(Layer.provide(receivingDatabase)),
                 ProjectionStore.layer.pipe(Layer.provide(receivingDatabase)),
-                ApplicationEvents.OrchestrationEventStoreLive.pipe(
-                  Layer.provide(receivingDatabase),
-                ),
+                ApplicationEvents.layer.pipe(Layer.provide(receivingDatabase)),
               );
             })
           : Layer.empty;
@@ -1183,6 +1189,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         >[0][] = [];
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
+          Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
+          Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
+          Layer.mock(WsSecretRequests.SecretRequests)({}),
+          Layer.mock(WsServerBrowser.ServerBrowser)({}),
           WsTokenAccountingService.layer,
           Layer.mock(Threads.ThreadManagementService)({
             getThreadShell: () => Effect.succeed(null),
@@ -1455,7 +1465,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               ),
             ),
           );
-          const handler = yield* HttpRouter.toHttpEffect(websocketRpcRouteLayer);
+          const handler = yield* HttpRouter.toHttpEffect(WebSocketRpc.layer);
           const serving = yield* handler.pipe(
             Effect.provideService(WsHttpServerRequest.HttpServerRequest, request),
             Effect.scoped,

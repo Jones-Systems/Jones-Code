@@ -767,6 +767,17 @@ describe("orchestrator MCP toolkit", () => {
             const invoke = (name: string, args: Record<string, unknown>) =>
               invokeAs(invocation, name, args);
 
+            const deniedSettlement = yield* invoke("t3_thread_settle", {
+              clientRequestId: "wrong-credential",
+            });
+            expect(declaredFailure(deniedSettlement)).toMatchObject({
+              _tag: "OrchestratorMcpFailure",
+              code: "orchestration_error",
+              message: expect.stringContaining("thread.metadata.update"),
+            });
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).thread.selfSettlement,
+            ).toBeUndefined();
             const refusedSettle = yield* invoke("t3_thread_organize", { action: "settle" });
             expect(refusedSettle.isError).toBe(true);
             expect(refusedSettle.structuredContent).toBeUndefined();

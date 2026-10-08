@@ -4,9 +4,8 @@ import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
 import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
 import * as Schema from "effect/Schema";
-import { ChildProcessSpawner } from "effect/unstable/process";
 import { PullRequestCiStatusResult } from "@t3tools/contracts";
-import * as GitHubCli from "../../sourceControl/GitHubCli.ts";
+import * as GitHubApi from "../../sourceControl/GitHubApi.ts";
 import { readGitHubCiStatus } from "./GitHubCiStatus.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -21,12 +20,11 @@ const input = {
 };
 function output(value: unknown, stdoutTruncated = false) {
   return {
-    exitCode: ChildProcessSpawner.ExitCode(0),
-    stdout: encodeJson(value),
-    stderr: "",
-    stdoutTruncated,
-    stderrTruncated: false,
-    stdoutInvalidUtf8: false,
+    status: 200,
+    headers: {},
+    body: encodeJson(value),
+    truncated: stdoutTruncated,
+    invalidUtf8: false,
   };
 }
 const run = (id: number, status = "queued") => ({
@@ -51,18 +49,13 @@ const runner = (id: number) => ({
   busy: false,
   labels: [{ name: "self-hosted" }],
 });
-function cli(read: (endpoint: string) => unknown): Pick<GitHubCli.GitHubCli["Service"], "execute"> {
+function cli(read: (endpoint: string) => unknown): Pick<GitHubApi.GitHubApi["Service"], "rest"> {
   return {
-    execute: (request) => {
-      assert.deepEqual(request.args.slice(0, 5), [
-        "api",
-        "--method",
-        "GET",
-        "--hostname",
-        "github.com",
-      ]);
-      assert.equal(request.env, undefined);
-      return Effect.succeed(output(read(request.args[5]!)));
+    rest: (request) => {
+      assert.equal(request.host, "github.com");
+      assert.equal(request.method, "GET");
+      assert.equal(request.body, undefined);
+      return Effect.succeed(output(read(request.path)));
     },
   };
 }
@@ -180,17 +173,17 @@ it.effect("keeps runner permission errors independent and never returns error pa
     const secret = "fixture-credential-must-not-leak";
     const result = yield* readGitHubCiStatus(
       {
-        execute: (request) =>
-          request.args[5]!.includes("/runners")
+        rest: (request) =>
+          request.path.includes("/runners")
             ? Effect.fail(
-                new GitHubCli.GitHubCliCommandError({
-                  command: "gh",
-                  cwd: "/workspace",
-                  httpStatus: 403,
-                  cause: secret,
+                new GitHubApi.GitHubApiResponseError({
+                  host: "github.com",
+                  operation: "fixture",
+                  status: 403,
+                  githubErrors: [secret],
                 }),
               )
-            : Effect.succeed(output(empty(request.args[5]!))),
+            : Effect.succeed(output(empty(request.path))),
       },
       input,
     );
@@ -207,7 +200,7 @@ it.effect("treats malformed and truncated responses as unavailable", () =>
       output({ total_count: 0 }),
       output({ total_count: 0, workflow_runs: [], runners: [] }, true),
     ]) {
-      const result = yield* readGitHubCiStatus({ execute: () => Effect.succeed(response) }, input);
+      const result = yield* readGitHubCiStatus({ rest: () => Effect.succeed(response) }, input);
       assert.equal(result.jobs.state, "unavailable");
       assert.equal(result.runners.state, "unavailable");
     }
@@ -270,15 +263,14 @@ it.effect(
       const limits = yield* SourceControlRateLimit.make;
       let reads = 0;
       const now = yield* Clock.currentTimeMillis;
-      const failing: Pick<GitHubCli.GitHubCli["Service"], "execute"> = {
-        execute: () => {
+      const failing: Pick<GitHubApi.GitHubApi["Service"], "rest"> = {
+        rest: () => {
           reads++;
           return Effect.fail(
-            new GitHubCli.GitHubCliRateLimitError({
-              command: "gh",
-              cwd: "/workspace",
+            new GitHubApi.GitHubApiRateLimitError({
+              host: "github.com",
+              operation: "fixture",
               retryAt: now + 300_000,
-              cause: "fixture-secret",
             }),
           );
         },

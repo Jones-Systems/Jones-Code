@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The diagnostic retains raw nested exit reasons after interruption without acquiring another runtime.
 import { assert, it } from "@effect/vitest";
 import * as NodeConsole from "node:console";
 import * as Cause from "effect/Cause";

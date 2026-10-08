@@ -9,16 +9,16 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../../config.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import type { ProviderAdapterV2Shape } from "../../orchestration-v2/ProviderAdapter.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import {
   principal,
   threadId,
@@ -42,20 +42,20 @@ const adapter: ProviderAdapterV2Shape = {
   openSession: () =>
     Effect.die("Physical provider invocation is prohibited in imported planner fixture"),
 };
-const planner = makeOrchestratorV2ReplayLayerWithRegistry(
+const planner = ProviderReplayHarness.layerWithRegistry(
   { name: "jones-imported-planner", runtimePolicyOverride: { cwd: "/fixture" } },
-  ProviderAdapterRegistry.makeLayer([adapter]),
+  ProviderAdapterRegistry.layerFromAdapters([adapter]),
   {
-    databaseLayer: SqlitePersistenceMemory,
+    databaseLayer: SqlitePersistence.layerMemory,
     serverConfigLayer: ownedConfig,
     runEffectWorker: false,
   },
 );
 const receiving = Layer.mergeAll(
   ownedConfig,
-  SqlitePersistenceMemory,
+  SqlitePersistence.layerMemory,
   planner,
-  ProjectionStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+  ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect(

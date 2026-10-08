@@ -81,6 +81,7 @@ import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/source
 
 import { AllowGitHubReserve } from "../sourceControl/GitHubCli.ts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as PullRequestCiStatus from "../jones/pullRequestCi/PullRequestCiStatus.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -703,7 +704,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
-  const githubCi = yield* Effect.serviceOption(GitHubCli.GitHubCli);
+  const githubCi = yield* Effect.serviceOption(GitHubApi.GitHubApi);
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,

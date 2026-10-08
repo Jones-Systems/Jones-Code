@@ -19,12 +19,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../../project/ManagedProjectFolders.ts";
-import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
+import * as ProviderRegistryMock from "../../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -37,7 +37,7 @@ import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapter
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "../../orchestration-v2/ThreadTitleRegenerationService.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 
 const projectId = ProjectId.make("project:launch-test");
 const otherProjectId = ProjectId.make("project:launch-other");
@@ -89,9 +89,9 @@ interface HarnessOptions {
 }
 
 function makeHarness(options: HarnessOptions = {}) {
-  const database = SqlitePersistenceMemory;
-  const registry = ProviderAdapterRegistry.makeLayer([adapter]);
-  const orchestrator = makeOrchestratorV2ReplayLayerWithRegistry(
+  const database = SqlitePersistence.layerMemory;
+  const registry = ProviderAdapterRegistry.layerFromAdapters([adapter]);
+  const orchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-launch" },
     registry,
     { databaseLayer: database, runEffectWorker: false },
@@ -146,6 +146,7 @@ function makeHarness(options: HarnessOptions = {}) {
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
       createWorktree,
+      hasCommit: () => Effect.succeed(false),
       renameBranch,
       fetchRemote: options.fetchRemote ?? (() => Effect.void),
       listRefs:
@@ -175,7 +176,7 @@ function makeHarness(options: HarnessOptions = {}) {
       generateBranchName,
     }),
     ServerSettings.layerTest(options.serverSettings),
-    makeProviderRegistryLayer(options.providers),
+    ProviderRegistryMock.layer(options.providers),
     options.managedFolders ??
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
@@ -627,81 +628,97 @@ it.effect("keeps lookup failures visible without creating a worktree or starting
 
 it.effect(
   "an automatic-base retry reuses the recorded worktree without selecting another base",
-  () => {
-    let setupFailures = 1;
-    let lookups = 0;
-    const harness = makeHarness({
-      listRefs: () =>
-        Effect.sync(() => {
-          lookups += 1;
-          return {
-            refs: [worktreeBaseRef("main", { isDefault: true })],
-            isRepo: true,
-            hasPrimaryRemote: false,
-            nextCursor: null,
-            totalCount: 1,
-          };
-        }),
-      runSetup: () =>
-        setupFailures-- > 0
-          ? Effect.fail(new Error("setup failed") as never)
-          : Effect.succeed({ status: "no-script" as const }),
-    });
-    return Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-      const launched = yield* launches.launch(
-        launchInput({
-          command: "command:launch:reuse",
-          thread: "thread:launch:reuse",
-          message: "Reuse the worktree",
-          workspace: { type: "worktree" },
-        }),
-      );
-      yield* waitUntil(() =>
-        threads
-          .getThreadProjection(launched.threadId)
-          .pipe(
-            Effect.map(
-              (projection) =>
-                projection.runs[0]?.status === "failed" &&
-                projection.thread.branch === "generated-branch",
-            ),
-          ),
-      );
-      const failed = yield* threads.getThreadProjection(launched.threadId);
-      assert.equal(failed.thread.worktreePath, "/repo-worktrees/feature");
-
-      yield* launches.retryPreparation({
-        commandId: CommandId.make("command:launch:reuse:retry"),
-        threadId: launched.threadId,
-        runId: failed.runs[0]!.id,
+  () =>
+    Effect.gen(function* () {
+      const renamedWorkspaceRecorded = yield* Deferred.make<void>();
+      let setupFailures = 1;
+      let lookups = 0;
+      const harness = makeHarness({
+        listRefs: () =>
+          Effect.sync(() => {
+            lookups += 1;
+            return {
+              refs: [worktreeBaseRef("main", { isDefault: true })],
+              isRepo: true,
+              hasPrimaryRemote: false,
+              nextCursor: null,
+              totalCount: 1,
+            };
+          }),
+        runSetup: () =>
+          setupFailures-- > 0
+            ? Deferred.await(renamedWorkspaceRecorded).pipe(
+                Effect.andThen(Effect.fail(new Error("setup failed") as never)),
+              )
+            : Effect.succeed({ status: "no-script" as const }),
       });
-      yield* waitUntil(() =>
-        outbox
-          .listByCommandId(CommandId.make("command:launch:reuse:retry:release"))
-          .pipe(Effect.map((effects) => effects.length === 1)),
-      );
-      const retried = yield* threads.getThreadProjection(launched.threadId);
-      assert.equal(retried.runs[0]?.status, "starting");
-      // The retry neither checks out again nor puts back the temporary branch.
-      assert.equal(harness.createWorktree.mock.calls.length, 1);
-      assert.equal(harness.renameBranch.mock.calls.length, 1);
-      assert.equal(retried.thread.branch, "generated-branch");
-      assert.equal(retried.thread.worktreePath, "/repo-worktrees/feature");
-      // Clients see the retry's setup, not the failed one it replaced.
-      const snapshot = yield* tracker.get(launched.threadId);
-      assert.equal(snapshot?.phase, "done");
-      assert.isNull(snapshot?.baseRef);
-      assert.equal(lookups, 1);
-      assert.deepEqual(
-        snapshot?.stages.map((stage) => stage.id),
-        ["setup-script", "agent"],
-      );
-    }).pipe(Effect.provide(harness.layer));
-  },
+      return yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        yield* threads
+          .streamStoredEventsFrom({ threadId: ThreadId.make("thread:launch:reuse") })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "thread.metadata-updated" &&
+                stored.event.payload.branch === "generated-branch",
+            ),
+            Stream.runHead,
+            Effect.andThen(Deferred.succeed(renamedWorkspaceRecorded, undefined)),
+            Effect.forkChild,
+          );
+        const launched = yield* launches.launch(
+          launchInput({
+            command: "command:launch:reuse",
+            thread: "thread:launch:reuse",
+            message: "Reuse the worktree",
+            workspace: { type: "worktree" },
+          }),
+        );
+        yield* waitUntil(() =>
+          threads
+            .getThreadProjection(launched.threadId)
+            .pipe(
+              Effect.map(
+                (projection) =>
+                  projection.runs[0]?.status === "failed" &&
+                  projection.thread.branch === "generated-branch",
+              ),
+            ),
+        );
+        const failed = yield* threads.getThreadProjection(launched.threadId);
+        assert.equal(failed.thread.worktreePath, "/repo-worktrees/feature");
+
+        yield* launches.retryPreparation({
+          commandId: CommandId.make("command:launch:reuse:retry"),
+          threadId: launched.threadId,
+          runId: failed.runs[0]!.id,
+        });
+        yield* waitUntil(() =>
+          outbox
+            .listByCommandId(CommandId.make("command:launch:reuse:retry:release"))
+            .pipe(Effect.map((effects) => effects.length === 1)),
+        );
+        const retried = yield* threads.getThreadProjection(launched.threadId);
+        assert.equal(retried.runs[0]?.status, "starting");
+        // The retry neither checks out again nor puts back the temporary branch.
+        assert.equal(harness.createWorktree.mock.calls.length, 1);
+        assert.equal(harness.renameBranch.mock.calls.length, 1);
+        assert.equal(retried.thread.branch, "generated-branch");
+        assert.equal(retried.thread.worktreePath, "/repo-worktrees/feature");
+        // Clients see the retry's setup, not the failed one it replaced.
+        const snapshot = yield* tracker.get(launched.threadId);
+        assert.equal(snapshot?.phase, "done");
+        assert.isNull(snapshot?.baseRef);
+        assert.equal(lookups, 1);
+        assert.deepEqual(
+          snapshot?.stages.map((stage) => stage.id),
+          ["setup-script", "agent"],
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
 
 it.effect.each([

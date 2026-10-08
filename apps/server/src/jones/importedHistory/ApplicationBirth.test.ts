@@ -7,9 +7,9 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { readApplicationBirthRecord } from "./ApplicationBirth.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { receivingCreationLookupProgram } from "../../../../../scripts/jones/performance/migration-restore-worker.mjs";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
@@ -141,5 +141,5 @@ it.effect(
       if (Exit.isFailure(rejected))
         assert.match(Cause.pretty(rejected.cause), /receiving migration055 lookup index missing/);
       assert.deepStrictEqual(yield* snapshot, withoutIndex);
-    }).pipe(Effect.provide(SqlitePersistenceMemory.pipe(Layer.provide(NodeServices.layer)))),
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory.pipe(Layer.provide(NodeServices.layer)))),
 );

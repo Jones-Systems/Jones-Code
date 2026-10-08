@@ -13,20 +13,35 @@ const [Effect, Layer, FileSystem] = await Promise.all([
   load("FileSystem"),
 ]);
 const app = (file) => import(NodeURL.pathToFileURL(root + "/apps/server/src/" + file + ".ts"));
-const [Start, Projection, Run, Sessions, Policy, Id, Sink, Handoff, Git, Project, Auth] =
-  await Promise.all([
-    app("orchestration-v2/ProviderTurnStartService"),
-    app("orchestration-v2/ProjectionStore"),
-    app("orchestration-v2/RunExecutionService"),
-    app("orchestration-v2/ProviderSessionManager"),
-    app("orchestration-v2/RuntimePolicy"),
-    app("orchestration-v2/IdAllocator"),
-    app("orchestration-v2/EventSink"),
-    app("orchestration-v2/ContextHandoffService"),
-    app("git/GitWorkflowService"),
-    app("project/ProjectService"),
-    app("provider/ProviderAuthService"),
-  ]);
+const [
+  Start,
+  Projection,
+  Run,
+  Sessions,
+  Policy,
+  Id,
+  Sink,
+  Handoff,
+  Git,
+  Project,
+  Auth,
+  Settings,
+  Instances,
+] = await Promise.all([
+  app("orchestration-v2/ProviderTurnStartService"),
+  app("orchestration-v2/ProjectionStore"),
+  app("orchestration-v2/RunExecutionService"),
+  app("orchestration-v2/ProviderSessionManager"),
+  app("orchestration-v2/RuntimePolicy"),
+  app("orchestration-v2/IdAllocator"),
+  app("orchestration-v2/EventSink"),
+  app("orchestration-v2/ContextHandoffService"),
+  app("git/GitWorkflowService"),
+  app("project/ProjectService"),
+  app("provider/ProviderAuthService"),
+  app("serverSettings"),
+  app("provider/ProviderInstanceRegistry"),
+]);
 let current;
 let fullReads = 0;
 const liveRuns = [];
@@ -47,8 +62,10 @@ const dependencies = Layer.mergeAll(
   Id.layer,
   FileSystem.layerNoop({}),
   Layer.mock(Git.GitWorkflowService)({}),
-  Layer.mock(Project.ProjectService)({}),
+  Layer.mock(Project.ProjectService)({ getById: () => Effect.succeedNone }),
   Layer.mock(Auth.ProviderAuthService)({}),
+  Settings.layerTest(),
+  Layer.mock(Instances.ProviderInstanceRegistry)({ getInstance: () => Effect.succeed(undefined) }),
   Layer.mock(Projection.ProjectionStoreV2)({
     getThreadProjection: () =>
       Effect.sync(() => {
@@ -83,6 +100,8 @@ const dependencies = Layer.mergeAll(
       }),
   }),
   Layer.mock(Sink.EventSinkV2)({
+    assertImportedHistoryStartAllowed: () => Effect.void,
+    assertRuntimeStopStartAllowed: () => Effect.void,
     write: () => Effect.succeed([]),
     writeIfRunCurrent: ({ events }) =>
       Effect.sync(() => {

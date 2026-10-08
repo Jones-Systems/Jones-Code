@@ -15,6 +15,15 @@ import { AiError, McpProtocol, McpSchema, McpServer, Tool, type Toolkit } from "
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { OrchestratorMcpFailure, PreviewAutomationError } from "@t3tools/contracts";
 
+import { DecisionSnapshotCollectorLive } from "../jones/mcp/decisionSnapshot/collector.ts";
+import {
+  DecisionSnapshotNativeCountsLive,
+  DecisionSnapshotToolkitAccess,
+} from "../jones/mcp/decisionSnapshot/handlers.ts";
+import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
+import { OrganizationMetadataHandlersLive } from "../jones/mcp/organizationMetadata/handlers.ts";
+import { OrganizationMetadataToolkit } from "../jones/mcp/organizationMetadata/tools.ts";
+import * as OrganizationMetadata from "../jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
@@ -840,6 +849,19 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
+export const OrganizationMetadataRegistrationLive = toolkitRegistration(
+  OrganizationMetadataToolkit,
+  OrganizationMetadataHandlersLive,
+).pipe(Layer.provide(OrganizationMetadata.layer));
+
+const DecisionSnapshotToolkitRegistrationLive = toolkitRegistration(
+  DecisionSnapshotToolkit,
+  DecisionSnapshotToolkitAccess,
+).pipe(
+  Layer.provide(DecisionSnapshotNativeCountsLive),
+  Layer.provide(DecisionSnapshotCollectorLive),
+);
+
 export const layerMcpTransport = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -848,6 +870,8 @@ export const layerMcpTransport = McpServer.layerHttp({
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
 export const layer = Layer.mergeAll(
+  OrganizationMetadataRegistrationLive,
+  DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,

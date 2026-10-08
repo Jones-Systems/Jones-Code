@@ -16,7 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { NativeProviderEnrollmentBinding, type NativeProviderEnrollment } from "./enrollment.ts";
 import { sha256Bytes, type WorkstreamsNativeProvider } from "./service.ts";
 

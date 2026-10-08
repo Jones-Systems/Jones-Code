@@ -1,14 +1,14 @@
 import { EnvironmentHttpApi, EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as ByteSize from "effect/ByteSize";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
-import * as HttpEffect from "effect/unstable/http/HttpEffect";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpEffect from "effect/http/HttpEffect";
 import {
   HttpIncomingMessage,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import * as VoiceReview from "./bridge.ts";
 
 export const voiceReviewResponseHeadersLayer = HttpRouter.middleware(

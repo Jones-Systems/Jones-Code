@@ -26,7 +26,7 @@ export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E
             Layer.provide(
               VoiceReview.dependenciesLayerLive.pipe(
                 Layer.provide(
-                  Layer.merge(ProjectionStoreV2.layer, ServerEnvironment.identityLayer),
+                  Layer.merge(ProjectionStoreV2.layer, ServerEnvironment.layerIdentity),
                 ),
               ),
             ),

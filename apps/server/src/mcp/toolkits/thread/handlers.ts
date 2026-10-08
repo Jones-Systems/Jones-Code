@@ -15,6 +15,7 @@ import {
   dispatchFailure,
   newCommandId,
   readCaller,
+  readMessageWritableThread,
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
@@ -41,19 +42,32 @@ function queueEntry(
 const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
   threadId: ThreadId | undefined,
   command: (common: { commandId: CommandId; threadId: ThreadId }) => OrchestrationV2Command,
+  contentMutation = false,
 ) {
-  const { threads, projection } = yield* readThread(threadId);
+  const { threads, projection, caller } = yield* contentMutation
+    ? readMessageWritableThread(threadId)
+    : readThread(threadId);
+  const requested = command({ commandId: yield* newCommandId(), threadId: projection.thread.id });
   const result = yield* threads
-    .dispatch(command({ commandId: yield* newCommandId(), threadId: projection.thread.id }))
+    .dispatch(
+      requested.type === "queued-run.edit" && caller !== undefined
+        ? { ...requested, senderThreadId: caller.id }
+        : requested,
+    )
     .pipe(Effect.mapError(dispatchFailure));
   return { sequence: result.sequence };
 });
 
-const readQuestion = Effect.fn("mcp.readQuestion")(function* (input: {
-  threadId?: ThreadId | undefined;
-  requestId: RuntimeRequestId;
-}) {
-  const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
+const readQuestion = Effect.fn("mcp.readQuestion")(function* (
+  input: {
+    threadId?: ThreadId | undefined;
+    requestId: RuntimeRequestId;
+  },
+  writable = false,
+) {
+  const context = yield* writable
+    ? readMessageWritableThread(input.threadId, ["runtimeRequests", "turnItems"])
+    : readThread(input.threadId, ["runtimeRequests", "turnItems"]);
   const request = context.projection.runtimeRequests.find(
     (request) =>
       request.id === input.requestId &&
@@ -138,7 +152,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     (input) => [input.targetThreadId, input.sourceThreadId],
     (input) =>
       Effect.gen(function* () {
-        const context = yield* readThread(input.targetThreadId);
+        const context = yield* readMessageWritableThread(input.targetThreadId);
         const source = yield* readThread(input.sourceThreadId);
         const result = yield* context.threads
           .dispatch({
@@ -179,6 +193,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         modelSelection: thread.modelSelection,
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
+        threadMessagesBlocked: thread.threadMessagesBlocked ?? false,
       };
     }),
   ),
@@ -218,7 +233,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_pending_request_respond: writesThread((input) =>
     Effect.gen(function* () {
-      const { threads, projection } = yield* readQuestion(input);
+      const { threads, projection, caller } = yield* readQuestion(input, true);
       const result = yield* threads
         .dispatch({
           type: "runtime-request.respond",
@@ -226,6 +241,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           commandId: yield* newCommandId(),
           requestId: input.requestId,
           answers: input.answers,
+          ...(caller === undefined ? {} : { senderThreadId: caller.id }),
         })
         .pipe(Effect.mapError(dispatchFailure));
       return { sequence: result.sequence };
@@ -260,12 +276,16 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     }),
   ),
   t3_queue_edit: writesThread((input) =>
-    dispatch(input.threadId, (common) => ({
-      ...common,
-      type: "queued-run.edit",
-      runId: input.queuedRunId,
-      text: input.text,
-    })),
+    dispatch(
+      input.threadId,
+      (common) => ({
+        ...common,
+        type: "queued-run.edit",
+        runId: input.queuedRunId,
+        text: input.text,
+      }),
+      true,
+    ),
   ),
   t3_queue_cancel: writesThread((input) =>
     dispatch(input.threadId, (common) => ({

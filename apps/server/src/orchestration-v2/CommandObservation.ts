@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { EventSinkV2 } from "./EventSink.ts";
 import { legacyBootstrapBirth } from "./LegacyBootstrap.ts";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuery")(function* () {

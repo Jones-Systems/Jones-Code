@@ -96,3 +96,40 @@ it.effect("refuses thread-owned capabilities to a caller signed in from outside 
     expect(error.threadId).toBeUndefined();
   });
 });
+
+it.effect("requires an explicit focused decision snapshot grant", () => {
+  const invocation: McpInvocationContext.McpInvocationScope = {
+    environmentId: EnvironmentId.make("environment-snapshot"),
+    requestNamespace: "provider-session-snapshot",
+    thread: {
+      threadId: ThreadId.make("thread-snapshot"),
+      providerSessionId: "provider-session-snapshot",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    },
+    client: undefined,
+    capabilities: new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+    issuedAt: 1,
+  };
+  return Effect.gen(function* () {
+    const error = yield* McpInvocationContext.requireMcpCapability("decision-snapshot").pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.flip,
+    );
+    expect(error).toBeInstanceOf(McpCapabilityUnavailableError);
+    expect(error).toMatchObject({
+      capability: "decision-snapshot",
+      environmentId: invocation.environmentId,
+      threadId: invocation.thread?.threadId,
+      providerSessionId: invocation.thread?.providerSessionId,
+      providerInstanceId: invocation.thread?.providerInstanceId,
+    });
+    const granted: McpInvocationContext.McpInvocationScope = {
+      ...invocation,
+      capabilities: new Set(["decision-snapshot"]),
+    };
+    const scope = yield* McpInvocationContext.requireMcpCapability("decision-snapshot").pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, granted),
+    );
+    expect(scope).toBe(granted);
+  });
+});

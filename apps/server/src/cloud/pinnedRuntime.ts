@@ -497,7 +497,7 @@ const runtimeSha256 = (bytes: Uint8Array, step: string) =>
   Effect.tryPromise({
     try: () => crypto.subtle.digest("SHA-256", bytes),
     catch: (cause) => new PinnedRuntimeInstallError({ step, cause }),
-  }).pipe(Effect.map((digest) => Encoding.encodeHex(new Uint8Array(digest))));
+  }).pipe(Effect.map((digest) => Hex.encode(new Uint8Array(digest))));
 
 export const verifyPinnedRuntimeProvenance = Effect.fn(
   "cloud.pinned_runtime.verify_jones_provenance",

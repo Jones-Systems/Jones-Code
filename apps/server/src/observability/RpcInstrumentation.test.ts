@@ -334,3 +334,41 @@ describe("WS RPC instrumentation middleware", () => {
     ),
   );
 });
+
+it.effect("labels the Jones CI read with its pull request owner", () =>
+  withTelemetry((ended) =>
+    Effect.gen(function* () {
+      const group = groupOf(WS_METHODS.pullRequestsCiStatus);
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.pullRequestsCiStatus, () =>
+              Effect.succeed({
+                host: "github.com",
+                organization: "Jones-Systems",
+                accountId: "fixture-account",
+                observedAt: "2026-10-04T16:00:00Z",
+                repositories: [],
+                scopeTruncated: false,
+                jobs: { state: "available" as const, reasons: [], items: [] },
+                workflows: { state: "available" as const, reasons: [], items: [] },
+                runners: { state: "available" as const, reasons: [], items: [] },
+              }),
+            ),
+            readOnlyConnection,
+          ),
+        ),
+      );
+      yield* client[WS_METHODS.pullRequestsCiStatus]({
+        host: "github.com",
+        organization: "Jones-Systems",
+      });
+      const [span] = rpcSpans(ended);
+      assert.equal(span?.attributes.get("rpc.aggregate"), "pull-requests");
+      assert.equal(
+        requestCount(yield* Metric.snapshot, WS_METHODS.pullRequestsCiStatus, "success")?.count,
+        1,
+      );
+    }),
+  ),
+);

@@ -15,6 +15,7 @@ import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
@@ -127,6 +128,7 @@ export function makeReplayServerConfig(
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       stateDir,
+      authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
@@ -248,6 +250,7 @@ export function layerWithRegistry<Error>(
   scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
   registryLayer: Layer.Layer<ProviderAdapterRegistry.ProviderAdapterRegistryV2, Error>,
   options: {
+    readonly serverConfigLayer?: Layer.Layer<ServerConfig.ServerConfig>;
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
@@ -268,10 +271,12 @@ export function layerWithRegistry<Error>(
   | ProviderSessionManager.ProviderSessionManagerV2,
   Error | MigrationError | PlatformError.PlatformError | SqlError
 > {
-  const layerServerConfig = Layer.effect(
-    ServerConfig.ServerConfig,
-    makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
-  ).pipe(Layer.provide(NodeServices.layer));
+  const layerServerConfig =
+    options.serverConfigLayer ??
+    Layer.effect(
+      ServerConfig.ServerConfig,
+      makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
+    ).pipe(Layer.provide(NodeServices.layer));
   const layerRuntime =
     scenario.runtimePolicyOverride === undefined
       ? RuntimePolicy.layer
@@ -330,6 +335,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(IdAllocator.layer),
   );
   const layerPersistence = Layer.mergeAll(
+    layerDatabase,
     layerStores,
     layerEventSinkProvided,
     layerCommandReceiptStoreProvided,
@@ -375,6 +381,10 @@ export function layerWithRegistry<Error>(
         layerProviderSessionManagerProvided,
         Layer.mock(ProviderAuthService.ProviderAuthService)({
           tryHandlePromptCommand: () => Effect.succeed(false),
+        }),
+        layerServerSettings,
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: () => Effect.succeed(undefined),
         }),
         layerRunExecutionServiceProvided,
         layerRuntime,

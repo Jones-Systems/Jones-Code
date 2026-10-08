@@ -1,4 +1,5 @@
 import {
+  ORCHESTRATION_V2_WS_METHODS,
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
@@ -31,6 +32,29 @@ import {
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("separates physical stop target observation from runtime mutation", () => {
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop),
+    ).toBe(AuthOrchestrationReadScope);
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget),
+    ).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+  it("reads CI status under exactly orchestration read permission", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.pullRequestsCiStatus)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
+  it("reads saved accounting under diagnostics read permission", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverReadTokenAccounting)).toBe(
+      AuthDiagnosticsReadScope,
+    );
+  });
+
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
@@ -400,5 +424,111 @@ it.effect("separates host file URLs from readable attachment URLs", () =>
       });
     }
     expect(handled).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+describe("CI status RPC authorization", () => {
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (
+        tag,
+      ): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof WS_METHODS.pullRequestsCiStatus> =>
+        tag !== WS_METHODS.pullRequestsCiStatus,
+    ),
+  );
+
+  it.effect("dispatches CI reads only with the declared read scope", () =>
+    Effect.gen(function* () {
+      const result = {
+        host: "github.com",
+        organization: "Jones-Systems",
+        accountId: "fixture-account",
+        observedAt: "2026-10-04T16:00:00Z",
+        repositories: [],
+        scopeTruncated: false,
+        jobs: { state: "available" as const, reasons: [], items: [] },
+        workflows: { state: "available" as const, reasons: [], items: [] },
+        runners: { state: "available" as const, reasons: [], items: [] },
+      };
+      for (const scopes of [
+        [],
+        [AuthOrchestrationOperateScope],
+        [AuthOrchestrationReadScope],
+      ] as const) {
+        let dispatched = 0;
+        const client = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.pullRequestsCiStatus, () =>
+                Effect.sync(() => {
+                  dispatched++;
+                  return result;
+                }),
+              ),
+              RpcAuthorization.layer(scopes),
+            ),
+          ),
+        );
+        const read = client[WS_METHODS.pullRequestsCiStatus]({
+          host: "github.com",
+          organization: "Jones-Systems",
+        });
+        if (scopes[0] === AuthOrchestrationReadScope) {
+          expect(yield* read).toEqual(result);
+          expect(dispatched).toBe(1);
+        } else {
+          expect(yield* read.pipe(Effect.flip)).toMatchObject({
+            _tag: "EnvironmentAuthorizationError",
+            requiredScope: AuthOrchestrationReadScope,
+          });
+          expect(dispatched).toBe(0);
+        }
+      }
+    }).pipe(Effect.scoped),
+  );
+});
+
+it.effect("rejects captured runtime target reads before invoking their owner", () =>
+  Effect.gen(function* () {
+    const methods = [
+      ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
+      ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
+      ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget,
+    ] as const;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof methods)[number]> =>
+          !(methods as readonly string[]).includes(tag),
+      ),
+    );
+    let invoked = false;
+    const unavailableOwner = () =>
+      Effect.sync(() => {
+        invoked = true;
+      }).pipe(Effect.andThen(Effect.never));
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          group.toLayerHandler(
+            ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
+            unavailableOwner,
+          ),
+          group.toLayerHandler(
+            ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
+            unavailableOwner,
+          ),
+          group.toLayerHandler(
+            ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget,
+            unavailableOwner,
+          ),
+          RpcAuthorization.layer([]),
+        ),
+      ),
+    );
+    const target = yield* client[ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]({
+      threadId: ThreadId.make("fixture-thread"),
+    }).pipe(Effect.flip);
+    expect(target).toMatchObject({ requiredScope: AuthOrchestrationReadScope });
+    expect(invoked).toBe(false);
   }).pipe(Effect.scoped),
 );

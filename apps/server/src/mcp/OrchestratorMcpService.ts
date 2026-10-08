@@ -36,6 +36,8 @@ import {
   type OrchestratorMcpListScheduledTasksInput,
   type ProjectId,
   type OrchestratorMcpThreadDetail,
+  type OrchestratorMcpThreadSettleInput,
+  type OrchestratorMcpThreadSettleResult,
   type OrchestratorMcpThreadInterruptInput,
   type OrchestratorMcpThreadInterruptResult,
   type OrchestratorMcpThreadListInput,
@@ -123,6 +125,10 @@ type TerminalTaskStatus = Extract<
 >;
 
 export interface OrchestratorMcpServiceShape {
+  readonly settleThread: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpThreadSettleInput,
+  ) => Effect.Effect<OrchestratorMcpThreadSettleResult, OrchestratorMcpFailure>;
   readonly capabilities: (
     scope: McpInvocationScope,
   ) => Effect.Effect<OrchestratorMcpCapabilitiesResult, OrchestratorMcpFailure>;
@@ -659,6 +665,7 @@ function listItemFromShell(
     model: shell.modelSelection.model,
     runtimeMode: shell.runtimeMode,
     interactionMode: shell.interactionMode,
+    threadMessagesBlocked: shell.threadMessagesBlocked ?? false,
     linkedPullRequest: shell.linkedPullRequest ?? null,
     ...threadSettlement(shell),
     ...threadSnooze(shell, context.nowMs),
@@ -696,6 +703,7 @@ function threadDetail(
     model: projection.thread.modelSelection.model,
     runtimeMode: projection.thread.runtimeMode,
     interactionMode: projection.thread.interactionMode,
+    threadMessagesBlocked: projection.thread.threadMessagesBlocked ?? false,
     linkedPullRequest: projection.thread.linkedPullRequest ?? null,
     titleRegeneration:
       projection.thread.titleRegeneration === undefined ||
@@ -1504,6 +1512,29 @@ const make = Effect.gen(function* () {
     });
 
   return OrchestratorMcpService.of({
+    settleThread: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const threadScope = yield* requireThreadScope(scope, "t3_thread_settle");
+        const intent = yield* threadManagement
+          .requestSelfSettlement({
+            threadId: threadScope.thread.threadId,
+            mcpCredentialId: threadScope.thread.providerSessionId,
+            providerInstanceId: threadScope.thread.providerInstanceId,
+            commandId: stableCommandId({
+              scope,
+              requestKey: input.clientRequestId,
+              operation: `self-settle:${threadScope.thread.threadId}`,
+            }),
+          })
+          .pipe(Effect.mapError(threadManagementFailure));
+        return {
+          status: "accepted",
+          threadId: threadScope.thread.threadId,
+          runId: intent.runId,
+          clientRequestId: input.clientRequestId,
+        };
+      }),
     scheduleTask: (scope, input) =>
       Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
@@ -2293,8 +2324,23 @@ const make = Effect.gen(function* () {
         return {
           projectId,
           currentThreadId: parent?.thread.id ?? null,
-          threads: page.map((shell) =>
-            listItemFromShell(shell, { environmentId: scope.environmentId, nowMs }),
+          threads: yield* Effect.forEach(
+            page,
+            (shell) =>
+              Effect.gen(function* () {
+                const item = listItemFromShell(shell, {
+                  environmentId: scope.environmentId,
+                  nowMs,
+                });
+                if (
+                  !Object.hasOwn(threadManagement, "observeThreadActivity") ||
+                  threadManagement.observeThreadActivity === undefined
+                )
+                  return item;
+                const activityObservation = yield* threadManagement.observeThreadActivity(shell.id);
+                return { ...item, activityObservation };
+              }),
+            { concurrency: 1 },
           ),
           nextCursor,
           total: filtered.length,

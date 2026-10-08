@@ -218,7 +218,7 @@ it.effect(
             calls.push({ input, binding: options?.legacyOwnedControl });
           }),
       });
-      const cleanup = ResourceCleanupService.live.pipe(
+      const cleanup = ResourceCleanupService.layer.pipe(
         Layer.provideMerge(
           Layer.mergeAll(
             terminals,
@@ -227,7 +227,7 @@ it.effect(
         ),
       );
       const events = yield* Ref.make<ReadonlyArray<string>>([]);
-      const layer = makeExecutorLayer({ events }).pipe(Layer.provide(cleanup));
+      const layer = layerExecutorFor({ events }).pipe(Layer.provide(cleanup));
       const now = yield* DateTime.now;
       const template = restartEffect(now, { type: "detach" });
       yield* Effect.gen(function* () {
@@ -249,7 +249,7 @@ it.effect(
 it.effect("bound legacy terminal cleanup refuses a default no-op owner", () =>
   Effect.gen(function* () {
     const events = yield* Ref.make<ReadonlyArray<string>>([]);
-    const layer = makeExecutorLayer({ events });
+    const layer = layerExecutorFor({ events });
     const template = restartEffect(yield* DateTime.now, { type: "detach" });
     yield* Effect.gen(function* () {
       const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;

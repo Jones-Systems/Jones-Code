@@ -3,8 +3,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Command, Flag } from "effect/unstable/cli";
-import { FetchHttpClient } from "effect/unstable/http";
+import { Command, Flag } from "effect/cli";
+import { FetchHttpClient } from "effect/http";
 
 import * as ProcessRunner from "../../processRunner.ts";
 import * as HostService from "./HostService.ts";

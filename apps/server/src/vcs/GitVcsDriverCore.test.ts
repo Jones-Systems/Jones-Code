@@ -143,7 +143,7 @@ describe("resolveRemoteTrackingCommitIfExists", () => {
           ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/release/stable^{commit}"],
         ]);
       }),
-    ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+    ).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
   );
 });
 
@@ -2953,7 +2953,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         );
         const driver = yield* makeGitVcsDriverCore().pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.provide(ServerConfigLayer),
+          Effect.provide(layerServerConfig),
         );
         return {
           cwd,

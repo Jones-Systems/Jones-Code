@@ -201,8 +201,9 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
 export const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
-  const context = yield* readWritableThread(threadId, fields);
+  const context = yield* readThread(threadId, fields);
   if (
+    context.caller !== undefined &&
     context.caller.id !== context.projection.thread.id &&
     context.projection.thread.threadMessagesBlocked === true
   ) {

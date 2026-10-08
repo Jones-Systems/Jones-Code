@@ -5,6 +5,8 @@ import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { HttpServer } from "effect/http";
@@ -15,6 +17,11 @@ import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "./config.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as Keybindings from "./keybindings.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
+import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -67,6 +74,7 @@ it.effect("parks automatic pull until activation without delaying command readin
         requeuedEffects: 0,
       };
       const importSummary = { importedThreadCount: 0, importedMessageCount: 0 };
+      const sql = yield* SqlClient.SqlClient;
       const dependencies: Layer.Layer<
         Layer.Services<ReturnType<typeof ServerRuntimeStartup.layerWithOptions>>
       > = Layer.mergeAll(
@@ -103,6 +111,12 @@ it.effect("parks automatic pull until activation without delaying command readin
           startupPresentation: "browser",
           autoBootstrapProjectFromCwd: false,
         }),
+        Layer.succeed(SqlClient.SqlClient, sql),
+        FileSystem.layerNoop({}),
+        Layer.succeed(HostProcessEnvironment, {}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({}),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({}),
         Layer.mock(Keybindings.Keybindings)({ start: Effect.void }),
         Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
           pendingThreadCount: Effect.succeed(0),
@@ -150,6 +164,7 @@ it.effect("parks automatic pull until activation without delaying command readin
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(ServiceLauncherClient.ServiceLauncherClient)({
           managed: true,
+          requiresQualifiedTrialGate: false,
           prepareTrial: Deferred.succeed(prepared, undefined).pipe(
             Effect.andThen(Deferred.await(commitTrial)),
             Effect.as(undefined),
@@ -174,7 +189,9 @@ it.effect("parks automatic pull until activation without delaying command readin
 
       yield* Effect.gen(function* () {
         const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-        yield* startup.markHttpListening;
+        yield* startup.markHttpListening(
+          NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
+        );
 
         // A reverted, awaited pull reaches statusDetails instead of prepareTrial.
         // Race the two receipts so that regression fails without a timeout.
@@ -199,5 +216,5 @@ it.effect("parks automatic pull until activation without delaying command readin
       );
       expect(yield* Deferred.isDone(statusInterrupted)).toBe(true);
     }),
-  ),
+  ).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );

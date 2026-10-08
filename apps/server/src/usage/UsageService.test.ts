@@ -180,7 +180,7 @@ describe("UsageService", () => {
       );
       const service = yield* UsageService.make.pipe(
         Effect.provide(
-          serviceLayers({ prefix: "usage-service-exact-daily-window", home, settings }),
+          layerService({ prefix: "usage-service-exact-daily-window", home, settings }),
         ),
       );
       const summary = yield* service.readSummary({
@@ -208,7 +208,7 @@ describe("UsageService", () => {
       const { home, settings } = yield* setup;
       const service = yield* UsageService.make.pipe(
         Effect.provide(
-          serviceLayers({ prefix: "usage-service-invalid-exact-window", home, settings }),
+          layerService({ prefix: "usage-service-invalid-exact-window", home, settings }),
         ),
       );
       const reason = yield* service

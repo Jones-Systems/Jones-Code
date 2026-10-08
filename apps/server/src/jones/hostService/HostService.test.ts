@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous fixture provenance hashes must match the staged executable bytes.
 import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
 import {
@@ -16,8 +17,8 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 import { afterEach, vi } from "vite-plus/test";
 
 import packageJson from "../../../package.json" with { type: "json" };

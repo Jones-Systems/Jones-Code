@@ -73,6 +73,14 @@ function metadataCommand(input: {
   readonly update: ThreadMetadataMcpUpdateInput;
 }): Extract<OrchestrationV2Command, { readonly type: "thread.metadata.update" }> {
   switch (input.update.action) {
+    case "block_thread_messages":
+    case "allow_thread_messages":
+      return {
+        type: "thread.metadata.update",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        threadMessagesBlocked: input.update.action === "block_thread_messages",
+      };
     case "rename":
       return {
         type: "thread.metadata.update",
@@ -119,6 +127,7 @@ function resultFromThread(input: {
     commandId: input.commandId,
     sequence: input.sequence,
     title: input.thread.title,
+    threadMessagesBlocked: input.thread.threadMessagesBlocked ?? false,
     titleRegeneration:
       input.thread.titleRegeneration === undefined || input.thread.titleRegeneration === null
         ? null
@@ -169,6 +178,12 @@ const make = Effect.gen(function* () {
     const target = yield* threadManagement
       .getProjectThreadRecords({ projectId: shell.projectId, threadId }, [])
       .pipe(Effect.mapError(threadLookupFailure));
+    if (input.action === "allow_thread_messages" && threadId !== scope.thread?.threadId) {
+      return yield* failure(
+        "capability_denied",
+        "Only the calling thread can allow incoming thread messages for itself.",
+      );
+    }
     const requestKey =
       input.clientRequestId === undefined
         ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)

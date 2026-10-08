@@ -813,5 +813,5 @@ it.effect(
       expect(NodeFS.existsSync(NodePath.join(config.attachmentsDir, `${pendingId}.png`))).toBe(
         true,
       );
-    }).pipe(Effect.provide(intakeTestLayer)),
+    }).pipe(Effect.provide(layerIntakeTest)),
 );

@@ -4,10 +4,10 @@ import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as ServerSettings from "../../serverSettings.ts";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/unstable/process";
 import type { OrchestrationProjectShell, ProjectId } from "@t3tools/contracts";
-import * as GitHubCli from "../../sourceControl/GitHubCli.ts";
+import * as GitHubApi from "../../sourceControl/GitHubApi.ts";
 import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
 import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -73,7 +73,7 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>) {
                 viewer: "test-user",
                 credentialFingerprint: credential,
               }).pipe(
-                Effect.provideService(GitHubCli.PinnedGitHubCredential, {
+                Effect.provideService(GitHubApi.PinnedGitHubCredential, {
                   host: request.host,
                   token: Redacted.make("fixture-secret"),
                   credentialFingerprint: credential,
@@ -99,22 +99,22 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>) {
           Layer.mock(PullRequestFilesViewed.PullRequestFilesViewedRepository)({}),
           Layer.mock(PullRequestReadCache.PullRequestReadCache)({}),
           SourceControlRateLimit.layer,
-          Layer.mock(GitHubCli.GitHubCli)({
-            execute: (request) =>
+          ServerSettings.layerTest(),
+          Layer.mock(GitHubApi.GitHubApi)({
+            rest: (request) =>
               Effect.gen(function* () {
-                const pinned = yield* GitHubCli.PinnedGitHubCredential;
-                const endpoint = request.args[5]!;
+                const pinned = yield* GitHubApi.PinnedGitHubCredential;
+                const endpoint = request.path;
                 calls.push({ endpoint, credential: pinned?.credentialFingerprint });
                 const value = endpoint.includes("/runners")
                   ? { total_count: 0, runners: [] }
                   : { total_count: 0, workflow_runs: [] };
                 return {
-                  exitCode: ChildProcessSpawner.ExitCode(0),
-                  stdout: encodeJson(value),
-                  stderr: "",
-                  stdoutTruncated: false,
-                  stderrTruncated: false,
-                  stdoutInvalidUtf8: false,
+                  status: 200,
+                  headers: {},
+                  body: encodeJson(value),
+                  truncated: false,
+                  invalidUtf8: false,
                 };
               }),
           }),

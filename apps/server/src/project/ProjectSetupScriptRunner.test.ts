@@ -74,6 +74,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
     deletedAt: null,
   };
   const layer = ProjectSetupScriptRunner.layer.pipe(
+    Layer.provide(NodeCrypto.layer),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectService.ProjectService)({
@@ -366,6 +367,7 @@ it.effect(
       }),
     ).pipe(Layer.provide(ServerSettings.layerTest()));
     const layer = ProjectSetupScriptRunner.layer.pipe(
+      Layer.provide(NodeCrypto.layer),
       Layer.provide(
         Layer.mergeAll(
           terminal,
@@ -467,6 +469,7 @@ it.effect(
       | Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]
       | undefined;
     const layer = ProjectSetupScriptRunner.layer.pipe(
+      Layer.provide(NodeCrypto.layer),
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectService.ProjectService)({}),
@@ -516,7 +519,7 @@ it.effect(
                   type: "output",
                   threadId: input.threadId,
                   terminalId: input.terminalId,
-                  data: `__T3_SETUP_DONE___${token}:0\r\n`,
+                  data: `__T3_SETUP_DONE___${token}:0\r\nfixture> `,
                 });
               }).pipe(
                 Effect.mapError(

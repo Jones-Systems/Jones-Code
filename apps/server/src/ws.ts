@@ -1,3 +1,12 @@
+import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
+import {
+  NativeBootstrapDispatchError,
+  NativeCreationRejectionCode,
+  EnvironmentAuthenticatedPrincipal,
+  CurrentRuntimeStopRequestError,
+} from "@t3tools/contracts";
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import { QueueDispatchCommand } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -155,6 +164,7 @@ import {
 } from "./orchestration-v2/threadHistoryPaging.ts";
 import {
   projectDomainEventForWire,
+  isPublicStoredOrchestrationEvent,
   projectThreadProjectionForWire,
 } from "./orchestration-v2/WireProjection.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -219,6 +229,7 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
@@ -773,6 +784,7 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           afterSequence,
         })
         .pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.map((stored) => ({
             kind: "event" as const,
             sequence: stored.sequence,
@@ -795,9 +807,11 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           threadId: input.threadId,
           afterSequence,
           throughSequence,
+          publicOnly: true,
           limit: THREAD_RESUME_MAX_REPLAY_EVENTS + 1,
         })
         .pipe(
+          Stream.filter(isPublicStoredOrchestrationEvent),
           Stream.map((stored) => ({
             kind: "event" as const,
             sequence: stored.sequence,
@@ -1189,6 +1203,19 @@ const layerWsRpc = (
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const currentRuntimeStop = yield* Effect.serviceOption(RuntimeStop.CurrentRuntimeStop);
+      const withCurrentRuntimeStop = <A, E, R>(
+        action: (owner: RuntimeStop.CurrentRuntimeStop["Service"]) => Effect.Effect<A, E, R>,
+      ): Effect.Effect<A, E | CurrentRuntimeStopRequestError, R> =>
+        Option.isNone(currentRuntimeStop)
+          ? Effect.fail(
+              new CurrentRuntimeStopRequestError({ reason: "captured_runtime_stop_unavailable" }),
+            )
+          : action(currentRuntimeStop.value);
+      const runtimeStopPrincipal = EnvironmentAuthenticatedPrincipal.of({
+        ...currentSession,
+        scopes: new Set(currentSession.scopes),
+      });
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -1219,6 +1246,7 @@ const layerWsRpc = (
         }
       };
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
+      const queueCompatibility = yield* QueueCompatibility.QueueCompatibility;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
@@ -1244,6 +1272,7 @@ const layerWsRpc = (
               Effect.orElseSucceed(() => null),
             );
       const usage = yield* UsageService.UsageService;
+      const tokenAccounting = yield* TokenAccountingService.TokenAccountingService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
@@ -1684,6 +1713,9 @@ const layerWsRpc = (
             yield* serverSettings.getSettings,
           );
           const environment = yield* serverEnvironment.getDescriptor;
+          const capabilities = { ...environment.capabilities };
+          delete capabilities.savedTokenAccounting;
+          if (yield* tokenAccounting.isAvailable) capabilities.savedTokenAccounting = true;
           const auth = yield* serverAuth.getDescriptor();
           const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
           const editorConfig = yield* resolveEditorConfig(
@@ -1692,7 +1724,7 @@ const layerWsRpc = (
           );
 
           return {
-            environment,
+            environment: { ...environment, capabilities },
             auth,
             cwd: config.cwd,
             keybindingsConfigPath: config.keybindingsConfigPath,
@@ -1808,55 +1840,145 @@ const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
-        [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
-          Effect.annotateCurrentSpan({
-            "orchestration_v2.command_id": command.commandId,
-            "orchestration_v2.command_type": command.type,
-            "orchestration_v2.thread_id":
-              command.type === "thread.fork" || command.type === "thread.merge_back"
-                ? command.targetThreadId
-                : command.type === "delegated_task.request" ||
-                    command.type === "delegated_task.wake-policy" ||
-                    command.type === "delegated_task.completion-delivery.acknowledge" ||
-                    command.type === "delegated_task.completion-delivery.dispose" ||
-                    command.type === "thread.created.record"
-                  ? command.parentThreadId
-                  : command.threadId,
-            ...(command.type === "thread.fork" || command.type === "thread.merge_back"
-              ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
-              : {}),
-          }).pipe(
-            Effect.andThen(
-              startup
-                .enqueueCommand(
-                  // A retry also restarts the preparation work the launch owns.
-                  (command.type === "prepared-run.retry"
-                    ? threadLaunch.retryPreparation(command)
-                    : ThreadMessageIntake.dispatchCommand(
-                        ThreadManagementService.withCreationProvenance(command, {
-                          createdBy: "user",
-                          creationSource:
-                            "creationSource" in command ? command.creationSource : "web",
-                        }),
-                      )
-                  ).pipe(Effect.provide(intakeContext)),
-                )
-                .pipe(
-                  Effect.tap(() => recordClientCommandAnalytics(command)),
-                  Effect.map((result) => ({ sequence: result.sequence })),
-                  Effect.mapError((cause) => {
-                    const detail = userFacingDispatchErrorMessage(cause);
-                    return new OrchestrationV2DispatchCommandError({
-                      commandId: command.commandId,
-                      commandType: command.type,
-                      message: detail ?? "Failed to dispatch orchestration V2 command",
-                      ...(detail === undefined ? {} : { detail }),
-                      cause,
-                    });
+        [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: (input) =>
+          startup
+            .enqueueCommand(
+              withCurrentRuntimeStop((owner) => owner.stop(input)).pipe(
+                Effect.provideService(EnvironmentAuthenticatedPrincipal, runtimeStopPrincipal),
+              ),
+            )
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new CurrentRuntimeStopRequestError({
+                    reason: "captured_runtime_stop_rejected",
                   }),
-                ),
+              ),
+            ),
+        [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: (input) =>
+          withCurrentRuntimeStop((owner) => owner.observe(input)).pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, runtimeStopPrincipal),
+            Effect.mapError(
+              (error) => new CurrentRuntimeStopRequestError({ reason: error.reason }),
             ),
           ),
+        [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: (input) =>
+          withCurrentRuntimeStop((owner) => owner.readTarget(input.threadId)).pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, runtimeStopPrincipal),
+            Effect.mapError(
+              (error) => new CurrentRuntimeStopRequestError({ reason: error.reason }),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: (submission) =>
+          Effect.annotateCurrentSpan({ "rpc.aggregate": "orchestrationV2" }).pipe(
+            Effect.andThen(
+              threadLaunch.dispatchNativeBootstrap === undefined
+                ? Effect.fail(
+                    new NativeBootstrapDispatchError({
+                      code: "unsupported_authority",
+                      message: "Native bootstrap is unavailable",
+                    }),
+                  )
+                : startup
+                    .enqueueCommand(
+                      threadLaunch.dispatchNativeBootstrap(submission).pipe(
+                        Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+                          ...currentSession,
+                          scopes: new Set(currentSession.scopes),
+                        }),
+                      ),
+                    )
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new NativeBootstrapDispatchError({
+                            code:
+                              "code" in cause &&
+                              typeof cause.code === "string" &&
+                              Schema.is(NativeCreationRejectionCode)(cause.code)
+                                ? cause.code
+                                : "unresolved_claim",
+                            message: "Native bootstrap was rejected; observe the original claim",
+                          }),
+                      ),
+                    ),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
+          Schema.is(QueueDispatchCommand)(command)
+            ? Effect.annotateCurrentSpan({
+                "rpc.aggregate": "orchestration",
+                "orchestration.command_id": command.commandId,
+              }).pipe(
+                Effect.andThen(
+                  startup
+                    .enqueueCommand(queueCompatibility.dispatch(command, "legacy_websocket"))
+                    .pipe(
+                      Effect.mapError((error) => {
+                        const cause = error.cause;
+                        return Schema.is(OrchestrationDispatchCommandError)(cause)
+                          ? cause
+                          : new OrchestrationDispatchCommandError({
+                              message:
+                                Schema.is(QueueCompatibility.QueueCompatibilityError)(error) &&
+                                error.reason === "dispatch_guard_rejected"
+                                  ? "Dispatch guard rejected."
+                                  : "Failed to dispatch orchestration command.",
+                              cause,
+                            });
+                      }),
+                    ),
+                ),
+              )
+            : Effect.annotateCurrentSpan({
+                "rpc.aggregate": "orchestrationV2",
+                "orchestration_v2.command_id": command.commandId,
+                "orchestration_v2.command_type": command.type,
+                "orchestration_v2.thread_id":
+                  command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? command.targetThreadId
+                    : command.type === "delegated_task.request" ||
+                        command.type === "delegated_task.wake-policy" ||
+                        command.type === "delegated_task.completion-delivery.acknowledge" ||
+                        command.type === "delegated_task.completion-delivery.dispose" ||
+                        command.type === "thread.created.record"
+                      ? command.parentThreadId
+                      : command.threadId,
+                ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                  ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                  : {}),
+              }).pipe(
+                Effect.andThen(
+                  startup
+                    .enqueueCommand(
+                      // A retry also restarts the preparation work the launch owns.
+                      (command.type === "prepared-run.retry"
+                        ? threadLaunch.retryPreparation(command)
+                        : ThreadMessageIntake.dispatchCommand(
+                            ThreadManagementService.withCreationProvenance(command, {
+                              createdBy: "user",
+                              creationSource:
+                                "creationSource" in command ? command.creationSource : "web",
+                            }),
+                          )
+                      ).pipe(Effect.provide(intakeContext)),
+                    )
+                    .pipe(
+                      Effect.tap(() => recordClientCommandAnalytics(command)),
+                      Effect.map((result) => ({ sequence: result.sequence })),
+                      Effect.mapError((cause) => {
+                        const detail = userFacingDispatchErrorMessage(cause);
+                        return new OrchestrationV2DispatchCommandError({
+                          commandId: command.commandId,
+                          commandType: command.type,
+                          message: detail ?? "Failed to dispatch orchestration V2 command",
+                          ...(detail === undefined ? {} : { detail }),
+                          cause,
+                        });
+                      }),
+                    ),
+                ),
+              ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           readWorkflowScript({ scriptPath: input.scriptPath }),
         [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
@@ -1912,13 +2034,12 @@ const layerWsRpc = (
                   rowLimit: THREAD_HISTORY_SNAPSHOT_ROW_LIMIT,
                 })
                 .pipe(
-                  Effect.map((snapshot) =>
-                    projectThreadProjectionForWire(
+                  Effect.map(
+                    (snapshot) =>
                       buildBoundedThreadProjection({
-                        projection: snapshot.projection,
+                        projection: projectThreadProjectionForWire(snapshot.projection),
                         snapshotSequence: snapshot.snapshotSequence,
                       }).projection,
-                    ),
                   ),
                   Effect.mapError(
                     (cause) =>
@@ -2397,11 +2518,29 @@ const layerWsRpc = (
         [WS_METHODS.serverGetProcessResourceHistory]: (input) =>
           processResourceMonitor.readHistory(input),
         [WS_METHODS.serverGetResourceTelemetryHistory]: (input) =>
-          resourceTelemetry.readHistory(input),
-        [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
-        [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
-        [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,
-        [WS_METHODS.serverSignalProcess]: (input) => processDiagnostics.signal(input),
+          Effect.annotateCurrentSpan({
+            "rpc.aggregate": "server",
+          }).pipe(Effect.andThen(resourceTelemetry.readHistory(input))),
+        [WS_METHODS.serverGetUsageSummary]: (input) =>
+          Effect.annotateCurrentSpan({
+            "rpc.aggregate": "server",
+          }).pipe(Effect.andThen(usage.readSummary(input))),
+        [WS_METHODS.serverReadTokenAccounting]: (_input) =>
+          Effect.annotateCurrentSpan({
+            "rpc.aggregate": "server",
+          }).pipe(Effect.andThen(tokenAccounting.read)),
+        [WS_METHODS.serverRefreshUsageRates]: (_input) =>
+          Effect.annotateCurrentSpan({
+            "rpc.aggregate": "server",
+          }).pipe(Effect.andThen(usage.refreshRates)),
+        [WS_METHODS.serverRetryResourceTelemetry]: (_input) =>
+          Effect.annotateCurrentSpan({
+            "rpc.aggregate": "server",
+          }).pipe(Effect.andThen(resourceTelemetry.retry)),
+        [WS_METHODS.serverSignalProcess]: (input) =>
+          Effect.annotateCurrentSpan({
+            "rpc.aggregate": "server",
+          }).pipe(Effect.andThen(processDiagnostics.signal(input))),
         [WS_METHODS.serverReportClientActivity]: (input, metadata) =>
           Ref.update(rpcClientIds, (clientIds) => {
             const next = new Set(clientIds);
@@ -2445,6 +2584,7 @@ const layerWsRpc = (
                 Effect.forkScoped,
               ),
           ),
+        [WS_METHODS.pullRequestsCiStatus]: (input) => pullRequests.ciStatus(input),
         [WS_METHODS.pullRequestsList]: (input) => pullRequests.list(input),
         [WS_METHODS.pullRequestsListStats]: (input) => pullRequests.listStats(input),
         [WS_METHODS.pullRequestsRoutingIdentity]: (input) => pullRequests.routingIdentity(input),
@@ -3171,6 +3311,7 @@ export const layer = Layer.unwrap(
               previewAutomationBroker,
               serverBrowser,
             ).pipe(
+              Layer.provide(QueueCompatibility.layer),
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees
               // their defects, not the rest of the server's.

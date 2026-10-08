@@ -1,3 +1,12 @@
+import * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import {
+  type LegacyGuardRejectionDeleteCommand,
+  type LegacyFailureDeleteCommand,
+  type RecordedServerCommand as OrchestrationV2ServerCommand,
+  type RecordedRun as OrchestrationV2Run,
+  type RecordedThreadProjection as OrchestrationV2ThreadProjection,
+} from "./RecordedTypes.ts";
 import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
@@ -11,12 +20,9 @@ import {
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
-  type OrchestrationV2ServerCommand,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
-  type OrchestrationV2Run,
   type OrchestrationV2ThreadShellSnapshot,
-  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   ProjectId,
@@ -26,6 +32,7 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -271,11 +278,23 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
+  readonly stopCurrentThreadRuntime?: import("./Orchestrator.ts").OrchestratorV2Shape["stopCurrentThreadRuntime"];
+  readonly reviewImportedHistory?: Orchestrator.OrchestratorV2["Service"]["reviewImportedHistory"];
+  readonly startWithImportedHistory?: Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"];
+  readonly observeImportedHistoryStart?: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
+
+  readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyFailureDelete?: (
+    command: LegacyFailureDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyGuardRejectionDelete?: (
+    command: LegacyGuardRejectionDeleteCommand,
   ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
@@ -310,6 +329,9 @@ export interface ThreadManagementServiceShape {
     readonly location?: "active" | "archive";
   }) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, Orchestrator.OrchestratorV2Error>;
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
+  readonly observeThreadActivity?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RuntimeObservation.ProviderThreadActivityObservation>;
   readonly listProjectThreads: (input: {
     readonly projectId: ProjectId;
     readonly includeSubagents: boolean;
@@ -399,6 +421,56 @@ function latestSteerableRun(
 const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+  const sessions = yield* Effect.serviceOption(ProviderSessionManager.ProviderSessionManagerV2);
+  const observeThreadActivity = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const shell = yield* orchestrator.getThreadShell(threadId);
+      if (shell === null)
+        return {
+          foreground: null,
+          background: null,
+          backgroundStatus: "unknown" as const,
+          reason: "thread_unavailable",
+        };
+      if (shell.archivedAt !== null || shell.deletedAt !== null)
+        return { foreground: null, background: null, backgroundStatus: "known" as const };
+      const sampledAt = yield* Clock.currentTimeMillis;
+      const native =
+        Option.isSome(sessions) &&
+        Object.hasOwn(sessions.value, "observeThreadActivity") &&
+        sessions.value.observeThreadActivity !== undefined
+          ? yield* sessions.value.observeThreadActivity(threadId)
+          : null;
+      const current = yield* orchestrator.getThreadShell(threadId);
+      if (current === null)
+        return {
+          foreground: null,
+          background: null,
+          backgroundStatus: "unknown" as const,
+          reason: "thread_unavailable",
+        };
+      const activity = RuntimeObservation.providerThreadActivityObservation(
+        current,
+        native,
+        sampledAt,
+      );
+      return {
+        ...activity,
+        foreground:
+          native === null || native.status === "unknown"
+            ? RuntimeObservation.providerThreadForegroundActivity(current)
+            : activity.foreground,
+      };
+    }).pipe(
+      Effect.catchCause(() =>
+        Effect.succeed({
+          foreground: null,
+          background: null,
+          backgroundStatus: "unknown" as const,
+          reason: "native_activity_unavailable",
+        }),
+      ),
+    );
 
   const ensureLegacyTranscript = Effect.fn(
     "orchestrationV2.threadManagement.ensureLegacyTranscript",
@@ -765,6 +837,20 @@ const make = Effect.gen(function* () {
       return { type: "interrupt_requested", run: interruptibleRun, dispatch } as const;
     });
 
+  const reviewImported = orchestrator.reviewImportedHistory;
+  const reviewImportedHistory =
+    reviewImported === undefined
+      ? undefined
+      : (
+          input: Parameters<NonNullable<ThreadManagementServiceShape["reviewImportedHistory"]>>[0],
+        ) =>
+          ensureLegacyTranscript(input.threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new Orchestrator.OrchestratorProjectionError({ threadId: input.threadId, cause }),
+            ),
+            Effect.andThen(reviewImported(input)),
+          );
   const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = (input) =>
     Effect.gen(function* () {
       const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
@@ -792,8 +878,25 @@ const make = Effect.gen(function* () {
     });
 
   return ThreadManagementService.of({
+    ...(orchestrator.stopCurrentThreadRuntime === undefined
+      ? {}
+      : { stopCurrentThreadRuntime: orchestrator.stopCurrentThreadRuntime }),
+    reviewImportedHistory,
+    startWithImportedHistory: orchestrator.startWithImportedHistory,
+    observeImportedHistoryStart: orchestrator.observeImportedHistoryStart,
+    requestSelfSettlement: orchestrator.requestSelfSettlement,
     ensureLegacyTranscript,
     dispatch,
+    ...(orchestrator.dispatchLegacyFailureDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete,
+        }),
+    ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete,
+        }),
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getTimelinePage(threadId, options)),
@@ -819,6 +922,7 @@ const make = Effect.gen(function* () {
     getProjectThread,
     getShellSnapshot: orchestrator.getShellSnapshot,
     getThreadShell: orchestrator.getThreadShell,
+    observeThreadActivity,
     listProjectThreads,
     sendToThread,
     waitForThread,

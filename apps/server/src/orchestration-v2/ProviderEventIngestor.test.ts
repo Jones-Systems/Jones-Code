@@ -1548,7 +1548,7 @@ it.effect.each([
         ?.observed,
       unobservedRuntimeIdentity(),
     );
-  }).pipe(Effect.provide(TestLayer)),
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect(
@@ -1673,7 +1673,7 @@ it.effect(
       assert.deepEqual(identity?.observed, observed);
       assert.equal(identity?.requested.model, modelSelection.model);
       assert.equal(identity?.observed.serviceTier.status, "unknown");
-    }).pipe(Effect.provide(TestLayer)),
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("availability and finalized text persist without settling the current attempt", () =>
@@ -1831,5 +1831,5 @@ it.effect("availability and finalized text persist without settling the current 
     assert.isFalse(records.messages[0]?.streaming);
     assert.equal(records.providerSessions[0]?.status, "error");
     assert.isNull((yield* store.getThreadShell(threadId))?.latestRunProviderSettlement);
-  }).pipe(Effect.provide(TestLayer)),
+  }).pipe(Effect.provide(layerTest)),
 );

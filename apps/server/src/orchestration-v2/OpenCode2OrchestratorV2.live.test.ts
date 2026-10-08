@@ -53,6 +53,7 @@ import * as AntigravityInstallation from "../provider/AntigravityInstallation.ts
 import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ProviderInstanceRegistryHydration from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as ProviderEventLoggers from "../provider/ProviderEventLoggers.ts";
 import * as OpenCode2Client from "../provider/opencode2/OpenCode2Client.ts";
@@ -186,6 +187,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
         ProviderEventLoggers.NoOpProviderEventLoggers,
       ),
       ModelManifest.layerTest,
+      ProcessAttribution.layer,
       AntigravityInstallation.AntigravityInstallation.layer.pipe(
         Layer.provide(layerServerConfig.pipe(Layer.provide(layerPlatformTest))),
         Layer.provide(FetchHttpClient.layer),

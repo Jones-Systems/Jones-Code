@@ -98,7 +98,7 @@ it.effect("blocks project peers, permits self recovery, and denies foreign unblo
         id,
         projectId: ProjectId.make("project:metadata"),
         title: "Metadata thread",
-        modelSelection: { instanceId: scope.providerInstanceId, model: "gpt-5" },
+        modelSelection: { instanceId: scope.thread!.providerInstanceId, model: "gpt-5" },
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,

@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
+  EventId,
   NodeId,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
@@ -20,6 +21,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
+import { emptyProjection } from "../orchestration-v2/ProjectionStore.ts";
+import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
 import {
   DispatchModeLimit,
   type DispatchModeRefusal,
@@ -1807,3 +1810,90 @@ describe("OrchestratorMcpService provider resolution", () => {
     );
   });
 });
+
+it.effect(
+  "serializes historical and blocked flags through actual MCP thread list and detail methods",
+  () =>
+    Effect.gen(function* () {
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const threadId = ThreadId.make("thread:mcp-block-serializer");
+      const scope: McpInvocationScope = {
+        environmentId: EnvironmentId.make("environment:mcp-block-serializer"),
+        requestNamespace: "session:mcp-block-serializer",
+        thread: { threadId, providerSessionId: "session:mcp-block-serializer", providerInstanceId },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+      for (const blocked of [undefined, false, true]) {
+        const shell = {
+          ...v2PullRequestThread({
+            id: threadId,
+            projectId: ProjectId.make("project:mcp-block-serializer"),
+            title: "Serializer fixture",
+            modelSelection: { instanceId: providerInstanceId, model: "test-model" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            pullRequests: [],
+            latestUserMessageAt: null,
+            createdAt: "2026-10-04T00:00:00Z",
+            updatedAt: "2026-10-04T00:00:00Z",
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+          }),
+          ...(blocked === undefined ? {} : { threadMessagesBlocked: blocked }),
+        };
+        const projection = emptyProjection({
+          type: "thread.created",
+          id: EventId.make("fixture:mcp-block-serializer"),
+          threadId,
+          occurredAt: shell.createdAt,
+          payload: { ...shell, lastVisitedAt: null },
+        });
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(projection),
+            getThreadShell: () => Effect.succeed(shell),
+            getProjectThreadRecords: () => Effect.succeed(projection),
+            listProjectThreads: () => Effect.succeed([shell]),
+            ...(blocked === undefined
+              ? {}
+              : {
+                  observeThreadActivity: () =>
+                    Effect.succeed({
+                      foreground: null,
+                      background: "monitoring" as const,
+                      backgroundStatus: "known" as const,
+                    }),
+                }),
+            getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const listed = yield* service.listThreads(scope, {});
+          const detail = yield* service.readThread(scope, { threadId });
+          assert.equal(listed.threads[0]?.threadMessagesBlocked, blocked ?? false);
+          assert.equal(listed.threads[0]?.status, shell.activityRunStatus ?? shell.status);
+          assert.equal(
+            listed.threads[0]?.activityObservation?.background,
+            blocked === undefined ? undefined : "monitoring",
+          );
+          assert.equal(detail.thread.threadMessagesBlocked, blocked ?? false);
+          assert.equal(listed.threads[0]?.threadId, threadId);
+          assert.equal(detail.thread.threadId, threadId);
+          assert.equal(listed.threads[0]?.title, "Serializer fixture");
+          assert.equal(detail.thread.title, "Serializer fixture");
+        }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+      }
+    }),
+);
