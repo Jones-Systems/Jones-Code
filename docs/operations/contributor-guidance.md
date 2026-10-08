@@ -10,6 +10,73 @@ Understand the constraint before preserving existing complexity or adding new
 machinery. Keep scope aligned with the owner's task. If a task conflicts with
 applicable guidance, identify the conflict and obtain the owner's direction.
 
+## Keep Jones changes separate from upstream
+
+Jones Code regularly imports changes from T3 Code. Adding Jones logic directly
+to upstream files makes those imports repeatedly conflict and obscures which
+side owns the behavior. Use the extracted structure by default for new features
+and repairs: keep Jones implementations and their tests together in Jones-owned
+modules, and keep upstream integration points small. This reduces edit overlap;
+upstream API changes can still require adapter and compatibility repairs.
+
+| Jones-owned code                                            | Default location                     |
+| ----------------------------------------------------------- | ------------------------------------ |
+| Wire schemas and small derived contract helpers             | `packages/contracts/src/jones/`      |
+| Shared client state, commands and capability handling       | `packages/client-runtime/src/jones/` |
+| Server services, upstream adapters and registration bundles | `apps/server/src/jones/`             |
+| Jones persistence and migration loader                      | `apps/server/src/jones/persistence/` |
+| Web components, views and controllers                       | `apps/web/src/jones/`                |
+| Mobile features                                             | `apps/mobile/src/jones/`             |
+| Desktop shell and IPC features                              | `apps/desktop/src/jones/`            |
+| Boundary checks and Jones development tools                 | `scripts/jones/`                     |
+
+Use the existing feature owner within these locations before creating another
+module. Keep coherent existing Jones-owned feature directories where they are
+when a move would add churn without an integration benefit. Shared utilities
+and additional packages follow the same ownership principle; do not duplicate
+code merely to fit this table.
+
+- **Hooks and adapters.** Upstream-owned files should register or call a narrow,
+  typed Jones interface. Put Jones business logic, retries and lifecycle work
+  behind that interface, rather than growing the hook. Jones modules may use
+  specific upstream APIs through adapters. Keep contract modules independent
+  of runtime services and avoid barrel cycles.
+- **Tests.** Put Jones behavior tests beside their Jones implementation and use
+  the existing runner's discovery or a small explicit registration. Preserve
+  upstream tests and assertions. Keep a Jones case in an upstream test only
+  when the integration harness requires it, and record that exception. Keep
+  meaningful application integration coverage for both sides.
+- **Boundary accounting.** Update the affected feature fragment under
+  `scripts/jones/boundary/fragments/`, and the applicable
+  [inventory](../../scripts/jones/boundary/inventory.json),
+  [feature coverage](../../scripts/jones/boundary/features.json) and
+  [check mapping](../../scripts/jones/boundary/checks.json).
+  Record hooks, accepted shared edits, imports from upstream into Jones,
+  test exceptions and removed paths. Run the following from the repository root
+  on a supported Node version:
+
+  ```sh
+  node scripts/jones/check-boundary.ts --strict
+  ```
+
+  Do not weaken
+  its path, ancestry, hash or resolution checks to hide new divergence.
+
+- **Stored state.** Preserve wire names, persisted fields, event decoding,
+  migration identities and guards. Keep Jones migrations on their independent
+  loader and tracking ledger; source extraction must not rewrite stored history.
+- **Practical exceptions.** A small direct shared-file edit is acceptable when
+  isolating it would require disproportionate complexity or duplicated upstream
+  machinery. State the reason and classify the edit. Do not build a generic
+  plugin framework or perform unrelated moves to eliminate every conflict.
+
+An upstream import and Jones restoration are separate concerns. Follow
+[the upstream sync procedure](./upstream-sync.md#upstream-sync-procedure):
+import upstream in the bottom PR, restore Jones behavior in stacked follow-ons,
+and qualify the complete stack before merging any layer. A similar upstream
+feature is not an accepted replacement without behavior evidence and M Jones's
+explicit decision.
+
 ## Coverage before completion
 
 The common failure is a change that works on the path tested but is missing
