@@ -83,6 +83,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getAppBranding"]>;
   },
+  getPreviewAutomationRuntimeIdentity: () =>
+    ipcRenderer.invoke(IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getClientPlatform: () => clientPlatform,
   setNotificationBadge: (badge) =>

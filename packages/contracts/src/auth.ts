@@ -166,10 +166,20 @@ const legacyParents: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>>
   [AuthTerminalReadScope]: AuthTerminalOperateScope,
 };
 
+// Wire presentation only: these native permissions were never implied by legacy grants.
+const legacyNativeDenialScopes: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>> = {
+  "workstreams:native:context": AuthOrchestrationReadScope,
+  "workstreams:native:settlement": AuthOrchestrationOperateScope,
+  "workstreams:native:reconciliation": AuthOrchestrationOperateScope,
+};
+
 /** Keep permission denials decodable by clients with the original scope enum. */
 export function authScopeRequiredResponse(requiredPermission: AuthEnvironmentScope) {
   return {
-    requiredScope: legacyParents[requiredPermission] ?? requiredPermission,
+    requiredScope:
+      legacyNativeDenialScopes[requiredPermission] ??
+      legacyParents[requiredPermission] ??
+      requiredPermission,
     requiredPermission,
   };
 }

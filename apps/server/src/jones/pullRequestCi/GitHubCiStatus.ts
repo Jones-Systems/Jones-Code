@@ -80,15 +80,16 @@ export const readGitHubCiStatus = (
             ),
           );
         }),
-        Effect.catchTag("SourceControlRateLimitPausedError", (cause) =>
-          Effect.fail(
-            new GitHubApi.GitHubApiRateLimitError({
-              host: input.host,
-              operation: "PullRequestCiStatus.read",
-              retryAt: cause.retryAt,
-            }),
-          ),
-        ),
+        Effect.catchTags({
+          SourceControlRateLimitPausedError: (cause) =>
+            Effect.fail(
+              new GitHubApi.GitHubApiRateLimitError({
+                host: input.host,
+                operation: "PullRequestCiStatus.read",
+                retryAt: cause.retryAt,
+              }),
+            ),
+        }),
       );
     };
     const result: PullRequestCiStatusResult = {

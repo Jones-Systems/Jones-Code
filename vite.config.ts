@@ -197,10 +197,11 @@ export default defineConfig({
         },
       },
       {
-        // These clients are session metadata, device streams, and an Expo update adapter.
+        // These clients are session metadata, device streams, update adapters, and GitHub artifacts.
         files: [
           "apps/web/src/components/settings/ConnectionsSettings.tsx",
           "apps/mobile/src/features/updates/app-updates.ts",
+          "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts",
           "apps/web/src/components/device/DevicePhoneViewport.tsx",
           "apps/web/src/components/device/DeviceDuoViewport.tsx",
         ],

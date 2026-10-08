@@ -48,6 +48,32 @@ describe("authorization grants", () => {
     },
   );
 
+  it.each([
+    ["workstreams:native:context", "orchestration:read"],
+    ["workstreams:native:settlement", "orchestration:operate"],
+    ["workstreams:native:reconciliation", "orchestration:operate"],
+  ] as const)("presents %s denials without granting native rights", (permission, legacyScope) => {
+    expect(authScopeRequiredResponse(permission)).toEqual({
+      requiredScope: legacyScope,
+      requiredPermission: permission,
+    });
+    expect(sessionGrantsScope({ authenticated: true, scopes: [legacyScope] }, permission)).toBe(
+      false,
+    );
+    expect(
+      sessionGrantsScope(
+        { authenticated: true, scopes: [legacyScope], permissions: [] },
+        permission,
+      ),
+    ).toBe(false);
+    expect(
+      sessionGrantsScope(
+        { authenticated: true, scopes: [], permissions: [permission] },
+        permission,
+      ),
+    ).toBe(true);
+  });
+
   it("keeps old clients able to decode grants with new permissions", () => {
     const response = authScopeResponse(AuthStandardClientScopes);
     expect(decodeOldScopes(response.scopes)).toEqual(response.scopes);

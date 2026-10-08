@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - synchronous workflow-presence check during test discovery, outside any Effect runtime.
+import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
@@ -457,7 +459,10 @@ function workflowRun(workflow: string, stepName: string) {
 }
 
 it.layer(NodeServices.layer)("Discord release CLI and workflow", (it) => {
-  it.effect("passes the published nightly body from the workflow to ordered sends", () =>
+  // Jones defers the upstream release workflow; restoring it reenables this integration case.
+  it.effect.skipIf(
+    !NodeFS.existsSync(new URL("../.github/workflows/release.yml", import.meta.url)),
+  )("passes the published nightly body from the workflow to ordered sends", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
