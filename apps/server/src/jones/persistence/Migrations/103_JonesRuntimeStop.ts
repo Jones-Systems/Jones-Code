@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE jones_runtime_stop_intents (command_id TEXT PRIMARY KEY NOT NULL REFERENCES orchestration_command_receipts(command_id),thread_id TEXT NOT NULL,identity_json TEXT NOT NULL CHECK(json_valid(identity_json)))`;

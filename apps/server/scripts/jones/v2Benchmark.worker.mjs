@@ -5,7 +5,7 @@ import * as NodeURL from "node:url";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { makeSqlitePersistenceLive } from "../../src/persistence/Layers/Sqlite.ts";
+import { layerFromPath } from "../../src/persistence/Sqlite.ts";
 import * as EventStore from "../../src/orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../src/orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "../../src/orchestration-v2/EventSink.ts";
@@ -41,7 +41,7 @@ try {
   phase("bound");
   const dbPath = NodePath.join(root, "synthetic.sqlite");
   NodeFS.closeSync(NodeFS.openSync(dbPath, "wx", 0o600));
-  const database = makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer));
+  const database = layerFromPath(dbPath).pipe(Layer.provide(NodeServices.layer));
   const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
     Layer.provideMerge(database),
   );

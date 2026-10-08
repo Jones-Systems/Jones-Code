@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";

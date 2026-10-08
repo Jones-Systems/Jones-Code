@@ -9,9 +9,9 @@ import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hos
 import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
+  settleProjectScript,
   setupProjectScript,
 } from "@t3tools/shared/projectScripts";
-import * as NodeCrypto from "node:crypto";
 import { canonicalLegacyPayload, legacyPayloadHash } from "../orchestration-v2/LegacyBootstrap.ts";
 import type {
   LegacyPreparation,
@@ -20,6 +20,7 @@ import type {
 
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -116,6 +117,8 @@ export interface ProjectSetupScriptRunnerInput {
   readonly preferredTerminalId?: string;
   readonly legacyPreparation?: LegacySetupPreparationHooks;
   readonly nativePreparation?: NativeSetupPreparationHooks;
+  /** Which project script to run. Defaults to the worktree setup script. */
+  readonly trigger?: "setup" | "settle";
   readonly project?: {
     readonly id: ProjectId;
     readonly workspaceRoot: string;
@@ -200,11 +203,11 @@ function stripTerminalControl(text: string): string {
   return (
     text
       .replace(
-        // eslint-disable-next-line no-control-regex
+        // eslint-disable-next-line no-control-regex -- ANSI escape sequences start with ESC.
         /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g,
         "",
       )
-      // eslint-disable-next-line no-control-regex
+      // eslint-disable-next-line no-control-regex -- removing control characters is the point.
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
   );
 }
@@ -257,6 +260,7 @@ export const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const terminalManager = yield* TerminalManager.TerminalManager;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const crypto = yield* Crypto.Crypto;
   const completionShell = resolveCompletionShell(
     yield* HostProcessPlatform,
     yield* HostProcessEnvironment,
@@ -280,6 +284,9 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const startedAtMs = yield* Clock.currentTimeMillis;
       const done = yield* Deferred.make<ProjectSetupScriptCompletion>();
+      // The shell redraws its prompt just after the sentinel. Closing before
+      // that would read the redraw as new activity and keep an idle shell.
+      const promptReturned = yield* Deferred.make<void>();
       let lineBuffer = "";
       let settled = false;
 
@@ -333,15 +340,26 @@ export const make = Effect.gen(function* () {
           if (lineBuffer.length > PARTIAL_LINE_MAX_LENGTH) {
             lineBuffer = lineBuffer.slice(-PARTIAL_LINE_MAX_LENGTH);
           }
-          return Effect.forEach(lines, handleLine, { discard: true });
+          return Effect.forEach(lines, handleLine, { discard: true }).pipe(
+            // A prompt has no newline, so it is what remains once the sentinel is in.
+            Effect.andThen(
+              Effect.suspend(() =>
+                settled && lineBuffer.length > 0
+                  ? Deferred.succeed(promptReturned, undefined).pipe(Effect.asVoid)
+                  : Effect.void,
+              ),
+            ),
+          );
         }
         if (event.type === "exited" || event.type === "closed") {
-          return settle(null);
+          return settle(null).pipe(Effect.andThen(Deferred.succeed(promptReturned, undefined)));
         }
         return Effect.void;
       });
 
       const completion = Deferred.await(done).pipe(
+        // A shell with an empty prompt never prints one; do not wait forever.
+        Effect.tap(() => Deferred.await(promptReturned).pipe(Effect.timeoutOption("1 second"))),
         Effect.ensuring(Effect.sync(() => unsubscribe())),
       );
       return { completion, unsubscribe };
@@ -411,6 +429,7 @@ export const make = Effect.gen(function* () {
       return yield* new ProjectSetupScriptProjectNotFoundError(errorContext);
     }
 
+    const trigger = input.trigger ?? "setup";
     const legacy = input.legacyPreparation;
     const captured = legacy?.capturedDefinition;
     const settings =
@@ -431,7 +450,9 @@ export const make = Effect.gen(function* () {
       native?.script ??
       (settings === undefined
         ? undefined
-        : setupProjectScript(resolveProjectScripts(settings, project)));
+        : trigger === "settle"
+          ? settleProjectScript(resolveProjectScripts(settings, project))
+          : setupProjectScript(resolveProjectScripts(settings, project)));
     if (!script) {
       if (legacy !== undefined)
         yield* legacy.noScript().pipe(
@@ -453,7 +474,9 @@ export const make = Effect.gen(function* () {
       native?.control.terminalId ??
       legacy?.binding.terminalId ??
       input.preferredTerminalId ??
-      `setup-${script.id}`;
+      (trigger === "settle"
+        ? `settle-${script.id}-${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).slice(0, 8)}`
+        : `setup-${script.id}`);
     if (
       legacy !== undefined &&
       (legacy.binding.threadId !== input.threadId ||
@@ -500,7 +523,8 @@ export const make = Effect.gen(function* () {
     const observe =
       input.observeCompletion ?? (legacy === undefined && native === undefined ? undefined : {});
     const completionToken =
-      captured?.completionToken ?? (observe ? NodeCrypto.randomUUID().replaceAll("-", "") : null);
+      captured?.completionToken ??
+      (observe ? (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "") : null);
     let commandLine =
       captured?.commandLine ??
       (observe && completionToken

@@ -5,7 +5,7 @@ import type {
   TokenAccountingReadResult,
   TokenAccountingReport,
 } from "@t3tools/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useState, type ReactNode } from "react";
 
 import { environmentCatalog } from "../../connection/catalog";

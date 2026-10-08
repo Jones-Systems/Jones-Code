@@ -23,7 +23,8 @@ import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts
 import { emptyProjection } from "../../../orchestration-v2/ProjectionStore.ts";
 import { v2PullRequestThread } from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { ThreadToolkitHandlersLive } from "./handlers.ts";
+import * as ThreadHandlers from "./handlers.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
 import { ThreadToolkit } from "./tools.ts";
 
 it.effect("blocks foreign text edits and answers while preserving self controls and readback", () =>
@@ -34,9 +35,9 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
     const requestId = RuntimeRequestId.make("request:block-test");
     const scope: McpInvocationContext.McpInvocationScope = {
       environmentId: EnvironmentId.make("environment:block-test"),
-      threadId: callerId,
-      providerSessionId: "session:block-test",
-      providerInstanceId,
+      requestNamespace: "session:block-test",
+      thread: { threadId: callerId, providerSessionId: "session:block-test", providerInstanceId },
+      client: undefined,
       capabilities: new Set(["orchestration"]),
       issuedAt: 1,
     };
@@ -129,7 +130,9 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
       }),
     );
     const toolkit = yield* ThreadToolkit.pipe(
-      Effect.provide(ThreadToolkitHandlersLive.pipe(Layer.provide(dependencies))),
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ThreadHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
     );
     const invoke = <Name extends keyof typeof ThreadToolkit.tools>(
       name: Name,

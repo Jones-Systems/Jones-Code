@@ -19,8 +19,8 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as NativeEvidence from "./evidence.ts";
 import * as CheckpointService from "../../../orchestration-v2/CheckpointService.ts";
 import * as CommandPolicy from "../../../orchestration-v2/CommandPolicy.ts";
@@ -44,7 +44,7 @@ import { NativeProviderAttempts, NativeProviderAttemptsLive } from "./attemptRep
 import { makeWorkstreamsNativeProvider, sha256Bytes, type NativeProviderPorts } from "./service.ts";
 import { makeProviderFixture, binding, request, requestBytesSha256, now } from "./testFixtures.ts";
 
-const database = SqlitePersistenceMemory;
+const database = SqlitePersistence.layerMemory;
 const stores = Layer.mergeAll(
   EventStore.layer,
   ProjectionStore.layer,
@@ -64,7 +64,7 @@ const runtime = Orchestrator.layer.pipe(
       CommandPolicy.layer,
       IdAllocator.layer,
       RuntimePolicy.layer,
-      ProviderAdapterRegistry.makeLayer([]),
+      ProviderAdapterRegistry.layerFromAdapters([]),
       ProviderContinuationRequests.layer,
       Layer.mock(CheckpointService.CheckpointServiceV2)({}),
       Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),

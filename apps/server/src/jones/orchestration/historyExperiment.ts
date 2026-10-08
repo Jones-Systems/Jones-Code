@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The immutable benchmark source identity is hashed synchronously at module initialization before runtime acquisition.
 import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous source binding hashes the exact SQL owner file before the frozen query experiment runs.
 import * as NodeFS from "node:fs";
@@ -16,14 +17,14 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 
 // Benchmark-only successor to #63/#71. Legacy source c4c68bb and 77c0113
 // remains historical evidence: its mixed/negative timings do not measure V2.
 export const historyExperimentLayer = ProjectionStore.layer.pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
 );
 export const historyThreadId = ThreadId.make("history-experiment");
 const iso = "2026-10-02T00:00:00.000Z";

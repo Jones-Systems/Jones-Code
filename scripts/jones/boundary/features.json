@@ -339,6 +339,16 @@
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
       "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+    },
+    {
+      "id": "preview-runtime-identity",
+      "tests": [
+        "apps/desktop/src/preview/DesktopBrowserHost.test.ts",
+        "apps/server/src/preview/DesktopBrowserChannel.test.ts",
+        "apps/server/src/mcp/PreviewAutomationBroker.test.ts",
+        "apps/server/src/preview/ServerBrowser.test.ts"
+      ],
+      "scope": "Desktop attachment identity and lifetime fencing remain covered by the native host, channel, broker and server browser after upstream removed renderer automation hosts."
     }
   ]
 }

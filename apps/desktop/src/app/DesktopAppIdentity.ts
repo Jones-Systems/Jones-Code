@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - The opaque process-lifetime runtime identity is created synchronously before any Effect runtime or service is acquired.
 import * as NodeCrypto from "node:crypto";
 import type { PreviewAutomationRuntimeIdentity } from "@t3tools/contracts";
 import * as Context from "effect/Context";

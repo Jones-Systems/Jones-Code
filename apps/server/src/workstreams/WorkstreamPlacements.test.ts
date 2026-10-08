@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous contract hashing and opaque request identities retain their existing wire encoding.
 import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

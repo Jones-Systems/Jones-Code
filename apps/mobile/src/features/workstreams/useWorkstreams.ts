@@ -23,7 +23,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { AppState, Pressable, Text } from "react-native";
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectionAtomRuntime } from "../../connection/runtime";

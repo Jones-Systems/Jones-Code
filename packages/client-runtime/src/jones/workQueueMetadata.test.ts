@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { RelayConnectionTarget, type PreparedConnection } from "../connection/model.ts";
 import type { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
-import { remoteHttpClientLayer } from "../rpc/http.ts";
+import { layerRemoteHttpClient } from "../rpc/http.ts";
 import { fetchWorkQueueMetadata } from "./workQueueMetadata.ts";
 
 function connection(id: string, cookie = false): PreparedConnection {
@@ -22,7 +22,7 @@ const signer = Option.none<ManagedRelayDpopSigner["Service"]>();
 it.effect("binds each metadata query to the selected environment and its credentials", () =>
   Effect.gen(function* () {
     const calls: Array<{ url: string; init: RequestInit }> = [];
-    const layer = remoteHttpClientLayer(async (url, init) => {
+    const layer = layerRemoteHttpClient(async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       return Response.json({ status: "unconfigured", reason: "not_configured" });
     });
@@ -44,7 +44,7 @@ it.effect("binds each metadata query to the selected environment and its credent
 );
 it.effect("retains cookie authentication and rejects private or malformed response fields", () =>
   Effect.gen(function* () {
-    const layer = remoteHttpClientLayer(async (_url, init) => {
+    const layer = layerRemoteHttpClient(async (_url, init) => {
       expect(init?.credentials).toBe("include");
       return Response.json({
         status: "unavailable",
@@ -61,7 +61,7 @@ it.effect("retains cookie authentication and rejects private or malformed respon
 );
 it.effect("keeps old or unreachable servers unavailable without returning mock or empty rows", () =>
   Effect.gen(function* () {
-    const layer = remoteHttpClientLayer(async () => new Response("Missing", { status: 404 }));
+    const layer = layerRemoteHttpClient(async () => new Response("Missing", { status: 404 }));
     const error = yield* fetchWorkQueueMetadata({ prepared: connection("old"), signer }).pipe(
       Effect.flip,
       Effect.provide(layer),

@@ -1,4 +1,5 @@
 import { type RecordedStoredLifecycleEvent as OrchestrationV2StoredEvent } from "./RecordedTypes.ts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Pure deciders and persisted receipt keys require synchronous SHA-256.
 import * as NodeCrypto from "node:crypto";
 import { CommandId, OrchestrationV2LegacyBootstrapPolicy, type ThreadId } from "@t3tools/contracts";
 

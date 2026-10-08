@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { CheckIcon, CircleAlertIcon } from "lucide-react";
 import { useRef, useState } from "react";
 

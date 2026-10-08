@@ -1,4 +1,7 @@
-import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
+import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+
 import * as Fiber from "effect/Fiber";
 import * as Deferred from "effect/Deferred";
 import { OrchestrationV2ThreadStreamItem } from "@t3tools/contracts";
@@ -25,14 +28,14 @@ import * as Stream from "effect/Stream";
 import * as Sink from "effect/Sink";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import type * as PtyAdapter from "../terminal/PtyAdapter.ts";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
-import { makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
+
 import * as Orchestrator from "./Orchestrator.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
@@ -44,7 +47,7 @@ import * as Management from "./ThreadManagementService.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
-import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
+
 import {
   LegacyNoTerminalControl,
   type LegacyPreparation,
@@ -142,11 +145,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                   : Effect.die("Actual no-control D must never spawn"),
             },
           }).pipe(Effect.provide(ProcessRunner.layer));
-          const database = makeSqlitePersistenceLive(`${root}/journal.sqlite`).pipe(
+          const database = SqlitePersistence.layerFromPath(`${root}/journal.sqlite`).pipe(
             Layer.provide(NodeServices.layer),
           );
-          const registry = ProviderAdapterRegistry.makeLayer([adapter]);
-          const runtime = makeOrchestratorV2ReplayLayerWithRegistry(
+          const registry = ProviderAdapterRegistry.layerFromAdapters([adapter]);
+          const runtime = ProviderReplayHarness.layerWithRegistry(
             { name: `legacy-failure-${scenario}` },
             registry,
             { databaseLayer: database, runEffectWorker: false },
@@ -167,7 +170,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             stores,
             database,
             maintenance,
-            OrchestrationEventStoreLive.pipe(Layer.provide(database)),
+            ApplicationEvents.layer.pipe(Layer.provide(database)),
           );
           const projectId = ProjectId.make(`known-failure:P:${scenario}`);
           const threadId = ThreadId.make(`known-failure:T:${scenario}`);

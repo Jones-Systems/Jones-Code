@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { PrimaryEnvironmentHttpClient, layer } from "./environments/primary/httpClient";
-import { primaryEnvironmentHttpLayer } from "./environments/primary/httpLayer";
+import { layer as primaryEnvironmentHttpLayer } from "./environments/primary/httpLayer";
 
 export const HOST_STATUS_NAMES = { vps: "VPS", test: "Test", mini: "Mini", home: "Home" } as const;
 export const HOST_STATUS_IDS = ["vps", "test", "mini", "home"] as const;

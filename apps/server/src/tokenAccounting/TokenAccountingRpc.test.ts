@@ -1,15 +1,16 @@
 import {
   AuthAccessWriteScope,
-  AuthOrchestrationReadScope,
+  AuthDiagnosticsReadScope,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as RpcTest from "effect/unstable/rpc/RpcTest";
+import * as RpcTest from "effect/rpc/RpcTest";
 
-import { RPC_REQUIRED_SCOPES, rpcScopeAuthorizationLayer } from "../auth/RpcAuthorization.ts";
+import { RPC_REQUIRED_SCOPES } from "../auth/RpcAuthorization.ts";
+import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as TokenAccountingService from "./TokenAccountingService.ts";
 
 const method = WS_METHODS.serverReadTokenAccounting;
@@ -28,9 +29,7 @@ describe("saved accounting RPC", () => {
       const service = yield* TokenAccountingService.TokenAccountingService;
       expect(yield* service.isAvailable).toBe(false);
       const client = yield* RpcTest.makeClient(group).pipe(
-        Effect.provide(
-          Layer.mergeAll(handler, rpcScopeAuthorizationLayer([AuthOrchestrationReadScope])),
-        ),
+        Effect.provide(Layer.mergeAll(handler, RpcAuthorization.layer([AuthDiagnosticsReadScope]))),
       );
       expect(yield* client[method]({})).toMatchObject({
         state: "unavailable",
@@ -62,14 +61,14 @@ describe("saved accounting RPC", () => {
       );
       const client = yield* RpcTest.makeClient(group).pipe(
         Effect.provide(
-          Layer.mergeAll(handler, rpcScopeAuthorizationLayer([AuthAccessWriteScope])).pipe(
+          Layer.mergeAll(handler, RpcAuthorization.layer([AuthAccessWriteScope])).pipe(
             Layer.provide(service),
           ),
         ),
       );
       expect(yield* client[method]({}).pipe(Effect.flip)).toMatchObject({
         _tag: "EnvironmentAuthorizationError",
-        requiredScope: AuthOrchestrationReadScope,
+        requiredScope: AuthDiagnosticsReadScope,
       });
       expect(reads).toBe(0);
     }).pipe(Effect.scoped),

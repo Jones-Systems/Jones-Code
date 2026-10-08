@@ -5,7 +5,7 @@ import {
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderAdapterV2TurnInput } from "./ProviderAdapter.ts";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
@@ -36,7 +36,7 @@ import * as Schema from "effect/Schema";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
-import * as ProviderAuthService from "../provider/Services/ProviderAuthService.ts";
+import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";

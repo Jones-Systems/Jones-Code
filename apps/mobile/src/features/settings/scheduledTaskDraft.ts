@@ -6,9 +6,11 @@ import type {
   ScheduledTask,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskUpsertInput,
+  ScheduledTaskWebhookSignature,
 } from "@t3tools/contracts";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { parseMaxDeliveryAge } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
   resolveProjectSettings,
   type LegacyProjectSettingsFields,
@@ -38,10 +40,14 @@ export function scheduledTaskDefaultModel(
 }
 
 export type ScheduleDraft = {
-  readonly mode: "fixed_time" | "interval";
+  readonly mode: "fixed_time" | "interval" | "webhook";
   readonly timeOfDay: string;
   readonly weekdays: ReadonlyArray<number>;
   readonly intervalMinutes: string;
+  /** A webhook signature check configured elsewhere; mobile keeps it but does not edit it. */
+  readonly signature: ScheduledTaskWebhookSignature | null;
+  /** Minutes as typed; empty runs every held request regardless of age. */
+  readonly maxDeliveryAgeMinutes: string;
 };
 
 export const DEFAULT_SCHEDULE: ScheduleDraft = {
@@ -49,25 +55,57 @@ export const DEFAULT_SCHEDULE: ScheduleDraft = {
   timeOfDay: "09:00",
   weekdays: [1, 2, 3, 4, 5],
   intervalMinutes: "15",
+  signature: null,
+  maxDeliveryAgeMinutes: "",
 };
 
 export function scheduleDraftForTask(task: Pick<ScheduledTask, "schedule">): ScheduleDraft {
-  return task.schedule.type === "fixed_time"
-    ? {
+  switch (task.schedule.type) {
+    case "fixed_time":
+      return {
         ...DEFAULT_SCHEDULE,
         timeOfDay: task.schedule.timeOfDay,
         weekdays: task.schedule.weekdays?.length
           ? [...new Set(task.schedule.weekdays)].sort((a, b) => a - b)
           : [0, 1, 2, 3, 4, 5, 6],
-      }
-    : {
+      };
+    case "interval":
+      return {
         ...DEFAULT_SCHEDULE,
         mode: "interval",
         intervalMinutes: String(Math.max(1, task.schedule.everyMs / 60_000)),
       };
+    case "webhook":
+      return {
+        ...DEFAULT_SCHEDULE,
+        mode: "webhook",
+        signature: task.schedule.signature,
+        maxDeliveryAgeMinutes:
+          task.schedule.maxDeliveryAgeMinutes == null
+            ? ""
+            : String(task.schedule.maxDeliveryAgeMinutes),
+      };
+  }
 }
 
 export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSchedule | null {
+  if (draft.mode === "webhook") {
+    const maxDeliveryAgeMinutes = parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes);
+    if (maxDeliveryAgeMinutes === undefined) return null;
+    // No secret is sent, so the server keeps the stored one.
+    return {
+      type: "webhook",
+      signature:
+        draft.signature === null
+          ? null
+          : {
+              header: draft.signature.header,
+              encoding: draft.signature.encoding,
+              prefix: draft.signature.prefix,
+            },
+      maxDeliveryAgeMinutes,
+    };
+  }
   if (draft.mode === "interval") {
     const minutes = Number(draft.intervalMinutes);
     // Undo floating-point noise from displaying existing millisecond intervals as minutes.
@@ -120,6 +158,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.schedule.timeOfDay,
     [...draft.schedule.weekdays].sort((a, b) => a - b),
     draft.schedule.intervalMinutes,
+    draft.schedule.maxDeliveryAgeMinutes,
     draft.workspace,
     draft.baseRef,
     draft.checkoutPath,
@@ -185,8 +224,8 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
 /** Shared by the scheduled-task form and its save/reopen contract tests. */
 export function scheduledTaskUpsertInputFromDraft(
   draft: ScheduledTaskDraft,
+  schedule: ScheduledTaskUpsertSchedule | null = scheduleFromDraft(draft.schedule),
 ): ScheduledTaskUpsertInput | null {
-  const schedule = scheduleFromDraft(draft.schedule);
   if (!draft.projectId || !draft.modelSelection || !schedule) return null;
   const baseRef = draft.baseRef.trim();
   return {

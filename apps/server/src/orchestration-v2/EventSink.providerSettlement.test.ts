@@ -1,3 +1,4 @@
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointScopeId,
@@ -18,13 +19,13 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
-const database = SqlitePersistenceMemory;
+const database = SqlitePersistence.layerMemory;
 const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
   Layer.provideMerge(database),
 );

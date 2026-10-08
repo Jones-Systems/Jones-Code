@@ -1,13 +1,13 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { runV2Workload, validateV2Workload } from "./v2Workload.ts";
 
-const database = SqlitePersistenceMemory;
+const database = SqlitePersistence.layerMemory;
 const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
   Layer.provideMerge(database),
 );

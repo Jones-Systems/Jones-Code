@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Native fixture custody hashes stay synchronous before runtime acquisition and retain the exact receipt byte encoding.
 import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Custody checks require native statfs observations and bounded SQLite header reads.
 import * as NodeFS from "node:fs";
@@ -20,8 +21,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { makeSqlitePersistenceLive } from "../../src/persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import { layerFromPath } from "../../src/persistence/Sqlite.ts";
 import { initializeV2Database } from "../../src/persistence/initializeV2Database.ts";
 import * as EventSink from "../../src/orchestration-v2/EventSink.ts";
 import * as EventStore from "../../src/orchestration-v2/EventStore.ts";
@@ -224,7 +225,7 @@ export async function produceCurrentFixture<A>(
   });
   const paths = { dbPath: permit.canonicalPath };
   // The receiving persistence loader runs both upstream and Jones migrations on the same client.
-  const database = makeSqlitePersistenceLive(paths.dbPath).pipe(Layer.provide(NodeServices.layer));
+  const database = layerFromPath(paths.dbPath).pipe(Layer.provide(NodeServices.layer));
   const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
     Layer.provideMerge(database),
   );

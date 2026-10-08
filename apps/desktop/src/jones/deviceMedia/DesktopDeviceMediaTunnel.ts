@@ -15,7 +15,7 @@ import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as DesktopShutdown from "../../app/DesktopShutdown.ts";
 
@@ -59,7 +59,10 @@ const make = Effect.gen(function* () {
   const net = yield* NetService.NetService;
   const shutdown = yield* DesktopShutdown.DesktopShutdown;
   const sshCommand = yield* resolveSshCommand;
-  const entries = new Map<string, { readonly scope: Scope.Scope; readonly rendererId: number }>();
+  const entries = new Map<
+    string,
+    { readonly scope: Scope.Closeable; readonly rendererId: number }
+  >();
   let sequence = 0;
   let stopped = false;
 

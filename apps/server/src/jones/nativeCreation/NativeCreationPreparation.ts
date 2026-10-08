@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Native preparation identities require synchronous SHA256 of canonical receipt bytes before effectful admission.
 import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import * as NodeCrypto from "node:crypto";
 import * as NodeBuffer from "node:buffer";

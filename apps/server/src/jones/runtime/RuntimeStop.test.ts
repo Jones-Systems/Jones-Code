@@ -24,8 +24,8 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import { ProviderAdapterCloseSessionError } from "../../orchestration-v2/ProviderAdapter.ts";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
@@ -34,7 +34,7 @@ import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager
 import * as RuntimeStop from "./RuntimeStop.ts";
 import * as StopStore from "./RuntimeStopSqlite.ts";
 const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, AuthSessions.layer).pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
 );
 const testLayer = EventSink.layer.pipe(Layer.provideMerge(stores));
 const fixture = Effect.fnUntraced(function* () {

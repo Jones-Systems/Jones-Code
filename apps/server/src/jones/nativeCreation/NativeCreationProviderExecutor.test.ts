@@ -21,7 +21,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { NativeCreationExecutionReferenceV2 } from "./NativeCreationExecutionTypes.ts";
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 import {
@@ -32,6 +32,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
+import * as Crypto from "effect/Crypto";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
@@ -649,6 +650,7 @@ const scenario = (mode: Mode) =>
           const adapter = CodexAdapterV2.makeCodexAdapterV2({
             instanceId: binding.providerInstanceId,
             settings,
+            crypto: yield* Crypto.Crypto,
             environment: {},
             fileSystem: fs,
             idAllocator: allocator,
