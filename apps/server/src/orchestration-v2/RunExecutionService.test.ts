@@ -5032,6 +5032,7 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
       appThreadId: ids.threadId,
       contextUsage: null,
       nativeMetadata: null,
+      goal: null,
       pendingBackgroundTasks: [],
       ownerNodeId: ids.rootNodeId,
       nativeThreadRef: null,
