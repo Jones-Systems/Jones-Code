@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import migrateClaims from "./003_JonesNativeCreationIntents.ts";
 import migrateWorkspace from "./101_JonesNativeWorkspacePreparation.ts";
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });

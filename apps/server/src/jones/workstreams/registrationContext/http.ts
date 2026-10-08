@@ -1,9 +1,9 @@
 import { AuthOrchestrationReadScope, EnvironmentHttpBadRequestError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import * as HttpEffect from "effect/unstable/http/HttpEffect";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as HttpEffect from "effect/http/HttpEffect";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
 import { failEnvironmentInternal, requireEnvironmentScope } from "../../../auth/http.ts";
 import type { WorkstreamsRegistrationContext } from "./service.ts";

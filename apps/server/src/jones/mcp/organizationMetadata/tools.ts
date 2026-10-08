@@ -1,10 +1,14 @@
-import { McpCapabilityUnavailableError, NonNegativeInt } from "@t3tools/contracts";
+import {
+  McpCapabilityUnavailableError,
+  NonNegativeInt,
+  OrchestratorMcpFailure,
+} from "@t3tools/contracts";
 import {
   NativeInvocationContext,
   OrganizationThreadMetadataPage,
 } from "@t3tools/contracts/jones/organizationMetadata";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import {
   OrganizationMetadataMcpService,
@@ -24,7 +28,7 @@ export const OrganizationMetadataToolkit = Toolkit.make(
       "Read the authenticated thread and environment IDs, effective base directory, proved bound loopback origin, and bundled server version. A null origin means no loopback route is proved; server generation is unavailable. This is not runtime attestation.",
     parameters: emptyInput,
     success: NativeInvocationContext,
-    failure: McpCapabilityUnavailableError,
+    failure: Schema.Union([McpCapabilityUnavailableError, OrchestratorMcpFailure]),
     failureMode: "return",
     dependencies,
   })

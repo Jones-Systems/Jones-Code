@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { type HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { type HttpServerRequest, HttpServerResponse } from "effect/http";
 import { failEnvironmentInternal } from "../../auth/http.ts";
 import type { EnvironmentAuth } from "../../auth/EnvironmentAuth.ts";
 import * as DeviceService from "../../device/DeviceService.ts";

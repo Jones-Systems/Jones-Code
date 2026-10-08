@@ -14,16 +14,16 @@ import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/ho
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Etag from "effect/unstable/http/Etag";
-import * as HttpPlatform from "effect/unstable/http/HttpPlatform";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as HttpApi from "effect/unstable/httpapi/HttpApi";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+import * as Etag from "effect/http/Etag";
+import * as HttpPlatform from "effect/http/HttpPlatform";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { describe, expect, it as test } from "vite-plus/test";
 
 import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
-import { environmentAuthenticatedAuthLayer } from "../../auth/http.ts";
+import * as AuthHttp from "../../auth/http.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
 import * as Launcher from "../../cloud/serviceLauncherClient.ts";
@@ -101,7 +101,7 @@ it.layer(NodeServices.layer)("Jones update Release compatibility", (it) => {
         );
         const routes = HttpApiBuilder.layer(JonesUpdatesTestApi).pipe(
           Layer.provide(jonesUpdatesHttpApiLayer),
-          Layer.provide(environmentAuthenticatedAuthLayer),
+          Layer.provide(AuthHttp.layerAuthenticatedAuth),
           Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
           Layer.provide(updates),
           Layer.provideMerge(

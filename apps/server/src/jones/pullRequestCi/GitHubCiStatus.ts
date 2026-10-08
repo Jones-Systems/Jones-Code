@@ -6,7 +6,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import * as GitHubCli from "../../sourceControl/GitHubCli.ts";
+import * as GitHubApi from "../../sourceControl/GitHubApi.ts";
 import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
 
 const CI_RUN_STATUSES = ["in_progress", "queued", "waiting", "pending", "requested"] as const;
@@ -38,16 +38,16 @@ const CiRunner = Schema.Struct({
 
 function ciReadReason(error: unknown): string {
   const tag = typeof error === "object" && error !== null && "_tag" in error ? error._tag : "";
-  if (tag === "GitHubCliRateLimitError" || tag === "SourceControlRateLimitPausedError")
+  if (tag === "GitHubApiRateLimitError" || tag === "SourceControlRateLimitPausedError")
     return "GitHub API rate limit reached; reads are paused.";
-  if (tag === "GitHubCliAuthenticationError") return "GitHub authentication is unavailable.";
-  if (tag === "GitHubCliUnavailableError") return "GitHub CLI is unavailable.";
+  if (tag === "GitHubApiAuthenticationError") return "GitHub authentication is unavailable.";
+  if (tag === "GitHubCliMissingError") return "GitHub CLI is unavailable.";
   return "GitHub data could not be read; access may be restricted.";
 }
 
 /** Read only under the caller's verified credential; error payloads never cross the wire. */
 export const readGitHubCiStatus = (
-  github: Pick<GitHubCli.GitHubCli["Service"], "execute">,
+  github: Pick<GitHubApi.GitHubApi["Service"], "rest">,
   input: {
     readonly cwd: string;
     readonly host: string;
@@ -62,19 +62,19 @@ export const readGitHubCiStatus = (
     const rateLimits = yield* Effect.serviceOption(SourceControlRateLimit.SourceControlRateLimit);
     const rateLimitKey = { provider: "github" as const, host: input.host };
     let lastLease: number | undefined;
-    const request: GitHubCli.GitHubCli["Service"]["execute"] = (requestInput) => {
-      if (Option.isNone(rateLimits)) return github.execute(requestInput);
+    const request: GitHubApi.GitHubApi["Service"]["rest"] = (requestInput) => {
+      if (Option.isNone(rateLimits)) return github.rest(requestInput);
       return rateLimits.value.check(rateLimitKey).pipe(
         Effect.flatMap((lease) => {
           lastLease = lease;
-          return github.execute(requestInput).pipe(
+          return github.rest(requestInput).pipe(
             Effect.tapError((error) =>
-              error._tag === "GitHubCliRateLimitError" ||
-              (error._tag === "GitHubCliCommandError" && error.httpStatus === 429)
+              error._tag === "GitHubApiRateLimitError" ||
+              (error._tag === "GitHubApiResponseError" && error.status === 429)
                 ? rateLimits.value.recordRateLimit({
                     ...rateLimitKey,
                     lease,
-                    retryAt: error._tag === "GitHubCliRateLimitError" ? error.retryAt : undefined,
+                    retryAt: error._tag === "GitHubApiRateLimitError" ? error.retryAt : undefined,
                   })
                 : Effect.void,
             ),
@@ -82,11 +82,10 @@ export const readGitHubCiStatus = (
         }),
         Effect.catchTag("SourceControlRateLimitPausedError", (cause) =>
           Effect.fail(
-            new GitHubCli.GitHubCliRateLimitError({
-              command: "gh",
-              cwd: input.cwd,
+            new GitHubApi.GitHubApiRateLimitError({
+              host: input.host,
+              operation: "PullRequestCiStatus.read",
               retryAt: cause.retryAt,
-              cause,
             }),
           ),
         ),
@@ -150,22 +149,17 @@ export const readGitHubCiStatus = (
           totalCalls++;
           if (repository !== undefined) callsByRepository.set(repository, repositoryCalls + 1);
           const read = yield* request({
-            cwd: input.cwd,
-            args: [
-              "api",
-              "--method",
-              "GET",
-              "--hostname",
-              input.host,
-              `${endpoint}${endpoint.includes("?") ? "&" : "?"}per_page=${CI_PAGE_SIZE}&page=${number}`,
-            ],
-            timeoutMs: 8_000,
-            maxOutputBytes: 2 * 1024 * 1024,
+            host: input.host,
+            operation: "PullRequestCiStatus.read",
+            method: "GET",
+            path: `${endpoint}${endpoint.includes("?") ? "&" : "?"}per_page=${CI_PAGE_SIZE}&page=${number}`,
+            timeout: 8_000,
+            maxResponseBytes: 2 * 1024 * 1024,
           }).pipe(
             Effect.flatMap((output) =>
-              output.stdoutTruncated || output.stdoutInvalidUtf8
+              output.truncated || output.invalidUtf8
                 ? Effect.fail("incomplete-output")
-                : decode(output.stdout).pipe(Effect.mapError(() => "invalid-response")),
+                : decode(output.body).pipe(Effect.mapError(() => "invalid-response")),
             ),
             Effect.result,
           );

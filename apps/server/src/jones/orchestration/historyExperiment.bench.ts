@@ -1,9 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The opt-in benchmark emits raw machine-readable timing records without Effect logger metadata.
 import { TurnItemId } from "@t3tools/contracts";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeConsole from "node:console";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { test, describe } from "vite-plus/test";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import {

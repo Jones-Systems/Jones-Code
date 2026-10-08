@@ -14,13 +14,13 @@ import {
   type WorkstreamCommand,
 } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
-import * as HttpApi from "effect/unstable/httpapi/HttpApi";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpPlatform from "effect/unstable/http/HttpPlatform";
-import * as Etag from "effect/unstable/http/Etag";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpPlatform from "effect/http/HttpPlatform";
+import * as Etag from "effect/http/Etag";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
-import { environmentAuthenticatedAuthLayer } from "../auth/http.ts";
+import { layerAuthenticatedAuth } from "../auth/http.ts";
 import { make, WorkstreamGateway, WorkstreamGatewayError } from "./WorkstreamGateway.ts";
 import { WorkstreamsRegistrationContext } from "../jones/workstreams/registrationContext/service.ts";
 import { makeRegistrationFixture } from "../jones/workstreams/registrationContext/testFixtures.ts";
@@ -28,7 +28,7 @@ import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { HttpIncomingMessage } from "effect/unstable/http";
+import { HttpIncomingMessage } from "effect/http";
 import { describe, expect } from "vite-plus/test";
 
 import {
@@ -151,7 +151,7 @@ const withHttpFixture = Effect.fn(function* (
   const routes = HttpApiBuilder.layer(WorkstreamTestApi).pipe(
     Layer.provide(workstreamHttpApiLayer),
     Layer.provide(Layer.succeed(WorkstreamsRegistrationContext, makeRegistrationFixture().service)),
-    Layer.provide(environmentAuthenticatedAuthLayer),
+    Layer.provide(layerAuthenticatedAuth),
     Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
     Layer.provide(
       Layer.succeed(WorkstreamGateway, {

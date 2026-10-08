@@ -16,7 +16,7 @@ import {
   type ProviderQueueStorage,
   ProviderQueueStorageError,
 } from "./providerQueue.ts";
-import { mergeProviderSnapshot } from "./Layers/ProviderRegistry.ts";
+import { mergeProviderSnapshot } from "./ProviderRegistry.ts";
 import { withInstanceIdentity } from "./Drivers/instanceIdentity.ts";
 import {
   makeQualifiedQuota,

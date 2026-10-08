@@ -1,7 +1,7 @@
 import { TurnItemId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import {
   historyExperimentLayer,

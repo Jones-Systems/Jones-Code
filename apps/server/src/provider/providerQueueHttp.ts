@@ -6,9 +6,9 @@ import {
   type ProviderQueueRefreshResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { annotateEnvironmentRequest, requireEnvironmentScope } from "../auth/http.ts";
-import { ProviderRegistry } from "./Services/ProviderRegistry.ts";
+import { ProviderRegistry } from "./ProviderRegistry.ts";
 import { makeProviderQueue, makeProviderQueueStorage } from "./providerQueue.ts";
 
 const unavailable = (instanceId: ProviderInstanceId): ProviderQueueRefreshResult => ({

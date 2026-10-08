@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Native custody fixtures allocate UUIDs before runtime acquisition and report retained scratch synchronously after teardown.
 import * as NodeAssert from "node:assert/strict";
 import * as NodeCrypto from "node:crypto";
 import * as NodeConsole from "node:console";
@@ -8,7 +9,7 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import { describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { produceCurrentFixture } from "./currentFixtures.ts";
 import type { CurrentFixtureOptions, CurrentProductionResult } from "./currentFixtures.ts";
 import {

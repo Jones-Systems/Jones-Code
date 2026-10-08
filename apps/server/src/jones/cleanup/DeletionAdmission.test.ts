@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { makeDeletionAdmission } from "./DeletionAdmission.ts";

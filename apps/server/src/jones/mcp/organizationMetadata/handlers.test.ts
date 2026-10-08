@@ -12,7 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
+import { McpProtocol, McpSchema, McpServer, Tool } from "effect/ai";
 import {
   HttpBody,
   HttpClient,
@@ -20,18 +20,17 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import * as NetAddress from "effect/unstable/net/NetAddress";
+} from "effect/http";
+import * as NetAddress from "effect/net/NetAddress";
 import { ServerConfig, deriveServerPaths } from "../../../config.ts";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
 import * as Metadata from "./OrganizationMetadataMcpService.ts";
-import {
-  OrganizationMetadataHandlersLive,
-  OrganizationMetadataRegistrationLive,
-} from "./handlers.ts";
+import { OrganizationMetadataHandlersLive } from "./handlers.ts";
+import { OrganizationMetadataRegistrationLive } from "../../../mcp/McpHttpServer.ts";
+import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { OrganizationMetadataToolkit } from "./tools.ts";
 
 const encodeJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -80,9 +79,13 @@ const configLayer = Layer.effect(
 
 const invocation: Invocation.McpInvocationScope = {
   environmentId: EnvironmentId.make("authenticated-environment"),
-  threadId: ThreadId.make("authenticated-thread"),
-  providerSessionId: "private-session",
-  providerInstanceId: ProviderInstanceId.make("codex"),
+  requestNamespace: "private-session",
+  thread: {
+    threadId: ThreadId.make("authenticated-thread"),
+    providerSessionId: "private-session",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  client: undefined,
   capabilities: new Set(["orchestration"]),
   issuedAt: 1,
 };
@@ -158,7 +161,7 @@ it.effect(
     Effect.gen(function* () {
       const toolkit = yield* OrganizationMetadataToolkit.pipe(
         Effect.provide(
-          OrganizationMetadataHandlersLive.pipe(
+          McpToolAccess.HandlersLayer.layer(OrganizationMetadataHandlersLive).pipe(
             Layer.provide(Metadata.layer),
             Layer.provide(dependencies),
           ),
@@ -169,7 +172,7 @@ it.effect(
         {
           ...invocation,
           environmentId: EnvironmentId.make("alternate-environment"),
-          threadId: ThreadId.make("alternate-thread"),
+          thread: { ...invocation.thread!, threadId: ThreadId.make("alternate-thread") },
         },
         invocation,
       ]) {
@@ -184,9 +187,9 @@ it.effect(
         const result = results.at(-1)?.result;
         expect(result).toMatchObject({
           environmentId: caller.environmentId,
-          threadId: caller.threadId,
+          threadId: caller.thread?.threadId,
         });
-        expect(encodeJsonText(result)).not.toContain(caller.providerSessionId);
+        expect(encodeJsonText(result)).not.toContain(caller.thread?.providerSessionId);
         expect(encodeJsonText(result)).not.toContain("authorizationHeader");
       }
     }),
@@ -208,7 +211,11 @@ it.effect(
         },
       });
       const toolkit = yield* OrganizationMetadataToolkit.pipe(
-        Effect.provide(OrganizationMetadataHandlersLive.pipe(Layer.provide(service))),
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(OrganizationMetadataHandlersLive).pipe(
+            Layer.provide(service),
+          ),
+        ),
       );
       for (const name of ["get_invocation_context", "list_organization_thread_metadata"] as const) {
         const results = yield* toolkit.handle(name, {}).pipe(
@@ -225,6 +232,44 @@ it.effect(
           capability: "orchestration",
         });
       }
+      expect(reads).toBe(0);
+    }),
+);
+
+it.effect(
+  "denies caller invocation context to an external OAuth client before reading metadata",
+  () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const service = Layer.succeed(Metadata.OrganizationMetadataMcpService, {
+        getInvocationContext: () => {
+          reads++;
+          return Effect.die("unexpected context read");
+        },
+        listThreadMetadata: () => Effect.die("unused"),
+      });
+      const toolkit = yield* OrganizationMetadataToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(OrganizationMetadataHandlersLive).pipe(
+            Layer.provide(service),
+          ),
+        ),
+      );
+      const results = yield* toolkit.handle("get_invocation_context", {}).pipe(
+        Stream.unwrap,
+        Stream.runCollect,
+        Effect.provideService(Invocation.McpInvocationContext, {
+          ...invocation,
+          requestNamespace: "client:synthetic-session",
+          thread: undefined,
+          client: { sessionId: "synthetic-session", label: "synthetic", access: "read-only" },
+        }),
+        Effect.provide(service),
+      );
+      expect(results.at(-1)?.result).toMatchObject({
+        _tag: "OrchestratorMcpFailure",
+        code: "thread_credential_required",
+      });
       expect(reads).toBe(0);
     }),
 );
@@ -255,7 +300,7 @@ it.effect(
         expect(context.isError).toBe(false);
         expect(context.structuredContent).toMatchObject({
           environmentId: invocation.environmentId,
-          threadId: invocation.threadId,
+          threadId: invocation.thread?.threadId,
           loopbackOrigin: "http://127.0.0.1:43123",
         });
         const page = yield* server

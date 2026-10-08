@@ -1,0 +1,18 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "preview-runtime-identity",
+  "jonesOwnedPaths": [],
+  "hookPaths": [
+    "apps/desktop/src/preview/DesktopBrowserHost.ts",
+    "apps/server/src/preview/DesktopBrowserChannel.ts",
+    "apps/server/src/mcp/PreviewAutomationBroker.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "packages/contracts/src/desktopBrowser.ts",
+    "packages/contracts/src/previewAutomation.ts"
+  ],
+  "tombstones": [
+    "apps/web/src/components/preview/PreviewAutomationHosts.tsx",
+    "apps/web/src/components/preview/PreviewAutomationHosts.test.tsx"
+  ],
+  "allowedImports": []
+}

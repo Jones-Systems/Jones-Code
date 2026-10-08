@@ -5,7 +5,7 @@ import * as Fiber from "effect/Fiber";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import { TestClock } from "effect/testing";
-import * as NetAddress from "effect/unstable/net/NetAddress";
+import * as NetAddress from "effect/net/NetAddress";
 import {
   decodeServiceLauncherContext,
   decodeServiceLauncherChildMessage,

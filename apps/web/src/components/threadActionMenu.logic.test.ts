@@ -8,6 +8,7 @@ import {
 } from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
+  canOperate: true,
   branch: null,
   projectFilter: null,
   isPinned: false,
@@ -72,6 +73,63 @@ describe("buildThreadActionMenuItems", () => {
       }).find((item) => item.id === "stop-thread"),
     ).toMatchObject({ disabled: false });
   });
+  it.each([false, true])(
+    "disables both lifecycle directions without permission (reversed: %s)",
+    (reversed) => {
+      const items = buildThreadActionMenuItems({
+        ...baseState,
+        canOperate: false,
+        isPinned: reversed,
+        isSettled: reversed,
+        isSnoozed: reversed,
+      });
+      const expected = reversed
+        ? [
+            "unpin",
+            "unsettle",
+            "stop-thread",
+            "unsnooze",
+            "rename",
+            "regenerate-title",
+            "auto-settle",
+            "archive",
+            "delete",
+          ]
+        : [
+            "pin",
+            "settle",
+            "stop-thread",
+            "snooze",
+            "rename",
+            "regenerate-title",
+            "auto-settle",
+            "archive",
+            "delete",
+          ];
+      expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(expected);
+      expect(
+        items.find((item) => item.id === "snooze")?.children?.every((child) => child.disabled) ??
+          true,
+      ).toBe(true);
+    },
+  );
+
+  it("preserves local actions and restores mutations after a grant", () => {
+    const denied = buildThreadActionMenuItems({ ...baseState, canOperate: false, branch: "main" });
+    expect(denied.filter((item) => !item.disabled).map((item) => item.id)).toEqual([
+      "new-thread-on-branch",
+      "mark-unread",
+      "copy",
+      "project-settings",
+    ]);
+    const allowed = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: true,
+      canStopSession: true,
+    });
+    expect(allowed.every((item) => !item.disabled)).toBe(true);
+  });
+
   it("hides capability-gated items while keeping Stop available as a disabled action", () => {
     expect(
       ids({

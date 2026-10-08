@@ -28,11 +28,11 @@ import * as Stream from "effect/Stream";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as ServerConfig from "../../config.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
-import * as ProviderInstanceRegistry from "../../provider/Services/ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -47,10 +47,7 @@ import type {
   ProviderAdapterV2Shape,
 } from "../../orchestration-v2/ProviderAdapter.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
-import {
-  OrchestrationV2EventSinkLayerLive,
-  OrchestrationV2LayerLive,
-} from "../../orchestration-v2/runtimeLayer.ts";
+import * as RuntimeLayer from "../../orchestration-v2/runtimeLayer.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 
@@ -173,15 +170,15 @@ const seedProject = (input: {
   );
 
 const TestLayer = Layer.mergeAll(
-  OrchestrationV2LayerLive,
-  OrchestrationV2EventSinkLayerLive,
+  RuntimeLayer.layer,
+  RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
   EffectOutbox.layer,
   ThreadCommandExecutor.layer,
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
-  Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
   Layer.provide(ServerSettings.layerTest()),
@@ -454,7 +451,7 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
   return { ...fixture, turnId, now, queue, tool, writeTool, react, sessionSpy };
 });
 
-it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
+it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
   it.effect.each([null, false] as const)(
     "retains legacy eligibility %s for a separate terminal turn",
     (eligibility) =>

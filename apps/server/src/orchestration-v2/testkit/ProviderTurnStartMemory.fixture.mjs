@@ -38,9 +38,9 @@ const [
   app("orchestration-v2/ContextHandoffService"),
   app("git/GitWorkflowService"),
   app("project/ProjectService"),
-  app("provider/Services/ProviderAuthService"),
+  app("provider/ProviderAuthService"),
   app("serverSettings"),
-  app("provider/Services/ProviderInstanceRegistry"),
+  app("provider/ProviderInstanceRegistry"),
 ]);
 let current;
 let fullReads = 0;

@@ -4,7 +4,7 @@ import type {
   DeviceMediaRoute,
 } from "@t3tools/client-runtime/device/hub-access";
 import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
@@ -30,7 +30,7 @@ vi.mock("@t3tools/client-runtime/state/device", () => ({
   createDeviceEnvironmentAtoms: () => ({}),
 }));
 vi.mock("../../connection/runtime", async () => {
-  const { AsyncResult, Atom } = await import("effect/unstable/reactivity");
+  const { AsyncResult, Atom } = await import("effect/reactivity");
   return { connectionAtomRuntime: { atom: () => Atom.make(AsyncResult.initial()) } };
 });
 vi.mock("../../rpc/atomRegistry", () => ({ appAtomRegistry: { refresh: state.refresh } }));

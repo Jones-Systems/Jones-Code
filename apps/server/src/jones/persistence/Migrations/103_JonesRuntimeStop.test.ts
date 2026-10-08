@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 it.effect(
   "runtime stop migration owns new tables without altering foreign rows and retained identities cannot be replaced",
   () =>
@@ -24,5 +24,5 @@ it.effect(
       assert.deepEqual(yield* sql`SELECT phase,result FROM jones_runtime_stop_observations`, [
         { phase: "started", result: "unknown" },
       ]);
-    }).pipe(Effect.provide(SqlitePersistenceMemory)),
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

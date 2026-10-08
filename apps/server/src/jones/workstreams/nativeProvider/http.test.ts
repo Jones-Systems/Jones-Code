@@ -11,7 +11,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { TestClock } from "effect/testing";
 import { createNativeProviderHandlers } from "./http.ts";
 import { makeWorkstreamsNativeProvider } from "./service.ts";

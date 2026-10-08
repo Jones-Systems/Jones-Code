@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import migration from "./104_JonesDeletionAdmission.ts";
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 it.effect(

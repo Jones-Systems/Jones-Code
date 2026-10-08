@@ -2,10 +2,10 @@
   "schema": "jones.boundary-inventory/v1",
   "upstream": {
     "repository": "pingdotgg/t3code",
-    "tag": "v0.0.46-nightly.20261004.2648",
-    "commit": "5a96895a85b43c838da6c89cf21068b99c003d5a"
+    "tag": "v0.0.46-nightly.20261007.2787",
+    "commit": "f570bd21663f56ce94c41829d3b7d72886e25a34"
   },
-  "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
+  "baseline": "f570bd21663f56ce94c41829d3b7d72886e25a34",
   "paths": {
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
@@ -439,8 +439,6 @@
     "apps/web/src/components/files/PdfPreview.test.tsx": "jones-owned",
     "apps/web/src/components/files/PdfPreview.tsx": "jones-owned",
     "apps/web/src/components/files/fileEditorHighlight.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/components/preview/PreviewAutomationHosts.test.tsx": "jones-tests-in-upstream",
-    "apps/web/src/components/preview/PreviewAutomationHosts.tsx": "accepted-shared",
     "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.test.tsx": "jones-owned",
     "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.tsx": "jones-owned",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx": "accepted-shared",

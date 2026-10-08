@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { runJonesMigrations } from "./JonesMigrationGuard.ts";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
@@ -67,7 +67,7 @@ const futureMigration = Effect.gen(function* () {
 const futureEntries = [...originals, [100, "FutureProbe", futureMigration] as const];
 
 it.effect(
-  "runs upstream 1–56, the six released Jones effects and receiving native execution once",
+  "runs upstream 1–59, the six released Jones effects and receiving native execution once",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -295,7 +295,7 @@ it.effect.each([
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* seedLegacy();
-    yield* runMigrations({ toMigrationInclusive: 56 });
+    yield* runMigrations({ toMigrationInclusive: 59 });
     yield* sql.unsafe(corrupt);
     const before = yield* readLedger;
     const schema = yield* readSchema;
@@ -333,7 +333,7 @@ it.effect("rejects a future ledger gap instead of skipping a pending lower regis
 it.effect("an explicit upstream limit leaves absent and invalid Jones history untouched", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 56 }), migrationManifest);
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 59 }), migrationManifest);
     assert.deepStrictEqual(
       yield* sql`SELECT name FROM sqlite_master WHERE name = 'jones_sql_migrations' OR name = 'worktree_ownership_leases'`,
       [],
@@ -341,7 +341,7 @@ it.effect("an explicit upstream limit leaves absent and invalid Jones history un
     yield* sql`CREATE TABLE jones_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)`;
     yield* sql`INSERT INTO jones_sql_migrations VALUES (99, 'Unknown')`;
     const before = yield* sql`SELECT * FROM jones_sql_migrations`;
-    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 56 }), []);
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 59 }), []);
     assert.deepStrictEqual(yield* sql`SELECT * FROM jones_sql_migrations`, before);
   }).pipe(Effect.provide(memory)),
 );

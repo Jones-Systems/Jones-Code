@@ -147,7 +147,7 @@ async function loadSource(source) {
     Option: "effect/Option",
     Stream: "effect/Stream",
     Logger: "effect/Logger",
-    SqlClient: "effect/unstable/sql/SqlClient",
+    SqlClient: "effect/sql/SqlClient",
     NodeServices: "@effect/platform-node/NodeServices",
   };
   const files = {

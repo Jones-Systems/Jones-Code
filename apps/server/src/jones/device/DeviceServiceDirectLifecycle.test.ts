@@ -8,7 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
-import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as ServerConfig from "../../config.ts";

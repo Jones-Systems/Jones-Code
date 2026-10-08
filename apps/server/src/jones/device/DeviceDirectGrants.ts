@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The server-local grant boundary retains its synchronous CSPRNG token encoding without adding a new service or error contract.
 import * as NodeCrypto from "node:crypto";
 import {
   AuthOrchestrationReadScope,
