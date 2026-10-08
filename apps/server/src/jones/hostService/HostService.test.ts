@@ -465,7 +465,7 @@ it.effect.each([
     } else if (failure === "active-qualified") {
       f.files.set(
         `${baseDir}/runtime/service-state.json`,
-        JSON.stringify({
+        yield* encodeUnknownJson({
           protocol: SERVICE_LAUNCHER_PROTOCOL,
           activeVersion: "0.0.44-preview.20261007.100.1",
         }),
@@ -504,7 +504,7 @@ it.effect.each(["desktop", "target-qualified", "active-qualified"] as const)(
       } else {
         f.files.set(
           `${baseDir}/runtime/service-state.json`,
-          JSON.stringify({
+          yield* encodeUnknownJson({
             protocol: SERVICE_LAUNCHER_PROTOCOL,
             activeVersion: "0.0.44-preview.20261007.100.1",
           }),
@@ -540,7 +540,7 @@ it.effect.each(["invalid", "unreadable", "pending"] as const)(
         statePath,
         failure === "invalid"
           ? "{broken"
-          : JSON.stringify({
+          : yield* encodeUnknownJson({
               protocol: SERVICE_LAUNCHER_PROTOCOL,
               activeVersion: packageJson.version,
               ...(failure === "pending"
