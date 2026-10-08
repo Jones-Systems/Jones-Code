@@ -1300,6 +1300,34 @@ export const layerWithOptions = (
           ),
         );
 
+      const retainThreadForWorkMode = (
+        threadId: ThreadId,
+        providerSessionId: ProviderSessionId,
+        providerInstanceId: ProviderInstanceId,
+      ) =>
+        Effect.gen(function* () {
+          if (Option.isNone(serverSettings)) return false;
+          const settings = yield* serverSettings.value.getSettings;
+          if (!settings.workModeEnabled) return false;
+          const thread = yield* projectionStore.getThread(threadId);
+          if (
+            thread.archivedAt !== null ||
+            thread.deletedAt !== null ||
+            thread.settledAt !== null ||
+            thread.settledOverride === "settled" ||
+            thread.lineage.parentThreadId !== null ||
+            thread.lineage.relationshipToParent !== null ||
+            thread.activeProviderThreadId === null
+          )
+            return false;
+          return WorkModeRetention.workModeRetainsSession({
+            projection: yield* projectionStore.getThreadProjection(threadId),
+            providerSessionId,
+            providerInstanceId,
+            nowMs: yield* Clock.currentTimeMillis,
+          });
+        }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+
       // Annotated to break the releaseIfStillIdle <-> scheduleIdleReleaseInternal
       // inference cycle introduced by the pin re-arm below.
       const releaseIfStillIdle = (input: {
@@ -1326,35 +1354,19 @@ export const layerWithOptions = (
               : yield* probedRuntime.hasPendingBackgroundWork.pipe(
                   Effect.catchCause(() => Effect.succeed(false)),
                 );
-          const retainForWorkMode = Option.isNone(serverSettings)
-            ? false
-            : yield* Effect.gen(function* () {
-                const settings = yield* serverSettings.value.getSettings;
-                if (!settings.workModeEnabled) return false;
-                for (const threadId of entry.attachedThreadIds) {
-                  const eligible = yield* Effect.gen(function* () {
-                    const thread = yield* projectionStore.getThread(threadId);
-                    if (
-                      thread.archivedAt !== null ||
-                      thread.deletedAt !== null ||
-                      thread.settledAt !== null ||
-                      thread.settledOverride === "settled" ||
-                      thread.lineage.parentThreadId !== null ||
-                      thread.lineage.relationshipToParent !== null ||
-                      thread.activeProviderThreadId === null
-                    )
-                      return false;
-                    return WorkModeRetention.workModeRetainsSession({
-                      projection: yield* projectionStore.getThreadProjection(threadId),
-                      providerSessionId: input.providerSessionId,
-                      providerInstanceId: probedRuntime.instanceId,
-                      nowMs: yield* Clock.currentTimeMillis,
-                    });
-                  }).pipe(Effect.catchCause(() => Effect.succeed(false)));
-                  if (eligible) return true;
-                }
-                return false;
-              }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+          const retainForWorkMode = yield* Effect.gen(function* () {
+            for (const threadId of entry.attachedThreadIds) {
+              if (
+                yield* retainThreadForWorkMode(
+                  threadId,
+                  input.providerSessionId,
+                  probedRuntime.instanceId,
+                )
+              )
+                return true;
+            }
+            return false;
+          });
           if (hasPendingWork) {
             const now = yield* Clock.currentTimeMillis;
             const pinnedSinceMs = entry.pinnedSinceMs ?? now;
@@ -1873,6 +1885,12 @@ export const layerWithOptions = (
                   : yield* entry.runtime
                       .hasPendingBackgroundWorkForThread(pending.providerThread)
                       .pipe(Effect.catchCause(() => Effect.succeed(false)));
+              const retainForWorkMode = yield* retainThreadForWorkMode(
+                input.threadId,
+                input.providerSessionId,
+                entry.runtime.instanceId,
+              );
+              if (retainForWorkMode) return "work-mode-deferred" as const;
               if (hasPendingWork) return "deferred" as const;
               const unloading = yield* Ref.modify(sessions, (current) => {
                 const latest = current.get(key);
@@ -1911,10 +1929,16 @@ export const layerWithOptions = (
               return "unloaded" as const;
             }),
           );
-          // Re-check on this fiber after another idle window, outside the
+          // Re-check on this fiber after the retention window, outside the
           // lock so the thread's next attach is not held up meanwhile.
-          if (outcome === "deferred") {
-            yield* Effect.sleep(Duration.millis(idleTimeoutMs));
+          if (outcome === "deferred" || outcome === "work-mode-deferred") {
+            yield* Effect.sleep(
+              Duration.millis(
+                outcome === "work-mode-deferred"
+                  ? WorkModeRetention.WORK_MODE_RETENTION_RECHECK_MS
+                  : idleTimeoutMs,
+              ),
+            );
             return yield* unloadIdleThread(input);
           }
         });
@@ -2400,6 +2424,7 @@ export const layerWithOptions = (
             return unknown("runtime_binding_changed");
           const runtime = entry.runtime;
           const loadedKey = entry.loadedProviderThreadKeyByThread.get(threadId);
+          if (loadedKey === undefined) return unknown("runtime_not_loaded");
           const attachedThreadIds = entry.attachedThreadIds;
           const evidenceRevision = provider?.runtimeIdentity?.evidenceRevision ?? null;
           const isCurrent = Effect.gen(function* () {
@@ -2473,6 +2498,7 @@ export const layerWithOptions = (
             if (binding === undefined || binding.threadId !== threadId)
               return unavailable("native_binding_unavailable");
             const loadedKey = entry.loadedProviderThreadKeyByThread.get(threadId);
+            if (loadedKey === undefined) return unavailable("runtime_not_loaded");
             const sampledAt = yield* Clock.currentTimeMillis;
             const observation = yield* runtime
               .readThreadActivity(provider)
@@ -2529,9 +2555,10 @@ export const layerWithOptions = (
           const entry = (yield* Ref.get(sessions)).get(key);
           if (!entry || !entry.attachedThreadIds.has(threadId) || !entry.runtime.captureRuntimeStop)
             return null;
+          const loadedKey = entry.loadedProviderThreadKeyByThread.get(threadId);
+          if (loadedKey === undefined) return null;
           const captured = yield* entry.runtime.captureRuntimeStop(provider);
           if (captured === null || captured.binding.threadId !== threadId) return null;
-          const loadedKey = entry.loadedProviderThreadKeyByThread.get(threadId);
           const isCurrent = Effect.gen(function* () {
             if (!(yield* captured.isCurrent)) return false;
             const after = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
