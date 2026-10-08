@@ -87,6 +87,17 @@ it does not eliminate compatibility work. Explain necessary shared-file edits.
   domain services and transports thin. Use `.repos/effect-smol/LLMS.md` for
   Effect library guidance when needed; vendored references are read-only.
 
+## Pull request merge qualification
+
+Ordinary PR merges require passing applicable checks on the current head.
+For an atomically selected, contiguous complete stack, follow the standing
+[atomic stack qualification policy](docs/operations/contributor-guidance.md#atomic-stack-qualification).
+A qualified current top may cover lower failures repaired higher in that group;
+record their repair evidence instead of making every intermediate layer green
+or requesting a new exception for each eligible stack. Broken prefixes cannot
+merge independently. Merge authority, required reviews and thread resolution
+still apply; the policy does not authorize bypasses or ruleset changes.
+
 ## Test data
 
 Follow [test data](docs/operations/development.md#test-data) for synthetic

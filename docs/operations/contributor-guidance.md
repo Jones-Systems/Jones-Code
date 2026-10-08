@@ -253,6 +253,40 @@ reported problems against the source, and follow the task's authority for
 disposition and fixes. Stay quiet when nothing changes. Report current-head
 results and unresolved findings; absence of a bot review is not a failure.
 
+### Atomic stack qualification
+
+Ordinary PR merges require passing applicable checks on the exact current head.
+The standing policy for a complete atomic stack qualifies the composed
+result rather than every intermediate layer. It applies only when all of the
+following hold:
+
+- The selected group is contiguous and complete: the import or foundational
+  change and every repair it needs are included, with the receiving base and
+  constituent PR heads recorded. The current top contains all those changes.
+- That exact top is qualified for the complete group's upstream behavior and
+  Jones parity, with passing applicable checks and full applicable coverage.
+  Skipped, unavailable or unrelated checks do not prove coverage. Refresh
+  qualification if the top, a constituent head or the receiving base changes.
+- The failure-to-repair ledger maps each lower failure to its repair higher in
+  the selected group and the passing check on the composed top that proves
+  restoration. No unexplained or unrepaired lower failure remains.
+- Integration lands the complete qualified group atomically. A broken import
+  or intermediate prefix cannot merge independently. A non-atomic queue or
+  sequence must qualify every group it actually lands before landing it.
+
+For an eligible group, keep lower CI failures visible as resolved-by-higher
+entries in the ledger. Do not add work merely to make already-repaired lower
+layers green, and do not request a separate CI exception for each occurrence
+of this accepted pattern. If a failure lacks a qualified repair or the group
+cannot land atomically, this policy does not cover it.
+
+Normal merge authorization, required reviews, resolved review threads and
+receiving-ref/tree readback remain required for the selected group. This
+qualification policy grants no merge authority and never permits bypassing
+required checks or changing repository rulesets. If repository enforcement
+prevents the intended atomic integration, hold that operation and report the
+specific constraint.
+
 ## Documentation
 
 Most code changes do not need an internal documentation change. Prefer code,
