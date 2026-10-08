@@ -715,6 +715,7 @@ export function HomeScreen(props: HomeScreenProps) {
         groups: workstreams.groups,
         collapsedKeys: workstreams.collapsedKeys,
         secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+        selectedThreadKey,
         searching: props.searchQuery.trim().length > 0,
       }),
     [
@@ -723,6 +724,7 @@ export function HomeScreen(props: HomeScreenProps) {
       workstreams.groups,
       workstreams.collapsedKeys,
       workstreams.secondaryLabelsByKey,
+      selectedThreadKey,
       props.searchQuery,
     ],
   );

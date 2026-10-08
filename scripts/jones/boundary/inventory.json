@@ -2,10 +2,10 @@
   "schema": "jones.boundary-inventory/v1",
   "upstream": {
     "repository": "pingdotgg/t3code",
-    "tag": "v0.0.46-nightly.20261007.2787",
-    "commit": "f570bd21663f56ce94c41829d3b7d72886e25a34"
+    "tag": "v0.0.46-nightly.20261008.2801",
+    "commit": "d720210996a514368ba99f4860063110033d93fa"
   },
-  "baseline": "f570bd21663f56ce94c41829d3b7d72886e25a34",
+  "baseline": "d720210996a514368ba99f4860063110033d93fa",
   "paths": {
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
@@ -420,7 +420,7 @@
     "apps/server/src/provider/qualifiedQuota.ts": "jones-owned",
     "apps/server/src/provider/testFixtures/codexCollabMockPeer.mjs": "accepted-shared",
     "apps/server/src/pullRequest/GitHubCiStatus.test.ts": "jones-owned",
-    "apps/server/src/pullRequest/GitHubPullRequestCli.ts": "accepted-shared",
+    "apps/server/src/pullRequest/GitHubPullRequestApi.ts": "accepted-shared",
     "apps/server/src/pullRequest/PullRequestCiStatus.test.ts": "jones-owned",
     "apps/server/src/pullRequest/PullRequestService.ts": "accepted-shared",
     "apps/server/src/relay/AgentAwarenessRelay.test.ts": "jones-tests-in-upstream",
