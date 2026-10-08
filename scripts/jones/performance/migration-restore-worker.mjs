@@ -78,7 +78,7 @@ async function loadModules(source, current) {
     Layer: "effect/Layer",
     ManagedRuntime: "effect/ManagedRuntime",
     Logger: "effect/Logger",
-    SqlClient: "effect/unstable/sql/SqlClient",
+    SqlClient: "effect/sql/SqlClient",
     NodeServices: "@effect/platform-node/NodeServices",
   };
   const files = {

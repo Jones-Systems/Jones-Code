@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Synchronous fixture hashing verifies exact boundary source bytes.
 import * as NodeCrypto from "node:crypto";
 import { describe, expect, it } from "vite-plus/test";
 import {

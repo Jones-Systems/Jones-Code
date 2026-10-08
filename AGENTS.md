@@ -23,6 +23,14 @@ Source changes do not update an installed application, adopt a runtime, publish
 a release, or authorize deployment. Report source and operational results
 separately.
 
+## Jones-owned changes
+
+Before adding or changing Jones-specific behavior, follow the
+[extraction rules](docs/operations/contributor-guidance.md#keep-jones-changes-separate-from-upstream).
+Keep Jones logic and tests in Jones-owned modules, with small recorded hooks
+into T3-owned files. This reduces recurring conflicts when importing T3 Code;
+it does not eliminate compatibility work. Explain necessary shared-file edits.
+
 ## Boundaries that apply throughout
 
 - Execution belongs to the server environment that owns the workspace:

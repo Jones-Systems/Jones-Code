@@ -13,9 +13,9 @@
     "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
     "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
     "apps/server/src/provider/Drivers/CodexDriver.test.ts",
-    "apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.ts",
-    "apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts",
-    "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+    "apps/server/src/provider/ProviderInstanceRegistryHydration.ts",
+    "apps/server/src/provider/ProviderInstanceRegistry.test.ts",
+    "apps/server/src/provider/ProviderRegistry.test.ts",
     "apps/server/src/resourceTelemetry/Model.test.ts",
     "apps/server/src/resourceTelemetry/Model.ts",
     "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts",
@@ -59,15 +59,15 @@
       "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
     },
     {
-      "from": "apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.ts",
+      "from": "apps/server/src/provider/ProviderInstanceRegistryHydration.ts",
       "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
     },
     {
-      "from": "apps/server/src/provider/Layers/ProviderInstanceRegistryLive.test.ts",
+      "from": "apps/server/src/provider/ProviderInstanceRegistry.test.ts",
       "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
     },
     {
-      "from": "apps/server/src/provider/Layers/ProviderRegistry.test.ts",
+      "from": "apps/server/src/provider/ProviderRegistry.test.ts",
       "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
     },
     {
