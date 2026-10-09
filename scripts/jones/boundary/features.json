@@ -419,6 +419,14 @@
         "apps/server/src/persistence/AuthPairingLinks.test.ts"
       ],
       "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; native host qualification and runtime adoption remain separate."
+    },
+    {
+      "id": "persistence-upstream-isolation",
+      "tests": [
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts"
+      ],
+      "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows."
     }
   ]
 }

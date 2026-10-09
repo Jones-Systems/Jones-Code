@@ -25,6 +25,14 @@ const originals = [
   [5, "WorkstreamsNativeAttempts", Jones005],
   [6, "WorkstreamsProviderEnrollments", Jones006],
 ] as const;
+// Released builds of 002 added this upstream column; the identity now has no effect.
+const released002 = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE projection_thread_sessions ADD COLUMN runtime_identity_json TEXT`;
+});
+const releasedEffects = originals.map(
+  ([id, name, migration]) => [id, name, id === 2 ? released002 : migration] as const,
+);
 const names = originals.map(([migration_id, name]) => ({ migration_id, name }));
 const foreignV2Names = [
   "V2NativeAcceptance",
@@ -53,7 +61,7 @@ const seedLegacy = (prefix = 6) =>
     created_at datetime NOT NULL DEFAULT current_timestamp,
     name VARCHAR(255) NOT NULL
   )`;
-    for (const [id, name, migration] of originals.slice(0, prefix)) {
+    for (const [id, name, migration] of releasedEffects.slice(0, prefix)) {
       yield* migration;
       yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
     }
@@ -80,7 +88,7 @@ it.effect(
         yield* sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
         migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
       );
-      assert.ok(
+      assert.isFalse(
         (yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_thread_sessions)`).some(
           ({ name }) => name === "runtime_identity_json",
         ),
@@ -157,7 +165,11 @@ it.effect.each([0, 1, 2, 3, 4, 5, 6])(
         yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id < 100 ORDER BY migration_id`,
         names,
       );
-      for (const row of oldSchema) {
+      // 105 rebuilds this table without its upstream reference; UpstreamIsolation.test.ts
+      // covers that shape. Its triggers keep their released text.
+      for (const row of oldSchema.filter(
+        ({ type, name }) => type !== "table" || name !== "workstreams_native_enrollments",
+      )) {
         assert.ok(
           (yield* readSchema).some(
             (current) => current.name === row.name && current.sql === row.sql,
@@ -350,7 +362,7 @@ const encodePreexistingRuntimeIdentity = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ runtimeGeneration: Schema.String })),
 );
 
-it.effect("leaves bounded upstream replay untouched and migrates existing sessions as null", () =>
+it.effect("leaves bounded upstream replay untouched and thread sessions in upstream shape", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 54 });
@@ -364,17 +376,21 @@ it.effect("leaves bounded upstream replay untouched and migrates existing sessio
       (thread_id, status, provider_name, runtime_mode, updated_at)
       VALUES ('old-session', 'ready', 'codex', 'full-access', '2026-09-01T00:00:00.000Z')`;
     yield* runMigrations();
-    assert.deepEqual(yield* sql`SELECT runtime_identity_json FROM projection_thread_sessions`, [
-      { runtime_identity_json: null },
+    assert.deepEqual(
+      yield* sql<{ name: string }>`PRAGMA table_info(projection_thread_sessions)`,
+      before,
+    );
+    assert.deepEqual(yield* sql`SELECT thread_id FROM projection_thread_sessions`, [
+      { thread_id: "old-session" },
     ]);
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("preserves preexisting identity JSON when the column predates the fork ledger", () =>
+it.effect("preserves identity JSON in a column added by a released build", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 54 });
-    yield* Jones002;
+    yield* released002;
     const identity = encodePreexistingRuntimeIdentity({ runtimeGeneration: "preexisting-runtime" });
     yield* sql`INSERT INTO projection_thread_sessions
       (thread_id, status, provider_name, runtime_mode, updated_at, runtime_identity_json)

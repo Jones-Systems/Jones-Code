@@ -30,6 +30,9 @@ Before adding or changing Jones-specific behavior, follow the
 Keep Jones logic and tests in Jones-owned modules, with small recorded hooks
 into T3-owned files. This reduces recurring conflicts when importing T3 Code;
 it does not eliminate compatibility work. Explain necessary shared-file edits.
+Database changes follow the [Jones database boundary](docs/operations/contributor-guidance.md#jones-database-boundary):
+never change upstream schema, ledgers or rows; keep Jones metadata in sparse
+Jones-owned tables keyed by upstream IDs, without references to upstream tables.
 
 ## Boundaries that apply throughout
 

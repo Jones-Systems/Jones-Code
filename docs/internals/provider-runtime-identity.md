@@ -40,8 +40,8 @@ instance, driver, model and explicit tier remain current. A requested-configurat
 change rejects that stale writer even when the process generation is unchanged.
 
 Full and detail views retain each provider thread's own identity. Shell identity
-comes only from the exact active provider thread of that application thread. Old snapshots may omit identity, and legacy Jones migration002 remains compatibility
-storage rather than evidence of a live V2 runtime. Explicit service-tier options
+comes only from the exact active provider thread of that application thread. Old snapshots may omit identity. A `runtime_identity_json` column left by released
+Jones migration 002 is unused residue, not evidence of a live V2 runtime. Explicit service-tier options
 are recorded as requested; normalization of the fast-mode alias remains deferred.
 A native launch followed by binding-publication failure remains an unknown effect:
 fail visibly and stop replay. Automatic recovery of that boundary is deferred.
