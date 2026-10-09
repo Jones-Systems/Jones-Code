@@ -91,6 +91,7 @@ function createDesktopClerkBridge(stateDir: string, isDevelopment: boolean) {
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  if (environment.previewCompanionProduct) return DesktopClerk.of({ configure: Effect.void });
   const electronApp = yield* ElectronApp.ElectronApp;
   const shell = yield* ElectronShell.ElectronShell;
 

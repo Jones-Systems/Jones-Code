@@ -10,6 +10,7 @@ import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
+import * as CompanionChannels from "./jones/previewCompanion/channels.ts";
 import { mergeLegacyLocalStorage } from "./legacyLocalStorageMerge.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
@@ -76,6 +77,38 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  previewCompanion: {
+    getState: () => ipcRenderer.invoke(CompanionChannels.GET_STATE),
+    configure: (input) => ipcRenderer.invoke(CompanionChannels.CONFIGURE, input),
+    setTicketProviderReady: (ready) =>
+      ipcRenderer.invoke(CompanionChannels.TICKET_PROVIDER_READY, ready),
+    completeTicket: (response) => ipcRenderer.invoke(CompanionChannels.COMPLETE_TICKET, response),
+    retry: () => ipcRenderer.invoke(CompanionChannels.RETRY),
+    onTicketRequest: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (typeof value !== "object" || value === null) return;
+        listener(value as Parameters<typeof listener>[0]);
+      };
+      ipcRenderer.on(CompanionChannels.TICKET_REQUEST, handler);
+      return () => ipcRenderer.removeListener(CompanionChannels.TICKET_REQUEST, handler);
+    },
+    onNotice: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (typeof value !== "object" || value === null) return;
+        listener(value as Parameters<typeof listener>[0]);
+      };
+      ipcRenderer.on(CompanionChannels.NOTICE, handler);
+      return () => ipcRenderer.removeListener(CompanionChannels.NOTICE, handler);
+    },
+    onState: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (typeof value !== "object" || value === null) return;
+        listener(value as Parameters<typeof listener>[0]);
+      };
+      ipcRenderer.on(CompanionChannels.STATE, handler);
+      return () => ipcRenderer.removeListener(CompanionChannels.STATE, handler);
+    },
+  },
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {

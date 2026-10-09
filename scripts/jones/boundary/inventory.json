@@ -359,7 +359,6 @@
     "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/ThreadMessageIntake.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/ThreadStream.ts": "accepted-shared",
-    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/WireProjection.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/WireProjection.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/http.ts": "accepted-shared",
@@ -806,7 +805,9 @@
     "scripts/stamp-jones-build.ts": "jones-owned",
     "packages/contracts/src/auth.test.ts": "jones-tests-in-upstream",
     "apps/mobile/src/state/thread-task-permissions.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/persistence/AuthPairingLinks.ts": "accepted-shared",
+    "apps/server/src/persistence/AuthPairingLinks.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

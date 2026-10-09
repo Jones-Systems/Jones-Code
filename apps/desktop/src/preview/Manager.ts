@@ -59,6 +59,7 @@ import * as Scope from "effect/Scope";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { notifyCompanionPopupBlocked } from "../jones/previewCompanion/CompanionPopup.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { MENU_ACTION_CHANNEL, PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL } from "../ipc/channels.ts";
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
@@ -1661,6 +1662,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.ipc.on(RECORDING_INPUT_CHANNEL, recordingInput);
         wc.ipc.on(MOUSE_NAVIGATE_CHANNEL, mouseNavigate);
         wc.setWindowOpenHandler((details) => {
+          if (browserHost.isCompanionGuest(wc)) {
+            notifyCompanionPopupBlocked(details.url);
+            return { action: "deny" };
+          }
           if (previewWindowOpenAction(details) === "popup") {
             return { action: "allow", overrideBrowserWindowOptions: POPUP_WINDOW_OPTIONS };
           }
@@ -1861,6 +1866,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ) {
       return yield* new PreviewWebContentsNotFoundError({ tabId, webContentsId });
     }
+    if (tab.serverTab) browserHost.registerCompanionGuest(tab.serverTab, wc);
     yield* rendererHistory.register(wc, { surface: "preview", tabId });
     const attached = yield* Ref.get(attachedRef);
     const annotationTheme = yield* Ref.get(annotationThemeRef);
@@ -3696,8 +3702,8 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const browserSession = yield* BrowserSession.BrowserSession;
   const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
   const downloadSessions = new WeakSet<Electron.Session>();
-  // Server tabs save downloads where the server's engine reads them. Downloads
-  // the person starts in a tab the server is not driving keep Electron's dialog.
+  // The host cancels companion downloads and places local server downloads on
+  // the shared disk. Other tabs keep Electron's dialog.
   const placeServerDownloads = (session: Electron.Session) => {
     if (downloadSessions.has(session)) return;
     downloadSessions.add(session);

@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
 
 import { JonesUpdateState } from "./jones/jonesUpdates.ts";
 import type {
@@ -1165,6 +1166,7 @@ export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
+  previewCompanion?: DesktopCompanionBridge;
   getAppBranding: () => DesktopAppBranding | null;
   getPreviewAutomationRuntimeIdentity?: () => Promise<PreviewAutomationRuntimeIdentity>;
   /** Absolute path of a dropped or picked file; absent on desktop builds predating it. */

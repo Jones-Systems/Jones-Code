@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/preview-companion/http": {
+      "types": "./src/jones/previewCompanion/http.ts",
+      "default": "./src/jones/previewCompanion/http.ts"
+    },
+    "./jones/preview-companion/stream-unavailable": {
+      "types": "./src/jones/previewCompanion/streamUnavailable.ts",
+      "default": "./src/jones/previewCompanion/streamUnavailable.ts"
+    },
     "./jones/imported-history/commands": {
       "types": "./src/jones/importedHistory/commands.ts",
       "default": "./src/jones/importedHistory/commands.ts"

@@ -122,7 +122,6 @@
     "apps/server/src/cloud/serviceProtocol.ts",
     "apps/server/src/config.ts",
     "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.testkit.ts",
-    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts",
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
     "apps/server/src/serviceLauncher.test.ts",

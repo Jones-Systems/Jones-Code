@@ -17,8 +17,6 @@ const legacyReaders = ["orchestration-v2/legacy/", "persistence/Migrations/"] as
  * list short; new V1 reads belong in the importer.
  */
 const legacyReaderFiles: Record<string, string> = {
-  "jones/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.ts":
-    "extracted schema history adds runtime identity to V1 thread sessions",
   // Provider history for settings migration reads V1 thread sessions once at load.
   "serverSettings.ts": "one-time provider history for settings migration",
 };

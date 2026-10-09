@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 
 import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./methods/providerAuth.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
+import * as CompanionIpc from "../jones/previewCompanion/ipcMethods.ts";
 import { openDeviceMediaTunnel, closeDeviceMediaTunnel } from "../jones/deviceMedia/ipcMethods.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
@@ -85,6 +86,7 @@ import {
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
+  yield* CompanionIpc.install;
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();
 

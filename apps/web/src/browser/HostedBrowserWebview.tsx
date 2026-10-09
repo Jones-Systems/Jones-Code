@@ -1,5 +1,6 @@
 "use client";
 
+import { registerCompanionGuest } from "../jones/previewCompanion/guest";
 import type {
   DesktopPreviewColorScheme,
   PreviewViewportSetting,
@@ -13,7 +14,11 @@ import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import { cn, isMacPlatform } from "~/lib/utils";
 
-import { resolveBrowserSurfacePanelRect, useBrowserSurfaceStore } from "./browserSurfaceStore";
+import {
+  acquireBrowserSurfaceActivity,
+  resolveBrowserSurfacePanelRect,
+  useBrowserSurfaceStore,
+} from "./browserSurfaceStore";
 import { useActiveBrowserRecordingTabIds } from "./browserRecording";
 import {
   browserViewportSettingKey,
@@ -60,8 +65,9 @@ export function HostedBrowserWebview(props: {
    */
   readonly profileId: string | undefined;
   readonly zoomFactor: number;
-  /** A tab of the desktop's own server; the server drives this webview's page. */
+  /** The environment drives this webview through a local or companion channel. */
   readonly serverDriven?: boolean;
+  readonly companion?: boolean;
   /**
    * For a server-driven tab, the appearance and zoom its environment published,
    * which this webview follows so every client and agent sees one state.
@@ -81,11 +87,12 @@ export function HostedBrowserWebview(props: {
     zoomFactor,
     profileId,
     serverDriven = false,
+    companion = false,
     serverRendering,
   } = props;
   const clientSettingsHydrated = useClientSettingsHydrated();
   const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
-  const [initialSrc] = useState(() => initialUrl ?? "about:blank");
+  const [initialSrc] = useState(() => (companion ? "about:blank" : (initialUrl ?? "about:blank")));
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<ElectronWebview | null>(null);
@@ -141,6 +148,11 @@ export function HostedBrowserWebview(props: {
   }, [runtimeTabId, serverZoomFactor]);
 
   const [webviewGeneration, setWebviewGeneration] = useState(0);
+  useEffect(
+    () => (companion ? acquireBrowserSurfaceActivity(runtimeTabId) : undefined),
+    [companion, runtimeTabId],
+  );
+
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
   const latestUrlRef = useRef(initialUrl);
 
@@ -157,23 +169,43 @@ export function HostedBrowserWebview(props: {
     const bridge = previewBridge;
     if (!clientSettingsHydrated || !webview || !config || !bridge) return;
     let disposed = false;
+    let registered = false;
+    let registering = false;
     let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
     const register = () => {
       const lease = tabLeaseRef.current;
-      if (!lease) return;
+      if (!lease || (companion && registered) || registering) return;
+      registering = true;
       void (async () => {
         try {
           // The main-process tab and the DOM webview are created by separate
           // effects. Wait for the former so registration cannot race and fail
           // with PreviewTabNotFoundError on a fast about:blank attachment.
-          await lease.ready;
-          if (disposed || webviewRef.current !== webview) return;
-          const webContentsId = webview.getWebContentsId();
-          if (Number.isInteger(webContentsId) && webContentsId > 0) {
+          const isCurrent = () => !disposed && webviewRef.current === webview;
+          const registerWebview = async () => {
+            const webContentsId = webview.getWebContentsId();
+            if (!Number.isInteger(webContentsId) || webContentsId <= 0)
+              throw new Error("Guest is not attached.");
             await bridge.registerWebview(runtimeTabId, webContentsId);
+          };
+          if (companion) {
+            registered = await registerCompanionGuest({
+              ready: lease.ready,
+              isCurrent,
+              register: registerWebview,
+              url: () => latestUrlRef.current,
+              navigate: (url) => {
+                webview.src = url;
+              },
+            });
+          } else {
+            await lease.ready;
+            if (isCurrent()) await registerWebview();
           }
         } catch {
           // did-attach/dom-ready will retry if the guest was not ready yet.
+        } finally {
+          registering = false;
         }
       })();
     };
@@ -185,7 +217,7 @@ export function HostedBrowserWebview(props: {
       recoveryTimeout = setTimeout(() => {
         recoveryTimeout = null;
         if (!disposed) {
-          setRecoverySrc(latestUrlRef.current ?? initialSrc);
+          setRecoverySrc(companion ? "about:blank" : (latestUrlRef.current ?? initialSrc));
           setWebviewGeneration((generation) => generation + 1);
         }
       }, recovery.delayMs);
@@ -211,7 +243,7 @@ export function HostedBrowserWebview(props: {
       webview.removeEventListener("render-process-gone", recoverGuest);
       webview.removeEventListener("focus", dismissHostPopups);
     };
-  }, [clientSettingsHydrated, config, initialSrc, runtimeTabId, webviewGeneration]);
+  }, [clientSettingsHydrated, companion, config, initialSrc, runtimeTabId, webviewGeneration]);
 
   const active = presentation.visible && presentation.rect !== null;
   const lastRect = presentation.rect;

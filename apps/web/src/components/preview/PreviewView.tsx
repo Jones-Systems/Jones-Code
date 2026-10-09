@@ -1,4 +1,6 @@
-"use client";
+import { CompanionToolbar } from "../../jones/previewCompanion/HostControls";
+import { useCompanionBindings } from "../../jones/previewCompanion/state";
+("use client");
 
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
@@ -166,6 +168,10 @@ export function PreviewView({
   const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
   // Server tabs run in the environment's browser and stream to any client, except the
   // desktop app's own server's tabs, which render here natively while the server drives them.
+  const companionBinding = useCompanionBindings(threadRef);
+  const companionTab =
+    companionBinding?.status === "ready" &&
+    companionBinding.value.tabs.some((tab) => tab.tabId === tabId && tab.hostId !== null);
   const nativeServerTab = useRendersServerTabNatively(threadRef.environmentId, snapshot);
   const isServerTab = snapshot?.runtime === "server" && !nativeServerTab;
   /** The server owns this tab's appearance, zoom, and size, whoever renders it. */
@@ -887,6 +893,7 @@ export function PreviewView({
       className="flex min-h-0 flex-1 flex-col bg-background"
       data-thread-key={scopedThreadKey(threadRef)}
     >
+      {serverOwnsRendering ? <CompanionToolbar threadRef={threadRef} tabId={tabId} /> : null}
       <PreviewChromeRow
         url={url}
         loading={loading || serverStreamPending}
@@ -902,7 +909,9 @@ export function PreviewView({
         onOpenInBrowser={tabId ? handleOpenInBrowser : undefined}
         // Capture, annotation, and the more menu drive the desktop webview, so
         // server tabs leave them out. Floating works for both.
-        onCapture={previewBridge && tabId && !isServerTab ? handleCapture : undefined}
+        onCapture={
+          previewBridge && tabId && !isServerTab && !companionTab ? handleCapture : undefined
+        }
         captureDisabled={!desktopOverlay || isUnreachable}
         recording={recordingRuntimeTabId !== null}
         onPictureInPicture={
@@ -912,7 +921,9 @@ export function PreviewView({
         pictureInPictureDisabled={
           isUnreachable || (!isServerTab && !desktopOverlay?.hasWebContents)
         }
-        onPickElement={previewBridge && tabId && !isServerTab ? handlePickElement : undefined}
+        onPickElement={
+          previewBridge && tabId && !isServerTab && !companionTab ? handlePickElement : undefined
+        }
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
         // failed to load (a React overlay covers the webview, so the
@@ -942,7 +953,7 @@ export function PreviewView({
           ) : null
         }
         trailingActions={
-          moreMenuActions ? (
+          moreMenuActions && !companionTab ? (
             <PreviewMoreMenu
               enabled={
                 runtimeTabId !== null &&

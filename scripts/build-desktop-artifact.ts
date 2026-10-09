@@ -22,6 +22,11 @@ import desktopPackageJson from "../apps/desktop/package.json" with { type: "json
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
+import {
+  applyCompanionPackageVariant,
+  companionPackageMetadata,
+  type DesktopPackageVariant,
+} from "./jones/preview-companion/packageVariant.ts";
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   decodeJonesDesktopBuildMetadata,
@@ -154,6 +159,7 @@ const PLATFORM_CONFIG: Record<typeof BuildPlatform.Type, PlatformConfig> = {
 };
 
 interface BuildCliInput {
+  readonly variant?: Option.Option<DesktopPackageVariant>;
   readonly platform: Option.Option<typeof BuildPlatform.Type>;
   readonly target: Option.Option<string>;
   readonly arch: Option.Option<typeof BuildArch.Type>;
@@ -911,6 +917,7 @@ const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* (
 });
 
 interface ResolvedBuildOptions {
+  readonly variant?: DesktopPackageVariant;
   readonly platform: typeof BuildPlatform.Type;
   readonly target: string;
   readonly arch: typeof BuildArch.Type;
@@ -927,6 +934,8 @@ interface ResolvedBuildOptions {
 
 interface StagePackageJson {
   readonly name: string;
+  readonly productName?: string;
+  readonly jonesDesktopProduct?: DesktopPackageVariant;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
@@ -1655,6 +1664,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
       supportedArchitectures: [...supportedArchitectures],
     });
   }
+  const variant = Option.getOrUndefined(input.variant ?? Option.none());
   const version = mergeOptions(input.buildVersion, env.version, undefined);
   const releaseDir = resolveBooleanFlag(input.mockUpdates, env.mockUpdates)
     ? "release-mock"
@@ -1685,6 +1695,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     Option.getOrUndefined(input.wslRuntime) ?? Option.getOrUndefined(env.wslRuntime);
 
   return {
+    ...(variant === undefined ? {} : { variant }),
     platform,
     target,
     arch,
@@ -2671,6 +2682,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   // source file was never written fails the electron-builder step.
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  variant?: DesktopPackageVariant,
 ) {
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
@@ -2703,7 +2715,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
-  if (!isDesktopPreviewVersion(version)) {
+  if (variant !== "preview-companion" && !isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
@@ -2845,7 +2857,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.win = winConfig;
   }
 
-  return buildConfig;
+  return applyCompanionPackageVariant(buildConfig, version, variant);
 });
 
 const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(function* (
@@ -3661,7 +3673,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
   const configuredMacPasskeySigning =
-    options.platform === "mac" && options.signed
+    options.variant !== "preview-companion" && options.platform === "mac" && options.signed
       ? yield* Effect.try({
           try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
@@ -3712,6 +3724,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       : undefined;
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
+    ...companionPackageMetadata(options.variant),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
@@ -3747,6 +3760,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      options.variant,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -3957,6 +3971,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
+  variant: Flag.Literals("variant", ["preview-companion"]).pipe(
+    Flag.withDescription("Build the separate browser-only Jones Preview Companion product."),
+    Flag.optional,
+  ),
   platform: Flag.Literals("platform", BuildPlatform.literals).pipe(
     Flag.withDescription("Build platform (env: T3CODE_DESKTOP_PLATFORM)."),
     Flag.optional,

@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/previewCompanionProduct": {
+      "types": "./src/jones/previewCompanionProduct.ts",
+      "import": "./src/jones/previewCompanionProduct.ts"
+    },
+    "./jones/previewCompanionFraming": {
+      "types": "./src/jones/previewCompanionFraming.ts",
+      "import": "./src/jones/previewCompanionFraming.ts"
+    },
     "./jones/importedHistoryCanonical": {
       "types": "./src/jones/importedHistoryCanonical.ts",
       "import": "./src/jones/importedHistoryCanonical.ts"
