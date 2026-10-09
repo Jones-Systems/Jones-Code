@@ -1,4 +1,5 @@
 import type { AssistantCitation } from "@t3tools/contracts";
+import { oneSpaceThreadQuery } from "@t3tools/shared/jones/composerThreadQuery";
 import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import {
@@ -75,8 +76,11 @@ function forEachMentionMatch(
   });
 }
 
-export function collectComposerPromptInlineTokens(text: string) {
-  const tokens = collectComposerInlineTokens(text);
+export function collectComposerPromptInlineTokens(text: string, queryCursor = text.length) {
+  const query = oneSpaceThreadQuery(text, queryCursor, (char) => /\s/u.test(char));
+  const tokens = collectComposerInlineTokens(text).filter(
+    (token) => token.type !== "mention" || token.start !== query?.rangeStart,
+  );
   const citations = collectAssistantCitations(text);
   const references = collectComposerContextReferences(text);
   if (citations.length === 0 && references.length === 0) return tokens;

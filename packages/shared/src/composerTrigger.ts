@@ -1,3 +1,5 @@
+import { oneSpaceThreadQuery } from "./jones/composerThreadQuery.ts";
+
 export type ComposerTriggerKind =
   | "path"
   | "pull-request"
@@ -118,7 +120,8 @@ export function detectComposerTrigger(
     };
   }
   if (!token.startsWith("@")) {
-    return null;
+    const threadQuery = oneSpaceThreadQuery(text, cursor, wsCheck);
+    return threadQuery ? { kind: "path", ...threadQuery } : null;
   }
 
   return {

@@ -427,6 +427,11 @@
         "apps/server/src/jones/persistence/Migrations.test.ts"
       ],
       "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows."
+    },
+    {
+      "id": "composer-thread-query",
+      "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
+      "scope": "Web/desktop and shared mobile one-space @ query; preserves matcher identities and legacy file chip delimiters."
     }
   ]
 }

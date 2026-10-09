@@ -1,4 +1,5 @@
 import type { ClientSettings } from "@t3tools/contracts/settings";
+import { oneSpaceThreadQuery } from "@t3tools/shared/jones/composerThreadQuery";
 import type { AssistantCitation, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import {
   serializeAssistantCitation,
@@ -280,7 +281,8 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
     };
   }
   if (!token.startsWith("@")) {
-    return null;
+    const threadQuery = oneSpaceThreadQuery(text, cursor, isWhitespace);
+    return threadQuery ? { kind: "path", ...threadQuery } : null;
   }
 
   return {
