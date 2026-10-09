@@ -743,6 +743,23 @@
         "vp run --filter @t3tools/tailscale typecheck",
         "vp run --filter @t3tools/scripts typecheck"
       ]
+    },
+    {
+      "id": "jones-design-requests",
+      "tests": [
+        "packages/contracts/src/jones/designRequests.test.ts",
+        "packages/client-runtime/src/jones/designRequests/packetV1.test.ts",
+        "packages/client-runtime/src/jones/designRequests/route.test.ts",
+        "packages/client-runtime/src/jones/designRequests/channel.test.ts",
+        "packages/client-runtime/src/jones/designRequests/gateway.test.ts",
+        "apps/web/src/jones/designRequests/bindingStore.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/designRequests.test.ts packages/client-runtime/src/jones/designRequests/packetV1.test.ts packages/client-runtime/src/jones/designRequests/route.test.ts packages/client-runtime/src/jones/designRequests/channel.test.ts packages/client-runtime/src/jones/designRequests/gateway.test.ts apps/web/src/jones/designRequests/bindingStore.test.ts",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck"
+      ]
     }
   ]
 }

@@ -11,6 +11,10 @@
       "types": "./src/jones/importedHistory/continuation.ts",
       "default": "./src/jones/importedHistory/continuation.ts"
     },
+    "./jones/design-requests": {
+      "types": "./src/jones/designRequests/index.ts",
+      "default": "./src/jones/designRequests/index.ts"
+    },
     "./voice-review/fixtures": {
       "types": "./src/voiceReview/fixtures.ts",
       "default": "./src/voiceReview/fixtures.ts"

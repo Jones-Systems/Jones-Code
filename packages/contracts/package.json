@@ -30,6 +30,10 @@
     "./jones/jonesUpdates": {
       "types": "./src/jones/jonesUpdates.ts",
       "import": "./src/jones/jonesUpdates.ts"
+    },
+    "./jones/designRequests": {
+      "types": "./src/jones/designRequests.ts",
+      "import": "./src/jones/designRequests.ts"
     }
   },
   "scripts": {

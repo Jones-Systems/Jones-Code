@@ -366,6 +366,18 @@
         "apps/server/src/cli/pair.test.ts"
       ],
       "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
+    },
+    {
+      "id": "design-requests",
+      "tests": [
+        "packages/contracts/src/jones/designRequests.test.ts",
+        "packages/client-runtime/src/jones/designRequests/packetV1.test.ts",
+        "packages/client-runtime/src/jones/designRequests/route.test.ts",
+        "packages/client-runtime/src/jones/designRequests/channel.test.ts",
+        "packages/client-runtime/src/jones/designRequests/gateway.test.ts",
+        "apps/web/src/jones/designRequests/bindingStore.test.ts"
+      ],
+      "scope": "Design gallery requests through the authenticated web client: jones-design-request/1 opener handshake, client-local pairing to an existing workstream, deterministic primary-placement routing with named held states, packet v1 digest and image verification, and queue-mode dispatch with deterministic command IDs and receipt readback. No server, persistence or queue activation changes."
     }
   ]
 }
