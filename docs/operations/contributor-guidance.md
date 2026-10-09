@@ -65,6 +65,7 @@ code merely to fit this table.
 - **Stored state.** Preserve wire names, persisted fields, event decoding,
   migration identities and guards. Keep Jones migrations on their independent
   loader and tracking ledger; source extraction must not rewrite stored history.
+  Database changes follow the [Jones database boundary](#jones-database-boundary).
 - **Practical exceptions.** A small direct shared-file edit is acceptable when
   isolating it would require disproportionate complexity or duplicated upstream
   machinery. State the reason and classify the edit. Do not build a generic
@@ -76,6 +77,53 @@ import upstream in the bottom PR, restore Jones behavior in stacked follow-ons,
 and qualify the complete stack before merging any layer. A similar upstream
 feature is not an accepted replacement without behavior evidence and M Jones's
 explicit decision.
+
+### Jones database boundary
+
+T3 Code can open a database that Jones Code has used, and upstream migrations
+and maintenance assume only upstream schema. Upstream owns every table, column,
+index, trigger and view created by `apps/server/src/persistence/Migrations`,
+and its `effect_sql_migrations` ledger. It may prune, delete, drop or rebuild
+those objects without knowing about Jones.
+
+- **No upstream schema changes.** Jones migrations must not alter, drop or
+  rebuild upstream tables, or add columns, indexes, triggers or views to them.
+  They must not write the upstream ledger or upstream rows.
+- **Jones-owned tables.** Store Jones state only in tables created through the
+  Jones loader and recorded in `jones_sql_migrations`. Name new tables, indexes
+  and triggers with a `jones_` prefix. Released unprefixed names such as
+  `native_creation_*` and `workstreams_native_*` keep their names.
+- **Sparse extension rows.** To attach Jones metadata to an upstream record,
+  key a Jones table by that record's stable ID, such as a thread, command,
+  effect or session ID. Write a row only when Jones has something to record,
+  in the transaction of the Jones operation that produces it. Do not mirror
+  upstream rows eagerly, copy upstream payloads, or keep rows in step with
+  upstream writes through triggers.
+- **No references to upstream tables.** Do not declare foreign keys from Jones
+  tables to upstream tables. With foreign keys enabled, such a key makes
+  upstream deletes, pruning and table rebuilds fail. Verify the upstream row in
+  the transaction that writes the Jones row, and treat a missing upstream row
+  as absent when reading. References between Jones tables are allowed.
+- **Upstream payloads and hot paths.** Do not add Jones fields to upstream JSON
+  payloads or columns. Read upstream rows from Jones-owned queries through
+  existing upstream keys and indexes. Do not add joins, scans or schema checks
+  to upstream per-event or per-command paths; a necessary hook does a
+  primary-key lookup and is recorded as a hook.
+- **Environment identity.** Jones rows are meaningful only beside the upstream
+  rows of the same database. Do not copy or restore Jones tables separately
+  from the upstream data they describe.
+- **Released history.** Never renumber, rename or delete a released Jones
+  migration. When one breaks these rules, keep its identity, change its effect
+  only if no stored data depends on it, and repair existing databases with a
+  new data-preserving Jones migration. Removing upstream residue that released
+  migrations left behind, such as `runtime_identity_json` on the V1 thread
+  session projection, needs a separately authorized operation.
+
+[`UpstreamIsolation.test.ts`](../../apps/server/src/jones/persistence/UpstreamIsolation.test.ts)
+checks the schema rules against the complete Jones manifest. Some earlier
+integrations predate these rules, for example the native-creation reference in
+effect outbox payloads and Jones table checks in the event sink. They are not
+precedent for new work.
 
 ## Coverage before completion
 

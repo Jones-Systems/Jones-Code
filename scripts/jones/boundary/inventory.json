@@ -359,7 +359,6 @@
     "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/ThreadMessageIntake.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/ThreadStream.ts": "accepted-shared",
-    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/WireProjection.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/WireProjection.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/http.ts": "accepted-shared",
