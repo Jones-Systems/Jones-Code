@@ -611,6 +611,7 @@
     "apps/web/src/routeTree.gen.ts": "generated",
     "apps/web/src/routes/_chat.conversations.tsx": "hook",
     "apps/web/src/routes/_chat.pull-requests.tsx": "hook",
+    "apps/web/src/routes/design-requests.tsx": "hook",
     "apps/web/src/routes/voice-review.tsx": "hook",
     "apps/web/src/routes/work-queue.tsx": "hook",
     "apps/web/src/state/conversations.ts": "jones-owned",
