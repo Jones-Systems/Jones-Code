@@ -36,12 +36,20 @@ export interface CdpRelayConnection {
   readonly event: (method: string, params: unknown, sessionId: string | undefined) => void;
 }
 
-interface CdpCommand {
+export interface CdpCommand {
   readonly id: number;
   readonly method: string;
   readonly params?: Record<string, unknown>;
   readonly sessionId?: string;
 }
+
+export type CdpRelayPolicy = (
+  command: CdpCommand,
+  route: "browser" | "page",
+) =>
+  | { readonly type: "allow" }
+  | { readonly type: "deny"; readonly message: string }
+  | { readonly type: "rewrite"; readonly params: Record<string, unknown> };
 
 const isCommand = (value: unknown): value is CdpCommand =>
   typeof value === "object" &&
@@ -66,6 +74,7 @@ const ACKNOWLEDGED = new Set([
 export function createCdpRelayConnection(
   target: CdpRelayTarget,
   write: (message: string) => void,
+  policy?: CdpRelayPolicy,
 ): CdpRelayConnection {
   const send = (message: Record<string, unknown>) => write(JSON.stringify(message));
   let attached = false;
@@ -178,10 +187,22 @@ export function createCdpRelayConnection(
         return;
       }
       if (!isCommand(command)) return;
-      const result =
+      const routeKind =
         command.sessionId === undefined || sessions.get(command.sessionId) === "browser"
-          ? browserCommand(command)
-          : pageCommand(command);
+          ? "browser"
+          : "page";
+      const decision = policy?.(command, routeKind);
+      if (decision?.type === "deny") {
+        send({
+          id: command.id,
+          error: { code: -32000, message: decision.message },
+          ...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
+        });
+        return;
+      }
+      const checked =
+        decision?.type === "rewrite" ? { ...command, params: decision.params } : command;
+      const result = routeKind === "browser" ? browserCommand(checked) : pageCommand(checked);
       const route = command.sessionId === undefined ? {} : { sessionId: command.sessionId };
       // Replies leave as commands finish, as Chromium's do, so a slow command
       // such as a screenshot never holds up the ones behind it.

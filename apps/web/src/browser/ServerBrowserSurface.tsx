@@ -1,6 +1,10 @@
 "use client";
 
 import {
+  previewHostUnavailableMessage,
+  type PreviewHostUnavailable,
+} from "@t3tools/client-runtime/jones/preview-companion/stream-unavailable";
+import {
   createPreviewFramePainter,
   createPreviewStreamClient,
   previewStreamControlLabel,
@@ -197,6 +201,7 @@ export function ServerBrowserSurface(props: {
   };
   const unauthorizedRef = useRef(0);
   const [accessDenied, setAccessDenied] = useState(false);
+  const [hostUnavailable, setHostUnavailable] = useState<PreviewHostUnavailable | null>(null);
   const [hostSetup, setHostSetup] = useState<PreviewStreamHostSetup | null>(null);
   const pendingMoveRef = useRef<MouseInput | null>(null);
   const pendingWheelRef = useRef<WheelInput | null>(null);
@@ -364,7 +369,8 @@ export function ServerBrowserSurface(props: {
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!visible || accessDenied || hostSetup || !access || !cap || !canvas) return;
+    if (!visible || accessDenied || hostSetup || hostUnavailable || !access || !cap || !canvas)
+      return;
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     const painter = createPreviewFramePainter(canvas, () => {
       if (hasFrameRef.current) return;
@@ -428,6 +434,7 @@ export function ServerBrowserSurface(props: {
           clearInput();
         },
         onHostSetup: setHostSetup,
+        onHostUnavailable: setHostUnavailable,
         onUnauthorized: () => {
           // Fresh tickets re-run this effect. Repeated refusals need an explicit retry.
           const refusals = ++unauthorizedRef.current;
@@ -462,6 +469,7 @@ export function ServerBrowserSurface(props: {
     environmentId,
     followSize,
     hostSetup,
+    hostUnavailable,
     tabId,
     threadId,
     visible,
@@ -869,6 +877,23 @@ export function ServerBrowserSurface(props: {
           </div>
         ) : null}
       </div>
+      {visible && hostUnavailable ? (
+        <div className="visible absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-background p-4 text-center">
+          <p role="status" className="max-w-sm text-sm text-muted-foreground">
+            {previewHostUnavailableMessage(hostUnavailable)}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              refreshPreviewStreamAccess(environmentId);
+              setHostUnavailable(null);
+            }}
+          >
+            Try again
+          </Button>
+        </div>
+      ) : null}
       {visible && hostSetup ? (
         <div className="visible absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-background p-4 text-center">
           <p role="alert" className="max-w-sm text-sm text-muted-foreground">

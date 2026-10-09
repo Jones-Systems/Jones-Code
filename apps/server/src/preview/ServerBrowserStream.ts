@@ -3,6 +3,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
+  PREVIEW_STREAM_RENDER_HOST_UNAVAILABLE_CLOSE_CODE,
   PreviewStreamHostSetup,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -24,6 +25,7 @@ import { authenticateMediaRequest } from "../auth/http.ts";
 import { assetResponseHeaders } from "../http.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import { companionCloseReason } from "../jones/previewCompanion/streamCloseReason.ts";
 
 const PREVIEW_STREAM_ROUTE_PREFIX = "/api/preview-stream";
 /** Matches `PREVIEW_STREAM_TAB_GONE_CODE` in the client. */
@@ -95,6 +97,12 @@ const makeHandler = (browser: ServerBrowser.ServerBrowser["Service"]) =>
             Effect.catchTags({
               ServerBrowserTabNotFoundError: () => Effect.succeed({ _tag: "gone" as const }),
               ServerBrowserLaunchError: (error) => {
+                const companion = companionCloseReason(error.cause);
+                if (companion !== undefined)
+                  return Effect.succeed({
+                    _tag: "companionUnavailable" as const,
+                    reason: companion,
+                  });
                 const setup = hostSetup(error.cause);
                 return setup === undefined
                   ? Effect.fail(error)
@@ -116,6 +124,15 @@ const makeHandler = (browser: ServerBrowser.ServerBrowser["Service"]) =>
         const gone = writer.write(new Socket.CloseEvent(TAB_GONE_CODE, "tab closed"));
         if (attached._tag === "gone") {
           yield* gone;
+          return HttpServerResponse.empty();
+        }
+        if (attached._tag === "companionUnavailable") {
+          yield* writer.write(
+            new Socket.CloseEvent(
+              PREVIEW_STREAM_RENDER_HOST_UNAVAILABLE_CLOSE_CODE,
+              attached.reason,
+            ),
+          );
           return HttpServerResponse.empty();
         }
         if (attached._tag === "hostSetup") {

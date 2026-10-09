@@ -2,9 +2,14 @@
 import { type DeviceHubAccess, withDeviceHubQuery } from "../device/hubAccess.ts";
 import {
   PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE,
+  PREVIEW_STREAM_RENDER_HOST_UNAVAILABLE_CLOSE_CODE,
   type PreviewStreamHostSetup,
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
+import {
+  decodePreviewHostUnavailable,
+  type PreviewHostUnavailable,
+} from "../jones/previewCompanion/streamUnavailable.ts";
 
 export const PREVIEW_STREAM_BASE_PATH = "/api/preview-stream";
 
@@ -212,6 +217,7 @@ export interface PreviewStreamEvents {
   readonly onGone?: () => void;
   /** The server's browser cannot start until its host is set up. The client has stopped. */
   readonly onHostSetup?: (setup: PreviewStreamHostSetup) => void;
+  readonly onHostUnavailable?: (host: PreviewHostUnavailable) => void;
 }
 
 export interface PreviewStreamClient {
@@ -369,6 +375,13 @@ export function createPreviewStreamClient(
       if (event.code === PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE) {
         stopped = true;
         events.onHostSetup?.(decodeHostSetup(event.reason));
+        return;
+      }
+      if (event.code === PREVIEW_STREAM_RENDER_HOST_UNAVAILABLE_CLOSE_CODE) {
+        stopped = true;
+        const host = decodePreviewHostUnavailable(event.reason);
+        if (events.onHostUnavailable) events.onHostUnavailable(host);
+        else if (!opened) events.onConnectedChange(false);
         return;
       }
       // Rejected upgrades surface as 1006 before open for both cookies and tickets.

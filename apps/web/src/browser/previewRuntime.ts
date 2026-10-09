@@ -1,3 +1,12 @@
+import { ThreadId } from "@t3tools/contracts";
+import { Atom, AsyncResult } from "effect/reactivity";
+import {
+  bindingsQuery,
+  companionStateAtom,
+  readBindingResult,
+} from "../jones/previewCompanion/state";
+import { nativeCompanionRendering } from "../jones/previewCompanion/inventory";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, PreviewRuntime, PreviewSessionSnapshot } from "@t3tools/contracts";
 
@@ -25,25 +34,52 @@ export function usePreviewAvailable(environmentId: EnvironmentId | null): boolea
 
 /**
  * Whether this client draws a server tab with its own `<webview>`. The desktop
- * app renders tabs of the server it launched, which drives them over the
- * desktop browser channel; every other client and environment streams them.
+ * app obeys immutable host bindings first; the local-server rule remains the
+ * fallback only for a server binding or an older server without this endpoint.
  */
 export function rendersServerTabNatively(
   environmentId: EnvironmentId,
   primaryEnvironmentId: EnvironmentId | null,
-  snapshot: Pick<PreviewSessionSnapshot, "runtime"> | null | undefined,
+  snapshot:
+    | (Pick<PreviewSessionSnapshot, "runtime"> &
+        Partial<Pick<PreviewSessionSnapshot, "threadId" | "tabId">>)
+    | null
+    | undefined,
 ): boolean {
-  return (
-    isElectron &&
-    snapshot?.runtime === "server" &&
-    primaryEnvironmentId !== null &&
-    environmentId === primaryEnvironmentId
-  );
+  if (!isElectron || snapshot?.runtime !== "server") return false;
+  if (!snapshot.threadId || !snapshot.tabId) return environmentId === primaryEnvironmentId;
+  return nativeCompanionRendering({
+    environmentId,
+    primaryEnvironmentId,
+    snapshot: { ...snapshot, threadId: snapshot.threadId, tabId: snapshot.tabId },
+    binding: readBindingResult({ environmentId, threadId: ThreadId.make(snapshot.threadId) }),
+    companion: appAtomRegistry.get(companionStateAtom),
+  });
 }
 
 export function useRendersServerTabNatively(
   environmentId: EnvironmentId,
-  snapshot: Pick<PreviewSessionSnapshot, "runtime"> | null | undefined,
+  snapshot:
+    | (Pick<PreviewSessionSnapshot, "runtime"> &
+        Partial<Pick<PreviewSessionSnapshot, "threadId" | "tabId">>)
+    | null
+    | undefined,
 ): boolean {
-  return rendersServerTabNatively(environmentId, useAtomValue(primaryEnvironmentIdAtom), snapshot);
+  const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
+  const companion = useAtomValue(companionStateAtom);
+  const binding = useAtomValue(
+    snapshot?.threadId
+      ? bindingsQuery({ environmentId, input: { threadId: ThreadId.make(snapshot.threadId) } })
+      : emptyBinding,
+  );
+  if (!isElectron || !snapshot?.threadId || !snapshot.tabId)
+    return rendersServerTabNatively(environmentId, primaryEnvironmentId, snapshot);
+  return nativeCompanionRendering({
+    environmentId,
+    primaryEnvironmentId,
+    companion,
+    snapshot: { ...snapshot, threadId: snapshot.threadId, tabId: snapshot.tabId },
+    binding: binding && AsyncResult.isSuccess(binding) ? binding.value : null,
+  });
 }
+const emptyBinding = Atom.make(null);

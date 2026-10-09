@@ -32,6 +32,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import { makeCompanionProductUpdates } from "../jones/previewCompanion/CompanionProductUpdates.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -288,12 +289,20 @@ function isArm64HostRunningIntelBuild(runtimeInfo: DesktopRuntimeInfo): boolean 
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const electronWindow = yield* ElectronWindow.ElectronWindow;
+  if (environment.previewCompanionProduct) {
+    return makeCompanionProductUpdates({
+      version: environment.appVersion,
+      runtimeInfo: environment.runtimeInfo,
+      channel: environment.defaultDesktopSettings.updateChannel,
+      emit: (state) => electronWindow.sendAll(IpcChannels.UPDATE_STATE_CHANNEL, state),
+    });
+  }
   const config = yield* DesktopConfig.DesktopConfig;
   const pool = yield* DesktopBackendPool.DesktopBackendPool;
   const desktopState = yield* DesktopState.DesktopState;
   const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
-  const electronWindow = yield* ElectronWindow.ElectronWindow;
-  const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
 

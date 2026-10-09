@@ -234,12 +234,14 @@ export const click = async (
   page: Page,
   input: PreviewAutomationClickInput,
   pointer: PointerReporter = noPointer,
+  onDispatch: () => void | Promise<void> = constVoid,
 ): Promise<{ readonly x: number; readonly y: number }> => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
   const point = await targetPoint(page, locator, input, timeout);
   await pointer(point, "click");
   const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
+  await onDispatch();
   const clicked =
     locator === null
       ? page.mouse.click(point.x, point.y, options)
@@ -257,10 +259,15 @@ export const click = async (
   return point;
 };
 
-export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
+export const type = async (
+  page: Page,
+  input: PreviewAutomationTypeInput,
+  onDispatch: () => void | Promise<void> = constVoid,
+) => {
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
   if (locator !== null && input.clear) {
+    await onDispatch();
     await locator.fill(input.text, { timeout });
     return;
   }
@@ -312,6 +319,7 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
       "The target is not an enabled text field, so no text was typed.",
     );
   }
+  await onDispatch();
   if (input.clear) {
     await page.keyboard.press("ControlOrMeta+A");
     await page.keyboard.press("Delete");
@@ -395,13 +403,23 @@ export const setInputFiles = async (page: Page, input: PreviewAutomationUploadIn
   return true;
 };
 
-export const press = async (page: Page, input: PreviewAutomationPressInput) => {
+export const press = async (
+  page: Page,
+  input: PreviewAutomationPressInput,
+  onDispatch: () => void | Promise<void> = constVoid,
+) => {
+  await onDispatch();
   await page.keyboard.press([...(input.modifiers ?? []), input.key].join("+"));
 };
 
-export const scroll = async (page: Page, input: PreviewAutomationScrollInput) => {
+export const scroll = async (
+  page: Page,
+  input: PreviewAutomationScrollInput,
+  onDispatch: () => void | Promise<void> = constVoid,
+) => {
   const delta = [input.deltaX ?? 0, input.deltaY ?? 0] as const;
   const locator = targetLocator(page, input);
+  await onDispatch();
   if (locator === null) {
     // Page-side code is passed as source: the server compiles without DOM types.
     await page.evaluate(`scrollBy(${delta[0]}, ${delta[1]})`);
@@ -410,7 +428,12 @@ export const scroll = async (page: Page, input: PreviewAutomationScrollInput) =>
   await locator.evaluate((element, [x, y]) => element.scrollBy(x, y), delta);
 };
 
-export const evaluate = async (cdp: CDPSession, input: PreviewAutomationEvaluateInput) => {
+export const evaluate = async (
+  cdp: CDPSession,
+  input: PreviewAutomationEvaluateInput,
+  onDispatch: () => void | Promise<void> = constVoid,
+) => {
+  await onDispatch();
   const result = await cdp.send("Runtime.evaluate", {
     expression: input.expression,
     awaitPromise: input.awaitPromise ?? true,

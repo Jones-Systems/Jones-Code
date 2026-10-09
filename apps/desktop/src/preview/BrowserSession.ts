@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+import { isCompanionGuest } from "../jones/previewCompanion/CompanionIsolation.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 /**
@@ -203,11 +204,16 @@ export const make = Effect.gen(function* BrowserSessionMake() {
           // the challenge every few seconds, so logins behind it never complete
           // (#5002). Re-setting the unchanged native string is harmless, so it
           // is the rewritten string itself that trips the check.
-          browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-            callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
+          browserSession.setPermissionRequestHandler((contents, permission, callback) => {
+            callback(
+              ALLOWED_PREVIEW_PERMISSIONS.has(permission) &&
+                !(permission === "clipboard-read" && isCompanionGuest(contents)),
+            );
           });
-          browserSession.setPermissionCheckHandler((_webContents, permission) =>
-            ALLOWED_PREVIEW_PERMISSIONS.has(permission),
+          browserSession.setPermissionCheckHandler(
+            (contents, permission) =>
+              ALLOWED_PREVIEW_PERMISSIONS.has(permission) &&
+              !(permission === "clipboard-read" && isCompanionGuest(contents)),
           );
           const next = new Map(sessions);
           next.set(partition, browserSession);

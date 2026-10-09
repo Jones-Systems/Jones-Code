@@ -41,3 +41,9 @@ export const hostStatusHttpApiLayer = hostStatusHandlers.pipe(Layer.provide(Host
 export const tokenAccountingLayer = Layer.suspend(() =>
   TokenAccountingService.layerWithReader(makeRuntimeReader(process.env)),
 );
+
+export {
+  routeLayer as previewCompanionRouteLayer,
+  servicesLayer as previewCompanionServicesLayer,
+} from "../previewCompanion/registration.ts";
+export { previewCompanionHttpApiLayer } from "../previewCompanion/http.ts";

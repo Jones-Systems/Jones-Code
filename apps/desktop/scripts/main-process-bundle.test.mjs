@@ -114,8 +114,57 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-boot-"));
   try {
     const entries = ["src/boot.ts", "src/compileCache.ts"];
-    const sources = [...entries, "src/app/DesktopUserDataOverride.ts"];
-    await NodeFSP.mkdir(NodePath.join(directory, "src/app"), { recursive: true });
+    const sources = [
+      ...entries,
+      "src/app/DesktopUserDataOverride.ts",
+      "src/jones/previewCompanion/CompanionProduct.ts",
+    ];
+    const sharedPackageDirectory = NodePath.join(directory, "node_modules/@t3tools/shared");
+    const electronPackageDirectory = NodePath.join(directory, "node_modules/electron");
+    await Promise.all([
+      ...sources.map((entry) =>
+        NodeFSP.mkdir(NodePath.dirname(NodePath.join(directory, entry)), { recursive: true }),
+      ),
+      NodeFSP.mkdir(sharedPackageDirectory, { recursive: true }),
+      NodeFSP.mkdir(electronPackageDirectory, { recursive: true }),
+    ]);
+    await Promise.all([
+      NodeFSP.copyFile(
+        new URL("../../../packages/shared/src/jones/previewCompanionProduct.ts", import.meta.url),
+        NodePath.join(sharedPackageDirectory, "previewCompanionProduct.ts"),
+      ),
+      NodeFSP.writeFile(
+        NodePath.join(sharedPackageDirectory, "package.json"),
+        JSON.stringify({
+          name: "@t3tools/shared",
+          type: "module",
+          exports: { "./jones/previewCompanionProduct": "./previewCompanionProduct.ts" },
+        }),
+      ),
+      NodeFSP.writeFile(
+        NodePath.join(directory, "package.json"),
+        JSON.stringify({
+          name: "t3code",
+          dependencies: { "@t3tools/shared": "0.0.0", electron: "44.4.2" },
+        }),
+      ),
+      NodeFSP.writeFile(
+        NodePath.join(electronPackageDirectory, "package.json"),
+        JSON.stringify({ name: "electron", main: "index.cjs" }),
+      ),
+      NodeFSP.writeFile(
+        NodePath.join(electronPackageDirectory, "index.cjs"),
+        `
+const path = require("node:path");
+const appRoot = path.resolve(__dirname, "../..");
+module.exports = { app: {
+  isPackaged: true,
+  getAppPath: () => appRoot,
+  getPath: (role) => path.join(appRoot, "electron-" + role),
+  setPath: () => {},
+} };`,
+      ),
+    ]);
     await Promise.all(
       sources.map((entry) =>
         NodeFSP.copyFile(new URL(`../${entry}`, import.meta.url), NodePath.join(directory, entry)),
@@ -146,8 +195,21 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
           ]),
       ),
     );
-    const runBoot = (override) => {
+    for (const [name, source] of emittedSources) {
+      assert.notMatch(
+        source,
+        /\brequire\s*\(\s*["']@t3tools\/shared(?:\/[^"']*)?["']\s*\)/,
+        `${name} must not require workspace-only shared source at runtime`,
+      );
+    }
+    assert.match(
+      emittedSources.get("boot.cjs"),
+      /\brequire\s*\(\s*["']electron["']\s*\)/,
+      "boot.cjs must retain Electron as a runtime dependency",
+    );
+    const runBoot = (override, metadata = { name: "t3code" }) => {
       const operations = [];
+      const env = { T3CODE_DESKTOP_USER_DATA_DIR: override, T3CODE_HOME: "/ordinary/state" };
       const modules = new Map();
       const load = (name) => {
         if (modules.has(name)) return modules.get(name).exports;
@@ -158,11 +220,16 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
         NodeVM.runInNewContext(source, {
           module,
           exports: module.exports,
-          process: { env: { T3CODE_DESKTOP_USER_DATA_DIR: override } },
+          process: { env },
           require: (specifier) => {
             if (specifier === "node:path") return NodePath.posix;
             if (specifier === "node:fs")
               return {
+                readFileSync: (path, encoding) => {
+                  assert.equal(path, "/fixture/app/package.json");
+                  assert.equal(encoding, "utf8");
+                  return JSON.stringify(metadata);
+                },
                 mkdirSync: (path, options) => {
                   assert.equal(options.recursive, true);
                   operations.push(`mkdir:${path}`);
@@ -170,7 +237,15 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
               };
             if (specifier === "electron")
               return {
-                app: { setPath: (role, path) => operations.push(`${role}:${path}`) },
+                app: {
+                  isPackaged: true,
+                  getAppPath: () => "/fixture/app",
+                  getPath: (role) => {
+                    assert.ok(role === "appData" || role === "home");
+                    return role === "appData" ? "/fixture/appData" : "/fixture/home";
+                  },
+                  setPath: (role, path) => operations.push(`${role}:${path}`),
+                },
               };
             if (specifier === "./compileCache.cjs") {
               operations.push("cache");
@@ -185,7 +260,7 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
         });
         return module.exports;
       };
-      return { operations, load: () => load("boot.cjs") };
+      return { operations, env, load: () => load("boot.cjs") };
     };
     const isolated = runBoot(" /isolated/other/../profile ");
     isolated.load();
@@ -202,6 +277,29 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
     const invalid = runBoot("relative/profile");
     assert.throws(invalid.load, /must be an absolute path/);
     assert.deepEqual(invalid.operations, []);
+    const companion = runBoot("/ordinary/profile", {
+      name: "jones-preview-companion",
+      jonesDesktopProduct: "preview-companion",
+    });
+    companion.load();
+    assert.deepEqual(companion.operations, [
+      "mkdir:/fixture/appData/Jones Preview Companion",
+      "mkdir:/fixture/appData/Jones Preview Companion/Session",
+      "mkdir:/fixture/home/.jones-preview-companion",
+      "userData:/fixture/appData/Jones Preview Companion",
+      "sessionData:/fixture/appData/Jones Preview Companion/Session",
+      "cache",
+      "startup",
+    ]);
+    assert.equal(companion.env.T3CODE_HOME, "/fixture/home/.jones-preview-companion");
+    assert.equal(companion.env.JONES_PREVIEW_COMPANION_PRODUCT, "true");
+    assert.equal(
+      companion.env.T3CODE_DESKTOP_USER_DATA_DIR,
+      "/fixture/appData/Jones Preview Companion",
+    );
+    const missingMarker = runBoot(undefined, { name: "jones-preview-companion" });
+    assert.throws(missingMarker.load, /Invalid preview companion product marker/);
+    assert.deepEqual(missingMarker.operations, []);
     const fixture = `console.log(require('node:module').getCompileCacheDir() ? 'cached' : 'uncached');`;
     await NodeFSP.writeFile(NodePath.join(outputDirectory, "main.cjs"), fixture);
     await NodeFSP.writeFile(

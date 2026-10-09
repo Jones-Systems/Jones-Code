@@ -1,3 +1,5 @@
+import { previewHostUnavailableMessage } from "@t3tools/client-runtime/jones/preview-companion/stream-unavailable";
+import { toastManager } from "../components/ui/toast";
 import {
   createPreviewFramePainter,
   createPreviewStreamClient,
@@ -126,6 +128,14 @@ export async function openServerPictureInPicture(input: {
           retryTimer = setTimeout(() => void connect(true), 1_000 * 2 ** refusals++);
         },
         onGone: onLeave,
+        onHostUnavailable: (host) => {
+          toastManager.add({
+            type: "info",
+            title: "Browser host unavailable",
+            description: previewHostUnavailableMessage(host),
+          });
+          onLeave();
+        },
       },
     );
   };
