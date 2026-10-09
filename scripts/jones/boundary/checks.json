@@ -834,6 +834,25 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
+    },
+    {
+      "id": "jones-composer-thread-query",
+      "tests": [
+        "apps/web/src/jones/composer/threadMentionTrigger.test.ts",
+        "apps/web/src/composer-logic.test.ts",
+        "packages/shared/src/composerTrigger.test.ts",
+        "packages/client-runtime/src/composerThreadItems.test.ts",
+        "apps/web/src/composer-editor-mentions.test.ts",
+        "packages/shared/src/composerInlineTokens.test.ts",
+        "apps/web/src/composer-rich-text-doc.test.ts",
+        "scripts/jones/check-boundary.test.ts",
+        "apps/web/src/composer-rich-text.test.ts",
+        "apps/mobile/src/features/threads/use-composer-command-menu.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/composer/threadMentionTrigger.test.ts apps/web/src/composer-logic.test.ts packages/shared/src/composerTrigger.test.ts packages/client-runtime/src/composerThreadItems.test.ts apps/web/src/composer-editor-mentions.test.ts packages/shared/src/composerInlineTokens.test.ts apps/web/src/composer-rich-text-doc.test.ts scripts/jones/check-boundary.test.ts apps/web/src/composer-rich-text.test.ts apps/mobile/src/features/threads/use-composer-command-menu.test.ts",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
