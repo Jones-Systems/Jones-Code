@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/composerThreadQuery": {
+      "types": "./src/jones/composerThreadQuery.ts",
+      "import": "./src/jones/composerThreadQuery.ts"
+    },
     "./jones/previewCompanionProduct": {
       "types": "./src/jones/previewCompanionProduct.ts",
       "import": "./src/jones/previewCompanionProduct.ts"

@@ -807,7 +807,13 @@
     "apps/mobile/src/state/thread-task-permissions.test.ts": "jones-tests-in-upstream",
     "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts": "jones-tests-in-upstream",
     "apps/server/src/persistence/AuthPairingLinks.ts": "accepted-shared",
-    "apps/server/src/persistence/AuthPairingLinks.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/persistence/AuthPairingLinks.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/composer-logic.ts": "hook",
+    "packages/shared/src/composerTrigger.ts": "hook",
+    "packages/shared/src/jones/composerThreadQuery.ts": "jones-owned",
+    "apps/web/src/jones/composer/threadMentionTrigger.test.ts": "jones-owned",
+    "apps/web/src/composer-editor-mentions.ts": "hook",
+    "apps/web/src/components/ComposerPromptEditorTiptap.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

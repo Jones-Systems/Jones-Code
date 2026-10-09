@@ -1,0 +1,29 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "composer-thread-query",
+  "jonesOwnedPaths": [
+    "packages/shared/src/jones/composerThreadQuery.ts",
+    "apps/web/src/jones/composer/threadMentionTrigger.test.ts"
+  ],
+  "hookPaths": [
+    "packages/shared/src/composerTrigger.ts",
+    "apps/web/src/composer-logic.ts",
+    "apps/web/src/composer-editor-mentions.ts",
+    "apps/web/src/components/ComposerPromptEditorTiptap.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/shared/src/composerTrigger.ts",
+      "to": "packages/shared/src/jones/composerThreadQuery.ts"
+    },
+    {
+      "from": "apps/web/src/composer-logic.ts",
+      "to": "packages/shared/src/jones/composerThreadQuery.ts"
+    },
+    {
+      "from": "apps/web/src/composer-editor-mentions.ts",
+      "to": "packages/shared/src/jones/composerThreadQuery.ts"
+    }
+  ]
+}
