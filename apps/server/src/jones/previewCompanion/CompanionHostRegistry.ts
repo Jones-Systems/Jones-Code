@@ -25,8 +25,8 @@ import {
   MAX_MESSAGE_BYTES,
 } from "./framing.ts";
 
-export const HEARTBEAT_MS = 15_000;
-export const HEARTBEAT_TIMEOUT_MS = 45_000;
+const HEARTBEAT_MS = 15_000;
+const HEARTBEAT_TIMEOUT_MS = 45_000;
 export class CompanionTransportError extends Schema.TaggedError<CompanionTransportError>()(
   "CompanionTransportError",
   { cause: Schema.Defect() },

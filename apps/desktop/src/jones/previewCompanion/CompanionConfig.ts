@@ -33,7 +33,7 @@ export class CompanionConfig extends Context.Service<
 
 export const browserOnlyStartup = (config: DesktopCompanionConfig): boolean => config.browserOnly;
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const productLocked = yield* DesktopConfig.DesktopConfig.pipe(
     Effect.map((config) => config.previewCompanionProduct),
     Effect.mapError(() => new CompanionConfigError({ operation: "read" })),

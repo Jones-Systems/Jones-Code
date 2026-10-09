@@ -805,7 +805,9 @@
     "scripts/stamp-jones-build.ts": "jones-owned",
     "packages/contracts/src/auth.test.ts": "jones-tests-in-upstream",
     "apps/mobile/src/state/thread-task-permissions.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/persistence/AuthPairingLinks.ts": "accepted-shared",
+    "apps/server/src/persistence/AuthPairingLinks.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

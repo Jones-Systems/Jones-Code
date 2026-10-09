@@ -57,7 +57,7 @@ export const getState = DesktopIpc.makeIpcMethod({
     }),
 });
 
-export const configure = DesktopIpc.makeIpcMethod({
+const configure = DesktopIpc.makeIpcMethod({
   channel: Channels.CONFIGURE,
   payload: DesktopCompanionConfigureInput,
   result: DesktopCompanionState,

@@ -270,7 +270,7 @@ export const bootstrapWithIpcRegistration = <E, R>(registerIpc: Effect.Effect<vo
     }
   }).pipe(Effect.withSpan("desktop.bootstrap"));
 
-export const bootstrap = bootstrapWithIpcRegistration(installDesktopIpcHandlers());
+const bootstrap = bootstrapWithIpcRegistration(installDesktopIpcHandlers());
 
 const startup = Effect.gen(function* () {
   const appIdentity = yield* DesktopAppIdentity.DesktopAppIdentity;

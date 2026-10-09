@@ -7,7 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import type { CompanionQuery } from "./state.ts";
 
-export function isAssignedHere(
+function isAssignedHere(
   state: DesktopCompanionState | null,
   environmentId: EnvironmentId,
   threadId: string,

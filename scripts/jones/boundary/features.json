@@ -415,7 +415,8 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "packages/contracts/src/jones/previewCompanion.test.ts",
         "scripts/build-desktop-artifact.test.ts",
-        "scripts/jones/preview-companion/packageVariant.test.ts"
+        "scripts/jones/preview-companion/packageVariant.test.ts",
+        "apps/server/src/persistence/AuthPairingLinks.test.ts"
       ],
       "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; native host qualification and runtime adoption remain separate."
     }
