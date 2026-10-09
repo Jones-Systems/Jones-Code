@@ -366,6 +366,14 @@
         "apps/server/src/cli/pair.test.ts"
       ],
       "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
+    },
+    {
+      "id": "persistence-upstream-isolation",
+      "tests": [
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts"
+      ],
+      "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows."
     }
   ]
 }

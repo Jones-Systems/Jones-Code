@@ -25,6 +25,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 102, name: "ImportedHistoryChoices" },
         { migration_id: 103, name: "RuntimeStop" },
         { migration_id: 104, name: "DeletionAdmission" },
+        { migration_id: 105, name: "UpstreamReferenceIsolation" },
       ],
     );
     assert.deepEqual(
