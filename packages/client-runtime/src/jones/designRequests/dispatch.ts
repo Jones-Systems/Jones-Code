@@ -135,9 +135,7 @@ export function buildDesignRequestMessage(
   return text.length > limits.messageChars ? null : text;
 }
 
-export function designRequestUploads(
-  images: readonly VerifiedImage[],
-): UploadChatImageAttachment[] {
+function designRequestUploads(images: readonly VerifiedImage[]): UploadChatImageAttachment[] {
   return images.map((image) => ({
     type: "image",
     name: image.name,

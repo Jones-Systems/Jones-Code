@@ -22,7 +22,7 @@ import { loadDesignRequestRegistry, type DesignRequestRegistrySnapshot } from ".
 
 const LOADING: DesignRequestRegistrySnapshot = { status: "loading", data: null, placements: null };
 
-export const designRequestThreadCandidates = (
+const designRequestThreadCandidates = (
   threads: readonly EnvironmentThreadShell[],
 ): DesignRequestThreadCandidate[] =>
   threads.map((thread) => ({

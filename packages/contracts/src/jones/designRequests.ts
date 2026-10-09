@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
  * Jones verifies the packet, resolves the destination and queues the message itself.
  */
 export const DESIGN_REQUEST_PROTOCOL = "jones-design-request/1" as const;
-export const DESIGN_REQUEST_GALLERY_VERSION = 1;
+const DESIGN_REQUEST_GALLERY_VERSION = 1;
 
 export interface DesignRequestLimits {
   readonly images: number;

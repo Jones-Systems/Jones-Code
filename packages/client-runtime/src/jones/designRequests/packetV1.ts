@@ -1,3 +1,5 @@
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import {
   DESIGN_REQUEST_LIMITS,
   type DesignRequestAttachmentData,
@@ -11,8 +13,8 @@ import {
  * targets and capture contexts are only checked structurally because the digest already binds
  * them and Jones only quotes them as review data.
  */
-export const PACKET_V1_FORMAT = "design-gallery-request-packet";
-export const PACKET_V1_VERSION = 1;
+const PACKET_V1_FORMAT = "design-gallery-request-packet";
+const PACKET_V1_VERSION = 1;
 export const PACKET_V1_UPDATE_FORMAT = "design-gallery-request-update";
 
 const PACKET_KEYS = [
@@ -320,8 +322,7 @@ function timestamp(value: unknown, field: string) {
   if (
     typeof value !== "string" ||
     !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
+    !Option.exists(DateTime.make(value), (date) => DateTime.formatIso(date) === value)
   )
     invalid(field);
 }
