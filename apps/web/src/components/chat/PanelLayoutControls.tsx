@@ -90,7 +90,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               className="shrink-0 [-webkit-app-region:no-drag]"
               pressed={terminalOpen}
               onPressedChange={onToggleTerminal}
-              aria-label="Toggle terminal drawer"
+              aria-label="Toggle terminal"
               variant="ghost"
               size="sm"
               disabled={!terminalAvailable}
@@ -100,7 +100,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
           </TooltipTrigger>
           <TooltipPopup side="bottom">
             {terminalAvailable
-              ? `Toggle terminal drawer${terminalShortcutLabel ? ` (${terminalShortcutLabel})` : ""}`
+              ? `Open or close the terminal on this thread’s server${terminalShortcutLabel ? ` (${terminalShortcutLabel})` : ""}`
               : "Terminal drawer is unavailable"}
           </TooltipPopup>
         </Tooltip>

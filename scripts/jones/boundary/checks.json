@@ -872,6 +872,14 @@
       ]
     },
     {
+      "id": "jones-utility-navigation",
+      "tests": [],
+      "commands": [
+        "vp run --filter @t3tools/web typecheck",
+        "vp lint apps/web/src/jones/navigation/JonesSidebarUtilityMenu.tsx apps/web/src/components/sidebar/SidebarChrome.tsx"
+      ]
+    },
+    {
       "id": "jones-desktop-workstreams-shell",
       "tests": ["apps/desktop/src/shell/DesktopShellEnvironment.test.ts"],
       "commands": [

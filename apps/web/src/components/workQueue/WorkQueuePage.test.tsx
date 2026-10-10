@@ -722,6 +722,9 @@ describe("submitted work page integration", () => {
       vi.doMock("../ui/sidebar", () => ({ SidebarInset: wrapper }));
       const { WorkQueuePage } = await import("./WorkQueuePage");
       await act(() => root.render(<WorkQueuePage />));
+      expect(
+        container.querySelector<HTMLDetailsElement>('[aria-label="Mock queue preview"]')?.open,
+      ).toBe(false);
       expect(container.querySelector('[aria-label="Mock queue preview"]')?.textContent).toContain(
         "Synthetic preview data is separate",
       );

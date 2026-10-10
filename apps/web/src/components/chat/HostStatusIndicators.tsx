@@ -10,11 +10,11 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const healthClasses = {
-  healthy: "border-emerald-500/60 bg-emerald-500/10",
-  warning: "border-yellow-500/70 bg-yellow-500/15",
-  elevated: "border-orange-500/70 bg-orange-500/15",
-  critical: "border-red-500/70 bg-red-500/15",
-  unavailable: "border-muted-foreground/30 bg-muted text-muted-foreground",
+  healthy: "border-emerald-500/30 bg-emerald-500/5",
+  warning: "border-yellow-500/35 bg-yellow-500/8",
+  elevated: "border-orange-500/35 bg-orange-500/8",
+  critical: "border-red-500/35 bg-red-500/8",
+  unavailable: "border-muted-foreground/15 bg-muted/50 text-muted-foreground/75",
 };
 
 const metricClasses = {

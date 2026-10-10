@@ -6776,7 +6776,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               data-chat-composer-shortcut-rails="true"
               aria-hidden={!shortcutRails.visible || undefined}
               inert={!shortcutRails.visible || undefined}
-              className="relative w-full"
+              className="relative w-full bg-background"
               style={{ height: shortcutRails.height }}
             >
               <div className="pointer-events-auto absolute bottom-0 left-0">

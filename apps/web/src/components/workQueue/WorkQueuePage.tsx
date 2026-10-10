@@ -35,6 +35,10 @@ export function WorkQueuePage() {
       </WorkspacePageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <WorkspacePageContainer width="expanded">
+          <p className="text-sm text-muted-foreground">
+            Work already submitted for routing and delivery. To edit or pause a voice prompt before
+            release, open Queue. Accepted or delivered work is not necessarily completed.
+          </p>
           <label className="flex items-center gap-3 text-sm">
             Environment
             <select
@@ -69,8 +73,10 @@ export function WorkQueuePage() {
               environmentId={selected.environmentId}
             />
           )}
-          <section aria-label="Mock queue preview" className="mt-8 space-y-4">
-            <h2 className="text-lg font-medium">Mock queue preview</h2>
+          <details aria-label="Mock queue preview" className="mt-8 space-y-4">
+            <summary className="cursor-pointer text-sm text-muted-foreground">
+              Demo preview · sample data only
+            </summary>
             <p className="text-sm text-muted-foreground">
               Synthetic preview data is separate from the sampled queue metadata above.
             </p>
@@ -87,7 +93,7 @@ export function WorkQueuePage() {
               </Alert>
             )}
             <WorkQueuePanel source={source} onDirtyChange={setDirty} />
-          </section>
+          </details>
         </WorkspacePageContainer>
       </div>
     </SidebarInset>

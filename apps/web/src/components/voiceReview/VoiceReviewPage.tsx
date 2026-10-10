@@ -36,14 +36,15 @@ export function VoiceReviewPage() {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden">
       <WorkspacePageHeader electron={isElectron}>
         <MicIcon className="size-4" />
-        <h1>Voice review</h1>
+        <h1>Queue · voice prompts</h1>
       </WorkspacePageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <WorkspacePageContainer>
           <p className="text-sm text-muted-foreground">
-            Voice prompts release when their countdown ends. Double-click a prompt to edit it and
-            pause delivery, or use Edit. Released means handed off for processing; it does not mean
-            an agent has started.
+            Review voice prompts before they are released. Submitted work shows routing and delivery
+            metadata. Voice prompts release when their countdown ends. Double-click a prompt to edit
+            it and pause delivery, or use Edit. Released means handed off for processing; it does
+            not mean an agent has started.
           </p>
           <label className="flex items-center gap-3 text-sm">
             Environment

@@ -814,6 +814,8 @@
     "apps/web/src/jones/composer/threadMentionTrigger.test.ts": "jones-owned",
     "apps/web/src/composer-editor-mentions.ts": "hook",
     "apps/web/src/components/ComposerPromptEditorTiptap.tsx": "accepted-shared",
+    "apps/web/src/jones/navigation/JonesSidebarUtilityMenu.tsx": "jones-owned",
+    "apps/web/src/components/chat/PanelLayoutControls.tsx": "accepted-shared",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts": "hook",
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts": "jones-tests-in-upstream",
     "apps/desktop/src/jones/workstreams/shellActivation.ts": "jones-owned",
@@ -1294,6 +1296,10 @@
     {
       "from": "apps/server/src/cloud/bootService.ts",
       "to": "apps/server/src/jones/hostService/privateRuntime.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/jones/navigation/JonesSidebarUtilityMenu.tsx"
     },
     {
       "from": "apps/desktop/src/shell/DesktopShellEnvironment.ts",

@@ -11968,7 +11968,7 @@ export default function ChatView(props: ChatViewProps) {
                   data-chat-composer-shortcut-host="true"
                   className="relative w-full"
                 />
-                <div aria-hidden className="pb-safe">
+                <div aria-hidden className="bg-background pb-safe">
                   <div className="h-4 sm:h-5" />
                 </div>
               </div>

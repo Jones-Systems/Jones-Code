@@ -452,6 +452,11 @@
         "apps/desktop/src/jones/updates/preloadInstall.test.ts",
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
       ]
+    },
+    {
+      "id": "utility-navigation",
+      "tests": [],
+      "scope": "Sidebar navigation interaction uses isolated Browser panel verification. Web typecheck and targeted lint cover the extracted component; queue and composer behavior retain their existing feature tests."
     }
   ]
 }
