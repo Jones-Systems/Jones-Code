@@ -1,5 +1,7 @@
+import { it as effectIt } from "@effect/vitest";
 import type { DesktopBridge } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
@@ -68,34 +70,37 @@ describe("desktop install IPC decoding", () => {
       installPrepared: () => Effect.succeed({ ...result, failed: false }),
     });
     const invoke = (payload: unknown) =>
-      Effect.runPromise(
-        installUpdate
-          .handler(payload)
-          .pipe(Effect.provideService(DesktopUpdates.DesktopUpdates, service)),
-      );
+      installUpdate
+        .handler(payload)
+        .pipe(Effect.provideService(DesktopUpdates.DesktopUpdates, service));
     return { invoke, installStaged, install };
   }
 
-  it("routes the preload handle through the real IPC decoder to the staged installer", async () => {
-    const { invoke, installStaged, install } = harness();
-    mocks.invoke.mockImplementationOnce((_channel, payload) => invoke(payload));
-    await bridge.installUpdate("staged-build-123");
-    expect(installStaged).toHaveBeenCalledExactlyOnceWith("staged-build-123");
-    expect(install).not.toHaveBeenCalled();
-  });
+  effectIt.effect("routes the handle through the real IPC decoder to the staged installer", () =>
+    Effect.gen(function* () {
+      const { invoke, installStaged, install } = harness();
+      yield* invoke("staged-build-123");
+      expect(installStaged).toHaveBeenCalledExactlyOnceWith("staged-build-123");
+      expect(install).not.toHaveBeenCalled();
+    }),
+  );
 
-  it("routes the no-argument preload request to the upstream installer", async () => {
-    const { invoke, installStaged, install } = harness();
-    mocks.invoke.mockImplementationOnce((_channel, payload) => invoke(payload));
-    await bridge.installUpdate();
-    expect(install).toHaveBeenCalledOnce();
-    expect(installStaged).not.toHaveBeenCalled();
-  });
+  effectIt.effect("routes the no-argument request to the upstream installer", () =>
+    Effect.gen(function* () {
+      const { invoke, installStaged, install } = harness();
+      yield* invoke(undefined);
+      expect(install).toHaveBeenCalledOnce();
+      expect(installStaged).not.toHaveBeenCalled();
+    }),
+  );
 
-  it("rejects malformed install payloads before either installer runs", async () => {
-    const { invoke, installStaged, install } = harness();
-    await expect(invoke(123)).rejects.toThrow();
-    expect(install).not.toHaveBeenCalled();
-    expect(installStaged).not.toHaveBeenCalled();
-  });
+  effectIt.effect("rejects malformed install payloads before either installer runs", () =>
+    Effect.gen(function* () {
+      const { invoke, installStaged, install } = harness();
+      const exit = yield* Effect.exit(invoke(123));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(install).not.toHaveBeenCalled();
+      expect(installStaged).not.toHaveBeenCalled();
+    }),
+  );
 });
