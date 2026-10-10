@@ -80,14 +80,39 @@ def same_binding(left, right):
 
 def process_identity(pid):
     result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'command='], capture_output=True, text=True)
-    if result.returncode != 0 or not result.stdout.strip(): return None
-    return result.stdout.strip()
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
+    if result.returncode != 0 or result.stderr.strip() or len(result.stdout.strip().splitlines()) != 1:
+        raise RuntimeError('Process inspection failed; signal withheld.')
+    identity = result.stdout.strip()
+    fields = identity.split(None, 5)
+    try:
+        if len(fields) != 6: raise ValueError('Missing process identity fields.')
+        time.strptime(' '.join(fields[:5]), '%a %b %d %H:%M:%S %Y')
+    except ValueError:
+        raise RuntimeError('Process inspection failed; signal withheld.')
+    return identity
+
+def process_start(pid):
+    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat=', '-o', 'lstart='], capture_output=True, text=True)
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
+    fields = result.stdout.strip().split()
+    if result.returncode != 0 or result.stderr.strip() or len(result.stdout.strip().splitlines()) != 1 or len(fields) != 6:
+        raise RuntimeError('Process inspection failed; signal withheld.')
+    if fields[0][0] not in 'DIRSTUWXYZt' or any(flag not in '<>AELNSTVWXslN+' for flag in fields[0][1:]):
+        raise RuntimeError('Process inspection failed; signal withheld.')
+    try: time.strptime(' '.join(fields[1:]), '%a %b %d %H:%M:%S %Y')
+    except ValueError: raise RuntimeError('Process inspection failed; signal withheld.')
+    return fields[0], fields[1:]
 
 def alive(proof):
     identity = process_identity(proof['pid'])
     if identity is None: return False
-    if identity != proof['identity']: raise RuntimeError('Process identity changed; signal withheld.')
-    return True
+    if identity == proof['identity']: return True
+    start = process_start(proof['pid'])
+    if start is None: return False
+    # An unreaped exit retains its PID and birth time but loses its command.
+    if start[0].startswith('Z') and start[1] == proof['identity'].split()[:5]: return False
+    raise RuntimeError('Process identity changed; signal withheld.')
 
 def stop_exact(proofs):
     for proof in proofs:

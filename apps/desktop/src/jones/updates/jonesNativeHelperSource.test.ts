@@ -134,6 +134,7 @@ def synthetic_identity(pid):
     if pid == 456: return 'tracked-native-app'
     return None
 process_identity = synthetic_identity
+process_start = lambda pid: ('S', [])
 native_durable = durable
 def synthetic_durable(destination, value, exclusive=False):
     destination = pathlib.Path(destination)
@@ -380,6 +381,110 @@ for suffix, content in contents.items():
     } finally {
       await f.cleanup();
     }
+  });
+
+  it("stops its owned child through the unreaped zombie window and refuses a live mismatch", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+def cancel(signum, frame): raise SystemExit(128 + signum)
+signal.signal(signal.SIGTERM, cancel)
+signal.signal(signal.SIGINT, cancel)
+child = subprocess.Popen(['/bin/sleep', '30'])
+native_kill = os.kill
+signals = []
+def captured_kill(pid, sig):
+    assert pid == child.pid
+    signals.append((pid, sig))
+    native_kill(pid, sig)
+os.kill = captured_kill
+try:
+    proof = {'pid': child.pid, 'identity': process_identity(child.pid)}
+    assert proof['identity'] is not None
+    try: stop_exact([dict(proof, identity=proof['identity'] + ' altered')])
+    except RuntimeError as error: assert str(error) == 'Process identity changed; signal withheld.'
+    else: raise AssertionError('A live mismatch was accepted')
+    assert signals == []
+    assert process_identity(child.pid) == proof['identity']
+    stop_exact([proof])
+    assert signals == [(child.pid, signal.SIGTERM)]
+    assert process_identity(child.pid) != proof['identity']
+    assert process_start(child.pid)[0].startswith('Z')
+    assert alive(proof) is False
+    assert child.wait(timeout=2) == -signal.SIGTERM
+    assert alive(proof) is False
+finally:
+    os.kill = native_kill
+    if child.returncode is None: child.kill()
+    child.wait(timeout=2)
+`;
+    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it("withholds signals on reused identities and failed observations, and retains the stop deadline", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+birth = 'Sat Oct 10 08:20:14 2026'
+proof = {'pid': 123, 'identity': birth + ' /owned/process'}
+signals = []
+calls = []
+os.kill = lambda pid, sig: signals.append((pid, sig))
+def result(output='', code=0, error=''):
+    return type('Result', (), {'returncode': code, 'stdout': output, 'stderr': error})()
+def observe(results):
+    pending = iter(results)
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[:4] == ['/bin/ps', '-p', '123', '-o']
+        return next(pending)
+    subprocess.run = run
+    signals.clear()
+def blocked(results, message='Process inspection failed; signal withheld.'):
+    observe(results)
+    try: stop_exact([proof])
+    except RuntimeError as error: assert str(error) == message
+    else: raise AssertionError('Unsafe process observation was accepted')
+    assert signals == []
+for observation in (result(code=2), result(), result(birth), result('malformed command'),
+                    result(proof['identity'] + '\n' + proof['identity']),
+                    result(proof['identity'], error='inspection warning'), result(code=1, error='inspection failed')):
+    blocked([observation])
+mismatch = result(birth + ' <defunct>')
+for status in (result(code=2), result(), result('Z malformed'), result('Z ' + birth + '\nZ ' + birth),
+               result('Z ' + birth, error='inspection warning'), result('Zgarbage ' + birth)):
+    blocked([mismatch, status])
+blocked([mismatch, result('Z Sat Oct 10 08:20:15 2026')], 'Process identity changed; signal withheld.')
+blocked([mismatch, result('S ' + birth)], 'Process identity changed; signal withheld.')
+observe([result(code=1), result(code=1)])
+stop_exact([proof]); assert signals == []
+observe([mismatch, result(code=1), result(code=1)])
+stop_exact([proof]); assert signals == []
+observe([mismatch, result('Z ' + birth), mismatch, result('Z ' + birth)])
+stop_exact([proof]); assert signals == []
+observe([result(proof['identity']), mismatch, result('Z ' + birth)])
+stop_exact([proof]); assert signals == [(123, signal.SIGTERM)]
+assert calls[0] == ['/bin/ps', '-p', '123', '-o', 'lstart=', '-o', 'command=']
+observe([result(proof['identity']), result(proof['identity'])])
+clock = iter((0, 31))
+time.monotonic = lambda: next(clock)
+time.sleep = lambda delay: (_ for _ in ()).throw(AssertionError('Unexpected wait'))
+try: stop_exact([proof])
+except RuntimeError as error: assert str(error) == 'Owned native writers did not stop; recovery held.'
+else: raise AssertionError('Live process bypassed deadline')
+assert signals == [(123, signal.SIGTERM)]
+`;
+    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
   });
 
   it("checks exact native files, ignores readers, and refuses writers or incomplete access", () => {
