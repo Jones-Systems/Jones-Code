@@ -47,7 +47,7 @@ describe("desktop install IPC decoding", () => {
     const state = createInitialDesktopUpdateState(
       "1.0.0",
       { hostArch: "arm64", appArch: "arm64", runningUnderArm64Translation: false },
-      "stable",
+      "latest",
     );
     const result = { accepted: true, completed: false, state };
     const installStaged = vi.fn(() => Effect.succeed(result));
