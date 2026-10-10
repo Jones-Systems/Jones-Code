@@ -180,14 +180,12 @@ def pair_state(expected, directory):
         if source.exists(): copied = clone_file(source, directory / ('state.sqlite' + suffix)) and copied
     method = 'clone'
     if not copied:
-        # SQLite backup reads the stopped source and includes committed WAL frames.
-        # Only this incomplete snapshot's exact files are cleanup-owned.
-        for name in ('state.sqlite', 'state.sqlite-wal', 'state.sqlite-shm'):
-            target = directory / name
-            if target.exists(): target.unlink()
-        with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as source, sqlite3.connect(directory / 'state.sqlite') as target:
-            source.backup(target)
-        method = 'sqlite-backup'
+        # Writers are stopped before this snapshot; preserve the exact DB/WAL/SHM pair.
+        shutil.copy2(database, directory / 'state.sqlite')
+        for suffix in ('-wal', '-shm'):
+            source = pathlib.Path(str(database) + suffix)
+            if source.exists(): shutil.copy2(source, directory / ('state.sqlite' + suffix))
+        method = 'copy'
     os.chmod(directory / 'state.sqlite', database.stat().st_mode & 0o777)
     presence = {}
     for name in SETTINGS:
@@ -198,7 +196,7 @@ def pair_state(expected, directory):
     clone_tree(expected['profile'], directory / 'profile', profile=True)
     sync_tree(directory)
     durable(directory / 'pair.json', {'expected': expected, 'settings': presence,
-            'recovery': {'method': method, 'bytes': database.stat().st_size,
+            'recovery': {'method': method, 'bytes': sum((directory / ('state.sqlite' + suffix)).stat().st_size for suffix in ('', '-wal', '-shm') if (directory / ('state.sqlite' + suffix)).exists()),
                          'startedAt': started, 'completedAt': time.time()}}, True)
 
 def restore_pair(expected, directory, advanced):

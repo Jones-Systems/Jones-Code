@@ -8,6 +8,7 @@ import * as NodeModule from "node:module";
 import {
   createPackageWithOptions,
   extractAll,
+  extractFile,
   getRawHeader,
   statFile,
   type DirectoryRecord,
@@ -30,6 +31,7 @@ import {
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   decodeJonesDesktopBuildMetadata,
+  verifyJonesPackagedStartupGate,
   type JonesBuildSource,
 } from "./jones/updates/build-provenance.ts";
 import {
@@ -3940,6 +3942,30 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         runtimeArchivePath: options.wslRuntime,
       }),
       verbose: options.verbose,
+    });
+  }
+
+  if (options.platform === "mac" && stagePackageJson.jonesSource !== undefined) {
+    const source = stagePackageJson.jonesSource;
+    const packagedAsar = path.join(
+      stageDistDir,
+      options.arch === "arm64" ? "mac-arm64" : "mac",
+      `${stagePackageJson.productName ?? resolveDesktopProductName(appVersion)}.app`,
+      "Contents",
+      "Resources",
+      "app.asar",
+    );
+    yield* Effect.try({
+      try: () =>
+        verifyJonesPackagedStartupGate(
+          JSON.parse(extractFile(packagedAsar, "package.json").toString("utf8")),
+          { version: appVersion, source },
+        ),
+      catch: (cause) =>
+        new BundleNotSelfContainedError({
+          exitCode: -1,
+          output: `Packaged Jones startup-gate verification failed: ${String(cause)}`,
+        }),
     });
   }
 

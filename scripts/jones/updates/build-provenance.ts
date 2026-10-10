@@ -28,6 +28,21 @@ export const JonesDesktopBuildMetadata = Schema.Union([
 export const decodeJonesDesktopBuildMetadata =
   Schema.decodeUnknownEffect(JonesDesktopBuildMetadata);
 
+export function verifyJonesPackagedStartupGate(
+  metadata: unknown,
+  expected: { readonly version: string; readonly source: JonesBuildSource },
+): void {
+  const qualified = Schema.decodeUnknownSync(JonesDesktopBuildMetadata)(metadata);
+  const manifest = metadata as Record<string, unknown>;
+  if (
+    qualified.startupGateProtocol !== 1 ||
+    qualified.jonesSource?.sha !== expected.source.sha ||
+    qualified.jonesSource?.tree !== expected.source.tree ||
+    manifest.version !== expected.version
+  )
+    throw new Error("Packaged Jones app does not prove its source-bound startup gate.");
+}
+
 /** An unsigned preview remains a manual Darwin build, never a signed release qualification. */
 export function bundlesJonesNativeHelper(
   platform: "mac" | "linux" | "win",
@@ -70,7 +85,7 @@ export function stampJonesBuildSource(input: {
   const manifests = ["apps/server/package.json", "apps/desktop/package.json"].map((relative) => {
     const file = NodePath.join(root, relative);
     const manifest = JSON.parse(NodeFS.readFileSync(file, "utf8")) as Record<string, unknown>;
-    return { file, manifest: { ...manifest, jonesSource: identity } };
+    return { file, manifest: { ...manifest, jonesSource: identity, startupGateProtocol: 1 } };
   });
   for (const { file, manifest } of manifests)
     NodeFS.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n");

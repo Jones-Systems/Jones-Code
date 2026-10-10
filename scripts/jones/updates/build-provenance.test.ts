@@ -5,10 +5,12 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { readJonesStartupGateProtocol } from "../../../apps/server/src/jones/cloud/qualifiedStartup.ts";
 import {
   bundlesJonesNativeHelper,
   JonesDesktopBuildMetadata,
   stampJonesBuildSource,
+  verifyJonesPackagedStartupGate,
 } from "./build-provenance.ts";
 
 const fixtures = new Set<string>();
@@ -71,6 +73,25 @@ describe("Jones build provenance", () => {
     tree: "c".repeat(40),
   };
 
+  it("refuses packaged metadata that lost its implemented gate or source binding", () => {
+    const metadata = {
+      version: "0.0.45-preview.20261010.38048764253.1",
+      jonesSource: source,
+      startupGateProtocol: 1,
+    };
+    const expected = { version: metadata.version, source };
+    expect(() => verifyJonesPackagedStartupGate(metadata, expected)).not.toThrow();
+    for (const invalid of [
+      { ...metadata, startupGateProtocol: undefined },
+      { ...metadata, startupGateProtocol: 2 },
+      { ...metadata, jonesSource: { ...source, sha: "d".repeat(40) } },
+      { ...metadata, jonesSource: { ...source, tree: "d".repeat(40) } },
+      { ...metadata, version: "older" },
+    ]) {
+      expect(() => verifyJonesPackagedStartupGate(invalid, expected)).toThrow();
+    }
+  });
+
   it("preserves absent capability and only propagates an explicit source-bound marker", () => {
     expect(decodeDesktopMetadata({})).toEqual({});
     expect(decodeDesktopMetadata({ jonesSource: source })).toEqual({ jonesSource: source });
@@ -125,7 +146,11 @@ describe("Jones build provenance", () => {
           await NodeFSP.readFile(NodePath.join(f.root, `apps/${name}/package.json`), "utf8"),
         );
         expect(stamped).toMatchObject({ name, retained: { nested: true }, jonesSource: identity });
-        expect(stamped).not.toHaveProperty("startupGateProtocol");
+        expect(stamped.startupGateProtocol).toBe(readJonesStartupGateProtocol());
+        expect(decodeDesktopMetadata(stamped)).toMatchObject({
+          startupGateProtocol: 1,
+          jonesSource: identity,
+        });
       }
       expect(JSON.parse(await NodeFSP.readFile(serverFile, "utf8"))).toHaveProperty(
         "version",

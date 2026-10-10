@@ -9,6 +9,7 @@ import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 
 import { APP_VERSION } from "./branding";
+import { isJonesPreviewBuildPair } from "./jones/updates/versionSkew";
 import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
 
 export interface VersionMismatch {
@@ -48,10 +49,10 @@ function versionCore(version: string): string {
 }
 
 /**
- * The skew a user can act on: the connected server runs an older T3 Code than
+ * The skew a user can act on: the connected server runs an older build than
  * this client, so the server is the side that needs updating.
  *
- * Two nightly builds compare their full versions, including the date and run.
+ * Two nightly builds or two Jones previews compare their full versions, including the date and run.
  * Other combinations compare their core `major.minor.patch` only, so a stable
  * build and a nightly build with the same core do not cause an update warning.
  * A server ahead of the client does not need an update. Versions that do not
@@ -68,14 +69,15 @@ export function resolveVersionMismatch(
 
   const clientCore = versionCore(normalizedClientVersion);
   const serverCore = versionCore(normalizedServerVersion);
-  const compareNightlyBuilds =
-    parseSemver(normalizedClientVersion)?.prerelease[0] === "nightly" &&
-    parseSemver(normalizedServerVersion)?.prerelease[0] === "nightly";
+  const compareBuildVersions =
+    (parseSemver(normalizedClientVersion)?.prerelease[0] === "nightly" &&
+      parseSemver(normalizedServerVersion)?.prerelease[0] === "nightly") ||
+    isJonesPreviewBuildPair(normalizedClientVersion, normalizedServerVersion);
   const serverIsBehind =
     parseSemver(clientCore) && parseSemver(serverCore)
       ? compareSemverVersions(
-          compareNightlyBuilds ? normalizedServerVersion : serverCore,
-          compareNightlyBuilds ? normalizedClientVersion : clientCore,
+          compareBuildVersions ? normalizedServerVersion : serverCore,
+          compareBuildVersions ? normalizedClientVersion : clientCore,
         ) < 0
       : normalizedServerVersion !== normalizedClientVersion;
   if (!serverIsBehind) {

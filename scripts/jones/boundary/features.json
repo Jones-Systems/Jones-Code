@@ -451,6 +451,10 @@
     {
       "id": "jones-local-desktop-update",
       "tests": [
+        "apps/web/src/jones/updates/versionSkew.test.ts",
+        "scripts/stamp-jones-build.test.ts",
+        "scripts/jones/updates/build-provenance.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
         "apps/desktop/src/jones/updates/preloadInstall.test.ts",
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
       ]

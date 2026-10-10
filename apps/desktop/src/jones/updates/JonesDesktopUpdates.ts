@@ -49,7 +49,7 @@ const ActivationJournal = Schema.Struct({
   message: Schema.optionalKey(Schema.String),
   recovery: Schema.optionalKey(
     Schema.Struct({
-      method: Schema.Literals(["clone", "sqlite-backup"]),
+      method: Schema.Literals(["clone", "copy", "sqlite-backup"]),
       bytes: Schema.Number,
       startedAt: Schema.Number,
       completedAt: Schema.Number,
