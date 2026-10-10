@@ -99,6 +99,7 @@ const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
 );
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeJsonString = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
 const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
 
@@ -3959,18 +3960,17 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       const manifestJson = yield* Effect.try(() =>
         extractFile(packagedAsar, "package.json").toString("utf8"),
       );
-      const metadata = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
-        manifestJson,
-      );
+      const metadata = yield* decodeJsonString(manifestJson);
       yield* Effect.try(() =>
         verifyJonesPackagedStartupGate(metadata, { version: appVersion, source }),
       );
     }).pipe(
-      Effect.mapError((cause) =>
-        new BundleNotSelfContainedError({
-          exitCode: -1,
-          output: `Packaged Jones startup-gate verification failed: ${String(cause)}`,
-        }),
+      Effect.mapError(
+        (cause) =>
+          new BundleNotSelfContainedError({
+            exitCode: -1,
+            output: `Packaged Jones startup-gate verification failed: ${String(cause)}`,
+          }),
       ),
     );
   }
