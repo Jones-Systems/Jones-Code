@@ -1,6 +1,14 @@
+import { it as effectIt } from "@effect/vitest";
 import type { DesktopBridge } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { UPDATE_INSTALL_CHANNEL } from "../../ipc/channels.ts";
+import { installUpdate } from "../../ipc/methods/updates.ts";
+import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
+import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn().mockResolvedValue({ accepted: true }),
@@ -14,6 +22,7 @@ vi.mock("electron", () => ({
   webUtils: {},
 }));
 vi.mock("@clerk/electron/preload", () => ({ exposeClerkBridge: vi.fn() }));
+vi.mock("electron-updater", () => ({ autoUpdater: {} }));
 
 let bridge: DesktopBridge;
 beforeAll(async () => {
@@ -33,4 +42,65 @@ describe("desktop preload install bridge", () => {
     await bridge.installUpdate();
     expect(mocks.invoke).toHaveBeenLastCalledWith(UPDATE_INSTALL_CHANNEL);
   });
+});
+
+describe("desktop install IPC decoding", () => {
+  function harness() {
+    const state = createInitialDesktopUpdateState(
+      "1.0.0",
+      { hostArch: "arm64", appArch: "arm64", runningUnderArm64Translation: false },
+      "latest",
+    );
+    const result = { accepted: true, completed: false, state };
+    const installStaged = vi.fn(() => Effect.succeed(result));
+    const install = vi.fn(() => result);
+    const service = DesktopUpdates.DesktopUpdates.of({
+      getState: Effect.succeed(state),
+      isActionActive: Effect.succeed(false),
+      isInstallActive: Effect.succeed(false),
+      subscribe: Effect.succeed({ latest: state, changes: Stream.empty }),
+      emitState: Effect.void,
+      disabledReason: Effect.succeed(Option.none()),
+      configure: Effect.void,
+      setChannel: () => Effect.succeed(state),
+      check: () => Effect.succeed({ checked: true, state }),
+      download: Effect.succeed(result),
+      install: Effect.sync(install),
+      installStaged,
+      installPrepared: () => Effect.succeed({ ...result, failed: false }),
+    });
+    const invoke = (payload: unknown) =>
+      installUpdate
+        .handler(payload)
+        .pipe(Effect.provideService(DesktopUpdates.DesktopUpdates, service));
+    return { invoke, installStaged, install };
+  }
+
+  effectIt.effect("routes the handle through the real IPC decoder to the staged installer", () =>
+    Effect.gen(function* () {
+      const { invoke, installStaged, install } = harness();
+      yield* invoke("staged-build-123");
+      expect(installStaged).toHaveBeenCalledExactlyOnceWith("staged-build-123");
+      expect(install).not.toHaveBeenCalled();
+    }),
+  );
+
+  effectIt.effect("routes the no-argument request to the upstream installer", () =>
+    Effect.gen(function* () {
+      const { invoke, installStaged, install } = harness();
+      yield* invoke(undefined);
+      expect(install).toHaveBeenCalledOnce();
+      expect(installStaged).not.toHaveBeenCalled();
+    }),
+  );
+
+  effectIt.effect("rejects malformed install payloads before either installer runs", () =>
+    Effect.gen(function* () {
+      const { invoke, installStaged, install } = harness();
+      const exit = yield* Effect.exit(invoke(123));
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(install).not.toHaveBeenCalled();
+      expect(installStaged).not.toHaveBeenCalled();
+    }),
+  );
 });
