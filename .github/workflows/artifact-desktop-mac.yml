@@ -11,6 +11,10 @@ on:
       - apps/desktop/**
       - scripts/build-desktop-artifact.ts
       - scripts/update-release-package-versions.ts
+      - scripts/stamp-jones-build.ts
+      - scripts/jones/updates/build-provenance.ts
+      - apps/server/src/jones/updates/**
+      - apps/server/src/jones/cloud/qualifiedStartup.ts
       - scripts/lib/**
       - native/resource-monitor/**
       - native/browser-secret/**

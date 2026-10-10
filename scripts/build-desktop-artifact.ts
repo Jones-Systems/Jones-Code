@@ -8,6 +8,7 @@ import * as NodeModule from "node:module";
 import {
   createPackageWithOptions,
   extractAll,
+  extractFile,
   getRawHeader,
   statFile,
   type DirectoryRecord,
@@ -30,6 +31,7 @@ import {
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   decodeJonesDesktopBuildMetadata,
+  verifyJonesPackagedStartupGate,
   type JonesBuildSource,
 } from "./jones/updates/build-provenance.ts";
 import {
@@ -97,6 +99,7 @@ const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
 );
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeJsonString = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
 const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
 
@@ -3941,6 +3944,35 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       }),
       verbose: options.verbose,
     });
+  }
+
+  if (options.platform === "mac" && stagePackageJson.jonesSource !== undefined) {
+    const source = stagePackageJson.jonesSource;
+    const packagedAsar = path.join(
+      stageDistDir,
+      options.arch === "arm64" ? "mac-arm64" : "mac",
+      `${stagePackageJson.productName ?? resolveDesktopProductName(appVersion)}.app`,
+      "Contents",
+      "Resources",
+      "app.asar",
+    );
+    yield* Effect.gen(function* () {
+      const manifestJson = yield* Effect.try(() =>
+        extractFile(packagedAsar, "package.json").toString("utf8"),
+      );
+      const metadata = yield* decodeJsonString(manifestJson);
+      yield* Effect.try(() =>
+        verifyJonesPackagedStartupGate(metadata, { version: appVersion, source }),
+      );
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new BundleNotSelfContainedError({
+            exitCode: -1,
+            output: `Packaged Jones startup-gate verification failed: ${String(cause)}`,
+          }),
+      ),
+    );
   }
 
   const stageEntries = yield* fs.readDirectory(stageDistDir);

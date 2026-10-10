@@ -19,6 +19,7 @@ for (const relative of ["apps/server/package.json", "apps/desktop/package.json"]
   const file = NodePath.join(root, relative);
   const manifest = JSON.parse(NodeFS.readFileSync(file, "utf8")) as Record<string, unknown>;
   manifest.jonesSource = identity;
+  manifest.startupGateProtocol = 1;
   NodeFS.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n");
 }
 if (process.env.GITHUB_ENV) {

@@ -50,12 +50,15 @@
     "apps/web/src/jones/updates/jonesUpdates.ts",
     "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
     "apps/web/src/jones/updates/localDesktopUpdate.ts",
+    "apps/web/src/jones/updates/versionSkew.test.ts",
+    "apps/web/src/jones/updates/versionSkew.ts",
     "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
     "packages/client-runtime/src/jones/updates/jonesUpdates.ts",
     "packages/shared/src/jones/jonesActions.test.ts",
     "packages/shared/src/jones/jonesActions.ts"
   ],
   "hookPaths": [
+    "apps/web/src/versionSkew.ts",
     "apps/desktop/src/ipc/methods/updates.ts",
     "apps/desktop/src/preload.ts",
     "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
@@ -97,6 +100,10 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/web/src/versionSkew.ts",
+      "to": "apps/web/src/jones/updates/versionSkew.ts"
+    },
     {
       "from": "apps/desktop/src/updates/DesktopUpdates.ts",
       "to": "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts"

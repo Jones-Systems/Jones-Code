@@ -10,6 +10,10 @@ on:
       - scripts/build-cli-archive.ts
       - scripts/smoke-cli-archive.ts
       - scripts/update-release-package-versions.ts
+      - scripts/stamp-jones-build.ts
+      - scripts/jones/updates/build-provenance.ts
+      - apps/server/src/jones/updates/**
+      - apps/server/src/jones/cloud/qualifiedStartup.ts
       - scripts/lib/cli-external-packages.ts
       - scripts/lib/public-config.ts
       - packages/shared/src/cliRelease.ts

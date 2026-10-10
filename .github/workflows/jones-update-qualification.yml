@@ -1,0 +1,68 @@
+name: Jones update qualification
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/jones-update-qualification.yml
+      - .github/workflows/artifact-desktop-mac.yml
+      - .github/workflows/artifact-cli-linux.yml
+      - apps/desktop/src/jones/updates/**
+      - apps/server/src/jones/updates/**
+      - apps/server/src/jones/cloud/qualifiedStartup.ts
+      - apps/web/src/jones/updates/**
+      - apps/web/src/versionSkew.ts
+      - scripts/stamp-jones-build*
+      - scripts/build-desktop-artifact.ts
+      - scripts/jones/updates/**
+      - scripts/jones/boundary/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jones-update-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: Jones update regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Qualify affected update and recovery behavior
+        run: >-
+          vp test run
+          apps/web/src/versionSkew.test.ts
+          apps/web/src/jones/updates/versionSkew.test.ts
+          apps/web/src/jones/updates/localDesktopUpdate.test.ts
+          apps/desktop/src/jones/updates/preloadInstall.test.ts
+          apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
+          apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
+          apps/desktop/src/jones/updates/jonesMacStaging.test.ts
+          apps/server/src/jones/updates/trialGate.test.ts
+          apps/server/src/jones/updates/trialStartup.test.ts
+          apps/server/src/jones/cloud/qualifiedStartup.test.ts
+          scripts/stamp-jones-build.test.ts
+          scripts/jones/updates/build-provenance.test.ts
+          scripts/build-desktop-artifact.test.ts
+
+      - name: Verify Jones boundary accounting
+        run: node scripts/jones/check-boundary.ts --strict --json

@@ -321,11 +321,56 @@ def forbidden(*args): raise RuntimeError('Exhaustive content scan is forbidden')
 digest = forbidden
 app_digest = forbidden
 pair_state(expected, root / 'pair')
-assert read(root / 'pair' / 'pair.json')['recovery']['method'] in ('clone', 'sqlite-backup')
+assert read(root / 'pair' / 'pair.json')['recovery']['method'] in ('clone', 'copy')
 prove_quiescence = lambda active: None
 restore_pair(expected, root / 'pair', root / 'advanced')
 with sqlite3.connect(database) as db:
     assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous'
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("copies the stopped DB and sidecars after a partial clone without opening SQLite", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+home, profile = root / 'copy-home', root / 'copy-profile'
+home.mkdir(); profile.mkdir()
+database = home / 'state.sqlite'
+contents = {'': b'stopped database bytes', '-wal': b'committed WAL bytes', '-shm': b'shared memory bytes'}
+for suffix, content in contents.items():
+    pathlib.Path(str(database) + suffix).write_bytes(content)
+(profile / 'opaque').write_text('profile')
+expected = {'databasePath': str(database), 'profile': str(profile)}
+def partial_clone(source, target):
+    target.write_bytes(b'partial clone')
+    return False
+def forbidden(*args, **kwargs): raise RuntimeError('Recovery must not open SQLite')
+clone_file = partial_clone
+sqlite3.connect = forbidden
+pair_state(expected, root / 'copy-pair')
+recovery = read(root / 'copy-pair' / 'pair.json')['recovery']
+assert recovery['method'] == 'copy'
+assert recovery['bytes'] == sum(map(len, contents.values()))
+for suffix, content in contents.items():
+    assert (root / 'copy-pair' / ('state.sqlite' + suffix)).read_bytes() == content
+    pathlib.Path(str(database) + suffix).write_bytes(b'advanced state')
+prove_quiescence = lambda active: None
+restore_pair(expected, root / 'copy-pair', root / 'copy-advanced')
+for suffix, content in contents.items():
+    assert pathlib.Path(str(database) + suffix).read_bytes() == content
+    assert (root / 'copy-advanced' / ('state.sqlite' + suffix)).read_bytes() == b'advanced state'
 `;
       NodeChildProcess.execFileSync(
         "python3",

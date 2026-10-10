@@ -424,6 +424,8 @@
     {
       "id": "jones-qualified-updates-clients",
       "tests": [
+        "apps/web/src/jones/updates/versionSkew.test.ts",
+        "apps/web/src/versionSkew.test.ts",
         "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
         "packages/client-runtime/src/state/server.test.ts",
         "packages/client-runtime/src/state/serverTokenAccounting.test.ts",
@@ -432,7 +434,7 @@
         "apps/mobile/src/features/settings/environment-maintenance.test.ts"
       ],
       "commands": [
-        "vp test run packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/web/src/components/ServerUpdateAction.test.tsx apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/versionSkew.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/web/src/components/ServerUpdateAction.test.tsx apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck"

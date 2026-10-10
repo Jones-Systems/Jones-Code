@@ -75,6 +75,7 @@ describe("Jones build source stamp", () => {
       ).toMatchObject({
         name,
         retained: { nested: true },
+        startupGateProtocol: 1,
         jonesSource: { repository: "Jones-Systems/Jones-Code", sha: input.sha, tree: input.tree },
       });
     }
