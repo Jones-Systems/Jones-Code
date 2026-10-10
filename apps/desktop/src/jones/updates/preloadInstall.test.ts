@@ -69,9 +69,9 @@ describe("desktop install IPC decoding", () => {
     });
     const invoke = (payload: unknown) =>
       Effect.runPromise(
-        installUpdate.handler(payload).pipe(
-          Effect.provideService(DesktopUpdates.DesktopUpdates, service),
-        ),
+        installUpdate
+          .handler(payload)
+          .pipe(Effect.provideService(DesktopUpdates.DesktopUpdates, service)),
       );
     return { invoke, installStaged, install };
   }
