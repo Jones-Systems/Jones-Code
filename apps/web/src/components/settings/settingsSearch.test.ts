@@ -10,6 +10,7 @@ import {
   searchableSetting,
   searchSettings,
   SETTINGS_SEARCH_ITEMS,
+  SETTINGS_SECTION_LABELS,
   type SettingsSearchItem,
 } from "./settingsSearch";
 
@@ -45,6 +46,24 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
 ];
 
 describe("searchSettings", () => {
+  it("places Jones Code after Archive and finds the device-local prompt preference", () => {
+    expect(Object.keys(SETTINGS_SECTION_LABELS).slice(-2)).toEqual([
+      "/settings/archived",
+      "/settings/jones-code",
+    ]);
+    expect(SETTINGS_SECTION_LABELS["/settings/jones-code"]).toBe("Jones Code");
+    expect(searchSettings("default prompt view")).toContainEqual(
+      expect.objectContaining({ id: "prompts-default-stage", to: "/settings/jones-code" }),
+    );
+    expect(getSettingsSearchTargetScope("prompts-default-stage")).toMatchObject({
+      title: "Default prompt view",
+      scope: null,
+    });
+    expect(searchableSetting("prompts-default-stage")).toEqual({
+      id: "prompts-default-stage",
+      title: "Default prompt view",
+    });
+  });
   it.each(["send shortcut", "multiline", "new line"])("finds Send shortcut for %s", (query) => {
     expect(searchSettings(query).map((item) => item.id)).toContain("send-shortcut");
   });

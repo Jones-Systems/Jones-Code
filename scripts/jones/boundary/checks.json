@@ -126,6 +126,7 @@
     {
       "id": "jones-queue-dispatch-goals",
       "tests": [
+        "apps/server/src/environment/ServerEnvironment.test.ts",
         "apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts",
         "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
         "apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts",
@@ -138,7 +139,7 @@
         "apps/server/src/provider/providerQueueHttp.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/QueueCompatibility.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts apps/server/src/provider/providerGoal.test.ts apps/server/src/provider/providerQueue.test.ts apps/server/src/provider/providerQueueHttp.test.ts"
+        "vp test run apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/QueueCompatibility.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts apps/server/src/provider/providerGoal.test.ts apps/server/src/provider/providerQueue.test.ts apps/server/src/provider/providerQueueHttp.test.ts"
       ]
     },
     {
@@ -231,6 +232,9 @@
     {
       "id": "jones-work-queue-metadata",
       "tests": [
+        "apps/web/src/jones/workQueue/PromptsSettings.test.tsx",
+        "apps/web/src/components/settings/settingsSearch.test.ts",
+        "packages/contracts/src/settings.test.ts",
         "apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts",
         "apps/server/src/jones/workQueueMetadata/http.test.ts",
         "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
@@ -239,7 +243,7 @@
         "packages/contracts/src/jones/workQueueMetadata.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts"
+        "vp test run apps/web/src/jones/workQueue/PromptsSettings.test.tsx apps/web/src/components/settings/settingsSearch.test.ts packages/contracts/src/settings.test.ts apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts"
       ]
     },
     {

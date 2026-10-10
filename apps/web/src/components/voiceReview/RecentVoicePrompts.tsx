@@ -30,6 +30,8 @@ export function RecentVoicePrompts({
   transport,
   onRefresh,
   unavailable,
+  title = "Recent prompts",
+  emptyMessage = "No recent prompts observed.",
 }: {
   entries: readonly VoiceReviewRecentEntry[];
   registry: ThreadRegistryComposedSnapshot | null;
@@ -37,18 +39,20 @@ export function RecentVoicePrompts({
   transport: RegistryCorrectionTransport;
   onRefresh: () => Promise<void>;
   unavailable: boolean;
+  title?: string;
+  emptyMessage?: string;
 }) {
   return (
     <aside
       className="flex min-w-0 flex-col gap-3 rounded-xl border bg-muted/20 p-4"
       aria-label="Recent voice prompts"
     >
-      <h2 className="font-medium">Recent prompts</h2>
+      <h2 className="font-medium">{title}</h2>
       <p className="text-sm text-muted-foreground">
         Workstream corrections update metadata. They never send a prompt again.
       </p>
       {entries.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No recent prompts observed.</p>
+        <p className="text-sm text-muted-foreground">{emptyMessage}</p>
       ) : null}
       {entries.map((entry) => (
         <RecentPromptRow

@@ -564,6 +564,10 @@
     "apps/web/src/components/settings/DeviceHostEditor.tsx": "accepted-shared",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx": "accepted-shared",
     "apps/web/src/components/settings/SettingsPanels.tsx": "accepted-shared",
+    "apps/web/src/components/settings/SettingsScopeSentence.tsx": "accepted-shared",
+    "apps/web/src/components/settings/SettingsSidebarNav.tsx": "accepted-shared",
+    "apps/web/src/components/settings/settingsSearch.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/settings/settingsSearch.ts": "accepted-shared",
     "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/deviceHostConnectionChecks.ts": "accepted-shared",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.test.ts": "jones-tests-in-upstream",
@@ -640,6 +644,9 @@
     "apps/web/src/versionSkew.ts": "hook",
     "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/jones/workMode/SidebarWorkModePill.tsx": "jones-owned",
+    "apps/web/src/jones/workQueue/UnifiedQueuePage.tsx": "jones-owned",
+    "apps/web/src/jones/workQueue/PromptsSettings.test.tsx": "jones-owned",
+    "apps/web/src/jones/workQueue/PromptsSettings.tsx": "jones-owned",
     "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.tsx": "jones-owned",
     "apps/web/src/jones/workQueue/useWorkQueueMetadata.ts": "jones-owned",
     "apps/web/src/jones/workstreamAppearance/WorkstreamColorDialog.test.tsx": "jones-tests-in-upstream",
@@ -653,6 +660,7 @@
     "apps/web/src/routes/_chat.pull-requests.tsx": "hook",
     "apps/web/src/routes/design-requests.tsx": "hook",
     "apps/web/src/routes/voice-review.tsx": "hook",
+    "apps/web/src/routes/settings.jones-code.tsx": "hook",
     "apps/web/src/routes/work-queue.tsx": "hook",
     "apps/web/src/state/conversations.ts": "jones-owned",
     "apps/web/src/state/tokenAccounting.test.ts": "jones-owned",
@@ -792,6 +800,7 @@
     "packages/contracts/src/rpc.ts": "accepted-shared",
     "packages/contracts/src/server.ts": "accepted-shared",
     "packages/contracts/src/settings.ts": "hook",
+    "packages/contracts/src/settings.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/threadCorpusProtocol.test.ts": "jones-owned",
     "packages/contracts/src/threadCorpusProtocol.ts": "jones-owned",
     "packages/contracts/src/threadMetadataMcp.test.ts": "jones-tests-in-upstream",
@@ -1203,11 +1212,15 @@
     },
     {
       "from": "apps/web/src/routes/voice-review.tsx",
-      "to": "apps/web/src/components/voiceReview/VoiceReviewPage.tsx"
+      "to": "apps/web/src/components/workQueue/WorkQueuePage.tsx"
     },
     {
       "from": "apps/web/src/routes/work-queue.tsx",
       "to": "apps/web/src/components/workQueue/WorkQueuePage.tsx"
+    },
+    {
+      "from": "apps/web/src/routes/settings.jones-code.tsx",
+      "to": "apps/web/src/jones/workQueue/PromptsSettings.tsx"
     },
     {
       "from": "packages/contracts/src/environment.ts",

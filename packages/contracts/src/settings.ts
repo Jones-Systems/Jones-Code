@@ -299,6 +299,9 @@ export const ChatWidth = Schema.Literals(["comfortable", "wide", "full"]);
 export type ChatWidth = typeof ChatWidth.Type;
 
 export const ClientSettingsSchema = Schema.Struct({
+  promptsDefaultStage: Schema.Literals(["pending", "queued", "sent"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("pending" as const)),
+  ),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
   ),
@@ -1819,6 +1822,7 @@ export function requiredScopesForServerSettingsPatch(
 }
 
 export const ClientSettingsPatch = Schema.Struct({
+  promptsDefaultStage: Schema.optionalKey(Schema.Literals(["pending", "queued", "sent"])),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   diffColorScheme: Schema.optionalKey(DiffColorScheme),
