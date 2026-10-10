@@ -870,6 +870,14 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck"
       ]
+    },
+    {
+      "id": "jones-utility-navigation",
+      "tests": [],
+      "commands": [
+        "vp run --filter @t3tools/web typecheck",
+        "vp lint apps/web/src/jones/navigation/JonesSidebarUtilityMenu.tsx apps/web/src/components/sidebar/SidebarChrome.tsx"
+      ]
     }
   ]
 }

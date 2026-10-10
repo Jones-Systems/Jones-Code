@@ -1,8 +1,8 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect } from "react";
 
-// Utility pages replace the sidebar utility row with a
-// Back button. Everything else is the main app. Legacy `/projects/<key>` links
+// Utility pages keep the icon row; clicking the active icon returns to the main app.
+// Legacy `/projects/<key>` links
 // redirect into settings, so they count too and are never remembered.
 export function isSidebarUtilityPage(pathname: string) {
   return (
@@ -19,7 +19,7 @@ export function isSidebarUtilityPage(pathname: string) {
 
 let mainAppHref: string | null = null;
 
-// Mount once in the app shell. Records the latest main app URL so Back can
+// Mount once in the app shell. Records the latest main app URL so an active icon can
 // return there no matter how many utility pages were visited since.
 export function MainAppLocationTracker() {
   const href = useLocation({

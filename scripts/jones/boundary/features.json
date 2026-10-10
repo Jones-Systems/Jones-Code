@@ -444,6 +444,11 @@
         "apps/web/src/jones/designRequests/bindingStore.test.ts"
       ],
       "scope": "Design gallery requests through the authenticated web client: jones-design-request/1 opener handshake, client-local pairing to an existing workstream, deterministic primary-placement routing with named held states, packet v1 digest and image verification, and queue-mode dispatch with deterministic command IDs and receipt readback. No server, persistence or queue activation changes."
+    },
+    {
+      "id": "utility-navigation",
+      "tests": [],
+      "scope": "Sidebar navigation interaction uses isolated Browser panel verification. Web typecheck and targeted lint cover the extracted component; queue and composer behavior retain their existing feature tests."
     }
   ]
 }

@@ -154,7 +154,7 @@ export function ProviderInstanceShortcuts(props: {
       aria-hidden={!visible || undefined}
       inert={!visible || undefined}
       data-composer-shortcut-group="accounts"
-      className="grid w-max grid-cols-[repeat(3,36px)] gap-1 rounded-(--control-radius) bg-background/50"
+      className="grid w-max grid-cols-[repeat(3,36px)] gap-1 rounded-(--control-radius) bg-background"
       style={{ visibility: visible ? "visible" : "hidden" }}
     >
       {entries.map((entry) => {

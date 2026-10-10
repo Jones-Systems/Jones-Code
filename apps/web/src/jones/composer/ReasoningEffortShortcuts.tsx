@@ -42,7 +42,7 @@ export function ReasoningEffortShortcuts(
       aria-label={descriptor.label}
       aria-hidden={!props.visible || undefined}
       inert={!props.visible || undefined}
-      className="grid w-max grid-cols-[repeat(3,minmax(max-content,1fr))] gap-1 rounded-(--control-radius) bg-background/50"
+      className="grid w-max grid-cols-[repeat(3,minmax(max-content,1fr))] gap-1 rounded-(--control-radius) bg-background"
       style={{ visibility: props.visible ? "visible" : "hidden" }}
     >
       {descriptor.options.map((option) => (

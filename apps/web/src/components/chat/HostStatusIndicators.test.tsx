@@ -104,7 +104,7 @@ it("keeps one bubble per host while live samples update both metric colors and a
   );
   expect(bubbles()).toHaveLength(4);
   expect(bubbles()[0]?.textContent).toBe("VPS · 23% · 4");
-  expect(bubbles()[0]?.className).toContain("bg-yellow-500/15");
+  expect(bubbles()[0]?.className).toContain("bg-yellow-500/8");
   expect(bubbles()[0]?.getAttribute("aria-label")).toContain("CPU 23%");
   expect(bubbles()[0]?.getAttribute("aria-label")).toContain("Available RAM 4 GiB");
   expect(bubbles()[0]?.querySelectorAll("span")[0]?.className).toContain("text-emerald-700");
