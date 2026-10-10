@@ -870,6 +870,14 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck"
       ]
+    },
+    {
+      "id": "jones-desktop-workstreams-shell",
+      "tests": ["apps/desktop/src/shell/DesktopShellEnvironment.test.ts"],
+      "commands": [
+        "vp test run apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
+        "vp run --filter @t3tools/desktop typecheck"
+      ]
     }
   ]
 }
