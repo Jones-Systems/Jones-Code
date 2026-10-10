@@ -12,7 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
-import packageJson from "../../../../package.json" with { type: "json" };
+import { APP_IDENTITY } from "../../runtimeIdentity/AppIdentity.ts";
 import { ServerConfig } from "../../../config.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 
@@ -105,7 +105,8 @@ const make = Effect.gen(function* () {
           threadId: caller.threadId,
           effectiveBaseDir: config.baseDir,
           loopbackOrigin,
-          serverVersion: packageJson.version,
+          serverVersion: APP_IDENTITY.version,
+          appIdentity: APP_IDENTITY,
           serverGeneration: null,
         };
       }),

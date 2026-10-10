@@ -8,6 +8,7 @@
  * Do not import t3code modules from the string body. The Pi process resolves
  * `@earendil-works/pi-coding-agent` and `typebox` from the user's pi install.
  */
+import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
 
 export const PI_T3_MCP_EXTENSION_FILENAME = "pi-t3-mcp-extension.ts";
@@ -29,6 +30,7 @@ import { Type } from "typebox";
 const URL_ENV = ${JSON.stringify(T3_MCP_URL_ENV)};
 const TOKEN_ENV = ${JSON.stringify(T3_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(T3_PI_RUNTIME_MODE_ENV)};
+const APP_IDENTITY_INSTRUCTIONS = ${JSON.stringify(buildAppIdentityInstructions())};
 const ORCHESTRATION_INSTRUCTIONS = ${JSON.stringify(T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim())};
 const PROTOCOL = "2025-06-18";
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
@@ -249,6 +251,13 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     }
   });
 
+  // Use Pi's system-prompt channel: wrapping the user message breaks slash commands.
+  // Identity is always present; MCP guidance is conditional on the attached bridge.
+  pi.on("before_agent_start", (event) => ({
+    systemPrompt: event.systemPrompt + "\\n\\n" + APP_IDENTITY_INSTRUCTIONS +
+      (env(URL_ENV) && env(TOKEN_ENV) ? "\\n\\n" + ORCHESTRATION_INSTRUCTIONS : ""),
+  }));
+
   const endpoint = env(URL_ENV);
   const token = env(TOKEN_ENV);
   if (endpoint === undefined || token === undefined) {
@@ -320,12 +329,5 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
       ctx.ui.notify(\`t3-code MCP unavailable: \${message}\`, "warning");
     }
   });
-
-  // Deliver orchestration guidance through pi's real system-prompt channel.
-  // Wrapping the first user message instead would stop it from starting
-  // with "/" and silently break slash-command expansion.
-  pi.on("before_agent_start", (event) => ({
-    systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS,
-  }));
 }
 `;

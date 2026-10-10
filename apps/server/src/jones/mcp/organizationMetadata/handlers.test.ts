@@ -27,6 +27,7 @@ import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
+import { APP_IDENTITY } from "../../runtimeIdentity/AppIdentity.ts";
 import * as Metadata from "./OrganizationMetadataMcpService.ts";
 import { OrganizationMetadataHandlersLive } from "./handlers.ts";
 import { OrganizationMetadataRegistrationLive } from "../../../mcp/McpHttpServer.ts";
@@ -188,6 +189,7 @@ it.effect(
         expect(result).toMatchObject({
           environmentId: caller.environmentId,
           threadId: caller.thread?.threadId,
+          appIdentity: APP_IDENTITY,
         });
         expect(encodeJsonText(result)).not.toContain(caller.thread?.providerSessionId);
         expect(encodeJsonText(result)).not.toContain("authorizationHeader");
