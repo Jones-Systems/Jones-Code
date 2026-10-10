@@ -103,7 +103,8 @@
     "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx",
     "apps/web/src/jones/workstreams/workstreamReferenceActions.ts",
     "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
-    "apps/web/src/jones/workstreams/workstreamActionSnapshot.ts"
+    "apps/web/src/jones/workstreams/workstreamActionSnapshot.ts",
+    "apps/desktop/src/jones/workstreams/shellActivation.ts"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -132,7 +133,9 @@
     "apps/web/src/test/reactHookHarness.ts",
     "packages/client-runtime/src/authorization/index.ts",
     "packages/contracts/src/auth.ts",
-    "vite.config.ts"
+    "vite.config.ts",
+    "apps/desktop/src/shell/DesktopShellEnvironment.ts",
+    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -251,6 +254,10 @@
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/workstreamsRegistrationContext.ts"
+    },
+    {
+      "from": "apps/desktop/src/shell/DesktopShellEnvironment.ts",
+      "to": "apps/desktop/src/jones/workstreams/shellActivation.ts"
     }
   ]
 }

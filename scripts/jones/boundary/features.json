@@ -53,7 +53,8 @@
         "apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
         "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
-        "apps/mobile/src/features/workstreams/projection.test.ts"
+        "apps/mobile/src/features/workstreams/projection.test.ts",
+        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
       ]
     },
     {
