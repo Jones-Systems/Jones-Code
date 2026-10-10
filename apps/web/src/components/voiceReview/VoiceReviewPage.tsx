@@ -5,13 +5,8 @@ import type {
   ThreadRegistryComposedSnapshot,
   ThreadRegistryWorkstreams,
 } from "@t3tools/contracts";
-import { MicIcon, PauseIcon, PlayIcon } from "lucide-react";
+import { PauseIcon, PlayIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
-import { isElectron } from "../../env";
-import { WorkspacePageContainer } from "../WorkspacePageContainer";
-import { WorkspacePageHeader } from "../WorkspacePageHeader";
-import { SidebarInset } from "../ui/sidebar";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { useVoiceReview } from "./useVoiceReview";
@@ -23,62 +18,6 @@ import {
   voiceReviewError,
   type VoiceReviewTransport,
 } from "./voiceReviewActions";
-
-export function VoiceReviewPage() {
-  const { environments } = useEnvironments();
-  const primaryId = usePrimaryEnvironmentId();
-  const [requestedId, setRequestedId] = useState<EnvironmentId | null>(null);
-  const selected =
-    environments.find((environment) => environment.environmentId === requestedId) ??
-    environments.find((environment) => environment.environmentId === primaryId) ??
-    environments[0];
-  return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden">
-      <WorkspacePageHeader electron={isElectron}>
-        <MicIcon className="size-4" />
-        <h1>Prompts</h1>
-      </WorkspacePageHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <WorkspacePageContainer>
-          <p className="text-sm text-muted-foreground">
-            Review voice prompts before they are released. Queued shows requests waiting for
-            delivery and prompts released for processing. Voice prompts release when their countdown
-            ends. Double-click a prompt to edit it and pause delivery, or use Edit. Released means
-            handed off for processing; it does not mean an agent has started.
-          </p>
-          <label className="flex items-center gap-3 text-sm">
-            Environment
-            <select
-              aria-label="Voice review environment"
-              value={selected?.environmentId ?? ""}
-              onChange={(event) => {
-                const environment = environments.find(
-                  (item) => item.environmentId === event.target.value,
-                );
-                if (environment) setRequestedId(environment.environmentId);
-              }}
-              className="rounded-md border bg-background px-2 py-1"
-            >
-              {environments.map((environment) => (
-                <option key={environment.environmentId} value={environment.environmentId}>
-                  {environment.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {selected ? (
-            <EnvironmentVoiceReview
-              key={selected.environmentId}
-              environmentId={selected.environmentId}
-            />
-          ) : (
-            <p>No environment is connected.</p>
-          )}
-        </WorkspacePageContainer>
-      </div>
-    </SidebarInset>
-  );
-}
 
 export function EnvironmentVoiceReview({
   environmentId,
