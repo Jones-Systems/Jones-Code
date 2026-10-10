@@ -1,5 +1,11 @@
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 
+import {
+  getJonesDesktopUpdateBlockedMessage,
+  getJonesDesktopUpdateOutcomeMessage,
+  getJonesDesktopUpdateRefusal,
+} from "../jones/updates/localDesktopUpdate";
+
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
 
 const DESKTOP_RELEASE_HISTORY_URL = "https://github.com/pingdotgg/t3code/releases";
@@ -52,7 +58,11 @@ export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | nul
 }
 
 export function isDesktopUpdateButtonDisabled(state: DesktopUpdateState | null): boolean {
-  return state?.status === "downloading";
+  return (
+    state?.status === "downloading" ||
+    (state !== null &&
+      getJonesDesktopUpdateBlockedMessage(state, resolveDesktopUpdateButtonAction(state)) !== null)
+  );
 }
 
 export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState): string {
@@ -71,6 +81,11 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
 }
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
+  const blocked = getJonesDesktopUpdateBlockedMessage(
+    state,
+    resolveDesktopUpdateButtonAction(state),
+  );
+  if (blocked) return blocked;
   if (state.status === "available") {
     return `Update ${state.availableVersion ?? "available"} ready to download`;
   }
@@ -94,7 +109,7 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     }
     return state.message ?? "Update failed";
   }
-  return "Up to date";
+  return getJonesDesktopUpdateOutcomeMessage(state) ?? "Up to date";
 }
 
 export function getDesktopUpdateInstallConfirmationMessage(
@@ -105,6 +120,8 @@ export function getDesktopUpdateInstallConfirmationMessage(
 }
 
 export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): string | null {
+  const refusal = getJonesDesktopUpdateRefusal(result);
+  if (refusal) return refusal;
   if (!result.accepted || result.completed) return null;
   if (typeof result.state.message !== "string") return null;
   const message = result.state.message.trim();

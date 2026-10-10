@@ -1,3 +1,4 @@
+import { getJonesDesktopUpdateBlockedMessage } from "../jones/updates/localDesktopUpdate";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { ArrowRightIcon } from "lucide-react";
 
@@ -56,7 +57,8 @@ export function showDesktopUpdateDownloadedToast(
     title: "Update downloaded",
     description: (
       <>
-        Restart the app from the update button to install it.
+        {getJonesDesktopUpdateBlockedMessage(state, "install") ??
+          "Restart the app from the update button to install it."}
         {releaseUrl ? <ReleaseNotesLink releaseUrl={releaseUrl} shell={shell} /> : null}
       </>
     ),

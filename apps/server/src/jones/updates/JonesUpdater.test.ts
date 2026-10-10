@@ -26,7 +26,7 @@ const candidate: JonesActionsCandidate = {
   platform: "linux",
   architecture: "x64",
 };
-function fixture() {
+function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
   const effects: string[] = [];
   let available = candidate;
   const host: JonesUpdaterHost = {
@@ -50,10 +50,13 @@ function fixture() {
       effects.push("install");
     },
   };
-  const updater = new JonesUpdater(host, {
-    check: async () => ({ state: "available", candidate: available }),
-    stage: async () => ({ receipt: { sha256: "e".repeat(64) } }) as JonesStagedArtifact,
-  });
+  const updater = new JonesUpdater(
+    { ...host, ...overrides },
+    {
+      check: async () => ({ state: "available", candidate: available }),
+      stage: async () => ({ receipt: { sha256: "e".repeat(64) } }) as JonesStagedArtifact,
+    },
+  );
   return {
     updater,
     effects,
@@ -117,4 +120,50 @@ describe("host-owned Jones updater", () => {
     await check;
     expect(f.effects).toEqual([]);
   });
+});
+
+it("retains the native terminal outcome identity after a subsequent build check", async () => {
+  const terminal = {
+    id: "update-fixture",
+    status: "rolled-back" as const,
+    fromVersion: "0.0.0-preview.20261002.1",
+    targetVersion: candidate.version,
+    reason: "trial failed",
+  };
+  const f = fixture({ startupOutcome: () => terminal });
+  await f.updater.check();
+  expect(f.updater.snapshot()).toMatchObject({
+    updateId: terminal.id,
+    outcome: {
+      status: "rolled-back",
+      reason: "trial failed",
+      fromVersion: terminal.fromVersion,
+      targetVersion: terminal.targetVersion,
+    },
+  });
+});
+
+it("keeps the accepted native update ID while refusing a second install", async () => {
+  const effects: string[] = [];
+  const f = fixture({
+    install: async () => {
+      effects.push("install");
+      return { updateId: "native-id" };
+    },
+  });
+  await f.updater.check();
+  await f.updater.download({ artifactId: 4, sourceSha: candidate.source });
+  const input = {
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+  };
+  expect(await f.updater.install(input)).toMatchObject({
+    phase: "installing",
+    updateId: "native-id",
+  });
+  await f.updater.install(input);
+  await f.updater.check();
+  expect(f.updater.snapshot().phase).toBe("installing");
+  expect(effects).toEqual(["install"]);
 });

@@ -208,12 +208,13 @@
       "tests": [
         "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
         "packages/ssh/src/tunnel.test.ts",
-        "packages/ssh/src/runnerProcess.test.ts"
+        "packages/ssh/src/runnerProcess.test.ts",
+        "packages/ssh/src/jones/hostRuntime.test.ts"
       ],
       "commands": [
-        "vp test run packages/ssh/src/jones/persistentRemoteLifecycle.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts",
         "vp run --filter @t3tools/ssh typecheck",
-        "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts"
+        "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
+        "vp test run packages/ssh/src/jones/persistentRemoteLifecycle.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts packages/ssh/src/jones/hostRuntime.test.ts"
       ]
     },
     {
@@ -319,10 +320,14 @@
         "apps/server/src/serverRuntimeStartup.test.ts",
         "apps/server/src/cli/service.test.ts",
         "apps/server/src/cli/update.test.ts",
-        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/cloud/qualifiedBackup.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/jones/updates/capabilityReceipt.test.ts",
+        "apps/server/src/jones/cloud/launcherCapability.test.ts"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts"
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/updates/capabilityReceipt.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts"
       ]
     },
     {
@@ -735,13 +740,14 @@
         "scripts/lib/dev-share.test.ts",
         "scripts/dev-runner.test.ts",
         "packages/ssh/src/tunnel.test.ts",
-        "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts"
+        "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
+        "apps/server/src/jones/hostService/adoption.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts apps/server/src/cli/pair.test.ts apps/server/src/jones/hostService/artifactVerification.test.ts apps/server/src/jones/hostService/releasePolicy.test.ts apps/server/src/jones/hostService/HostServiceConfig.test.ts apps/server/src/jones/hostService/HostService.test.ts apps/server/src/jones/hostService/cli.test.ts packages/tailscale/src/tailscale.test.ts packages/tailscale/src/jones/serveOwnership.test.ts scripts/lib/dev-share.test.ts scripts/dev-runner.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/tailscale typecheck",
-        "vp run --filter @t3tools/scripts typecheck"
+        "vp run --filter @t3tools/scripts typecheck",
+        "vp test run apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts apps/server/src/cli/pair.test.ts apps/server/src/jones/hostService/artifactVerification.test.ts apps/server/src/jones/hostService/releasePolicy.test.ts apps/server/src/jones/hostService/HostServiceConfig.test.ts apps/server/src/jones/hostService/HostService.test.ts apps/server/src/jones/hostService/cli.test.ts packages/tailscale/src/tailscale.test.ts packages/tailscale/src/jones/serveOwnership.test.ts scripts/lib/dev-share.test.ts scripts/dev-runner.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts apps/server/src/jones/hostService/adoption.test.ts"
       ]
     },
     {
@@ -885,6 +891,21 @@
       "commands": [
         "vp test run apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
         "vp run --filter @t3tools/desktop typecheck"
+      ]
+    },
+    {
+      "id": "jones-local-desktop-update",
+      "tests": [
+        "apps/desktop/src/jones/updates/preloadInstall.test.ts",
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
+        "apps/web/src/components/desktopUpdate.logic.test.ts",
+        "apps/web/src/components/desktopUpdate.toast.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/desktop/src/jones/updates/preloadInstall.test.ts apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/components/desktopUpdate.logic.test.ts apps/web/src/components/desktopUpdate.toast.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/desktop typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
       ]
     },
     {

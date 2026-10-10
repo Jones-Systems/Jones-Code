@@ -1,3 +1,4 @@
+import { decodeMigrationPlan, type MigrationPlan } from "../jones/updates/migrationPlan.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import {
   decodeStagedQualifiedRuntime,
@@ -33,6 +34,7 @@ export interface PendingServiceUpdate {
   readonly targetVersion: string;
   readonly dbPath: string;
   readonly status: "pending";
+  readonly migrationPlan?: MigrationPlan;
   readonly phase: "accepted" | "trial-ready";
   readonly qualified?: StagedQualifiedRuntime;
   readonly startupReceipt?: QualifiedTrialReceipt;
@@ -43,6 +45,7 @@ interface LegacyPendingServiceUpdate extends Omit<PendingServiceUpdate, "phase">
 export type ServiceUpdateRecord =
   | PendingServiceUpdate
   | (ServerSelfUpdateOutcome & {
+      readonly migrationPlan?: MigrationPlan;
       readonly qualified?: StagedQualifiedRuntime;
       readonly startupReceipt?: QualifiedTrialReceipt;
     });
@@ -80,6 +83,7 @@ export type ServiceLauncherParentMessage =
   | {
       readonly type: "update-accepted";
       readonly updateId: string;
+      readonly migrationPlan?: MigrationPlan;
     }
   | {
       readonly type: "update-rejected";
@@ -108,6 +112,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   if (!isRecord(value)) return undefined;
   const { id, fromVersion, targetVersion, status } = value;
+  const migrationPlan =
+    value.migrationPlan === undefined ? undefined : decodeMigrationPlan(value.migrationPlan);
+  if (value.migrationPlan !== undefined && migrationPlan === undefined) return undefined;
   const qualified =
     value.qualified === undefined ? undefined : decodeStagedQualifiedRuntime(value.qualified);
   const startupReceipt =
@@ -155,6 +162,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
           phase: value.phase,
           ...(qualified === undefined ? {} : { qualified }),
           ...(startupReceipt === undefined ? {} : { startupReceipt }),
+          ...(migrationPlan === undefined ? {} : { migrationPlan }),
         }
       : undefined;
   }
@@ -169,6 +177,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
       status,
       ...(qualified === undefined ? {} : { qualified }),
       ...(startupReceipt === undefined ? {} : { startupReceipt }),
+      ...(migrationPlan === undefined ? {} : { migrationPlan }),
       ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
     };
   }
@@ -378,7 +387,14 @@ export function decodeServiceLauncherParentMessage(
     return { type: value.type, reason: value.reason };
   }
   if (value.type === "update-accepted" && typeof value.updateId === "string") {
-    return { type: value.type, updateId: value.updateId };
+    const migrationPlan =
+      value.migrationPlan === undefined ? undefined : decodeMigrationPlan(value.migrationPlan);
+    if (value.migrationPlan !== undefined && migrationPlan === undefined) return undefined;
+    return {
+      type: value.type,
+      updateId: value.updateId,
+      ...(migrationPlan === undefined ? {} : { migrationPlan }),
+    };
   }
   if (value.type !== "committed" || typeof value.updateId !== "string") return undefined;
   if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {

@@ -74,7 +74,8 @@ function fixture<A, E, R>(body: (root: string) => Effect.Effect<A, E, R>) {
               "synthetic state",
             );
           });
-          return yield* body(root);
+          const canonicalRoot = yield* fileIo(() => NodeFSP.realpath(root));
+          return yield* body(canonicalRoot);
         }),
       ),
     (root) =>

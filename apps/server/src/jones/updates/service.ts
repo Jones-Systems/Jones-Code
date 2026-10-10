@@ -23,6 +23,8 @@ import packageJson from "../../../package.json" with { type: "json" };
 import { retainStagedSelection, restoreStagedSelection } from "./stagedSelection.ts";
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
+import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
+import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
 import { JonesUpdater } from "./JonesUpdater.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
@@ -287,7 +289,35 @@ export const layer = Layer.effect(
         onSuccess: (selection) => selection,
       }),
     );
+    const recovery =
+      terminal === undefined
+        ? undefined
+        : yield* Effect.tryPromise(() =>
+            readQualifiedBackupReceipt(config.baseDir, terminal.id),
+          ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    let capabilityWrites = Promise.resolve();
+    const publishCapability = (state: JonesUpdateState) => {
+      if (environmentId === undefined) return;
+      capabilityWrites = capabilityWrites
+        .catch(() => {})
+        .then(() =>
+          publishJonesUpdateCapabilityReceipt({
+            schema: 1,
+            baseDir: config.baseDir,
+            environmentId,
+            currentVersion: version,
+            processId: process.pid,
+            qualifiedLauncher: launcher.managed && launcher.qualifiedUpdates === true,
+            capability: {
+              install:
+                state.capability.install && !["preparing", "installing"].includes(state.phase),
+            },
+          }),
+        );
+      void capabilityWrites.catch(() => {});
+    };
     const updater = new JonesUpdater({
+      stateChanged: publishCapability,
       startupOutcome: () =>
         restoreFailure === undefined ? launcher.qualifiedStartupOutcome : undefined,
       initialState: {
@@ -329,6 +359,19 @@ export const layer = Layer.effect(
           : { phase: "blocked" as const, message: restoreFailure }),
         ...(environmentId === undefined ? {} : { environmentId }),
         currentVersion: version,
+        ...(launcher.qualifiedUpdateMigrationPlan === undefined
+          ? {}
+          : { migrationPlan: launcher.qualifiedUpdateMigrationPlan }),
+        ...(recovery === undefined
+          ? {}
+          : {
+              recovery: {
+                method: recovery.method,
+                bytes: recovery.bytes,
+                completedAt: recovery.completedAt,
+                durationMs: recovery.durationMs,
+              },
+            }),
         capability: {
           check: supported && nativeReceipt,
           download: supported && nativeReceipt && selfUpdate.stageQualified !== undefined,
@@ -367,15 +410,28 @@ export const layer = Layer.effect(
         if (selfUpdate.stageQualified === undefined)
           throw new Error("bootstrap-required: Qualified staging is unavailable.");
         const result = await run(selfUpdate.stageQualified(artifact));
-        await retainStagedSelection(result);
-        return { stagedHandle: result.stagedHandle, version: result.receipt.version };
+        const { migrationPlan, ...selection } = result;
+        await retainStagedSelection(selection);
+        return {
+          stagedHandle: result.stagedHandle,
+          version: result.receipt.version,
+          ...(migrationPlan === undefined ? {} : { migrationPlan }),
+        };
       },
       install: async (input) => {
         if (qualifiedSelfUpdate.installQualified === undefined)
           throw new Error("bootstrap-required: Qualified Install is unavailable.");
-        await run(qualifiedSelfUpdate.installQualified(input));
+        const accepted = await run(qualifiedSelfUpdate.installQualified(input));
+        return {
+          ...(accepted.updateId === undefined ? {} : { updateId: accepted.updateId }),
+          ...(launcher.qualifiedUpdateMigrationPlan === undefined
+            ? {}
+            : { migrationPlan: launcher.qualifiedUpdateMigrationPlan }),
+        };
       },
     });
+    publishCapability(updater.snapshot());
+    yield* Effect.promise(() => capabilityWrites.catch(() => {}));
     yield* Effect.sleep("15 seconds").pipe(
       Effect.andThen(Effect.promise(() => updater.check())),
       Effect.forkScoped,
@@ -388,7 +444,25 @@ export const layer = Layer.effect(
     return JonesUpdates.of({
       prepareNative: () =>
         Effect.succeed(blocked("Native desktop preparation is unavailable on this server.")),
-      state: (after) => Effect.promise((signal) => updater.observe(after, signal)),
+      state: (after) =>
+        Effect.promise(async (signal) => {
+          const state = await updater.observe(after, signal);
+          if (state.updateId === undefined || state.outcome === undefined) return state;
+          const receipt = await readQualifiedBackupReceipt(config.baseDir, state.updateId).catch(
+            () => undefined,
+          );
+          return receipt === undefined
+            ? state
+            : {
+                ...state,
+                recovery: {
+                  method: receipt.method,
+                  bytes: receipt.bytes,
+                  completedAt: receipt.completedAt,
+                  durationMs: receipt.durationMs,
+                },
+              };
+        }),
       check: Effect.promise(() => updater.check()),
       download: (input) => Effect.promise(() => updater.download(input)),
       install: (input) => Effect.promise(() => updater.install(input)),

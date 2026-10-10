@@ -7,6 +7,8 @@ import * as NodeNet from "node:net";
 import type * as NetAddress from "effect/net/NetAddress";
 import type { StagedQualifiedRuntime } from "./qualifiedRuntime.ts";
 
+export const readJonesStartupGateProtocol = (): 1 => 1;
+
 export interface QualifiedTrialRuntimeWitness {
   readonly home: string;
   readonly databasePath: string;

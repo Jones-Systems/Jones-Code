@@ -58,11 +58,16 @@ import { IS_NIGHTLY_BUILD, NightlyMobileBetaRow } from "../NightlyMobileBeta";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
 import {
   canCheckForUpdate,
+  getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
 } from "../../components/desktopUpdate.logic";
+import {
+  getJonesDesktopUpdateBlockedMessage,
+  installLocalDesktopUpdate,
+} from "../../jones/updates/localDesktopUpdate";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import {
@@ -364,8 +369,18 @@ function AboutVersionSection() {
         setIsUpdateActionPending(false);
         return;
       }
-      void bridge
-        .installUpdate()
+      void installLocalDesktopUpdate(bridge, updateState)
+        .then((result) => {
+          const message = getDesktopUpdateActionError(result);
+          if (!message) return;
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not install update",
+              description: message,
+            }),
+          );
+        })
         .catch((error: unknown) => {
           toastManager.add(
             stackedThreadToast({
@@ -421,9 +436,10 @@ function AboutVersionSection() {
   const buttonLabel =
     actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
   const description =
-    action === "download" || action === "install"
+    getJonesDesktopUpdateBlockedMessage(updateState, action) ??
+    (action === "download" || action === "install"
       ? "Update available."
-      : "Current version of the application.";
+      : "Current version of the application.");
 
   return (
     <>

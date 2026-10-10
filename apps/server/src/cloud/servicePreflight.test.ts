@@ -60,6 +60,44 @@ it("preserves ordinary preflight without inferring qualified support", () => {
   ).toContain("startup-gate-unavailable");
 });
 
+it("returns the staged candidate's migration plan and preserves it on decode", () => {
+  const migrationPlan = { pendingUpstream: [59], pendingJones: [105] };
+  const result = runServicePreflight({
+    databasePath: "/missing/state.sqlite",
+    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+    version: "candidate",
+    migrationPlanResult: { status: "ready", migrationPlan },
+  });
+  expect(result).toMatchObject({ status: "ready", migrationPlan });
+  expect(decodeServicePreflightResult(result)).toEqual(result);
+});
+
+it("blocks installation when candidate migration preflight is blocked", () => {
+  expect(
+    runServicePreflight({
+      databasePath: "/missing/state.sqlite",
+      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+      version: "candidate",
+      migrationPlanResult: { status: "blocked", reason: "Candidate older than this database." },
+    }),
+  ).toEqual({
+    status: "blocked",
+    version: "candidate",
+    reason: "Candidate older than this database.",
+  });
+});
+
+it("rejects a malformed supplied migration plan", () => {
+  expect(
+    decodeServicePreflightResult({
+      status: "ready",
+      version: "candidate",
+      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+      migrationPlan: { pendingUpstream: ["59"], pendingJones: [105] },
+    }),
+  ).toBeUndefined();
+});
+
 it.each([null, undefined, 0, 2, "1", true])(
   "rejects supplied malformed startup gate marker %s",
   (startupGateProtocol) => {
@@ -91,4 +129,18 @@ it("qualifies only an exact successful candidate with symmetric gate support", (
     { code: 0, stdout: JSON.stringify({ ...result, launcherProtocol: 3 }), version: "1.2.3" },
   ])
     expect(qualifiedServicePreflightFailure(input)).toContain("startup-gate-unavailable");
+});
+
+it("preserves a bound candidate database blocker before stopping the active server", () => {
+  expect(
+    qualifiedServicePreflightFailure({
+      code: 1,
+      version: "1.0.0",
+      stdout: JSON.stringify({
+        status: "blocked",
+        version: "1.0.0",
+        reason: "Candidate older than this database (Jones migration 105).",
+      }),
+    }),
+  ).toBe("Candidate older than this database (Jones migration 105).");
 });

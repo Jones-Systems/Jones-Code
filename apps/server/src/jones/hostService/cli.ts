@@ -71,6 +71,71 @@ const setup = Command.make("setup", {
     }),
   ),
 );
+const adopt = Command.make("adopt", {
+  ...baseFlags,
+  activeArtifactDir: Flag.String("active-artifact-dir"),
+  activeSourceCommit: Flag.String("active-source-commit"),
+  launcherArtifactDir: Flag.String("launcher-artifact-dir"),
+  launcherSourceCommit: Flag.String("launcher-source-commit"),
+  supersedeExecstart: Flag.Boolean("supersede-execstart").pipe(Flag.withDefault(false)),
+  legacyDirectServe: Flag.Boolean("legacy-direct-serve").pipe(Flag.withDefault(false)),
+  acceptUnattestedChildCapability: Flag.Boolean("accept-unattested-child-capability").pipe(
+    Flag.withDefault(false),
+  ),
+  serviceUnit: Flag.Literals("service-unit", ["jones-code.service", "t3code.service"]).pipe(
+    Flag.optional,
+  ),
+  serviceUnitSha256: Flag.String("service-unit-sha256").pipe(Flag.optional),
+  taskOperationId: Flag.String("task-operation-id").pipe(Flag.optional),
+  taskHandoffSha256: Flag.String("task-handoff-sha256").pipe(Flag.optional),
+  taskDropin: Flag.String("task-dropin").pipe(Flag.optional),
+  preserveDropin: Flag.String("preserve-dropin").pipe(Flag.atLeast(0)),
+  dryRun,
+}).pipe(
+  Command.withDescription(
+    "Enroll exact Actions artifacts and adopt a qualified launcher while retaining the active server version.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const input = {
+        baseDir: flags.baseDir,
+        activeArtifactDir: flags.activeArtifactDir,
+        activeSourceCommit: flags.activeSourceCommit,
+        launcherArtifactDir: flags.launcherArtifactDir,
+        launcherSourceCommit: flags.launcherSourceCommit,
+        dryRun: flags.dryRun,
+        supersedeExecstart: flags.supersedeExecstart,
+        legacyDirectServe: flags.legacyDirectServe,
+        acceptUnattestedChildCapability: flags.acceptUnattestedChildCapability,
+        preserveDropin: flags.preserveDropin,
+        ...(Option.isSome(flags.serviceUnit) ? { serviceUnit: flags.serviceUnit.value } : {}),
+        ...(Option.isSome(flags.serviceUnitSha256)
+          ? { serviceUnitSha256: flags.serviceUnitSha256.value }
+          : {}),
+        ...(Option.isSome(flags.taskOperationId)
+          ? { taskOperationId: flags.taskOperationId.value }
+          : {}),
+        ...(Option.isSome(flags.taskHandoffSha256)
+          ? { taskHandoffSha256: flags.taskHandoffSha256.value }
+          : {}),
+        ...(Option.isSome(flags.taskDropin) ? { taskDropin: flags.taskDropin.value } : {}),
+      };
+      const service = yield* HostService.HostService;
+      const plan = yield* service.planAdoption(input);
+      yield* Console.log(
+        ["Jones host adoption effect plan:", ...plan.effects.map((effect) => `  ${effect}`)].join(
+          "\n",
+        ),
+      );
+      if (plan.recovery !== undefined)
+        yield* Console.log(["Recovery requires separate review:", ...plan.recovery].join("\n"));
+      const result = yield* service.adopt(input);
+      yield* Console.log(
+        `${result.state}: launcher ${result.plan.launcherVersion}; active server ${result.plan.activeVersion}`,
+      );
+    }),
+  ),
+);
 const status = Command.make("status", {
   ...baseFlags,
   json: Flag.Boolean("json").pipe(Flag.withDefault(false)),
@@ -119,7 +184,7 @@ const routeRemove = Command.make("route-remove", { ...baseFlags, dryRun }).pipe(
 
 export const jonesCommand = Command.make("jones").pipe(
   Command.withSubcommands([
-    Command.make("host").pipe(Command.withSubcommands([stage, setup, status, routeRemove])),
+    Command.make("host").pipe(Command.withSubcommands([stage, setup, adopt, status, routeRemove])),
   ]),
 );
 

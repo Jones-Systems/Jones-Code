@@ -6,7 +6,11 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { observeJonesUpdateState } from "./jonesUpdates.ts";
+import * as Schema from "effect/Schema";
+import { JonesUpdateState as JonesUpdateStateSchema } from "@t3tools/contracts/jones/jonesUpdates";
+import { jonesUpdatePresentation, observeJonesUpdateState } from "./jonesUpdates.ts";
+
+const decodeJonesUpdateState = Schema.decodeUnknownSync(JonesUpdateStateSchema);
 
 const staged: JonesUpdateState = {
   source: "jones-actions",
@@ -119,3 +123,32 @@ it.effect("long-polls by the returned revision until the host reports no Jones s
     expect(states).toEqual([staged, newer, null]);
   }),
 );
+
+it("keeps restart pending until a host outcome arrives and presents rollback reasons", () => {
+  expect(
+    jonesUpdatePresentation({ ...staged, phase: "installing", updateId: "native-id" }),
+  ).toMatchObject({
+    busy: true,
+    message: "Installing — server restarting. Waiting for the launcher outcome.",
+    outcomeMessage: undefined,
+  });
+  expect(
+    jonesUpdatePresentation({
+      ...staged,
+      phase: "rolled-back",
+      outcome: {
+        status: "rolled-back",
+        fromVersion: "1.0.0",
+        targetVersion: "2.0.0",
+        reason: "candidate older than database",
+      },
+    }),
+  ).toMatchObject({
+    busy: false,
+    outcomeMessage: "Rolled back: 1.0.0 → 2.0.0 · candidate older than database",
+  });
+});
+
+it("decodes older Jones update payloads without outcome metadata", () => {
+  expect(decodeJonesUpdateState(staged)).toEqual(staged);
+});

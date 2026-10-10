@@ -32,6 +32,7 @@ import { jonesBootServiceLayer, reconcileService } from "../../cli/service.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import { isProcessAlive, PersistedServerRuntimeState } from "../../serverRuntimeState.ts";
 import * as HostServiceConfig from "./HostServiceConfig.ts";
+import * as HostAdoption from "./adoption.ts";
 import { JONES_BOOT_SERVICE_IDENTITY } from "./identity.ts";
 import {
   decodeJonesArtifactMetadata,
@@ -120,6 +121,15 @@ const ProcessAlive = Context.Reference<(pid: number) => boolean>("jones/hostServ
 export class HostService extends Context.Service<
   HostService,
   {
+    readonly planAdoption: (
+      input: HostAdoption.AdoptInput,
+    ) => Effect.Effect<HostAdoption.AdoptionPlan, HostServiceError>;
+    readonly adopt: (
+      input: HostAdoption.AdoptInput,
+    ) => Effect.Effect<
+      { readonly state: "dry-run" | "adopted"; readonly plan: HostAdoption.AdoptionPlan },
+      HostServiceError
+    >;
     readonly stageRuntime: (
       input: StageInput,
     ) => Effect.Effect<PinnedRuntime.PinnedRuntimePaths, HostServiceError>;
@@ -270,6 +280,108 @@ const make = Effect.gen(function* () {
       platform,
       arch,
     });
+
+  const adoptionHost = () =>
+    Effect.gen(function* () {
+      if (
+        (platform !== "linux" && platform !== "darwin") ||
+        (arch !== "x64" && arch !== "arm64") ||
+        uid === undefined
+      )
+        return yield* new HostServiceError({
+          operation: "adopt",
+          reason: "Native host platform or service-user identity is unavailable.",
+        });
+      const runtimeContext = yield* Effect.context<never>();
+      const runPromise = Effect.runPromiseWith(runtimeContext);
+      return {
+        platform,
+        architecture: arch,
+        home,
+        uid,
+        environmentPath: yield* Config.String("PATH").pipe(Config.withDefault("/usr/bin:/bin")),
+        run: async (command: HostAdoption.AdoptionCommand) => {
+          const result = await runPromise(
+            runner.run({ ...command, timeout: "5 minutes", maxOutputBytes: 128 * 1024 }),
+          );
+          if (
+            result.code !== 0 ||
+            result.timedOut ||
+            result.stdoutTruncated ||
+            result.stdoutInvalidUtf8
+          )
+            throw new HostAdoption.HostAdoptionError(
+              "A bounded host command failed or has an unknown effect; inspect before retry.",
+            );
+          return result.stdout;
+        },
+        readback: async (expected: {
+          readonly baseDir: string;
+          readonly activeVersion: string;
+          readonly environmentId: string;
+        }) => {
+          return await runPromise(
+            Effect.gen(function* () {
+              const observed = yield* readRuntime(expected.baseDir);
+              if (Option.isNone(observed.state))
+                return yield* new HostServiceError({
+                  operation: "adopt-readback",
+                  reason: "New service-managed runtime has not produced readback.",
+                });
+              const state = observed.state.value;
+              const environment = yield* descriptor(`http://127.0.0.1:${state.port}`);
+              if (Option.isNone(environment))
+                return yield* new HostServiceError({
+                  operation: "adopt-readback",
+                  reason: "Native environment descriptor is unavailable.",
+                });
+              return {
+                processId: state.pid,
+                serviceManaged: state.serviceManaged === true,
+                port: state.port,
+                serverVersion: environment.value.serverVersion,
+                environmentId: environment.value.environmentId,
+              };
+            }),
+          );
+        },
+      } satisfies HostAdoption.AdoptionHost;
+    });
+  const planAdoption: HostService["Service"]["planAdoption"] = (input) =>
+    wrap(
+      "adopt-plan",
+      Effect.gen(function* () {
+        const host = yield* adoptionHost();
+        return yield* Effect.tryPromise({
+          try: () => HostAdoption.planHostAdoption(input, host),
+          catch: (cause) =>
+            new HostServiceError({
+              operation: "adopt-plan",
+              reason: cause instanceof Error ? cause.message : "Qualification is unavailable.",
+              cause,
+            }),
+        });
+      }),
+    );
+  const adopt: HostService["Service"]["adopt"] = (input) =>
+    wrap(
+      "adopt",
+      Effect.gen(function* () {
+        const host = yield* adoptionHost();
+        return yield* Effect.tryPromise({
+          try: () => HostAdoption.adoptHost(input, host),
+          catch: (cause) =>
+            new HostServiceError({
+              operation: "adopt",
+              reason:
+                cause instanceof Error
+                  ? cause.message
+                  : "Effect requires reconciliation before retry.",
+              cause,
+            }),
+        });
+      }),
+    );
 
   const stageRuntime: HostService["Service"]["stageRuntime"] = (input) =>
     wrap(
@@ -715,7 +827,7 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  return HostService.of({ stageRuntime, plan, setup, status, routeRemove });
+  return HostService.of({ planAdoption, adopt, stageRuntime, plan, setup, status, routeRemove });
 });
 
 export const layer = Layer.effect(HostService, make);

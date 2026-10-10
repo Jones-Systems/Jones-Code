@@ -8,6 +8,7 @@ import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import { runJonesMigrations } from "./JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "./JonesMigrations.ts";
+import isolationMigration from "./Migrations/105_JonesUpstreamReferenceIsolation.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const upstreamThrough = migrationManifest.at(-1)![0];
@@ -153,6 +154,35 @@ const pruneSettled = Effect.gen(function* () {
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   return yield* outbox.pruneSettled;
 }).pipe(Effect.provide(EffectOutbox.layer));
+
+it.effect("migration 105 rolls back a rebuilt table when its row count changes", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: upstreamThrough });
+    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id < 105));
+    yield* seedReferencedRows;
+    const before = yield* readTable("workstreams_native_enrollments");
+    // Fault injection drops copied rows without weakening the real transaction.
+    const losingRows = new Proxy(sql, {
+      get(target, property) {
+        if (property !== "unsafe") return Reflect.get(target, property);
+        return (statement: string) =>
+          target.unsafe(
+            statement.startsWith('INSERT INTO "workstreams_native_enrollments"')
+              ? statement.replace("ORDER BY jones_rowid", "WHERE 0 ORDER BY jones_rowid")
+              : statement,
+          );
+      },
+    });
+    const result = yield* Effect.exit(
+      sql.withTransaction(
+        isolationMigration.pipe(Effect.provideService(SqlClient.SqlClient, losingRows)),
+      ),
+    );
+    assert.isTrue(Exit.isFailure(result));
+    assert.deepStrictEqual(yield* readTable("workstreams_native_enrollments"), before);
+  }).pipe(Effect.provide(memory)),
+);
 
 it.effect("Jones migrations leave upstream schema and ledger unchanged", () =>
   Effect.gen(function* () {

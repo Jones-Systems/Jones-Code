@@ -1,3 +1,4 @@
+import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Context from "effect/Context";
@@ -130,6 +131,7 @@ export class ServiceLauncherClient extends Context.Service<
     readonly currentVersion?: string;
     /** Last durable terminal result; reading it never sends a prepared IPC message. */
     readonly qualifiedStartupOutcome?: ServerSelfUpdateOutcome | undefined;
+    readonly qualifiedUpdateMigrationPlan?: MigrationPlan | undefined;
     readonly requestUpdate: (input: {
       readonly targetVersion: string;
       readonly dbPath: string;
@@ -286,6 +288,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       }),
     );
 
+  let acceptedMigrationPlan: MigrationPlan | undefined = context?.update?.migrationPlan;
   const requestUpdate = (input: {
     readonly targetVersion: string;
     readonly dbPath: string;
@@ -314,7 +317,10 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
           ).pipe(
             Effect.flatMap((reply) =>
               reply.type === "update-accepted"
-                ? Effect.succeed(reply.updateId)
+                ? Effect.sync(() => {
+                    acceptedMigrationPlan = reply.migrationPlan;
+                    return reply.updateId;
+                  })
                 : reply.type === "update-rejected"
                   ? Effect.fail(
                       new ServiceLauncherRejectedError({
@@ -422,6 +428,9 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     qualifiedStaging: context?.qualifiedUpdatesProtocol === 1,
     ...(context === undefined ? {} : { currentVersion: context.childVersion }),
     requestUpdate,
+    get qualifiedUpdateMigrationPlan() {
+      return acceptedMigrationPlan;
+    },
     get qualifiedStartupOutcome() {
       return qualifiedTransaction ? outcome : undefined;
     },

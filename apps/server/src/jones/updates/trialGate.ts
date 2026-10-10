@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalTimers:off
 // Native detached-helper boundary needs exact process and durable file identity.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -269,6 +270,7 @@ export async function awaitJonesTrialCommit(input: {
   await new Promise<void>((resolve, reject) => {
     let watcher: NodeFS.FSWatcher | undefined;
     let inFlight: Promise<void> | undefined;
+    let recheck: ReturnType<typeof setTimeout> | undefined;
     let inspectAgain = false;
     let terminal = false;
     let terminalCause: unknown;
@@ -280,6 +282,7 @@ export async function awaitJonesTrialCommit(input: {
       }
       terminal = true;
       terminalCause = cause;
+      clearTimeout(recheck);
       watcher?.close();
       signal?.removeEventListener("abort", abort);
       // Drain an inspection before returning: cancellation can overlap durable reservation I/O.
@@ -297,6 +300,7 @@ export async function awaitJonesTrialCommit(input: {
       });
     };
     const abort = () => {
+      clearTimeout(recheck);
       watcher?.close();
       if (inFlight === undefined) {
         finish(
@@ -342,6 +346,8 @@ export async function awaitJonesTrialCommit(input: {
     };
     const startInspect = () => {
       if (terminal) return;
+      clearTimeout(recheck);
+      recheck = undefined;
       if (inFlight !== undefined) {
         inspectAgain = true;
         return;
@@ -351,6 +357,8 @@ export async function awaitJonesTrialCommit(input: {
         inFlight = undefined;
         if (signal?.aborted && !terminal) abort();
         else if (inspectAgain && !terminal) startInspect();
+        // Native filesystem notifications can be dropped; recheck only the bound grant file.
+        else if (!terminal) recheck = setTimeout(startInspect, 250);
       });
     };
     try {

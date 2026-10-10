@@ -95,11 +95,28 @@ function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
 }
 
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
+const HOST_MANAGED = { hostManagedRuntime: true } as const;
 const NODE_SCRIPT = {
   nodeScriptPath: "/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs",
 } as const;
 
 describe("ssh tunnel scripts", () => {
+  it("attaches Jones to the host runtime without downloading or starting a server", () => {
+    const launch = SshTunnel.buildRemoteLaunchScript(HOST_MANAGED);
+    assert.include(launch, "service-state.json");
+    assert.include(launch, '"serverKind":"external"');
+    assert.notInclude(launch, "nohup");
+    assert.notInclude(launch, "t3_fetch");
+    assert.notInclude(launch, "pick-port");
+    const pairing = SshTunnel.buildRemotePairingScript("test-host", HOST_MANAGED);
+    assert.include(pairing, "service-state.json");
+    assert.notInclude(pairing, "t3_fetch");
+    assert.notInclude(
+      SshTunnel.buildRemoteT3RunnerScript({ ...HOST_MANAGED, ...ARCHIVE }),
+      ARCHIVE.archiveVersion,
+    );
+  });
+
   it("installs and runs the release archive without Node, npm, or npx", () => {
     const script = SshTunnel.buildRemoteT3RunnerScript(ARCHIVE);
 

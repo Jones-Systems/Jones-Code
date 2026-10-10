@@ -5,8 +5,11 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { Launcher, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
+import packageJson from "../../../package.json" with { type: "json" };
+import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
+import { readQualifiedBackupReceipt, type QualifiedBackupAdapter } from "./qualifiedBackup.ts";
 import type { QualifiedQuiescenceAdapter } from "./qualifiedQuiescence.ts";
+import { QUALIFIED_STARTUP_STATE_FILES } from "./qualifiedQuiescence.ts";
 import {
   currentQualifiedRuntimeBinding,
   qualifiedPayloadDigest,
@@ -17,6 +20,8 @@ import {
 
 const baseline = "0.0.0-preview.20261002.100";
 const target = "0.0.0-preview.20261002.101.1";
+// oxlint-disable-next-line t3code/no-global-process-runtime -- These controlled launcher executables must bind the actual native fixture host.
+const fixturePlatform = NodeOS.platform() === "darwin" ? "darwin" : "linux";
 const readMarker = (file: string) => {
   const database = new NodeSqlite.DatabaseSync(file, { readOnly: true });
   try {
@@ -27,12 +32,19 @@ const readMarker = (file: string) => {
 };
 
 async function runScenario(
-  mode: "commit" | "rollback" | "stale-child" | "missing-gate" | "wrong-gate",
-  body: (base: string) => Promise<void>,
+  mode: "commit" | "rollback" | "stale-child" | "missing-gate" | "wrong-gate" | "blocked-candidate",
+  body: (base: string, launcherFailure: unknown) => Promise<void>,
   quiescenceAdapter: QualifiedQuiescenceAdapter = { scan: async () => [] },
   onLauncher?: (launcher: Launcher) => void,
+  options: {
+    readonly backupAdapter?: QualifiedBackupAdapter;
+    readonly productionMain?: boolean;
+    readonly startupGateProtocol?: 1 | "missing";
+  } = {},
 ) {
-  const base = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
+  const base = await NodeFSP.realpath(
+    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-")),
+  );
   try {
     const userdata = NodePath.join(base, "userdata");
     await NodeFSP.mkdir(userdata, { mode: 0o700 });
@@ -51,6 +63,10 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeNet from "node:net";
 import { makeQualifiedTrialReceipt, reserveQualifiedResume, sameQualifiedTrialIdentity } from "${NodePath.join(import.meta.dirname, "qualifiedStartup.ts")}";
 if (process.argv.includes("__service-preflight")) {
+  if (${JSON.stringify(mode)} === "blocked-candidate") {
+    console.log(JSON.stringify({status:"blocked",version:${JSON.stringify(target)},reason:"candidate-older-than-database"}));
+    process.exit(1);
+  }
   console.log(JSON.stringify({status:"ready",version:${JSON.stringify(target)},launcherProtocol:4,
     ...(${JSON.stringify(mode)} === "missing-gate" ? {} : {startupGateProtocol:${JSON.stringify(mode)} === "wrong-gate" ? 2 : 1})}));
   process.exit(0);
@@ -82,16 +98,29 @@ if (context.update?.status === "pending") {
     if (m.type !== "committed") return;
     if (m.startupGateProtocol !== 1 || m.qualified?.generation !== context.update.id ||
       !sameQualifiedTrialIdentity(receipt, m.qualified)) process.exit(2);
+    writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "observed-trial-launcher.json"))}, JSON.stringify({
+      receipt: JSON.parse(readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "jones-launcher-capability.json"))}, "utf8")), childPid:process.pid,
+    }));
     await reserveQualifiedResume({receipt});
     process.exit(0);
   });
   process.send({type:"prepared", updateId:context.update.id, startupGateProtocol:1, qualified:receipt});
 } else if (context.update === undefined) {
   const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
-  process.on("message", m => {if (m.type === "update-rejected") process.exit(0);});
+  process.on("message", m => {if (m.type === "update-accepted") {
+    writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "observed-active-launcher.json"))}, JSON.stringify({
+      receipt: JSON.parse(readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "jones-launcher-capability.json"))}, "utf8")), childPid:process.pid,
+    }));
+  } else if (m.type === "update-rejected") {
+    writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "rejected.json"))}, JSON.stringify(m));
+    process.exit(0);
+  }});
   process.send({type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle});
   setInterval(() => {}, 1000);
-} else process.exit(0);
+} else {
+  writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "restart-context.json"))}, JSON.stringify(context));
+  process.exit(0);
+}
 `;
     const active = NodePath.join(base, "runtime", "versions", baseline);
     const payload = NodePath.join(base, "payload");
@@ -107,13 +136,16 @@ if (context.update?.status === "pending") {
       sourceSha: "c".repeat(40),
       sourceTree: "b".repeat(40),
       installedSourceSha: "d".repeat(40),
-      workflow: ".github/workflows/artifact-cli-linux.yml",
+      workflow:
+        fixturePlatform === "darwin"
+          ? ".github/workflows/artifact-desktop-mac.yml"
+          : ".github/workflows/artifact-cli-linux.yml",
       runId: 100,
       runAttempt: 1,
       artifactId: 99,
       artifactDigest: `sha256:${"e".repeat(64)}`,
       archiveSha256: "f".repeat(64),
-      platform: "linux",
+      platform: fixturePlatform,
       // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher fixture must match the native host running its controlled executable.
       architecture: NodeOS.arch() === "arm64" ? "arm64" : "x64",
     };
@@ -143,17 +175,30 @@ if (context.update?.status === "pending") {
       // These controlled lifecycle fixtures isolate native process observation;
       // qualifiedQuiescence tests cover refusal and exact-file writer proof.
       quiescenceAdapter,
-      startupGateProtocol: 1,
+      ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
+      ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
     });
     onLauncher?.(launcher);
     // Captured children exit or are reaped before the launcher settles; cleanup never polls by process name.
-    await launcher.run().then(
-      () => {
-        throw new Error("Unexpected launcher completion");
-      },
-      () => undefined,
-    );
-    await body(base);
+    const previousHome = process.env.T3CODE_HOME;
+    let launcherFailure: unknown;
+    try {
+      if (options.productionMain) process.env.T3CODE_HOME = base;
+      await (options.productionMain ? main({ quiescenceAdapter }) : launcher.run()).then(
+        () => {
+          throw new Error("Unexpected launcher completion");
+        },
+        (cause: unknown) => {
+          launcherFailure = cause;
+        },
+      );
+    } finally {
+      if (options.productionMain) {
+        if (previousHome === undefined) delete process.env.T3CODE_HOME;
+        else process.env.T3CODE_HOME = previousHome;
+      }
+    }
+    await body(base, launcherFailure);
   } finally {
     await NodeFSP.rm(base, { recursive: true, force: true });
   }
@@ -161,6 +206,31 @@ if (context.update?.status === "pending") {
 
 it("commits a qualified trial after readiness and retains its previous binary/state pair", async () => {
   await runScenario("commit", async (base) => {
+    for (const [role, childVersion] of [
+      ["active", baseline],
+      ["trial", target],
+    ] as const) {
+      const observed = JSON.parse(
+        await NodeFSP.readFile(
+          NodePath.join(base, "runtime", `observed-${role}-launcher.json`),
+          "utf8",
+        ),
+      );
+      assert.deepEqual(observed.receipt, {
+        schema: 1,
+        baseDir: base,
+        launcherVersion: packageJson.version,
+        launcherPid: process.pid,
+        launcherProtocol: 4,
+        qualifiedUpdatesProtocol: 1,
+        startupGateProtocol: 1,
+        childPid: observed.childPid,
+        childVersion,
+      });
+    }
+    await NodeAssert.rejects(
+      NodeFSP.access(NodePath.join(base, "runtime", "jones-launcher-capability.json")),
+    );
     const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
     assert.equal(state.activeVersion, target);
     assert.equal(state.update?.status, "committed");
@@ -190,19 +260,26 @@ it("commits a qualified trial after readiness and retains its previous binary/st
     );
     const statePath = NodePath.join(base, "runtime", "service-state.json");
     const beforeRecovery = await NodeFSP.readFile(statePath, "utf8");
+    const beforeReservation = await NodeFSP.readFile(reservation, "utf8");
     await NodeAssert.rejects(
       new Launcher(base, state, {
         quiescenceAdapter: { scan: async () => [] },
         startupGateProtocol: 1,
       }).run(),
-      /held for reconciliation/,
+      /Active child exited unexpectedly/,
     );
     assert.equal(await NodeFSP.readFile(statePath, "utf8"), beforeRecovery);
-    await NodeFSP.access(reservation);
+    assert.equal(await NodeFSP.readFile(reservation, "utf8"), beforeReservation);
+    const restarted = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(base, "runtime", "restart-context.json"), "utf8"),
+    );
+    assert.equal(restarted.childVersion, target);
+    assert.equal(restarted.update.status, "committed");
+    assert.equal(restarted.startupGateProtocol, 1);
   });
 });
 
-it("holds a stale captured PID proof without committing or automatically restoring advanced state", async () => {
+it("holds a stale PID proof until restart proves writers stopped and restores the previous pair", async () => {
   await runScenario("stale-child", async (base) => {
     const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
     assert.equal(state.activeVersion, baseline);
@@ -212,6 +289,171 @@ it("holds a stale captured PID proof without committing or automatically restori
     assert.equal(readMarker(NodePath.join(backup, "database")), "before");
     assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "after");
     await NodeAssert.rejects(NodeFSP.access(NodePath.join(backup, "resume-dispatched.json")));
+    const statePath = NodePath.join(base, "runtime", "service-state.json");
+    const beforeRecovery = await NodeFSP.readFile(statePath, "utf8");
+    await NodeAssert.rejects(
+      new Launcher(base, state, {
+        quiescenceAdapter: { scan: async ({ files }) => [{ pid: 999, path: files[0]!.path }] },
+        startupGateProtocol: 1,
+      }).run(),
+      /writer-active/,
+    );
+    assert.equal(await NodeFSP.readFile(statePath, "utf8"), beforeRecovery);
+    assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "after");
+    await NodeAssert.rejects(
+      new Launcher(base, state, {
+        quiescenceAdapter: { scan: async () => [] },
+        startupGateProtocol: 1,
+      }).run(),
+      /Active child exited unexpectedly/,
+    );
+    const recovered = await readServiceState(statePath);
+    assert.equal(recovered.activeVersion, baseline);
+    assert.equal(recovered.update?.status, "rolled-back");
+    assert.equal(
+      recovered.update?.status === "pending" ? undefined : recovered.update?.reason,
+      "launcher-restarted",
+    );
+    assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    assert.equal(readMarker(NodePath.join(backup, "advanced-state", "database")), "after");
+    await NodeAssert.rejects(NodeFSP.access(NodePath.join(backup, "resume-dispatched.json")));
+  });
+});
+
+it("rejects insufficient copy capacity before accepting Install or stopping the active child", async () => {
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update, undefined);
+      assert.equal(state.activeVersion, baseline);
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+      );
+      assert.match(rejected.reason, /recovery-capacity/);
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+      assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
+    },
+    { scan: async () => [] },
+    undefined,
+    {
+      backupAdapter: {
+        availableBytes: async () => 0,
+        copyFile: async () => {
+          throw Object.assign(new Error("synthetic unsupported clone"), { code: "ENOTSUP" });
+        },
+      },
+    },
+  );
+});
+
+it("binds the qualified startup gate through production main", async () => {
+  let scans = 0;
+  await runScenario(
+    "commit",
+    async (base, launcherFailure) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(
+        state.activeVersion,
+        target,
+        `Launcher failure: ${String(launcherFailure)}; state: ${JSON.stringify(state)}`,
+      );
+      assert.equal(state.update?.status, "committed");
+      assert.ok(scans > 0, "Production main must use the supplied fixture process observer.");
+    },
+    {
+      scan: async () => {
+        scans++;
+        return [];
+      },
+    },
+    undefined,
+    { productionMain: true },
+  );
+});
+
+it("rejects a staged Install when the launcher's startup gate is absent", async () => {
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update, undefined);
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+      );
+      assert.match(rejected.reason, /bootstrap-required/);
+    },
+    { scan: async () => [] },
+    undefined,
+    { startupGateProtocol: "missing" },
+  );
+});
+
+it("reports a candidate's bound migration refusal before accepting or stopping the server", async () => {
+  await runScenario("blocked-candidate", async (base) => {
+    const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+    assert.equal(state.update, undefined);
+    assert.equal(state.activeVersion, baseline);
+    const rejected = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+    );
+    assert.equal(rejected.reason, "candidate-older-than-database");
+    assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
+  });
+});
+
+it("resumes an interrupted rollback without starting a candidate or recapturing restored files", async () => {
+  await runScenario("stale-child", async (base) => {
+    const statePath = NodePath.join(base, "runtime", "service-state.json");
+    const state = await readServiceState(statePath);
+    const backup = NodePath.join(base, "runtime", "db-backup", state.update!.id);
+    const advanced = NodePath.join(backup, "advanced-state");
+    const database = NodePath.join(base, "userdata", "statev2.sqlite");
+    await NodeFSP.mkdir(advanced, { mode: 0o700 });
+    const names = ["database", ...QUALIFIED_STARTUP_STATE_FILES];
+    const entries = [];
+    for (const name of names) {
+      const source = name === "database" ? database : NodePath.join(base, "userdata", name);
+      const stat = await NodeFSP.stat(source, { bigint: true }).catch(
+        (cause: NodeJS.ErrnoException) => {
+          if (cause.code === "ENOENT") return undefined;
+          throw cause;
+        },
+      );
+      if (stat !== undefined)
+        entries.push({ name, device: stat.dev.toString(), inode: stat.ino.toString() });
+    }
+    await NodeFSP.writeFile(
+      NodePath.join(advanced, "rename-journal.json"),
+      JSON.stringify(entries),
+    );
+    await NodeFSP.writeFile(NodePath.join(backup, ".restore-pending"), "");
+    await NodeFSP.rename(database, NodePath.join(advanced, "database"));
+    await NodeFSP.copyFile(NodePath.join(backup, "database"), database);
+    await NodeAssert.rejects(
+      new Launcher(base, state, {
+        quiescenceAdapter: { scan: async () => [] },
+        startupGateProtocol: 1,
+      }).run(),
+      /Active child exited unexpectedly/,
+    );
+    const recovered = await readServiceState(statePath);
+    assert.equal(recovered.update?.status, "rolled-back");
+    assert.equal(readMarker(database), "before");
+    assert.equal(readMarker(NodePath.join(advanced, "database")), "after");
+    assert.equal(
+      (await NodeFSP.stat(NodePath.join(advanced, "database"), { bigint: true })).ino.toString(),
+      entries[0]!.inode,
+    );
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(base, "userdata", "settings.json"), "utf8"),
+      "before-settings",
+    );
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(advanced, "settings.json"), "utf8"),
+      "after-settings",
+    );
   });
 });
 
@@ -254,6 +496,10 @@ it("restores paired settings and SQLite after a failed trial and retains its adv
     assert.equal(state.activeVersion, baseline);
     assert.equal(state.update?.status, "rolled-back");
     const backup = NodePath.join(base, "runtime", "db-backup", state.update!.id);
+    const recovery = await readQualifiedBackupReceipt(base, state.update!.id);
+    assert.isDefined(recovery);
+    assert.isTrue(recovery!.method === "clone" || recovery!.method === "copy");
+    assert.isAbove(recovery!.bytes, 0);
     assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
     assert.equal(
       await NodeFSP.readFile(NodePath.join(base, "userdata", "settings.json"), "utf8"),
@@ -289,6 +535,23 @@ it("retains the active pointer and unchanged state when an unknown same-home wri
       await NodeAssert.rejects(
         NodeFSP.access(NodePath.join(base, "runtime", "db-backup", state.update!.id)),
       );
+      await NodeAssert.rejects(
+        new Launcher(base, state, {
+          quiescenceAdapter: { scan: async () => [] },
+          startupGateProtocol: 1,
+        }).run(),
+        /Active child exited unexpectedly/,
+      );
+      const recovered = await readServiceState(
+        NodePath.join(base, "runtime", "service-state.json"),
+      );
+      assert.equal(recovered.activeVersion, baseline);
+      assert.equal(recovered.update?.status, "failed");
+      assert.equal(
+        recovered.update?.status === "pending" ? undefined : recovered.update?.reason,
+        "launcher-restarted",
+      );
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
     },
     { scan: async ({ files }) => [{ pid: 999, path: files[0]!.path }] },
   );

@@ -10,39 +10,50 @@
     "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
     "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
     "apps/desktop/src/jones/updates/jonesNativePreparation.ts",
-    "packages/shared/src/jones/jonesActions.ts",
-    "packages/shared/src/jones/jonesActions.test.ts",
+    "apps/desktop/src/jones/updates/preloadInstall.test.ts",
+    "apps/mobile/src/jones/updates/JonesUpdateControls.tsx",
+    "apps/mobile/src/jones/updates/jonesUpdates.ts",
+    "apps/server/src/jones/cloud/launcherCapability.test.ts",
+    "apps/server/src/jones/cloud/launcherCapability.ts",
     "apps/server/src/jones/cloud/qualifiedArchive.test.ts",
     "apps/server/src/jones/cloud/qualifiedArchive.ts",
+    "apps/server/src/jones/cloud/qualifiedBackup.test.ts",
+    "apps/server/src/jones/cloud/qualifiedBackup.ts",
     "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
     "apps/server/src/jones/cloud/qualifiedDarwinRuntime.ts",
+    "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
     "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
     "apps/server/src/jones/cloud/qualifiedQuiescence.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.ts",
+    "apps/server/src/jones/cloud/qualifiedStartup.test.ts",
+    "apps/server/src/jones/cloud/qualifiedStartup.ts",
     "apps/server/src/jones/updates/JonesUpdater.test.ts",
     "apps/server/src/jones/updates/JonesUpdater.ts",
+    "apps/server/src/jones/updates/capabilityReceipt.test.ts",
+    "apps/server/src/jones/updates/capabilityReceipt.ts",
+    "apps/server/src/jones/updates/http.test.ts",
+    "apps/server/src/jones/updates/http.ts",
+    "apps/server/src/jones/updates/migrationPlan.test.ts",
+    "apps/server/src/jones/updates/migrationPlan.ts",
     "apps/server/src/jones/updates/nativePreparation.ts",
     "apps/server/src/jones/updates/qualification.test.ts",
     "apps/server/src/jones/updates/qualification.ts",
+    "apps/server/src/jones/updates/service.ts",
     "apps/server/src/jones/updates/stagedSelection.test.ts",
     "apps/server/src/jones/updates/stagedSelection.ts",
     "apps/server/src/jones/updates/trialGate.test.ts",
     "apps/server/src/jones/updates/trialGate.ts",
-    "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
-    "apps/server/src/jones/cloud/qualifiedStartup.test.ts",
-    "apps/server/src/jones/cloud/qualifiedStartup.ts",
-    "apps/server/src/jones/updates/http.test.ts",
-    "apps/server/src/jones/updates/http.ts",
-    "apps/server/src/jones/updates/service.ts",
     "apps/server/src/jones/updates/trialStartup.test.ts",
     "apps/server/src/jones/updates/trialStartup.ts",
-    "packages/client-runtime/src/jones/updates/jonesUpdates.ts",
-    "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
     "apps/web/src/jones/updates/JonesUpdateControls.tsx",
     "apps/web/src/jones/updates/jonesUpdates.ts",
-    "apps/mobile/src/jones/updates/JonesUpdateControls.tsx",
-    "apps/mobile/src/jones/updates/jonesUpdates.ts"
+    "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
+    "apps/web/src/jones/updates/localDesktopUpdate.ts",
+    "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+    "packages/client-runtime/src/jones/updates/jonesUpdates.ts",
+    "packages/shared/src/jones/jonesActions.test.ts",
+    "packages/shared/src/jones/jonesActions.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/ipc/methods/updates.ts",
@@ -77,7 +88,12 @@
     "apps/web/src/components/ServerUpdateAction.test.tsx",
     "apps/web/src/components/settings/ConnectionsSettings.tsx",
     "apps/mobile/src/features/settings/environment-maintenance.ts",
-    "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+    "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+    "apps/web/src/components/desktopUpdate.logic.ts",
+    "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+    "apps/web/src/components/settings/SettingsPanels.tsx",
+    "apps/web/src/components/LegacySidebar.tsx",
+    "apps/web/src/components/desktopUpdate.toast.tsx"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -192,6 +208,62 @@
     {
       "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
       "to": "apps/mobile/src/jones/updates/JonesUpdateControls.tsx"
+    },
+    {
+      "from": "apps/web/src/components/desktopUpdate.logic.ts",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/SettingsPanels.tsx",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/desktopUpdate.toast.tsx",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/server/src/cli/servicePreflight.ts",
+      "to": "apps/server/src/jones/persistence/JonesMigrations.ts"
+    },
+    {
+      "from": "apps/server/src/cli/servicePreflight.ts",
+      "to": "apps/server/src/jones/updates/migrationPlan.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/servicePreflight.ts",
+      "to": "apps/server/src/jones/updates/migrationPlan.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedBackup.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/updates/migrationPlan.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/updates/migrationPlan.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceLauncherClient.ts",
+      "to": "apps/server/src/jones/updates/migrationPlan.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceProtocol.ts",
+      "to": "apps/server/src/jones/updates/migrationPlan.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/launcherCapability.ts"
     }
   ]
 }

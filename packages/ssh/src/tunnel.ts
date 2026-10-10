@@ -49,6 +49,11 @@ import {
   FAILED_NEW_REMOTE_SERVER_CLEANUP_SCRIPT,
   PERSISTENT_REMOTE_REUSE_SCRIPT,
 } from "./jones/persistentRemoteLifecycle.ts";
+import {
+  buildHostRuntimeAttachScript,
+  buildHostRuntimePairingScript,
+  buildHostRuntimeRunnerScript,
+} from "./jones/hostRuntime.ts";
 
 const DEFAULT_REMOTE_PORT = 3773;
 const REMOTE_PORT_SCAN_WINDOW = 200;
@@ -70,6 +75,8 @@ const REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS = 900_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
 
 export interface RemoteT3RunnerOptions {
+  /** Jones clients attach to the host's managed active runtime. */
+  readonly hostManagedRuntime?: boolean;
   /**
    * Dev mode: run `node <path>` on the remote instead of a release archive.
    * The only mode that needs Node on the remote.
@@ -78,8 +85,8 @@ export interface RemoteT3RunnerOptions {
   readonly nodeEngineRange?: string | null;
   /**
    * Exact version whose self-contained release archive the remote installs
-   * and runs. Required unless `nodeScriptPath` is set; the remote then needs
-   * neither Node nor npm.
+   * and runs. Required unless `nodeScriptPath` or `hostManagedRuntime` is set;
+   * the remote then needs neither Node nor npm.
    */
   readonly archiveVersion?: string | null;
   readonly releaseBaseUrl?: string | null;
@@ -133,6 +140,7 @@ function isNodeScriptRunner(runner: RemoteT3RunnerOptions | undefined): boolean 
 }
 
 function sshRunnerLogFields(runner: RemoteT3RunnerOptions | undefined) {
+  if (runner?.hostManagedRuntime) return { runner: "host-managed" };
   if (runner?.nodeScriptPath?.trim()) {
     return { runner: "node-script", nodeScriptPath: runner.nodeScriptPath.trim() };
   }
@@ -713,6 +721,7 @@ export class SshMissingRunnerError extends Schema.TaggedError<SshMissingRunnerEr
 }
 
 export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string {
+  if (input?.hostManagedRuntime) return buildHostRuntimeRunnerScript();
   const nodeScriptPath = input?.nodeScriptPath?.trim() || "";
   const archiveVersion = input?.archiveVersion?.trim() || "";
   if (nodeScriptPath === "" && archiveVersion === "") {
@@ -749,6 +758,7 @@ export function buildRemoteNodeEnvScript(input?: RemoteT3RunnerOptions): string 
 }
 
 export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
+  if (input?.hostManagedRuntime) return buildHostRuntimeAttachScript();
   return applyScriptPlaceholders(REMOTE_LAUNCH_SCRIPT, {
     T3_ARCHIVE_MODE: isNodeScriptRunner(input) ? "0" : "1",
     T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
@@ -764,6 +774,7 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
 }
 
 export function buildRemotePairingScript(stateKey: string, input?: RemoteT3RunnerOptions): string {
+  if (input?.hostManagedRuntime) return buildHostRuntimePairingScript();
   return applyScriptPlaceholders(REMOTE_PAIRING_SCRIPT, {
     T3_STATE_KEY: stateKey,
     T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
@@ -795,9 +806,10 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
     const result = yield* runSshCommand(target, {
       remoteCommandArgs: ["sh", "-l", "-s", "--", stateKey],
       stdin: buildRemoteLaunchScript(runner),
-      timeoutMs: isNodeScriptRunner(runner)
-        ? REMOTE_LAUNCH_TIMEOUT_MS
-        : REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS,
+      timeoutMs:
+        isNodeScriptRunner(runner) || runner?.hostManagedRuntime
+          ? REMOTE_LAUNCH_TIMEOUT_MS
+          : REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS,
       ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
       ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
       ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
@@ -856,9 +868,10 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
   const result = yield* runSshCommand(target, {
     remoteCommandArgs: ["sh", "-s"],
     stdin: buildRemotePairingScript(stateKey, runner),
-    // Pairing may be the first command on a cold remote, so it can install
-    // the archive on the way.
-    ...(isNodeScriptRunner(runner) ? {} : { timeoutMs: REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS }),
+    // Only archive runners can install during pairing; host attachment is bounded.
+    ...(isNodeScriptRunner(runner) || runner?.hostManagedRuntime
+      ? {}
+      : { timeoutMs: REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS }),
     ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
     ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
     ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),

@@ -1,3 +1,4 @@
+import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // Qualified staging delegates to the Node-only launcher boundary and owns its scratch lifetime.
 import {
@@ -58,6 +59,7 @@ import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProto
 
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 const isServiceLauncherClientError = Schema.is(ServiceLauncherClient.ServiceLauncherClientError);
+const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
@@ -79,7 +81,10 @@ export class ServerSelfUpdate extends Context.Service<
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly stageQualified?: (
       artifact: JonesStagedArtifact,
-    ) => Effect.Effect<StagedQualifiedRuntime, ServerSelfUpdateError>;
+    ) => Effect.Effect<
+      StagedQualifiedRuntime & { readonly migrationPlan?: MigrationPlan },
+      ServerSelfUpdateError
+    >;
     readonly installQualified?: (
       input: { readonly stagedHandle: string; readonly continueRunningThreads?: boolean },
       onHandoffAccepted?: () => Effect.Effect<void>,
@@ -468,6 +473,16 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         version,
       });
       if (reason !== undefined) return yield* failWith(reason);
+      const parsed = yield* decodePreflightJson(result.stdout.trim()).pipe(
+        Effect.mapError((cause) =>
+          failWith(
+            "startup-gate-unavailable: The candidate returned an invalid service preflight.",
+            cause,
+          ),
+        ),
+      );
+      const decoded = decodeServicePreflightResult(parsed);
+      return decoded?.status === "ready" ? decoded.migrationPlan : undefined;
     });
   const stageQualified = (artifact: JonesStagedArtifact) =>
     Effect.tryPromise({
@@ -513,7 +528,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             });
           } else await extractQualifiedLinuxArchive(staged.payloadPath, scratch);
           await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), staged.candidate);
-          return await stageQualifiedRuntime({
+          let migrationPlan: MigrationPlan | undefined;
+          const qualifiedStage = await stageQualifiedRuntime({
             artifact: qualifiedRuntimeArtifactFromJonesStage(staged, scratch),
             binding,
             host: { platform, architecture: arch },
@@ -521,11 +537,12 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               // Darwin Download inspects app metadata and ASAR; it never launches
               // an unsigned candidate against the owner's native service home.
               if (staged.candidate.platform === "darwin") return;
-              await runPromise(
+              migrationPlan = await runPromise(
                 validateQualifiedCandidate(entryPath, binding.dbPath, staged.receipt.version),
               );
             },
           });
+          return { ...qualifiedStage, ...(migrationPlan === undefined ? {} : { migrationPlan }) };
         } finally {
           await NodeFSP.rm(scratch, { recursive: true, force: true });
         }

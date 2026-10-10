@@ -17,11 +17,25 @@ export interface JonesUpdaterHost {
   readonly platform: "linux" | "darwin";
   readonly architecture: "x64" | "arm64";
   readonly cacheRoot: string;
-  readonly stage: (
-    artifact: JonesStagedArtifact,
-  ) => Promise<{ stagedHandle: string; version: string }>;
-  readonly install: (request: JonesUpdateInstallInput) => Promise<void>;
-  readonly startupOutcome?: () => { status: "committed" | "rolled-back" | "failed" } | undefined;
+  readonly stage: (artifact: JonesStagedArtifact) => Promise<{
+    stagedHandle: string;
+    version: string;
+    migrationPlan?: JonesUpdateState["migrationPlan"];
+  }>;
+  readonly install: (request: JonesUpdateInstallInput) => Promise<void | {
+    readonly updateId?: string;
+    readonly migrationPlan?: JonesUpdateState["migrationPlan"];
+  }>;
+  readonly stateChanged?: (state: JonesUpdateState) => void;
+  readonly startupOutcome?: () =>
+    | {
+        status: "committed" | "rolled-back" | "failed";
+        id: string;
+        fromVersion: string;
+        targetVersion: string;
+        reason?: string;
+      }
+    | undefined;
 }
 
 /** One checker belongs to the host. Connected clients observe the same fixed staging handle. */
@@ -45,29 +59,46 @@ export class JonesUpdater {
 
   snapshot(): JonesUpdateState {
     const outcome =
-      this.revision === 0 && this.state.stagedHandle === undefined
-        ? this.host.startupOutcome?.()
-        : undefined;
+      this.state.outcome !== undefined || ["preparing", "installing"].includes(this.state.phase)
+        ? undefined
+        : this.host.startupOutcome?.();
     return {
       ...this.state,
       ...(outcome === undefined
         ? {}
         : {
-            phase: outcome.status === "failed" ? ("error" as const) : outcome.status,
-            message:
-              outcome.status === "committed"
-                ? "The selected Jones runtime was installed."
-                : outcome.status === "rolled-back"
-                  ? "Installation rolled back to its retained binary and state pair."
-                  : "Native installation requires reconciliation.",
+            updateId: this.state.updateId ?? outcome.id,
+            outcome: {
+              status: outcome.status === "failed" ? ("blocked" as const) : outcome.status,
+              fromVersion: outcome.fromVersion,
+              targetVersion: outcome.targetVersion,
+              ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+            },
+            ...(this.revision === 0 && this.state.stagedHandle === undefined
+              ? {
+                  phase: outcome.status === "failed" ? ("error" as const) : outcome.status,
+                  message:
+                    outcome.status === "committed"
+                      ? "The selected Jones runtime was installed."
+                      : outcome.status === "rolled-back"
+                        ? "Installation rolled back to its retained binary and state pair."
+                        : "Native installation requires reconciliation.",
+                }
+              : {}),
           }),
       revision: this.revision,
     };
   }
 
+  private clearOutcome(): void {
+    const { outcome: _outcome, updateId: _updateId, ...state } = this.state;
+    this.state = state;
+  }
+
   private publish(patch: Partial<JonesUpdateState>): JonesUpdateState {
     this.state = { ...this.state, ...patch };
     this.revision += 1;
+    this.host.stateChanged?.(this.snapshot());
     for (const listener of this.listeners) listener();
     return this.snapshot();
   }
@@ -98,11 +129,30 @@ export class JonesUpdater {
   private fail(error: unknown): JonesUpdateState {
     // The Actions adapter sanitizes transport failures; injected host errors must also be safe to publish.
     const message = error instanceof Error ? error.message : "Jones update failed.";
-    return this.publish({ phase: "blocked", message });
+    return this.publish({
+      phase: "blocked",
+      message,
+      ...(this.state.currentVersion === undefined || this.state.provenance?.version === undefined
+        ? {}
+        : {
+            outcome: {
+              status: "blocked" as const,
+              fromVersion: this.state.currentVersion,
+              targetVersion: this.state.provenance.version,
+              reason: message,
+            },
+          }),
+    });
   }
 
   async check(): Promise<JonesUpdateState> {
-    if (this.busy || !this.state.capability.check) return this.snapshot();
+    if (
+      this.busy ||
+      this.state.phase === "installing" ||
+      this.state.phase === "preparing" ||
+      !this.state.capability.check
+    )
+      return this.snapshot();
     this.busy = true;
     const staged = this.state.stagedHandle !== undefined;
     if (!staged) this.publish({ phase: "checking", message: "Checking qualified main builds…" });
@@ -173,9 +223,11 @@ export class JonesUpdater {
       const artifact = await this.actions.stage(candidate, this.host.cacheRoot);
       this.publish({ phase: "verifying", message: "Verifying and staging the downloaded build…" });
       const staged = await this.host.stage(artifact);
+      this.clearOutcome();
       return this.publish({
         phase: "staged",
         stagedHandle: staged.stagedHandle,
+        ...(staged.migrationPlan === undefined ? {} : { migrationPlan: staged.migrationPlan }),
         message: "Downloaded and verified. Install is a separate action.",
         provenance: {
           ...this.state.provenance!,
@@ -208,11 +260,17 @@ export class JonesUpdater {
       });
     }
     this.busy = true;
-    this.publish({ phase: "preparing", message: "Preparing the selected installation…" });
+    this.clearOutcome();
+    this.publish({
+      phase: "preparing",
+      message: "Preparing the selected installation…",
+    });
     try {
-      await this.host.install(input);
+      const accepted = await this.host.install(input);
       return this.publish({
         phase: "installing",
+        ...(accepted?.updateId === undefined ? {} : { updateId: accepted.updateId }),
+        ...(accepted?.migrationPlan === undefined ? {} : { migrationPlan: accepted.migrationPlan }),
         message: "The native launcher accepted the installation.",
       });
     } catch (error) {

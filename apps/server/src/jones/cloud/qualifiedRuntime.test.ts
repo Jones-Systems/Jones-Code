@@ -24,6 +24,11 @@ import {
 } from "./qualifiedRuntime.ts";
 
 const baseline = "0.0.0-preview.20261002.100";
+const fixtureHost = {
+  platform: "linux",
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher fixture uses the native architecture with an explicitly injected Linux platform.
+  architecture: NodeOS.arch() === "arm64" ? "arm64" : "x64",
+};
 const candidateVersion = "0.0.0-preview.20261002.101.1";
 const receipt = (
   version: string,
@@ -50,7 +55,9 @@ const receipt = (
 async function fixture<A>(
   body: (base: string, payload: string, artifact: QualifiedRuntimeArtifact) => Promise<A>,
 ): Promise<A> {
-  const base = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-qualified-test-"));
+  const base = await NodeFSP.realpath(
+    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-qualified-test-")),
+  );
   try {
     const active = NodePath.join(base, "runtime", "versions", baseline);
     const payload = NodePath.join(base, "candidate");
@@ -86,9 +93,10 @@ async function fixture<A>(
 
 it("stages a fixed source and payload without changing live state or active runtime", async () => {
   await fixture(async (base, _payload, artifact) => {
-    const binding = await currentQualifiedRuntimeBinding(base, baseline);
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
     const validated: string[] = [];
     const staged = await stageQualifiedRuntime({
+      host: fixtureHost,
       artifact,
       binding,
       validate: async (entry) => {
@@ -113,9 +121,12 @@ it("stages a fixed source and payload without changing live state or active runt
       await NodeFSP.readFile(NodePath.join(base, "userdata", "settings.json"), "utf8"),
       "untouched settings",
     );
-    assert.equal((await currentQualifiedRuntimeBinding(base, baseline)).activeVersion, baseline);
+    assert.equal(
+      (await currentQualifiedRuntimeBinding(base, baseline, fixtureHost)).activeVersion,
+      baseline,
+    );
     assert.deepEqual(
-      await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle),
+      await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
       staged,
     );
     await NodeFSP.writeFile(
@@ -123,7 +134,7 @@ it("stages a fixed source and payload without changing live state or active runt
       "different-environment",
     );
     await NodeAssert.rejects(
-      verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle),
+      verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
       (cause: unknown) =>
         cause instanceof QualifiedRuntimeBlockedError &&
         cause.reason === "binding-mismatch" &&
@@ -134,10 +145,16 @@ it("stages a fixed source and payload without changing live state or active runt
 
 it("preserves occupied runtime versions and rejects a same-version different-source cache", async () => {
   await fixture(async (base, _payload, artifact) => {
-    const binding = await currentQualifiedRuntimeBinding(base, baseline);
-    const staged = await stageQualifiedRuntime({ artifact, binding, validate: async () => {} });
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+    const staged = await stageQualifiedRuntime({
+      artifact,
+      binding,
+      host: fixtureHost,
+      validate: async () => {},
+    });
     await NodeAssert.rejects(
       stageQualifiedRuntime({
+        host: fixtureHost,
         artifact: { ...artifact, sourceSha: "f".repeat(40) },
         binding,
         validate: async () => {},
@@ -145,7 +162,7 @@ it("preserves occupied runtime versions and rejects a same-version different-sou
       /occupied by a different candidate/,
     );
     assert.equal(
-      (await readQualifiedRuntimeReceipt(base, staged.receipt.version)).sourceSha,
+      (await readQualifiedRuntimeReceipt(base, staged.receipt.version, fixtureHost)).sourceSha,
       artifact.sourceSha,
     );
     await NodeFSP.writeFile(
@@ -153,7 +170,7 @@ it("preserves occupied runtime versions and rejects a same-version different-sou
       "tampered",
     );
     await NodeAssert.rejects(
-      verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle),
+      verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
       /payload changed/,
     );
   });
@@ -165,7 +182,7 @@ it("requires source-qualified bootstrap even when a version-only sentinel exists
     await NodeFSP.rm(NodePath.join(active, QUALIFIED_RUNTIME_RECEIPT));
     await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), baseline);
     await NodeAssert.rejects(
-      currentQualifiedRuntimeBinding(base, baseline),
+      currentQualifiedRuntimeBinding(base, baseline, fixtureHost),
       /enrolled with its qualified source/,
     );
   });
@@ -204,8 +221,9 @@ it("rejects escaping symlinks in a verified payload before copying it", async ()
     );
     await NodeAssert.rejects(
       stageQualifiedRuntime({
+        host: fixtureHost,
         artifact,
-        binding: await currentQualifiedRuntimeBinding(base, baseline),
+        binding: await currentQualifiedRuntimeBinding(base, baseline, fixtureHost),
         validate: async () => {},
       }),
       /symlink escapes/,
@@ -316,13 +334,14 @@ it("stages the shared transport's real raw artifact digest representation", asyn
     const normalized = qualifiedRuntimeArtifactFromJonesStage(shared, payload);
     assert.equal(normalized.artifactDigest, `sha256:${shared.candidate.artifactDigest}`);
     const staged = await stageQualifiedRuntime({
+      host: fixtureHost,
       artifact: normalized,
-      binding: await currentQualifiedRuntimeBinding(base, baseline),
+      binding: await currentQualifiedRuntimeBinding(base, baseline, fixtureHost),
       validate: async () => {},
     });
     assert.equal(staged.receipt.artifactDigest, normalized.artifactDigest);
     assert.deepEqual(
-      await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle),
+      await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
       staged,
     );
   });
@@ -354,4 +373,35 @@ it("selects Electron raw filesystem and fails closed when it is unavailable", ()
       }),
     /raw filesystem unavailable/,
   );
+});
+
+it("qualifies a manual Mac CLI layout only with its CLI workflow receipt", async () => {
+  await fixture(async (base, payload, artifact) => {
+    const cliWorkflow = ".github/workflows/artifact-cli-mac.yml" as const;
+    const host = { platform: "darwin", architecture: "arm64" };
+    const active = NodePath.join(base, "runtime", "versions", baseline);
+    await NodeFSP.writeFile(
+      NodePath.join(active, QUALIFIED_RUNTIME_RECEIPT),
+      JSON.stringify({
+        ...receipt(baseline, "c".repeat(40)),
+        platform: "darwin",
+        architecture: "arm64",
+        workflow: cliWorkflow,
+        payloadSha256: await qualifiedPayloadDigest(active, "darwin", cliWorkflow),
+      }),
+      { mode: 0o600 },
+    );
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, host);
+    const staged = await stageQualifiedRuntime({
+      artifact: { ...artifact, platform: "darwin", architecture: "arm64", workflow: cliWorkflow },
+      binding,
+      host,
+      validate: async () => {},
+    });
+    assert.equal(staged.receipt.workflow, cliWorkflow);
+    await NodeAssert.rejects(
+      qualifiedPayloadDigest(payload, "darwin", ".github/workflows/artifact-desktop-mac.yml"),
+      /unexpected root/,
+    );
+  });
 });
