@@ -53,9 +53,7 @@ import {
 const FIRST_FINAL = "provider thread resume fixture first turn complete";
 const SECOND_FINAL = "provider thread resume fixture second turn complete";
 
-const decodeCodexTranscript = Schema.decodeUnknownEffect(
-  CodexReplay.CodexAppServerReplayTranscript,
-);
+const decodeCodexTranscript = CodexOrchestratorReplayHarness.decodeTranscript;
 const readRawTranscript = Effect.fn("readRecoveryTranscript")(function* (file: URL) {
   return yield* readProviderReplayTranscript(file);
 });

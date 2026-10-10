@@ -107,6 +107,7 @@ import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachme
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
+import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import {
   buildCodexAdditionalContext,
   buildCodexDeveloperInstructions,
@@ -800,7 +801,12 @@ export function buildCodexTurnStartParams(input: {
               device: input.deviceToolsAvailable ?? false,
             },
           )
-        : undefined;
+        : {
+            jones_code_identity: {
+              kind: "application" as const,
+              value: buildAppIdentityInstructions(),
+            },
+          };
     const additionalContext =
       t3Context === undefined && Object.keys(appContext).length === 0
         ? undefined

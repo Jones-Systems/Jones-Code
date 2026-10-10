@@ -1,3 +1,4 @@
+import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
 import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
 
@@ -91,7 +92,11 @@ import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const replayTranscriptJson = Schema.fromJsonString(CodexReplay.CodexAppServerReplayTranscript);
 const encodeReplayTranscriptJson = Schema.encodeEffect(replayTranscriptJson);
-const decodeReplayTranscriptJson = Schema.decodeUnknownEffect(replayTranscriptJson);
+const decodeRawReplayTranscriptJson = Schema.decodeUnknownEffect(replayTranscriptJson);
+const decodeReplayTranscriptJson = (input: string) =>
+  decodeRawReplayTranscriptJson(input).pipe(
+    Effect.flatMap(CodexAdapterV2Testkit.CodexOrchestratorReplayHarness.decodeTranscript),
+  );
 const encodeStringJson = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
 describe("Codex context usage compatibility", () => {
@@ -491,7 +496,10 @@ describe("CodexAdapterV2 runtime policy", () => {
         modelSelection,
         appContext,
       });
-      assert.deepEqual(alone.additionalContext, {
+      const { jones_code_identity, ...appEntries } = alone.additionalContext!;
+      assert.equal(jones_code_identity?.kind, "application");
+      assert.include(jones_code_identity?.value ?? "", "product ID: jones-code");
+      assert.deepEqual(appEntries, {
         "mcp_app_todos_list_todos_item-1": { kind: "untrusted", value: "Filtered to overdue" },
       });
       // Alongside T3's own context, both are kept.
@@ -1791,17 +1799,23 @@ function codexReplayPreamble(input: {
   ];
 }
 
+const decodeMaterializedTranscript = Schema.decodeUnknownSync(
+  CodexReplay.CodexAppServerReplayTranscript,
+);
+
 function makeCodexReplayTranscript(input: {
   readonly scenario: string;
   readonly entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>;
 }): CodexReplay.CodexAppServerReplayTranscript {
-  return {
-    provider: "codex",
-    protocol: "codex.app-server",
-    version: "0.144.0",
-    scenario: input.scenario,
-    entries: input.entries,
-  };
+  return decodeMaterializedTranscript(
+    materializeCodexReplayAppIdentity({
+      provider: "codex",
+      protocol: "codex.app-server",
+      version: "0.144.0",
+      scenario: input.scenario,
+      entries: input.entries,
+    }),
+  );
 }
 
 function withReplayRequestId(
