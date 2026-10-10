@@ -17,6 +17,7 @@
     ".github/workflows/artifact-cli-mac.yml": "policy",
     ".github/workflows/artifact-desktop-mac.yml": "policy",
     ".github/workflows/ci.yml": "policy",
+    ".github/workflows/jones-update-qualification.yml": "policy",
     ".github/workflows/cursor-hygiene-webhook.yml": "upstream-deleted",
     ".github/workflows/deploy-relay.yml": "upstream-deleted",
     ".github/workflows/desktop-macos-preview-publish.yml": "upstream-deleted",
