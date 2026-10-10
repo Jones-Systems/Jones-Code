@@ -83,14 +83,7 @@ def process_identity(pid):
     if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
     if result.returncode != 0 or result.stderr.strip() or len(result.stdout.strip().splitlines()) != 1:
         raise RuntimeError('Process inspection failed; signal withheld.')
-    identity = result.stdout.strip()
-    fields = identity.split(None, 5)
-    try:
-        if len(fields) != 6: raise ValueError('Missing process identity fields.')
-        time.strptime(' '.join(fields[:5]), '%a %b %d %H:%M:%S %Y')
-    except ValueError:
-        raise RuntimeError('Process inspection failed; signal withheld.')
-    return identity
+    return result.stdout.strip()
 
 def process_start(pid):
     result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat=', '-o', 'lstart='], capture_output=True, text=True)

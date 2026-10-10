@@ -452,7 +452,7 @@ def blocked(results, message='Process inspection failed; signal withheld.'):
     except RuntimeError as error: assert str(error) == message
     else: raise AssertionError('Unsafe process observation was accepted')
     assert signals == []
-for observation in (result(code=2), result(), result(birth), result('malformed command'),
+for observation in (result(code=2), result(),
                     result(proof['identity'] + '\n' + proof['identity']),
                     result(proof['identity'], error='inspection warning'), result(code=1, error='inspection failed')):
     blocked([observation])
@@ -462,6 +462,7 @@ for status in (result(code=2), result(), result('Z malformed'), result('Z ' + bi
     blocked([mismatch, status])
 blocked([mismatch, result('Z Sat Oct 10 08:20:15 2026')], 'Process identity changed; signal withheld.')
 blocked([mismatch, result('S ' + birth)], 'Process identity changed; signal withheld.')
+blocked([result('malformed command'), result('S ' + birth)], 'Process identity changed; signal withheld.')
 observe([result(code=1), result(code=1)])
 stop_exact([proof]); assert signals == []
 observe([mismatch, result(code=1), result(code=1)])
@@ -479,6 +480,11 @@ try: stop_exact([proof])
 except RuntimeError as error: assert str(error) == 'Owned native writers did not stop; recovery held.'
 else: raise AssertionError('Live process bypassed deadline')
 assert signals == [(123, signal.SIGTERM)]
+time.monotonic = lambda: 0
+for localized in ('Sa 10 Okt 08:20:14 2026 /owned/process', '2026年10月10日 08:20:14 /owned/process'):
+    proof = {'pid': 123, 'identity': localized}
+    observe([result(localized), result(code=1)])
+    stop_exact([proof]); assert signals == [(123, signal.SIGTERM)]
 `;
     NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
       encoding: "utf8",
