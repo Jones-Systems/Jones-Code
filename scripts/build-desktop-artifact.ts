@@ -3955,20 +3955,24 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       "Resources",
       "app.asar",
     );
-    yield* Effect.try({
-      try: () =>
-        verifyJonesPackagedStartupGate(
-          Schema.decodeSync(Schema.UnknownFromJsonString)(
-            extractFile(packagedAsar, "package.json").toString("utf8"),
-          ),
-          { version: appVersion, source },
-        ),
-      catch: (cause) =>
+    yield* Effect.gen(function* () {
+      const manifestJson = yield* Effect.try(() =>
+        extractFile(packagedAsar, "package.json").toString("utf8"),
+      );
+      const metadata = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        manifestJson,
+      );
+      yield* Effect.try(() =>
+        verifyJonesPackagedStartupGate(metadata, { version: appVersion, source }),
+      );
+    }).pipe(
+      Effect.mapError((cause) =>
         new BundleNotSelfContainedError({
           exitCode: -1,
           output: `Packaged Jones startup-gate verification failed: ${String(cause)}`,
         }),
-    });
+      ),
+    );
   }
 
   const stageEntries = yield* fs.readDirectory(stageDistDir);
