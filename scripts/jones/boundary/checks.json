@@ -878,6 +878,21 @@
         "vp test run apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
         "vp run --filter @t3tools/desktop typecheck"
       ]
+    },
+    {
+      "id": "jones-local-desktop-update",
+      "tests": [
+        "apps/desktop/src/jones/updates/preloadInstall.test.ts",
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
+        "apps/web/src/components/desktopUpdate.logic.test.ts",
+        "apps/web/src/components/desktopUpdate.toast.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/desktop/src/jones/updates/preloadInstall.test.ts apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/components/desktopUpdate.logic.test.ts apps/web/src/components/desktopUpdate.toast.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/desktop typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }

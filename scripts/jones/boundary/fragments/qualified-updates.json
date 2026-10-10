@@ -42,7 +42,10 @@
     "apps/web/src/jones/updates/JonesUpdateControls.tsx",
     "apps/web/src/jones/updates/jonesUpdates.ts",
     "apps/mobile/src/jones/updates/JonesUpdateControls.tsx",
-    "apps/mobile/src/jones/updates/jonesUpdates.ts"
+    "apps/mobile/src/jones/updates/jonesUpdates.ts",
+    "apps/desktop/src/jones/updates/preloadInstall.test.ts",
+    "apps/web/src/jones/updates/localDesktopUpdate.ts",
+    "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/ipc/methods/updates.ts",
@@ -77,7 +80,12 @@
     "apps/web/src/components/ServerUpdateAction.test.tsx",
     "apps/web/src/components/settings/ConnectionsSettings.tsx",
     "apps/mobile/src/features/settings/environment-maintenance.ts",
-    "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+    "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+    "apps/web/src/components/desktopUpdate.logic.ts",
+    "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+    "apps/web/src/components/settings/SettingsPanels.tsx",
+    "apps/web/src/components/LegacySidebar.tsx",
+    "apps/web/src/components/desktopUpdate.toast.tsx"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -192,6 +200,26 @@
     {
       "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
       "to": "apps/mobile/src/jones/updates/JonesUpdateControls.tsx"
+    },
+    {
+      "from": "apps/web/src/components/desktopUpdate.logic.ts",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/SettingsPanels.tsx",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
+    },
+    {
+      "from": "apps/web/src/components/desktopUpdate.toast.tsx",
+      "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
     }
   ]
 }

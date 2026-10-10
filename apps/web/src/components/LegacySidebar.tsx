@@ -1,3 +1,4 @@
+import { installLocalDesktopUpdate } from "../jones/updates/localDesktopUpdate";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { Spinner } from "~/components/ui/spinner";
@@ -3841,8 +3842,7 @@ export default function LegacySidebar() {
         setDesktopUpdateActionPending(false);
         return;
       }
-      void bridge
-        .installUpdate()
+      void installLocalDesktopUpdate(bridge, desktopUpdateState)
         .then((result) => {
           if (!shouldToastDesktopUpdateActionResult(result)) return;
           const actionError = getDesktopUpdateActionError(result);

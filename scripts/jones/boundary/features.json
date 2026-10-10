@@ -445,6 +445,13 @@
         "apps/web/src/jones/designRequests/bindingStore.test.ts"
       ],
       "scope": "Design gallery requests through the authenticated web client: jones-design-request/1 opener handshake, client-local pairing to an existing workstream, deterministic primary-placement routing with named held states, packet v1 digest and image verification, and queue-mode dispatch with deterministic command IDs and receipt readback. No server, persistence or queue activation changes."
+    },
+    {
+      "id": "jones-local-desktop-update",
+      "tests": [
+        "apps/desktop/src/jones/updates/preloadInstall.test.ts",
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
+      ]
     }
   ]
 }

@@ -816,7 +816,13 @@
     "apps/web/src/components/ComposerPromptEditorTiptap.tsx": "accepted-shared",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts": "hook",
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts": "jones-tests-in-upstream",
-    "apps/desktop/src/jones/workstreams/shellActivation.ts": "jones-owned"
+    "apps/desktop/src/jones/workstreams/shellActivation.ts": "jones-owned",
+    "apps/web/src/components/desktopUpdate.logic.ts": "hook",
+    "apps/web/src/components/sidebar/SidebarUpdatePill.tsx": "hook",
+    "apps/desktop/src/jones/updates/preloadInstall.test.ts": "jones-owned",
+    "apps/web/src/jones/updates/localDesktopUpdate.ts": "jones-owned",
+    "apps/web/src/jones/updates/localDesktopUpdate.test.ts": "jones-owned",
+    "apps/web/src/components/desktopUpdate.toast.tsx": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
