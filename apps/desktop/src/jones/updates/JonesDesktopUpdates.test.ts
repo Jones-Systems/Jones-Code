@@ -265,7 +265,8 @@ describe("Jones desktop updates", () => {
         expect(command).toBe("/usr/bin/plutil");
         expect(args).toEqual(["-convert", "json", "-o", "-", infoPlist]);
         expect(options).toEqual({ encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 120000 });
-        if (callback === undefined) throw new Error("The plist command requires a callback.");
+        if (typeof callback !== "function")
+          throw new Error("The plist command requires a callback.");
         void NodeFSP.readFile(infoPlist, "utf8").then(
           (xml) => {
             const info = Object.fromEntries(
