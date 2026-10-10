@@ -3958,7 +3958,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     yield* Effect.try({
       try: () =>
         verifyJonesPackagedStartupGate(
-          JSON.parse(extractFile(packagedAsar, "package.json").toString("utf8")),
+          Schema.decodeSync(Schema.UnknownFromJsonString)(
+            extractFile(packagedAsar, "package.json").toString("utf8"),
+          ),
           { version: appVersion, source },
         ),
       catch: (cause) =>

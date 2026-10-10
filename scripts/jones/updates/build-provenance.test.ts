@@ -5,7 +5,6 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { readJonesStartupGateProtocol } from "../../../apps/server/src/jones/cloud/qualifiedStartup.ts";
 import {
   bundlesJonesNativeHelper,
   JonesDesktopBuildMetadata,
@@ -71,7 +70,7 @@ describe("Jones build provenance", () => {
     repository: "Jones-Systems/Jones-Code",
     sha: "b".repeat(40),
     tree: "c".repeat(40),
-  };
+  } as const;
 
   it("refuses packaged metadata that lost its implemented gate or source binding", () => {
     const metadata = {
@@ -146,7 +145,7 @@ describe("Jones build provenance", () => {
           await NodeFSP.readFile(NodePath.join(f.root, `apps/${name}/package.json`), "utf8"),
         );
         expect(stamped).toMatchObject({ name, retained: { nested: true }, jonesSource: identity });
-        expect(stamped.startupGateProtocol).toBe(readJonesStartupGateProtocol());
+        expect(stamped.startupGateProtocol).toBe(1);
         expect(decodeDesktopMetadata(stamped)).toMatchObject({
           startupGateProtocol: 1,
           jonesSource: identity,
