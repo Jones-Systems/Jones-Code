@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalTimers:off
+// @effect-diagnostics globalDate:off
 // The launcher supervises the server child for the boot service and must keep
 // working across server versions, so it stays on Node built-ins with no Effect
 // runtime: it is the one part of the executable that cannot depend on the
@@ -1191,12 +1192,17 @@ export class Launcher {
   }
 }
 
-export async function main(): Promise<void> {
+export async function main(
+  options: { readonly quiescenceAdapter?: QualifiedQuiescenceAdapter } = {},
+): Promise<void> {
   const baseDir = process.env.T3CODE_HOME?.trim();
   if (baseDir === undefined || baseDir === "") {
     throw new Error("T3CODE_HOME is required by the T3 Code service launcher.");
   }
   const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
   const state = await readServiceState(statePath);
-  await new Launcher(baseDir, state, { startupGateProtocol: readJonesStartupGateProtocol() }).run();
+  await new Launcher(baseDir, state, {
+    ...options,
+    startupGateProtocol: readJonesStartupGateProtocol(),
+  }).run();
 }

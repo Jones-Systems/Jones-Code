@@ -33,7 +33,7 @@ const readMarker = (file: string) => {
 
 async function runScenario(
   mode: "commit" | "rollback" | "stale-child" | "missing-gate" | "wrong-gate" | "blocked-candidate",
-  body: (base: string) => Promise<void>,
+  body: (base: string, launcherFailure: unknown) => Promise<void>,
   quiescenceAdapter: QualifiedQuiescenceAdapter = { scan: async () => [] },
   onLauncher?: (launcher: Launcher) => void,
   options: {
@@ -181,13 +181,16 @@ if (context.update?.status === "pending") {
     onLauncher?.(launcher);
     // Captured children exit or are reaped before the launcher settles; cleanup never polls by process name.
     const previousHome = process.env.T3CODE_HOME;
+    let launcherFailure: unknown;
     try {
       if (options.productionMain) process.env.T3CODE_HOME = base;
-      await (options.productionMain ? main() : launcher.run()).then(
+      await (options.productionMain ? main({ quiescenceAdapter }) : launcher.run()).then(
         () => {
           throw new Error("Unexpected launcher completion");
         },
-        () => undefined,
+        (cause: unknown) => {
+          launcherFailure = cause;
+        },
       );
     } finally {
       if (options.productionMain) {
@@ -195,7 +198,7 @@ if (context.update?.status === "pending") {
         else process.env.T3CODE_HOME = previousHome;
       }
     }
-    await body(base);
+    await body(base, launcherFailure);
   } finally {
     await NodeFSP.rm(base, { recursive: true, force: true });
   }
@@ -345,14 +348,25 @@ it("rejects insufficient copy capacity before accepting Install or stopping the 
 });
 
 it("binds the qualified startup gate through production main", async () => {
+  let scans = 0;
   await runScenario(
     "commit",
-    async (base) => {
+    async (base, launcherFailure) => {
       const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
-      assert.equal(state.activeVersion, target);
+      assert.equal(
+        state.activeVersion,
+        target,
+        `Launcher failure: ${String(launcherFailure)}; state: ${JSON.stringify(state)}`,
+      );
       assert.equal(state.update?.status, "committed");
+      assert.ok(scans > 0, "Production main must use the supplied fixture process observer.");
     },
-    { scan: async () => [] },
+    {
+      scan: async () => {
+        scans++;
+        return [];
+      },
+    },
     undefined,
     { productionMain: true },
   );
