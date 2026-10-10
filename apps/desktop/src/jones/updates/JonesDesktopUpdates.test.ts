@@ -1,8 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - Source-qualified synthetic desktop fixture, never launches a native app.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type {
   JonesActionsCandidate,
   JonesStagedArtifact,
@@ -13,6 +14,11 @@ import {
 } from "./JonesDesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 import { hashMacApp, hashMacFile } from "./jonesMacStaging.ts";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  return { ...original, execFile: vi.fn(original.execFile) };
+});
 
 const candidate: JonesActionsCandidate = {
   schema: 1,
@@ -250,13 +256,34 @@ async function fixture(bootstrap = true, terminal?: "committed" | "rolled-back")
 describe("Jones desktop updates", () => {
   it("adopts a source-qualified stable bundle without a helper generation or full-app scan", async () => {
     const f = await fixture(false);
+    const nativeCommand = vi.mocked(NodeChildProcess.execFile);
     try {
       const contents = NodePath.join(f.app, "Contents");
       const executable = NodePath.join(contents, "MacOS", "Jones");
+      const infoPlist = NodePath.join(contents, "Info.plist");
+      nativeCommand.mockImplementation((command, args, options, callback) => {
+        expect(command).toBe("/usr/bin/plutil");
+        expect(args).toEqual(["-convert", "json", "-o", "-", infoPlist]);
+        expect(options).toEqual({ encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 120000 });
+        if (callback === undefined) throw new Error("The plist command requires a callback.");
+        void NodeFSP.readFile(infoPlist, "utf8").then(
+          (xml) => {
+            const info = Object.fromEntries(
+              [...xml.matchAll(/<key>([^<]+)<\/key>\s*<string>([^<]+)<\/string>/g)].map((match) => [
+                match[1],
+                match[2],
+              ]),
+            );
+            callback(null, JSON.stringify(info), "");
+          },
+          (cause: NodeChildProcess.ExecFileException) => callback(cause, "", ""),
+        );
+        return new NodeChildProcess.ChildProcess();
+      });
       await NodeFSP.mkdir(NodePath.dirname(executable), { recursive: true });
       await NodeFSP.rename(f.active.executablePath, executable);
       await NodeFSP.writeFile(
-        NodePath.join(contents, "Info.plist"),
+        infoPlist,
         `<?xml version="1.0"?><plist version="1.0"><dict>
         <key>CFBundleExecutable</key><string>Jones</string>
         <key>CFBundleIdentifier</key><string>com.jones.code</string>
@@ -292,8 +319,20 @@ describe("Jones desktop updates", () => {
       });
       await restarted.configure();
       expect(restarted.state.jones?.capability.install).toBe(true);
+      expect(nativeCommand).toHaveBeenCalledTimes(3);
       expect(await NodeFSP.readFile(active.databasePath, "utf8")).toBe("live-state");
+      await NodeFSP.writeFile(
+        infoPlist,
+        (await NodeFSP.readFile(infoPlist, "utf8")).replace("com.jones.code", "com.other.code"),
+      );
+      await restarted.configure();
+      expect(restarted.state.jones?.capability.install).toBe(false);
+      expect(restarted.state.jones?.message).toBe(
+        "The native manifest does not match the running bundle identity.",
+      );
+      expect(nativeCommand).toHaveBeenCalledTimes(4);
     } finally {
+      nativeCommand.mockReset();
       await f.cleanup();
     }
   });

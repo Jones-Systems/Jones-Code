@@ -11,6 +11,7 @@ import {
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { EnvironmentId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
 import {
@@ -327,7 +328,9 @@ export class JonesDesktopUpdateController {
             recovery: {
               method: journal.recovery.method === "clone" ? "clone" : "copy",
               bytes: journal.recovery.bytes,
-              completedAt: new Date(journal.recovery.completedAt * 1000).toISOString(),
+              completedAt: DateTime.formatIso(
+                DateTime.fromEpochSeconds(journal.recovery.completedAt),
+              ),
               durationMs: Math.round(
                 (journal.recovery.completedAt - journal.recovery.startedAt) * 1000,
               ),
