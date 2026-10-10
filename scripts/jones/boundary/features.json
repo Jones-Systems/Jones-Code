@@ -30,7 +30,7 @@
     {
       "id": "work-queue-preview",
       "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
-      "scope": "Mock submitted-work preview remains covered by WorkQueuePage.test.tsx; the adapted canonical metadata panel, service, HTTP route, contracts and shared client runtime are covered by work-queue-metadata."
+      "scope": "Explicit sample preview components remain covered by WorkQueuePage.test.tsx. Ordinary Prompts navigation uses UnifiedQueuePage with genuine voice review and read-only durable queue metadata; integration coverage belongs to work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
@@ -74,12 +74,14 @@
     {
       "id": "queue-dispatch-goals",
       "tests": [
+        "apps/server/src/environment/ServerEnvironment.test.ts",
         "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
         "apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts",
         "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
         "apps/server/src/provider/providerQueue.test.ts",
         "apps/server/src/provider/providerGoal.test.ts"
-      ]
+      ],
+      "scope": "Guarded legacy queue dispatch, durable command observation and provider inventory/quota facade, with exact queueDispatch/v1 advertisement on the protocol-2 environment descriptor."
     },
     {
       "id": "provider-runtime-identity",
@@ -158,6 +160,9 @@
     {
       "id": "work-queue-metadata",
       "tests": [
+        "apps/web/src/jones/workQueue/PromptsSettings.test.tsx",
+        "apps/web/src/components/settings/settingsSearch.test.ts",
+        "packages/contracts/src/settings.test.ts",
         "apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts",
         "apps/server/src/jones/workQueueMetadata/http.test.ts",
         "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
@@ -165,7 +170,7 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "packages/contracts/src/jones/workQueueMetadata.test.ts"
       ],
-      "scope": "Adapted rebuild #113 canonical artifact metadata: validated server configuration and artifact reads, authenticated HTTP registration, capability-gated shared client reads, and metadata panel integration in WorkQueuePage."
+      "scope": "Validated artifact metadata configuration and reads, authenticated HTTP registration, and capability-gated shared client reads. UnifiedQueuePage presents Pending, Queued and Sent, combines genuine voice review with read-only external queue metadata, preserves editing across stage changes, and keeps unavailable and stale observations distinct from empty queues. Legacy Queue and Voice Review routes share the Prompts page; voice processing release does not establish confirmed native delivery. Jones Code settings follows Archive and saves a device-local default prompt view, defaulting existing clients to Pending."
     },
     {
       "id": "direct-desktop-media",

@@ -7,14 +7,21 @@
     "apps/server/src/jones/workQueueMetadata/config.ts",
     "apps/server/src/jones/workQueueMetadata/http.test.ts",
     "apps/server/src/jones/workQueueMetadata/http.ts",
+    "apps/web/src/jones/workQueue/UnifiedQueuePage.tsx",
+    "apps/web/src/jones/workQueue/PromptsSettings.test.tsx",
+    "apps/web/src/jones/workQueue/PromptsSettings.tsx",
     "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.tsx",
     "apps/web/src/jones/workQueue/useWorkQueueMetadata.ts",
     "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
     "packages/client-runtime/src/jones/workQueueMetadata.ts"
   ],
-  "hookPaths": [],
+  "hookPaths": ["apps/web/src/routes/settings.jones-code.tsx"],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/web/src/routes/settings.jones-code.tsx",
+      "to": "apps/web/src/jones/workQueue/PromptsSettings.tsx"
+    },
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/workQueueMetadata.ts"

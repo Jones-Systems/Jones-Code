@@ -82,9 +82,10 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
     <section aria-label="Queue metadata" className="space-y-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-lg font-medium">Submitted work</h2>
+          <h2 className="text-lg font-medium">Queue</h2>
           <p className="text-sm text-muted-foreground">
-            Read-only sampled queue metadata. Prompt text is not available.
+            Requests from all supported producers. Read-only sampled metadata; prompt text and
+            editing are unavailable.
           </p>
         </div>
         <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
@@ -92,8 +93,8 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
         </Button>
       </div>
       <p className="text-sm text-muted-foreground">
-        Accepted or delivered does not mean completed work. This view does not track whether the
-        work is complete.
+        Accepted dispatch or native command status does not prove a handoff or completed work.
+        Historical, held and uncertain states remain here until handoff evidence is available.
       </p>
       <div role="status">
         {loading && <p>Loading queue metadata…</p>}
@@ -204,6 +205,7 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
                       Dispatch: {item.dispatch_status ?? "Not observed"}
                       <br />
                       Native command: {item.native_command_status ?? "Not observed"}
+                      <div>Handoff: unconfirmed in this sample</div>
                     </td>
                     <td className="border-b p-3">Not tracked</td>
                   </tr>

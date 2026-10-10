@@ -217,6 +217,20 @@ it.layer(Layer.merge(NodeServices.layer, Layer.succeed(HostProcessEnvironment, {
 
         expect(first.environmentId).toBe(second.environmentId);
         expect(first.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
+        expect(first.orchestrationProtocolVersion).toBe(2);
+        for (const descriptor of [first, second]) {
+          expect(descriptor.capabilities.queueDispatch).toEqual({
+            schemaVersion: "t3.queue-dispatch-capability/v1",
+            orchestrationProtocolVersion: 1,
+            dispatchGuard: "t3.thread-turn-dispatch-guard/v1",
+            commandObservation: "t3.command-observation/v1",
+            persistedRejection: "t3.command-rejection/v1",
+            providerInventory: "t3.provider-queue-inventory/v1",
+            qualifiedQuota: "codex.t3-qualified-quota/v1",
+            authSession: "t3.auth-session-cli/v1",
+          });
+          expect(descriptor.capabilities.workQueueMetadata).toBe(true);
+        }
         expect(second.capabilities.repositoryIdentity).toBe(true);
         expect(second.capabilities.worktreeDefaultBase).toBe(true);
         expect(second.capabilities.queuedToolBoundaryDelivery).toBe(true);

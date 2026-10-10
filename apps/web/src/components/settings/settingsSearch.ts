@@ -23,7 +23,8 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
-  | "/settings/archived";
+  | "/settings/archived"
+  | "/settings/jones-code";
 
 /**
  * Where a setting can be edited. Device-local rows have no scope: they render
@@ -99,6 +100,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
   "/settings/archived": "Archive",
+  "/settings/jones-code": "Jones Code",
 };
 
 /** Anchor id of the first row bound to `command` on the Keybindings page. */
@@ -134,6 +136,12 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
  * that may not be mounted point at their nearest stable section instead.
  */
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "prompts-default-stage",
+    title: "Default prompt view",
+    to: "/settings/jones-code",
+    searchTerms: ["prompts pending queued sent preferred stage opening view"],
+  },
   {
     id: "storage-worktrees",
     title: "Worktree cleanup",
@@ -942,6 +950,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/connections": "connections",
   "/settings/scheduled-tasks": null,
   "/settings/archived": "project-defaults",
+  "/settings/jones-code": null,
 };
 
 /** Search keeps the selected target. A missing row can explain its owning scope instead. */

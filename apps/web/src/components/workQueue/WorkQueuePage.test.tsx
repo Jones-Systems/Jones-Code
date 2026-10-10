@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { WorkQueueMetadata, WorkQueueMetadataResult } from "@t3tools/contracts";
+import { voiceReviewRecentFixture } from "@t3tools/client-runtime/voice-review/fixtures";
 import {
   WorkQueueMetadataPanel,
   type WorkQueueMetadataLoader,
@@ -580,7 +581,8 @@ describe("submitted work metadata", () => {
       "Dispatch: unknown",
       "Native command: Not observed",
       "Not tracked",
-      "does not mean completed",
+      "does not prove a handoff or completed work",
+      "Handoff: unconfirmed in this sample",
       "Source: queue",
       "Sampled",
     ]) {
@@ -667,7 +669,9 @@ describe("submitted work metadata", () => {
 describe("submitted work page integration", () => {
   const mockedModules = [
     "../../state/environments",
+    "../../hooks/useSettings",
     "../../jones/workQueue/useWorkQueueMetadata",
+    "../voiceReview/useVoiceReview",
     "@tanstack/react-router",
     "../WorkspacePageHeader",
     "../WorkspacePageContainer",
@@ -687,9 +691,14 @@ describe("submitted work page integration", () => {
     for (const path of mockedModules) vi.doUnmock(path);
     vi.unstubAllGlobals();
   });
-  it.each([false, true])(
-    "negotiates metadata capability=%s while keeping the synthetic preview separate",
-    async (supported) => {
+  it.each([
+    [false, "pending"],
+    [true, "pending"],
+    [true, "queued"],
+    [true, "sent"],
+  ] as const)(
+    "negotiates metadata capability=%s and hydrates initial stage=%s without synthetic controls",
+    async (supported, initialStage) => {
       vi.resetModules();
       const load = vi.fn<WorkQueueMetadataLoader>(async () => ({
         status: "unconfigured",
@@ -704,6 +713,13 @@ describe("submitted work page integration", () => {
           environment: { capabilities: supported ? { workQueueMetadata: true } : {} },
         },
       };
+      let hydrationStatus = "pending";
+      const retryPreferences = vi.fn(async () => undefined);
+      vi.doMock("../../hooks/useSettings", () => ({
+        useClientSettings: () => ({ promptsDefaultStage: initialStage }),
+        useClientSettingsHydrationStatus: () => hydrationStatus,
+        ensureClientSettingsHydrated: retryPreferences,
+      }));
       vi.doMock("../../state/environments", () => ({
         useEnvironments: () => ({ environments: [environment] }),
         usePrimaryEnvironmentId: () => environment.environmentId,
@@ -711,6 +727,26 @@ describe("submitted work page integration", () => {
       vi.doMock("../../jones/workQueue/useWorkQueueMetadata", () => ({
         useWorkQueueMetadata: () => load,
       }));
+      const draft = voiceReviewRecentFixture.entries[1]!.draft;
+      const mutate = vi.fn(async () => ({
+        draft: { ...draft, state: "editing", revision: 2 },
+        edit_handle: "fixture-edit-handle",
+      }));
+      const voiceReview = {
+        fetchList: async () => ({ drafts: [draft] }),
+        transport: { get: vi.fn(), mutate },
+        review: {
+          recent: async () => ({
+            ...voiceReviewRecentFixture,
+            entries: [voiceReviewRecentFixture.entries[0]!],
+          }),
+          registry: async () => ({ threads: [], partial: false, unavailable: [] }),
+          workstreams: async () => ({ workstreams: [] }),
+          diagnostics: vi.fn(),
+          correctAssociation: vi.fn(),
+        },
+      };
+      vi.doMock("../voiceReview/useVoiceReview", () => ({ useVoiceReview: () => voiceReview }));
       vi.doMock("@tanstack/react-router", () => ({
         useBlocker: () => ({ status: "idle" }),
       }));
@@ -722,12 +758,93 @@ describe("submitted work page integration", () => {
       vi.doMock("../ui/sidebar", () => ({ SidebarInset: wrapper }));
       const { WorkQueuePage } = await import("./WorkQueuePage");
       await act(() => root.render(<WorkQueuePage />));
+      expect(container.textContent).toContain("Loading Prompts preferences");
+      expect(container.querySelector('[role="tablist"]')).toBeNull();
+      expect(load).not.toHaveBeenCalled();
+      hydrationStatus = "failed";
+      await act(() => root.render(<WorkQueuePage />));
+      expect(container.textContent).toContain("Prompts preferences could not be loaded");
+      await act(() => container.querySelector<HTMLButtonElement>("button")!.click());
+      expect(retryPreferences).toHaveBeenCalledTimes(1);
+      hydrationStatus = "ready";
+      await act(() => root.render(<WorkQueuePage />));
+      expect(container.querySelector('[aria-label="Mock queue preview"]')).toBeNull();
+      expect(container.textContent).not.toContain("sample data only");
+      const pending = container.querySelector<HTMLButtonElement>("#queue-pending-tab")!;
+      const queued = container.querySelector<HTMLButtonElement>("#queue-queued-tab")!;
+      const sent = container.querySelector<HTMLButtonElement>("#queue-sent-tab")!;
       expect(
-        container.querySelector<HTMLDetailsElement>('[aria-label="Mock queue preview"]')?.open,
-      ).toBe(false);
-      expect(container.querySelector('[aria-label="Mock queue preview"]')?.textContent).toContain(
-        "Synthetic preview data is separate",
+        container.querySelector(`#queue-${initialStage}-tab`)?.getAttribute("aria-selected"),
+      ).toBe("true");
+      await act(() => pending.click());
+      expect(
+        container.querySelector('[aria-label="Recent voice prompts"]')?.closest("[hidden]"),
+      ).not.toBeNull();
+      if (supported)
+        expect(
+          container.querySelector('[aria-label="Queue metadata"]')?.closest("[hidden]"),
+        ).not.toBeNull();
+      expect(pending.getAttribute("aria-selected")).toBe("true");
+      const edit = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Edit",
+      )!;
+      await act(() => edit.click());
+      const editor = container.querySelector<HTMLTextAreaElement>(
+        '[aria-label="Edit voice prompt"]',
+      )!;
+      expect(editor.value).toBe(draft.text);
+      expect(mutate.mock.calls[0]).toEqual([
+        draft.id,
+        "edit-begin",
+        { expected_revision: draft.revision },
+      ]);
+      await act(() => {
+        pending.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      });
+      expect(queued.getAttribute("aria-selected")).toBe("true");
+      expect(document.activeElement).toBe(queued);
+      expect(
+        container.querySelector('[aria-label="Recent voice prompts"]')?.closest("[hidden]"),
+      ).toBeNull();
+      expect(
+        container.querySelector('[aria-label="Pending voice prompts"]')?.closest("[hidden]"),
+      ).not.toBeNull();
+      expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
+      await act(() =>
+        queued.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
       );
+      expect(sent.getAttribute("aria-selected")).toBe("true");
+      expect(document.activeElement).toBe(sent);
+      expect(
+        container.querySelector('[aria-label="Pending voice prompts"]')?.closest("[hidden]"),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[aria-label="Recent voice prompts"]')?.closest("[hidden]"),
+      ).not.toBeNull();
+      expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
+      expect(container.textContent).toContain(
+        "Sent history is not available from this connection yet",
+      );
+      await act(() =>
+        sent.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
+      );
+      expect(pending.getAttribute("aria-selected")).toBe("true");
+      expect(document.activeElement).toBe(pending);
+      await act(() =>
+        pending.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })),
+      );
+      expect(sent.getAttribute("aria-selected")).toBe("true");
+      await act(() =>
+        sent.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })),
+      );
+      expect(pending.getAttribute("aria-selected")).toBe("true");
+      await act(() =>
+        pending.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })),
+      );
+      expect(sent.getAttribute("aria-selected")).toBe("true");
+      await act(() => pending.click());
+      expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
+      expect(mutate).toHaveBeenCalledTimes(1);
       expect(load).toHaveBeenCalledTimes(supported ? 1 : 0);
       expect(container.querySelector('[aria-label="Queue metadata"]') !== null).toBe(supported);
       expect(container.textContent).toContain(

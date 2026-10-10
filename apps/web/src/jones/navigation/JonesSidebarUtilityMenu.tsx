@@ -1,10 +1,4 @@
-import {
-  BookOpenIcon,
-  ChartNoAxesColumnIcon,
-  ListTodoIcon,
-  MicIcon,
-  SettingsIcon,
-} from "lucide-react";
+import { BookOpenIcon, ChartNoAxesColumnIcon, ListTodoIcon, SettingsIcon } from "lucide-react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { memo } from "react";
 import { usePullRequestsSupported } from "../../state/environments";
@@ -41,15 +35,9 @@ const destinations = [
   },
   {
     path: "/work-queue",
-    label: "Submitted work",
+    label: "Prompts",
     icon: ListTodoIcon,
-    description: "Work already submitted for routing and delivery",
-  },
-  {
-    path: "/voice-review",
-    label: "Queue",
-    icon: MicIcon,
-    description: "Review, edit, or pause voice prompts before release",
+    description: "Review pending, queued and sent prompts",
   },
   {
     path: "/conversations",
@@ -72,6 +60,7 @@ export const JonesSidebarUtilityMenu = memo(function JonesSidebarUtilityMenu() {
         if (path === "/pull-requests" && !pullRequestsSupported) return null;
         const active =
           pathname === path ||
+          (path === "/work-queue" && pathname === "/voice-review") ||
           (path === "/settings" &&
             (pathname.startsWith("/settings/") || pathname.startsWith("/projects/")));
         return (
