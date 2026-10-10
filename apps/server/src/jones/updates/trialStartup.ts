@@ -10,7 +10,7 @@ import * as ServiceLauncherClient from "../../cloud/serviceLauncherClient.ts";
 import type { QualifiedTrialRuntimeWitness } from "../cloud/qualifiedStartup.ts";
 import { awaitJonesTrialCommit, JonesTrialGateError } from "./trialGate.ts";
 
-export const readJonesStartupGateProtocol = (): 1 => 1;
+export { readJonesStartupGateProtocol } from "../cloud/qualifiedStartup.ts";
 
 export const hasJonesTrialDescriptor = Effect.map(
   HostProcessEnvironment,

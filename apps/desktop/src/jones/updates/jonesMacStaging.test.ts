@@ -13,6 +13,7 @@ import {
   JonesCandidateStartupGateUnavailableError,
   preflightJonesCandidateStartupGate,
   requireJonesCandidateStartupGate,
+  requireStableMacAppPath,
 } from "./jonesMacStaging.ts";
 
 async function withBundle(run: (root: string) => Promise<void>): Promise<void> {
@@ -168,4 +169,33 @@ describe("native bundle integrity filesystem", () => {
         await expect(hashMacApp(app)).rejects.toThrow("App symlink escapes the staged app.");
       }),
   );
+});
+
+describe("stable native update paths", () => {
+  it("accepts a writable bundle and refuses aliases or AppTranslocation paths", async () => {
+    await withBundle(async (root) => {
+      const app = NodePath.join(root, "Jones.app");
+      await NodeFSP.mkdir(app);
+      expect(await requireStableMacAppPath(app)).toBe(app);
+      const alias = NodePath.join(root, "Alias.app");
+      await NodeFSP.symlink(app, alias);
+      await expect(requireStableMacAppPath(alias)).rejects.toThrow("stable writable");
+      const translocated = NodePath.join(root, "AppTranslocation", "Jones.app");
+      await NodeFSP.mkdir(translocated, { recursive: true });
+      await expect(requireStableMacAppPath(translocated)).rejects.toThrow("stable writable");
+    });
+  });
+
+  it.skipIf(process.getuid?.() === 0)("refuses an unwritable bundle parent", async () => {
+    await withBundle(async (root) => {
+      const app = NodePath.join(root, "Jones.app");
+      await NodeFSP.mkdir(app);
+      try {
+        await NodeFSP.chmod(root, 0o500);
+        await expect(requireStableMacAppPath(app)).rejects.toMatchObject({ code: "EACCES" });
+      } finally {
+        await NodeFSP.chmod(root, 0o700);
+      }
+    });
+  });
 });

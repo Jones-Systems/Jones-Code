@@ -20,8 +20,23 @@ afterEach(async () => {
   }
 });
 async function fixture() {
-  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-selection-"));
-  roots.push(root);
+  const allocatedRoot = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-selection-"));
+  roots.push(allocatedRoot);
+  const root = await NodeFSP.realpath(allocatedRoot);
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Native receipts must bind the host executing these synthetic fixtures.
+  const platform = NodeOS.platform();
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Native receipts must bind the host executing these synthetic fixtures.
+  const architecture = NodeOS.arch();
+  if (
+    (platform !== "linux" && platform !== "darwin") ||
+    (architecture !== "x64" && architecture !== "arm64") ||
+    (platform === "darwin" && architecture !== "arm64")
+  )
+    throw new Error("Synthetic staging requires a supported native runtime host.");
+  const workflow =
+    platform === "darwin"
+      ? ".github/workflows/artifact-cli-mac.yml"
+      : ".github/workflows/artifact-cli-linux.yml";
   await NodeFSP.mkdir(NodePath.join(root, "userdata"));
   await NodeFSP.writeFile(NodePath.join(root, "userdata", "statev2.sqlite"), "unchanged-state");
   await NodeFSP.writeFile(NodePath.join(root, "userdata", "environment-id"), "own-environment");
@@ -47,14 +62,13 @@ async function fixture() {
       runId: 2,
       runAttempt: 1,
       artifactId: 3,
-      workflow: ".github/workflows/artifact-cli-linux.yml",
+      workflow,
       artifactDigest: `sha256:${"d".repeat(64)}`,
       archiveSha256: "e".repeat(64),
-      platform: "linux",
-      // oxlint-disable-next-line t3code/no-global-process-runtime -- Native receipt must match this fixture host.
-      architecture: NodeOS.arch() as "x64" | "arm64",
+      platform,
+      architecture,
       version: current,
-      payloadSha256: await qualifiedPayloadDigest(runtime),
+      payloadSha256: await qualifiedPayloadDigest(runtime, platform, workflow),
     };
     await NodeFSP.writeFile(
       NodePath.join(runtime, ".jones-runtime-receipt.json"),

@@ -141,7 +141,8 @@
       "tests": [
         "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
         "packages/ssh/src/tunnel.test.ts",
-        "packages/ssh/src/runnerProcess.test.ts"
+        "packages/ssh/src/runnerProcess.test.ts",
+        "packages/ssh/src/jones/hostRuntime.test.ts"
       ],
       "scope": "SSH disconnect and client shutdown preserve host-owned remote servers. Shell policy is isolated under Jones ownership; manager lifecycle tests retain their shared harness."
     },
@@ -364,7 +365,8 @@
         "apps/server/src/jones/hostService/artifactVerification.test.ts",
         "apps/server/src/jones/hostService/HostServiceConfig.test.ts",
         "packages/tailscale/src/jones/serveOwnership.test.ts",
-        "apps/server/src/cli/pair.test.ts"
+        "apps/server/src/cli/pair.test.ts",
+        "apps/server/src/jones/hostService/adoption.test.ts"
       ],
       "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
     },

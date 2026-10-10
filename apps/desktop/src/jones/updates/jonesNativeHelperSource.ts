@@ -1,6 +1,6 @@
 /** Kept outside the app bundle before handoff so quitting Electron cannot stop activation. */
 export const jonesNativeHelperSource = String.raw`#!/usr/bin/env python3
-import argparse, fcntl, hashlib, json, os, pathlib, signal, sqlite3, subprocess, sys, time, uuid, shutil, stat
+import argparse, fcntl, hashlib, json, os, pathlib, signal, sqlite3, subprocess, sys, time, uuid, shutil, stat, plistlib, struct
 
 PROTOCOL = 1
 STARTUP_GATE_PROTOCOL = 1
@@ -98,11 +98,37 @@ def stop_exact(proofs):
         time.sleep(0.1)
 
 def prove_quiescence(expected):
-    # Profile and the whole userdata directory include SQLite WAL and settings writers.
-    for directory in (str(pathlib.Path(expected['databasePath']).parent), expected['profile']):
-        result = subprocess.run(['/usr/sbin/lsof', '-t', '+D', directory], capture_output=True, text=True)
-        if result.returncode not in (0, 1): raise RuntimeError('Native file-writer inspection failed.')
-        if result.stdout.strip(): raise RuntimeError('Native state still has open writers; recovery held.')
+    database = pathlib.Path(expected['databasePath'])
+    profile = pathlib.Path(expected['profile'])
+    files = [database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm')]
+    files += [database.parent / name for name in SETTINGS]
+    profile_databases = [profile / name for name in ('History', 'Cookies', 'Login Data', 'Web Data', 'Default/History', 'Default/Cookies', 'Default/Network/Cookies', 'Default/Login Data', 'Default/Web Data')]
+    for path in profile_databases: files += [path, pathlib.Path(str(path) + '-wal'), pathlib.Path(str(path) + '-shm')]
+    files += [profile / name for name in ('Local State', 'Preferences', 'LOCK', 'Default/Preferences', 'Default/Local Storage/leveldb/LOCK', 'Default/Session Storage/LOCK')]
+    existing = [str(path) for path in files if path.exists()]
+    if not existing: raise RuntimeError('Native database files are missing; writer inspection held.')
+    result = subprocess.run(['/usr/sbin/lsof', '-F', 'pfa', '--'] + existing, capture_output=True, text=True)
+    if result.returncode not in (0, 1): raise RuntimeError('Native file-writer inspection failed.')
+    if result.stderr.strip() and (any(path in result.stderr for path in existing) or not all(line.startswith("lsof: WARNING: can't stat()") or line.strip() == 'Output information may be incomplete.' for line in result.stderr.splitlines() if line.strip())):
+        raise RuntimeError('Native file-writer inspection was incomplete.')
+    access = None
+    descriptor_open = False
+    for line in result.stdout.splitlines():
+        if line.startswith('f'):
+            if descriptor_open and access is None: raise RuntimeError('Native descriptor access is missing; recovery held.')
+            access = None
+            descriptor_open = True
+        elif line.startswith('a'):
+            access = line[1:]
+            if access in ('w', 'u'): raise RuntimeError('Native state still has open writers; recovery held.')
+            if access != 'r': raise RuntimeError('Native descriptor access is unknown; recovery held.')
+        elif line.startswith('p'):
+            if descriptor_open and access is None: raise RuntimeError('Native descriptor access is missing; recovery held.')
+            descriptor_open = False
+        elif line: raise RuntimeError('Native file-writer output was invalid.')
+    if descriptor_open and access is None: raise RuntimeError('Native descriptor access is missing; recovery held.')
+    if result.returncode == 1 and result.stdout.strip(): raise RuntimeError('Native writer inspection returned an inconsistent result.')
+
 
 def preserve_restart_tunnel(expected, transaction_id):
     marker = pathlib.Path(expected['home']) / 'runtime' / 'desktop-update-restart'
@@ -117,10 +143,8 @@ def preserve_restart_tunnel(expected, transaction_id):
 def verify_app(staged, expected):
     if type(staged.get('startupGateProtocol')) is not int or staged['startupGateProtocol'] != STARTUP_GATE_PROTOCOL:
         raise RuntimeError('The staged candidate does not prove the required startup gate.')
-    if app_digest(staged['appPath']) != staged['appDigest']: raise RuntimeError('Staged app integrity changed.')
-    if digest(staged['executablePath']) != staged['executableDigest']: raise RuntimeError('Staged executable changed.')
-    if digest(pathlib.Path(staged['appPath']) / 'Contents/Resources/app.asar') != staged['asarDigest']:
-        raise RuntimeError('Staged ASAR changed.')
+    if expected.get('bundleIdentifier') is not None and staged.get('bundleIdentifier') != expected['bundleIdentifier']:
+        raise RuntimeError('The staged app has a different bundle identity.')
     receipt = read(staged['receiptPath'])
     if receipt['app'] != staged: raise RuntimeError('Staged handle no longer binds its receipt.')
     candidate = receipt['candidate']
@@ -129,42 +153,59 @@ def verify_app(staged, expected):
     artifact = receipt['artifact']
     if artifact['candidate'] != candidate or candidate['installedSource'] != expected['sourceSha']:
         raise RuntimeError('Staged artifact does not descend the active source.')
-    if digest(artifact['payloadPath']) != artifact['receipt']['sha256'] or digest(pathlib.Path(artifact['payloadPath']).parent / 'github-artifact.zip') != candidate['artifactDigest']:
-        raise RuntimeError('Qualified outer artifact or native payload integrity changed.')
-    if app_digest(expected['appPath']) != expected['appDigest']:
-        raise RuntimeError('Previous app integrity changed; activation held.')
+
+def clone_file(source, target):
+    if source.is_symlink() or not source.is_file(): raise RuntimeError('Unexpected recovery file type.')
+    result = subprocess.run(['/bin/cp', '-c', '-p', str(source), str(target)], capture_output=True, text=True)
+    return result.returncode == 0
+
+def clone_tree(source, target, profile=False):
+    result = subprocess.run(['/bin/cp', '-cR', str(source), str(target)], capture_output=True, text=True)
+    if result.returncode != 0:
+        # Preserve partial copy effects inside this new task-owned tree; retained generations are never removed.
+        shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True,
+                        ignore=lambda root, names: [name for name in names if profile and name in TRANSIENT_PROFILE])
+    if profile:
+        for name in TRANSIENT_PROFILE:
+            copied = pathlib.Path(target) / name
+            if copied.exists() or copied.is_symlink(): copied.unlink()
 
 def pair_state(expected, directory):
     directory.mkdir(mode=0o700)
     database = pathlib.Path(expected['databasePath'])
-    uri = database.as_uri() + '?mode=ro'
-    with sqlite3.connect(uri, uri=True) as source, sqlite3.connect(directory / 'state.sqlite') as target:
-        source.backup(target)
-        if target.execute('PRAGMA integrity_check').fetchone()[0] != 'ok': raise RuntimeError('SQLite backup failed integrity check.')
+    started = time.time()
+    copied = clone_file(database, directory / 'state.sqlite')
+    for suffix in ('-wal', '-shm'):
+        source = pathlib.Path(str(database) + suffix)
+        if source.exists(): copied = clone_file(source, directory / ('state.sqlite' + suffix)) and copied
+    method = 'clone'
+    if not copied:
+        # SQLite backup reads the stopped source and includes committed WAL frames.
+        # Only this incomplete snapshot's exact files are cleanup-owned.
+        for name in ('state.sqlite', 'state.sqlite-wal', 'state.sqlite-shm'):
+            target = directory / name
+            if target.exists(): target.unlink()
+        with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as source, sqlite3.connect(directory / 'state.sqlite') as target:
+            source.backup(target)
+        method = 'sqlite-backup'
     os.chmod(directory / 'state.sqlite', database.stat().st_mode & 0o777)
     presence = {}
     for name in SETTINGS:
         source = database.parent / name
         presence[name] = source.exists()
         if source.exists():
-            if source.is_symlink() or not source.is_file(): raise RuntimeError('Unexpected settings file type.')
-            shutil.copy2(source, directory / name)
-    shutil.copytree(expected['profile'], directory / 'profile', symlinks=True,
-                    ignore=lambda root, names: [name for name in names if name in TRANSIENT_PROFILE])
+            if not clone_file(source, directory / name): shutil.copy2(source, directory / name)
+    clone_tree(expected['profile'], directory / 'profile', profile=True)
     sync_tree(directory)
     durable(directory / 'pair.json', {'expected': expected, 'settings': presence,
-            'settingsDigests': {name: digest(directory / name) for name, exists in presence.items() if exists},
-            'profileDigest': app_digest(directory / 'profile', True), 'databaseDigest': digest(directory / 'state.sqlite')}, True)
+            'recovery': {'method': method, 'bytes': database.stat().st_size,
+                         'startedAt': started, 'completedAt': time.time()}}, True)
 
 def restore_pair(expected, directory, advanced):
     pair = read(directory / 'pair.json')
-    if pair['expected'] != expected or digest(directory / 'state.sqlite') != pair['databaseDigest']:
+    if pair['expected'] != expected or not (directory / 'state.sqlite').is_file() or not (directory / 'profile').is_dir():
         raise RuntimeError('Recovery pair no longer binds the previous app and state.')
-    if app_digest(directory / 'profile', True) != pair['profileDigest']:
-        raise RuntimeError('Recovery profile integrity changed.')
-    for name, expected_digest in pair['settingsDigests'].items():
-        if name not in SETTINGS or digest(directory / name) != expected_digest:
-            raise RuntimeError('Recovery settings integrity changed.')
+    if set(pair['settings']) != set(SETTINGS): raise RuntimeError('Recovery settings presence is unknown.')
     prove_quiescence(expected)
     advanced.mkdir(mode=0o700)
     database = pathlib.Path(expected['databasePath'])
@@ -172,16 +213,93 @@ def restore_pair(expected, directory, advanced):
         source = database.parent / name
         if source.exists(): os.rename(source, advanced / name)
     os.rename(expected['profile'], advanced / 'profile')
-    shutil.copy2(directory / 'state.sqlite', database)
+    for suffix in ('', '-wal', '-shm'):
+        source = directory / ('state.sqlite' + suffix)
+        if source.exists() and not clone_file(source, pathlib.Path(str(database) + suffix)):
+            shutil.copy2(source, pathlib.Path(str(database) + suffix))
     for name, exists in pair['settings'].items():
-        if exists: shutil.copy2(directory / name, database.parent / name)
-    shutil.copytree(directory / 'profile', expected['profile'], symlinks=True)
+        if exists and not clone_file(directory / name, database.parent / name): shutil.copy2(directory / name, database.parent / name)
+    clone_tree(directory / 'profile', pathlib.Path(expected['profile']), profile=True)
     sync_tree(expected['profile'])
     for restored in [database] + [database.parent / name for name, exists in pair['settings'].items() if exists]:
         descriptor = os.open(restored, os.O_RDONLY | os.O_NOFOLLOW)
         try: os.fsync(descriptor)
         finally: os.close(descriptor)
     durable(advanced / 'retained.json', {'protocol': PROTOCOL, 'previous': expected}, True)
+
+def sync_parent(path):
+    descriptor = os.open(pathlib.Path(path).parent, os.O_RDONLY)
+    try: os.fsync(descriptor)
+    finally: os.close(descriptor)
+
+def asar_metadata(archive):
+    descriptor = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024 * 1024:
+            raise RuntimeError('App metadata archive is not a bounded regular file.')
+        prefix = stream.read(16)
+        if len(prefix) != 16: raise RuntimeError('App metadata archive is truncated.')
+        size, header_size, _, json_size = struct.unpack('<IIII', prefix)
+        if size != 4 or header_size < 8 or header_size > 16 * 1024 * 1024 or json_size > header_size - 8 or 8 + header_size > info.st_size:
+            raise RuntimeError('App metadata archive header is invalid.')
+        entry = json.loads(stream.read(json_size))['files']['package.json']
+        offset, length = entry.get('offset'), entry.get('size')
+        if entry.get('unpacked') is True or 'link' in entry or not isinstance(offset, str) or not offset.isascii() or not offset.isdigit() or type(length) is not int or length < 1 or length > 1024 * 1024:
+            raise RuntimeError('App package metadata is not a bounded packed file.')
+        position = 8 + header_size + int(offset)
+        if position + length > info.st_size: raise RuntimeError('App package metadata exceeds its archive.')
+        stream.seek(position)
+        return json.loads(stream.read(length))
+
+def bundle_identity(active):
+    app = pathlib.Path(active['appPath'])
+    if app.is_symlink() or not app.is_dir() or any(part in ('AppTranslocation', 'Volumes', 'tmp', 'jones-updates') for part in app.parts):
+        raise RuntimeError('Move Jones Code to a stable writable Applications folder before updating.')
+    with open(app / 'Contents/Info.plist', 'rb') as stream: info = plistlib.load(stream)
+    executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
+    if info['CFBundleShortVersionString'] != active['version'] or str(executable) != active['executablePath'] or (active.get('bundleIdentifier') is not None and info['CFBundleIdentifier'] != active['bundleIdentifier']):
+        raise RuntimeError('Native bundle identity changed; launch held.')
+    metadata = asar_metadata(app / 'Contents/Resources/app.asar')
+    source = metadata.get('jonesSource', {})
+    if metadata.get('version') != active['version'] or source.get('repository') != 'Jones-Systems/Jones-Code' or source.get('sha') != active['sourceSha'] or source.get('tree') != active['sourceTree']:
+        raise RuntimeError('Native app source or version changed; launch held.')
+    if not os.access(app.parent, os.W_OK): raise RuntimeError('The stable app folder is not writable; native authorization is required.')
+    return info['CFBundleIdentifier']
+
+def prepare_bundle(expected, staged, transaction_id):
+    stable = pathlib.Path(expected['appPath'])
+    incoming = stable.with_name(stable.name + '.jones-incoming-' + transaction_id)
+    previous = stable.with_name(stable.name + '.jones-previous-' + expected['generation'])
+    if incoming.exists() or incoming.is_symlink() or previous.exists() or previous.is_symlink():
+        raise RuntimeError('An occupied bundle generation requires reconciliation; it was preserved.')
+    clone_tree(staged['appPath'], incoming)
+    if app_digest(incoming) != staged['appDigest']: raise RuntimeError('Staged app integrity changed during bundle preparation.')
+    sync_tree(incoming)
+    sync_parent(incoming)
+    return incoming, previous
+
+def swap_bundle(expected, incoming, previous):
+    stable = pathlib.Path(expected['appPath'])
+    os.rename(stable, previous)
+    sync_parent(stable)
+    try:
+        os.rename(incoming, stable)
+        sync_parent(stable)
+    except Exception:
+        if not stable.exists() and previous.exists():
+            os.rename(previous, stable)
+            sync_parent(stable)
+        raise
+
+def restore_bundle(expected, incoming, previous):
+    stable = pathlib.Path(expected['appPath'])
+    if not previous.exists(): return
+    if incoming.exists(): raise RuntimeError('Occupied trial bundle path; rollback held.')
+    os.rename(stable, incoming)
+    sync_parent(stable)
+    os.rename(previous, stable)
+    sync_parent(stable)
 
 def launch(active, descriptor=None):
     env = os.environ.copy()
@@ -229,15 +347,21 @@ def activate(intent_file):
     record('intent')
     candidate = None
     backend_process = None
+    incoming = previous = None
     startup_unknown = False
     try:
         record('preparing')
+        incoming, previous = prepare_bundle(expected, staged, intent['transactionId'])
+        record('preparing', incomingBundle=str(incoming), previousBundle=str(previous))
         preserve_restart_tunnel(expected, intent['transactionId'])
         stop_exact(intent['processes'])
         prove_quiescence(expected)
         record('quiescent')
         pair_state(expected, tx / 'previous-pair')
-        record('paired', pairedState=str(tx / 'previous-pair'))
+        record('paired', pairedState=str(tx / 'previous-pair'), recovery=read(tx / 'previous-pair' / 'pair.json')['recovery'])
+        record('swap-intent')
+        swap_bundle(expected, incoming, previous)
+        record('swapped')
         descriptor = {'protocol': PROTOCOL, 'startupGateProtocol': STARTUP_GATE_PROTOCOL, 'transactionId': intent['transactionId'],
                       'home': expected['home'], 'databasePath': expected['databasePath'],
                       'profile': expected['profile'], 'environmentId': expected['environmentId'],
@@ -246,7 +370,8 @@ def activate(intent_file):
                       'trialReceiptPath': str(tx / 'trial-receipt.json'), 'commitGrantPath': str(tx / 'commit-grant.json')}
         durable(tx / 'trial-descriptor.json', descriptor, True)
         next_active = dict(expected, generation=intent['transactionId'], transactionId=intent['transactionId'],
-                           **{key: staged[key] for key in ('appPath', 'executablePath', 'version', 'sourceSha', 'sourceTree', 'appDigest')})
+                           **{key: staged[key] for key in ('version', 'sourceSha', 'sourceTree', 'appDigest')},
+                           executablePath=str(pathlib.Path(expected['appPath']) / pathlib.Path(staged['executablePath']).relative_to(staged['appPath'])))
         record('trial')
         candidate = launch(next_active, tx / 'trial-descriptor.json')
         record('trial', candidateWriter=candidate)
@@ -279,7 +404,7 @@ def activate(intent_file):
         durable(tx / 'commit-grant.json', dict(generation=intent['transactionId'],
                     **{key: descriptor[key] for key in ('protocol', 'startupGateProtocol', 'transactionId', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')}), True)
         record('resumed')
-    except Exception:
+    except Exception as failure:
         active = read(manifest_path)
         if startup_unknown or (tx / 'resume-dispatched.json').exists() or journal['phase'] in ('committed', 'resume-intent', 'resumed') or active != expected or (journal['phase'] == 'trial' and candidate is None):
             record('blocked', message='Unknown activation, startup, or resume effect; binaries and advanced state retained.')
@@ -295,7 +420,7 @@ def activate(intent_file):
                     return
                 except Exception:
                     pass
-            record('blocked', message='Preparation did not prove a complete recovery pair; previous binary and state retained.')
+            record('blocked', message='Update preparation refused: ' + str(failure) + '; previous binary and state retained.')
             return
         try:
             record('rollback-intent')
@@ -306,8 +431,9 @@ def activate(intent_file):
             stop_exact(proofs)
             prove_quiescence(expected)
             restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state')
+            if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
             launch(expected)
-            record('rolled-back')
+            record('rolled-back', message='Update rolled back: ' + str(failure))
         except Exception:
             record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation.')
 
@@ -337,8 +463,7 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     active = read(manifest_path)
     if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':
         raise SystemExit('Native launcher bootstrap is required.')
-    if app_digest(active['appPath']) != active['appDigest']:
-        raise SystemExit('The active app does not match its validated install manifest.')
+    bundle_identity(active)
     if args.activate: activate(args.activate)
     elif args.launch:
         transactions = manifest_path.parent / 'jones-updates' / 'transactions'

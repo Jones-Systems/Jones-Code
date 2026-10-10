@@ -118,3 +118,19 @@ export function createJonesUpdateAtoms<R, E>(
   });
   return { value, action };
 }
+
+export function jonesUpdatePresentation(state: JonesUpdateState) {
+  const busy = ["checking", "downloading", "verifying", "preparing", "installing"].includes(
+    state.phase,
+  );
+  const message =
+    state.phase === "installing"
+      ? "Installing — server restarting. Waiting for the launcher outcome."
+      : (state.message ?? state.phase);
+  const outcome = state.outcome;
+  const outcomeMessage =
+    outcome === undefined
+      ? undefined
+      : `${outcome.status === "committed" ? "Installed" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcome.fromVersion} → ${outcome.targetVersion}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
+  return { busy, message, outcomeMessage };
+}

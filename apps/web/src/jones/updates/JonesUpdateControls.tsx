@@ -1,3 +1,4 @@
+import { jonesUpdatePresentation } from "@t3tools/client-runtime/jones/updates";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
@@ -18,15 +19,25 @@ export function JonesUpdateControls({ environmentId }: { readonly environmentId:
       setPending(false);
     }
   };
-  const busy =
-    pending ||
-    ["checking", "building", "downloading", "verifying", "preparing", "installing"].includes(
-      state.phase,
-    );
+  const presentation = jonesUpdatePresentation(state);
+  const busy = pending || presentation.busy;
   const provenance = state.provenance;
   return (
     <div className="mt-2 flex max-w-lg flex-col gap-2 text-xs">
-      <p className="text-muted-foreground">Jones main · {state.message ?? state.phase}</p>
+      <p className="text-muted-foreground">Jones main · {presentation.message}</p>
+      {state.updateId ? <p className="text-muted-foreground">Update {state.updateId}</p> : null}
+      {presentation.outcomeMessage ? <p role="status">{presentation.outcomeMessage}</p> : null}
+      {state.migrationPlan ? (
+        <p className="text-muted-foreground">
+          Pending migrations: {state.migrationPlan.pendingUpstream.length} upstream,{" "}
+          {state.migrationPlan.pendingJones.length} Jones
+        </p>
+      ) : null}
+      {state.recovery ? (
+        <p className="text-muted-foreground">
+          Recovery {state.recovery.method} · {(state.recovery.bytes / 1024 ** 3).toFixed(2)} GiB
+        </p>
+      ) : null}
       {provenance ? (
         <p className="text-muted-foreground">
           {provenance.version ?? provenance.sourceSha.slice(0, 8)}

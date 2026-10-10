@@ -2,6 +2,7 @@ import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/con
 
 import {
   getJonesDesktopUpdateBlockedMessage,
+  getJonesDesktopUpdateOutcomeMessage,
   getJonesDesktopUpdateRefusal,
 } from "../jones/updates/localDesktopUpdate";
 
@@ -108,7 +109,7 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     }
     return state.message ?? "Update failed";
   }
-  return "Up to date";
+  return getJonesDesktopUpdateOutcomeMessage(state) ?? "Up to date";
 }
 
 export function getDesktopUpdateInstallConfirmationMessage(

@@ -3,6 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
+import * as NodeEvents from "node:events";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import * as NetAddress from "effect/net/NetAddress";
 import { awaitJonesTrialCommit } from "./trialGate.ts";
@@ -17,11 +18,18 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     open: vi.fn(original.open),
   };
 });
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof NodeFS>();
+  return { ...original, watch: vi.fn(original.watch) };
+});
 afterEach(async () => {
   const original = await vi.importActual<typeof NodeFSP>("node:fs/promises");
   vi.mocked(NodeFSP.readFile).mockReset().mockImplementation(original.readFile);
   vi.mocked(NodeFSP.link).mockReset().mockImplementation(original.link);
   vi.mocked(NodeFSP.open).mockReset().mockImplementation(original.open);
+  const originalFs = await vi.importActual<typeof NodeFS>("node:fs");
+  vi.mocked(NodeFS.watch).mockReset().mockImplementation(originalFs.watch);
+  vi.useRealTimers();
 });
 
 const listener = NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 4888);
@@ -32,7 +40,7 @@ async function fixture<A>(body: (root: string) => Promise<A>): Promise<A> {
     await NodeFSP.mkdir(NodePath.join(root, "userdata"));
     await NodeFSP.mkdir(NodePath.join(root, "profile"));
     await NodeFSP.writeFile(NodePath.join(root, "userdata/statev2.sqlite"), "state");
-    return await body(root);
+    return await body(await NodeFSP.realpath(root));
   } finally {
     await NodeFSP.rm(root, { recursive: true, force: true });
     await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
@@ -42,6 +50,7 @@ async function watchFile(file: string, signal: AbortSignal) {
   const watcher = NodeFS.watch(NodePath.dirname(file));
   let rejectWait: ((cause: Error) => void) | undefined;
   const aborted = () => rejectWait?.(new Error("Synthetic receipt observation cancelled."));
+  let recheck: ReturnType<typeof setInterval> | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
       rejectWait = reject;
@@ -55,11 +64,13 @@ async function watchFile(file: string, signal: AbortSignal) {
       };
       watcher.on("change", inspect);
       watcher.on("error", reject);
+      recheck = setInterval(inspect, 250);
       signal.addEventListener("abort", aborted, { once: true });
       if (signal.aborted) aborted();
       else inspect();
     });
   } finally {
+    clearInterval(recheck);
     signal.removeEventListener("abort", aborted);
     watcher.close();
   }
@@ -338,6 +349,74 @@ function latch() {
   });
   return { promise, resolve };
 }
+
+it.each(["valid", "mismatched"] as const)(
+  "rechecks a %s grant after an initial miss when every filesystem event is dropped",
+  async (mode) =>
+    fixture(async (root) => {
+      const input = await trial(root);
+      const original = await vi.importActual<typeof NodeFSP>("node:fs/promises");
+      const entered = latch();
+      const release = latch();
+      let inspections = 0;
+      let closed = false;
+      const watcher = Object.assign(new NodeEvents.EventEmitter(), {
+        close: () => {
+          closed = true;
+        },
+      });
+      vi.mocked(NodeFS.watch).mockImplementation(() => watcher as NodeFS.FSWatcher);
+      vi.mocked(NodeFSP.readFile).mockImplementation((async (
+        ...args: Parameters<typeof NodeFSP.readFile>
+      ) => {
+        if (args[0] === input.commitGrantPath && ++inspections === 1) {
+          entered.resolve();
+          await release.promise;
+          throw Object.assign(new Error("Synthetic initial grant miss"), { code: "ENOENT" });
+        }
+        return original.readFile(...args);
+      }) as typeof NodeFSP.readFile);
+      const controller = new AbortController();
+      const gate = awaitJonesTrialCommit({ ...input, signal: controller.signal });
+      const outcome = gate.then(
+        () => ({ status: "committed" as const }),
+        (cause: unknown) => ({ status: "rejected" as const, cause }),
+      );
+      try {
+        await Promise.race([entered.promise, gate]);
+        vi.useFakeTimers();
+        await publishGrant(input.commitGrantPath, {
+          ...input,
+          generation: mode === "valid" ? input.transactionId : "different",
+        });
+        release.resolve();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(inspections).toBeGreaterThan(1);
+        const result = await outcome;
+        if (mode === "valid") {
+          expect(result.status).toBe("committed");
+          expect(
+            JSON.parse(
+              await original.readFile(NodePath.join(root, "resume-dispatched.json"), "utf8"),
+            ),
+          ).toMatchObject({ resumeHeld: true, transactionId: input.transactionId });
+        } else {
+          expect(result).toMatchObject({
+            status: "rejected",
+            cause: { step: "grant", uncertain: false },
+          });
+          await noReservation(root);
+        }
+        expect(closed).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        release.resolve();
+        controller.abort();
+        await outcome;
+        vi.useRealTimers();
+      }
+    }),
+);
 
 async function publishGrant(path: string, value: unknown) {
   const pending = `${path}.unpublished`;

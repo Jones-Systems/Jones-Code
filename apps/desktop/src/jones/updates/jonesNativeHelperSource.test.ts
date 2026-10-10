@@ -39,7 +39,7 @@ for app in (previous_app, candidate_app):
     (app / 'Contents' / 'Resources').mkdir(parents=True)
     (app / 'Contents' / 'MacOS').mkdir()
     (app / 'Contents' / 'Resources' / 'app.asar').write_text('synthetic-asar')
-    (app / 'Contents' / 'MacOS' / 'Jones').write_text('synthetic-executable')
+    (app / 'Contents' / 'MacOS' / 'Jones').write_text('previous-executable' if app == previous_app else 'candidate-executable')
 expected = {'protocol': 1, 'owner': 'desktop', 'generation': 'previous', 'transactionId': 'bootstrap',
     'home': str(root), 'databasePath': str(database), 'profile': str(profile), 'environmentId': 'same-environment',
     'appPath': str(previous_app), 'executablePath': str(previous_app / 'Contents/MacOS/Jones'),
@@ -70,6 +70,14 @@ intent = {'protocol': 1, 'transactionId': staged['handle'], 'expected': expected
     'listener': 'http://127.0.0.1:3777'}
 durable(tx / 'intent.json', intent, True)
 events = []
+if fault in ('bundle-denied', 'bundle-second-rename-denied'):
+    native_rename = os.rename
+    def denied_rename(source, target):
+        source = pathlib.Path(source)
+        if (fault == 'bundle-denied' and source == previous_app) or (fault == 'bundle-second-rename-denied' and '.jones-incoming-' in source.name):
+            raise PermissionError('App Management denied bundle replacement')
+        return native_rename(source, target)
+    os.rename = denied_rename
 native_stop = lambda proofs: events.append('stop:' + str(len(proofs)))
 def synthetic_stop(proofs):
     native_stop(proofs)
@@ -166,6 +174,9 @@ else:
         assert descriptor['startupGateProtocol'] == 1
         assert grant == dict(generation=descriptor['transactionId'], **{key: descriptor[key] for key in fields})
         assert read(manifest_path)['sourceSha'] == staged['sourceSha']
+        assert read(manifest_path)['appPath'] == expected['appPath']
+        assert pathlib.Path(read(manifest_path)['executablePath']).read_text() == 'candidate-executable'
+        assert pathlib.Path(journal['previousBundle']).joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
     if fault.startswith('missing-') or fault in ('legacy-receipt', 'gate-mismatch', 'gate-boolean', 'protocol-mismatch', 'tree-mismatch', 'version-mismatch', 'listener-mismatch', 'invalid-backend', 'dead-backend', 'changed-backend'):
         assert read(manifest_path) == expected
         assert not (tx / 'commit-grant.json').exists()
@@ -181,9 +192,10 @@ else:
         assert state == 'previous-state'
         assert (home / 'settings.json').read_text() == 'previous-settings'
         assert (profile / 'opaque').read_text() == 'same-host-profile'
+        assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
         if fault != 'snapshot-failed':
             with sqlite3.connect(tx / 'advanced-state' / 'state.sqlite') as db:
-                assert db.execute('SELECT value FROM identity').fetchone()[0] == 'advanced-state'
+                assert db.execute('SELECT value FROM identity').fetchone()[0] == ('previous-state' if fault.startswith('bundle-') else 'advanced-state')
         else:
             assert 'candidate-launch' not in events
     if journal['phase'] == 'blocked' and 'candidate-launch' in events:
@@ -229,6 +241,8 @@ describe("Jones native helper", () => {
   it.each([
     ["success", "resumed"],
     ["trial-mismatch", "rolled-back"],
+    ["bundle-denied", "rolled-back"],
+    ["bundle-second-rename-denied", "rolled-back"],
     ["legacy-receipt", "blocked"],
     ["gate-mismatch", "blocked"],
     ["gate-boolean", "blocked"],
@@ -287,6 +301,114 @@ describe("Jones native helper", () => {
       }
     },
   );
+  it("pairs and restores without scanning database or profile contents", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+home, profile = root / 'userdata', root / 'profile'
+home.mkdir(); profile.mkdir()
+database = home / 'state.sqlite'
+with sqlite3.connect(database) as db:
+    db.execute('CREATE TABLE identity (value TEXT)')
+    db.execute("INSERT INTO identity VALUES ('previous')")
+(profile / 'opaque').write_text('profile')
+expected = {'databasePath': str(database), 'profile': str(profile)}
+def forbidden(*args): raise RuntimeError('Exhaustive content scan is forbidden')
+digest = forbidden
+app_digest = forbidden
+pair_state(expected, root / 'pair')
+assert read(root / 'pair' / 'pair.json')['recovery']['method'] in ('clone', 'sqlite-backup')
+prove_quiescence = lambda active: None
+restore_pair(expected, root / 'pair', root / 'advanced')
+with sqlite3.connect(database) as db:
+    assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous'
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("checks exact native files, ignores readers, and refuses writers or incomplete access", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+expected = {'databasePath': '/synthetic/state.sqlite', 'profile': '/synthetic/profile'}
+pathlib.Path.exists = lambda path: True
+calls = []
+def inspect(output, code=0, error=''):
+    def run(command, **kwargs):
+        calls.append(command)
+        return type('Result', (), {'returncode': code, 'stdout': output, 'stderr': error})()
+    subprocess.run = run
+    prove_quiescence(expected)
+inspect('p12\nf3\nar\n')
+assert '+D' not in calls[0]
+assert '/synthetic/state.sqlite' in calls[0]
+assert '/synthetic/state.sqlite-wal' in calls[0]
+assert '/synthetic/state.sqlite-shm' in calls[0]
+for output in ('p12\nf3\naw\n', 'p12\nf3\nau\n', 'p12\nf3\n', 'unparsed'):
+    try: inspect(output)
+    except RuntimeError: pass
+    else: raise AssertionError('A writer or unknown access was accepted')
+inspect('', 1)
+`;
+    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it("checks normal native launch identity from bounded plist and ASAR metadata", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+app = root / 'Jones.app'
+(app / 'Contents/MacOS').mkdir(parents=True)
+(app / 'Contents/Resources').mkdir()
+active = {'appPath': str(app), 'executablePath': str(app / 'Contents/MacOS/Jones'),
+    'version': 'preview-version', 'bundleIdentifier': 'com.jones.code', 'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40}
+with open(app / 'Contents/Info.plist', 'wb') as stream:
+    plistlib.dump({'CFBundleIdentifier': active['bundleIdentifier'], 'CFBundleExecutable': 'Jones',
+        'CFBundleShortVersionString': active['version']}, stream)
+metadata = {'version': active['version'], 'jonesSource': {'repository': 'Jones-Systems/Jones-Code',
+    'sha': active['sourceSha'], 'tree': active['sourceTree']}}
+payload = json.dumps(metadata).encode()
+header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(payload)}}}).encode()
+(app / 'Contents/Resources/app.asar').write_bytes(struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + payload)
+def forbidden(*args): raise RuntimeError('Normal launches must not hash the bundle')
+app_digest = forbidden
+digest = forbidden
+assert bundle_identity(active) == 'com.jones.code'
+for key, bad in (('sourceSha', 'c' * 40), ('sourceTree', 'd' * 40), ('version', 'wrong-version'), ('bundleIdentifier', 'wrong.bundle')):
+    try: bundle_identity(dict(active, **{key: bad}))
+    except RuntimeError: pass
+    else: raise AssertionError('A changed bundle identity was accepted')
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("has valid standalone Python syntax", () => {
     expect(
       NodeChildProcess.execFileSync(

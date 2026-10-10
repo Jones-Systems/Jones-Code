@@ -15,6 +15,7 @@ import type {
   QualifiedTrialReceipt,
   QualifiedTrialRuntimeWitness,
 } from "../jones/cloud/qualifiedStartup.ts";
+import { decodeQualifiedTrialGrant } from "../jones/cloud/qualifiedStartup.ts";
 
 import {
   LEGACY_SERVICE_LAUNCHER_PROTOCOL,
@@ -403,6 +404,61 @@ function qualifiedFixture(protocol: 3 | 4 = 4, startupGateProtocol?: 1) {
     );
   return { host, context, pending, receipt, events, operations, witness, make };
 }
+
+// Frozen parent decoder from PR239 d3e6f8e843a0477542380a4ec0d9ae02a1084053.
+// Its grant validator remains shared and unchanged; retain this body to prove additive wire compatibility.
+function decodePr239ParentMessage(value: unknown): ServiceLauncherParentMessage | undefined {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  if (!isRecord(value)) return undefined;
+  if (value.type === "update-rejected" && typeof value.reason === "string") {
+    return { type: value.type, reason: value.reason };
+  }
+  if (value.type === "update-accepted" && typeof value.updateId === "string") {
+    return { type: value.type, updateId: value.updateId };
+  }
+  if (value.type !== "committed" || typeof value.updateId !== "string") return undefined;
+  if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
+    const qualified = decodeQualifiedTrialGrant(value.qualified);
+    if (
+      value.startupGateProtocol !== 1 ||
+      qualified === undefined ||
+      qualified.updateId !== value.updateId
+    )
+      return undefined;
+    return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
+  }
+  return { type: value.type, updateId: value.updateId };
+}
+
+it("retains PR239 staged-handle requests and accepts additive migration plans in its parent decoder", () => {
+  const fixture = qualifiedFixture(4, 1);
+  const request = {
+    type: "request-update" as const,
+    targetVersion: fixture.pending.targetVersion,
+    dbPath: fixture.receipt.databasePath,
+    stagedHandle: fixture.receipt.stagedHandle,
+  };
+  expect(decodeServiceLauncherChildMessage(request)).toEqual(request);
+  const migrationPlan = { pendingUpstream: [103], pendingJones: [105] };
+  expect(
+    decodePr239ParentMessage({
+      type: "update-accepted",
+      updateId: fixture.pending.id,
+      migrationPlan,
+    }),
+  ).toEqual({ type: "update-accepted", updateId: fixture.pending.id });
+  const committed = {
+    type: "committed" as const,
+    updateId: fixture.pending.id,
+    startupGateProtocol: 1 as const,
+    qualified: { ...fixture.receipt, generation: fixture.pending.id },
+  };
+  expect(decodePr239ParentMessage({ ...committed, migrationPlan })).toEqual(committed);
+  expect(
+    decodePr239ParentMessage({ ...committed, migrationPlan, startupGateProtocol: 2 }),
+  ).toBeUndefined();
+});
 
 it.effect("establishes the qualified outcome only after exact grant and durable reservation", () =>
   Effect.gen(function* () {

@@ -235,6 +235,9 @@ async function fixture(bootstrap = true, terminal?: "committed" | "rolled-back")
   const controller = new JonesDesktopUpdateController(options);
   return {
     home,
+    app,
+    active,
+    options,
     profile,
     databasePath,
     controller,
@@ -245,6 +248,71 @@ async function fixture(bootstrap = true, terminal?: "committed" | "rolled-back")
 }
 
 describe("Jones desktop updates", () => {
+  it("adopts a source-qualified stable bundle without a helper generation or full-app scan", async () => {
+    const f = await fixture(false);
+    try {
+      const contents = NodePath.join(f.app, "Contents");
+      const executable = NodePath.join(contents, "MacOS", "Jones");
+      await NodeFSP.mkdir(NodePath.dirname(executable), { recursive: true });
+      await NodeFSP.rename(f.active.executablePath, executable);
+      await NodeFSP.writeFile(
+        NodePath.join(contents, "Info.plist"),
+        `<?xml version="1.0"?><plist version="1.0"><dict>
+        <key>CFBundleExecutable</key><string>Jones</string>
+        <key>CFBundleIdentifier</key><string>com.jones.code</string>
+        <key>CFBundleShortVersionString</key><string>${f.active.version}</string>
+      </dict></plist>`,
+      );
+      await NodeFSP.rename(f.databasePath, NodePath.join(f.home, "userdata", "statev2.sqlite"));
+      await NodeFSP.writeFile(
+        NodePath.join(f.home, "userdata", "environment-id"),
+        "native-environment\n",
+      );
+      await NodeFSP.unlink(NodePath.join(f.home, "runtime", "jones-active-install.json"));
+      // An escaping payload link would fail a complete app hash. Configure reads only bound metadata.
+      await NodeFSP.symlink(f.home, NodePath.join(f.app, "opaque-link"));
+      const controller = new JonesDesktopUpdateController({
+        ...f.options,
+        executablePath: executable,
+      });
+      await controller.configure();
+      expect(controller.state.jones?.capability.install).toBe(true);
+      const active = JSON.parse(
+        await NodeFSP.readFile(
+          NodePath.join(f.home, "runtime", "jones-active-install.json"),
+          "utf8",
+        ),
+      );
+      expect(active.bundleIdentifier).toBe("com.jones.code");
+      expect(active.sourceSha).toBe(candidate.installedSource);
+      expect(active.databasePath).toBe(NodePath.join(f.home, "userdata", "statev2.sqlite"));
+      const restarted = new JonesDesktopUpdateController({
+        ...f.options,
+        executablePath: executable,
+      });
+      await restarted.configure();
+      expect(restarted.state.jones?.capability.install).toBe(true);
+      expect(await NodeFSP.readFile(active.databasePath, "utf8")).toBe("live-state");
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("preserves an occupied manifest that does not bind the current source", async () => {
+    const f = await fixture(false);
+    try {
+      const file = NodePath.join(f.home, "runtime", "jones-active-install.json");
+      const occupied = JSON.stringify({ ...f.active, sourceSha: "0".repeat(40) });
+      await NodeFSP.writeFile(file, occupied);
+      await f.controller.configure();
+      expect(f.controller.state.jones?.capability.install).toBe(false);
+      expect(f.controller.state.jones?.phase).toBe("blocked");
+      expect(await NodeFSP.readFile(file, "utf8")).toBe(occupied);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("retains a markerless candidate without preparing or launching native activation", async () => {
     const f = await fixture();
     try {
@@ -351,7 +419,7 @@ describe("Jones desktop updates", () => {
     }
   });
   it.each(["committed", "rolled-back"] as const)(
-    "reads %s after restart only with a valid native launcher binding",
+    "reads %s after ordinary stable-path relaunch without a helper generation",
     async (terminal) => {
       const f = await fixture(true, terminal);
       try {
@@ -364,8 +432,8 @@ describe("Jones desktop updates", () => {
       const unqualified = await fixture(false, terminal);
       try {
         await unqualified.controller.configure();
-        expect(unqualified.controller.state.jones?.phase).not.toBe(terminal);
-        expect(unqualified.controller.state.jones?.capability.install).toBe(false);
+        expect(unqualified.controller.state.jones?.phase).toBe(terminal);
+        expect(unqualified.controller.state.jones?.capability.install).toBe(true);
       } finally {
         await unqualified.cleanup();
       }
@@ -395,15 +463,14 @@ describe("Jones desktop updates", () => {
     }
   });
 
-  it("allows qualified checks and staging while a hardcoded launcher requires bootstrap for Install", async () => {
+  it("allows stable-path checks and staging after a normal launch", async () => {
     const f = await fixture(false);
     try {
       await f.controller.configure();
       expect(f.controller.state.jones?.capability).toEqual({
         check: true,
         download: true,
-        install: false,
-        reason: "bootstrap-required",
+        install: true,
       });
       await f.controller.check();
       await f.controller.download();

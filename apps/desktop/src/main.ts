@@ -104,9 +104,8 @@ const layerDesktopEnvironment = Layer.unwrap(
   }),
 );
 
-// The remote runs the exact release this app is on, from its self-contained
-// archive, so it needs neither Node nor npm. Development points the remote at
-// a source checkout instead so the two sides can be iterated together.
+// Jones attaches to the host owner's active runtime; desktop and server
+// artifacts upgrade independently. Development keeps its explicit checkout.
 const resolveDesktopSshCliRunner = (
   environment: DesktopEnvironment.DesktopEnvironment["Service"],
 ): RemoteT3RunnerOptions => {
@@ -117,7 +116,9 @@ const resolveDesktopSshCliRunner = (
       nodeEngineRange: serverPackageJson.engines.node,
     };
   }
-  return { archiveVersion: environment.appVersion };
+  return environment.branding.baseName === "Jones Code"
+    ? { hostManagedRuntime: true }
+    : { archiveVersion: environment.appVersion };
 };
 
 const layerDesktopSshEnvironment = Layer.unwrap(

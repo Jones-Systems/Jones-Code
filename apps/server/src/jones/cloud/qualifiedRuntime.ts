@@ -42,7 +42,8 @@ export interface QualifiedRuntimeArtifact {
   readonly artifactId: number;
   readonly workflow:
     | ".github/workflows/artifact-cli-linux.yml"
-    | ".github/workflows/artifact-desktop-mac.yml";
+    | ".github/workflows/artifact-desktop-mac.yml"
+    | ".github/workflows/artifact-cli-mac.yml";
   readonly artifactDigest: string;
   readonly archiveSha256: string;
   readonly platform: "linux" | "darwin";
@@ -139,7 +140,10 @@ function decodeQualifiedRuntimeReceipt(value: unknown): QualifiedRuntimeReceipt 
     (r.platform === "darwin" && r.architecture !== "arm64") ||
     (r.platform === "linux"
       ? r.workflow !== ".github/workflows/artifact-cli-linux.yml"
-      : r.workflow !== ".github/workflows/artifact-desktop-mac.yml") ||
+      : ![
+          ".github/workflows/artifact-desktop-mac.yml",
+          ".github/workflows/artifact-cli-mac.yml",
+        ].includes(String(r.workflow))) ||
     typeof r.version !== "string" ||
     !VERSION.test(r.version)
   )
@@ -274,10 +278,11 @@ async function durableCreate(file: string, value: unknown): Promise<void> {
   }
 }
 
-/** Hash every file and contained symlink; reject devices, links escaping the tree and unexpected roots. */
+/** Hash payload files and contained symlinks; auxiliary receipts never select runtime identity. */
 export async function qualifiedPayloadDigest(
   directory: string,
   platform: "linux" | "darwin" = "linux",
+  workflow?: QualifiedRuntimeArtifact["workflow"],
 ): Promise<string> {
   const fs = bundleFileSystem().promises;
   const root = await fs.realpath(directory);
@@ -323,10 +328,15 @@ export async function qualifiedPayloadDigest(
   };
   const roots = (await fs.readdir(root)).sort();
   for (const name of roots) {
-    if (name === QUALIFIED_RUNTIME_RECEIPT || name === ".install-complete") continue;
+    if (
+      name === QUALIFIED_RUNTIME_RECEIPT ||
+      name === ".install-complete" ||
+      name === ".jones-provenance.json"
+    )
+      continue;
     if (
       !(
-        platform === "darwin"
+        platform === "darwin" && workflow !== ".github/workflows/artifact-cli-mac.yml"
           ? ["t3", "Jones Code.app"]
           : ["t3", "client", "node_modules", "resource-monitor"]
       ).includes(name)
@@ -366,8 +376,11 @@ export async function readQualifiedRuntimeReceipt(
   if (receipt.platform !== host.platform || receipt.architecture !== host.architecture)
     return blocked("invalid-artifact", "Runtime receipt does not match this host platform.");
   if (
-    (await qualifiedPayloadDigest(runtimeDirectory(baseDir, version), receipt.platform)) !==
-    receipt.payloadSha256
+    (await qualifiedPayloadDigest(
+      runtimeDirectory(baseDir, version),
+      receipt.platform,
+      receipt.workflow,
+    )) !== receipt.payloadSha256
   )
     return blocked("integrity-mismatch", "Qualified runtime payload changed.");
   return receipt;
@@ -424,7 +437,11 @@ export async function stageQualifiedRuntime(input: {
     if (JSON.stringify(current) !== JSON.stringify(input.binding))
       return blocked("binding-mismatch", "The selected native environment changed before staging.");
     const { payloadDirectory, ...candidate } = input.artifact;
-    const digest = await qualifiedPayloadDigest(payloadDirectory, candidate.platform);
+    const digest = await qualifiedPayloadDigest(
+      payloadDirectory,
+      candidate.platform,
+      candidate.workflow,
+    );
     const host = input.host ?? { platform: process.platform, architecture: process.arch };
     const receipt = decodeQualifiedRuntimeReceipt({
       ...candidate,
@@ -481,7 +498,7 @@ export async function stageQualifiedRuntime(input: {
           errorOnExist: true,
           force: false,
         });
-        if ((await qualifiedPayloadDigest(scratch, receipt.platform)) !== digest)
+        if ((await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow)) !== digest)
           return blocked("integrity-mismatch", "Runtime payload changed during staging.");
         await input.validate(NodePath.join(scratch, "t3"));
         await durableCreate(NodePath.join(scratch, QUALIFIED_RUNTIME_RECEIPT), receipt);
@@ -527,4 +544,99 @@ export async function verifyStagedQualifiedRuntime(
   if (JSON.stringify(receipt) !== JSON.stringify(staged.receipt))
     return blocked("integrity-mismatch", "Staged receipt does not match the qualified runtime.");
   return staged;
+}
+
+/** Enrolls an independently verified bootstrap payload; never replaces an occupied runtime. */
+export async function enrollQualifiedRuntime(input: {
+  readonly artifact: QualifiedRuntimeArtifact;
+  readonly baseDir: string;
+  readonly host: { readonly platform: string; readonly architecture: string };
+  readonly validate: (entryPath: string) => Promise<void>;
+}): Promise<QualifiedRuntimeReceipt> {
+  const { payloadDirectory, ...artifact } = input.artifact;
+  const digest = await qualifiedPayloadDigest(
+    payloadDirectory,
+    artifact.platform,
+    artifact.workflow,
+  );
+  const receipt = decodeQualifiedRuntimeReceipt({
+    ...artifact,
+    protocol: 1,
+    payloadSha256: digest,
+  });
+  if (
+    receipt === undefined ||
+    receipt.platform !== input.host.platform ||
+    receipt.architecture !== input.host.architecture
+  )
+    return blocked("invalid-artifact", "Bootstrap artifact does not match this host.");
+  const destination = runtimeDirectory(input.baseDir, receipt.version);
+  const existing = await NodeFSP.lstat(destination).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  });
+  if (existing !== undefined) {
+    if (
+      !existing.isDirectory() ||
+      existing.isSymbolicLink() ||
+      (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow)) !== digest
+    )
+      return blocked(
+        "occupied-cache",
+        "Existing runtime differs from the verified artifact; it was preserved.",
+      );
+    const current = await NodeFSP.lstat(
+      NodePath.join(destination, QUALIFIED_RUNTIME_RECEIPT),
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return undefined;
+    });
+    if (current !== undefined) {
+      const observed = await readQualifiedRuntimeReceipt(
+        input.baseDir,
+        receipt.version,
+        input.host,
+      );
+      const keys = Object.keys(receipt) as Array<keyof QualifiedRuntimeReceipt>;
+      if (keys.some((key) => key !== "installedSourceSha" && observed[key] !== receipt[key]))
+        return blocked("occupied-cache", "Existing qualified receipt differs; it was preserved.");
+      await input.validate(NodePath.join(destination, "t3"));
+      return observed;
+    }
+    const marker = await NodeFSP.readFile(NodePath.join(destination, ".install-complete"), "utf8");
+    if (marker.trim() !== receipt.version)
+      return blocked("occupied-cache", "Existing runtime is incomplete; it was preserved.");
+    await input.validate(NodePath.join(destination, "t3"));
+    await durableCreate(NodePath.join(destination, QUALIFIED_RUNTIME_RECEIPT), receipt);
+    return receipt;
+  }
+  await NodeFSP.mkdir(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
+  const owner = await NodeFSP.mkdtemp(
+    NodePath.join(NodePath.dirname(destination), ".jones-adopt-"),
+  );
+  const scratch = NodePath.join(owner, "payload");
+  try {
+    await bundleFileSystem().promises.cp(payloadDirectory, scratch, {
+      recursive: true,
+      dereference: false,
+      verbatimSymlinks: true,
+      errorOnExist: true,
+      force: false,
+    });
+    if ((await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow)) !== digest)
+      return blocked("integrity-mismatch", "Bootstrap payload changed while copied.");
+    await input.validate(NodePath.join(scratch, "t3"));
+    await durableCreate(NodePath.join(scratch, QUALIFIED_RUNTIME_RECEIPT), receipt);
+    await durableCreate(NodePath.join(scratch, ".install-complete"), receipt.version);
+    await NodeFSP.rename(scratch, destination);
+    const directory = await NodeFSP.open(NodePath.dirname(destination), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } finally {
+    await NodeFSP.rm(owner, { recursive: true, force: true });
+  }
+  return receipt;
 }

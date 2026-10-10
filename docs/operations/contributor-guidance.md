@@ -118,6 +118,14 @@ those objects without knowing about Jones.
   new data-preserving Jones migration. Removing upstream residue that released
   migrations left behind, such as `runtime_identity_json` on the V1 thread
   session projection, needs a separately authorized operation.
+- **Update checks.** Trust upstream migrations through the normal T3 startup
+  and recovery process. Before stopping the active server, the staged candidate
+  reads the migration ledgers without writing them and reports pending IDs;
+  a candidate older than the database is blocked. Add targeted checks inside
+  Jones migrations for their declared effects and interactions, such as row
+  counts around a Jones table rebuild and removal of upstream references.
+  A failed check aborts the migration transaction. Routine updates do not need
+  full database scans, content hashing or a separate migration rehearsal.
 
 [`UpstreamIsolation.test.ts`](../../apps/server/src/jones/persistence/UpstreamIsolation.test.ts)
 checks the schema rules against the complete Jones manifest. Some earlier

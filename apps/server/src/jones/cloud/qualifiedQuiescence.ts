@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
-// @effect-diagnostics globalTimers:off
 // Native observation at the detached launcher boundary. This proves ordinary
-// same-user writers; privileged/system actors remain outside the service model.
+// same-user exact-file writers; privileged/system actors remain outside the
+// service model. Process names are not evidence that a state inode is idle.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -70,47 +70,45 @@ const deviceText = (dev: bigint) => {
 export function linuxQualifiedQuiescenceAdapter(
   options: {
     readonly procRoot?: string;
+    /** Retained for caller compatibility; unrelated process count never gates an update. */
     readonly maximumProcesses?: number;
+    /** Retained for caller compatibility; unrelated descriptors never gate an update. */
     readonly maximumDescriptors?: number;
+    /** Retained for caller compatibility; elapsed whole-host time never gates an update. */
     readonly now?: () => number;
+    readonly processNames?: () => Promise<readonly string[]>;
   } = {},
 ): QualifiedQuiescenceAdapter {
   const procRoot = options.procRoot ?? "/proc";
-  const now = options.now ?? Date.now;
+  const processNames = options.processNames ?? (() => NodeFSP.readdir(procRoot));
   return {
     async scan(input) {
-      const started = now();
-      let descriptors = 0;
-      const bound = () => {
-        if (now() - started > 5_000 || descriptors > (options.maximumDescriptors ?? 100_000))
-          throw new QualifiedQuiescenceError("proof-limit");
-      };
-      const names = (await NodeFSP.readdir(procRoot)).filter((name) => /^\d+$/.test(name));
-      if (names.length > (options.maximumProcesses ?? 4_096))
-        throw new QualifiedQuiescenceError("proof-limit");
       const writers: { pid: number; path: string }[] = [];
-      for (const name of names) {
-        bound();
-        const directory = NodePath.join(procRoot, name);
-        const pid = Number(name);
-        try {
-          // /proc directory ownership gates observation without privileged reads.
-          if ((await NodeFSP.stat(directory)).uid !== input.uid) continue;
-          const status = await boundedRead(NodePath.join(directory, "status"), 64 * 1024);
-          const effectiveUid = /^Uid:\s+\d+\s+(\d+)/m.exec(status)?.[1];
-          if (effectiveUid === undefined) throw unavailable();
-          if (Number(effectiveUid) !== input.uid) continue;
-          const birth = processBirth(
-            await boundedRead(NodePath.join(directory, "stat"), 16 * 1024),
-          );
-          if (!input.allowedProcessIds.includes(pid)) {
+      const observed = new Set<string>();
+      // A second discovery checks new processes for exact-inode writers without
+      // holding an update merely because unrelated processes appeared.
+      for (let discovery = 0; discovery < 2; discovery++) {
+        const names = (await processNames()).filter((name) => /^\d+$/.test(name));
+        for (const name of names) {
+          if (observed.has(name)) continue;
+          observed.add(name);
+          const directory = NodePath.join(procRoot, name);
+          const pid = Number(name);
+          try {
+            if ((await NodeFSP.stat(directory)).uid !== input.uid) continue;
+            if (input.allowedProcessIds.includes(pid)) continue;
+            const status = await boundedRead(NodePath.join(directory, "status"), 64 * 1024);
+            const effectiveUid = /^Uid:\s+\d+\s+(\d+)/m.exec(status)?.[1];
+            if (effectiveUid === undefined) throw unavailable();
+            if (Number(effectiveUid) !== input.uid) continue;
+            const birth = processBirth(
+              await boundedRead(NodePath.join(directory, "stat"), 16 * 1024),
+            );
             const fds = (await NodeFSP.readdir(NodePath.join(directory, "fd"))).filter((fd) =>
               /^\d+$/.test(fd),
             );
-            descriptors += fds.length;
-            bound();
+            let selectedInodeObserved = false;
             for (const fd of fds) {
-              bound();
               try {
                 const stat = await NodeFSP.stat(NodePath.join(directory, "fd", fd), {
                   bigint: true,
@@ -119,14 +117,15 @@ export function linuxQualifiedQuiescenceAdapter(
                   (file) => file.device === stat.dev && file.inode === stat.ino,
                 );
                 if (target === undefined) continue;
+                selectedInodeObserved = true;
                 const info = await boundedRead(NodePath.join(directory, "fdinfo", fd), 8 * 1024);
                 const flags = /^flags:\s+([0-7]+)$/m.exec(info)?.[1];
                 if (flags === undefined) throw unavailable();
                 if ((Number.parseInt(flags, 8) & 3) !== 0) writers.push({ pid, path: target.path });
               } catch (cause) {
                 if (!isGone(cause)) throw cause;
-                // A closed descriptor is harmless; an existing descriptor with
-                // unavailable access flags leaves the writer proof incomplete.
+                // A closed descriptor is harmless; an existing scoped descriptor
+                // with unavailable access flags leaves the writer proof incomplete.
                 if (
                   await NodeFSP.stat(NodePath.join(directory, "fd", fd)).then(
                     () => true,
@@ -156,16 +155,19 @@ export function linuxQualifiedQuiescenceAdapter(
                     .map((part) => BigInt(`0x${part}`).toString(16))
                     .join(":") === deviceText(file.device),
               );
-              if (target !== undefined) writers.push({ pid, path: target.path });
+              if (target !== undefined) {
+                selectedInodeObserved = true;
+                writers.push({ pid, path: target.path });
+              }
             }
-          }
-          if (
-            processBirth(await boundedRead(NodePath.join(directory, "stat"), 16 * 1024)) !== birth
-          )
-            throw unavailable();
-        } catch (cause) {
-          if (isGone(cause)) {
-            // Ignore a vanished process only when the process directory vanished too.
+            if (
+              selectedInodeObserved &&
+              processBirth(await boundedRead(NodePath.join(directory, "stat"), 16 * 1024)) !== birth
+            )
+              throw unavailable();
+          } catch (cause) {
+            if (!isGone(cause)) throw cause;
+            // Missing evidence is harmless only when the observed process vanished.
             if (
               await NodeFSP.stat(directory).then(
                 () => true,
@@ -176,24 +178,9 @@ export function linuxQualifiedQuiescenceAdapter(
               )
             )
               throw unavailable();
-          } else throw cause;
+          }
         }
       }
-      // A same-user process born during this bounded scan has not been observed.
-      const finalNames = (await NodeFSP.readdir(procRoot)).filter((name) => /^\d+$/.test(name));
-      if (finalNames.length > (options.maximumProcesses ?? 4_096))
-        throw new QualifiedQuiescenceError("proof-limit");
-      for (const name of finalNames) {
-        bound();
-        if (names.includes(name)) continue;
-        try {
-          if ((await NodeFSP.stat(NodePath.join(procRoot, name))).uid === input.uid)
-            throw unavailable();
-        } catch (cause) {
-          if (!isGone(cause)) throw cause;
-        }
-      }
-      bound();
       return writers;
     },
   };
@@ -236,57 +223,73 @@ export function parseDarwinWriterOutput(output: string, input: QualifiedWriterSc
   return writers;
 }
 
+export function parseDarwinWriterResult(
+  result: { readonly code: number | null; readonly stdout: string; readonly stderr: string },
+  input: QualifiedWriterScan,
+) {
+  if (result.code !== 0 && !(result.code === 1 && result.stdout === "")) throw unavailable();
+  const diagnostics = result.stderr.split("\n").filter((line) => line.trim() !== "");
+  // lsof can warn about unrelated mounts even when every exact-file result is
+  // usable. Permission, argument and selected-file errors still block the proof.
+  let filesystemWarning = false;
+  for (const line of diagnostics) {
+    const mount = /^lsof: WARNING: can't stat\(\) .+ file system (.+)$/.exec(line)?.[1];
+    if (mount !== undefined) {
+      if (input.files.some((file) => file.path === mount || file.path.startsWith(`${mount}/`)))
+        throw unavailable();
+      filesystemWarning = true;
+    } else if (!filesystemWarning || !/^\s+Output information may be incomplete\.$/.test(line)) {
+      throw unavailable();
+    }
+  }
+  return parseDarwinWriterOutput(result.stdout, input);
+}
+
 function darwinQualifiedQuiescenceAdapter(): QualifiedQuiescenceAdapter {
   return {
     async scan(input) {
       if (input.files.length === 0) return [];
-      const output = await new Promise<string>((resolve, reject) => {
-        const child = NodeChildProcess.spawn(
-          "/usr/sbin/lsof",
-          [
-            "-nP",
-            "-a",
-            "-u",
-            String(input.uid),
-            "-F",
-            "pfan",
-            "--",
-            ...input.files.map((file) => file.path),
-          ],
-          { stdio: ["ignore", "pipe", "pipe"] },
-        );
-        let stdout = "";
-        let stderrSize = 0;
-        const timeout = setTimeout(() => {
-          child.kill("SIGKILL");
-          reject(new QualifiedQuiescenceError("proof-limit"));
-        }, 5_000);
-        child.stdout.on("data", (data: Buffer) => {
-          stdout += data.toString("utf8");
-          if (Buffer.byteLength(stdout) > 1024 * 1024) {
-            child.kill("SIGKILL");
-            reject(new QualifiedQuiescenceError("proof-limit"));
-          }
-        });
-        child.stderr.on("data", (data: Buffer) => {
-          stderrSize += data.length;
-          if (stderrSize > 16 * 1024) {
-            child.kill("SIGKILL");
-            reject(new QualifiedQuiescenceError("proof-limit"));
-          }
-        });
-        child.once("error", () => {
-          clearTimeout(timeout);
-          reject(unavailable());
-        });
-        child.once("close", (code) => {
-          clearTimeout(timeout);
-          if (stderrSize !== 0 || (code !== 0 && !(code === 1 && stdout === "")))
+      const output = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
+        (resolve, reject) => {
+          const child = NodeChildProcess.spawn(
+            "/usr/sbin/lsof",
+            [
+              "-nP",
+              "-a",
+              "-u",
+              String(input.uid),
+              "-F",
+              "pfan",
+              "--",
+              ...input.files.map((file) => file.path),
+            ],
+            { stdio: ["ignore", "pipe", "pipe"] },
+          );
+          let stdout = "";
+          let stderr = "";
+          child.stdout.on("data", (data: Buffer) => {
+            stdout += data.toString("utf8");
+            if (Buffer.byteLength(stdout) > 1024 * 1024) {
+              child.kill("SIGKILL");
+              reject(new QualifiedQuiescenceError("proof-limit"));
+            }
+          });
+          child.stderr.on("data", (data: Buffer) => {
+            stderr += data.toString("utf8");
+            if (Buffer.byteLength(stderr) > 16 * 1024) {
+              child.kill("SIGKILL");
+              reject(new QualifiedQuiescenceError("proof-limit"));
+            }
+          });
+          child.once("error", () => {
             reject(unavailable());
-          else resolve(stdout);
-        });
-      });
-      return parseDarwinWriterOutput(output, input);
+          });
+          child.once("close", (code) => {
+            resolve({ code, stdout, stderr });
+          });
+        },
+      );
+      return parseDarwinWriterResult(output, input);
     },
   };
 }

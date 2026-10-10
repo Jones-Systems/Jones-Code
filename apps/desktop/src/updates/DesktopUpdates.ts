@@ -37,6 +37,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as DesktopUserData from "../app/DesktopUserData.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
@@ -362,7 +363,7 @@ export const make = Effect.gen(function* () {
       appRoot: environment.appRoot,
       appPath: environment.path.resolve(environment.resourcesPath, "../.."),
       executablePath,
-      profile: processEnv.T3CODE_DESKTOP_USER_DATA_DIR,
+      profile: yield* DesktopUserData.resolveUserDataPath(environment),
       activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
       architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
       platform: environment.platform,

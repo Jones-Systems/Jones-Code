@@ -21,8 +21,8 @@ import {
   type JonesStagedMacApp as StagedMacApp,
 } from "./jonesActivation.ts";
 import {
-  hashMacApp,
-  hashMacFile,
+  readMacBundleIdentity,
+  requireStableMacAppPath,
   JonesCandidateStartupGateUnavailableError,
   preflightJonesCandidateStartupGate,
   runNativeCommand,
@@ -46,6 +46,14 @@ const ActivationJournal = Schema.Struct({
   intent: JonesInstallIntent,
   phase: Schema.String,
   message: Schema.optionalKey(Schema.String),
+  recovery: Schema.optionalKey(
+    Schema.Struct({
+      method: Schema.Literals(["clone", "sqlite-backup"]),
+      bytes: Schema.Number,
+      startedAt: Schema.Number,
+      completedAt: Schema.Number,
+    }),
+  ),
 });
 const StageSelection = Schema.Struct({
   schema: Schema.Literal(1),
@@ -142,6 +150,8 @@ export class JonesDesktopUpdateController {
   #activationBlocked = false;
   #candidateStartupGateUnavailable = false;
   #terminalPhase: "committed" | "rolled-back" | undefined;
+  #activationMessage: string | undefined;
+  #lastJournal: typeof ActivationJournal.Type | undefined;
   readonly #options: JonesDesktopUpdateOptions;
   readonly #client: Pick<JonesActionsClient, "check" | "stage">;
 
@@ -179,7 +189,14 @@ export class JonesDesktopUpdateController {
 
   async #selectionFile(): Promise<string> {
     const binding = await this.#selectionBinding();
-    const digest = NodeCrypto.createHash("sha256").update(JSON.stringify(binding)).digest("hex");
+    const digest = NodeCrypto.createHash("sha256")
+      .update(
+        JSON.stringify({
+          ...binding,
+          terminalTransaction: this.#lastJournal?.intent.transactionId,
+        }),
+      )
+      .digest("hex");
     return NodePath.join(this.updaterRoot, "staging", `${binding.installedSource}-${digest}.json`);
   }
 
@@ -232,11 +249,9 @@ export class JonesDesktopUpdateController {
       NodePath.dirname(selection.app.appPath) !== NodePath.join(appsRoot, selection.app.handle) ||
       selection.app.receiptPath !==
         NodePath.join(appsRoot, selection.app.handle, "mac-app-receipt.json") ||
-      (await hashMacApp(selection.app.appPath)) !== selection.app.appDigest ||
-      (await hashMacFile(selection.app.executablePath)) !== selection.app.executableDigest ||
-      (await hashMacFile(
-        NodePath.join(selection.app.appPath, "Contents", "Resources", "app.asar"),
-      )) !== selection.app.asarDigest
+      (selection.app.bundleIdentifier !== undefined &&
+        (await readMacBundleIdentity(selection.app.appPath)).bundleIdentifier !==
+          selection.app.bundleIdentifier)
     )
       throw new Error("Staged native app or artifact integrity changed.");
     const info = await NodeFSP.lstat(selection.app.receiptPath);
@@ -278,14 +293,50 @@ export class JonesDesktopUpdateController {
             : candidateGateUnavailable
               ? "source-unqualified"
               : undefined;
+    const journal = this.#lastJournal;
+    const outcomeStatus =
+      journal?.phase === "resumed"
+        ? "committed"
+        : journal?.phase === "rolled-back"
+          ? "rolled-back"
+          : journal === undefined
+            ? undefined
+            : "blocked";
     const jones: JonesUpdateState = {
       source: "jones-actions",
       channel: "jones-main",
       phase,
+      ...((phase === "preparing" || phase === "installing") && this.#staged !== undefined
+        ? { updateId: this.#staged.handle }
+        : journal === undefined
+          ? {}
+          : { updateId: journal.intent.transactionId }),
+      ...(journal === undefined || outcomeStatus === undefined
+        ? {}
+        : {
+            outcome: {
+              status: outcomeStatus,
+              fromVersion: journal.intent.expected.version,
+              targetVersion: journal.intent.staged.version,
+              ...(journal.message === undefined ? {} : { reason: journal.message }),
+            },
+          }),
+      ...(journal?.recovery === undefined
+        ? {}
+        : {
+            recovery: {
+              method: journal.recovery.method === "clone" ? "clone" : "copy",
+              bytes: journal.recovery.bytes,
+              completedAt: new Date(journal.recovery.completedAt * 1000).toISOString(),
+              durationMs: Math.round(
+                (journal.recovery.completedAt - journal.recovery.startedAt) * 1000,
+              ),
+            },
+          }),
       capability: {
         check: this.#source !== undefined && !this.#options.disabledByEnv,
         download: this.#source !== undefined && !this.#options.disabledByEnv,
-        install: reason === undefined,
+        install: reason === undefined && phase !== "installing",
         ...(reason === undefined ? {} : { reason }),
       },
       ...(this.#candidate === undefined ? {} : { provenance: provenance(this.#candidate) }),
@@ -314,6 +365,57 @@ export class JonesDesktopUpdateController {
     await this.#options.onState(this.#state);
   }
 
+  async #adopt(metadata: typeof BuildMetadata.Type): Promise<ActiveInstall> {
+    if (
+      metadata.jonesSource === undefined ||
+      this.#options.profile === undefined ||
+      this.#options.disabledByEnv
+    )
+      throw new Error("Source-qualified app and native profile are required for setup.");
+    const transactions = await NodeFSP.readdir(
+      NodePath.join(this.updaterRoot, "transactions"),
+    ).catch((cause: NodeJS.ErrnoException) => {
+      if (cause.code === "ENOENT") return [];
+      throw cause;
+    });
+    if (transactions.length > 0)
+      throw new Error("Retained native transactions require reconciliation before app setup.");
+    const appPath = await requireStableMacAppPath(this.#options.appPath);
+    const bundle = await readMacBundleIdentity(appPath);
+    const executablePath = await NodeFSP.realpath(this.#options.executablePath);
+    if (bundle.version !== this.#state.currentVersion || executablePath !== bundle.executablePath)
+      throw new Error("The running executable does not match its app bundle.");
+    const home = await NodeFSP.realpath(this.#options.home);
+    const databasePath = await NodeFSP.realpath(NodePath.join(home, "userdata", "statev2.sqlite"));
+    const environmentId = decodeEnvironmentId(
+      (await NodeFSP.readFile(NodePath.join(home, "userdata", "environment-id"), "utf8")).trim(),
+    );
+    const generation = NodeCrypto.randomBytes(32).toString("hex");
+    const active: ActiveInstall = {
+      protocol: 1,
+      owner: "desktop",
+      generation,
+      transactionId: "bootstrap",
+      home,
+      databasePath,
+      profile: await NodeFSP.realpath(this.#options.profile),
+      environmentId,
+      appPath,
+      executablePath,
+      version: bundle.version,
+      sourceSha: metadata.jonesSource.sha,
+      sourceTree: metadata.jonesSource.tree,
+      bundleIdentifier: bundle.bundleIdentifier,
+    };
+    await NodeFSP.mkdir(NodePath.dirname(this.manifestPath), { recursive: true, mode: 0o700 });
+    try {
+      await writeJonesNativeFile(this.manifestPath, JSON.stringify(active) + "\n", 0o600);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+    }
+    return decodeActiveInstall(JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")));
+  }
+
   async configure(): Promise<void> {
     const metadata = decodeBuildMetadata(
       JSON.parse(
@@ -322,20 +424,42 @@ export class JonesDesktopUpdateController {
     );
     this.#source = metadata.jonesSource?.sha;
     this.#terminalPhase = undefined;
+    this.#activationMessage = undefined;
+    this.#lastJournal = undefined;
+    let boundManifest = false;
     try {
-      const active = decodeActiveInstall(
-        JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")),
-      );
+      let active: ActiveInstall;
+      try {
+        active = decodeActiveInstall(JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")));
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
+          this.#activationBlocked = true;
+          throw cause;
+        }
+        active = await this.#adopt(metadata);
+      }
+      boundManifest = true;
+      const appPath = await requireStableMacAppPath(this.#options.appPath);
+      if (active.bundleIdentifier !== undefined) {
+        const bundle = await readMacBundleIdentity(appPath);
+        if (
+          bundle.bundleIdentifier !== active.bundleIdentifier ||
+          bundle.version !== active.version ||
+          bundle.executablePath !== active.executablePath
+        )
+          throw new Error("The native manifest does not match the running bundle identity.");
+      }
       if (
         active.home !== (await NodeFSP.realpath(this.#options.home)) ||
         active.appPath !== (await NodeFSP.realpath(this.#options.appPath)) ||
         active.executablePath !== (await NodeFSP.realpath(this.#options.executablePath)) ||
         this.#options.profile === undefined ||
         active.profile !== (await NodeFSP.realpath(this.#options.profile)) ||
-        this.#options.activeGeneration !== active.generation ||
+        (this.#options.activeGeneration !== undefined &&
+          this.#options.activeGeneration !== active.generation) ||
         active.version !== this.#state.currentVersion ||
         (metadata.jonesSource?.sha ?? metadata.t3codeCommitHash) !== active.sourceSha ||
-        active.appDigest !== (await hashMacApp(active.appPath))
+        (metadata.jonesSource !== undefined && metadata.jonesSource.tree !== active.sourceTree)
       )
         throw new Error("The native launcher does not bind the running app.");
       this.#bootstrap = active;
@@ -346,6 +470,7 @@ export class JonesDesktopUpdateController {
         if (cause.code === "ENOENT") return [];
         throw cause;
       });
+      let latestOutcomeTime = -Infinity;
       for (const entry of entries) {
         if (!/^[a-f0-9]{64}$/.test(entry))
           throw new Error("Unknown native transaction requires reconciliation.");
@@ -360,7 +485,7 @@ export class JonesDesktopUpdateController {
             try {
               await NodeFSP.lstat(NodePath.join(directory, "intent.json"));
               this.#activationBlocked = true;
-              throw new Error("Native activation has unknown effects.");
+              throw new Error("Native activation has unknown effects.", { cause });
             } catch (intentError) {
               if ((intentError as NodeJS.ErrnoException).code !== "ENOENT") throw intentError;
             }
@@ -371,7 +496,9 @@ export class JonesDesktopUpdateController {
               } catch (preparationError) {
                 if ((preparationError as NodeJS.ErrnoException).code === "ENOENT") {
                   this.#activationBlocked = true;
-                  throw new Error("Native preparation has unknown effects.");
+                  throw new Error("Native preparation has unknown effects.", {
+                    cause: preparationError,
+                  });
                 }
                 throw preparationError;
               }
@@ -388,27 +515,40 @@ export class JonesDesktopUpdateController {
           (journal.phase !== "resumed" && journal.phase !== "rolled-back")
         ) {
           this.#activationBlocked = true;
-          throw new Error("Native activation requires reconciliation.");
+          this.#lastJournal = journal;
+          throw new Error(journal.message ?? "Native activation requires reconciliation.");
         }
-        if (
+        const committed =
           journal.phase === "resumed" &&
           journal.intent.transactionId === active.transactionId &&
           journal.intent.staged.sourceSha === active.sourceSha &&
-          journal.intent.staged.appDigest === active.appDigest
-        ) {
-          this.#terminalPhase = "committed";
-        } else if (
+          journal.intent.staged.appDigest === active.appDigest;
+        const rolledBack =
           journal.phase === "rolled-back" &&
-          JSON.stringify(journal.intent.expected) === JSON.stringify(active) &&
-          this.#terminalPhase !== "committed"
-        ) {
-          this.#terminalPhase = "rolled-back";
+          JSON.stringify(journal.intent.expected) === JSON.stringify(active);
+        if (committed || rolledBack) {
+          const outcomeTime = (await NodeFSP.stat(NodePath.join(directory, "journal.json")))
+            .mtimeMs;
+          if (outcomeTime >= latestOutcomeTime) {
+            latestOutcomeTime = outcomeTime;
+            this.#lastJournal = journal;
+            this.#terminalPhase = committed ? "committed" : "rolled-back";
+            this.#activationMessage =
+              journal.message ??
+              (committed
+                ? `Update ${entry} committed; Jones Code ${active.version} is active.`
+                : `Update ${entry} rolled back; Jones Code ${active.version} remains active.`);
+          }
         }
       }
-    } catch {
-      // No mutation or implicit migration of legacy hardcoded launchers.
+    } catch (cause) {
+      if (boundManifest) this.#activationBlocked = true;
+      this.#activationMessage =
+        cause instanceof Error ? cause.message : "Native app setup could not be proved.";
       this.#bootstrap = undefined;
       this.#terminalPhase = undefined;
+      if (this.#lastJournal?.phase === "resumed" || this.#lastJournal?.phase === "rolled-back")
+        this.#lastJournal = undefined;
     }
     try {
       await this.#hydrateStage();
@@ -439,18 +579,20 @@ export class JonesDesktopUpdateController {
         : this.#options.disabledByEnv
           ? "The native launcher disables updates; Jones bootstrap must enable them."
           : this.#activationBlocked
-            ? "Retained native activation or preparation requires reconciliation."
+            ? (this.#activationMessage ??
+              "Retained native activation or preparation requires reconciliation.")
             : this.#bootstrap === undefined
-              ? "Checks and downloads are available. Install requires the native Jones launcher bootstrap."
-              : undefined,
+              ? (this.#activationMessage ??
+                "Move Jones Code to a stable writable Applications folder to enable Restart.")
+              : this.#activationMessage,
     );
   }
 
   async check(): Promise<boolean> {
     if (this.#busy !== null || this.#source === undefined || this.#options.disabledByEnv)
       return false;
-    // Refresh a missing launcher binding after an independently completed native transaction.
-    // The production startup owner must hold readiness until its exact commit grant.
+    // Reload a missing stable-path binding after an independently completed native transaction.
+    // The production startup owner holds readiness until its exact commit grant.
     if (this.#bootstrap === undefined) await this.configure();
     this.#busy = "check";
     try {
@@ -594,15 +736,13 @@ export class JonesDesktopUpdateController {
     }
     this.#busy = "install";
     try {
-      // Revalidate the fixed staged app and active binding before asking for native continuations.
+      // The helper checks the fixed candidate digest before stopping writers; preparation binds this active manifest.
       const current = decodeActiveInstall(
         JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")),
       );
       if (JSON.stringify(current) !== JSON.stringify(expected))
         throw new Error("Active install changed.");
       decodeStagedApp(staged);
-      if ((await hashMacApp(staged.appPath)) !== staged.appDigest)
-        throw new Error("Stage changed.");
       await preflightJonesCandidateStartupGate(staged);
       const tx = NodePath.dirname(jonesContinuationReceiptPath(this.#options.home, handle));
       await NodeFSP.mkdir(tx, { recursive: true, mode: 0o700 });
@@ -658,18 +798,32 @@ export class JonesDesktopUpdateController {
           if (this.#busy !== "install") return;
           this.#busy = null;
           this.#activationBlocked = true;
-          void this.#publish(
-            "blocked",
-            "downloaded",
-            "The native helper exited; retained transaction state requires reconciliation.",
-          );
+          void (async () => {
+            try {
+              this.#lastJournal = decodeActivationJournal(
+                JSON.parse(await NodeFSP.readFile(NodePath.join(tx, "journal.json"), "utf8")),
+              );
+            } catch {
+              /* The transaction files remain available for reconciliation. */
+            }
+            await this.#publish(
+              "blocked",
+              "downloaded",
+              this.#lastJournal?.message ??
+                "The native helper exited; retained transaction state requires reconciliation.",
+            );
+          })();
         });
         child.once("spawn", () => {
           child.unref();
           resolve();
         });
       });
-      await this.#publish("installing", "downloaded");
+      await this.#publish(
+        "installing",
+        "downloaded",
+        `Installing update ${handle}; Jones Code is restarting. The outcome appears after restart.`,
+      );
       return { accepted: true, completed: false, failed: false };
     } catch (cause) {
       this.#busy = null;

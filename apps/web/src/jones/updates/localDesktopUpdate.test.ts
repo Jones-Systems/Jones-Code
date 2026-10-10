@@ -2,6 +2,7 @@ import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/con
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  canCheckForUpdate,
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   isDesktopUpdateButtonDisabled,
@@ -49,6 +50,61 @@ describe("Jones local desktop update UI", () => {
     expect(bridge.installUpdate).toHaveBeenCalledExactlyOnceWith("downloaded-1.1.0");
     expect(isDesktopUpdateButtonDisabled(downloaded)).toBe(false);
   });
+
+  it.each(["preparing", "installing"] as const)(
+    "blocks a second Restart while %s",
+    async (phase) => {
+      const state = {
+        ...downloaded,
+        jones: { ...downloaded.jones!, phase, updateId: "desktop-update" },
+      };
+      const bridge = { installUpdate: vi.fn() };
+      expect(isDesktopUpdateButtonDisabled(state)).toBe(true);
+      expect(getDesktopUpdateButtonTooltip(state)).toContain("outcome appears after restart");
+      await expect(installLocalDesktopUpdate(bridge, state)).rejects.toThrow(
+        "restarting Jones Code",
+      );
+      expect(bridge.installUpdate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["committed", "rolled-back"] as const)(
+    "shows the %s Restart outcome without disabling Check",
+    (status) => {
+      const state: DesktopUpdateState = {
+        ...downloaded,
+        status: "up-to-date",
+        downloadedVersion: null,
+        availableVersion: null,
+        jones: {
+          ...downloaded.jones!,
+          phase: status,
+          updateId: "desktop-update",
+          outcome: {
+            status,
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            reason: "Native transaction finished.",
+          },
+        },
+      };
+      const tooltip = getDesktopUpdateButtonTooltip(state);
+      expect(tooltip).toContain("desktop-update");
+      expect(tooltip).toContain(status === "committed" ? "committed" : "rolled back");
+      expect(tooltip).toContain("1.0.0");
+      expect(tooltip).toContain("1.1.0");
+      expect(tooltip).toContain("Native transaction finished.");
+      expect(isDesktopUpdateButtonDisabled(state)).toBe(false);
+      expect(canCheckForUpdate(state)).toBe(true);
+      const nextDownload: DesktopUpdateState = {
+        ...state,
+        status: "available",
+        availableVersion: "1.2.0",
+      };
+      expect(getDesktopUpdateButtonTooltip(nextDownload)).toBe("Update 1.2.0 ready to download");
+      expect(isDesktopUpdateButtonDisabled(nextDownload)).toBe(false);
+    },
+  );
 
   it("keeps upstream installs argument-free", async () => {
     const { jones: _jones, ...upstream } = downloaded;

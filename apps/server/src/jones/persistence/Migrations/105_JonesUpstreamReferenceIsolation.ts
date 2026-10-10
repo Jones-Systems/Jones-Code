@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import { ConstraintError, SqlError } from "effect/sql/SqlError";
 
 // Earlier Jones tables declared foreign keys to upstream tables. With
 // foreign_keys on, those keys reject upstream deletes and table rebuilds, such
@@ -74,6 +75,9 @@ export default Effect.gen(function* () {
   // the same rows return. Deferral lets the enclosing migration commit check that.
   yield* sql`PRAGMA defer_foreign_keys = ON`;
   for (const [table, create] of rebuilt) {
+    const before = yield* sql.unsafe<{ readonly count: number }>(
+      `SELECT count(*) AS count FROM "${table}"`,
+    );
     const columns = (yield* sql<{ readonly name: string }>`
       SELECT name FROM pragma_table_info(${table}) ORDER BY cid
     `).map(({ name }) => `"${name}"`);
@@ -92,5 +96,27 @@ export default Effect.gen(function* () {
     );
     yield* sql.unsafe(`DROP TABLE ${holder}`);
     for (const dependent of dependents) yield* sql.unsafe(dependent.sql);
+    const after = yield* sql.unsafe<{ readonly count: number }>(
+      `SELECT count(*) AS count FROM "${table}"`,
+    );
+    const references = yield* sql<{
+      readonly table: string;
+    }>`SELECT "table" FROM pragma_foreign_key_list(${table})`;
+    if (
+      before[0]?.count !== after[0]?.count ||
+      references.some(
+        ({ table: target }) => !target.startsWith("jones_") && target !== "native_creation_intents",
+      )
+    ) {
+      return yield* Effect.fail(
+        new SqlError({
+          reason: new ConstraintError({
+            cause: undefined,
+            operation: "Jones migration 105 self-check",
+            message: "Jones migration 105 did not preserve rows or isolate upstream references.",
+          }),
+        }),
+      );
+    }
   }
 });

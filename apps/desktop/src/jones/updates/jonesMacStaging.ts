@@ -22,6 +22,7 @@ const AppMetadata = Schema.Struct({
 });
 const AppInfo = Schema.Struct({
   CFBundleExecutable: Schema.String,
+  CFBundleIdentifier: Schema.String,
   CFBundleShortVersionString: Schema.String,
 });
 const AppReceipt = Schema.Struct({
@@ -176,10 +177,55 @@ export async function hashMacApp(directory: string): Promise<string> {
   return hash.digest("hex");
 }
 
+/** Normal launches read only the bundle metadata; candidate payload hashing belongs to activation. */
+export async function readMacBundleIdentity(appPath: string): Promise<{
+  readonly bundleIdentifier: string;
+  readonly version: string;
+  readonly executablePath: string;
+}> {
+  const info = decodeAppInfo(
+    JSON.parse(
+      await runNativeCommand("/usr/bin/plutil", [
+        "-convert",
+        "json",
+        "-o",
+        "-",
+        NodePath.join(appPath, "Contents", "Info.plist"),
+      ]),
+    ),
+  );
+  if (!/^[^/\\]+$/.test(info.CFBundleExecutable) || info.CFBundleIdentifier.trim() === "")
+    throw new Error("The app bundle identity is invalid.");
+  return {
+    bundleIdentifier: info.CFBundleIdentifier,
+    version: info.CFBundleShortVersionString,
+    executablePath: NodePath.join(appPath, "Contents", "MacOS", info.CFBundleExecutable),
+  };
+}
+
+export async function requireStableMacAppPath(appPath: string): Promise<string> {
+  const resolved = await NodeFSP.realpath(appPath);
+  if (
+    resolved !== NodePath.resolve(appPath) ||
+    !resolved.endsWith(".app") ||
+    /(?:^|\/)(?:AppTranslocation|Volumes|tmp|jones-updates)(?:\/|$)/.test(resolved)
+  )
+    throw new Error("Move Jones Code to a stable writable Applications folder before updating.");
+  const info = await NodeFSP.lstat(resolved);
+  if (!info.isDirectory()) throw new Error("The running app is not a stable bundle.");
+  await NodeFSP.access(NodePath.dirname(resolved), NodeFS.constants.W_OK);
+  return resolved;
+}
+
 async function validateMacApp(
   directory: string,
   artifact: JonesStagedArtifact,
-): Promise<{ executablePath: string; asarPath: string; startupGateProtocol?: 1 }> {
+): Promise<{
+  executablePath: string;
+  asarPath: string;
+  bundleIdentifier: string;
+  startupGateProtocol?: 1;
+}> {
   const info = decodeAppInfo(
     JSON.parse(
       await runNativeCommand("/usr/bin/plutil", [
@@ -213,6 +259,7 @@ async function validateMacApp(
   return {
     executablePath,
     asarPath,
+    bundleIdentifier: info.CFBundleIdentifier,
     ...(metadata.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
   };
 }
@@ -237,10 +284,12 @@ export async function stageJonesMacApp(
       JSON.stringify(receipt.artifact) !== JSON.stringify(artifact) ||
       receipt.app.handle !== artifact.stagedHandle
     ) {
-      throw new Error("An occupied Mac stage does not bind this candidate; it was preserved.");
+      throw new Error("An occupied Mac stage does not bind this candidate; it was preserved.", {
+        cause,
+      });
     }
     if ((await hashMacApp(receipt.app.appPath)) !== receipt.app.appDigest)
-      throw new Error("Staged app integrity changed.");
+      throw new Error("Staged app integrity changed.", { cause });
     return receipt.app;
   }
   const mount = NodePath.join(directory, "mount");
@@ -266,12 +315,11 @@ export async function stageJonesMacApp(
     await hashMacApp(source); // Reject escaping links before copying.
     const appPath = NodePath.join(directory, apps[0].name);
     await runNativeCommand("/usr/bin/ditto", [source, appPath]);
-    const { executablePath, asarPath, startupGateProtocol } = await validateMacApp(
-      appPath,
-      artifact,
-    );
+    const { executablePath, asarPath, bundleIdentifier, startupGateProtocol } =
+      await validateMacApp(appPath, artifact);
     const app: StagedMacApp = {
       handle: artifact.stagedHandle,
+      bundleIdentifier,
       receiptPath,
       appPath,
       executablePath,

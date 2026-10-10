@@ -62,6 +62,29 @@ export const JonesUpdateState = Schema.Struct({
   checkedAt: Schema.optionalKey(Schema.String),
   environmentId: Schema.optionalKey(EnvironmentId),
   currentVersion: Schema.optionalKey(Schema.String),
+  updateId: Schema.optionalKey(TrimmedNonEmptyString),
+  outcome: Schema.optionalKey(
+    Schema.Struct({
+      status: Schema.Literals(["committed", "rolled-back", "blocked"]),
+      reason: Schema.optionalKey(Schema.String),
+      fromVersion: TrimmedNonEmptyString,
+      targetVersion: TrimmedNonEmptyString,
+    }),
+  ),
+  recovery: Schema.optionalKey(
+    Schema.Struct({
+      method: Schema.Literals(["clone", "copy"]),
+      bytes: Schema.Number,
+      completedAt: Schema.String,
+      durationMs: Schema.optionalKey(Schema.Number),
+    }),
+  ),
+  migrationPlan: Schema.optionalKey(
+    Schema.Struct({
+      pendingUpstream: Schema.Array(Schema.Number),
+      pendingJones: Schema.Array(Schema.Number),
+    }),
+  ),
 });
 export type JonesUpdateState = typeof JonesUpdateState.Type;
 

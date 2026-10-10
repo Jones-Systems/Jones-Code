@@ -17,7 +17,8 @@ export const JonesActiveInstall = Schema.Struct({
   version: Schema.String,
   sourceSha: Schema.String,
   sourceTree: Schema.String,
-  appDigest: Schema.String,
+  appDigest: Schema.optionalKey(Schema.String),
+  bundleIdentifier: Schema.optionalKey(Schema.String),
 });
 export type JonesActiveInstall = typeof JonesActiveInstall.Type;
 
@@ -30,6 +31,7 @@ export const JonesStagedMacApp = Schema.Struct({
   sourceSha: Schema.String,
   sourceTree: Schema.String,
   appDigest: Schema.String,
+  bundleIdentifier: Schema.optionalKey(Schema.String),
   asarDigest: Schema.String,
   executableDigest: Schema.String,
   startupGateProtocol: Schema.optionalKey(Schema.Literal(1)),

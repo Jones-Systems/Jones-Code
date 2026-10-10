@@ -1,3 +1,4 @@
+import { jonesUpdatePresentation } from "@t3tools/client-runtime/jones/updates";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useState } from "react";
@@ -27,16 +28,30 @@ export function JonesUpdateControls({
       setPending(false);
     }
   };
-  const busy =
-    pending ||
-    ["checking", "building", "downloading", "verifying", "preparing", "installing"].includes(
-      state.phase,
-    );
+  const presentation = jonesUpdatePresentation(state);
+  const busy = pending || presentation.busy;
   const provenance = state.provenance;
   return (
     <SettingsSection title="Jones main builds">
       <View className="gap-2 p-4">
-        <Text className="text-sm text-foreground-muted">{state.message ?? state.phase}</Text>
+        <Text className="text-sm text-foreground-muted">{presentation.message}</Text>
+        {state.updateId ? (
+          <Text className="text-sm text-foreground-muted">Update {state.updateId}</Text>
+        ) : null}
+        {presentation.outcomeMessage ? (
+          <Text className="text-sm text-foreground-muted">{presentation.outcomeMessage}</Text>
+        ) : null}
+        {state.migrationPlan ? (
+          <Text className="text-sm text-foreground-muted">
+            Pending migrations: {state.migrationPlan.pendingUpstream.length} upstream,{" "}
+            {state.migrationPlan.pendingJones.length} Jones
+          </Text>
+        ) : null}
+        {state.recovery ? (
+          <Text className="text-sm text-foreground-muted">
+            Recovery {state.recovery.method} · {(state.recovery.bytes / 1024 ** 3).toFixed(2)} GiB
+          </Text>
+        ) : null}
       </View>
       <SettingsActionRow
         icon="arrow.clockwise"

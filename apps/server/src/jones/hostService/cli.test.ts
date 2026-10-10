@@ -26,6 +26,31 @@ function testService() {
       return result;
     });
   const service = HostService.HostService.of({
+    planAdoption: (input) =>
+      record("plan-adoption", input, {
+        baseDir,
+        environmentId: "fixture",
+        activeVersion: "old",
+        launcherVersion: "new",
+        servicePath: "/task-owned/unit",
+        serviceContents: "fixture",
+        effects: ["Keep active version."],
+        commands: [],
+      }),
+    adopt: (input) =>
+      record("adopt", input, {
+        state: input.dryRun ? ("dry-run" as const) : ("adopted" as const),
+        plan: {
+          baseDir,
+          environmentId: "fixture",
+          activeVersion: "old",
+          launcherVersion: "new",
+          servicePath: "/task-owned/unit",
+          serviceContents: "fixture",
+          effects: [],
+          commands: [],
+        },
+      }),
     plan: (input) => record("plan", input, plan),
     setup: (input) =>
       Effect.gen(function* () {
@@ -114,7 +139,7 @@ it.effect("setup prints the effect plan before dispatch and exposes bounded flag
   }),
 );
 
-it.effect.each(["setup", "status", "stage-runtime", "route-remove"] as const)(
+it.effect.each(["setup", "adopt", "status", "stage-runtime", "route-remove"] as const)(
   "%s requires explicit --base-dir before dispatch",
   (command) =>
     Effect.gen(function* () {
@@ -175,4 +200,79 @@ it.effect("there is no Jones host pair command", () =>
     yield* t.run(["host", "pair", "--base-dir", baseDir]).pipe(Effect.flip);
     expect(t.calls).toEqual([]);
   }),
+);
+
+it.effect("adopt exposes separate active and launcher provenance with explicit supersession", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([
+      "host",
+      "adopt",
+      "--base-dir",
+      baseDir,
+      "--active-artifact-dir",
+      "/approved/active",
+      "--active-source-commit",
+      "a".repeat(40),
+      "--launcher-artifact-dir",
+      "/approved/launcher",
+      "--launcher-source-commit",
+      "b".repeat(40),
+      "--supersede-execstart",
+      "--dry-run",
+    ]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-adoption", "adopt"]);
+    expect(t.calls[1]?.input).toMatchObject({
+      dryRun: true,
+      supersedeExecstart: true,
+      activeArtifactDir: "/approved/active",
+      launcherArtifactDir: "/approved/launcher",
+    });
+  }),
+);
+
+it.effect(
+  "adopt decodes the explicit bootstrap bindings and repeated metadata-only preservation flags",
+  () =>
+    Effect.gen(function* () {
+      const t = testService();
+      yield* t.run([
+        "host",
+        "adopt",
+        "--base-dir",
+        baseDir,
+        "--active-artifact-dir",
+        "/approved/active",
+        "--active-source-commit",
+        "a".repeat(40),
+        "--launcher-artifact-dir",
+        "/approved/launcher",
+        "--launcher-source-commit",
+        "b".repeat(40),
+        "--legacy-direct-serve",
+        "--service-unit",
+        "t3code.service",
+        "--service-unit-sha256",
+        "c".repeat(64),
+        "--task-operation-id",
+        "bound-task",
+        "--task-handoff-sha256",
+        "d".repeat(64),
+        "--task-dropin",
+        `50-transition.conf=${"e".repeat(64)}`,
+        "--preserve-dropin",
+        "20-private.conf",
+        "--preserve-dropin",
+        "40-private.conf",
+        "--accept-unattested-child-capability",
+        "--dry-run",
+      ]);
+      expect(t.calls[1]?.input).toMatchObject({
+        legacyDirectServe: true,
+        serviceUnit: "t3code.service",
+        taskOperationId: "bound-task",
+        preserveDropin: ["20-private.conf", "40-private.conf"],
+        acceptUnattestedChildCapability: true,
+      });
+    }),
 );
