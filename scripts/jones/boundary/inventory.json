@@ -818,7 +818,15 @@
     "apps/web/src/components/chat/PanelLayoutControls.tsx": "accepted-shared",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts": "hook",
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts": "jones-tests-in-upstream",
-    "apps/desktop/src/jones/workstreams/shellActivation.ts": "jones-owned"
+    "apps/desktop/src/jones/workstreams/shellActivation.ts": "jones-owned",
+    "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts": "jones-owned",
+    "apps/server/src/jones/runtimeIdentity/AppIdentity.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.ts": "hook",
+    "apps/server/src/provider/RuntimeInstructions.ts": "hook",
+    "apps/server/src/provider/T3OrchestrationInstructions.ts": "hook",
+    "scripts/jones/boundary/fragments/agent-app-identity.json": "policy",
+    "apps/server/src/provider/CodexDeveloperInstructions.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/T3OrchestrationInstructions.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

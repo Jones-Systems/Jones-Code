@@ -491,7 +491,10 @@ describe("CodexAdapterV2 runtime policy", () => {
         modelSelection,
         appContext,
       });
-      assert.deepEqual(alone.additionalContext, {
+      const { jones_code_identity, ...appEntries } = alone.additionalContext!;
+      assert.equal(jones_code_identity?.kind, "application");
+      assert.include(jones_code_identity?.value ?? "", "product ID: jones-code");
+      assert.deepEqual(appEntries, {
         "mcp_app_todos_list_todos_item-1": { kind: "untrusted", value: "Filtered to overdue" },
       });
       // Alongside T3's own context, both are kept.

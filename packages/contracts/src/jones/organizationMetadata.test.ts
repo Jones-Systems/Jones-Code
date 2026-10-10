@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import {
   NativeInvocationContext,
+  JonesAppIdentity,
   OrganizationThreadMetadata,
   OrganizationThreadMetadataPage,
 } from "./organizationMetadata.ts";
@@ -43,6 +44,33 @@ describe("organization metadata wire contract", () => {
     };
     expect(decode(value)).toEqual(value);
     expect(() => decode({ ...value, serverGeneration: 1 })).toThrow();
+  });
+  it("adds explicit identity while retaining legacy invocation responses", () => {
+    const legacy = {
+      environmentId: "environment",
+      threadId: "thread",
+      effectiveBaseDir: "/synthetic",
+      loopbackOrigin: null,
+      serverVersion: "0.0.45",
+      serverGeneration: null,
+    };
+    const identity = {
+      productId: "jones-code",
+      productName: "Jones Code",
+      version: legacy.serverVersion,
+      source: null,
+    };
+    const decode = Schema.decodeUnknownSync(NativeInvocationContext);
+    expect(decode(legacy)).toEqual(legacy);
+    expect(decode({ ...legacy, appIdentity: identity }).appIdentity).toEqual(identity);
+    const decodeIdentity = Schema.decodeUnknownSync(JonesAppIdentity);
+    expect(() => decodeIdentity({ ...identity, productId: "t3-code" })).toThrow();
+    expect(() =>
+      decodeIdentity({
+        ...identity,
+        source: { repository: "Jones-Systems/Jones-Code", sha: "bad", tree: "b".repeat(40) },
+      }),
+    ).toThrow();
   });
   it("enforces bounded titles and keeps null activity", () => {
     const decode = Schema.decodeUnknownSync(OrganizationThreadMetadata);

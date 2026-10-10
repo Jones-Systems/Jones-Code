@@ -1,3 +1,4 @@
+import { OrganizationMetadataToolkit } from "../../jones/mcp/organizationMetadata/tools.ts";
 import * as NodeOS from "node:os";
 
 import type {
@@ -661,6 +662,7 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
 
   it("matches the read-only allowlist to the orchestrator toolkit annotations", () => {
     const readOnlyToolNames = [
+      OrganizationMetadataToolkit.tools.get_invocation_context,
       ...Object.values(OrchestratorToolkit.tools),
       ...Object.values(ThreadToolkit.tools),
       ...Object.values(WorktreeToolkit.tools),

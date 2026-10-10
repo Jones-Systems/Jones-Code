@@ -25,7 +25,7 @@ const dependencies = [McpInvocationContext, OrganizationMetadataMcpService];
 export const OrganizationMetadataToolkit = Toolkit.make(
   Tool.make("get_invocation_context", {
     description:
-      "Read the authenticated thread and environment IDs, effective base directory, proved bound loopback origin, and bundled server version. A null origin means no loopback route is proved; server generation is unavailable. This is not runtime attestation.",
+      "Read the authenticated thread and environment IDs, effective base directory, proved bound loopback origin, and bundled server version plus explicit appIdentity (product ID/name, version, optional stamped source commit/tree). Use this to identify Jones Code without inspecting processes or guessing from version names. A missing appIdentity on an older server leaves product identity unknown. A null origin means no loopback route is proved; server generation is unavailable. This is not runtime attestation.",
     parameters: emptyInput,
     success: NativeInvocationContext,
     failure: Schema.Union([McpCapabilityUnavailableError, OrchestratorMcpFailure]),

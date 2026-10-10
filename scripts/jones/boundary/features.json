@@ -450,6 +450,20 @@
       "id": "utility-navigation",
       "tests": [],
       "scope": "Sidebar navigation interaction uses isolated Browser panel verification. Web typecheck and targeted lint cover the extracted component; queue and composer behavior retain their existing feature tests."
+    },
+    {
+      "id": "agent-app-identity",
+      "tests": [
+        "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts",
+        "apps/server/src/provider/RuntimeInstructions.test.ts",
+        "apps/server/src/provider/CodexDeveloperInstructions.test.ts",
+        "apps/server/src/provider/T3OrchestrationInstructions.test.ts",
+        "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
+        "packages/contracts/src/jones/organizationMetadata.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.test.ts",
+        "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts"
+      ]
     }
   ]
 }
