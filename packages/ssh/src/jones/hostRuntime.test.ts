@@ -1,7 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous synthetic shell fixtures execute outside Effect.
 import * as NodeChildProcess from "node:child_process";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - try/finally owns these synchronous fixture files and cleanup.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Native paths locate the synchronous synthetic shell fixtures.
 import * as NodePath from "node:path";
 
 import {
