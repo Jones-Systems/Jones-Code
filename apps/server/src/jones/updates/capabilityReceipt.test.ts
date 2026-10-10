@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Exercises native receipt replacement and mode bits on an isolated real filesystem.
 import * as NodeFSP from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Paths belong to the native filesystem fixture consumed by the Promise adapter.
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";

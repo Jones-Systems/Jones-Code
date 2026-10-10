@@ -64,6 +64,7 @@ async function watchFile(file: string, signal: AbortSignal) {
       };
       watcher.on("change", inspect);
       watcher.on("error", reject);
+      // @effect-diagnostics-next-line globalTimers:off -- Native fs.watch test observer uses a timer to cover coalesced events and is always cleared in finally.
       recheck = setInterval(inspect, 250);
       signal.addEventListener("abort", aborted, { once: true });
       if (signal.aborted) aborted();

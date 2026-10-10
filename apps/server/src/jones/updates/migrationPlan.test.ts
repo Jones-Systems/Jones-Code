@@ -1,5 +1,7 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Verifies actual database and WAL bytes, timestamps, and fixture cleanup around synchronous node:sqlite.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Builds isolated native database fixture paths for the synchronous candidate CLI adapter.
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "@effect/vitest";

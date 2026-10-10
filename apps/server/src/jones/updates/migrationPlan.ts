@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Candidate preflight is a synchronous native SQLite adapter; stat distinguishes a missing database before opening it read-only.
 import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 

@@ -59,6 +59,7 @@ import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProto
 
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 const isServiceLauncherClientError = Schema.is(ServiceLauncherClient.ServiceLauncherClientError);
+const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
@@ -472,7 +473,15 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         version,
       });
       if (reason !== undefined) return yield* failWith(reason);
-      const decoded = decodeServicePreflightResult(JSON.parse(result.stdout.trim()));
+      const parsed = yield* decodePreflightJson(result.stdout.trim()).pipe(
+        Effect.mapError((cause) =>
+          failWith(
+            "startup-gate-unavailable: The candidate returned an invalid service preflight.",
+            cause,
+          ),
+        ),
+      );
+      const decoded = decodeServicePreflightResult(parsed);
       return decoded?.status === "ready" ? decoded.migrationPlan : undefined;
     });
   const stageQualified = (artifact: JonesStagedArtifact) =>
