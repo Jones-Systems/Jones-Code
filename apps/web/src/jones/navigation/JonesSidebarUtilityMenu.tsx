@@ -1,4 +1,4 @@
-import { BookOpenIcon, ChartNoAxesColumnIcon, ListTodoIcon, SettingsIcon } from "lucide-react";
+import { BookOpenIcon, ChartNoAxesColumnIcon, MicIcon, SettingsIcon } from "lucide-react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { memo } from "react";
 import { usePullRequestsSupported } from "../../state/environments";
@@ -36,7 +36,7 @@ const destinations = [
   {
     path: "/work-queue",
     label: "Prompts",
-    icon: ListTodoIcon,
+    icon: MicIcon,
     description: "Review pending, queued and sent prompts",
   },
   {
