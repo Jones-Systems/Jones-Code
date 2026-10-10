@@ -464,7 +464,9 @@
         "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
         "apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
         "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts",
-        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts"
+        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
       ]
     }
   ]

@@ -1,3 +1,4 @@
+import { materializeCodexReplayAppIdentity } from "../runtimeIdentity/CodexReplayIdentity.ts";
 import * as Guard from "./NativeCreationProviderGuard.ts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as Predicate from "effect/Predicate";
@@ -499,17 +500,23 @@ function codexReplayPreamble(input: {
   ];
 }
 
+const decodeMaterializedTranscript = Schema.decodeUnknownSync(
+  CodexReplay.CodexAppServerReplayTranscript,
+);
+
 function makeCodexReplayTranscript(input: {
   readonly scenario: string;
   readonly entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>;
 }): CodexReplay.CodexAppServerReplayTranscript {
-  return {
-    provider: "codex",
-    protocol: "codex.app-server",
-    version: "0.144.0",
-    scenario: input.scenario,
-    entries: input.entries,
-  };
+  return decodeMaterializedTranscript(
+    materializeCodexReplayAppIdentity({
+      provider: "codex",
+      protocol: "codex.app-server",
+      version: "0.144.0",
+      scenario: input.scenario,
+      entries: input.entries,
+    }),
+  );
 }
 
 type Mode =

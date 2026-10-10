@@ -900,7 +900,9 @@
         "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
         "apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
         "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts",
-        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts"
+        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts apps/server/src/provider/RuntimeInstructions.test.ts apps/server/src/provider/CodexDeveloperInstructions.test.ts apps/server/src/provider/T3OrchestrationInstructions.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.test.ts apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
@@ -908,7 +910,7 @@
         "vp run --filter @t3tools/contracts typecheck",
         "vp test run apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts -t \"matches the read-only allowlist\"",
         "vp test run apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts -t \"refreshes ACP prompt instructions\"",
-        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"CodexAdapterV2 runtime policy\"",
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts",
         "vp test run apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts"
       ]
     }
