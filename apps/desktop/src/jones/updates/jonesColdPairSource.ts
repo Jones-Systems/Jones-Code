@@ -462,9 +462,13 @@ class _ColdPairTransaction:
             if pair['copied'][name] is not None: self.copy(self.root / 'previous-pair' / name, stage / name, name == 'profile')
         self.sync_directory(stage)
         require(self.observe_members() == live)
-        self.mkdir(self.root / 'advanced-state')
+        advanced = self.root / 'advanced-state'
+        self.mkdir(advanced)
+        advanced_identity = self.root_identity(advanced)
+        require(advanced not in self.live_root_identities)
+        self.live_root_identities[advanced] = advanced_identity
         value = {'schema': 1, 'intentSha256': self.journal['intentSha256'], 'pairSha256': self.journal['pairSha256'],
-                 'live': live, 'staged': self.observe_members(stage), 'advancedIdentity': self.root_identity(self.root / 'advanced-state')}
+                 'live': live, 'staged': self.observe_members(stage), 'advancedIdentity': advanced_identity}
         raw = self.write('restore-intent.json', value)
         self.save(phase='restore', restoreSha256=sha(raw), done=[], pending=None)
 

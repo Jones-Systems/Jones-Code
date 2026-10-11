@@ -749,6 +749,52 @@ else:
                 assert (tx.root / 'journal.json').read_bytes() == retained_journal
             assert all((tx.root / name).read_bytes() == raw for name, raw in retained.items())
             assert (owner.directory / 'journal.json').read_bytes() == retained_owner
+        elif scenario in ('live-advanced-device-drift', 'live-advanced-inode-drift',
+                          'recovered-advanced-device-drift', 'recovered-advanced-inode-drift'):
+            tx.snapshot()
+            write(database, b'advanced-db')
+            write(root / 'profile/Preferences', b'advanced-profile')
+            advanced = tx.root / 'advanced-state'
+            original_identity = tx.root_identity
+            recovered_case = scenario.startswith('recovered-')
+            if recovered_case:
+                # Model prior-epoch stat numbering; no volume is actually remounted.
+                def prior_advanced_identity(path):
+                    result = original_identity(path)
+                    return dict(result, device=str(int(result['device']) + 1)) if path == advanced else result
+                tx.root_identity = prior_advanced_identity
+            tx.begin_restore()
+            tx.root_identity = original_identity
+            retained = {name: (tx.root / name).read_bytes() for name in ('intent.json', 'pair-descriptor.json', 'restore-intent.json')}
+            retained_owner = (owner.directory / 'journal.json').read_bytes()
+            before_restore = tx.observe_members()
+            active = transaction_type(owner) if recovered_case else tx
+            if recovered_case:
+                result = active.reconcile_restore()
+                assert result['status'] == 'pair-restored-gates-retained'
+                restored = active.observe_members()
+                for name, item in initial.items():
+                    assert (restored[name] is None) == (item is None)
+                    if item is not None: assert restored[name]['content'] == item['content']
+                assert active.observe_members(advanced) == before_restore
+            retained_journal = (tx.root / 'journal.json').read_bytes()
+            before_drift = active.observe_members()
+            retained_advanced = active.observe_members(advanced)
+            original_active_identity = active.root_identity
+            def changed_advanced(path):
+                result = original_active_identity(path)
+                if path == advanced:
+                    field = 'device' if scenario.endswith('device-drift') else 'inode'
+                    result = dict(result, **{field: str(int(result[field]) + 1)})
+                return result
+            active.root_identity = changed_advanced
+            expect_refusal(active.reconcile_restore)
+            expect_refusal(active.reconcile_restore)
+            assert active.observe_members() == before_drift
+            assert active.observe_members(advanced) == retained_advanced
+            assert (tx.root / 'journal.json').read_bytes() == retained_journal
+            assert all((tx.root / name).read_bytes() == raw for name, raw in retained.items())
+            assert (owner.directory / 'journal.json').read_bytes() == retained_owner
         elif scenario == 'profile-volume':
             original_identity = tx.root_identity
             observed_profile = []
@@ -973,6 +1019,10 @@ export const coldPairCases = [
   "live-root-device-drift",
   "live-root-inode-drift",
   "live-root-native-drift",
+  "live-advanced-device-drift",
+  "live-advanced-inode-drift",
+  "recovered-advanced-device-drift",
+  "recovered-advanced-inode-drift",
   "profile-volume",
   "nofollow-before-open",
   "nofollow-after-open",
