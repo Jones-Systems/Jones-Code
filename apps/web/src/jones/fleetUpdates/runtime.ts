@@ -14,13 +14,14 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 
 export const fleetDesktopState = Atom.make<FleetDesktopState | null>(null);
 export const fleetStatusError = Atom.make<string | null>(null);
-export const fleetHostCommand = createRuntimeCommand(connectionAtomRuntime, {
+interface FleetHostCommandInput {
+  readonly environmentId: EnvironmentId;
+  readonly request: FleetHostRequest;
+}
+const fleetHostCommand = createRuntimeCommand(connectionAtomRuntime, {
   label: "jones:fleet-host",
-  concurrency: { mode: "serial", key: (input) => input.environmentId },
-  execute: Effect.fn(function* (input: {
-    readonly environmentId: EnvironmentId;
-    readonly request: FleetHostRequest;
-  }) {
+  concurrency: { mode: "serial", key: (input: FleetHostCommandInput) => input.environmentId },
+  execute: Effect.fn(function* (input: FleetHostCommandInput) {
     const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const entry = (yield* SubscriptionRef.get(registry.entries)).get(input.environmentId);
     if (entry === undefined)
