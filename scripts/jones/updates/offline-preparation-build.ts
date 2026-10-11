@@ -188,6 +188,7 @@ interface BuildCustody {
 }
 
 interface LifecycleFixtureHooks {
+  readonly finalizationFault?: "nonempty-cleanup" | "custody-receipt-directory";
   readonly suppressCommandClose?: boolean;
   readonly child?: (child: NodeChildProcess.ChildProcess) => void;
   readonly stdout?: (bytes: Buffer) => void;
@@ -572,6 +573,8 @@ async function withPreparationBuildScope<A>(
         signalAuthority: "captured-handle-only",
         resources: scope.unresolved,
       };
+      if (fixture?.finalizationFault === "custody-receipt-directory")
+        NodeFS.mkdirSync(NodePath.join(scope.root, "retained-custody.json"));
       const fd = NodeFS.openSync(NodePath.join(scope.root, "retained-custody.json"), "wx", 0o600);
       try {
         NodeFS.writeFileSync(fd, `${encode(evidence)}\n`);
@@ -590,7 +593,10 @@ async function withPreparationBuildScope<A>(
           retainedRoot: scope.root,
         }),
       );
-    } else if (scope.root) NodeFS.rmSync(scope.root, { recursive: true, force: true });
+    } else if (scope.root) {
+      if (fixture?.finalizationFault === "nonempty-cleanup") NodeFS.rmdirSync(scope.root);
+      else NodeFS.rmSync(scope.root, { recursive: true, force: true });
+    }
   } catch (cause) {
     causes.push(cause);
   } finally {
@@ -615,7 +621,9 @@ export async function runPreparationLifecycleFixture(
     | "uncertain-close"
     | "drain-unawaited-command"
     | "signal-command"
-    | "await-signal-command",
+    | "await-signal-command"
+    | "cleanup-failure"
+    | "receipt-failure",
 ) {
   if (
     ![
@@ -627,6 +635,8 @@ export async function runPreparationLifecycleFixture(
       "drain-unawaited-command",
       "signal-command",
       "await-signal-command",
+      "cleanup-failure",
+      "receipt-failure",
     ].includes(scenario)
   )
     throw new Error("Unknown closed preparation lifecycle fixture.");
@@ -636,6 +646,7 @@ export async function runPreparationLifecycleFixture(
     scope?: PreparationBuildScope;
     child?: NodeChildProcess.ChildProcess;
     server?: NodeHTTP.Server;
+    rootIdentity?: { dev: number; ino: number };
   } = {};
   let childClosed = false;
   let closeChild: (() => void) | undefined;
@@ -649,6 +660,12 @@ export async function runPreparationLifecycleFixture(
   let serverClosed = true;
   let retainedBeforeFixtureCleanup = false;
   let custodyEvidence: unknown;
+  let retentionKind: "none" | "cleanup-retained" | "custody-unresolved" | "inspection-unresolved" =
+    "none";
+  let evidenceReadFailure: unknown;
+  let retainedBeforeRecovery = false;
+  let fixtureRecoveryObserved = false;
+  let outerRemoved = false;
   let listenersInstalled = false;
   let operationFailure: unknown;
   let outcome: "complete" | "rejected" = "complete";
@@ -674,6 +691,8 @@ export async function runPreparationLifecycleFixture(
         controller.signal,
         async (scope) => {
           observed.scope = scope;
+          const identity = NodeFS.lstatSync(scope.root);
+          observed.rootIdentity = { dev: identity.dev, ino: identity.ino };
           listenersInstalled = scope.listenersInstalled;
           NodeFS.writeFileSync(NodePath.join(scope.root, "owned.bin"), Buffer.alloc(4096), {
             flag: "wx",
@@ -701,7 +720,8 @@ export async function runPreparationLifecycleFixture(
           const waiting =
             scenario === "abort-command" ||
             scenario === "drain-unawaited-command" ||
-            scenario === "await-signal-command";
+            scenario === "await-signal-command" ||
+            scenario === "receipt-failure";
           const signalDriver = `import(${encode(import.meta.url)}).then(async ({ runPreparationLifecycleFixture }) => {
           const report = await runPreparationLifecycleFixture("await-signal-command");
           process.stdout.write("signal-report:" + JSON.stringify(report) + "\\n");
@@ -711,7 +731,7 @@ export async function runPreparationLifecycleFixture(
               ? signalDriver
               : waiting
                 ? 'process.stdout.write("ready"); setInterval(() => {}, 60000);'
-                : scenario === "failure"
+                : scenario === "failure" || scenario === "cleanup-failure"
                   ? 'process.stderr.write("owned failure"); process.exitCode = 7;'
                   : 'process.stdout.write("owned success");';
           const operation = scope.command(process.execPath, ["-e", program], scope.root, 4096);
@@ -722,7 +742,12 @@ export async function runPreparationLifecycleFixture(
           await operation;
         },
         {
-          suppressCommandClose: scenario === "uncertain-close",
+          suppressCommandClose: scenario === "uncertain-close" || scenario === "receipt-failure",
+          ...(scenario === "cleanup-failure"
+            ? { finalizationFault: "nonempty-cleanup" as const }
+            : scenario === "receipt-failure"
+              ? { finalizationFault: "custody-receipt-directory" as const }
+              : {}),
           child: (child) => {
             observed.child = child;
             child.once("close", () => {
@@ -736,6 +761,8 @@ export async function runPreparationLifecycleFixture(
             if (scenario === "signal-command") observed.child?.kill("SIGTERM");
             if (scenario === "await-signal-command") process.stdout.write("signal-scope-ready\n");
             if (scenario === "abort-command") controller.abort(new Error("owned command abort"));
+            if (scenario === "receipt-failure")
+              controller.abort(new Error("owned receipt primary failure"));
           },
         },
       );
@@ -743,13 +770,39 @@ export async function runPreparationLifecycleFixture(
       outcome = "rejected";
       operationFailure = cause;
     }
-    if (observed.scope?.root && NodeFS.existsSync(observed.scope.root)) {
-      retainedBeforeFixtureCleanup = true;
-      custodyEvidence = decode(
-        readFile(NodePath.join(observed.scope.root, "retained-custody.json"), 32 * 1024).toString(
-          "utf8",
-        ),
-      );
+    if (observed.scope?.root) {
+      let rootObserved = false;
+      try {
+        NodeFS.lstatSync(observed.scope.root);
+        rootObserved = true;
+        retainedBeforeFixtureCleanup = true;
+        retentionKind =
+          observed.scope.unresolved.length === 0 ? "cleanup-retained" : "custody-unresolved";
+        // A failed cleanup does not imply that a custody receipt was ever produced.
+        if (retentionKind === "custody-unresolved")
+          custodyEvidence = decode(
+            readFile(
+              NodePath.join(observed.scope.root, "retained-custody.json"),
+              32 * 1024,
+            ).toString("utf8"),
+          );
+      } catch (cause) {
+        const absentRoot =
+          !rootObserved &&
+          typeof cause === "object" &&
+          cause !== null &&
+          "code" in cause &&
+          cause.code === "ENOENT";
+        if (!absentRoot) {
+          evidenceReadFailure = cause;
+          if (!rootObserved) retentionKind = "inspection-unresolved";
+          outcome = "rejected";
+          operationFailure = new AggregateError(
+            operationFailure === undefined ? [cause] : [operationFailure, cause],
+            "Preparation fixture evidence inspection failed; prior cause and root retained.",
+          );
+        }
+      }
     }
   } finally {
     try {
@@ -772,8 +825,67 @@ export async function runPreparationLifecycleFixture(
         await bounded(closed, "Fixture loopback server close is unresolved.");
       }
       if (observed.child && !childClosed) throw new Error("Fixture child custody is unresolved.");
+      const unresolvedClosedIndependently =
+        observed.scope?.unresolved.every(
+          (resource) =>
+            resource.kind === "command" && resource.pid === observed.child?.pid && childClosed,
+        ) ?? true;
+      if (
+        evidenceReadFailure === undefined &&
+        retentionKind !== "cleanup-retained" &&
+        unresolvedClosedIndependently
+      ) {
+        NodeFS.rmSync(outer, { recursive: true, force: true });
+        outerRemoved = true;
+        if (observed.child) retainedBuildHandles.delete(observed.child);
+      } else retainedBeforeRecovery = true;
+    } catch (cause) {
+      cleanupFailure = cause;
+    }
+  }
+  // Only these closed fault cases can reconcile their retained synthetic root. Neither a missing receipt nor a scenario name alone proves custody.
+  if (
+    retainedBeforeRecovery &&
+    cleanupFailure === undefined &&
+    (scenario === "cleanup-failure" || scenario === "receipt-failure")
+  ) {
+    try {
+      const root = observed.scope?.root;
+      if (
+        !root ||
+        !observed.rootIdentity ||
+        !childClosed ||
+        !serverClosed ||
+        !observed.child ||
+        !observed.scope?.unresolved.every(
+          (resource) => resource.kind === "command" && resource.pid === observed.child?.pid,
+        )
+      )
+        throw new Error("Synthetic finalization recovery lacks independent resource closure.");
+      const identity = NodeFS.lstatSync(root);
+      const names = NodeFS.readdirSync(root).sort();
+      const expected =
+        scenario === "cleanup-failure" ? ["owned.bin"] : ["owned.bin", "retained-custody.json"];
+      if (
+        !identity.isDirectory() ||
+        identity.dev !== observed.rootIdentity.dev ||
+        identity.ino !== observed.rootIdentity.ino ||
+        encode(names) !== encode(expected) ||
+        !readFile(NodePath.join(root, "owned.bin"), 4096).equals(Buffer.alloc(4096))
+      )
+        throw new Error("Synthetic finalization recovery root differs from the captured fixture.");
+      if (scenario === "receipt-failure") {
+        const receipt = NodePath.join(root, "retained-custody.json");
+        if (!NodeFS.lstatSync(receipt).isDirectory() || NodeFS.readdirSync(receipt).length !== 0)
+          throw new Error(
+            "Synthetic receipt failure differs from the owned empty-directory fault.",
+          );
+      }
+      // Inspection causes are already retained in operationFailure before removing these independently closed resources.
       NodeFS.rmSync(outer, { recursive: true, force: true });
-      if (observed.child) retainedBuildHandles.delete(observed.child);
+      outerRemoved = true;
+      retainedBuildHandles.delete(observed.child);
+      fixtureRecoveryObserved = true;
     } catch (cause) {
       cleanupFailure = cause;
     }
@@ -807,7 +919,13 @@ export async function runPreparationLifecycleFixture(
     serverClosed,
     retainedBeforeFixtureCleanup,
     custodyEvidence,
-    rootRemoved: !NodeFS.existsSync(outer),
+    retentionKind,
+    retainedBeforeRecovery,
+    fixtureRecoveryObserved,
+    evidenceReadFailed: evidenceReadFailure !== undefined,
+    failureCauses: preparationFailureCauses(operationFailure),
+    retainedRoot: outerRemoved ? undefined : outer,
+    rootRemoved: outerRemoved && !NodeFS.existsSync(outer),
     failureMessage: operationFailure instanceof Error ? operationFailure.message : undefined,
     failureStatus:
       typeof operationFailure === "object" &&
@@ -816,6 +934,24 @@ export async function runPreparationLifecycleFixture(
         ? operationFailure.status
         : undefined,
   };
+}
+
+function preparationFailureCauses(
+  cause: unknown,
+): readonly { message: string; code?: unknown; status?: unknown }[] {
+  const result: { message: string; code?: unknown; status?: unknown }[] = [];
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 8 || result.length >= 32 || !(value instanceof Error)) return;
+    result.push({
+      message: value.message,
+      ...("code" in value ? { code: value.code } : {}),
+      ...("status" in value ? { status: value.status } : {}),
+    });
+    if (value instanceof AggregateError)
+      for (const inner of value.errors.slice(0, 32)) visit(inner, depth + 1);
+  };
+  visit(cause, 0);
+  return result;
 }
 
 function readFile(file: string, limit: number): Buffer {

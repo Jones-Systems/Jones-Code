@@ -190,6 +190,58 @@ describe("closed preparation SEA build", () => {
       expect(report.failureMessage).toMatch(/admitted resources unfinished/);
   });
 
+  it("keeps the command failure when actual nonempty-directory cleanup fails", async () => {
+    const report = await runPreparationLifecycleFixture("cleanup-failure");
+    expect(report.outcome).toBe("rejected");
+    expect(report.childCloseObserved).toBe(true);
+    expect(report.listenersRestored).toBe(true);
+    expect(report.retentionKind).toBe("cleanup-retained");
+    expect(report.custodyEvidence).toBeUndefined();
+    expect(report.evidenceReadFailed).toBe(false);
+    expect(report.failureCauses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 7 }),
+        expect.objectContaining({ code: "ENOTEMPTY" }),
+      ]),
+    );
+    expect(report.failureCauses.findIndex((cause) => cause.status === 7)).toBeLessThan(
+      report.failureCauses.findIndex((cause) => cause.code === "ENOTEMPTY"),
+    );
+    expect(report.retainedBeforeRecovery).toBe(true);
+    expect(report.fixtureRecoveryObserved).toBe(true);
+    expect(report.rootRemoved).toBe(true);
+  });
+
+  it("aggregates receipt publication and read failures behind the original resource failure", async () => {
+    const report = await runPreparationLifecycleFixture("receipt-failure");
+    expect(report.outcome).toBe("rejected");
+    expect(report.childCloseObserved).toBe(true);
+    expect(report.listenersRestored).toBe(true);
+    expect(report.retentionKind).toBe("custody-unresolved");
+    expect(report.evidenceReadFailed).toBe(true);
+    expect(report.failureCauses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: "owned receipt primary failure" }),
+        expect.objectContaining({ code: "EEXIST" }),
+        expect.objectContaining({
+          message: "Unbounded or non-regular build member: retained-custody.json",
+        }),
+      ]),
+    );
+    const primary = report.failureCauses.findIndex(
+      (cause) => cause.message === "owned receipt primary failure",
+    );
+    const publication = report.failureCauses.findIndex((cause) => cause.code === "EEXIST");
+    const inspection = report.failureCauses.findIndex(
+      (cause) => cause.message === "Unbounded or non-regular build member: retained-custody.json",
+    );
+    expect(primary).toBeLessThan(publication);
+    expect(publication).toBeLessThan(inspection);
+    expect(report.retainedBeforeRecovery).toBe(true);
+    expect(report.fixtureRecoveryObserved).toBe(true);
+    expect(report.rootRemoved).toBe(true);
+  });
+
   it("disables framework cleanup and retires only a verified completed output", () =>
     withArtifact((root) => {
       expect(offlinePreparationPack(root).clean).toBe(false);
