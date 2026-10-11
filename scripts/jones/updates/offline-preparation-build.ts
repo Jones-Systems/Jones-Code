@@ -11,10 +11,10 @@ import * as NodeOS from "node:os";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Native deadlines bound captured build resources before their scratch can be removed.
 import * as NodeTimers from "node:timers";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Only the closed lifecycle fixture opens an owned loopback HTTP server.
-import * as NodeHTTP from "node:http";
+import * as NodeHttp from "node:http";
 import * as NodeUtil from "node:util";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The sole download origin is the pinned official Node release over verified TLS.
-import * as NodeHTTPS from "node:https";
+import * as NodeHttpS from "node:https";
 import * as Schema from "effect/Schema";
 import ts from "typescript-legacy";
 import type { Plugin } from "vite-plus";
@@ -449,7 +449,7 @@ class PreparationBuildScope {
         let settled = false;
         let ended = false;
         let requestClosed = false;
-        let response: NodeHTTP.IncomingMessage | undefined;
+        let response: NodeHttp.IncomingMessage | undefined;
         let responseClosed = false;
         let socket: import("node:net").Socket | undefined;
         let socketClosed = false;
@@ -504,9 +504,9 @@ class PreparationBuildScope {
           // @effect-diagnostics-next-line globalTimers:off -- This native socket-close deadline records unresolved custody and is cleared after observed closure.
           drainTimer ??= NodeTimers.setTimeout(() => finish(true), 2_000);
         };
-        let request: NodeHTTP.ClientRequest;
+        let request: NodeHttp.ClientRequest;
         try {
-          request = (secure ? NodeHTTPS : NodeHTTP).get(url, { agent: false }, (incoming) => {
+          request = (secure ? NodeHttpS : NodeHttp).get(url, { agent: false }, (incoming) => {
             response = incoming;
             incoming.once("close", () => {
               responseClosed = true;
@@ -653,7 +653,7 @@ export async function runPreparationLifecycleFixture(
   const observed: {
     scope?: PreparationBuildScope;
     child?: NodeChildProcess.ChildProcess;
-    server?: NodeHTTP.Server;
+    server?: NodeHttp.Server;
     rootIdentity?: { dev: number; ino: number };
   } = {};
   let childClosed = false;
@@ -708,7 +708,7 @@ export async function runPreparationLifecycleFixture(
             mode: 0o600,
           });
           if (scenario === "abort-download") {
-            observed.server = NodeHTTP.createServer((_request, response) => {
+            observed.server = NodeHttp.createServer((_request, response) => {
               response.on("error", () => {});
               response.writeHead(200);
               response.write("owned partial bytes");

@@ -402,10 +402,20 @@ function preparationData(value: unknown): JonesLegacyBootstrapPreparation {
       sqlite.sourceId.length === 84 &&
       /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [a-f0-9]{64}$/.test(sqlite.sourceId),
   );
-  const sourceDate = sqlite.sourceId.slice(0, 19).replace(" ", "T") + ".000Z";
-  const parsedDate = new Date(sourceDate);
+  const [year, month, day, hour, minute, second] = sqlite.sourceId
+    .slice(0, 19)
+    .split(/[- :]/)
+    .map(Number);
+  const leap = year! % 4 === 0 && (year! % 100 !== 0 || year! % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   preparationRequire(
-    Number.isFinite(parsedDate.getTime()) && parsedDate.toISOString() === sourceDate,
+    month! >= 1 &&
+      month! <= 12 &&
+      day! >= 1 &&
+      day! <= days[month! - 1]! &&
+      hour! <= 23 &&
+      minute! <= 59 &&
+      second! <= 59,
   );
   return Object.freeze({
     schema: 1,
