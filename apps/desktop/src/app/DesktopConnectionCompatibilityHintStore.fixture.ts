@@ -18,6 +18,19 @@ const store = await Effect.runPromise(
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 let pending = Promise.resolve();
+process.on("error", () => {
+  process.exitCode = 1;
+});
+function send(message: object) {
+  if (!process.connected || !process.send) return;
+  try {
+    process.send(message, (error) => {
+      if (error) process.exitCode = 1;
+    });
+  } catch {
+    process.exitCode = 1;
+  }
+}
 process.on(
   "message",
   (message: {
@@ -39,14 +52,14 @@ process.on(
                   message.kind ?? null,
                 ),
               );
-        process.send?.({ id: message.id, ok: true, result });
+        send({ id: message.id, ok: true, result });
       } catch (error) {
-        process.send?.({ id: message.id, ok: false, error: String(error) });
+        send({ id: message.id, ok: false, error: String(error) });
       }
     });
   },
 );
 process.on("disconnect", () => {
-  void pending.then(() => process.exit(0));
+  void pending.then(() => process.exit(process.exitCode ?? 0));
 });
-process.send({ ready: true });
+send({ ready: true });
