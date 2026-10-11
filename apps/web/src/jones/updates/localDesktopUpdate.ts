@@ -84,3 +84,19 @@ export function getJonesDesktopUpdateBuildUrl(state: DesktopUpdateState): string
   const provenance = state.jones?.provenance;
   return provenance ? `https://github.com/Jones-Systems/Jones-Code/actions/runs/${provenance.runId}` : null;
 }
+
+export function canDiscardLocalDesktopUpdate(state: DesktopUpdateState | null): boolean {
+  const jones = state?.jones;
+  return jones !== undefined && jones.stagedHandle !== undefined &&
+    !["checking", "downloading", "verifying", "preparing", "installing"].includes(jones.phase) &&
+    jones.capability.reason !== "blocked" && jones.capability.reason !== "bootstrap-required";
+}
+
+export function discardLocalDesktopUpdate(
+  bridge: Pick<DesktopBridge, "discardUpdate">,
+  state: DesktopUpdateState | null,
+): Promise<DesktopUpdateActionResult> {
+  if (!bridge.discardUpdate || !canDiscardLocalDesktopUpdate(state) || !state?.jones?.stagedHandle)
+    return Promise.reject(new Error("The downloaded selection cannot be discarded right now."));
+  return bridge.discardUpdate(state.jones.stagedHandle);
+}

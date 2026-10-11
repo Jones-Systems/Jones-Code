@@ -5,8 +5,8 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { UPDATE_INSTALL_CHANNEL, UPDATE_DOWNLOAD_CHANNEL } from "../../ipc/channels.ts";
-import { downloadUpdate, installUpdate } from "../../ipc/methods/updates.ts";
+import { UPDATE_INSTALL_CHANNEL, UPDATE_DOWNLOAD_CHANNEL, UPDATE_DISCARD_CHANNEL } from "../../ipc/channels.ts";
+import { discardUpdate, downloadUpdate, installUpdate } from "../../ipc/methods/updates.ts";
 import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 
@@ -41,6 +41,11 @@ describe("desktop preload install bridge", () => {
     expect(mocks.invoke).toHaveBeenLastCalledWith(UPDATE_DOWNLOAD_CHANNEL);
   });
 
+  it("forwards the exact discard handle", async () => {
+    await bridge.discardUpdate!("staged-build-123");
+    expect(mocks.invoke).toHaveBeenLastCalledWith(UPDATE_DISCARD_CHANNEL, "staged-build-123");
+  });
+
   it("preserves the exact Jones staged handle across Electron IPC", async () => {
     await bridge.installUpdate("staged-build-123");
     expect(mocks.invoke).toHaveBeenLastCalledWith(UPDATE_INSTALL_CHANNEL, "staged-build-123");
@@ -64,6 +69,7 @@ describe("desktop install IPC decoding", () => {
       capability: { check: true, download: true, install: false },
     };
     const result = { accepted: true, completed: false, state };
+    const discardStaged = vi.fn(() => Effect.succeed(result));
     const downloadSelected = vi.fn(() => Effect.succeed(result));
     const download = vi.fn(() => result);
     const installStaged = vi.fn(() => Effect.succeed(result));
@@ -80,6 +86,7 @@ describe("desktop install IPC decoding", () => {
       check: () => Effect.succeed({ checked: true, state }),
       download: Effect.sync(download),
       downloadSelected,
+      discardStaged,
       install: Effect.sync(install),
       installStaged,
       installPrepared: () => Effect.succeed({ ...result, failed: false }),
@@ -91,8 +98,21 @@ describe("desktop install IPC decoding", () => {
     const invokeDownload = (payload: unknown) => downloadUpdate.handler(payload).pipe(
       Effect.provideService(DesktopUpdates.DesktopUpdates, service),
     );
-    return { invoke, installStaged, install, invokeDownload, download, downloadSelected };
+    const invokeDiscard = (payload: unknown) => discardUpdate.handler(payload).pipe(
+      Effect.provideService(DesktopUpdates.DesktopUpdates, service),
+    );
+    return { invoke, installStaged, install, invokeDownload, download, downloadSelected, invokeDiscard, discardStaged };
   }
+
+  effectIt.effect("decodes exact discard handles and rejects malformed requests", () =>
+    Effect.gen(function* () {
+      const { invokeDiscard, discardStaged } = harness(true);
+      yield* invokeDiscard("staged-build-123");
+      expect(discardStaged).toHaveBeenCalledExactlyOnceWith("staged-build-123");
+      expect(Exit.isFailure(yield* Effect.exit(invokeDiscard(undefined)))).toBe(true);
+      expect(discardStaged).toHaveBeenCalledOnce();
+    }),
+  );
 
   effectIt.effect("decodes Download selection and refuses missing Jones selection", () =>
     Effect.gen(function* () {

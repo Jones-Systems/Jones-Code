@@ -68,6 +68,8 @@ import {
   getJonesDesktopUpdateBlockedMessage,
   installLocalDesktopUpdate,
   downloadLocalDesktopUpdate,
+  discardLocalDesktopUpdate,
+  canDiscardLocalDesktopUpdate,
 } from "../../jones/updates/localDesktopUpdate";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
@@ -470,6 +472,35 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
+      {hasDesktopBridge && updateState?.jones?.stagedHandle && window.desktopBridge?.discardUpdate ? (
+        <SettingsRow
+          title="Downloaded build"
+          description="Discard this selection to check for another build. The active app keeps running."
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isUpdateActionPending || !canDiscardLocalDesktopUpdate(updateState)}
+              onClick={() => {
+                const bridge = window.desktopBridge;
+                if (!bridge || isUpdateActionPending) return;
+                setIsUpdateActionPending(true);
+                void discardLocalDesktopUpdate(bridge, updateState).then((result) => {
+                  const failure = getDesktopUpdateActionError(result);
+                  if (failure) throw new Error(failure);
+                }).catch((error: unknown) => {
+                  toastManager.add(stackedThreadToast({
+                    type: "error", title: "Could not discard downloaded build",
+                    description: error instanceof Error ? error.message : "Discard failed.",
+                  }));
+                }).finally(() => setIsUpdateActionPending(false));
+              }}
+            >
+              Discard download
+            </Button>
+          }
+        />
+      ) : null}
       {hasDesktopBridge && updateState?.jones ? (
         <SettingsRow
           title="Update track"

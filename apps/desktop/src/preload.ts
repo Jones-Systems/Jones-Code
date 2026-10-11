@@ -305,6 +305,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     selection === undefined
       ? ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL)
       : ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL, selection),
+  discardUpdate: (stagedHandle) => ipcRenderer.invoke(IpcChannels.UPDATE_DISCARD_CHANNEL, stagedHandle),
   installUpdate: (stagedHandle) =>
     stagedHandle === undefined
       ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL)

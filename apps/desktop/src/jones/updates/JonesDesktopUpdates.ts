@@ -74,6 +74,15 @@ const NativeStageReceipt = Schema.Struct({
   candidate: Schema.Unknown,
 });
 
+const decodeNativeSelectionResult = Schema.decodeUnknownSync(Schema.Struct({
+  protocol: Schema.Literal(1),
+  operation: Schema.Literals(["discard-staged", "claim-activation"]),
+  handle: Schema.String,
+  status: Schema.Literals(["discarded", "claimed", "refused", "uncertain"]),
+  intentPath: Schema.optionalKey(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
+}));
+
 const decodeBuildMetadata = Schema.decodeUnknownSync(BuildMetadata);
 const decodeActiveInstall = Schema.decodeUnknownSync(JonesActiveInstall);
 const decodeStagedApp = Schema.decodeUnknownSync(JonesStagedMacApp);
@@ -147,7 +156,7 @@ export class JonesDesktopUpdateController {
   #source: string | undefined;
   #candidate: JonesActionsCandidate | undefined;
   #staged: StagedMacApp | undefined;
-  #busy: "check" | "download" | "install" | null = null;
+  #busy: "check" | "download" | "install" | "discard" | null = null;
   #bootstrap: ActiveInstall | undefined;
   #activationBlocked = false;
   #candidateStartupGateUnavailable = false;
@@ -723,6 +732,58 @@ export class JonesDesktopUpdateController {
     }
   }
 
+  async #helperPath(): Promise<string> {
+    const helperHash = NodeCrypto.createHash("sha256").update(jonesNativeHelperSource).digest("hex");
+    const helper = NodePath.join(this.updaterRoot, `activate-v1-${helperHash}.py`);
+    try {
+      await writeJonesNativeFile(helper, jonesNativeHelperSource, 0o700);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "EEXIST" ||
+        (await NodeFSP.readFile(helper, "utf8")) !== jonesNativeHelperSource) throw cause;
+    }
+    return helper;
+  }
+
+  async discard(handle: string): Promise<{ accepted: boolean; completed: boolean }> {
+    if (this.#busy !== null || this.#staged?.handle !== handle || this.#activationBlocked ||
+      this.#options.disabledByEnv || this.#bootstrap === undefined) {
+      return { accepted: false, completed: false };
+    }
+    this.#busy = "discard";
+    let dispatched = false;
+    try {
+      const selection = await this.#selectionFile();
+      const raw = await NodeFSP.readFile(selection, "utf8");
+      if (decodeStageSelection(JSON.parse(raw)).app.handle !== handle) throw new Error("Selection changed.");
+      const helper = await this.#helperPath();
+      dispatched = true;
+      const result = decodeNativeSelectionResult(JSON.parse(await runNativeCommand("/usr/bin/python3", [
+        helper, "--manifest", this.manifestPath, "--discard-staged", handle,
+        "--selection", selection, "--selection-sha256", NodeCrypto.createHash("sha256").update(raw).digest("hex"),
+      ])));
+      if (result.operation !== "discard-staged" || result.handle !== handle || result.status === "uncertain")
+        throw new Error("Native discard outcome is uncertain.");
+      if (result.status !== "discarded") {
+        if (result.status !== "refused") throw new Error("Unexpected native discard outcome.");
+        await this.#publish("blocked", "downloaded", "The retained stage cannot be discarded while native work needs reconciliation.");
+        return { accepted: false, completed: false };
+      }
+      this.#staged = undefined;
+      this.#candidate = undefined;
+      this.#candidateStartupGateUnavailable = false;
+      await this.#publish("no-new", "idle", "Downloaded selection discarded. Check for builds to select another update.");
+      return { accepted: true, completed: true };
+    } catch {
+      if (dispatched) this.#activationBlocked = true;
+      await this.#publish("blocked", "downloaded", dispatched
+        ? "The discard outcome needs reconciliation; the retained stage remains held."
+        : "The downloaded selection could not be verified; its files were preserved.");
+      return { accepted: false, completed: false };
+    } finally {
+      this.#busy = null;
+    }
+  }
+
   async install(handle?: string): Promise<{
     accepted: boolean;
     completed: boolean;
@@ -753,19 +814,11 @@ export class JonesDesktopUpdateController {
       await preflightJonesCandidateStartupGate(staged);
       const tx = NodePath.dirname(jonesContinuationReceiptPath(this.#options.home, handle));
       await NodeFSP.mkdir(tx, { recursive: true, mode: 0o700 });
-      const helperHash = NodeCrypto.createHash("sha256")
-        .update(jonesNativeHelperSource)
-        .digest("hex");
-      const helper = NodePath.join(this.updaterRoot, `activate-v1-${helperHash}.py`);
-      try {
-        await writeJonesNativeFile(helper, jonesNativeHelperSource, 0o700);
-      } catch (cause) {
-        if (
-          (cause as NodeJS.ErrnoException).code !== "EEXIST" ||
-          (await NodeFSP.readFile(helper, "utf8")) !== jonesNativeHelperSource
-        )
-          throw cause;
-      }
+      const helper = await this.#helperPath();
+      const selectionPath = await this.#selectionFile();
+      const selectionRaw = await NodeFSP.readFile(selectionPath, "utf8");
+      if (decodeStageSelection(JSON.parse(selectionRaw)).app.handle !== handle)
+        throw new Error("The selected native stage changed.");
       await runNativeCommand("/usr/bin/python3", ["--version"]);
       const intentPath = NodePath.join(tx, "intent.json");
       try {
@@ -792,7 +845,23 @@ export class JonesDesktopUpdateController {
         processes: await this.#options.processProofs(),
         listener: await this.#options.listener(),
       };
-      await writeJonesNativeFile(intentPath, JSON.stringify(intent) + "\n", 0o600);
+      const requestPath = NodePath.join(tx, "activation-request.json");
+      const requestBytes = JSON.stringify(intent) + "\n";
+      try {
+        await writeJonesNativeFile(requestPath, requestBytes, 0o600);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "EEXIST" ||
+          (await NodeFSP.readFile(requestPath, "utf8")) !== requestBytes) throw cause;
+      }
+      this.#activationBlocked = true;
+      const claim = decodeNativeSelectionResult(JSON.parse(await runNativeCommand("/usr/bin/python3", [
+        helper, "--manifest", this.manifestPath, "--claim-activation", requestPath,
+        "--selection", selectionPath, "--selection-sha256",
+        NodeCrypto.createHash("sha256").update(selectionRaw).digest("hex"),
+      ])));
+      if (claim.operation !== "claim-activation" || claim.handle !== handle ||
+        claim.status !== "claimed" || claim.intentPath !== intentPath)
+        throw new Error("Native activation claim was not confirmed.");
       // This child is detached and owns its lock/journal; it outlives this Electron process.
       await new Promise<void>((resolve, reject) => {
         const child = NodeChildProcess.spawn(
@@ -851,7 +920,9 @@ export class JonesDesktopUpdateController {
       await this.#publish(
         "blocked",
         "downloaded",
-        "Native install could not prove its preparation and launcher binding; the current app remains active.",
+        this.#activationBlocked
+          ? "Native installation needs reconciliation; the retained transaction will not be retried automatically."
+          : "Native install could not prove its preparation and launcher binding; the current app remains active.",
       );
       return { accepted: false, completed: false, failed: true };
     }

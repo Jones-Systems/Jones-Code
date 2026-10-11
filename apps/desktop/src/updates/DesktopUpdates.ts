@@ -197,6 +197,7 @@ export class DesktopUpdates extends Context.Service<
       selection: JonesDesktopDownloadSelection,
     ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
+    readonly discardStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
     readonly installStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
     readonly installPrepared: (
       expectedVersion: string,
@@ -466,6 +467,9 @@ export const make = Effect.gen(function* () {
         ),
       install: install().pipe(
         Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
+      ),
+      discardStaged: (handle) => Effect.promise(() => controller.discard(handle)).pipe(
+        Effect.map((result) => ({ ...result, state: controller.state })),
       ),
       installStaged: (handle) =>
         install(handle).pipe(

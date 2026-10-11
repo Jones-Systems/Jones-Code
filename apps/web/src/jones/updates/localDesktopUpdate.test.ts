@@ -8,7 +8,7 @@ import {
   isDesktopUpdateButtonDisabled,
 } from "../../components/desktopUpdate.logic";
 import { showDesktopUpdateDownloadedToast } from "../../components/desktopUpdate.toast";
-import { downloadLocalDesktopUpdate, getJonesDesktopUpdateBuildUrl, installLocalDesktopUpdate } from "./localDesktopUpdate";
+import { canDiscardLocalDesktopUpdate, discardLocalDesktopUpdate, downloadLocalDesktopUpdate, getJonesDesktopUpdateBuildUrl, installLocalDesktopUpdate } from "./localDesktopUpdate";
 
 const toast = vi.hoisted(() => ({ add: vi.fn() }));
 vi.mock("../../components/ui/toast", () => ({ toastManager: toast }));
@@ -78,6 +78,18 @@ describe("Jones local desktop update UI", () => {
       accepted: true, completed: false,
       state: { ...downloaded, message: "Could not stage", jones: { ...downloaded.jones!, phase: "error" } },
     })).toBe("Could not stage");
+  });
+
+  it("discards the displayed handle but refuses an activation in progress", async () => {
+    const bridge = { discardUpdate: vi.fn().mockResolvedValue(result()) };
+    expect(canDiscardLocalDesktopUpdate(downloaded)).toBe(true);
+    await discardLocalDesktopUpdate(bridge, downloaded);
+    expect(bridge.discardUpdate).toHaveBeenCalledExactlyOnceWith("downloaded-1.1.0");
+    const installing = { ...downloaded, jones: { ...downloaded.jones!, phase: "installing" as const } };
+    expect(canDiscardLocalDesktopUpdate(installing)).toBe(false);
+    await expect(discardLocalDesktopUpdate(bridge, installing)).rejects.toThrow("cannot be discarded");
+    await expect(discardLocalDesktopUpdate({}, downloaded)).rejects.toThrow("cannot be discarded");
+    expect(bridge.discardUpdate).toHaveBeenCalledOnce();
   });
 
   it("installs the downloaded handle even when another version is available", async () => {

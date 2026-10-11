@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Source-qualified synthetic desktop fixture, never launches a native app.
+import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -45,6 +46,7 @@ const handle = "e".repeat(64);
 const fixtures = new Set<string>();
 async function cleanupFixture(root: string): Promise<void> {
   await NodeFSP.rm(root, { recursive: true, force: true });
+  await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
   fixtures.delete(root);
 }
 afterEach(async () => {
@@ -362,6 +364,54 @@ describe("Jones desktop updates", () => {
       await f.cleanup();
     }
   });
+
+  it.each(["discarded", "refused", "uncertain"] as const)(
+    "handles native discard %s without removing candidate bytes or live state",
+    async (status) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      try {
+        await f.controller.configure();
+        await f.controller.check();
+        await f.controller.download();
+        let selectionPath = "";
+        nativeCommand.mockImplementation((command, args, _options, callback) => {
+          expect(command).toBe("/usr/bin/python3");
+          if (typeof callback !== "function" || !Array.isArray(args)) throw new Error("Invalid command fixture.");
+          expect(args[3]).toBe("--discard-staged");
+          expect(args[4]).toBe(handle);
+          selectionPath = String(args[6]);
+          void (async () => {
+            const raw = await NodeFSP.readFile(selectionPath, "utf8");
+            expect(args[8]).toBe(NodeCrypto.createHash("sha256").update(raw).digest("hex"));
+            if (status === "discarded") await NodeFSP.unlink(selectionPath);
+            callback(null, JSON.stringify({ protocol: 1, operation: "discard-staged", handle, status }), "");
+          })().catch((cause: NodeChildProcess.ExecFileException) => callback(cause, "", ""));
+          return new NodeChildProcess.ChildProcess();
+        });
+        expect(await f.controller.discard("wrong-handle")).toEqual({ accepted: false, completed: false });
+        expect(await f.controller.discard(handle)).toEqual({ accepted: status === "discarded", completed: status === "discarded" });
+        if (status === "discarded") {
+          expect(f.controller.state.jones?.stagedHandle).toBeUndefined();
+          await expect(NodeFSP.lstat(selectionPath)).rejects.toMatchObject({ code: "ENOENT" });
+          const restarted = f.restart();
+          await restarted.configure();
+          expect(restarted.state.jones?.stagedHandle).toBeUndefined();
+          await f.controller.check();
+          expect(f.controller.state.jones?.provenance?.artifactId).toBe(99);
+        } else {
+          expect(f.controller.state.jones?.stagedHandle).toBe(handle);
+          expect((await NodeFSP.lstat(selectionPath)).isFile()).toBe(true);
+          if (status === "uncertain") expect(f.controller.state.jones?.capability.reason).toBe("blocked");
+        }
+        expect((await NodeFSP.lstat(NodePath.join(f.home, "runtime", "jones-updates", "apps", handle, "Candidate.app"))).isDirectory()).toBe(true);
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        nativeCommand.mockReset();
+        await f.cleanup();
+      }
+    },
+  );
 
   it("retains a markerless candidate without preparing or launching native activation", async () => {
     const f = await fixture();

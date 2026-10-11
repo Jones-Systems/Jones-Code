@@ -71,3 +71,14 @@ export const checkForUpdate = DesktopIpc.makeIpcMethod({
     return yield* updates.check("web-ui");
   }),
 });
+
+export const discardUpdate = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.UPDATE_DISCARD_CHANNEL,
+  payload: Schema.String,
+  result: DesktopUpdateActionResultSchema,
+  handler: Effect.fn("desktop.ipc.updates.discard")(function* (handle) {
+    const updates = yield* DesktopUpdates.DesktopUpdates;
+    if (updates.discardStaged !== undefined) return yield* updates.discardStaged(handle);
+    return { accepted: false, completed: false, state: yield* updates.getState };
+  }),
+});

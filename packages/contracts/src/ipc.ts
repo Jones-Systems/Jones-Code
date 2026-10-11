@@ -1294,6 +1294,7 @@ export interface DesktopBridge {
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: (selection?: JonesUpdateDownloadInput) => Promise<DesktopUpdateActionResult>;
+  discardUpdate?: (stagedHandle: string) => Promise<DesktopUpdateActionResult>;
   installUpdate: (stagedHandle?: string) => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /** Settings → `t3` command. Optional: older desktop builds lack it. */
