@@ -168,7 +168,9 @@
         "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
         "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "packages/contracts/src/jones/workQueueMetadata.test.ts"
+        "packages/contracts/src/jones/workQueueMetadata.test.ts",
+        "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
+        "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx"
       ],
       "scope": "Validated artifact metadata configuration and reads, authenticated HTTP registration, and capability-gated shared client reads. UnifiedQueuePage presents Pending, Queued and Sent, combines genuine voice review with read-only external queue metadata, preserves editing across stage changes, and keeps unavailable and stale observations distinct from empty queues. Legacy Queue and Voice Review routes share the Prompts page; voice processing release does not establish confirmed native delivery. Jones Code settings follows Archive and saves a device-local default prompt view, defaulting existing clients to Pending."
     },

@@ -240,10 +240,12 @@
         "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
         "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "packages/contracts/src/jones/workQueueMetadata.test.ts"
+        "packages/contracts/src/jones/workQueueMetadata.test.ts",
+        "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
+        "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/workQueue/PromptsSettings.test.tsx apps/web/src/components/settings/settingsSearch.test.ts packages/contracts/src/settings.test.ts apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts"
+        "vp test run apps/web/src/jones/workQueue/PromptsSettings.test.tsx apps/web/src/components/settings/settingsSearch.test.ts packages/contracts/src/settings.test.ts apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx"
       ]
     },
     {

@@ -11,6 +11,15 @@ import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RegistryCorrectionActions, type RegistryCorrectionTransport } from "./voiceReviewActions";
 
+const promptTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "America/New_York",
+  timeZoneName: "short",
+});
+
 type Thread = ThreadRegistryComposedSnapshot["threads"][number];
 
 function textField(record: Readonly<Record<string, unknown>> | null, key: string) {
@@ -49,7 +58,7 @@ export function RecentVoicePrompts({
     >
       <h2 className="font-medium">{title}</h2>
       <p className="text-sm text-muted-foreground">
-        Workstream corrections update metadata. They never send a prompt again.
+        Prompt history is read-only. Workstream corrections never resend prompts.
       </p>
       {entries.length === 0 ? (
         <p className="text-sm text-muted-foreground">{emptyMessage}</p>
@@ -87,7 +96,6 @@ function RecentPromptRow({
   onRefresh: () => Promise<void>;
   unavailable: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState("");
   const [actions] = useState(() => new RegistryCorrectionActions(transport));
   const [, render] = useState(0);
@@ -113,6 +121,7 @@ function RecentPromptRow({
     state: "active" | "suppressed",
     record?: ThreadRegistryAssociation,
   ) => {
+    if (disabled) return;
     const target = record?.subject ?? subject;
     if (!target || !ref.startsWith("inferred:") || entry.associations === undefined) return;
     const pending = actions.correct({
@@ -169,9 +178,20 @@ function RecentPromptRow({
         <h3 className="break-words text-sm font-medium">{title}</h3>
         <span className="text-xs text-muted-foreground">{entry.draft.state}</span>
       </div>
-      <p className="text-sm text-muted-foreground">
-        {summary ?? "Generated thread summary unavailable."}
-      </p>
+      {entry.text_state === "available" && entry.text !== null ? (
+        <p className="whitespace-pre-wrap break-words text-sm">{entry.text}</p>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          {entry.text_state === "deleted"
+            ? "Prompt text was deleted."
+            : entry.text_state === "expired"
+              ? "Prompt text has expired."
+              : "Prompt text is unavailable."}
+        </p>
+      )}
+      <time dateTime={entry.draft.created_at} className="text-xs text-muted-foreground">
+        {promptTimeFormatter.format(new Date(entry.draft.created_at))}
+      </time>
       {thread?.freshness.stale === true ? (
         <p className="text-xs text-muted-foreground">Thread context is stale.</p>
       ) : null}
@@ -192,7 +212,12 @@ function RecentPromptRow({
               ) : (
                 <Tooltip>
                   <TooltipTrigger
-                    render={<button type="button" />}
+                    render={
+                      <button
+                        type="button"
+                        disabled={disabled || !record || entry.associations === undefined}
+                      />
+                    }
                     className="rounded-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 disabled:opacity-40"
                     aria-label={`Remove ${options.get(ref) ?? ref} workstream`}
                     disabled={disabled || !record || entry.associations === undefined}
@@ -264,50 +289,42 @@ function RecentPromptRow({
           </Button>
         </div>
       ) : null}
-      <div>
-        <Button
-          variant="ghost"
-          size="compact"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? "Hide full text" : "Show full text"}
-        </Button>
-      </div>
-      {expanded ? (
-        <div className="flex flex-col gap-2 border-t pt-3 text-sm">
-          {entry.text_state === "available" && entry.text !== null ? (
-            <>
-              <p className="text-xs text-muted-foreground">
-                {entry.text_origin === "retained_command" ? "Retained command text" : "Draft text"}
-              </p>
-              <p className="whitespace-pre-wrap break-words">{entry.text}</p>
-              {entry.original_source_text !== null && entry.original_source_text !== entry.text ? (
-                <details>
-                  <summary>Original transcript</summary>
-                  <p className="whitespace-pre-wrap break-words">{entry.original_source_text}</p>
-                </details>
-              ) : null}
-            </>
-          ) : (
-            <p>
-              {entry.text_state === "deleted"
-                ? "Prompt text was deleted."
-                : entry.text_state === "expired"
-                  ? "Prompt text has expired."
-                  : "Prompt text is unavailable."}
-            </p>
-          )}
+      <details className="border-t pt-3 text-xs text-muted-foreground">
+        <summary className="cursor-pointer">Prompt details</summary>
+        <div className="mt-2 flex flex-col gap-2">
+          <p>{summary ?? "Generated thread summary unavailable."}</p>
+          <p>
+            Text source:{" "}
+            {entry.text_origin === "retained_command"
+              ? "Retained command text"
+              : entry.text_origin === "draft"
+                ? "Draft text"
+                : "Not available"}
+          </p>
+          {entry.original_source_text !== null && entry.original_source_text !== entry.text ? (
+            <details>
+              <summary className="cursor-pointer">Original transcript</summary>
+              <p className="whitespace-pre-wrap break-words">{entry.original_source_text}</p>
+            </details>
+          ) : null}
+          <p>
+            Source: {entry.draft.source_id} · revision {entry.draft.revision}
+          </p>
+          <p>Thread key: {entry.thread_key ?? "not observed"}</p>
+          <p>
+            Routing: {entry.draft.routing_state ?? "not observed"} ·{" "}
+            {entry.draft.routing_target ?? "target not observed"}
+          </p>
           <p>
             Command: {entry.command_id ?? "not observed"} · status:{" "}
             {entry.draft.command_status ?? "not observed"}
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p>
             Release is a handoff for processing. Queue receipt and native execution evidence are
             unavailable in this view.
           </p>
         </div>
-      ) : null}
+      </details>
     </article>
   );
 }
