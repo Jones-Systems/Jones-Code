@@ -271,6 +271,142 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it.each([
+    "success", "internal-symlink", "wrong-plan", "active", "parent", "pending", "stage", "unknown-journal",
+    "symlink-target", "changed-inode", "foreign-hardlink", "reference", "writer-busy",
+    "partial", "partial-new-file", "partial-replacement", "lost-reply", "reserve", "reserve-owner",
+  ])("retires only the inspected obsolete payload for %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+      const scenario = String.raw`
+retirement_fault = sys.argv[3]
+activate(tx / 'intent.json')
+assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+acquire_writer_exclusion = native_exclusion
+if retirement_fault != 'stage': selection_path.unlink()
+journal = read(tx / 'journal.json')
+if retirement_fault in ('active', 'parent'):
+    active = dict(expected, generation=transaction_id, transactionId=transaction_id)
+    if retirement_fault == 'parent':
+        next_id = '9' * 64
+        next_tx = tx.parent / next_id
+        next_intent = dict(intent, transactionId=next_id, expected=active)
+        durable(next_tx / 'intent.json', next_intent, True)
+        durable(next_tx / 'journal.json', {'intent': next_intent, 'phase': 'resumed'}, True)
+        active = dict(expected, generation=next_id, transactionId=next_id)
+    durable(manifest_path, active)
+else: active = expected
+if retirement_fault in ('pending', 'unknown-journal'):
+    durable(tx / 'journal.json', dict(journal, phase='trial' if retirement_fault == 'pending' else 'unknown'))
+if retirement_fault == 'symlink-target':
+    payload = tx / 'previous-pair' / 'profile'
+    payload.rename(payload.with_name('profile-retained'))
+    payload.symlink_to(profile)
+if retirement_fault == 'foreign-hardlink': os.link(tx / 'previous-pair' / 'state.sqlite', root / 'foreign-link')
+if retirement_fault == 'internal-symlink':
+    (root / 'unrelated-payload').write_text('must survive')
+    (tx / 'previous-pair' / 'profile' / 'external-link').symlink_to(root / 'unrelated-payload')
+if retirement_fault == 'reference':
+    shared = pathlib.Path(journal['previousBundle'])
+    shutil.copytree(previous_app, shared)
+    other_tx = tx.parent / ('9' * 64)
+    other_intent = dict(intent, transactionId=other_tx.name)
+    durable(other_tx / 'intent.json', other_intent, True)
+    durable(other_tx / 'journal.json', {'intent': other_intent, 'phase': 'rolled-back', 'previousBundle': str(shared)}, True)
+if retirement_fault in ('reserve', 'reserve-owner'):
+    reserve = allocate_recovery_file(tx / 'recovery-reserve.bin', 16384)
+    journal['recoveryReserves'] = [reserve]
+    durable(tx / 'journal.json', journal)
+    if retirement_fault == 'reserve-owner':
+        pathlib.Path(reserve['path']).rename(root / 'original-reserve')
+        pathlib.Path(reserve['path']).write_bytes(bytes(16384))
+metadata = [path for path in tx.rglob('*.json') if path.name not in SETTINGS]
+before = {str(path): path.read_bytes() for path in metadata}
+inspect = retirement_command('inspect-retirement', active, transaction_id)
+refusals = ('active', 'parent', 'pending', 'stage', 'unknown-journal', 'symlink-target', 'foreign-hardlink', 'reference', 'reserve-owner')
+if retirement_fault in refusals:
+    assert inspect['status'] == 'refused', inspect
+    assert not (tx / 'retirement-intent.json').exists()
+else:
+    assert inspect['status'] == 'ready' and inspect['targets'], inspect
+    plan_sha = inspect['planSha256']
+    if retirement_fault == 'wrong-plan': plan_sha = '0' * 64
+    if retirement_fault == 'changed-inode':
+        payload = pathlib.Path(inspect['targets'][0]['path'])
+        payload.rename(root / 'replaced-payload')
+        payload.write_bytes(b'changed')
+    reader = None
+    if retirement_fault == 'writer-busy':
+        reader = sqlite3.connect(native_writer_lease_paths(active)[0][0], isolation_level=None)
+        reader.execute('BEGIN'); reader.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+    native_remove = remove_retirement_payload
+    calls = []
+    def observed_remove(target):
+        calls.append(target['path'])
+        native_remove(target)
+        if retirement_fault.startswith('partial') and len(calls) == 1: raise OSError('Synthetic interruption after one approved payload')
+    remove_retirement_payload = observed_remove
+    original_durable = durable
+    if retirement_fault == 'lost-reply':
+        def durable(path, value, exclusive=False):
+            original_durable(path, value, exclusive)
+            if pathlib.Path(path).name == 'retirement-receipt.json': raise OSError('Synthetic completion response lost')
+    try: result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+    finally:
+        if reader is not None: reader.close()
+    if retirement_fault in ('wrong-plan', 'changed-inode', 'writer-busy'):
+        assert result['status'] == 'refused' and calls == [], result
+        assert not (tx / 'retirement-intent.json').exists()
+    elif retirement_fault.startswith('partial'):
+        assert result['status'] == 'uncertain', result
+        try: inspect_selection_transactions(active)
+        except SelectionRefused as error: assert error.reason == 'activation-pending'
+        else: raise AssertionError('Unreconciled retirement admitted activation')
+        if retirement_fault == 'partial-new-file': (tx / 'previous-pair' / 'profile' / 'new-file').write_text('unapproved')
+        if retirement_fault == 'partial-replacement':
+            payload = tx / 'previous-pair' / 'profile' / 'opaque'
+            payload.rename(root / 'original-profile-payload'); payload.write_text('replacement')
+        resume = retirement_command('inspect-retirement', active, transaction_id)
+        if retirement_fault == 'partial':
+            assert resume['status'] == 'ready' and resume['reconciliation'] is True, resume
+            assert resume['planSha256'] == plan_sha
+            result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+            assert result['status'] == 'retired', result
+        else:
+            assert resume['status'] == 'uncertain', resume
+            prior_calls = len(calls)
+            assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'uncertain'
+            assert len(calls) == prior_calls
+    elif retirement_fault == 'lost-reply':
+        assert result['status'] == 'uncertain', result
+        durable = original_durable
+        count = len(calls)
+        result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+        assert result['status'] == 'retired' and len(calls) == count, result
+    else:
+        assert result['status'] == 'retired', result
+        count = len(calls)
+        assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'retired'
+        assert len(calls) == count
+    if result['status'] == 'retired':
+        assert all(not pathlib.Path(target['path']).exists() for target in inspect['targets'])
+        assert retirement_command('inspect-retirement', active, transaction_id)['status'] == 'retired'
+assert {str(path): path.read_bytes() for path in metadata} == before
+assert database.exists() and (profile / 'opaque').read_text() == 'same-host-profile'
+assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
+if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch", fault], {
+        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("takes a fresh SQLite and profile snapshot on a second attempt while preserving the rolled-back attempt", async () => {
     const f = await fixture();
     try {
@@ -665,6 +801,11 @@ with open(lock_path, 'r+') as lock:
                              '--selection', str(root / 'selection.json'), '--selection-sha256', 'e' * 64], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {'protocol': 1, 'operation': 'discard-staged', 'handle': 'f' * 64, 'status': 'refused', 'reason': 'busy'}
+    for operation in ('inspect-retirement', 'retire-transaction'):
+        result = subprocess.run(['python3', str(root / 'synthetic-helper.py'), '--manifest', str(manifest), '--' + operation, 'e' * 64,
+                                 '--plan-sha256', 'd' * 64], capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {'protocol': 1, 'operation': operation, 'transactionId': 'e' * 64, 'status': 'refused', 'reason': 'busy'}
 assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock', 'manifest.json', 'synthetic-helper.py']
 `;
       NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
