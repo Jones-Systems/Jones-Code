@@ -357,6 +357,16 @@ it("presents an offered build's version before download and leaves an older host
   expect(jonesCandidatePresentation(staged)).toBeUndefined();
 });
 
+it("does not present retained provenance as a fresh offer after another check", () => {
+  const { stagedHandle: _handle, ...unstaged } = staged;
+  for (const phase of ["building", "no-new", "blocked"] as const) {
+    expect(jonesCandidatePresentation({ ...unstaged, phase, provenance: offered })).toBeUndefined();
+    expect(jonesCandidatePresentation({ ...staged, phase, provenance: offered })?.label).toBe(
+      "Downloaded",
+    );
+  }
+});
+
 it("matches laptop and candidate by full source commit, never by version or run", () => {
   const laptop = { repository: "Jones-Systems/Jones-Code", sha: offered.sourceSha };
   expect(compareJonesSource(laptop, offered)).toBe("matches");

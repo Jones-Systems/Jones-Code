@@ -145,7 +145,14 @@ export function shortJonesUpdateId(id: string) {
 /** The host's offered or staged build. Hosts that predate offered versions omit `version`. */
 export function jonesCandidatePresentation(state: JonesUpdateState) {
   const provenance = state.provenance;
-  if (provenance === undefined) return undefined;
+  if (
+    provenance === undefined ||
+    (state.stagedHandle === undefined &&
+      state.phase !== "available" &&
+      state.phase !== "downloading" &&
+      state.phase !== "verifying")
+  )
+    return undefined;
   return {
     label:
       state.stagedHandle !== undefined

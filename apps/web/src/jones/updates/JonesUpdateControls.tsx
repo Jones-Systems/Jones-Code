@@ -29,17 +29,22 @@ const laptopInstalledSourceAtom = Atom.make((get) => {
   if (!isElectron) return undefined;
   const environmentId = get(primaryEnvironmentIdAtom);
   if (environmentId === null) return undefined;
-  const localTarget = readPrimaryEnvironmentTarget();
-  if (localTarget?.source !== "desktop-managed") return undefined;
-  const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
-  if (prepared._tag === "None" || prepared.value.target._tag !== "PrimaryConnectionTarget")
+  try {
+    const localTarget = readPrimaryEnvironmentTarget();
+    if (localTarget?.source !== "desktop-managed") return undefined;
+    const prepared = get(environmentSession.preparedConnectionValueAtom(environmentId));
+    if (prepared._tag === "None" || prepared.value.target._tag !== "PrimaryConnectionTarget")
+      return undefined;
+    const target = prepared.value.target;
+    if (
+      new URL(target.httpBaseUrl).toString() !==
+        new URL(localTarget.target.httpBaseUrl).toString() ||
+      new URL(target.wsBaseUrl).toString() !== new URL(localTarget.target.wsBaseUrl).toString()
+    )
+      return undefined;
+  } catch {
     return undefined;
-  const target = prepared.value.target;
-  if (
-    new URL(target.httpBaseUrl).toString() !== new URL(localTarget.target.httpBaseUrl).toString() ||
-    new URL(target.wsBaseUrl).toString() !== new URL(localTarget.target.wsBaseUrl).toString()
-  )
-    return undefined;
+  }
   return get(jonesUpdates.value(environmentId))?.installedSource;
 });
 
@@ -81,7 +86,7 @@ const COMPARISON_BADGES = {
     label: "Comparison unavailable",
     variant: "outline",
     detail:
-      "Needs the full source commit of this build and of the build installed on this laptop. At least one isn't reported.",
+      "Needs a verified local desktop connection and the full source commit of both installed and offered builds. At least one is unavailable.",
   },
 } as const;
 
