@@ -134,16 +134,17 @@ export function bundleFileSystem(
 
 /** Publish a completion receipt only after its copied app payload is durable. */
 async function syncMacAppTree(path: string): Promise<void> {
-  const info = await NodeFSP.lstat(path);
+  const fs = bundleFileSystem().promises;
+  const info = await fs.lstat(path);
   if (info.isSymbolicLink()) return; // The validated internal target is synced during traversal.
   if (info.isDirectory()) {
-    for (const name of await NodeFSP.readdir(path)) {
+    for (const name of await fs.readdir(path)) {
       await syncMacAppTree(NodePath.join(path, name));
     }
   } else if (!info.isFile()) {
     throw new Error("Unsupported staged app entry during synchronization.");
   }
-  const handle = await NodeFSP.open(path, "r");
+  const handle = await fs.open(path, "r");
   try {
     await handle.sync();
   } finally {
@@ -314,7 +315,11 @@ export async function stageJonesMacApp(
       throw new Error("Staged app integrity changed.");
     return receipt.app;
   };
-  const completed = await findJonesCompletedStage(canonicalRoot, artifact.stagedHandle, receiptName);
+  const completed = await findJonesCompletedStage(
+    canonicalRoot,
+    artifact.stagedHandle,
+    receiptName,
+  );
   if (completed !== undefined) return readCompleted(completed);
   const attempt = await createJonesStageAttempt(canonicalRoot, artifact.stagedHandle);
   const directory = attempt.directory;

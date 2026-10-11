@@ -331,7 +331,9 @@ describe("Jones Actions staging", () => {
     const root = await cache();
     const staged = await client.stage(candidate, root);
     expect(await NodeFSP.readFile(staged.payloadPath, "utf8")).toBe("verified archive fixture");
-    expect(await NodeFSP.readdir(NodePath.join(root, "completed"))).toEqual([`${staged.stagedHandle}.json`]);
+    expect(await NodeFSP.readdir(NodePath.join(root, "completed"))).toEqual([
+      `${staged.stagedHandle}.json`,
+    ]);
     expect(await client.stage(candidate, root)).toEqual(staged);
     expect(
       await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), candidate),
@@ -418,7 +420,9 @@ describe("Jones Actions staging", () => {
       validateJonesStagedArtifact(NodePath.dirname(staged.value.payloadPath), candidate),
     ).resolves.toEqual(staged.value);
     expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(true);
-    expect(await NodeFSP.readdir(NodePath.join(root, "completed"))).toEqual([`${staged.value.stagedHandle}.json`]);
+    expect(await NodeFSP.readdir(NodePath.join(root, "completed"))).toEqual([
+      `${staged.value.stagedHandle}.json`,
+    ]);
     expect(await NodeFSP.readdir(NodePath.join(root, "attempts"))).toHaveLength(1);
   });
   it("retries an interrupted download without consuming a retained partial attempt", async () => {
@@ -426,13 +430,22 @@ describe("Jones Actions staging", () => {
     const next = fixture();
     const candidate = await available(failed.client);
     const root = await cache();
-    await expect(failed.client.stage(candidate, root)).rejects.toMatchObject({ reason: "unavailable" });
-    const partial = NodePath.join(root, "attempts", "stage-interrupted", jonesCandidateHandle(candidate));
+    await expect(failed.client.stage(candidate, root)).rejects.toMatchObject({
+      reason: "unavailable",
+    });
+    const partial = NodePath.join(
+      root,
+      "attempts",
+      "stage-interrupted",
+      jonesCandidateHandle(candidate),
+    );
     await NodeFSP.mkdir(partial, { recursive: true });
     await NodeFSP.writeFile(NodePath.join(partial, "github-artifact.zip"), "partial");
     const staged = await next.client.stage(candidate, root);
     expect(await NodeFSP.readFile(staged.payloadPath, "utf8")).toBe("verified archive fixture");
-    expect(await NodeFSP.readFile(NodePath.join(partial, "github-artifact.zip"), "utf8")).toBe("partial");
+    expect(await NodeFSP.readFile(NodePath.join(partial, "github-artifact.zip"), "utf8")).toBe(
+      "partial",
+    );
   });
   it("continues to reuse a verified legacy stage", async () => {
     const { client } = fixture();
@@ -442,8 +455,14 @@ describe("Jones Actions staging", () => {
     const legacyRoot = await cache();
     const legacy = NodePath.join(legacyRoot, initial.stagedHandle);
     await NodeFSP.cp(NodePath.dirname(initial.payloadPath), legacy, { recursive: true });
-    const receipt = { ...initial, payloadPath: NodePath.join(legacy, NodePath.basename(initial.payloadPath)) };
-    await NodeFSP.writeFile(NodePath.join(legacy, JONES_ACTIONS_RECEIPT_FILE), JSON.stringify(receipt));
+    const receipt = {
+      ...initial,
+      payloadPath: NodePath.join(legacy, NodePath.basename(initial.payloadPath)),
+    };
+    await NodeFSP.writeFile(
+      NodePath.join(legacy, JONES_ACTIONS_RECEIPT_FILE),
+      JSON.stringify(receipt),
+    );
     expect(await client.stage(candidate, legacyRoot)).toEqual(receipt);
   });
   it("rechecks final run attempt rather than downloading a stale candidate", async () => {
