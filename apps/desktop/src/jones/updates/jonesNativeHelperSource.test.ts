@@ -62,8 +62,17 @@ if fault == 'candidate-gate-wrong': staged['startupGateProtocol'] = 2
 if fault == 'candidate-gate-boolean': staged['startupGateProtocol'] = True
 durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
     'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}}, True)
-continuation = dict(protocol=1, transactionId=staged['handle'], prepared=True,
-    **{key: expected[key] for key in ('home', 'databasePath', 'profile', 'environmentId')})
+staging = manifest_path.parent / 'jones-updates' / 'staging'; staging.mkdir()
+selection_path = staging / (expected['sourceSha'] + '-' + 'e' * 64 + '.json')
+selection = {'schema': 1, 'source': 'jones-actions', 'home': expected['home'], 'profile': expected['profile'],
+             'currentVersion': expected['version'], 'installedSource': expected['sourceSha'], 'active': expected,
+             'artifactDirectory': str(root / 'artifact'), 'app': staged}
+durable(selection_path, selection, True)
+selection_digest = digest(selection_path)
+claim = preparation_claim(expected, staged['handle'], selection_path, selection_digest)
+durable(tx / 'prepare-intent.json', claim, True)
+durable(tx / 'prepare-dispatched.json', claim, True)
+continuation = dict(claim, prepared=True)
 durable(tx / 'continuation.json', continuation, True)
 intent = {'protocol': 1, 'transactionId': staged['handle'], 'expected': expected, 'staged': staged,
     'continuationReceipt': str(tx / 'continuation.json'), 'processes': [{'pid': 123, 'identity': 'owned-native-process'}],
@@ -223,6 +232,109 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it.each(["claim-first", "discard-first", "existing-claim-mismatch", "legacy-backend", "claim-sync-failed"])(
+    "serializes preparation admission for %s",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+        const setup = activationScenario.split("\nevents = []")[0];
+        const scenario = String.raw`
+request = tx / 'activation-request.json'; os.rename(tx / 'intent.json', request)
+for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
+def run(operation, selection_hash=selection_digest):
+    return selection_command(operation, expected, staged['handle'], str(selection_path), selection_hash, str(request))
+if fault == 'discard-first':
+    assert run('discard-staged')['status'] == 'discarded'
+    assert run('claim-preparation') == {'protocol': 1, 'operation': 'claim-preparation', 'handle': staged['handle'], 'status': 'refused', 'reason': 'selection-mismatch'}
+    assert not (tx / 'prepare-intent.json').exists()
+else:
+    if fault == 'claim-sync-failed':
+        original_durable = durable
+        def durable(path, value, exclusive=False):
+            original_durable(path, value, exclusive)
+            if pathlib.Path(path).name == 'prepare-intent.json': raise OSError('Claim publication sync outcome unknown')
+    result = run('claim-preparation')
+    assert result['status'] == ('uncertain' if fault == 'claim-sync-failed' else 'preparation-claimed'), result
+    assert read(tx / 'prepare-intent.json') == claim
+    assert run('discard-staged')['reason'] == 'activation-pending'
+    assert run('claim-preparation')['reason'] == 'activation-pending'
+    if fault == 'existing-claim-mismatch':
+        assert run('claim-preparation', '0' * 64)['reason'] == 'activation-pending'
+    if fault == 'legacy-backend':
+        legacy = {key: continuation[key] for key in ('protocol', 'transactionId', 'home', 'databasePath', 'profile', 'environmentId', 'prepared')}
+        durable(tx / 'continuation.json', legacy, True)
+        assert run('claim-activation')['status'] == 'refused'
+        durable(tx / 'intent.json', intent, True)
+        try: activate(tx / 'intent.json')
+        except RuntimeError as error: assert 'not prepared' in str(error)
+        else: raise AssertionError('Legacy backend preparation qualified')
+        assert not (tx / 'journal.json').exists()
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+`;
+        NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault], {
+          encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+        });
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
+  it("holds the actual activation flock across the preparation scan and durable claim", async () => {
+    const f = await fixture();
+    try {
+      const [nativeFunctions, parser] = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()");
+      const pause = String.raw`
+sys.platform = 'darwin'
+bundle_identity = lambda active: None
+original_durable = durable
+def durable(path, value, exclusive=False):
+    if pathlib.Path(path).name == 'prepare-intent.json':
+        root = pathlib.Path(__file__).parent
+        (root / 'claim-entered').write_text('entered')
+        deadline = time.monotonic() + 5
+        while not (root / 'claim-release').exists():
+            if time.monotonic() >= deadline: raise RuntimeError('Fixture release timeout')
+            time.sleep(0.01)
+    return original_durable(path, value, exclusive)
+`;
+      await NodeFSP.writeFile(NodePath.join(f.directory, "interleaved-helper.py"), `${nativeFunctions}\n${pause}\nparser = argparse.ArgumentParser()${parser}`);
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+for name in ('intent.json', 'prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
+command = ['python3', str(root / 'interleaved-helper.py'), '--manifest', str(manifest_path),
+           '--selection', str(selection_path), '--selection-sha256', selection_digest]
+child = subprocess.Popen(command + ['--claim-preparation', staged['handle']], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+try:
+    deadline = time.monotonic() + 5
+    while not (root / 'claim-entered').exists():
+        if child.poll() is not None: raise AssertionError(child.communicate())
+        if time.monotonic() >= deadline: raise AssertionError('Claim did not enter fixture barrier')
+        time.sleep(0.01)
+    competing = subprocess.run(command + ['--discard-staged', staged['handle']], capture_output=True, text=True, timeout=5)
+    assert competing.returncode == 0, competing.stderr
+    assert json.loads(competing.stdout)['reason'] == 'busy'
+    assert selection_path.exists() and not (tx / 'prepare-intent.json').exists()
+    (root / 'claim-release').write_text('released')
+    output, error = child.communicate(timeout=5)
+    assert child.returncode == 0, error
+    assert json.loads(output)['status'] == 'preparation-claimed'
+    after = subprocess.run(command + ['--discard-staged', staged['handle']], capture_output=True, text=True, timeout=5)
+    assert json.loads(after.stdout)['reason'] == 'activation-pending'
+    assert read(tx / 'prepare-intent.json') == claim and selection_path.exists()
+finally:
+    if child.poll() is None: child.kill()
+    child.wait(timeout=5)
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, "interleaved"], {
+        encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("holds exclusive state/profile leases and refuses readers, changed inodes, or WAL mode", async () => {
     const f = await fixture();
     try {
@@ -295,23 +407,17 @@ assert old.exists()
       const scenario = String.raw`
 request = tx / 'activation-request.json'
 os.rename(tx / 'intent.json', request)
-staging = manifest_path.parent / 'jones-updates' / 'staging'; staging.mkdir()
-selection_path = staging / (expected['sourceSha'] + '-' + 'e' * 64 + '.json')
-selection = {'schema': 1, 'source': 'jones-actions', 'home': expected['home'], 'profile': expected['profile'],
-             'currentVersion': expected['version'], 'installedSource': expected['sourceSha'], 'active': expected,
-             'artifactDirectory': str(root / 'artifact'), 'app': staged}
-durable(selection_path, selection, True)
-selection_digest = digest(selection_path)
 def run(operation):
     return selection_command(operation, expected, staged['handle'], str(selection_path), selection_digest, str(request))
 claiming = fault in ('claim', 'discard-before-claim', 'wrong-request', 'wrong-candidate', 'wrong-continuation', 'claim-sync-failed')
-if claiming and fault != 'discard-before-claim': durable(tx / 'prepare-intent.json', continuation, True)
+if not claiming or fault == 'discard-before-claim':
+    for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
 if fault == 'wrong-selection': selection_digest = '0' * 64
 if fault == 'wrong-request':
     request = tx / 'other-request.json'; durable(request, intent, True)
 if fault == 'wrong-candidate': durable(request, dict(intent, staged=dict(staged, sourceSha='0' * 40)))
 if fault == 'wrong-continuation': durable(tx / 'continuation.json', dict(continuation, environmentId='wrong'))
-if fault == 'associated-preparation': durable(tx / 'prepare-intent.json', continuation, True)
+if fault == 'associated-preparation': durable(tx / 'prepare-intent.json', claim, True)
 if fault in ('other-pending', 'other-terminal', 'unknown-journal'):
     other = tx.parent / ('e' * 64); other.mkdir()
     prior = dict(intent, transactionId=other.name)
@@ -320,7 +426,7 @@ if fault in ('other-pending', 'other-terminal', 'unknown-journal'):
     if fault == 'unknown-journal': durable(other / 'journal.json', {'intent': prior, 'phase': 'unknown'}, True)
 if fault == 'discard-before-claim':
     assert run('discard-staged')['status'] == 'discarded'
-    durable(tx / 'prepare-intent.json', continuation, True)
+    durable(tx / 'prepare-intent.json', claim, True)
 if fault == 'discard-sync-failed':
     def sync_parent(path): raise OSError('Synthetic parent sync failure after unlink')
 if fault == 'claim-sync-failed':

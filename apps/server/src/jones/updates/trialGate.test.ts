@@ -7,7 +7,6 @@ import * as NodeEvents from "node:events";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import * as NetAddress from "effect/net/NetAddress";
 import { awaitJonesTrialCommit } from "./trialGate.ts";
-import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof NodeFSP>();
@@ -378,76 +377,6 @@ it("rejects wrong source before receipt publication", async () =>
     await expect(NodeFSP.stat(descriptor.trialReceiptPath)).rejects.toMatchObject({
       code: "ENOENT",
     });
-  }));
-
-it("prepares only once for one fixed native transaction", async () =>
-  fixture(async (root) => {
-    await NodeFSP.mkdir(NodePath.join(root, "runtime"));
-    await NodeFSP.writeFile(
-      NodePath.join(root, "runtime/jones-active-install.json"),
-      JSON.stringify({
-        protocol: 1,
-        owner: "desktop",
-        home: root,
-        databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
-        profile: NodePath.join(root, "profile"),
-        environmentId: "fixture",
-        version: "v",
-      }),
-    );
-    let prepares = 0;
-    const input = {
-      home: root,
-      databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
-      environmentId: "fixture",
-      version: "v",
-      handle: "c".repeat(64),
-      prepare: async () => {
-        prepares++;
-        return [];
-      },
-      clear: async () => {},
-    };
-    await prepareNativeContinuationReceipt(input);
-    await prepareNativeContinuationReceipt(input);
-    expect(prepares).toBe(1);
-    await expect(
-      prepareNativeContinuationReceipt({ ...input, environmentId: "wrong" }),
-    ).rejects.toThrow("manifest");
-    expect(prepares).toBe(1);
-  }));
-
-it("retains an uncertain preparation reservation and refuses replay", async () =>
-  fixture(async (root) => {
-    await NodeFSP.mkdir(NodePath.join(root, "runtime"));
-    await NodeFSP.writeFile(
-      NodePath.join(root, "runtime/jones-active-install.json"),
-      JSON.stringify({
-        protocol: 1,
-        owner: "desktop",
-        home: root,
-        databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
-        profile: NodePath.join(root, "profile"),
-        environmentId: "fixture",
-        version: "v",
-      }),
-    );
-    let prepares = 0;
-    const input = {
-      home: root,
-      databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
-      environmentId: "fixture",
-      version: "v",
-      handle: "d".repeat(64),
-      prepare: async () => {
-        prepares++;
-        throw new Error("Unknown effect");
-      },
-      clear: async () => {},
-    };
-    await expect(prepareNativeContinuationReceipt(input)).rejects.toThrow("Unknown effect");
-    await expect(prepareNativeContinuationReceipt(input)).rejects.toMatchObject({ code: "EEXIST" });
-    expect(prepares).toBe(1);
   }));
 
 function latch() {
