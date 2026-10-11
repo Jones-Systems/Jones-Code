@@ -21,7 +21,7 @@ def _preparation_encoded(value):
 def _preparation_bundle(bundle):
     require(set(bundle) == BUNDLE_V2_KEYS | {'preparation'} and type(bundle['schema']) is int and bundle['schema'] == 3)
     require(bundle['repository'] == 'Jones-Systems/Jones-Code' and hex_value(bundle['sourceSha'], 40) and hex_value(bundle['sourceTree'], 40))
-    require(isinstance(bundle['version'], str) and len(bundle['version']) <= 128 and re.fullmatch('[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]{8}\.[0-9]+(?:\.[0-9]+)?', bundle['version']) is not None)
+    require(isinstance(bundle['version'], str) and len(bundle['version']) <= 128 and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]{8}\.[0-9]+(?:\.[0-9]+)?', bundle['version']) is not None)
     require(all(hex_value(bundle[key], 64) for key in ('bootstrapSha256', 'executorSha256', 'maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256')))
     value = bundle['preparation']
     require(isinstance(value, dict) and set(value) == {'schema', 'protocol', 'provenanceSha256', 'sourceInputHashes', 'entry', 'seaConfig', 'executable', 'node', 'sqlite'})
@@ -44,7 +44,7 @@ def _preparation_bundle(bundle):
     require(integer(node['archiveBytes']) and node['archiveBytes'] <= 128 * 1024 * 1024 and integer(node['runtimeBytes']) and node['runtimeBytes'] <= 256 * 1024 * 1024)
     sqlite = value['sqlite']
     require(isinstance(sqlite, dict) and set(sqlite) == {'version', 'sourceId'})
-    require(isinstance(sqlite['version'], str) and len(sqlite['version']) <= 11 and re.fullmatch('(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})', sqlite['version']) is not None)
+    require(isinstance(sqlite['version'], str) and len(sqlite['version']) <= 11 and re.fullmatch(r'(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})', sqlite['version']) is not None)
     require(isinstance(sqlite['sourceId'], str) and len(sqlite['sourceId']) == 84 and re.fullmatch('[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [a-f0-9]{64}', sqlite['sourceId']) is not None)
     parts = [int(part) for part in re.split('[- :]', sqlite['sourceId'][:19])]
     # ECMAScript's canonical source timestamp also admits astronomical year zero.
