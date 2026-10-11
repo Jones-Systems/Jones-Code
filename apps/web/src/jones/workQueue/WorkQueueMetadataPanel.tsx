@@ -82,51 +82,35 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
     <section aria-label="Queue metadata" className="space-y-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-lg font-medium">Queue</h2>
-          <p className="text-sm text-muted-foreground">
-            Requests from all supported producers. Read-only sampled metadata; prompt text and
-            editing are unavailable.
-          </p>
+          <h2 className="font-medium">Work queue</h2>
+          <p className="text-sm text-muted-foreground">Read-only request status.</p>
         </div>
-        <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
+        <Button variant="outline" size="compact" disabled={loading} onClick={() => void refresh()}>
           Refresh metadata
         </Button>
       </div>
-      <p className="text-sm text-muted-foreground">
-        Accepted dispatch or native command status does not prove a handoff or completed work.
-        Historical, held and uncertain states remain here until handoff evidence is available.
-      </p>
-      <div role="status">
+      <div role="status" className="text-sm text-muted-foreground">
         {loading && <p>Loading queue metadata…</p>}
         {failed && <p>Queue metadata unavailable. Refresh to try again.</p>}
-        {result?.status === "unconfigured" && (
-          <p>Queue metadata unsupported: no source is configured.</p>
-        )}
+        {result?.status === "unconfigured" && <p>Queue metadata is not configured.</p>}
         {result?.status === "unavailable" && (
           <p>Queue metadata unavailable: {unavailableMessages[result.reason]}.</p>
         )}
         {snapshot && (
-          <>
-            <p>
-              {stale
-                ? "Stale sample"
-                : result?.status === "partial"
-                  ? "Partial sample"
-                  : "Ready sample"}{" "}
-              · Coverage: {snapshot.coverage}
-            </p>
-            <p>Sampled {formatTime(snapshot.observed_at_ms)}</p>
-            <p>
-              Source: {snapshot.source.queue_id} · Host: {snapshot.source.host_id} · Environment:{" "}
-              {snapshot.source.environment_ref} · Exporter: {snapshot.source.exporter_instance_id}
-            </p>
-          </>
+          <p>
+            {stale
+              ? "Stale sample"
+              : result?.status === "partial"
+                ? "Partial sample"
+                : "Ready sample"}
+            {stale || snapshot.coverage === "partial" ? " · Current queue may differ." : null}
+          </p>
         )}
       </div>
       {snapshot &&
         (snapshot.items.length === 0 ? (
-          <p>
-            {snapshot.coverage === "partial" || stale
+          <p className="text-sm text-muted-foreground">
+            {snapshot.coverage === "partial" || result?.status === "partial" || stale
               ? "No rows in this sample; the current queue may contain work."
               : "No submitted work in this sample."}
           </p>
@@ -135,16 +119,8 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
             <table className="w-full text-left text-sm">
               <thead>
                 <tr>
-                  {[
-                    "Request / workstream",
-                    "Identity",
-                    "Lane / kinds",
-                    "Queue state",
-                    "Target",
-                    "Dispatch / native command",
-                    "Completion",
-                  ].map((heading) => (
-                    <th key={heading} className="border-b p-3">
+                  {["Request / workstream", "Target", "Queue state", "Handoff"].map((heading) => (
+                    <th key={heading} className="border-b p-3 font-medium">
                       {heading}
                     </th>
                   ))}
@@ -152,68 +128,88 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
               </thead>
               <tbody>
                 {snapshot.items.map((item) => (
-                  <tr key={item.request_id}>
-                    <td className="border-b p-3">
-                      <div>{item.request_id}</div>
-                      <div>{item.workstream_id}</div>
-                      <div>
-                        Submitted:{" "}
-                        {item.submitted_at_ms === null
-                          ? "Not available"
-                          : formatTime(item.submitted_at_ms)}
-                      </div>
+                  <tr key={item.request_id} className="align-top">
+                    <td className="max-w-64 break-words border-b p-3 [overflow-wrap:anywhere]">
+                      <div className="font-medium">{item.workstream_id}</div>
+                      <div className="text-xs text-muted-foreground">{item.request_id}</div>
+                      <details className="mt-2 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer">Request details</summary>
+                        <div className="mt-2 space-y-1">
+                          <div>
+                            Submitted:{" "}
+                            {item.submitted_at_ms === null
+                              ? "Not available"
+                              : formatTime(item.submitted_at_ms)}
+                          </div>
+                          <div>
+                            Lane: {item.lane} · {item.entry_kind} · {item.request_kind}
+                          </div>
+                          {item.canonical_binding ? (
+                            <>
+                              <div>Canonical binding verified at sample</div>
+                              {Object.entries(item.canonical_binding).map(([key, value]) => (
+                                <div key={key}>
+                                  {bindingLabels[key]}: {value}
+                                </div>
+                              ))}
+                            </>
+                          ) : (
+                            <>
+                              <div>Legacy / unverified identity</div>
+                              <div>No canonical binding available</div>
+                            </>
+                          )}
+                          <div>Dispatch: {item.dispatch_status ?? "Not observed"}</div>
+                          <div>Native command: {item.native_command_status ?? "Not observed"}</div>
+                          <div>Completion: Not tracked</div>
+                        </div>
+                      </details>
                     </td>
-                    <td className="border-b p-3">
-                      {item.canonical_binding ? (
-                        <>
-                          <div>Canonical binding verified at sample</div>
-                          {Object.entries(item.canonical_binding).map(([key, value]) => (
-                            <div key={key}>
-                              {bindingLabels[key]}: {value}
-                            </div>
-                          ))}
-                        </>
-                      ) : (
-                        <>
-                          <div>Legacy / unverified identity</div>
-                          <div>No canonical binding available</div>
-                        </>
-                      )}
-                    </td>
-                    <td className="border-b p-3">
-                      {item.lane}
-                      <br />
-                      {item.entry_kind}
-                      <br />
-                      {item.request_kind}
-                    </td>
-                    <td className="border-b p-3">{item.queue_state}</td>
-                    <td className="border-b p-3">
+                    <td className="max-w-64 break-words border-b p-3 [overflow-wrap:anywhere]">
                       {item.target ? (
                         <>
-                          {item.target.host_id}
-                          <br />
-                          {item.target.environment_ref}
-                          <br />
-                          {item.target.thread_id}
+                          <div className="break-all">{item.target.thread_id}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {item.target.host_id} · {item.target.environment_ref}
+                          </div>
                         </>
                       ) : (
                         "Not available"
                       )}
                     </td>
-                    <td className="border-b p-3">
-                      Dispatch: {item.dispatch_status ?? "Not observed"}
-                      <br />
-                      Native command: {item.native_command_status ?? "Not observed"}
-                      <div>Handoff: unconfirmed in this sample</div>
+                    <td className="max-w-64 break-words border-b p-3 [overflow-wrap:anywhere]">
+                      {item.queue_state}
                     </td>
-                    <td className="border-b p-3">Not tracked</td>
+                    <td className="max-w-48 border-b p-3 text-muted-foreground">
+                      Handoff: unconfirmed in this sample
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ))}
+      <details className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer">About this queue sample</summary>
+        <div className="mt-2 space-y-2 [overflow-wrap:anywhere]">
+          <p>Requests from all supported producers. Prompt text and editing are unavailable.</p>
+          <p>
+            Accepted dispatch or native command status does not prove a handoff or completed work.
+            Historical, held and uncertain states remain here until handoff evidence is available.
+          </p>
+          {snapshot ? (
+            <>
+              <p>
+                Coverage: {snapshot.coverage} · Sampled {formatTime(snapshot.observed_at_ms)}
+              </p>
+              <p>
+                Source: {snapshot.source.queue_id} · Host: {snapshot.source.host_id} · Environment:{" "}
+                {snapshot.source.environment_ref} · Exporter: {snapshot.source.exporter_instance_id}
+              </p>
+            </>
+          ) : null}
+        </div>
+      </details>
     </section>
   );
 }

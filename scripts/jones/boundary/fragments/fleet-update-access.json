@@ -23,7 +23,8 @@
     "apps/web/src/jones/fleetUpdates/runtime.ts",
     "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
     "packages/client-runtime/src/jones/fleetUpdates/campaignController.ts",
-    "packages/client-runtime/src/jones/fleetUpdates/hostBridge.ts"
+    "packages/client-runtime/src/jones/fleetUpdates/hostBridge.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts"
   ],
   "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],

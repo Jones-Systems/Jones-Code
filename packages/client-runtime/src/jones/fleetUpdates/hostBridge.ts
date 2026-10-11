@@ -45,13 +45,7 @@ export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFle
   const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
   const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
   const suffix =
-    input.action === "status"
-      ? input.operationId === undefined
-        ? ""
-        : `?operationId=${encodeURIComponent(input.operationId)}`
-      : input.action === "enroll"
-        ? "/enrollment"
-        : `/${input.action}`;
+    input.action === "status" ? "" : input.action === "enroll" ? "/enrollment" : `/${input.action}`;
   return yield* executeAuthenticatedEnvironmentHttpRequest({
     prepared,
     signer,

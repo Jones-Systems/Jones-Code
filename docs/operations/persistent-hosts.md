@@ -165,6 +165,46 @@ server PID with `qualifiedLauncher` and `capability.install` both true. No token
 store is accessed for that readback. Source tests use synthetic state and command
 adapters; they do not prove an installed host's adoption.
 
+### Exact pre-publisher private setup compatibility
+
+Ordinary adoption has one closed exception for the authenticated Linux x64 artifact
+at source `d3e6f8e843a0477542380a4ec0d9ae02a1084053`, tree
+`250db17dd136cef960e9bb8e054acadb41fba03d`. It requires
+`--accept-unattested-child-capability` during the reviewed dry-run and apply.
+Other sources, trees and platforms retain the ordinary child capability requirement.
+A version string alone never selects this exception.
+
+Run both the old matching artifact's genuine private setup and the qualified
+adoption commands with `umask 0077`. Payload qualification compares executable
+permission bits, so both extractions must use the same mask. Adoption requires an
+owner-only `.jones-provenance.json` and checks its actual metadata. It authenticates
+all nine provenance fields against
+the Actions artifact and executable bytes, and requires the exact old root layout.
+The native pending receipt records the file's exact preimage and a new exclusive
+evidence archive under `runtime/jones-adoption`, outside the selected version root.
+After comparing the occupied payload with the authenticated archive, adoption
+preserves provenance with a same-filesystem rename into the owned 0700 archive,
+syncs both directories, and checks the preserved bytes and inode before adding the
+canonical qualified receipt. It rechecks layout, evidence and running child identity
+before stopping. Unexpected entries, metadata, changed evidence or an occupied
+archive fail closed. No database content is hashed, copied or migrated by this step.
+
+The old startup preflight proves protocol and version compatibility only. The
+explicit layout check precedes effects and stop; real runtime readiness is observed
+after restart. Success requires the actual launcher receipt bound to its live PID,
+new child PID and both artifact versions. Any child capability receipt on this
+pre-publisher path blocks completion. The adoption receipt reports
+`attestation:"launcher-only"`, `attestationBasis:"pre-publisher-child"` and an
+unattested child capability, never `capability.install:true`. The normal API update
+gate remains independent.
+
+`jones host status` may print private provenance as `unverified` after the archive
+move. That display does not authenticate qualified adoption. Use the qualified
+runtime receipt, preserved archive, and native launcher/runtime readback as evidence.
+An interrupted move leaves the pending receipt and available evidence intact and
+blocks replay. Reconciliation or any manual restoration needs a separate exact
+approval; adoption never deletes evidence or restores it automatically.
+
 ### Bound legacy direct-serve bootstrap
 
 For a Jones-owned Linux user unit running `t3 serve` directly, the additional mode
