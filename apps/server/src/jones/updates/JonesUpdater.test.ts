@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, JonesUpdateState } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type {
   JonesActionsCandidate,
   JonesStagedArtifact,
@@ -66,6 +67,30 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
   };
 }
 describe("host-owned Jones updater", () => {
+  it("decodes older update state without inventing installed source identity", () => {
+    const decoded = Schema.decodeUnknownSync(JonesUpdateState)(fixture().updater.snapshot());
+    expect(decoded.installedSource).toBeUndefined();
+  });
+  it("keeps authenticated installed source separate from offered and staged candidates", async () => {
+    const installedSource = {
+      repository: "Jones-Systems/Jones-Code" as const,
+      sha: "a".repeat(40),
+      tree: "9".repeat(40),
+    };
+    const original = fixture().updater.snapshot();
+    const f = fixture({ initialState: { ...original, installedSource } });
+    expect(
+      Schema.decodeUnknownSync(JonesUpdateState)(f.updater.snapshot()).installedSource,
+    ).toEqual(installedSource);
+    await f.updater.check();
+    expect(f.updater.snapshot().installedSource).toEqual(installedSource);
+    expect(f.updater.snapshot().provenance?.sourceSha).toBe(candidate.source);
+    await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+    f.newer();
+    await f.updater.check();
+    expect(f.updater.snapshot().installedSource).toEqual(installedSource);
+    expect(f.updater.snapshot().provenance?.sourceSha).toBe(candidate.source);
+  });
   it("Download stages without invoking install and a later check retains the fixed handle", async () => {
     const f = fixture();
     await f.updater.check();

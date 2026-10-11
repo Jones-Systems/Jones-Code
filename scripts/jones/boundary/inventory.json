@@ -780,6 +780,8 @@
     "packages/contracts/src/jones/environmentHttpGroups.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/environmentHttpGroups.ts": "jones-owned",
     "packages/contracts/src/jones/fixtures/work_queue_metadata_v1.json.fixture": "jones-owned",
+    "packages/contracts/src/jones/fixtures/work_queue_metadata_v2_runtime_v1.json.fixture": "jones-owned",
+    "packages/contracts/src/jones/fixtures/work_queue_metadata_v2_runtime_v2.json.fixture": "jones-owned",
     "packages/contracts/src/jones/organizationMetadata.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/organizationMetadata.ts": "jones-owned",
     "packages/contracts/src/jones/providerRuntimeIdentity.test.ts": "jones-tests-in-upstream",
@@ -869,7 +871,9 @@
     "scripts/notify-discord-release.test.ts": "accepted-shared",
     "scripts/release-smoke.ts": "accepted-shared",
     "scripts/stamp-jones-build.test.ts": "jones-owned",
-    "scripts/stamp-jones-build.ts": "jones-owned"
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "apps/web/src/jones/workQueue/classifySentPrompts.ts": "jones-owned",
+    "apps/web/src/jones/workQueue/classifySentPrompts.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

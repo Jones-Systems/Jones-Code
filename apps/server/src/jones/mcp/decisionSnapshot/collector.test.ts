@@ -726,13 +726,47 @@ if __name__ == '__main__':
             throw new Error("fixture probe did not start");
           }),
         ]);
-        const operation = JSON.parse(
-          await NodeFSP.readFile(NodePath.join(scratch, "state/malcolm.json"), "utf8"),
-        ).operation;
         const childPid = Number(
           await NodeFSP.readFile(NodePath.join(scratch, "probe-ready.fixture"), "utf8"),
         );
-        expect(operation).toMatchObject({ pid: childPid, pgid: childPid, account: "malcolm" });
+        const publicationWait = new AbortController();
+        let publication: Promise<unknown> | undefined;
+        try {
+          publication = (async () => {
+            while (!publicationWait.signal.aborted) {
+              const operation = JSON.parse(
+                await NodeFSP.readFile(NodePath.join(scratch, "state/malcolm.json"), "utf8"),
+              ).operation;
+              if (
+                operation?.pid === childPid &&
+                operation.pgid === childPid &&
+                operation.account === "malcolm"
+              )
+                return operation;
+              await NodeTimersPromises.setTimeout(20, undefined, {
+                signal: publicationWait.signal,
+              });
+            }
+            throw new Error("fixture operation publication wait cancelled");
+          })();
+          const operation = await Promise.race([
+            publication,
+            first.then(() => {
+              throw new Error("collector finished before child operation was published");
+            }),
+            NodeTimersPromises.setTimeout(
+              Math.max(0, (nativeDeadline - monotonicSeconds()) * 1000),
+              undefined,
+              { signal: publicationWait.signal },
+            ).then(() => {
+              throw new Error("child operation was not published before the collector deadline");
+            }),
+          ]);
+          expect(operation).toMatchObject({ pid: childPid, pgid: childPid, account: "malcolm" });
+        } finally {
+          publicationWait.abort();
+          await publication?.catch(() => {});
+        }
         const concurrent = JSON.parse(
           await runBoundCollector(
             binding,

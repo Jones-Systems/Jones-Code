@@ -357,6 +357,7 @@ describe("Jones desktop updates", () => {
       await f.controller.configure();
       expect(f.controller.state.jones?.capability.install).toBe(false);
       expect(f.controller.state.jones?.phase).toBe("blocked");
+      expect(f.controller.state.jones?.installedSource).toBeUndefined();
       expect(await NodeFSP.readFile(file, "utf8")).toBe(occupied);
     } finally {
       await f.cleanup();
@@ -502,6 +503,11 @@ describe("Jones desktop updates", () => {
       await f.controller.check();
       expect(f.controller.state.jones?.provenance?.artifactId).toBe(candidate.artifactId);
       expect(f.controller.state.jones?.provenance?.sourceSha).toBe(candidate.source);
+      expect(f.controller.state.jones?.installedSource).toEqual({
+        repository: candidate.repository,
+        sha: f.active.sourceSha,
+        tree: f.active.sourceTree,
+      });
       expect(f.controller.state.jones?.stagedHandle).toBe(handle);
       expect(f.controller.state.downloadedVersion).toBe(candidate.version);
       expect(f.stages()).toBe(1);

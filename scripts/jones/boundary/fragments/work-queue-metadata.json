@@ -15,6 +15,8 @@
     "apps/web/src/jones/workQueue/UnifiedQueuePage.tsx",
     "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx",
     "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.tsx",
+    "apps/web/src/jones/workQueue/classifySentPrompts.test.ts",
+    "apps/web/src/jones/workQueue/classifySentPrompts.ts",
     "apps/web/src/jones/workQueue/useWorkQueueMetadata.ts",
     "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
     "packages/client-runtime/src/jones/workQueueMetadata.ts"
