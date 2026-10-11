@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 
 import type { ConnectionRegistration } from "../connection/catalog.ts";
 import type { ConnectionTarget, PersistedConnectionTarget } from "../connection/model.ts";
+import type { StoredConnectionCompatibilityHint } from "./storageDocument.ts";
 
 export class ConnectionPersistenceError extends Schema.TaggedError<ConnectionPersistenceError>()(
   "ConnectionPersistenceError",
@@ -20,6 +21,8 @@ export class ConnectionPersistenceError extends Schema.TaggedError<ConnectionPer
     operation: Schema.Literals([
       "list-targets",
       "list-disabled-targets",
+      "list-compatibility-hints",
+      "set-compatibility-hint",
       "register-connection",
       "set-connection-routes",
       "remove-connection",
@@ -47,6 +50,11 @@ export class ConnectionTargetStore extends Context.Service<
     readonly list: Effect.Effect<ReadonlyArray<ConnectionTarget>, ConnectionPersistenceError>;
     /** Saved environments the user switched off. See `ConnectionRegistrationStore.setEnabled`. */
     readonly listDisabled: Effect.Effect<ReadonlyArray<EnvironmentId>, ConnectionPersistenceError>;
+    /** Historical diagnostics only; absent on older adapters. */
+    readonly listCompatibilityHints?: Effect.Effect<
+      ReadonlyArray<StoredConnectionCompatibilityHint>,
+      ConnectionPersistenceError
+    >;
   }
 >()("@t3tools/client-runtime/platform/persistence/ConnectionTargetStore") {}
 
@@ -73,6 +81,12 @@ export class ConnectionRegistrationStore extends Context.Service<
     readonly setEnabled: (
       environmentId: EnvironmentId,
       enabled: boolean,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    /** Stale route bindings are ignored. Clearing a hint never enables the environment. */
+    readonly setCompatibilityHint?: (
+      environmentId: EnvironmentId,
+      routeBinding: string,
+      kind: StoredConnectionCompatibilityHint["kind"] | null,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
   }
 >()("@t3tools/client-runtime/platform/persistence/ConnectionRegistrationStore") {}

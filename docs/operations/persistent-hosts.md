@@ -266,6 +266,102 @@ continuation must retain the same unit and task preimage bindings and explicit
 unattested acceptance, while omitting `--legacy-direct-serve` because service state
 is then native.
 
+### Exact system-unit adoption
+
+`jones host adopt-system` adopts one existing system unit that runs the exact
+authenticated pre-publisher private setup build directly as its service user.
+It keeps the unit's owner, service user, `NoNewPrivileges=yes`, `KillMode`,
+slice, resource limits and every existing unit file. It adds only the owned
+`zzzz-jones-qualified-launcher.conf` drop-in, which selects a qualified launcher
+that supervises the same retained version. It does not move the service to a
+user unit, change the database, run migrations or claim child Install. Other
+active builds, homes with native service state or an adoption record, and
+already-owned drop-ins are refused.
+
+Root effects go through the closed worker
+[`systemServiceControl.pl`](../../apps/server/src/jones/hostService/systemServiceControl.pl),
+installed root-owned at `/usr/local/libexec/jones-code/jones-system-service-control`
+with the root-owned policy `/etc/jones-code/system-service.policy`. The policy
+fixes the unit, service user, UID, GID, home, slice and retained executable. The
+worker accepts only `inspect`, `stop`, `install-launcher`, `start` and
+`archive-launcher`, each with the expected unit digest and owned drop-in state.
+Its unit digest covers the fragment and every other drop-in by owner, mode and
+SHA-256. It reports metadata and digests, never unit contents, Environment values
+or a command line. It renders the owned drop-in itself from the policy home, the
+launcher version and the host, port and mode of the retained `serve` command.
+No sudoers rule grants it: the owner authenticates sudo for the session that
+runs the apply, and the CLI reaches the worker only with `sudo -n`. Normal
+Download and Install never use it.
+
+The dry-run is read-only: it creates no lock, record, scratch, permission change
+or cache, and needs no sudo. It prints the plan, its SHA-256, the owned drop-in
+text, the observed state of the root bootstrap and the bootstrap manifest.
+Installing that bootstrap is a separate, one-time, approved root operation. It
+covers the observer helper and worker bytes from the qualified source, whose
+digests are the `QUALIFIED_WRITER_OBSERVER_SHA256` and
+`SYSTEM_SERVICE_CONTROL_SHA256` constants, the rendered policy, and the observer
+socket units. Adoption installs none of them and refuses to apply until all are
+present exactly. Every unit file must be readable by the service user, so that
+the dry-run can bind it.
+
+```sh
+"$JONES_CLI" jones host adopt-system --base-dir "$JONES_BASE" \
+  --system-unit APPROVED_UNIT --port APPROVED_PORT \
+  --retained-executable /approved/retained/t3 \
+  --active-artifact-dir /approved/current-artifact --active-source-commit CURRENT_SOURCE_SHA \
+  --launcher-artifact-dir /approved/launcher-artifact --launcher-source-commit LAUNCHER_SOURCE_SHA \
+  --accept-unattested-child-capability --dry-run
+```
+
+Apply repeats the command with `--approved-plan-sha256 REVIEWED_PLAN_SHA256`
+instead of `--dry-run`, after the owner has authenticated sudo in that terminal.
+It derives the plan again and stops unless the digest matches. It then records
+each phase in `runtime/jones-system-adoption.json` before acting:
+
+1. Compares the worker's inspection with the plan.
+2. Changes an owned 0775 `runtime` directory to 0755 when the plan says so. The
+   launcher requires that nothing else can write it; `versions` and the rest of
+   the home are unchanged. Every later record carries `runtimeMode`: `applied`
+   is `false` before the attempt, missing while the change or its readback is
+   unsettled, and `true` once read back on the same directory.
+3. Enrolls both authenticated runtimes. The full retained payload must equal the
+   extracted archive.
+4. Reads the launcher's pending migration IDs without writing them.
+5. Proves through the observer socket that only the retained server writes the
+   selected state. The answer counts only if the retained process birth, the
+   socket and every selected state file's inode are unchanged after the
+   exchange.
+6. Rechecks the unit, process birth, executable, cgroup, descriptor, database
+   inode and environment.
+7. Stops the unit through the worker.
+8. Checks that every selected state file is on one of the local filesystems
+   Install admission accepts, then proves with kernel leases that nothing holds
+   the state open for writing. Any other filesystem, or a failed check, keeps
+   the unit stopped.
+9. Creates `service-state.json` exclusively with protocol 4 and the retained
+   version.
+10. Installs the owned drop-in and starts the unit.
+
+The record becomes `applied` only after the launcher and the retained child are
+observed under the unit's cgroup, together with the launcher capability receipt,
+the same environment, database inode, unit digest and migration IDs, and a
+complete socket observation with that child allowed. The child is expected to
+publish no capability receipt, so the record says `attestation:"launcher-only"`
+and `childCapability:"unattested"`. Whether the retained child offers Download
+and Install is observed afterwards through its own update capability; a
+`bootstrap-required` result is a gap to report, not a reason to retry.
+
+A failure whose effects are all known leaves the record `partial` at its
+recorded phase. That does not mean nothing changed: the permission correction
+and runtimes enrolled before that phase remain, and a failure while `enrolling`
+can leave only some of them. An uncertain permission change, stop, state
+creation, launcher installation, start or readback leaves it `unknown`.
+Neither is retried, reversed or restarted automatically, and a record of either
+kind blocks a second adoption. If the writer proof fails after the stop, the
+unit stays stopped. The retained executable directory, every original unit file
+and the database are preserved. Recovery, including archiving the owned drop-in
+with `archive-launcher`, needs its own approved plan.
+
 ## Pair and validate
 
 Use the guarded Jones artifact CLI under the route/pairing approval:
@@ -455,12 +551,8 @@ bootstrap, Install needs no owner sudo, password or terminal; the owner still
 starts each Install from the update controls.
 
 Source support for the socket does not install units, adopt a service or change
-a running host. It also does not adopt a system service unit. A system-unit host
-needs its own closed adoption, which keeps `NoNewPrivileges=yes`,
-`KillMode=control-group` and the shared slice's aggregate limits, restarts no
-process whose writer state is unknown, and hashes or copies no database. That
-adoption also owns the launcher's requirement that the home's `runtime`
-directory is not group- or other-writable (0755 or stricter).
+a running host. A system-unit host is adopted separately through
+[exact system-unit adoption](#exact-system-unit-adoption).
 
 Inspect first after an interrupted setup or pairing operation:
 
