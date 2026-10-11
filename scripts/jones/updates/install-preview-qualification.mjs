@@ -1087,6 +1087,71 @@ function rendererSteps(origin, sourceSha, runId) {
   return steps;
 }
 
+export async function waitProviderReady(rpc, instanceId) {
+  let resolveReady, rejectReady;
+  const ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  let finished = false;
+  const subscription = rpc.call("subscribeServerConfig", {}, (item) => {
+    if (finished) return;
+    try {
+      let providers;
+      if (item.type === "snapshot") providers = item.config?.providers;
+      else if (item.type === "providerStatuses") providers = item.payload?.providers;
+      else return;
+      NodeAssert.ok(Array.isArray(providers), "Native provider snapshot is missing providers");
+      const matches = providers.filter((provider) => provider?.instanceId === instanceId);
+      if (matches.length === 0) return;
+      NodeAssert.equal(matches.length, 1, "Native provider snapshot contains duplicate instances");
+      const provider = matches[0];
+      NodeAssert.equal(provider.driver, "acpRegistry", "Native provider has the wrong driver");
+      NodeAssert.equal(provider.enabled, true, "Native provider is disabled");
+      NodeAssert.ok(
+        provider.availability === undefined || provider.availability === "available",
+        "Native provider is unavailable",
+      );
+      resolveReady({ instanceId, driver: provider.driver, enabled: true });
+    } catch (error) {
+      rejectReady(error);
+    }
+  });
+  const terminal = subscription.result.then(
+    () => {
+      if (!finished)
+        rejectReady(new Error("Native config subscription ended before provider readiness"));
+      return { error: null };
+    },
+    (error) => {
+      if (!finished) rejectReady(error);
+      return { error };
+    },
+  );
+  let failure;
+  try {
+    return await ready;
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    finished = true;
+    try {
+      subscription.interrupt();
+      const exit = await terminal;
+      if (exit.error && exit.error !== failure && exit.error.nativeRpcInterrupted !== true)
+        throw exit.error;
+    } catch (cleanupError) {
+      if (failure && cleanupError !== failure)
+        throw new AggregateError(
+          [failure, cleanupError],
+          "Native provider readiness and subscription cleanup failed",
+        );
+      throw cleanupError;
+    }
+  }
+}
+
 export async function waitInactive(rpc, threadId) {
   let resolveInactive, rejectInactive;
   const inactive = new Promise((resolve, reject) => {
@@ -1298,6 +1363,8 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
               ...(renderer ? rendererSteps(renderer.origin, expected.sourceSha, id()) : []),
             ],
           };
+          // Settings persistence acknowledges before the provider registry finishes hydration.
+          await waitProviderReady(primary.rpc, instanceId);
           await primary.rpc.call("orchestration.launchThread", {
             commandId: id(),
             projectId,
