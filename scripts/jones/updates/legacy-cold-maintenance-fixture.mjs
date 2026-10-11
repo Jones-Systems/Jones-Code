@@ -12,7 +12,17 @@ const repository = NodeURL.fileURLToPath(new URL("../../../", import.meta.url));
 const updateSources = NodePath.join(repository, "apps/desktop/src/jones/updates");
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 
+const nativePairCases = {
+  "fd-native-clone": "roundtrip",
+  "fd-native-fallback": "native-fallback",
+  "fd-profile-volume": "profile-volume",
+  "fd-nofollow-source": "nofollow-copy-source",
+  "fd-nofollow-target": "nofollow-copy-target",
+  "fd-nofollow-observe": "nofollow-before-open",
+};
+
 export const coldMaintenanceCases = [
+  ...Object.keys(nativePairCases),
   "success",
   "before-owner",
   "after-owner",
@@ -432,6 +442,20 @@ finally:
 
 export async function runColdMaintenanceFixture(scenario, { signal } = {}) {
   NodeAssert.ok(coldMaintenanceCases.includes(scenario));
+  if (Object.hasOwn(nativePairCases, scenario)) {
+    const report = await runColdPairFixture(nativePairCases[scenario], {
+      signal,
+      nativeStorage: true,
+    });
+    NodeAssert.equal(report.nativeStorage.platform, "darwin");
+    NodeAssert.equal(report.nativeStorage.coldOwnerQualified, false);
+    return {
+      ...report,
+      case: scenario,
+      storageQualification: report.qualification,
+      qualification: "synthetic-pre-state-same-kernel",
+    };
+  }
   const sources = await readColdMaintenanceSources();
   return withLegacyIdentityScratch(async (root) => {
     const native = NodePath.join(root, "identity-native");
@@ -488,7 +512,7 @@ export async function runColdMaintenanceFixture(scenario, { signal } = {}) {
 }
 
 // Portable storage tests replace the resolver only in this owned namespace.
-// They exercise real files and the shared copy fallback, not native cold custody.
+// They exercise FD-bound storage on owned files, not native cold custody.
 const pairDriver = String.raw`
 import sys
 sys.dont_write_bytecode = True
@@ -550,17 +574,112 @@ else:
         return proof
     scope['_cold_pair_identity'] = portable_identity
     scope['_COLD_PAIR_HEADROOM'] = 16384
-    # No grandchildren: force the real shared clone routines through their copy fallback.
-    def unavailable_clone(args, **kwargs):
-        assert args[0] == '/bin/cp' and all(pathlib.Path(arg).is_relative_to(root) for arg in args[-2:])
-        return subprocess.CompletedProcess(args, 1, '', '')
-    subprocess.run = unavailable_clone
+    native_storage = payload.get('nativeStorage', False)
+    clone_counts = {'attempted': 0, 'cloned': 0, 'fallback': 0}
+    original_clone = scope['_cold_pair_clone']
+    def tracked_clone(source, parent, name):
+        clone_counts['attempted'] += 1
+        cloned = original_clone(source, parent, name) if native_storage and scenario != 'native-fallback' else False
+        clone_counts['cloned' if cloned else 'fallback'] += 1
+        return cloned
+    scope['_cold_pair_clone'] = tracked_clone
+    def no_subprocess(*args, **kwargs): raise AssertionError('FD-bound storage launched a child')
+    subprocess.run = no_subprocess
     transaction_type = scope['_ColdPairTransaction']
     with scope['fixed_lock'](root / 'runtime/jones-active-install.json') as current_lock:
         owner.current_lock = current_lock
         tx = transaction_type(owner)
         initial = tx.observe_members()
-        if scenario in ('partial-copy', 'source-changed'):
+        if scenario == 'profile-volume':
+            original_identity = tx.root_identity
+            observed_profile = []
+            def foreign_profile(path):
+                result = original_identity(path)
+                if path == root / 'profile':
+                    observed_profile.append(path)
+                    result = dict(result, device=str(int(result['device']) + 1))
+                return result
+            tx.root_identity = foreign_profile
+            expect_refusal(tx.snapshot)
+            assert observed_profile and 'stateTransaction' not in owner.journal
+            assert not tx.root.exists() and transaction_type(owner).observe_members() == initial
+        elif scenario.startswith('nofollow-') or scenario == 'bounded-readback':
+            outside = root / 'outside'
+            outside.mkdir(mode=0o700)
+            write(outside / 'value', b'external-read-sentinel')
+            outside_file = (outside / 'value').stat()
+            outside_identity = (outside_file.st_dev, outside_file.st_ino)
+            outside_directory = (outside.stat().st_dev, outside.stat().st_ino)
+            original_open, original_read, original_scandir = os.open, os.read, os.scandir
+            original_clone_probe = scope['_cold_pair_clone']
+            nested, retained = root / 'profile/nested', root / 'profile/retained-nested'
+            nested_proof = (nested.stat().st_dev, nested.stat().st_ino)
+            profile_proof = ((root / 'profile').stat().st_dev, (root / 'profile').stat().st_ino)
+            fault = {'fired': False, 'externalReads': 0, 'readback': 0, 'visited': 0}
+            destination = root / 'copied-profile'
+            def substitute(path, saved):
+                path.rename(saved)
+                path.symlink_to(outside, target_is_directory=True)
+                fault['fired'] = True
+            def guarded_open(path, flags, *args, **kwargs):
+                if scenario == 'nofollow-before-open' and not fault['fired'] and path == 'nested':
+                    substitute(nested, retained)
+                fd = original_open(path, flags, *args, **kwargs)
+                info = os.fstat(fd)
+                if (info.st_dev, info.st_ino) in (outside_identity, outside_directory):
+                    fault['externalReads'] += 1
+                    os.close(fd)
+                    raise AssertionError('Open escaped the bound source directory')
+                return fd
+            def guarded_read(fd, size):
+                info = os.fstat(fd)
+                if (info.st_dev, info.st_ino) == outside_identity:
+                    fault['externalReads'] += 1
+                    raise AssertionError('Read escaped the bound source directory')
+                return original_read(fd, size)
+            class CountedListing:
+                def __init__(self, iterator): self.iterator = iterator
+                def __enter__(self): return self
+                def __exit__(self, *args): self.iterator.close()
+                def __iter__(self): return self
+                def __next__(self):
+                    entry = next(self.iterator)
+                    fault['visited'] += 1
+                    return entry
+            def guarded_scandir(fd):
+                info = os.fstat(fd) if isinstance(fd, int) else pathlib.Path(fd).stat()
+                proof = (info.st_dev, info.st_ino)
+                if proof == outside_directory:
+                    fault['externalReads'] += 1
+                    raise AssertionError('Enumeration escaped the bound source directory')
+                if scenario == 'nofollow-after-open' and not fault['fired'] and proof == nested_proof:
+                    substitute(nested, retained)
+                if scenario == 'bounded-readback' and proof == profile_proof:
+                    fault['readback'] += 1
+                    if fault['readback'] == 2:
+                        for index in range(64): write(root / 'profile' / ('extra-' + str(index)), b'x')
+                        fault['fired'] = True
+                        return CountedListing(original_scandir(fd))
+                return original_scandir(fd)
+            def copy_substitution(source, parent, name):
+                if not fault['fired']:
+                    if scenario == 'nofollow-copy-source': substitute(nested, retained)
+                    elif scenario == 'nofollow-copy-target': substitute(destination, root / 'retained-copy')
+                return original_clone_probe(source, parent, name)
+            os.open, os.read, os.scandir = guarded_open, guarded_read, guarded_scandir
+            if scenario == 'bounded-readback': scope['_COLD_PAIR_BOUNDS'] = dict(scope['_COLD_PAIR_BOUNDS'], entries=16)
+            if scenario.startswith('nofollow-copy-'): scope['_cold_pair_clone'] = copy_substitution
+            try:
+                expect_refusal(lambda: tx.copy(root / 'profile', destination, True) if scenario.startswith('nofollow-copy-') else tx.observe(root / 'profile', True))
+                assert fault['fired'] and fault['externalReads'] == 0
+                if scenario == 'bounded-readback': assert fault['visited'] == 17
+                assert 'stateTransaction' not in owner.journal
+            finally:
+                os.open, os.read, os.scandir = original_open, original_read, original_scandir
+                scope['_cold_pair_clone'] = original_clone_probe
+            assert sorted(path.name for path in outside.iterdir()) == ['value']
+            assert (outside / 'value').read_bytes() == b'external-read-sentinel'
+        elif scenario in ('partial-copy', 'source-changed'):
             original_copy = tx.copy
             def interrupted_copy(source, target, profile):
                 result = original_copy(source, target, profile)
@@ -679,10 +798,22 @@ else:
                         assert not (root / 'profile/SingletonLock').exists() and not (root / 'profile/SingletonLock').is_symlink()
                         assert owner.journal['stateTransaction']
                         assert recovered.reconcile_restore() == result
-print(json.dumps({'case': scenario, 'passed': True, 'qualification': 'owned-mechanical-storage', 'stateAdmissionAllowed': False}))
+report = {'case': scenario, 'passed': True, 'qualification': 'owned-mechanical-storage', 'stateAdmissionAllowed': False}
+if payload.get('nativeStorage'):
+    assert sys.platform == 'darwin'
+    if scenario == 'roundtrip': assert clone_counts['cloned'] > 0
+    if scenario == 'native-fallback': assert clone_counts['attempted'] > 0 and clone_counts['cloned'] == 0 and clone_counts['fallback'] == clone_counts['attempted']
+    report['nativeStorage'] = {'platform': sys.platform, 'clone': clone_counts, 'coldOwnerQualified': False}
+print(json.dumps(report))
 `;
 
 export const coldPairCases = [
+  "profile-volume",
+  "nofollow-before-open",
+  "nofollow-after-open",
+  "nofollow-copy-source",
+  "nofollow-copy-target",
+  "bounded-readback",
   "held",
   "roundtrip",
   "sidecars",
@@ -706,15 +837,17 @@ export const coldPairCases = [
   "sticky-sync",
 ];
 
-export async function runColdPairFixture(scenario, { signal } = {}) {
-  NodeAssert.ok(coldPairCases.includes(scenario));
+export async function runColdPairFixture(scenario, { signal, nativeStorage = false } = {}) {
+  NodeAssert.ok(
+    coldPairCases.includes(scenario) || (nativeStorage && scenario === "native-fallback"),
+  );
   const sources = await readColdMaintenanceSources();
   return withLegacyIdentityScratch(async (root) => {
     const payload = NodePath.join(root, "pair.json");
     const entry = NodePath.join(root, "pair.py");
     await NodeFSP.writeFile(
       payload,
-      JSON.stringify({ maintenance: sources.maintenance, case: scenario }),
+      JSON.stringify({ maintenance: sources.maintenance, case: scenario, nativeStorage }),
     );
     await NodeFSP.writeFile(entry, pairDriver);
     const result = await runLegacyIdentityFixtureCommand(
