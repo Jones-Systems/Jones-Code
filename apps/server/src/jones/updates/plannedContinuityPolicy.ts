@@ -226,6 +226,7 @@ export function changesPlannedControl(
     [...continuationIds].some((id) => receipt.command_id === `command:effect:checkpoint.capture:${id}`)
   ) return false;
   if (
+    receipt.command_type === "message.dispatch" &&
     snapshot.workGeneration !== null &&
     receipt.command_id ===
       workModeCommand({

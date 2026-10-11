@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { workModeFixture } from "../workMode/Fixtures.testkit.ts";
+import { workModeCommand } from "../workMode/Policy.ts";
 import {
   canReleasePlannedQueue,
   captureThreadContinuity,
@@ -193,5 +194,18 @@ it("allows successful checkpoint receipts only for the captured continuation cha
   const receipt = { command_type: "checkpoint.capture", command_id: `command:effect:checkpoint.capture:${snapshot.sourceRunId}` };
   expect(changesPlannedControl(receipt, snapshot, ids)).toBe(false);
   expect(changesPlannedControl({ ...receipt, command_id: `${receipt.command_id}:other` }, snapshot, ids)).toBe(true);
+  expect(changesPlannedControl({ ...receipt, command_type: "thread.stop" }, snapshot, ids)).toBe(true);
+});
+
+it("does not mistake a Stop reusing the planned Work command ID for a Work dispatch", () => {
+  const projection = workModeFixture();
+  const snapshot = captureThreadContinuity({
+    projection, explicitContinuation: true, workModeEnabled: true, liveWorkOwner: true,
+    nowMs: 0, receiptRowId: 0, receiptCommandId: "",
+  })!;
+  const command = workModeCommand({ threadId: snapshot.threadId, generation: snapshot.workGeneration! });
+  const receipt = { command_id: command.commandId, command_type: command.type };
+  const ids = continuationRunIds(snapshot, projection);
+  expect(changesPlannedControl(receipt, snapshot, ids)).toBe(false);
   expect(changesPlannedControl({ ...receipt, command_type: "thread.stop" }, snapshot, ids)).toBe(true);
 });
