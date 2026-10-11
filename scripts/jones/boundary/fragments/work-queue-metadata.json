@@ -19,7 +19,9 @@
     "apps/web/src/jones/workQueue/classifySentPrompts.ts",
     "apps/web/src/jones/workQueue/useWorkQueueMetadata.ts",
     "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
-    "packages/client-runtime/src/jones/workQueueMetadata.ts"
+    "packages/client-runtime/src/jones/workQueueMetadata.ts",
+    "packages/contracts/src/jones/fixtures/work_queue_metadata_v2_runtime_v1.json.fixture",
+    "packages/contracts/src/jones/fixtures/work_queue_metadata_v2_runtime_v2.json.fixture"
   ],
   "hookPaths": ["apps/web/src/routes/settings.jones-code.tsx"],
   "tombstones": [],

@@ -59,7 +59,9 @@ export function EnvironmentVoiceReview({
   const { fetchList, transport, review } = useVoiceReview(environmentId);
   const [tab, setTab] = useState<"review" | "routing">("review");
   const [recent, setRecent] = useState<VoiceReviewRecentList | null>(null);
-  useEffect(() => { onRecentChange?.(recent); }, [recent, onRecentChange]);
+  useEffect(() => {
+    onRecentChange?.(recent);
+  }, [recent, onRecentChange]);
   const [registry, setRegistry] = useState<ThreadRegistryComposedSnapshot | null>(null);
   const [workstreams, setWorkstreams] = useState<ThreadRegistryWorkstreams | null>(null);
   const [metadataError, setMetadataError] = useState(false);

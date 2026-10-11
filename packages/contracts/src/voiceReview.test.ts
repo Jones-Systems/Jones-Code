@@ -38,15 +38,21 @@ describe("voice review mutation wire contract", () => {
 
 describe("voice queue delivery links", () => {
   const delivery = {
-    delivery_id: "delivery", queue_request_id: "request", payload_sha256: "a".repeat(64),
+    delivery_id: "delivery",
+    queue_request_id: "request",
+    payload_sha256: "a".repeat(64),
     destination: { backend: "codex", instance: "worker", thread_id: "thread", project_id: null },
   };
   const decode = Schema.decodeUnknownSync(VoiceReviewQueueDeliveryLinks);
   it("accepts bounded ready receipts and explicit unavailable outcomes", () => {
-    expect(decode({ status: "ready", reason: null, deliveries: [delivery] }).deliveries).toEqual([delivery]);
+    expect(decode({ status: "ready", reason: null, deliveries: [delivery] }).deliveries).toEqual([
+      delivery,
+    ]);
     for (const unlinked_delivery_count of [0, 1, 199]) {
-      expect(decode({ status: "ready", reason: null, deliveries: [delivery], unlinked_delivery_count })
-        .unlinked_delivery_count).toBe(unlinked_delivery_count);
+      expect(
+        decode({ status: "ready", reason: null, deliveries: [delivery], unlinked_delivery_count })
+          .unlinked_delivery_count,
+      ).toBe(unlinked_delivery_count);
     }
     for (const reason of ["forbidden", "source_unavailable", "invalid_receipt", "limit"]) {
       expect(decode({ status: "unavailable", reason, deliveries: [] }).reason).toBe(reason);
@@ -60,17 +66,26 @@ describe("voice queue delivery links", () => {
       { status: "ready", reason: null, deliveries: Array(201).fill(delivery) },
       { status: "ready", reason: null, deliveries: [{ ...delivery, prompt: "private" }] },
       { status: "ready", reason: null, deliveries: [{ ...delivery, payload_sha256: "invalid" }] },
-      { status: "ready", reason: null, deliveries: [{ ...delivery, destination: { ...delivery.destination, secret: "private" } }] },
+      {
+        status: "ready",
+        reason: null,
+        deliveries: [{ ...delivery, destination: { ...delivery.destination, secret: "private" } }],
+      },
       { status: "ready", reason: null, deliveries: [], detail: "private" },
       { status: "ready", reason: null, deliveries: [delivery], unlinked_delivery_count: 200 },
       { status: "unavailable", reason: "forbidden", deliveries: [], unlinked_delivery_count: 1 },
-    ]) expect(() => decode(value)).toThrow();
+    ])
+      expect(() => decode(value)).toThrow();
   });
   it("rejects invalid unlinked counts without coercion", () => {
     for (const unlinked_delivery_count of [-1, 0.5, 201, "1", true, null]) {
-      expect(() => decode({ status: "ready", reason: null, deliveries: [], unlinked_delivery_count })).toThrow();
+      expect(() =>
+        decode({ status: "ready", reason: null, deliveries: [], unlinked_delivery_count }),
+      ).toThrow();
     }
-    expect(decode({ status: "ready", reason: null, deliveries: [], unlinked_delivery_count: 200 })
-      .unlinked_delivery_count).toBe(200);
+    expect(
+      decode({ status: "ready", reason: null, deliveries: [], unlinked_delivery_count: 200 })
+        .unlinked_delivery_count,
+    ).toBe(200);
   });
 });

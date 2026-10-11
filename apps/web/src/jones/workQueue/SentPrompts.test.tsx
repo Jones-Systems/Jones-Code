@@ -60,14 +60,21 @@ describe("confirmed sent prompts", () => {
   });
   it("qualifies stale partial handoffs and never claims complete empty history", async () => {
     const observation = { sampledAt: prompt.sentAt, coverage: "partial" as const, stale: true };
-    await render({ status: "ready", provenance: "live", entries: [{ ...prompt, providerState: "pending" }], observation });
+    await render({
+      status: "ready",
+      provenance: "live",
+      entries: [{ ...prompt, providerState: "pending" }],
+      observation,
+    });
     expect(container.textContent).toContain("Previously observed confirmed handoffs");
     expect(container.textContent).toContain("Coverage: partial");
     expect(container.textContent).toContain("Sampled");
     expect(container.textContent).toContain("Provider turn: pending");
     expect(container.textContent).not.toContain("SAMPLE DATA");
     await render({ status: "ready", provenance: "live", entries: [], observation });
-    expect(container.textContent).toContain("No confirmed handoffs in this sample; other sent prompts may be unavailable.");
+    expect(container.textContent).toContain(
+      "No confirmed handoffs in this sample; other sent prompts may be unavailable.",
+    );
     expect(container.textContent).not.toContain("No sent prompts observed.");
   });
   it("keeps live observed-empty history distinct from unavailable and loading", async () => {

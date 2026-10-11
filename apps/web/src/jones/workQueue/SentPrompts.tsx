@@ -73,9 +73,13 @@ export function SentPrompts({ state }: { state: SentPromptsState }) {
       <p className="text-sm text-muted-foreground">Sent confirms handoff, not completed work.</p>
       {state.observation ? (
         <p role="status" className="text-sm text-muted-foreground">
-          {state.observation.stale ? "Previously observed confirmed handoffs" : "Confirmed handoffs in this sample"}
-          {" · Sampled "}{sentTimeFormatter.format(state.observation.sampledAt)}
-          {" · Coverage: "}{state.observation.coverage}
+          {state.observation.stale
+            ? "Previously observed confirmed handoffs"
+            : "Confirmed handoffs in this sample"}
+          {" · Sampled "}
+          {sentTimeFormatter.format(state.observation.sampledAt)}
+          {" · Coverage: "}
+          {state.observation.coverage}
           {" · This sample is not a complete sent history."}
         </p>
       ) : null}
@@ -84,7 +88,11 @@ export function SentPrompts({ state }: { state: SentPromptsState }) {
           Some sent prompts are unavailable because delivery confirmation is missing or invalid.
         </p>
       ) : entries.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{state.observation ? "No confirmed handoffs in this sample; other sent prompts may be unavailable." : "No sent prompts observed."}</p>
+        <p className="text-sm text-muted-foreground">
+          {state.observation
+            ? "No confirmed handoffs in this sample; other sent prompts may be unavailable."
+            : "No sent prompts observed."}
+        </p>
       ) : null}
       {entries.map((entry) => (
         <article key={entry.id} className="min-w-0 space-y-3 rounded-lg border p-4">
@@ -103,7 +111,9 @@ export function SentPrompts({ state }: { state: SentPromptsState }) {
             <time dateTime={new Date(entry.sentAt).toISOString()}>
               {sentTimeFormatter.format(entry.sentAt)}
             </time>
-            {entry.providerState ? <span>Provider turn: {entry.providerState} · finish line not tracked</span> : null}
+            {entry.providerState ? (
+              <span>Provider turn: {entry.providerState} · finish line not tracked</span>
+            ) : null}
             {entry.sourceLabel ? <span className="wrap-anywhere">{entry.sourceLabel}</span> : null}
             {entry.workstreams.length > 0 ? (
               <span className="wrap-anywhere">{entry.workstreams.join(" · ")}</span>

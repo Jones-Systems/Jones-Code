@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useBlocker } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
-import type { EnvironmentId, VoiceReviewRecentList, WorkQueueMetadataResult } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  VoiceReviewRecentList,
+  WorkQueueMetadataResult,
+} from "@t3tools/contracts";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { isElectron } from "../../env";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader";
@@ -249,12 +253,14 @@ function EnvironmentPrompts({
   const snapshot = metadata && "snapshot" in metadata ? metadata.snapshot : null;
   useEffect(() => {
     if (!metadata || !("snapshot" in metadata) || metadata.expires_at_ms <= now) return;
-    const timer = window.setTimeout(() => setNow(Date.now()),
-      Math.max(0, Math.min(metadata.expires_at_ms - Date.now(), 2_147_483_647)));
+    const timer = window.setTimeout(
+      () => setNow(Date.now()),
+      Math.max(0, Math.min(metadata.expires_at_ms - Date.now(), 2_147_483_647)),
+    );
     return () => window.clearTimeout(timer);
   }, [metadata, now]);
-  const nativeEnvironmentId = environment.serverConfig?.environment.environmentId === environmentId
-    ? environmentId : null;
+  const nativeEnvironmentId =
+    environment.serverConfig?.environment.environmentId === environmentId ? environmentId : null;
   const classified = classifySentPrompts(snapshot, recent?.entries ?? [], nativeEnvironmentId);
   const reportDirty = useCallback(
     (dirty: boolean) => onDirtyChange(environmentId, dirty),
@@ -287,36 +293,61 @@ function EnvironmentPrompts({
             Queue metadata unsupported by this environment.
           </p>
         ) : (
-          <EnvironmentWorkQueue environmentId={environmentId} onResult={setMetadata} excludedRequests={classified.confirmedRequests} />
+          <EnvironmentWorkQueue
+            environmentId={environmentId}
+            onResult={setMetadata}
+            excludedRequests={classified.confirmedRequests}
+          />
         )}
       </div>
       {pane === "sent" ? (
         <>
           {snapshot && !classified.sourceBound ? (
-            <p className="text-sm text-muted-foreground">Voice text matching is unavailable: the queue source is not bound to this native environment. Voice prompts remain under Queued.</p>
+            <p className="text-sm text-muted-foreground">
+              Voice text matching is unavailable: the queue source is not bound to this native
+              environment. Voice prompts remain under Queued.
+            </p>
           ) : null}
-          <SentPrompts state={snapshot ? {
-            status: "ready", provenance: "live", entries: classified.sent,
-            observation: {
-              sampledAt: snapshot.observed_at_ms,
-              coverage: metadata?.status === "partial" ? "partial" : snapshot.coverage,
-              stale: unavailable || metadata?.status === "stale" ||
-                (metadata !== null && "snapshot" in metadata && metadata.expires_at_ms <= now),
-            },
-          } : { status: "unavailable" }} />
+          <SentPrompts
+            state={
+              snapshot
+                ? {
+                    status: "ready",
+                    provenance: "live",
+                    entries: classified.sent,
+                    observation: {
+                      sampledAt: snapshot.observed_at_ms,
+                      coverage: metadata?.status === "partial" ? "partial" : snapshot.coverage,
+                      stale:
+                        unavailable ||
+                        metadata?.status === "stale" ||
+                        (metadata !== null &&
+                          "snapshot" in metadata &&
+                          metadata.expires_at_ms <= now),
+                    },
+                  }
+                : { status: "unavailable" }
+            }
+          />
         </>
       ) : null}
     </section>
   );
 }
 
-function EnvironmentWorkQueue({ environmentId, onResult, excludedRequests }: {
+function EnvironmentWorkQueue({
+  environmentId,
+  onResult,
+  excludedRequests,
+}: {
   environmentId: EnvironmentId;
   onResult: (result: WorkQueueMetadataResult | null) => void;
   excludedRequests: ReadonlySet<string>;
 }) {
   const load = useWorkQueueMetadata(environmentId);
-  return <WorkQueueMetadataPanel load={load} onResult={onResult} excludedRequests={excludedRequests} />;
+  return (
+    <WorkQueueMetadataPanel load={load} onResult={onResult} excludedRequests={excludedRequests} />
+  );
 }
 
 export function PromptQueueSettingsStatus({

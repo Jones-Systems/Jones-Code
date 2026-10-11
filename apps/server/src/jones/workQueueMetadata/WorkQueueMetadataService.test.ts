@@ -124,20 +124,78 @@ describe("configured queue metadata service", () => {
         }),
       ),
   );
+  it.effect.each(["v1", "v2"] as const)(
+    "reads the composed runtime %s producer fixture with the exact configured source",
+    (version) =>
+      fixture((path) =>
+        Effect.gen(function* () {
+          const bytes = yield* Effect.promise(() =>
+            NodeFSP.readFile(
+              new URL(
+                `../../../../../packages/contracts/src/jones/fixtures/work_queue_metadata_v2_runtime_${version}.json.fixture`,
+                import.meta.url,
+              ),
+            ),
+          );
+          const snapshot = decodeMetadata(JSON.parse(bytes.toString("utf8")));
+          const expectedSource = {
+            queue_id: "queue",
+            host_id: version === "v1" ? "vps" : "physical-host",
+            environment_ref: "environment",
+            exporter_instance_id: "exporter",
+          };
+          expect(snapshot.source).toEqual(expectedSource);
+          yield* Effect.promise(() => NodeFSP.writeFile(path, bytes, { mode: 0o600 }));
+          yield* TestClock.setTime(100);
+          expect(
+            yield* read({ status: "configured", path, source: expectedSource, maxAgeMs: 30_000 }),
+          ).toEqual({ status: "ready", snapshot, expires_at_ms: 30_100 });
+          for (const wrongSource of [
+            { ...expectedSource, host_id: version === "v1" ? "physical-host" : "vps" },
+            { ...expectedSource, environment_ref: "foreign-environment" },
+          ]) {
+            expect(
+              yield* read({ status: "configured", path, source: wrongSource, maxAgeMs: 30_000 }),
+            ).toEqual({ status: "unavailable", reason: "source_mismatch" });
+          }
+        }),
+      ),
+  );
   it.effect("reads v2 through the same descriptor, source and digest validation as v1", () =>
-    fixture((path, config) => Effect.gen(function* () {
-      const value = artifact({ schema: "codex.t3-work-queue-metadata/v2", items: [{
-        request_id: "request", workstream_id: "work", canonical_binding: null,
-        entry_kind: "ordinary", request_kind: "initial", lane: "normal", queue_state: "queued",
-        submitted_at_ms: null, target: null, dispatch_status: null, native_command_status: null,
-        finish_line: "not_tracked", payload_sha256: null, native_handoff: null,
-      }] });
-      yield* Effect.promise(() => NodeFSP.writeFile(path, JSON.stringify(value), { mode: 0o600 }));
-      expect(yield* read(config)).toMatchObject({ status: "ready", snapshot: value });
-      const corrupt = { ...value, snapshot_token: "0".repeat(64) };
-      yield* Effect.promise(() => NodeFSP.writeFile(path, JSON.stringify(corrupt), { mode: 0o600 }));
-      expect(yield* read(config)).toEqual({ status: "unavailable", reason: "invalid_artifact" });
-    })),
+    fixture((path, config) =>
+      Effect.gen(function* () {
+        const value = artifact({
+          schema: "codex.t3-work-queue-metadata/v2",
+          items: [
+            {
+              request_id: "request",
+              workstream_id: "work",
+              canonical_binding: null,
+              entry_kind: "ordinary",
+              request_kind: "initial",
+              lane: "normal",
+              queue_state: "queued",
+              submitted_at_ms: null,
+              target: null,
+              dispatch_status: null,
+              native_command_status: null,
+              finish_line: "not_tracked",
+              payload_sha256: null,
+              native_handoff: null,
+            },
+          ],
+        });
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(path, JSON.stringify(value), { mode: 0o600 }),
+        );
+        expect(yield* read(config)).toMatchObject({ status: "ready", snapshot: value });
+        const corrupt = { ...value, snapshot_token: "0".repeat(64) };
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(path, JSON.stringify(corrupt), { mode: 0o600 }),
+        );
+        expect(yield* read(config)).toEqual({ status: "unavailable", reason: "invalid_artifact" });
+      }),
+    ),
   );
   it.effect("returns explicit unconfigured and invalid configuration outcomes", () =>
     Effect.gen(function* () {

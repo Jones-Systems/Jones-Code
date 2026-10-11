@@ -178,8 +178,10 @@ export const VoiceReviewQueueDeliveryLinks = strictPayload({
 }).check(
   Schema.makeFilter((value) =>
     value.status === "ready"
-      ? value.reason === null && value.deliveries.length + (value.unlinked_delivery_count ?? 0) <= 200
-      : value.reason !== null && value.deliveries.length === 0 &&
+      ? value.reason === null &&
+        value.deliveries.length + (value.unlinked_delivery_count ?? 0) <= 200
+      : value.reason !== null &&
+        value.deliveries.length === 0 &&
         (value.unlinked_delivery_count === undefined || value.unlinked_delivery_count === 0),
   ),
 );

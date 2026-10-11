@@ -231,11 +231,15 @@ export const makeVoiceReviewBridge = (
   ): Promise<readonly VoiceReviewRecentEntry[]> => {
     const links = new Map<string, VoiceReviewQueueDeliveryLinks>();
     const commands = Array.from(
-      new Set(entries.flatMap((entry) =>
-        entry.command_id !== null && entry.draft.state !== "deleted" && entry.draft.state !== "expired"
-          ? [entry.command_id]
-          : [],
-      )),
+      new Set(
+        entries.flatMap((entry) =>
+          entry.command_id !== null &&
+          entry.draft.state !== "deleted" &&
+          entry.draft.state !== "expired"
+            ? [entry.command_id]
+            : [],
+        ),
+      ),
     );
     for (const id of commands) links.set(id, unavailableLinks("limit"));
     const selected = commands.slice(0, 50);
@@ -270,19 +274,27 @@ export const makeVoiceReviewBridge = (
             );
           } catch (error) {
             if (!controller.signal.aborted) {
-              links.set(id, unavailableLinks(
-                isVoiceReviewForbiddenError(error)
-                  ? "forbidden"
-                  : error instanceof SyntaxError ? "invalid_receipt" : "source_unavailable",
-              ));
+              links.set(
+                id,
+                unavailableLinks(
+                  isVoiceReviewForbiddenError(error)
+                    ? "forbidden"
+                    : error instanceof SyntaxError
+                      ? "invalid_receipt"
+                      : "source_unavailable",
+                ),
+              );
             }
             continue;
           }
           if (controller.signal.aborted || now() >= deadline) continue;
           try {
             if (
-              raw !== null && typeof raw === "object" && "deliveries" in raw &&
-              Array.isArray(raw.deliveries) && raw.deliveries.length > 200
+              raw !== null &&
+              typeof raw === "object" &&
+              "deliveries" in raw &&
+              Array.isArray(raw.deliveries) &&
+              raw.deliveries.length > 200
             ) {
               links.set(id, unavailableLinks("limit"));
               continue;
@@ -294,17 +306,26 @@ export const makeVoiceReviewBridge = (
             }
             // Only explicit queue relations can match; count unlinked siblings without exposing broker text or results.
             const deliveries = command.deliveries.flatMap((delivery) =>
-              delivery.queue_request_id === null ? [] : [{
-                delivery_id: delivery.id,
-                queue_request_id: delivery.queue_request_id,
-                payload_sha256: delivery.payload_hash,
-                destination: delivery.destination,
-              }],
+              delivery.queue_request_id === null
+                ? []
+                : [
+                    {
+                      delivery_id: delivery.id,
+                      queue_request_id: delivery.queue_request_id,
+                      payload_sha256: delivery.payload_hash,
+                      destination: delivery.destination,
+                    },
+                  ],
             );
-            links.set(id, decodeDeliveryLinks({
-              status: "ready", reason: null, deliveries,
-              unlinked_delivery_count: command.deliveries.length - deliveries.length,
-            }));
+            links.set(
+              id,
+              decodeDeliveryLinks({
+                status: "ready",
+                reason: null,
+                deliveries,
+                unlinked_delivery_count: command.deliveries.length - deliveries.length,
+              }),
+            );
           } catch {
             links.set(id, unavailableLinks("invalid_receipt"));
           }
@@ -322,11 +343,12 @@ export const makeVoiceReviewBridge = (
     }
     return entries.map((entry) => ({
       ...entry,
-      queue_delivery_links: entry.command_id === null
-        ? null
-        : entry.draft.state === "deleted" || entry.draft.state === "expired"
-          ? unavailableLinks("source_unavailable")
-          : links.get(entry.command_id) ?? unavailableLinks("limit"),
+      queue_delivery_links:
+        entry.command_id === null
+          ? null
+          : entry.draft.state === "deleted" || entry.draft.state === "expired"
+            ? unavailableLinks("source_unavailable")
+            : (links.get(entry.command_id) ?? unavailableLinks("limit")),
     }));
   };
   const get = async (principal: EnvironmentSessionPrincipalShape, id: string, mutation = false) => {
@@ -378,24 +400,28 @@ export const makeVoiceReviewBridge = (
       );
       return {
         ...result,
-        entries: await enrichRecent(trusted, result.entries
-          .filter((entry) => entry.draft.source_id === trusted.source_id)
-          .map((entry) => {
-            const terminal = entry.draft.state === "deleted" || entry.draft.state === "expired";
-            const unavailable = terminal || entry.text_state !== "available";
-            return unavailable
-              ? {
-                  ...entry,
-                  text: null,
-                  original_source_text: null,
-                  text_origin: null,
-                  text_state: terminal
-                    ? (entry.draft.state as "deleted" | "expired")
-                    : entry.text_state,
-                  draft: { ...entry.draft, text: null },
-                }
-              : entry;
-          }), deadline),
+        entries: await enrichRecent(
+          trusted,
+          result.entries
+            .filter((entry) => entry.draft.source_id === trusted.source_id)
+            .map((entry) => {
+              const terminal = entry.draft.state === "deleted" || entry.draft.state === "expired";
+              const unavailable = terminal || entry.text_state !== "available";
+              return unavailable
+                ? {
+                    ...entry,
+                    text: null,
+                    original_source_text: null,
+                    text_origin: null,
+                    text_state: terminal
+                      ? (entry.draft.state as "deleted" | "expired")
+                      : entry.text_state,
+                    draft: { ...entry.draft, text: null },
+                  }
+                : entry;
+            }),
+          deadline,
+        ),
       };
     },
     registrySnapshot: async (

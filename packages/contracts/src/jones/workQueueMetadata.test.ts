@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import producerRaw from "./fixtures/work_queue_metadata_v1.json.fixture?raw";
-import { WorkQueueMetadata, WorkQueueMetadataV1, WorkQueueMetadataV2, WorkQueueMetadataResult } from "./workQueueMetadata.ts";
+import {
+  WorkQueueMetadata,
+  WorkQueueMetadataV1,
+  WorkQueueMetadataV2,
+  WorkQueueMetadataResult,
+} from "./workQueueMetadata.ts";
 
 const item = {
   request_id: "request-1",
@@ -180,11 +185,13 @@ describe("v2 native handoff metadata", () => {
       { payload_sha256: "A".repeat(64) },
       { payload_sha256: null },
       { target: null },
-    ]) expect(() => decode({ ...v2, items: [{ ...v2Item, ...change }] })).toThrow();
+    ])
+      expect(() => decode({ ...v2, items: [{ ...v2Item, ...change }] })).toThrow();
     expect(() => decode({ ...v2, items: [item] })).toThrow();
     for (const turn_state of ["pending", "running", "completed", "interrupted", "error"]) {
-      expect(decode({ ...v2, items: [{ ...v2Item, native_handoff: { ...handoff, turn_state } }] }))
-        .toMatchObject({ items: [{ native_handoff: { turn_state } }] });
+      expect(
+        decode({ ...v2, items: [{ ...v2Item, native_handoff: { ...handoff, turn_state } }] }),
+      ).toMatchObject({ items: [{ native_handoff: { turn_state } }] });
     }
   });
 });

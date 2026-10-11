@@ -92,7 +92,8 @@ const ItemV2 = closed({
   native_handoff: Schema.NullOr(NativeHandoff),
 }).check(
   Schema.makeFilter(
-    (item) => item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
+    (item) =>
+      item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
   ),
 );
 const snapshotFields = {
