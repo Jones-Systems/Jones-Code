@@ -1,7 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off - The synthetic Python fixture invokes only the inert public bootstrap command.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import { describe, expect, it } from "vite-plus/test";
-import { createJonesLegacyBootstrapBundle } from "../../../../../scripts/jones/updates/legacy-bootstrap-bundle.ts";
+import {
+  createJonesLegacyBootstrapBundle,
+  createJonesLegacyBootstrapPreparationBundle,
+  JONES_PREPARATION_SOURCE_INPUTS,
+  type JonesPreparationArtifactEvidence,
+} from "../../../../../scripts/jones/updates/legacy-bootstrap-bundle.ts";
+import { jonesPreparationWorkerSource } from "./jonesPreparationWorkerSource.ts";
 
 const fixture = String.raw`
 import contextlib, hashlib, io, json, os, pathlib, plistlib, signal, stat, struct, sys, tempfile, zipfile
@@ -12,6 +19,9 @@ files = payload['files']
 bootstrap_source = files[0]['content']
 namespace = {'__name__': 'bootstrap_fixture'}
 exec(compile(bootstrap_source, 'bootstrap.py', 'exec'), namespace)
+if fault.startswith('v3-'):
+    worker = dict(namespace, BUNDLE_V2_KEYS=namespace['_BOOTSTRAP_BUNDLE_V2_KEYS'])
+    exec(compile(payload['workerSource'], 'worker-definitions.py', 'exec'), worker)
 # The command has no platform-specific mutations. Linux CI covers its Python
 # protocol; the separate packaged Mac qualifier invokes the unmodified platform gate.
 namespace['sys'].platform = 'darwin'
@@ -118,6 +128,28 @@ with tempfile.TemporaryDirectory(prefix='jones-legacy-bootstrap-') as temporary:
     entry = candidate_app / 'Contents/Resources/jones-bootstrap/bootstrap.py'
     namespace['__file__'] = str(entry)
     args = ['--manifest', str(manifest), '--selection', str(selection_path), '--selection-sha256', digest(selection_raw)]
+    runtime_reads = []
+    if fault.startswith('v3-'):
+        Observation = namespace['Observation']
+        original_file, original_raw = Observation.file, Observation.raw
+        @contextlib.contextmanager
+        def bounded_file(self, path, limit):
+            with original_file(self, path, limit) as stream:
+                if path.name != 'jones-offline-preparation': yield stream; return
+                class Reader:
+                    def fileno(self): return stream.fileno()
+                    def read(self, size):
+                        assert 0 < size <= 1048576
+                        runtime_reads.append((limit, size))
+                        return stream.read(size)
+                yield Reader()
+        def bounded_raw(self, path, limit=131072):
+            assert path.name != 'jones-offline-preparation', 'Runtime reached buffered metadata reader'
+            return original_raw(self, path, limit)
+        Observation.file, Observation.raw = bounded_file, bounded_raw
+        proof = namespace['decode']((entry.parent / 'BUNDLE.json').read_bytes())
+        assert namespace['_bootstrap_preparation_bundle'](proof) == worker['_preparation_bundle'](proof)
+        result['proofAgreement'] = True
     guard = {'active': False, 'forbidden': []}
     def audit(event, arguments):
         if not guard['active']: return
@@ -141,7 +173,54 @@ with tempfile.TemporaryDirectory(prefix='jones-legacy-bootstrap-') as temporary:
     code, inspection = invoke('inspect')
     assert code == 0 and inspection['status'] == 'bootstrap-required' and not (updater / 'bootstrap-executors').exists()
     output = pathlib.Path(inspection['executorPath']).parent
-    if fault == 'selection-changed': write(selection_path, selection_raw + b' ')
+    if (fault.startswith('v3-') and fault != 'v3-success') or fault == 'old-proof-oversize':
+        bundle_path = entry.parent / 'BUNDLE.json'
+        proof = namespace['decode'](bundle_path.read_bytes())
+        runtime_path = entry.parent / 'jones-offline-preparation'
+        if fault == 'v3-old-inputs': del proof['preparation']['sourceInputHashes']['apps/server/src/jones/updates/offlinePreparationWorker.ts']
+        elif fault == 'v3-extra-proof': proof['preparation']['callerApproved'] = True
+        elif fault == 'v3-runtime-bytes': write(runtime_path, runtime_path.read_bytes()[:-1] + b'y', 0o500)
+        elif fault == 'v3-runtime-mode': runtime_path.chmod(0o400)
+        elif fault == 'v3-source': proof['sourceSha'] = 'f' * 40
+        elif fault == 'v3-runtime-oversize': proof['preparation']['executable']['size'] = 256 * 1024 * 1024 + 1
+        elif fault == 'v3-native-oversize':
+            native_path = entry.parent / 'identity-native'
+            native = native_path.read_bytes() + bytes(4 * 1024 * 1024 + 1 - native_path.stat().st_size)
+            write(native_path, native, 0o500)
+            proof['identityNativeSha256'] = digest(native)
+        elif fault == 'v3-runtime-header':
+            runtime = bytes(16) + runtime_path.read_bytes()[16:]
+            write(runtime_path, runtime, 0o500)
+            proof['preparation']['executable']['sha256'] = digest(runtime)
+        elif fault == 'v3-runtime-size': proof['preparation']['executable']['size'] += 1
+        elif fault == 'v3-missing-runtime': runtime_path.unlink()
+        elif fault == 'v3-extra-resource': write(entry.parent / 'unexpected', b'preserved')
+        elif fault == 'v3-sqlite-date': proof['preparation']['sqlite']['sourceId'] = '1900-02-29 00:00:00 ' + 'a' * 64
+        elif fault == 'v3-node-version': proof['preparation']['node']['version'] = '26.8.1'
+        elif fault == 'v3-boolean-protocol': proof['preparation']['protocol'] = True
+        elif fault == 'v3-executor-mode': (entry.parent / 'executor.py').chmod(0o400)
+        elif fault == 'v3-maintenance-bytes': write(entry.parent / 'maintenance.py', b'changed', 0o500)
+        raw_bundle = encode(proof) + b'\n'
+        if fault == 'v3-canonical-proof': raw_bundle = json.dumps(proof, indent=2).encode() + b'\n'
+        elif fault == 'v3-proof-oversize': raw_bundle += b' ' * 65536
+        elif fault == 'old-proof-oversize': raw_bundle += b' ' * 8192
+        write(bundle_path, raw_bundle, 0o500 if fault == 'v3-bundle-mode' else 0o400)
+        if fault.startswith('v3-'):
+            def accepts(decoder):
+                try: decoder(proof); return True
+                except namespace['Refused']: return False
+            assert accepts(namespace['_bootstrap_preparation_bundle']) == accepts(worker['_preparation_bundle'])
+        # Rebind the fixture receipts so refusal proves bundle validation, not an
+        # earlier stale app digest. This creates no production provenance.
+        app['appDigest'] = hash_app(candidate_app)
+        write(app_dir / 'mac-app-receipt.json', encode({'app': app, 'artifact': artifact, 'candidate': candidate}))
+        selection_raw = encode(selection)
+        write(selection_path, selection_raw)
+        args[-1] = digest(selection_raw)
+        refused, rejected = invoke('inspect')
+        assert refused == 1 and rejected['status'] == 'refused' and not (updater / 'bootstrap-executors').exists()
+        result['inspectionRefused'] = True
+    elif fault == 'selection-changed': write(selection_path, selection_raw + b' ')
     elif fault == 'manifest-changed': write(manifest, encode(dict(active, generation='2' * 64)))
     elif fault == 'candidate-changed': write(candidate_app / 'Contents/MacOS/Jones', b'changed', 0o500)
     elif fault == 'protected-link': (candidate_app / 'Contents/Resources/protected-link').symlink_to(database)
@@ -207,6 +286,8 @@ with tempfile.TemporaryDirectory(prefix='jones-legacy-bootstrap-') as temporary:
         result.update(code=code, response=response)
         if code == 0:
             assert (output / 'executor.py').read_bytes() == files[1]['content'].encode()
+            assert sorted(path.name for path in output.iterdir()) == ['executor.py', 'receipt.json']
+            assert stat.S_IMODE((output / 'executor.py').stat().st_mode) == 0o500
             assert json.loads((output / 'receipt.json').read_bytes())['activationAllowed'] is False
             again, retry = invoke('stage-executor')
             assert again == 0 and retry['result'] == 'no-change'
@@ -247,6 +328,12 @@ with tempfile.TemporaryDirectory(prefix='jones-legacy-bootstrap-') as temporary:
     assert guard['forbidden'] == []
     assert not list(updater.rglob('commit-grant.json')) and not list(updater.rglob('trial-descriptor.json'))
     result['protectedAccesses'] = guard['forbidden']
+    if fault.startswith('v3-'):
+        assert any(limit == 256 * 1024 * 1024 for limit, size in runtime_reads)
+        assert len(runtime_reads) > 1 and manifest.read_bytes() == original_manifest
+        result['runtimeQualification'] = 'synthetic-nonexecuted-resource'
+        result['runtimeExecuted'] = False
+        if fault != 'v3-success': assert not (updater / 'bootstrap-executors').exists()
 result['fixtureRemoved'] = not root.exists()
 print(json.dumps(result))
 `;
@@ -260,7 +347,11 @@ const files = createJonesLegacyBootstrapBundle({
 
 function scenario(fault: string, bundle = files) {
   const output = NodeChildProcess.execFileSync("python3", ["-c", fixture], {
-    input: JSON.stringify({ files: bundle, fault }),
+    input: JSON.stringify({
+      files: bundle,
+      fault,
+      ...(fault.startsWith("v3-") ? { workerSource: jonesPreparationWorkerSource } : {}),
+    }),
     encoding: "utf8",
     timeout: 15000,
     maxBuffer: 1024 * 1024,
@@ -723,4 +814,164 @@ it("schema 2 preserves standalone executor staging and never executes its extra 
   expect(result.code).toBe(0);
   expect(result.retry).toBe("no-change");
   expect(result.response.activationAllowed).toBe(false);
+});
+
+function syntheticBootstrapNative() {
+  const binary = Buffer.alloc(160);
+  [0xfeedfacf, 0x0100000c, 0, 2, 2, 96, 0, 0].forEach((value, index) =>
+    binary.writeUInt32LE(value, index * 4),
+  );
+  binary.writeUInt32LE(0x19, 32);
+  binary.writeUInt32LE(72, 36);
+  binary.write("__TEXT", 40, "ascii");
+  binary.writeBigUInt64LE(160n, 80);
+  binary.writeUInt32LE(0x80000028, 104);
+  binary.writeUInt32LE(24, 108);
+  binary.writeBigUInt64LE(128n, 112);
+  return binary;
+}
+
+function preparationBootstrapFiles() {
+  // These bytes and proof fields are synthetic; the fixture forbids their execution.
+  const native = syntheticBootstrapNative();
+  const runtime = Buffer.concat([native, Buffer.alloc(1048576 + 17, 0x78)]);
+  const hash = (bytes: string | Uint8Array) =>
+    NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+  const identity = {
+    repository: "Jones-Systems/Jones-Code" as const,
+    sourceSha: "c".repeat(40),
+    sourceTree: "d".repeat(40),
+    version: "0.0.45-preview.20261011.123.1",
+  };
+  const config =
+    '{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n';
+  const evidence: JonesPreparationArtifactEvidence = {
+    schema: 1,
+    observation: "complete",
+    classification: "cold-preparation-worker",
+    source: identity,
+    preparation: {
+      schema: 1,
+      protocol: 1,
+      provenanceSha256: "1".repeat(64),
+      sourceInputHashes: Object.fromEntries(
+        JONES_PREPARATION_SOURCE_INPUTS.map((name) => [name, "2".repeat(64)]),
+      ) as JonesPreparationArtifactEvidence["preparation"]["sourceInputHashes"],
+      entry: { sha256: "3".repeat(64), size: 1 },
+      seaConfig: { sha256: hash(config), size: Buffer.byteLength(config) },
+      executable: {
+        name: "jones-offline-preparation",
+        sha256: hash(runtime),
+        size: runtime.length,
+      },
+      node: {
+        version: "26.8.2",
+        platform: "darwin",
+        architecture: "arm64",
+        archiveSha256: "4".repeat(64),
+        archiveBytes: 1,
+        checksumsSha256: "5".repeat(64),
+        runtimeSha256: "6".repeat(64),
+        runtimeBytes: 1,
+      },
+      sqlite: { version: "3.50.0", sourceId: "2026-10-11 00:00:00 " + "7".repeat(64) },
+    },
+  };
+  const bundle = createJonesLegacyBootstrapPreparationBundle(
+    identity,
+    {
+      identityNative: native,
+      identityNativeSourceSha256: "e".repeat(64),
+      maintenanceSource: "raise RuntimeError('must not execute')\n",
+    },
+    evidence,
+  );
+  return [
+    ...bundle.files.map((file) =>
+      typeof file.content === "string"
+        ? { ...file, content: file.content }
+        : { ...file, content: "", binaryHex: Buffer.from(file.content).toString("hex") },
+    ),
+    {
+      relativePath: bundle.runtime.relativePath,
+      mode: bundle.runtime.mode,
+      content: "",
+      binaryHex: runtime.toString("hex"),
+    },
+  ];
+}
+
+describe("standalone schema 3 executor staging", () => {
+  it("inspects and stages only the executor from six exact resources without executing the runtime", () => {
+    const result = scenario("v3-success", preparationBootstrapFiles());
+    expect(result.code).toBe(0);
+    expect(result.retry).toBe("no-change");
+    expect(result.proofAgreement).toBe(true);
+    expect(result.runtimeQualification).toBe("synthetic-nonexecuted-resource");
+    expect(result.runtimeExecuted).toBe(false);
+    expect(result.response).toMatchObject({
+      activationAllowed: false,
+      observationOnly: true,
+      blocker: "DESK-FIRST-01",
+    });
+  });
+
+  it.each([
+    "v3-old-inputs",
+    "v3-extra-proof",
+    "v3-runtime-bytes",
+    "v3-runtime-mode",
+    "v3-source",
+    "v3-runtime-oversize",
+    "v3-native-oversize",
+    "v3-runtime-header",
+    "v3-runtime-size",
+    "v3-missing-runtime",
+    "v3-extra-resource",
+    "v3-sqlite-date",
+    "v3-node-version",
+    "v3-boolean-protocol",
+    "v3-executor-mode",
+    "v3-maintenance-bytes",
+    "v3-canonical-proof",
+    "v3-proof-oversize",
+    "v3-bundle-mode",
+  ])(
+    "refuses malformed schema 3 inspection and staging while retaining the fixtures: %s",
+    (fault) => {
+      const result = scenario(fault, preparationBootstrapFiles());
+      expect(result.code).toBe(1);
+      expect(result.inspectionRefused).toBe(true);
+      expect(result.proofAgreement).toBe(true);
+      expect(result.runtimeExecuted).toBe(false);
+      expect(result.response).toMatchObject({ status: "refused", activationAllowed: false });
+    },
+  );
+
+  it.each([1, 2])("preserves the 8192-byte schema %i proof limit", (schema) => {
+    const bundle =
+      schema === 1
+        ? files
+        : createJonesLegacyBootstrapBundle(
+            {
+              repository: "Jones-Systems/Jones-Code",
+              sourceSha: "c".repeat(40),
+              sourceTree: "d".repeat(40),
+              version: "0.0.45-preview.20261011.123.1",
+            },
+            {
+              identityNative: syntheticBootstrapNative(),
+              identityNativeSourceSha256: "e".repeat(64),
+              maintenanceSource: "raise RuntimeError('must not execute')\n",
+            },
+          );
+    const wire = bundle.map((file) =>
+      typeof file.content === "string"
+        ? { ...file, content: file.content }
+        : { ...file, content: "", binaryHex: Buffer.from(file.content).toString("hex") },
+    );
+    const result = scenario("old-proof-oversize", wire);
+    expect(result.code).toBe(1);
+    expect(result.inspectionRefused).toBe(true);
+  });
 });

@@ -298,21 +298,103 @@ def transactions(observed, root, home):
             raise Refused('A retained native transaction has no verified terminal journal.')
     return names
 
+# Kept equivalent to the worker's preparation proof contract without importing
+# its process or state machinery into this standalone, nonexecuting command.
+_BOOTSTRAP_PREPARATION_NAME = 'jones-offline-preparation'
+_BOOTSTRAP_RUNTIME_BYTES = 256 * 1024 * 1024
+_BOOTSTRAP_BUNDLE_KEYS = {'schema', 'repository', 'sourceSha', 'sourceTree', 'version', 'bootstrapSha256', 'executorSha256'}
+_BOOTSTRAP_BUNDLE_V2_KEYS = _BOOTSTRAP_BUNDLE_KEYS | {'maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256', 'nativeArchitecture'}
+_BOOTSTRAP_PREPARATION_SOURCE_INPUTS = {'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json',
+    'apps/server/package.json', 'apps/desktop/package.json', 'apps/web/package.json',
+    'packages/contracts/package.json', 'apps/server/vite.config.ts', 'vite.config.ts',
+    'scripts/jones/updates/offline-preparation-build.ts',
+    'apps/server/src/jones/updates/offlinePreparationEntry.ts',
+    'apps/server/src/jones/updates/offlinePreparation.ts',
+    'apps/server/src/jones/updates/offlinePreparationCore.ts',
+    'apps/server/src/jones/updates/offlinePreparationPlan.ts',
+    'apps/server/src/jones/updates/offlinePreparationWorker.ts'}
+
+def _bootstrap_preparation_bundle(bundle):
+    require(set(bundle) == _BOOTSTRAP_BUNDLE_V2_KEYS | {'preparation'} and type(bundle['schema']) is int and bundle['schema'] == 3)
+    require(bundle['repository'] == 'Jones-Systems/Jones-Code' and hex_value(bundle['sourceSha'], 40) and hex_value(bundle['sourceTree'], 40))
+    require(isinstance(bundle['version'], str) and len(bundle['version']) <= 128 and re.fullmatch('[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]{8}\.[0-9]+(?:\.[0-9]+)?', bundle['version']) is not None)
+    require(all(hex_value(bundle[key], 64) for key in ('bootstrapSha256', 'executorSha256', 'maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256')))
+    value = bundle['preparation']
+    require(isinstance(value, dict) and set(value) == {'schema', 'protocol', 'provenanceSha256', 'sourceInputHashes', 'entry', 'seaConfig', 'executable', 'node', 'sqlite'})
+    require(type(value['schema']) is int and value['schema'] == 1 and type(value['protocol']) is int and value['protocol'] == 1)
+    require(hex_value(value['provenanceSha256'], 64))
+    inputs = value['sourceInputHashes']
+    require(isinstance(inputs, dict) and set(inputs) == _BOOTSTRAP_PREPARATION_SOURCE_INPUTS)
+    require(all(hex_value(digest, 64) for digest in inputs.values()))
+    for key, maximum in (('entry', 32 * 1024 * 1024), ('seaConfig', 16384), ('executable', 256 * 1024 * 1024)):
+        item = value[key]
+        require(isinstance(item, dict) and set(item) == ({'sha256', 'size', 'name'} if key == 'executable' else {'sha256', 'size'}))
+        require(hex_value(item['sha256'], 64) and integer(item['size']) and item['size'] <= maximum)
+    require(value['executable']['name'] == _BOOTSTRAP_PREPARATION_NAME)
+    config = b'{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n'
+    require(value['seaConfig'] == {'sha256': sha(config), 'size': len(config)})
+    node = value['node']
+    require(isinstance(node, dict) and set(node) == {'version', 'platform', 'architecture', 'archiveSha256', 'archiveBytes', 'checksumsSha256', 'runtimeSha256', 'runtimeBytes'})
+    require(node['version'] == '26.8.2' and node['platform'] == 'darwin' and node['architecture'] == bundle['nativeArchitecture'] == 'arm64')
+    require(all(hex_value(node[key], 64) for key in ('archiveSha256', 'checksumsSha256', 'runtimeSha256')))
+    require(integer(node['archiveBytes']) and node['archiveBytes'] <= 128 * 1024 * 1024 and integer(node['runtimeBytes']) and node['runtimeBytes'] <= 256 * 1024 * 1024)
+    sqlite = value['sqlite']
+    require(isinstance(sqlite, dict) and set(sqlite) == {'version', 'sourceId'})
+    require(isinstance(sqlite['version'], str) and len(sqlite['version']) <= 11 and re.fullmatch('(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})', sqlite['version']) is not None)
+    require(isinstance(sqlite['sourceId'], str) and len(sqlite['sourceId']) == 84 and re.fullmatch('[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [a-f0-9]{64}', sqlite['sourceId']) is not None)
+    parts = [int(part) for part in re.split('[- :]', sqlite['sourceId'][:19])]
+    # ECMAScript's canonical source timestamp also admits astronomical year zero.
+    try: datetime.datetime(parts[0] or 400, *parts[1:])
+    except ValueError: raise Refused('Preparation SQLite source timestamp is invalid.')
+    return value
+
+def _bootstrap_preparation_runtime(observed, path, proof):
+    digest, count = hashlib.sha256(), 0
+    with observed.file(path, _BOOTSTRAP_RUNTIME_BYTES) as stream:
+        info = os.fstat(stream.fileno())
+        require(info.st_size == proof['size'] and stat.S_IMODE(info.st_mode) == 0o500)
+        while True:
+            block = stream.read(1048576)
+            if not block: break
+            if count == 0: require(len(block) >= 32 and block[:16] == bytes.fromhex('cffaedfe0c0000010000000002000000'))
+            count += len(block)
+            require(count <= proof['size'] <= _BOOTSTRAP_RUNTIME_BYTES)
+            digest.update(block)
+    require(count == proof['size'] and digest.hexdigest() == proof['sha256'])
+
 def _bootstrap_bundle(observed, tools, candidate):
-    bundle, bundle_digest = observed.metadata(tools / 'BUNDLE.json', 8192)
-    bundle_keys = {'schema', 'repository', 'sourceSha', 'sourceTree', 'version', 'bootstrapSha256', 'executorSha256'}
-    require(type(bundle.get('schema')) is int and bundle['schema'] in (1, 2))
-    if bundle['schema'] == 2:
-        bundle_keys |= {'maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256', 'nativeArchitecture'}
-    require(set(bundle) == bundle_keys)
+    bundle, bundle_digest = observed.metadata(tools / 'BUNDLE.json', 65536)
+    require(type(bundle.get('schema')) is int and bundle['schema'] in (1, 2, 3))
+    if bundle['schema'] == 3:
+        preparation = _bootstrap_preparation_bundle(bundle)
+        require(sha(encoded(bundle) + b'\n') == bundle_digest)
+        expected = {'bootstrap.py', 'executor.py', 'BUNDLE.json', 'maintenance.py', 'identity-native', _BOOTSTRAP_PREPARATION_NAME}
+        with observed.directory(tools) as fd:
+            names = []
+            with os.scandir(fd) as entries:
+                for entry in entries:
+                    require(len(names) < len(expected) and entry.name in expected)
+                    names.append(entry.name)
+        names.sort()
+        require(set(names) == expected and (tools not in observed.app_directories or observed.app_directories[tools] == names))
+        observed.app_directories[tools] = names
+        require(stat.S_IMODE(observed.files[tools / 'BUNDLE.json'][3]) == 0o400)
+        for name in ('bootstrap.py', 'executor.py', 'maintenance.py', 'identity-native'):
+            with observed.file(tools / name, 4 * 1024 * 1024 if name == 'identity-native' else 1048576) as stream:
+                require(stat.S_IMODE(os.fstat(stream.fileno()).st_mode) == 0o500)
+    else:
+        require(observed.files[tools / 'BUNDLE.json'][5] <= 8192)
+        require(set(bundle) == (_BOOTSTRAP_BUNDLE_KEYS if bundle['schema'] == 1 else _BOOTSTRAP_BUNDLE_V2_KEYS))
     require(bundle['repository'] == REPOSITORY and bundle['sourceSha'] == candidate['source'] and bundle['sourceTree'] == candidate['tree'] and bundle['version'] == candidate['version'])
-    if bundle['schema'] == 2:
+    if bundle['schema'] in (2, 3):
         require(bundle['nativeArchitecture'] == 'arm64' and all(hex_value(bundle[key], 64) for key in ('maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256')))
         require(sha(observed.raw(tools / 'maintenance.py', 1048576)) == bundle['maintenanceSha256'])
         native = observed.raw(tools / 'identity-native', 4 * 1024 * 1024)
         require(sha(native) == bundle['identityNativeSha256'])
         require(len(native) >= 32 and native[:16] == bytes.fromhex('cffaedfe0c0000010000000002000000'))
         require(observed.files[tools / 'maintenance.py'][3] & 0o777 == 0o500 and observed.files[tools / 'identity-native'][3] & 0o777 == 0o500)
+    if bundle['schema'] == 3:
+        _bootstrap_preparation_runtime(observed, tools / _BOOTSTRAP_PREPARATION_NAME, preparation['executable'])
     return bundle, bundle_digest
 
 def inspect_inputs(manifest, selection_path, selection_sha, bootstrap_path):
