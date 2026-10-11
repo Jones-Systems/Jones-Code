@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { offlinePreparationEntryOutput } from "./offlinePreparationEntry.ts";
+import {
+  offlinePreparationEntryOutput,
+  offlinePreparationMain,
+} from "./offlinePreparationEntry.ts";
 
 describe("preparation executable entry", () => {
   it("does not print or change the exit status when imported", async () => {
@@ -24,5 +27,38 @@ describe("preparation executable entry", () => {
       productionInvocation: false,
       activation: false,
     });
+  });
+});
+
+describe("closed preparation invocation", () => {
+  it("keeps argument-free execution held", async () => {
+    const argv = process.argv,
+      exitCode = process.exitCode;
+    const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    try {
+      process.argv = [argv[0]!, "jones-offline-preparation"];
+      await offlinePreparationMain();
+      expect(write).toHaveBeenCalledExactlyOnceWith(offlinePreparationEntryOutput());
+      expect(process.exitCode).toBe(exitCode);
+    } finally {
+      process.argv = argv;
+      process.exitCode = exitCode;
+      write.mockRestore();
+    }
+  });
+  it("rejects a supplied database path with usage status 64", async () => {
+    const argv = process.argv,
+      exitCode = process.exitCode;
+    const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    try {
+      process.argv = [argv[0]!, "jones-offline-preparation", "--database", "/unowned/state.sqlite"];
+      await offlinePreparationMain();
+      expect(process.exitCode).toBe(64);
+      expect(write).toHaveBeenCalledExactlyOnceWith(offlinePreparationEntryOutput());
+    } finally {
+      process.argv = argv;
+      process.exitCode = exitCode;
+      write.mockRestore();
+    }
   });
 });

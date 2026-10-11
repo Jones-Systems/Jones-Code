@@ -8,15 +8,31 @@ export function offlinePreparationStatus() {
   } as const;
 }
 
-/** This entry has no argument, path, fixture or maintenance-authority interface. */
+/** Standalone invocation reports the held state without opening application state. */
 export function offlinePreparationEntryOutput(): string {
   // @effect-diagnostics-next-line preferSchemaOverJson:off -- This fixed native entry serializes only its closed held-status literal, without loading the application or schema runtime.
   return `${JSON.stringify(offlinePreparationStatus())}\n`;
 }
 
-// SEA module entries expose import.meta.main without filesystem entry detection.
-if (import.meta.main) {
-  // Node SEA preserves argv[0]/argv[1] for the executable; user arguments start at index 2.
-  if (process.argv.length !== 2) process.exitCode = 64;
-  process.stdout.write(offlinePreparationEntryOutput());
+/** The only executable dispatch reads the real inherited-process invocation. */
+export async function offlinePreparationMain(): Promise<void> {
+  if (process.argv.length === 2) {
+    process.stdout.write(offlinePreparationEntryOutput());
+    return;
+  }
+  const worker = await import("./offlinePreparationWorker.ts");
+  if (worker.preparationWorkerArguments(process.argv.slice(2)) === null) {
+    process.exitCode = 64;
+    process.stdout.write(offlinePreparationEntryOutput());
+    return;
+  }
+  try {
+    await worker.runInheritedPreparationWorker();
+  } catch {
+    process.exitCode = 70;
+    process.stderr.write("Closed preparation worker refused.\n");
+  }
 }
+
+// SEA module entries expose import.meta.main without filesystem entry detection.
+if (import.meta.main) await offlinePreparationMain();
