@@ -530,6 +530,8 @@
     {
       "id": "update-continuity",
       "tests": [
+        "apps/server/src/ServerSettingsPersistence.test.ts",
+        "apps/server/src/serverSettings.test.ts",
         "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts",
         "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
         "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",

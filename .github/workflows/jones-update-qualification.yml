@@ -18,6 +18,8 @@ on:
       - apps/server/src/jones/updates/**
       - apps/server/src/orchestration-v2/RestartContinuation*
       - apps/server/src/orchestration-v2/ServerUpdateContinuation*
+      - apps/server/src/ServerSettingsPersistence*
+      - apps/server/src/serverSettings*
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - apps/web/src/jones/updates/**
       - apps/web/jones-install-fixture.html
@@ -94,6 +96,8 @@ jobs:
           apps/server/src/jones/updates/trialGate.test.ts
           apps/server/src/orchestration-v2/RestartContinuation.test.ts
           apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts
+          apps/server/src/ServerSettingsPersistence.test.ts
+          apps/server/src/serverSettings.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
           apps/server/src/jones/cloud/qualifiedStartup.test.ts
           scripts/stamp-jones-build.test.ts

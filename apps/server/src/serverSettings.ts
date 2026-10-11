@@ -16,9 +16,8 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
-  ProjectId,
   ProjectScript,
-  ProjectSettingsOverrides,
+  type ProjectSettingsOverrides,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   type UsageLimitSourceConfig,
@@ -26,7 +25,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
-  ResponseStreamingMode,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
@@ -46,7 +44,6 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -55,13 +52,17 @@ import { writeFileStringAtomically } from "./atomicWrite.ts";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
-import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
+import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import {
   applyServerSettingsPatch,
   deriveLegacyProjectOverrides,
   isModelSelectionProviderEnabled,
 } from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import {
+  decodePersistedServerSettings,
+  type PersistedOptionalProviderSettings,
+} from "./ServerSettingsPersistence.ts";
 
 export { resolveSourceControlWriterModelSelection } from "@t3tools/shared/serverSettings";
 
@@ -354,52 +355,9 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
 export const layerTest = (overrides: DeepPartial<ServerSettings> = {}) =>
   Layer.effect(ServerSettingsService, makeTest(overrides));
 
-// Migrate saved token delivery without accepting it in settings writes or
-// letting one retired value reset the rest of the environment's settings.
-const PersistedResponseStreamingMode = Schema.Union([
-  ResponseStreamingMode,
-  Schema.Literal("token"),
-]).pipe(
-  Schema.decodeTo(
-    ResponseStreamingMode,
-    SchemaTransformation.transform({
-      decode: (mode) => (mode === "token" ? "paragraph" : mode),
-      encode: (mode) => mode,
-    }),
-  ),
-);
-const ServerSettingsJson = fromLenientJson(
-  Schema.Struct({
-    ...ServerSettings.fields,
-    responseStreamingMode: PersistedResponseStreamingMode.pipe(
-      Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
-    ),
-    projectSettingsOverrides: Schema.Record(
-      ProjectId,
-      Schema.Struct({
-        ...ProjectSettingsOverrides.fields,
-        responseStreamingMode: Schema.optionalKey(PersistedResponseStreamingMode),
-      }),
-    ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  }),
-);
-const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson);
-const PersistedOptionalProviderSettings = Schema.Struct({
-  providers: Schema.optionalKey(
-    Schema.Struct({
-      cursor: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
-      grok: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
-      opencode: Schema.optionalKey(Schema.Struct({ enabled: Schema.optionalKey(Schema.Boolean) })),
-    }),
-  ),
-});
-const decodePersistedOptionalProviderSettingsJsonExit = Schema.decodeUnknownExit(
-  fromLenientJson(PersistedOptionalProviderSettings),
-);
-
 function restoreUsedProviders(
   settings: ServerSettings,
-  persisted: typeof PersistedOptionalProviderSettings.Type,
+  persisted: PersistedOptionalProviderSettings,
   providerHistory: ReadonlyArray<{
     readonly providerName: string;
     readonly providerInstanceId: string | null;
@@ -739,32 +697,16 @@ const make = Effect.gen(function* () {
     });
 
   const loadSettingsFromDisk = Effect.gen(function* () {
-    let settings = DEFAULT_SERVER_SETTINGS;
-    let persisted: typeof PersistedOptionalProviderSettings.Type = {};
+    const raw = (yield* readConfigExists) ? yield* readRawConfig : undefined;
     // A file that failed to decode must stay on disk for the user to repair;
     // the fold below only writes when it started from the file's real contents.
-    let settingsFileTrusted = true;
-
-    if (yield* readConfigExists) {
-      const raw = yield* readRawConfig;
-      const decoded = decodeServerSettingsJsonExit(raw);
-      const persistedSettings = decodePersistedOptionalProviderSettingsJsonExit(raw);
-      if (persistedSettings._tag === "Success") {
-        persisted = persistedSettings.value;
-      }
-      if (decoded._tag === "Failure" || persistedSettings._tag === "Failure") {
-        const failure = decoded._tag === "Failure" ? decoded : persistedSettings;
-        settingsFileTrusted = false;
-        if (failure._tag === "Failure") {
-          yield* Effect.logWarning("failed to parse settings.json, using defaults", {
-            path: settingsPath,
-            issues: Cause.pretty(failure.cause),
-            cause: failure.cause,
-          });
-        }
-      } else {
-        settings = decoded.value;
-      }
+    const { settings, persisted, settingsFileTrusted, cause } = decodePersistedServerSettings(raw);
+    if (cause !== undefined) {
+      yield* Effect.logWarning("failed to parse settings.json, using defaults", {
+        path: settingsPath,
+        issues: Cause.pretty(cause),
+        cause,
+      });
     }
 
     const providerHistory = yield* sql<{
