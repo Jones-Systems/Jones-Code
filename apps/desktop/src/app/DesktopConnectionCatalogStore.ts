@@ -505,12 +505,11 @@ export const make = Effect.gen(function* () {
 
   return DesktopConnectionCatalogStore.of({
     snapshot,
-    get: readDocument(fileSystem, catalogPath).pipe(
-      Effect.flatMap((document) =>
-        Option.isNone(document) ? migrateLegacyCatalog : decryptDocument(document.value),
-      ),
-      Effect.withSpan("desktop.connectionCatalogStore.get"),
-    ),
+    get: Effect.gen(function* () {
+      const document = yield* readDocument(fileSystem, catalogPath);
+      if (Option.isNone(document)) return yield* migrateLegacyCatalog;
+      return yield* decryptDocument(document.value);
+    }).pipe(Effect.withSpan("desktop.connectionCatalogStore.get")),
     set: Effect.fn("desktop.connectionCatalogStore.set")(function* (catalog) {
       if (!(yield* encryptionAvailable)) {
         return false;
