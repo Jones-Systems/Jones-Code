@@ -409,6 +409,20 @@ export async function runScenario(client, scenario, report) {
         kind: "text-only",
         visibleTextLength: (snapshot.visibleText ?? "").length,
         contentOmitted: true,
+        // Fixed UI phrases only: ConnectionsSettings and connection/errors supply these messages.
+        ui: Object.fromEntries(
+          Object.entries({
+            addFailed: "Could not add backend",
+            hostMissing: "Enter a backend host.",
+            codeMissing: "Enter a pairing code.",
+            fetchFailed: "Failed to fetch remote environment endpoint",
+            invalidResponse: "Remote environment endpoint returned an invalid response",
+            invalidCredential: "The environment credential is invalid.",
+            authenticationRejected: "The environment rejected the authentication request.",
+            remoteListed: "Synthetic incompatible Jones host",
+            sourceMatches: "Source matches this app.",
+          }).map(([name, phrase]) => [name, (snapshot.visibleText ?? "").includes(phrase)]),
+        ),
       };
       report.controlledPageReconciled = true;
     } catch (snapshotError) {

@@ -203,7 +203,7 @@ NodeTest.test(
               return {
                 structuredContent: {
                   url: pairingUrl,
-                  visibleText: `Host 127.0.0.1 Pairing code ${code}`,
+                  visibleText: `Could not add backend: Failed to fetch remote environment endpoint. Host 127.0.0.1 Pairing code ${code}`,
                   interactiveElements: [{ value: code }],
                   screenshot: { data: imageBytes },
                   screenshotPath: "/owned/must-not-publish.png",
@@ -252,9 +252,18 @@ NodeTest.test(
         NodeAssert.deepEqual(Object.keys(readback.failureReconciliation).sort(), [
           "contentOmitted",
           "kind",
+          "ui",
           "visibleTextLength",
         ]);
         NodeAssert.equal(readback.failureReconciliation.contentOmitted, true);
+        NodeAssert.equal(readback.failureReconciliation.ui.addFailed, true);
+        NodeAssert.equal(readback.failureReconciliation.ui.fetchFailed, true);
+        NodeAssert.equal(readback.failureReconciliation.ui.sourceMatches, false);
+        NodeAssert.ok(
+          Object.values(readback.failureReconciliation.ui).every(
+            (value) => typeof value === "boolean",
+          ),
+        );
         NodeAssert.deepEqual(await NodeFSP.readdir(root), ["final.json"]);
       });
     });
@@ -421,13 +430,83 @@ NodeTest.test(
         NodeAssert.equal(descriptor.orchestrationProtocolVersion, 0);
         NodeAssert.deepEqual(descriptor.jonesSource, sourceIdentity);
         NodeAssert.deepEqual(proxy.evidence().requests, [
-          { method: "GET", path: "/.well-known/t3/environment", status: 200 },
+          {
+            method: "GET",
+            path: "/.well-known/t3/environment",
+            status: 200,
+            forwardingStarted: true,
+          },
         ]);
         NodeAssert.match(
           proxy.evidence().fixtureBoundary,
           /synthetic older boot-service descriptor/,
         );
         NodeAssert.equal(proxy.evidence().checks, 0);
+      });
+    });
+  },
+);
+
+NodeTest.test(
+  "fixture preflight permits native trace headers and omits unknown header values from evidence",
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      await withFixtureCleanup(async (defer) => {
+        const upstream = await serveRendererFixture(root);
+        defer(() => upstream.close());
+        const proxy = await fixtureProxy(upstream, {});
+        defer(() => proxy.close());
+        const headers = [
+          "authorization",
+          "b3",
+          "traceparent",
+          "content-type",
+          "dpop",
+          "x-t3-orchestration-protocol",
+        ];
+        const rejectedHeader = "x-synthetic-secret-must-not-be-recorded";
+        const response = await fetch(`${proxy.origin}/.well-known/t3/environment`, {
+          method: "OPTIONS",
+          headers: {
+            origin: "http://127.0.0.1:41000",
+            "access-control-request-method": "GET",
+            "access-control-request-headers": [...headers, rejectedHeader].join(","),
+          },
+        });
+        NodeAssert.equal(response.status, 204);
+        NodeAssert.deepEqual(
+          response.headers.get("access-control-allow-headers").split(","),
+          headers,
+        );
+        NodeAssert.equal(
+          response.headers.get("access-control-allow-headers").includes(rejectedHeader),
+          false,
+        );
+        NodeAssert.equal(
+          response.headers.get("access-control-allow-origin"),
+          "http://127.0.0.1:41000",
+        );
+        NodeAssert.deepEqual(proxy.evidence().requests, [
+          {
+            method: "OPTIONS",
+            path: "/.well-known/t3/environment",
+            status: 204,
+            requestedHeaders: Object.fromEntries(headers.map((name) => [name, true])),
+            unsupportedHeaders: true,
+          },
+        ]);
+        NodeAssert.deepEqual(upstream.evidence().requests, []);
+        NodeAssert.equal(JSON.stringify(proxy.evidence()).includes(rejectedHeader), false);
+        const invalid = await fetch(
+          `${proxy.origin}/unexpected-SYNTHETIC-SECRET?token=SYNTHETIC-SECRET`,
+        );
+        NodeAssert.equal(invalid.status, 500);
+        NodeAssert.deepEqual(proxy.evidence().requests.at(-1), {
+          method: "GET",
+          path: "other",
+          status: 500,
+        });
+        NodeAssert.equal(JSON.stringify(proxy.evidence()).includes("SYNTHETIC-SECRET"), false);
       });
     });
   },
