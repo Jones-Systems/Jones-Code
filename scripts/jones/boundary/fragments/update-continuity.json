@@ -9,6 +9,7 @@
     "apps/server/src/jones/updates/launcherOperation.ts",
     "apps/server/src/jones/updates/launcherOperation.test.ts",
     "apps/server/src/jones/updates/operationHandoff.test.ts",
+    "apps/server/src/jones/updates/desktopInstall.test.ts",
     "apps/server/src/jones/persistence/Migrations/106_JonesPlannedUpdateContinuity.ts",
     "apps/server/src/jones/updates/PlannedUpdateContinuity.ts",
     "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",

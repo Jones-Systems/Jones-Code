@@ -321,8 +321,8 @@ export const layer = Layer.effect(
                 refreshed.phase !== "staged"
               )
                 return blocked("The fixed desktop stage could not be prepared for installation.");
-              const prepared = yield* prepareNative(input);
-              if (prepared.phase === "blocked") return prepared;
+              // The desktop controller claims this selection before asking the prepare endpoint
+              // to mark continuations. Committing here only hands it the selected request token.
               state = { ...state, phase: "installing" };
               revision += 1;
               yield* receiver.commitDesktopUpdate(token).pipe(Effect.orDie);
