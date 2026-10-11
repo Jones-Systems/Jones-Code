@@ -105,7 +105,11 @@ async function createTwoHostCampaign(
         phase: "available",
         currentVersion: "old",
         environmentId,
-        installedSource: "b".repeat(40),
+        installedSource: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "b".repeat(40),
+          tree: "c".repeat(40),
+        },
         capability: { check: true, download: true, install: true },
       },
     } satisfies FleetHostStatus;
