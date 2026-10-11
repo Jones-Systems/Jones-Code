@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { FixtureOwnership } from "./native-startup-fixture.mjs";
 
 const historyLost = 0x01 | 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80;
@@ -73,14 +74,18 @@ export async function startObserver(executable, roots, signal) {
           events.push(message);
           if (events.length > 10000) throw new Error("Observer event history exceeded its bound.");
         } else {
-          messages.push(message);
-          if (messages.length > 50)
-            throw new Error("Observer handshake history exceeded its bound.");
+          let matched = false;
           for (const waiter of waiters)
             if (waiter.matches(message)) {
+              matched = true;
               waiter.resolve(message);
               waiters.delete(waiter);
             }
+          if (!matched) {
+            messages.push(message);
+            if (messages.length > 50)
+              throw new Error("Observer unmatched handshakes exceeded their bound.");
+          }
         }
       } catch (error) {
         stop(error);
@@ -90,8 +95,8 @@ export async function startObserver(executable, roots, signal) {
   const wait = (matches) =>
     new Promise((resolve, reject) => {
       if (failure) return reject(failure);
-      const prior = messages.find(matches);
-      if (prior) return resolve(prior);
+      const prior = messages.findIndex(matches);
+      if (prior !== -1) return resolve(messages.splice(prior, 1)[0]);
       const timer = setTimeout(() => stop(new Error("Observer handshake timed out.")), 5000);
       const waiter = {
         matches,
@@ -137,31 +142,66 @@ export async function startObserver(executable, roots, signal) {
   return { events, flush, close };
 }
 
-export async function observerControl(observer, roots) {
-  const offset = await observer.flush();
-  const names = [];
+export class ObserverControlError extends Error {
+  constructor(phase, root, names, observed, cause) {
+    super(`Observer positive control failed during ${phase}: ${String(cause).slice(0, 512)}`, {
+      cause,
+    });
+    this.name = "ObserverControlError";
+    this.control = {
+      phase,
+      root: root.slice(0, 1024),
+      paths: names.map((name) => path.relative(root, name).slice(0, 512)),
+      observedCount: observed.length,
+      events: observed.slice(-12).map((event) => ({
+        path: path.relative(root, event.path).slice(0, 512),
+        flags: event.flags,
+      })),
+    };
+  }
+}
+
+export async function observerControl(observer, roots, { timeoutMs = 5000 } = {}) {
   const ownership = new FixtureOwnership();
+  const observe = async (phase, root, names, flags, offset) => {
+    const deadline = performance.now() + timeoutMs;
+    try {
+      for (;;) {
+        // Flush acknowledges queued callbacks. The kernel may not yet have
+        // delivered this phase, so wait for the exact leaf event within a bound.
+        await observer.flush();
+        protectedMutations(observer.events, []);
+        if (
+          observer.events
+            .slice(offset)
+            .some((event) => names.includes(event.path) && (event.flags & flags) !== 0)
+        )
+          return;
+        assert.ok(performance.now() < deadline, "Observer missed the required leaf mutation.");
+        await delay(Math.min(25, Math.max(1, deadline - performance.now())));
+      }
+    } catch (cause) {
+      throw new ObserverControlError(phase, root, names, observer.events.slice(offset), cause);
+    }
+  };
   try {
+    await observer.flush();
     for (const root of roots) {
       const directory = await ownership.temporary(path.join(root, ".jones-observer-control-"));
       const name = path.join(directory, "sentinel");
-      names.push(name, `${name}.renamed`);
+      const renamed = `${name}.renamed`;
+      const names = [name, renamed];
+      let offset = observer.events.length;
       await fs.writeFile(name, "created", { flag: "wx", mode: 0o600 });
       await fs.appendFile(name, "-changed");
-      await fs.rename(name, `${name}.renamed`);
-      await fs.unlink(`${name}.renamed`);
-    }
-    await observer.flush();
-    const observed = observer.events.slice(offset);
-    for (let index = 0; index < names.length; index += 2) {
-      assert.ok(
-        observed.some(
-          (event) =>
-            (event.flags & mutation) !== 0 &&
-            (event.path === names[index] || event.path === names[index + 1]),
-        ),
-        "Observer missed a transient positive control.",
-      );
+      await observe("created", root, [name], 0x100 | 0x1000, offset);
+      offset = observer.events.length;
+      await fs.rename(name, renamed);
+      await observe("renamed", root, names, 0x800, offset);
+      offset = observer.events.length;
+      await fs.unlink(renamed);
+      await observe("removed", root, names, 0x200, offset);
+      for (const filename of names) await assert.rejects(fs.lstat(filename), { code: "ENOENT" });
     }
   } finally {
     await ownership.cleanup();

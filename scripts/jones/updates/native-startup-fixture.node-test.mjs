@@ -11,7 +11,12 @@ import {
   packagedStartupNames,
   runOwnedChild,
 } from "./native-startup-fixture.mjs";
-import { protectedMutations } from "./native-startup-observer.mjs";
+import {
+  ObserverControlError,
+  observerControl,
+  protectedMutations,
+  startObserver,
+} from "./native-startup-observer.mjs";
 
 test("qualification accepts the real stage-root package and derives product paths from bundle metadata", () => {
   const metadata = {
@@ -141,6 +146,116 @@ test("observer preserves transient mutation evidence and fails closed on dropped
       () => protectedMutations([{ path: "/unrelated", flags: flag }], ["/profile"]),
       /history/,
     );
+});
+
+async function controlFixture(fault, run) {
+  const ownership = new FixtureOwnership();
+  const root = await ownership.temporary(path.join(os.tmpdir(), "jones-observer-phases-"));
+  const events = [];
+  const phases = [];
+  const attempts = new Map();
+  let prior = "";
+  const observer = {
+    events,
+    async flush() {
+      const directories = await fs.readdir(root);
+      if (directories.length === 0) return events.length;
+      assert.equal(directories.length, 1);
+      const directory = path.join(root, directories[0]);
+      const leaves = await fs.readdir(directory);
+      const phase = leaves.includes("sentinel")
+        ? "created"
+        : leaves.includes("sentinel.renamed")
+          ? "renamed"
+          : "removed";
+      if (phase !== prior) {
+        assert.equal(
+          phases.at(-1),
+          { created: undefined, renamed: "created", removed: "renamed" }[phase],
+        );
+        prior = phase;
+      }
+      const count = (attempts.get(phase) ?? 0) + 1;
+      attempts.set(phase, count);
+      // A flush may acknowledge before the kernel delivers the next leaf event.
+      if (count !== 2) return events.length;
+      const leaf = phase === "created" ? "sentinel" : "sentinel.renamed";
+      events.push({
+        path: fault === phase ? directory : path.join(directory, leaf),
+        flags:
+          (fault === "history" ? 0x02 : 0) |
+          { created: 0x100, renamed: 0x800, removed: 0x200 }[phase],
+      });
+      if (fault !== phase) phases.push(phase);
+      return events.length;
+    },
+  };
+  try {
+    await run({ root, observer, phases });
+    assert.deepEqual(await fs.readdir(root), []);
+  } finally {
+    await ownership.cleanup();
+  }
+}
+
+test("observer control awaits distinct leaf phases and proves the transient files are absent", () =>
+  controlFixture(undefined, async ({ root, observer, phases }) => {
+    await observerControl(observer, [root]);
+    assert.deepEqual(phases, ["created", "renamed", "removed"]);
+    assert.deepEqual(
+      observer.events.map((event) => event.flags),
+      [0x100, 0x800, 0x200],
+    );
+    for (const event of observer.events)
+      await assert.rejects(fs.lstat(event.path), { code: "ENOENT" });
+  }));
+
+for (const missing of ["created", "renamed", "removed"])
+  test(`observer control rejects missing ${missing} leaf evidence and retains bounded phase details`, () =>
+    controlFixture(missing, async ({ root, observer }) => {
+      await assert.rejects(observerControl(observer, [root], { timeoutMs: 100 }), (error) => {
+        assert.ok(error instanceof ObserverControlError);
+        assert.equal(error.control.phase, missing);
+        assert.ok(error.control.paths.every((name) => !path.isAbsolute(name)));
+        assert.equal(error.control.events.length, 1);
+        assert.equal(
+          error.control.events[0].flags,
+          { created: 0x100, renamed: 0x800, removed: 0x200 }[missing],
+        );
+        assert.match(error.message, /required leaf mutation/);
+        return true;
+      });
+    }));
+
+test("observer control fails on lost history even when the positive leaf event is present", () =>
+  controlFixture("history", async ({ root, observer }) => {
+    await assert.rejects(observerControl(observer, [root]), (error) => {
+      assert.ok(error instanceof ObserverControlError);
+      assert.equal(error.control.phase, "created");
+      assert.equal(error.control.events[0].flags, 0x102);
+      assert.match(error.message, /lost history/);
+      return true;
+    });
+  }));
+
+test("observer consumes acknowledged flushes without exhausting its unmatched-message bound", async () => {
+  const observer = await startObserver(process.execPath, [
+    "-e",
+    `
+    const lines = require('node:readline').createInterface({ input: process.stdin });
+    const emit = (message) => process.stdout.write(JSON.stringify(message) + '\\n');
+    emit({ type: 'ready' });
+    lines.on('line', (line) => {
+      if (line === 'quit') { lines.close(); process.stdin.destroy(); }
+      else emit({ type: 'flushed', token: line.slice(6) });
+    });
+    `,
+  ]);
+  try {
+    for (let index = 0; index < 60; index++) assert.equal(await observer.flush(), 0);
+  } finally {
+    await observer.close();
+  }
 });
 
 test("cancelled qualification reaps only its captured child before fixture removal", async () => {

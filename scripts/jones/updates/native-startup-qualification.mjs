@@ -16,7 +16,12 @@ import {
   snapshotTree,
   withExclusiveLeases,
 } from "./native-startup-fixture.mjs";
-import { observerControl, protectedMutations, startObserver } from "./native-startup-observer.mjs";
+import {
+  ObserverControlError,
+  observerControl,
+  protectedMutations,
+  startObserver,
+} from "./native-startup-observer.mjs";
 
 // This gate is deliberately unavailable on developer hosts. Cocoa default paths
 // are not safely redirected by assuming HOME or CFFIXED_USER_HOME semantics.
@@ -235,6 +240,7 @@ try {
   failure = error;
   evidence.outcome = "failed";
   evidence.error = String(error).slice(0, 2048);
+  if (error instanceof ObserverControlError) evidence.observerControlFailure = error.control;
 } finally {
   if (observer) {
     try {
