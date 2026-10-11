@@ -340,3 +340,351 @@ describe("standalone legacy bootstrap", () => {
     expect(scenario("unsupported-command").argumentExit).toBe(2);
   });
 });
+
+const inventoryFixture = String.raw`
+import builtins, contextlib, hashlib, io, json, os, pathlib, plistlib, signal, stat, struct, sys, tempfile
+
+payload = json.load(sys.stdin)
+imports = []
+def checked_import(name, *args, **kwargs):
+    if name != 'sys':
+        assert sys.dont_write_bytecode, 'Bootstrap must disable bytecode writes before importing library modules'
+        imports.append(name)
+    return builtins.__import__(name, *args, **kwargs)
+namespace = {'__name__': 'inventory_fixture', '__builtins__': dict(vars(builtins), __import__=checked_import)}
+sys.dont_write_bytecode = False
+exec(compile(payload['files'][0]['content'], 'bootstrap.py', 'exec'), namespace)
+assert imports
+namespace['sys'].platform = 'darwin'
+signal.signal(signal.SIGTERM, lambda number, frame: (_ for _ in ()).throw(SystemExit(128 + number)))
+fault = payload['fault']
+guard = {'active': False, 'violations': [], 'controls': 0, 'fixtureMutations': 0}
+real_stat = os.stat
+
+def encode(value): return json.dumps(value, separators=(',', ':')).encode()
+def digest(value): return hashlib.sha256(value).hexdigest()
+def write(path, value, mode=0o600):
+    assert path.is_relative_to(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists(): path.chmod(0o600)
+    path.write_bytes(value)
+    path.chmod(mode)
+
+def app(path):
+    package = encode({'version': 'legacy', 'jonesSource': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'a' * 40, 'tree': 'b' * 40}})
+    header = encode({'files': {'package.json': {'size': len(package), 'offset': '0'}}})
+    write(path / 'Contents/Resources/app.asar', struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + package)
+    write(path / 'Contents/Info.plist', plistlib.dumps({'CFBundleExecutable': 'Jones', 'CFBundleShortVersionString': 'legacy'}))
+    write(path / 'Contents/MacOS/Jones', b'inert fixture executable', 0o500)
+
+def snapshot():
+    result = {}
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for name in directories + files:
+            path = pathlib.Path(directory) / name
+            info = path.lstat()
+            item = [stat.S_IMODE(info.st_mode), str(info.st_ino)]
+            if stat.S_ISLNK(info.st_mode): item.append(os.readlink(path))
+            elif stat.S_ISREG(info.st_mode): item.append(digest(path.read_bytes()))
+            result[str(path.relative_to(root))] = item
+    return result
+
+with tempfile.TemporaryDirectory(prefix='jones-inventory-fixture-') as temporary:
+    root = pathlib.Path(temporary).resolve()
+    home, profile = root / 'home', root / 'profile'
+    updater = home / 'runtime/jones-updates'
+    database = home / 'userdata/statev2.sqlite'
+    write(database, b'private database sentinel')
+    write(profile / 'sentinel', b'private profile sentinel')
+    installed = root / 'Applications/Installed.app'
+    app(installed)
+    active = {'protocol': 1, 'owner': 'desktop', 'generation': 'legacy-generation', 'transactionId': 'bootstrap',
+              'home': str(home), 'databasePath': str(database), 'profile': str(profile), 'environmentId': 'fixture',
+              'appPath': str(installed), 'executablePath': str(installed / 'Contents/MacOS/Jones'),
+              'version': 'legacy', 'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40}
+    manifest = home / 'runtime/jones-active-install.json'
+    write(manifest, encode(active))
+    stage = updater / 'apps/attempts/stage-PreReceipt' / ('e' * 64)
+    staged_app = stage / 'Candidate.app'
+    app(staged_app)
+    nested = staged_app / 'Contents/Frameworks/Nested.app/Contents/MacOS/Helper'
+    write(nested, b'inert nested executable', 0o500)
+    stage_mount = stage / 'mount'
+    write(stage_mount / 'private-mounted-file', b'must not inspect retained mount')
+    unknown = stage / 'unknown-directory'
+    write(unknown / 'private-unknown-file', b'must not enter unknown sibling')
+    staged = {'handle': 'e' * 64, 'receiptPath': str(stage / 'mac-app-receipt.json'), 'appPath': str(staged_app),
+              'executablePath': str(staged_app / 'Contents/MacOS/Jones'), 'version': 'legacy',
+              'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40,
+              'appDigest': '1' * 64, 'asarDigest': '2' * 64, 'executableDigest': '3' * 64}
+    tx = updater / 'transactions' / ('d' * 64)
+    intent = {'protocol': 1, 'transactionId': tx.name, 'expected': active, 'staged': staged,
+              'continuationReceipt': str(tx / 'continuation.json')}
+    intent_path = tx / 'intent.json'
+    write(intent_path, encode(intent))
+    write(tx / 'journal.json', encode({'intent': intent, 'phase': 'rolled-back'}))
+    for name in ('previous-pair', 'advanced-state'): write(tx / name / 'sentinel', b'private retained state')
+    incoming = installed.with_name(installed.name + '.jones-incoming-' + tx.name)
+    previous = installed.with_name(installed.name + '.jones-previous-' + active['generation'])
+    app(incoming)
+    app(previous)
+    helper_data = b'# inert legacy helper; never import or launch\n'
+    helper = updater / ('activate-v1-' + digest(helper_data) + '.py')
+    write(helper, helper_data, 0o700)
+    write(home / 'bin/t3', b'#!/bin/sh\n# inert shim\n', 0o700)
+    index = updater / 'apps/completed' / ('e' * 64 + '.json')
+    write(index, b'index data must not be read')
+    os.link(index, index.with_name('second-link.json'))
+    denied = [database.parent, profile, tx / 'previous-pair', tx / 'advanced-state', stage_mount]
+    forbidden_reads = [index, index.with_name('second-link.json'), unknown / 'private-unknown-file']
+    arguments = ['inventory-routes', '--manifest', str(manifest)]
+    if fault == 'invalid-anchor': arguments[-1] = str(database)
+    elif fault == 'overlap-anchor': write(manifest, encode(dict(active, profile=str(updater))))
+    elif fault == 'partial-transaction': write(intent_path, encode({'protocol': 1, 'transactionId': tx.name}))
+    elif fault == 'foreign-intent':
+        foreign = dict(active, appPath=str(root / 'foreign.app'), executablePath=str(root / 'foreign.app/Contents/MacOS/Jones'))
+        write(intent_path, encode(dict(intent, expected=foreign)))
+    elif fault == 'partial-executor': write(updater / 'bootstrap-executors' / ('9' * 64) / 'executor.py', b'partial')
+    elif fault == 'symlink': (staged_app / 'Contents/LinkedProfile').symlink_to(profile, target_is_directory=True)
+    elif fault == 'metadata-symlink':
+        target = staged_app / 'Contents/Info.plist'
+        target.unlink()
+        target.symlink_to(profile / 'sentinel')
+    elif fault == 'selection-argument': arguments += ['--selection', str(database)]
+    elif fault == 'read-failed':
+        real_metadata = namespace['InventoryObservation'].metadata
+        def failed_metadata(self, path, limit=131072):
+            if path == intent_path: raise OSError('injected owned fixture metadata read failure')
+            return real_metadata(self, path, limit)
+        namespace['InventoryObservation'].metadata = failed_metadata
+    elif fault.startswith('limit-'):
+        name = fault[len('limit-'):]
+        value = {'directoryEntries': 2, 'visits': 3, 'depth': 0, 'apps': 1, 'records': 3,
+                 'readBytes': len(manifest.read_bytes()) + 16}[name]
+        namespace['INVENTORY_LIMITS'][name] = value
+
+    def protected(path, metadata=False):
+        if not isinstance(path, (str, bytes, os.PathLike)): return False
+        value = os.fsdecode(path)
+        parsed = pathlib.Path(value)
+        if parsed.is_absolute():
+            return any(parsed == item or parsed.is_relative_to(item) for item in denied) or (not metadata and parsed in forbidden_reads)
+        return value in ('userdata', 'profile', 'previous-pair', 'advanced-state', 'mount', 'private-mounted-file', 'private-unknown-file')
+
+    def reject(event):
+        guard['violations'].append(event)
+        raise AssertionError('Inventory crossed the synthetic read-only boundary: ' + event)
+
+    def checked_stat(path, *args, **kwargs):
+        if guard['active'] and protected(path, True): reject('stat')
+        return real_stat(path, *args, **kwargs)
+
+    def audit(event, args):
+        if not guard['active']: return
+        if event in ('open', 'os.listdir', 'os.scandir') and args and protected(args[0]): reject(event)
+        if event == 'open' and len(args) > 2 and isinstance(args[2], int) and args[2] & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND): reject('write-open')
+        if event in ('os.mkdir', 'os.remove', 'os.rmdir', 'os.rename', 'os.link', 'os.symlink', 'os.chmod', 'os.truncate', 'os.utime', 'subprocess.Popen', 'os.system', 'os.exec', 'os.posix_spawn', 'sqlite3.connect'): reject(event)
+
+    sys.addaudithook(audit)
+    os.stat = checked_stat
+    try:
+        guard['active'] = True
+        for path in denied:
+            for operation in (lambda path=path: os.stat(path), lambda path=path: os.listdir(path), lambda path=path: os.open(path, os.O_RDONLY)):
+                try: operation()
+                except AssertionError: guard['controls'] += 1
+                else: raise AssertionError('Protected-path positive control did not reject')
+        try: os.chmod(helper, 0o600)
+        except AssertionError: guard['controls'] += 1
+        else: raise AssertionError('Mutation positive control did not reject')
+        guard['active'] = False
+        guard['violations'].clear()
+        expected = snapshot()
+        if fault in ('manifest-race', 'membership-race', 'mode-race'):
+            real_current = namespace['RouteInventory'].current
+            def raced_current(self):
+                global expected
+                guard['active'] = False
+                try:
+                    if fault == 'manifest-race': write(manifest, manifest.read_bytes() + b' ')
+                    elif fault == 'membership-race': write(stage / 'appeared', b'owned fixture race')
+                    else: nested.chmod(0o400)
+                    guard['fixtureMutations'] += 1
+                    expected = snapshot()
+                finally: guard['active'] = True
+                return real_current(self)
+            namespace['RouteInventory'].current = raced_current
+        output = io.StringIO()
+        guard['active'] = True
+        try:
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                try: code = namespace['main'](arguments)
+                except SystemExit as error:
+                    assert fault == 'selection-argument'
+                    code = error.code
+        finally: guard['active'] = False
+        report = json.loads(output.getvalue()) if output.getvalue() else None
+        assert snapshot() == expected
+        assert not guard['violations']
+        result = {'code': code, 'report': report, 'violations': guard['violations'], 'controls': guard['controls'],
+                  'fixtureMutations': guard['fixtureMutations'], 'unchanged': True,
+                  'paths': {'helper': str(helper), 'stage': str(stage), 'nested': str(nested), 'mount': str(stage_mount),
+                            'incoming': str(incoming), 'previous': str(previous), 'intent': str(intent_path), 'index': str(index)}}
+    finally:
+        guard['active'] = False
+        os.stat = real_stat
+result['fixtureRemoved'] = not root.exists()
+print(json.dumps(result))
+`;
+
+function inventoryScenario(fault: string) {
+  const output = NodeChildProcess.execFileSync("python3", ["-c", inventoryFixture], {
+    input: JSON.stringify({ files, fault }),
+    encoding: "utf8",
+    timeout: 15000,
+    maxBuffer: 1024 * 1024,
+  });
+  const result = JSON.parse(output);
+  expect(result.fixtureRemoved).toBe(true);
+  expect(result.unchanged).toBe(true);
+  expect(result.violations).toEqual([]);
+  expect(result.controls).toBe(16);
+  if (result.report !== null) {
+    expect(result.report).toMatchObject({
+      operation: "inventory-routes",
+      activationAllowed: false,
+      launchMembershipComplete: false,
+      processCustody: "unobserved",
+      observationOnly: true,
+      blocker: "DESK-FIRST-01",
+      coverage: {
+        history: "partial",
+        orphanSiblingApps: "unobserved",
+        payloadDigests: "not-verified",
+      },
+    });
+  }
+  return result;
+}
+
+describe("read-only installer route inventory", () => {
+  it("observes helpers, pre-receipt apps, nested executables, and exact retained siblings", () => {
+    const result = inventoryScenario("observed");
+    expect(result.code).toBe(0);
+    expect(result.report.status).toBe("observed");
+    expect(result.report.observations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "helper",
+          path: result.paths.helper,
+          binding: "content-addressed",
+        }),
+        expect.objectContaining({ kind: "stage", path: result.paths.stage, binding: "unbound" }),
+        expect.objectContaining({ kind: "executable", path: result.paths.nested }),
+        expect.objectContaining({
+          kind: "app",
+          path: result.paths.incoming,
+          role: "incoming",
+          binding: "record",
+        }),
+        expect.objectContaining({
+          kind: "app",
+          path: result.paths.previous,
+          role: "previous",
+          binding: "record",
+        }),
+        expect.objectContaining({
+          kind: "excluded",
+          path: result.paths.mount,
+          reason: "mount-not-traversed",
+        }),
+        expect.objectContaining({ kind: "completion-index", path: result.paths.index }),
+        expect.objectContaining({ kind: "absent", path: expect.stringContaining("/artifacts") }),
+      ]),
+    );
+    expect(result.report.issues).toContainEqual({
+      code: "receipt-missing",
+      path: `${result.paths.stage}/mac-app-receipt.json`,
+    });
+  });
+
+  it.each(["invalid-anchor", "overlap-anchor"])(
+    "refuses an unsafe manifest anchor before route traversal: %s",
+    (fault) => {
+      const result = inventoryScenario(fault);
+      expect(result.code).toBe(1);
+      expect(result.report.status).toBe("refused");
+      expect(result.report.observations).toEqual([]);
+    },
+  );
+
+  it.each([
+    "partial-transaction",
+    "foreign-intent",
+    "partial-executor",
+    "read-failed",
+    "metadata-symlink",
+  ])("reports partial observation and continues independent routes: %s", (fault) => {
+    const result = inventoryScenario(fault);
+    expect(result.code).toBe(2);
+    expect(result.report.status).toBe("partial");
+    expect(result.report.observations).toContainEqual(
+      expect.objectContaining({ kind: "helper", path: result.paths.helper }),
+    );
+    expect(result.report.observations).toContainEqual(
+      expect.objectContaining({ kind: "executable", path: result.paths.nested }),
+    );
+    if (fault === "foreign-intent") {
+      expect(result.report.observations).not.toContainEqual(
+        expect.objectContaining({ role: "incoming" }),
+      );
+    }
+  });
+
+  it("reports unresolved links without probing their protected targets", () => {
+    const result = inventoryScenario("symlink");
+    expect(result.code).toBe(0);
+    expect(result.report.issues).toContainEqual(
+      expect.objectContaining({ code: "unresolved-link" }),
+    );
+    expect(result.report.observations).toContainEqual(
+      expect.objectContaining({ kind: "link", binding: "unknown" }),
+    );
+  });
+
+  it.each(["manifest-race", "membership-race", "mode-race"])(
+    "rechecks metadata and membership before reporting observation: %s",
+    (fault) => {
+      const result = inventoryScenario(fault);
+      expect(result.code).toBe(2);
+      expect(result.report.status).toBe("partial");
+      expect(result.fixtureMutations).toBe(1);
+      expect(result.report.issues).toContainEqual(
+        expect.objectContaining({ code: "unreadable-or-changed" }),
+      );
+    },
+  );
+
+  it.each(["directoryEntries", "visits", "depth", "apps", "records", "readBytes"])(
+    "bounds inventory work before exhausting %s",
+    (bound) => {
+      const result = inventoryScenario(`limit-${bound}`);
+      expect(result.code).toBe(2);
+      expect(result.report.status).toBe("partial");
+      expect(result.report.issues).toContainEqual(
+        expect.objectContaining({ code: "inventory-limit" }),
+      );
+      expect(result.report.observations.length + result.report.issues.length).toBeLessThanOrEqual(
+        result.report.limits.records,
+      );
+      expect(result.report.usage.readBytes).toBeLessThanOrEqual(result.report.limits.readBytes);
+      expect(result.report.usage.visits).toBeLessThanOrEqual(result.report.limits.visits + 1);
+    },
+  );
+
+  it("rejects selection flags on the manifest-only command", () => {
+    const result = inventoryScenario("selection-argument");
+    expect(result.code).toBe(2);
+    expect(result.report).toBeNull();
+  });
+});

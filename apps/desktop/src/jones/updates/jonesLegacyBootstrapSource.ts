@@ -1,6 +1,8 @@
-/** Standalone, non-activating entry point; the executor is verified and copied only as data. */
+/** Standalone observation and staging; neither the application nor the executor is launched. */
 export const jonesLegacyBootstrapSource = String.raw`#!/usr/bin/env python3
-import argparse, contextlib, datetime, hashlib, json, os, pathlib, plistlib, re, stat, struct, sys, uuid, zipfile
+import sys
+sys.dont_write_bytecode = True
+import argparse, contextlib, datetime, hashlib, json, os, pathlib, plistlib, re, stat, struct, uuid, zipfile
 
 REPOSITORY = 'Jones-Systems/Jones-Code'
 MAX_FILE = 2 * 1024 * 1024 * 1024
@@ -421,7 +423,465 @@ def stage_executor(observed, active, updater, transaction_names, output, executo
     observed.current()
     return 'created'
 
+# Inventory is an observation of fixed installer path families, never admission
+# evidence. In particular, old helper births and orphan sibling apps are unproved.
+INVENTORY_LIMITS = {'directoryEntries': 4096, 'visits': 200000, 'depth': 32,
+                    'apps': 32, 'records': 8192, 'readBytes': 64 * 1024 * 1024}
+
+class InventoryLimit(Exception):
+    pass
+
+class InventoryReader:
+    def __init__(self, stream, inventory):
+        self.stream, self.inventory = stream, inventory
+    def fileno(self): return self.stream.fileno()
+    def seek(self, *args): return self.stream.seek(*args)
+    def read(self, size=-1):
+        remaining = max(0, os.fstat(self.stream.fileno()).st_size - self.stream.tell())
+        requested = remaining if size < 0 else min(size, remaining)
+        if requested > INVENTORY_LIMITS['readBytes'] - self.inventory.read_bytes:
+            raise InventoryLimit()
+        result = self.stream.read(requested)
+        self.inventory.read_bytes += len(result)
+        return result
+
+class InventoryObservation(Observation):
+    def __init__(self, inventory):
+        super().__init__()
+        self.inventory = inventory
+    def permitted(self, path):
+        super().permitted(path)
+        parts = path.parts
+        for index, name in enumerate(parts):
+            if name != 'jones-updates': continue
+            suffix = parts[index + 1:]
+            require(not (len(suffix) >= 3 and suffix[0] == 'transactions' and suffix[2] in ('previous-pair', 'advanced-state')))
+            if suffix[:1] != ('apps',): continue
+            if len(suffix) >= 3 and hex_value(suffix[1], 64): require(suffix[2] != 'mount')
+            if len(suffix) >= 5 and suffix[1] == 'attempts' and re.fullmatch('stage-[a-zA-Z0-9]+', suffix[2]) is not None and hex_value(suffix[3], 64):
+                require(suffix[4] != 'mount')
+    @contextlib.contextmanager
+    def file(self, path, limit):
+        with super().file(path, limit) as stream:
+            yield InventoryReader(stream, self.inventory)
+
+class RouteInventory:
+    def __init__(self, manifest):
+        self.report = {'schema': 1, 'operation': 'inventory-routes', 'status': 'observed',
+                       'observationOnly': True, 'activationAllowed': False,
+                       'launchMembershipComplete': False, 'processCustody': 'unobserved',
+                       'blocker': 'DESK-FIRST-01', 'manifestPath': str(manifest),
+                       'coverage': {'history': 'partial', 'orphanSiblingApps': 'unobserved',
+                                    'manualCopies': 'not-enumerated', 'interpreterIdentity': 'unobserved',
+                                    'payloadDigests': 'not-verified'},
+                       'observations': [], 'issues': []}
+        self.observed = InventoryObservation(self)
+        self.visits = self.read_bytes = 0
+        self.limited = False
+        self.listings, self.nodes = {}, {}
+        self.absent, self.apps, self.emitted = set(), set(), set()
+        self.manifest = manifest
+
+    def visit(self):
+        if self.limited: raise InventoryLimit()
+        self.visits += 1
+        if self.visits > INVENTORY_LIMITS['visits']: raise InventoryLimit()
+
+    def room(self):
+        if self.limited: raise InventoryLimit()
+        # Reserve one record for the terminal budget diagnostic.
+        if len(self.report['observations']) + len(self.report['issues']) >= INVENTORY_LIMITS['records'] - 1:
+            raise InventoryLimit()
+
+    def issue(self, code, path, partial=False):
+        self.room()
+        self.report['issues'].append({'code': code, 'path': str(path)})
+        if partial: self.report['status'] = 'partial'
+
+    def add(self, kind, path, binding='unknown', info=None, **fields):
+        key = kind, str(path)
+        if key in self.emitted: return
+        self.room()
+        self.emitted.add(key)
+        value = dict(kind=kind, path=str(path), binding=binding, **fields)
+        if info is not None:
+            value['identity'] = {'device': str(info.st_dev), 'inode': str(info.st_ino),
+                                 'uid': info.st_uid, 'mode': stat.S_IMODE(info.st_mode),
+                                 'nlink': info.st_nlink, 'size': info.st_size,
+                                 'mtimeNs': str(info.st_mtime_ns), 'ctimeNs': str(info.st_ctime_ns)}
+        self.report['observations'].append(value)
+
+    def limit(self, path):
+        if not self.limited:
+            self.limited = True
+            self.report['status'] = 'partial'
+            self.report['issues'].append({'code': 'inventory-limit', 'path': str(path)})
+
+    def attempt(self, path, operation):
+        if self.limited: return None
+        try:
+            return operation()
+        except InventoryLimit:
+            self.limit(path)
+        except (Refused, OSError, ValueError, KeyError, TypeError, OverflowError, RuntimeError, struct.error):
+            try: self.issue('unreadable-or-changed', path, True)
+            except InventoryLimit: self.limit(path)
+        return None
+
+    def names(self, path, optional=False, checking=False):
+        if self.limited: raise InventoryLimit()
+        try:
+            with self.observed.directory(path) as fd:
+                names = []
+                with os.scandir(fd) as entries:
+                    for entry in entries:
+                        self.visit()
+                        if len(names) >= INVENTORY_LIMITS['directoryEntries']: raise InventoryLimit()
+                        names.append(entry.name)
+                names.sort()
+        except FileNotFoundError:
+            if not optional: raise
+            self.absent.add(path)
+            self.add('absent', path)
+            return None
+        if checking:
+            require(self.listings[path] == names)
+        else:
+            require(path not in self.listings or self.listings[path] == names)
+            self.listings[path] = names
+        return names
+
+    def node(self, path):
+        self.visit()
+        self.observed.permitted(path)
+        with self.observed.directory(path.parent) as fd:
+            info = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+            proof = identity(info)
+            require(path not in self.nodes or self.nodes[path] == proof)
+            self.nodes[path] = proof
+            if stat.S_ISLNK(info.st_mode):
+                target = os.readlink(path.name, dir_fd=fd)
+                self.add('link', path, info=info, target=target)
+                self.issue('unresolved-link', path)
+                return None
+            require(info.st_uid == os.getuid())
+            return info
+
+    def record(self, path):
+        value, digest = self.observed.metadata(path)
+        self.add('record', path, sha256=digest)
+        return value
+
+    def active_shape(self, value):
+        require(isinstance(value, dict))
+        require(type(value.get('protocol')) is int and value['protocol'] == 1 and value.get('owner') == 'desktop')
+        for name in ('home', 'databasePath', 'profile', 'appPath', 'executablePath'):
+            require(isinstance(value.get(name), str) and len(value[name]) <= 4096)
+            absolute(value[name])
+        require(isinstance(value.get('environmentId'), str) and 0 < len(value['environmentId']) <= 512)
+        require(isinstance(value.get('version'), str) and 0 < len(value['version']) <= 128)
+        require(isinstance(value.get('generation'), str) and re.fullmatch('[A-Za-z0-9_-]{1,128}', value['generation']) is not None)
+        require(value.get('transactionId') == 'bootstrap' or hex_value(value.get('transactionId'), 64))
+        require(hex_value(value.get('sourceSha'), 40) and hex_value(value.get('sourceTree'), 40))
+        app, executable = absolute(value['appPath']), absolute(value['executablePath'])
+        require(app.name.endswith('.app') and executable.parent == app / 'Contents/MacOS')
+        require(executable.name not in ('.', '..'))
+        return value
+
+    def stage_path(self, root, handle, directory):
+        require(hex_value(handle, 64))
+        parts = absolute(str(directory)).relative_to(root).parts
+        require(parts == (handle,) or (len(parts) == 3 and parts[0] == 'attempts' and
+                re.fullmatch('stage-[a-zA-Z0-9]+', parts[1]) is not None and parts[2] == handle))
+
+    def staged_shape(self, value):
+        require(isinstance(value, dict))
+        app = absolute(value['appPath'])
+        self.stage_path(self.updater / 'apps', value['handle'], app.parent)
+        require(app.name.endswith('.app') and all(hex_value(value.get(key), 64) for key in ('appDigest', 'asarDigest', 'executableDigest')))
+        if 'startupGateProtocol' in value: require(type(value['startupGateProtocol']) is int and value['startupGateProtocol'] == 1)
+        require(value.get('receiptPath') == str(app.parent / 'mac-app-receipt.json'))
+        require(absolute(value['executablePath']).parent == app / 'Contents/MacOS')
+        require(hex_value(value.get('sourceSha'), 40) and hex_value(value.get('sourceTree'), 40))
+        require(isinstance(value.get('version'), str) and 0 < len(value['version']) <= 128)
+        return value
+
+    def anchor(self):
+        require(self.manifest.name == 'jones-active-install.json' and self.manifest.parent.name == 'runtime')
+        active, digest = self.observed.metadata(self.manifest)
+        self.active = self.active_shape(active)
+        self.home = absolute(active['home'])
+        require(self.manifest == self.home / 'runtime/jones-active-install.json')
+        self.updater = self.manifest.parent / 'jones-updates'
+        self.observed.denied = (absolute(active['databasePath']).parent, absolute(active['profile']))
+        for path in (self.manifest, self.updater, absolute(active['appPath']), self.home / 'bin/t3'):
+            self.observed.permitted(path)
+            require(not any(root.is_relative_to(path) for root in self.observed.denied))
+        self.report['manifestSha256'] = digest
+        self.add('record', self.manifest, 'manifest', sha256=digest)
+
+    def app(self, path, role, expected=None):
+        if path in self.apps: return
+        if len(self.apps) >= INVENTORY_LIMITS['apps']: raise InventoryLimit()
+        self.apps.add(path)
+        names = self.names(path, optional=True)
+        if names is None: return
+        with self.observed.directory(path) as fd: info = os.fstat(fd)
+        binding = 'manifest' if role == 'active' else 'record' if expected is not None else 'unbound'
+        self.add('app', path, binding, info=info, role=role)
+        def metadata():
+            info = plistlib.loads(self.observed.raw(path / 'Contents/Info.plist', 1048576))
+            package = app_metadata(self.observed, path)
+            source = package.get('jonesSource', {})
+            require(isinstance(info, dict) and isinstance(source, dict))
+            executable = info.get('CFBundleExecutable')
+            require(isinstance(executable, str) and re.fullmatch('[^/\\\\]+', executable) is not None and executable not in ('.', '..'))
+            require(source.get('repository') == REPOSITORY and hex_value(source.get('sha'), 40) and hex_value(source.get('tree'), 40))
+            require(package.get('version') == info.get('CFBundleShortVersionString'))
+            if expected is not None:
+                require(source['sha'] == expected['sourceSha'] and source['tree'] == expected['sourceTree'] and package['version'] == expected['version'])
+                require(executable == absolute(expected['executablePath']).name)
+            self.add('app-metadata', path, binding, sourceSha=source['sha'], sourceTree=source['tree'], version=package['version'])
+        self.attempt(path / 'Contents/Resources/app.asar', metadata)
+        pending = [(path, 0)]
+        while pending and not self.limited:
+            directory, depth = pending.pop()
+            if depth > INVENTORY_LIMITS['depth']: raise InventoryLimit()
+            children = self.names(directory)
+            for name in children:
+                child = directory / name
+                info = self.attempt(child, lambda child=child: self.node(child))
+                if info is None: continue
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append((child, depth + 1))
+                elif stat.S_ISREG(info.st_mode):
+                    if info.st_mode & 0o111:
+                        self.add('executable', child, binding, info=info, appPath=str(path))
+                    if info.st_nlink != 1: self.issue('unresolved-hardlink', child)
+                else:
+                    self.issue('unsupported-entry', child, True)
+
+    def helper(self, path, kind='helper', expected=None):
+        info = self.node(path)
+        if info is None: return
+        require(stat.S_ISREG(info.st_mode))
+        raw = self.observed.raw(path, 1048576)
+        digest = sha(raw)
+        wanted = expected if expected is not None else path.name[len('activate-v1-'):-3]
+        binding = 'content-addressed' if digest == wanted else 'unbound'
+        self.add(kind, path, binding, info=info, sha256=digest)
+        if digest != wanted: self.issue('helper-digest-unbound', path)
+
+    def stage(self, directory, apps):
+        names = self.names(directory)
+        marker = 'mac-app-receipt.json' if apps else 'jones-actions-stage.json'
+        binding, expected = 'unbound', None
+        if marker in names:
+            def receipt():
+                value = self.record(directory / marker)
+                if apps:
+                    app = self.staged_shape(value['app'])
+                    require(absolute(app['appPath']).parent == directory and app['handle'] == directory.name)
+                    candidate = value['candidate']
+                    require(isinstance(candidate, dict))
+                    require(validate_candidate(candidate) == directory.name)
+                    require(candidate.get('source') == app['sourceSha'] and candidate.get('tree') == app['sourceTree'] and candidate.get('version') == app['version'])
+                    return app
+                require(type(value.get('schema')) is int and value['schema'] == 1 and value.get('source') == 'jones-actions' and value.get('channel') == 'jones-main' and value.get('stagedHandle') == directory.name)
+                candidate = value['candidate']
+                require(isinstance(candidate, dict) and isinstance(value['receipt'], dict))
+                require(validate_candidate(candidate) == directory.name)
+                artifact_receipt(value['receipt'], candidate)
+                require(value.get('payloadPath') == str(directory / value['receipt']['artifact']))
+                return value
+            expected = self.attempt(directory / marker, receipt)
+            if expected is not None: binding = 'record'
+        else:
+            self.issue('receipt-missing', directory / marker)
+        self.add('stage', directory, binding, stageKind='apps' if apps else 'artifacts')
+        for name in names:
+            if apps and name == 'mount':
+                self.add('excluded', directory / name, reason='mount-not-traversed')
+            elif apps and name.endswith('.app'):
+                target = directory / name
+                matching = expected if expected is not None and expected['appPath'] == str(target) else None
+                self.attempt(target, lambda target=target, matching=matching: self.app(target, 'staged', matching))
+            elif name != marker:
+                self.attempt(directory / name, lambda name=name: self.add('stage-entry', directory / name, info=self.node(directory / name)))
+
+    def stages(self, root, apps):
+        names = self.names(root, optional=True)
+        if names is None: return
+        for name in names:
+            target = root / name
+            if hex_value(name, 64):
+                self.attempt(target, lambda target=target: self.stage(target, apps))
+            elif name == 'attempts':
+                attempts = self.names(target)
+                for attempt in attempts:
+                    base = target / attempt
+                    if re.fullmatch('stage-[a-zA-Z0-9]+', attempt) is None:
+                        self.add('unknown-entry', base)
+                        continue
+                    handles = self.attempt(base, lambda base=base: self.names(base))
+                    if handles is None: continue
+                    for handle in handles:
+                        if hex_value(handle, 64):
+                            directory = base / handle
+                            self.attempt(directory, lambda directory=directory: self.stage(directory, apps))
+                        else:
+                            self.add('unknown-entry', base / handle)
+            elif name == 'completed':
+                # These indexes can have the publisher's second hard link. Enumerate
+                # their identities only; actual attempts are scanned independently.
+                completed = self.names(target)
+                for entry in completed:
+                    index = target / entry
+                    self.attempt(index, lambda index=index: self.add('completion-index', index, info=self.node(index)))
+            else:
+                self.add('unknown-entry', target)
+
+    def transaction(self, directory):
+        self.observed.denied += (directory / 'previous-pair', directory / 'advanced-state')
+        names = self.names(directory)
+        if 'intent.json' not in names:
+            self.issue('transaction-intent-missing', directory, True)
+            return
+        intent = self.record(directory / 'intent.json')
+        require(type(intent.get('protocol')) is int and intent['protocol'] == 1 and intent.get('transactionId') == directory.name)
+        prior, staged = self.active_shape(intent['expected']), self.staged_shape(intent['staged'])
+        require(all(prior[key] == self.active[key] for key in ('home', 'databasePath', 'profile', 'environmentId', 'appPath')))
+        require(intent.get('continuationReceipt') == str(directory / 'continuation.json'))
+        if 'journal.json' in names:
+            journal = self.record(directory / 'journal.json')
+            require(journal.get('intent') == intent)
+        stable = absolute(self.active['appPath'])
+        for role, path, expected in (
+            ('incoming', stable.with_name(stable.name + '.jones-incoming-' + directory.name), staged),
+            ('previous', stable.with_name(stable.name + '.jones-previous-' + prior['generation']), prior)):
+            self.attempt(path, lambda path=path, role=role, expected=expected: self.app(path, role, expected))
+        for name in ('previous-pair', 'advanced-state'):
+            if name in names: self.add('excluded', directory / name, reason='private-state-copy')
+
+    def transactions(self):
+        root = self.updater / 'transactions'
+        names = self.names(root, optional=True)
+        for name in names or ():
+            path = root / name
+            if not hex_value(name, 64): self.add('unknown-entry', path)
+            else: self.attempt(path, lambda path=path: self.transaction(path))
+
+    def selections(self):
+        root = self.updater / 'staging'
+        names = self.names(root, optional=True)
+        for name in names or ():
+            path = root / name
+            if re.fullmatch('[a-f0-9]{40}-[a-f0-9]{64}\\.json', name) is None:
+                self.add('unknown-entry', path)
+                continue
+            def selection(path=path):
+                value = self.record(path)
+                require(type(value.get('schema')) is int and value['schema'] == 1 and value.get('source') == 'jones-actions')
+                prior = self.active_shape(value['active'])
+                require(all(prior[key] == self.active[key] for key in ('home', 'databasePath', 'profile', 'environmentId', 'appPath')))
+                require(value.get('home') == prior['home'] and value.get('profile') == prior['profile'])
+                require(value.get('installedSource') == prior['sourceSha'] == path.name[:40] and value.get('currentVersion') == prior['version'])
+                app = self.staged_shape(value['app'])
+                self.stage_path(self.updater / 'artifacts', app['handle'], value['artifactDirectory'])
+            self.attempt(path, selection)
+
+    def executors(self):
+        root = self.updater / 'bootstrap-executors'
+        names = self.names(root, optional=True)
+        for name in names or ():
+            directory = root / name
+            if not hex_value(name, 64):
+                self.add('unknown-entry', directory)
+                continue
+            def executor(directory=directory, name=name):
+                children = self.names(directory)
+                for child in children:
+                    if child not in ('receipt.json', 'executor.py'): self.add('unknown-entry', directory / child)
+                if 'receipt.json' not in children:
+                    self.issue('executor-receipt-missing', directory, True)
+                    return
+                receipt = self.record(directory / 'receipt.json')
+                require(type(receipt.get('schema')) is int and receipt['schema'] == 1 and receipt.get('bindingDigest') == name and receipt.get('manifestPath') == str(self.manifest))
+                require(receipt.get('executorPath') == str(directory / 'executor.py') and hex_value(receipt.get('executorSha256'), 64) and receipt.get('activationAllowed') is False)
+                self.helper(directory / 'executor.py', 'bootstrap-executor', receipt['executorSha256'])
+            self.attempt(directory, executor)
+
+    def roots(self):
+        self.add('interpreter', pathlib.Path('/usr/bin/python3'), identityStatus='unobserved')
+        self.attempt(absolute(self.active['appPath']), lambda: self.app(absolute(self.active['appPath']), 'active', self.active))
+        names = self.names(self.updater, optional=True)
+        for name in names or ():
+            path = self.updater / name
+            if re.fullmatch('activate-v1-[a-f0-9]{64}\\.py', name) is not None:
+                self.attempt(path, lambda path=path: self.helper(path))
+            elif name not in ('apps', 'artifacts', 'transactions', 'staging', 'bootstrap-executors'):
+                self.add('unknown-entry', path)
+        for name, operation in (
+            ('transactions', self.transactions), ('staging', self.selections),
+            ('apps', lambda: self.stages(self.updater / 'apps', True)),
+            ('artifacts', lambda: self.stages(self.updater / 'artifacts', False)),
+            ('bootstrap-executors', self.executors)):
+            self.attempt(self.updater / name, operation)
+        shim = self.home / 'bin/t3'
+        def cli():
+            names = self.names(shim.parent, optional=True)
+            if names is None or shim.name not in names:
+                self.add('absent', shim)
+                return
+            info = self.node(shim)
+            if info is not None:
+                self.add('cli-shim', shim, 'unbound', info=info, sha256=sha(self.observed.raw(shim)))
+        self.attempt(shim, cli)
+
+    def current(self):
+        for path in self.listings: self.names(path, checking=True)
+        for path, proof in self.nodes.items():
+            self.visit()
+            with self.observed.directory(path.parent) as fd:
+                require(identity(os.stat(path.name, dir_fd=fd, follow_symlinks=False)) == proof)
+        for path in self.absent:
+            self.visit()
+            try:
+                with self.observed.directory(path): raise Refused('Previously missing inventory directory appeared.')
+            except FileNotFoundError: pass
+        for _ in range(len(self.observed.directories) + len(self.observed.files)): self.visit()
+        self.observed.current()
+
+    def finish(self):
+        self.report['observations'].sort(key=lambda item: (item['path'], item['kind']))
+        self.report['issues'].sort(key=lambda item: (item['path'], item['code']))
+        self.report['limits'] = INVENTORY_LIMITS
+        self.report['usage'] = {'visits': self.visits, 'readBytes': self.read_bytes}
+        return self.report
+
+def inventory_routes(argv):
+    parser = argparse.ArgumentParser(description='Observe bounded installer path families; this cannot prove launch membership or authorize activation.')
+    parser.add_argument('--manifest', required=True)
+    args = parser.parse_args(argv)
+    inventory = RouteInventory(args.manifest)
+    try:
+        require(sys.platform == 'darwin')
+        require(len(args.manifest) <= 4096)
+        inventory.manifest = absolute(args.manifest)
+        inventory.anchor()
+    except (Refused, OSError, ValueError, KeyError, TypeError, OverflowError, RuntimeError, InventoryLimit):
+        inventory.report['status'] = 'refused'
+        inventory.issue('manifest-unbound', args.manifest)
+    else:
+        inventory.attempt(inventory.manifest.parent, inventory.roots)
+        inventory.attempt(inventory.manifest, inventory.current)
+    report = inventory.finish()
+    print(json.dumps(report, sort_keys=True))
+    return {'observed': 0, 'partial': 2, 'refused': 1}[report['status']]
+
 def main(argv=None):
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments[:1] == ['inventory-routes']: return inventory_routes(arguments[1:])
     parser = argparse.ArgumentParser(description='Inspect or stage the Jones executor. This does not install an update or authorize activation.')
     parser.add_argument('operation', choices=('inspect', 'stage-executor'))
     parser.add_argument('--manifest', required=True)

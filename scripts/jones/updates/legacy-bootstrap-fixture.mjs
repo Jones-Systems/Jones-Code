@@ -111,10 +111,12 @@ with zipfile.ZipFile(config['archive'], 'w', compression=zipfile.ZIP_STORED) as 
 // Audit ordinary public CLI execution without replacing its validator or
 // platform check. The positive control proves the same guard sees protected
 // metadata probes as well as opens; process creation is prohibited outright.
+// Inventory additionally forbids writes; the staging operations retain their owned writes.
 const auditedCli = String.raw`
 import json, os, pathlib, runpy, sys
 roots = json.loads(sys.argv[1])
 script, arguments = sys.argv[2], sys.argv[3:]
+read_only = bool(arguments) and arguments[0] == 'inventory-routes'
 violations = []
 fd_paths = {}
 control = False
@@ -139,7 +141,11 @@ def guard(path, dir_fd=None):
 def audit(event, args):
     if event == 'open' or event in ('os.listdir', 'os.scandir', 'os.chdir'):
         guard(args[0])
-    if event in ('subprocess.Popen', 'os.system', 'os.posix_spawn', 'os.exec', 'os.fork', 'os.forkpty'):
+    if read_only and (event in ('os.mkdir', 'os.remove', 'os.rmdir', 'os.rename', 'os.link', 'os.symlink', 'os.chmod', 'os.chown', 'os.truncate', 'os.utime', 'os.setxattr', 'os.removexattr') or
+                      (event == 'open' and args[2] & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))):
+        violations.append('filesystem-write')
+        raise ForbiddenFixtureAccess('inventory attempted filesystem mutation')
+    if event in ('subprocess.Popen', 'os.system', 'os.posix_spawn', 'os.exec', 'os.fork', 'os.forkpty', 'os.kill', 'os.killpg'):
         violations.append('child-execution')
         raise ForbiddenFixtureAccess('bootstrap attempted child execution')
 
@@ -156,7 +162,32 @@ def tracked_close(fd):
     fd_paths.pop(fd, None)
 
 os.open, os.close = tracked_open, tracked_close
-for name in ('stat', 'lstat', 'readlink', 'access', 'listdir', 'scandir'):
+original_scandir = os.scandir
+class GuardedEntry:
+    def __init__(self, entry, parent):
+        self.entry, self.parent = entry, parent
+    def __fspath__(self): return os.fspath(self.entry)
+    def __getattr__(self, name):
+        value = getattr(self.entry, name)
+        if name in ('stat', 'is_dir', 'is_file', 'is_symlink', 'inode'):
+            def checked(*args, **kwargs):
+                guard(os.path.join(self.parent, self.entry.name))
+                return value(*args, **kwargs)
+            return checked
+        return value
+
+class GuardedScan:
+    def __init__(self, path):
+        self.parent = guard(path)
+        self.entries = original_scandir(path)
+    def __iter__(self): return self
+    def __next__(self): return GuardedEntry(next(self.entries), self.parent)
+    def __enter__(self): return self
+    def __exit__(self, *args): self.close()
+    def close(self): self.entries.close()
+
+os.scandir = GuardedScan
+for name in ('stat', 'lstat', 'readlink', 'access', 'listdir'):
     original = getattr(os, name)
     def wrapped(path, *args, _original=original, **kwargs):
         guard(path, kwargs.get('dir_fd'))
@@ -164,13 +195,20 @@ for name in ('stat', 'lstat', 'readlink', 'access', 'listdir', 'scandir'):
     setattr(os, name, wrapped)
 controls = []
 parent_fd = os.open(os.path.dirname(roots[0]), os.O_RDONLY | os.O_DIRECTORY)
+def entry_probe():
+    with os.scandir(parent_fd) as entries:
+        next(entry for entry in entries if entry.name == os.path.basename(roots[0])).stat()
 try:
-    for probe, expected in (
-        (lambda: os.stat(roots[0]), 'protected-path'),
-        (lambda: os.open(roots[0], os.O_RDONLY), 'protected-path'),
+    probes = []
+    for root in roots:
+        probes.extend(((lambda root=root: os.stat(root), 'protected-path'),
+                       (lambda root=root: os.open(root, os.O_RDONLY), 'protected-path')))
+    probes.extend((
         (lambda: os.stat(os.path.basename(roots[0]), dir_fd=parent_fd), 'protected-path'),
+        (entry_probe, 'protected-path'),
         (lambda: sys.audit('subprocess.Popen', 'must-not-launch', [], None, None), 'child-execution'),
-    ):
+    ))
+    for probe, expected in probes:
         violations.clear()
         try:
             probe()
@@ -180,7 +218,20 @@ try:
             controls.append(False)
 finally:
     os.close(parent_fd)
-control = all(controls) and len(controls) == 4
+control = all(controls) and len(controls) == 2 * len(roots) + 3
+write_controls = []
+if read_only:
+    for event, args in (
+        ('open', (script, None, os.O_WRONLY | os.O_CREAT)),
+        ('os.chmod', (script, 0o700, -1)),
+    ):
+        violations.clear()
+        try:
+            sys.audit(event, *args)
+        except ForbiddenFixtureAccess:
+            write_controls.append(violations == ['filesystem-write'])
+        else:
+            write_controls.append(False)
 violations.clear()
 sys.argv = [script] + arguments
 code = 0
@@ -189,9 +240,45 @@ try:
 except SystemExit as error:
     code = error.code
 finally:
-    print('JONES_BOOTSTRAP_AUDIT=' + json.dumps({'positiveControl': control, 'violations': violations}), file=sys.stderr)
+    report = {'positiveControl': control, 'violations': violations}
+    if read_only:
+        report.update(readOnly=True, writeControl=all(write_controls) and len(write_controls) == 2)
+    print('JONES_BOOTSTRAP_AUDIT=' + json.dumps(report), file=sys.stderr)
 sys.exit(code)
 `;
+
+export function assertInventoryResponse(result, expected = "partial") {
+  NodeAssert.equal(result.signal, null, result.stderr);
+  NodeAssert.equal(result.code, { observed: 0, partial: 2, refused: 1 }[expected], result.stderr);
+  const response = JSON.parse(result.stdout);
+  NodeAssert.equal(response.schema, 1);
+  NodeAssert.equal(response.operation, "inventory-routes");
+  NodeAssert.equal(response.status, expected);
+  NodeAssert.equal(response.observationOnly, true);
+  NodeAssert.equal(response.activationAllowed, false);
+  NodeAssert.equal(response.launchMembershipComplete, false);
+  NodeAssert.equal(response.processCustody, "unobserved");
+  NodeAssert.equal(response.blocker, "DESK-FIRST-01");
+  NodeAssert.deepEqual(response.coverage, {
+    history: "partial",
+    orphanSiblingApps: "unobserved",
+    manualCopies: "not-enumerated",
+    interpreterIdentity: "unobserved",
+    payloadDigests: "not-verified",
+  });
+  NodeAssert.ok(Array.isArray(response.observations) && Array.isArray(response.issues));
+  const reports = result.stderr
+    .split("\n")
+    .filter((line) => line.startsWith("JONES_BOOTSTRAP_AUDIT="));
+  NodeAssert.equal(reports.length, 1, result.stderr);
+  NodeAssert.deepEqual(JSON.parse(reports[0].slice("JONES_BOOTSTRAP_AUDIT=".length)), {
+    positiveControl: true,
+    violations: [],
+    readOnly: true,
+    writeControl: true,
+  });
+  return response;
+}
 
 export function assertBootstrapResponse(result, expected) {
   NodeAssert.equal(result.signal, null, result.stderr);
@@ -407,7 +494,7 @@ export async function createLegacyBootstrapFixture({
   const script = NodePath.join(candidateApp, "Contents/Resources/jones-bootstrap/bootstrap.py");
   const protectedPaths = [databaseDirectory, profile];
   const before = await Promise.all([...protectedPaths, manifest].map(snapshotTree));
-  const invoke = async (operation, path = selectionPath) =>
+  const invoke = async (operation, path = selectionPath, denied = protectedPaths) =>
     runOwnedChild(
       "python3",
       [
@@ -415,15 +502,14 @@ export async function createLegacyBootstrapFixture({
         "-B",
         "-c",
         auditedCli,
-        json(protectedPaths),
+        json(denied),
         script,
         operation,
         "--manifest",
         manifest,
-        "--selection",
-        path,
-        "--selection-sha256",
-        sha256(await NodeFSP.readFile(path)),
+        ...(operation === "inventory-routes"
+          ? []
+          : ["--selection", path, "--selection-sha256", sha256(await NodeFSP.readFile(path))]),
       ],
       { env, signal, timeout: 120000 },
     );
@@ -503,6 +589,7 @@ export async function qualifyLegacyBootstrap(fixture, evidence = { scenarios: []
   const partialBefore = await snapshotTree(NodePath.dirname(staged.executorPath));
   await run("retained-partial-stage", "stage-executor", "refused");
   NodeAssert.deepEqual(await snapshotTree(NodePath.dirname(staged.executorPath)), partialBefore);
+  evidence.inventory = await qualifyInventoryRoutes(fixture);
   NodeAssert.deepEqual(
     await Promise.all([...fixture.protectedPaths, fixture.manifest].map(snapshotTree)),
     fixture.before,
@@ -519,4 +606,141 @@ export async function qualifyLegacyBootstrap(fixture, evidence = { scenarios: []
     ],
   });
   return evidence;
+}
+
+// Inventory gets incomplete synthetic remnants only after the original staging
+// scenarios finish. A diagnostic report must not become admission evidence.
+async function qualifyInventoryRoutes(fixture) {
+  const active = fixture.selection.active;
+  const updater = NodePath.join(NodePath.dirname(fixture.manifest), "jones-updates");
+  const handle = "e".repeat(64);
+  const stages = ["stage-PreReceipt", "stage-Interrupted"].map((attempt) =>
+    NodePath.join(updater, "apps", "attempts", attempt, handle),
+  );
+  const apps = [
+    NodePath.join(stages[0], "PreReceipt.app"),
+    NodePath.join(stages[1], "Partial.app"),
+  ];
+  for (const stage of stages) await NodeFSP.mkdir(stage, { recursive: true, mode: 0o700 });
+  await NodeFSP.cp(active.appPath, apps[0], { recursive: true, errorOnExist: true, force: false });
+  const executable = NodePath.join(apps[1], "Contents", "MacOS", "uncommitted");
+  await NodeFSP.mkdir(NodePath.dirname(executable), { recursive: true, mode: 0o700 });
+  await NodeFSP.writeFile(executable, "synthetic executable; never run\n", {
+    flag: "wx",
+    mode: 0o500,
+  });
+  const helper = NodePath.join(updater, `activate-v1-${fixture.bundle.executorSha256}.py`);
+  await NodeFSP.writeFile(
+    helper,
+    await NodeFSP.readFile(NodePath.join(NodePath.dirname(fixture.script), "executor.py")),
+    { flag: "wx", mode: 0o700 },
+  );
+  const transactionId = "d".repeat(64);
+  const transactions = [transactionId, "f".repeat(64)].map((id) =>
+    NodePath.join(updater, "transactions", id),
+  );
+  for (const transaction of transactions)
+    await NodeFSP.mkdir(transaction, { recursive: true, mode: 0o700 });
+  const intent = {
+    protocol: 1,
+    transactionId,
+    expected: active,
+    staged: fixture.selection.app,
+    continuationReceipt: NodePath.join(transactions[0], "continuation.json"),
+  };
+  await writeJson(NodePath.join(transactions[0], "intent.json"), intent);
+  await writeJson(NodePath.join(transactions[0], "journal.json"), { intent, phase: "resumed" });
+  await writeJson(NodePath.join(transactions[1], "intent.json"), {
+    protocol: 1,
+    transactionId: "f".repeat(64),
+  });
+  const retainedApps = [
+    `${active.appPath}.jones-incoming-${transactionId}`,
+    `${active.appPath}.jones-previous-${active.generation}`,
+  ];
+  for (const app of retainedApps)
+    await NodeFSP.cp(active.appPath, app, { recursive: true, errorOnExist: true, force: false });
+  const protectedRetained = transactions.flatMap((transaction) =>
+    ["previous-pair", "advanced-state"].map((name) => NodePath.join(transaction, name)),
+  );
+  for (const path of protectedRetained) {
+    await NodeFSP.mkdir(path, { mode: 0o700 });
+    await NodeFSP.writeFile(
+      NodePath.join(path, "sentinel"),
+      "synthetic retained state; never read",
+      {
+        flag: "wx",
+      },
+    );
+  }
+  const unchangedPaths = [...stages, helper, ...transactions, ...retainedApps];
+  const before = await Promise.all(unchangedPaths.map(snapshotTree));
+  const report = assertInventoryResponse(
+    await fixture.invoke("inventory-routes", undefined, [
+      ...fixture.protectedPaths,
+      ...protectedRetained,
+    ]),
+    "partial",
+  );
+  NodeAssert.equal(report.manifestPath, fixture.manifest);
+  NodeAssert.equal(report.manifestSha256, sha256(await NodeFSP.readFile(fixture.manifest)));
+  for (const [path, role] of [
+    [active.appPath, "active"],
+    [fixture.selection.app.appPath, "staged"],
+    ...apps.map((path) => [path, "staged"]),
+    [retainedApps[0], "incoming"],
+    [retainedApps[1], "previous"],
+  ]) {
+    NodeAssert.ok(
+      report.observations.some(
+        (item) => item.kind === "app" && item.path === path && item.role === role,
+      ),
+      `Packaged inventory omitted ${role} fixture app: ${path}`,
+    );
+  }
+  for (const path of stages) {
+    NodeAssert.ok(
+      report.observations.some(
+        (item) => item.kind === "stage" && item.path === path && item.binding === "unbound",
+      ),
+    );
+    NodeAssert.ok(
+      report.issues.some(
+        (item) =>
+          item.code === "receipt-missing" &&
+          typeof item.path === "string" &&
+          item.path.startsWith(path),
+      ),
+    );
+  }
+  NodeAssert.ok(
+    report.observations.some((item) => item.kind === "executable" && item.path === executable),
+  );
+  NodeAssert.ok(
+    report.observations.some(
+      (item) =>
+        item.kind === "helper" && item.path === helper && item.binding === "content-addressed",
+    ),
+  );
+  NodeAssert.ok(
+    report.issues.some(
+      (item) => typeof item.path === "string" && item.path.startsWith(transactions[1]),
+    ),
+  );
+  NodeAssert.deepEqual(await Promise.all(unchangedPaths.map(snapshotTree)), before);
+  return {
+    outcome: "passed",
+    scope: "supported-installer-route-diagnostic",
+    status: report.status,
+    actualPackagedScript: true,
+    completedAndPreReceiptAppsObserved: true,
+    transactionDerivedAppsObserved: true,
+    partialTransactionReported: true,
+    helperBinding: "content-addressed",
+    protectedAccessAudit: "positive-control-and-zero-accesses",
+    writeAudit: "positive-control-and-zero-writes",
+    launchMembershipComplete: false,
+    processCustody: "unobserved",
+    activationAllowed: false,
+  };
 }

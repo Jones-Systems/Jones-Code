@@ -5,7 +5,7 @@ Contents/Resources/jones-bootstrap/bootstrap.py. It prepares the new updater
 outside the application, so the installed application's older embedded helper is
 not required to make those bytes available.
 
-The tool exposes inspect and stage-executor. Both require the exact active
+The preparation commands are inspect and stage-executor. Both require the exact active
 installation manifest, an existing completed stage-selection record, and the
 SHA-256 of that selection's raw bytes:
 
@@ -31,3 +31,20 @@ Exact completed retries reuse the retained result. An occupied unknown or partia
 output is preserved and refused for reconciliation. Do not overwrite it or replace
 the installed helper's hash-named file. Database and profile contents are outside
 both commands' read/write scope, and neither command runs the copied executor.
+
+To investigate retained installer objects without a completed selection, use the
+separate read-only diagnostic:
+
+```text
+python3 <candidate.app>/Contents/Resources/jones-bootstrap/bootstrap.py inventory-routes --manifest <absolute-manifest>
+```
+
+It derives supported app-stage and helper roots from the manifest and reports
+partial attempts and unresolved records. It does not scan arbitrary app copies,
+inspect processes, or probe database and profile contents. Selection arguments
+are not accepted for this command. The JSON result goes to stdout; the tool writes
+nothing. Exit 0 means the bounded observation completed, 2 means observation was
+partial, and 1 means the manifest anchor was refused. An observed result can still
+contain unbound objects. Historical coverage remains partial, process custody is
+unobserved, and activationAllowed is always false. This report cannot establish
+writer exclusion, process drain, executable authenticity, or upgrade permission.

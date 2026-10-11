@@ -6,6 +6,7 @@ import * as NodeTest from "node:test";
 import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
 import {
   assertBootstrapResponse,
+  assertInventoryResponse,
   closeStartupObservation,
   verifyPackagedBootstrap,
 } from "./legacy-bootstrap-fixture.mjs";
@@ -116,6 +117,67 @@ const inspected = {
   nextRequirement: "qualified-maintenance-admission",
   bindingDigest: "c".repeat(64),
 };
+
+const inventory = {
+  schema: 1,
+  operation: "inventory-routes",
+  status: "partial",
+  observationOnly: true,
+  activationAllowed: false,
+  launchMembershipComplete: false,
+  processCustody: "unobserved",
+  blocker: "DESK-FIRST-01",
+  coverage: {
+    history: "partial",
+    orphanSiblingApps: "unobserved",
+    manualCopies: "not-enumerated",
+    interpreterIdentity: "unobserved",
+    payloadDigests: "not-verified",
+  },
+  observations: [{ kind: "helper", path: "/synthetic/helper.py", binding: "content-addressed" }],
+  issues: [{ code: "receipt-missing", path: "/synthetic/stage" }],
+};
+const inventoryAudit = {
+  positiveControl: true,
+  violations: [],
+  readOnly: true,
+  writeControl: true,
+};
+
+NodeTest.test("inventory cannot qualify activation, complete membership, or custody", () => {
+  NodeAssert.deepEqual(assertInventoryResponse(result(inventory, inventoryAudit, 2)), inventory);
+  const observed = { ...inventory, status: "observed", issues: [] };
+  assertInventoryResponse(result(observed, inventoryAudit), "observed");
+  for (const changed of [
+    { activationAllowed: true },
+    { launchMembershipComplete: true },
+    { processCustody: "verified" },
+    { observationOnly: false },
+    { coverage: { ...inventory.coverage, history: "complete" } },
+  ])
+    NodeAssert.throws(() =>
+      assertInventoryResponse(result({ ...observed, ...changed }, inventoryAudit), "observed"),
+    );
+  NodeAssert.throws(() => assertInventoryResponse(result(inventory, inventoryAudit), "partial"));
+});
+
+NodeTest.test("inventory qualification requires independent read and write audit controls", () => {
+  for (const changed of [
+    { positiveControl: false },
+    { writeControl: false },
+    { readOnly: false },
+    { violations: ["filesystem-write"] },
+    { violations: ["protected-path"] },
+    { violations: ["child-execution"] },
+  ])
+    NodeAssert.throws(() =>
+      assertInventoryResponse(result(inventory, { ...inventoryAudit, ...changed }, 2)),
+    );
+  NodeAssert.throws(() => assertInventoryResponse(result(inventory, undefined, 2)));
+  NodeAssert.throws(() =>
+    assertInventoryResponse({ ...result(inventory, inventoryAudit, 2), stderr: "" }),
+  );
+});
 
 NodeTest.test("inspection and executor staging are never counted as activation", () => {
   NodeAssert.deepEqual(assertBootstrapResponse(result(inspected), "inspected"), inspected);
