@@ -29,6 +29,7 @@ import {
   stopChild,
   withOwnedScratch,
   fixtureProxy,
+  scenarioSteps,
 } from "./install-preview-qualification.mjs";
 
 const source = NodePath.resolve(
@@ -71,6 +72,44 @@ NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
     /Missing visible text/,
   );
 });
+
+NodeTest.test(
+  "saved-host assertion requires the Base UI switch to be present, off and ARIA-disabled",
+  () => {
+    const assertions = scenarioSteps("http://127.0.0.1/pair#token=SYNTHETIC").filter(
+      (step) => step.label === "Update access must preserve the saved disabled host",
+    );
+    NodeAssert.equal(assertions.length, 3);
+    const shape = (checked, disabled) => ({
+      getAttribute: (name) =>
+        ({ "aria-checked": checked, "aria-disabled": disabled })[name] ?? null,
+    });
+    for (const step of assertions) {
+      const read = (toggle) =>
+        new Function("document", `return ${step.expression}`)({
+          querySelector: (selector) => {
+            NodeAssert.equal(
+              selector,
+              '[role="switch"][aria-label="Switch on Synthetic incompatible Jones host"]',
+            );
+            return toggle;
+          },
+        });
+      const disabledSpan = shape("false", "true");
+      NodeAssert.equal(disabledSpan.disabled, undefined);
+      NodeAssert.deepEqual(JSON.parse(JSON.stringify(read(disabledSpan))), step.expected);
+      for (const invalid of [
+        null,
+        shape("false", null),
+        shape("false", "false"),
+        shape("true", "true"),
+        shape(null, "true"),
+      ]) {
+        NodeAssert.throws(() => NodeAssert.deepEqual(read(invalid), step.expected));
+      }
+    }
+  },
+);
 
 NodeTest.test(
   "a failed controlled page action is captured before native tab closure without retry",

@@ -585,11 +585,12 @@ export async function serveRendererFixture(directory) {
   };
 }
 
-function scenarioSteps(remotePairing) {
+export function scenarioSteps(remotePairing) {
   const disabledPreference = {
     action: "assert-evaluate",
     label: "Update access must preserve the saved disabled host",
-    expression: `(() => { const toggle = document.querySelector('[role="switch"][aria-label="Switch on Synthetic incompatible Jones host"]'); return { present: toggle !== null, checked: toggle?.getAttribute("aria-checked"), disabled: toggle?.disabled }; })()`,
+    // Base UI Switch renders a span; its disabled state is exposed through ARIA.
+    expression: `(() => { const toggle = document.querySelector('[role="switch"][aria-label="Switch on Synthetic incompatible Jones host"]'); return { present: toggle !== null, checked: toggle?.getAttribute("aria-checked"), disabled: toggle?.getAttribute("aria-disabled") === "true" }; })()`,
     expected: { present: true, checked: "false", disabled: true },
   };
   return [
