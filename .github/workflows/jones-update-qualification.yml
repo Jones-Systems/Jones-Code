@@ -140,6 +140,7 @@ jobs:
           apps/server/src/jones/updates/offlinePreparation.test.ts
           apps/server/src/jones/updates/offlinePreparationEntry.test.ts
           apps/server/src/jones/updates/offlinePreparationPlan.test.ts
+          apps/server/src/jones/updates/offlinePreparationCore.test.ts
           scripts/jones/updates/offline-preparation-build.test.ts
           apps/server/src/ServerSettingsPersistence.test.ts
           apps/server/src/serverSettings.test.ts

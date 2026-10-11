@@ -10,6 +10,10 @@ import {
   offlinePreparationStatus,
   withSyntheticPreparationFixture,
 } from "./offlinePreparation.ts";
+import {
+  decodeOfflinePreparationPlan,
+  encodeOfflinePreparationPlan,
+} from "./offlinePreparationPlan.ts";
 
 const capabilities = {
   sessions: {
@@ -238,6 +242,10 @@ it("rejects serialized, fabricated, cross-scope, and expired plan authority", as
     expired = first;
     const plan = await first.plan();
     await NodeAssert.rejects(first.apply(JSON.parse(JSON.stringify(plan))), /unowned-plan/);
+    const decoded = decodeOfflinePreparationPlan(encodeOfflinePreparationPlan(plan));
+    assert.deepEqual(decoded.plan, plan);
+    assert.notStrictEqual(decoded.plan, plan);
+    await NodeAssert.rejects(first.apply(decoded.plan), /unowned-plan/);
     await withSyntheticPreparationFixture(seed, async (second) => {
       await NodeAssert.rejects(second.apply(plan), /unowned-plan/);
       assert.notInclude((await second.inspect()).audit, "database:write-open");
