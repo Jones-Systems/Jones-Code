@@ -134,6 +134,7 @@ jobs:
         run: node scripts/stamp-jones-build.ts
 
       - name: Build and qualify closed preparation executable
+        id: preparation_producer
         working-directory: apps/server
         env:
           JONES_PACK_PREPARATION: "1"
@@ -263,12 +264,14 @@ jobs:
 
       - name: Clean job scratch
         # A failed or cancelled qualifier may retain a mounted image or owned
-        # process group. Never override its uncertainty hold by deleting a parent.
+        # process group. Preparation can retain captured build resources as well.
+        # Never override either uncertainty hold by deleting a parent.
         if: >-
           always() &&
           (steps.native_qualification.outcome == 'success' || steps.native_qualification.outcome == 'skipped') &&
           (steps.legacy_primitives.outcome == 'success' || steps.legacy_primitives.outcome == 'skipped') &&
-          (steps.legacy_primitive_reports.outcome == 'success' || steps.legacy_primitive_reports.outcome == 'skipped')
+          (steps.legacy_primitive_reports.outcome == 'success' || steps.legacy_primitive_reports.outcome == 'skipped') &&
+          (steps.preparation_producer.outcome == 'success' || steps.preparation_producer.outcome == 'skipped')
         run: rm -rf -- "$GITHUB_WORKSPACE/.artifact-desktop-scratch"
 
       - name: Report retained qualification scratch
@@ -276,5 +279,6 @@ jobs:
           always() && (
           (steps.native_qualification.outcome != 'success' && steps.native_qualification.outcome != 'skipped') ||
           (steps.legacy_primitives.outcome != 'success' && steps.legacy_primitives.outcome != 'skipped') ||
-          (steps.legacy_primitive_reports.outcome != 'success' && steps.legacy_primitive_reports.outcome != 'skipped'))
+          (steps.legacy_primitive_reports.outcome != 'success' && steps.legacy_primitive_reports.outcome != 'skipped') ||
+          (steps.preparation_producer.outcome != 'success' && steps.preparation_producer.outcome != 'skipped'))
         run: echo 'Native qualification did not prove cleanup; job scratch is retained for runner disposal.' >> "$GITHUB_STEP_SUMMARY"

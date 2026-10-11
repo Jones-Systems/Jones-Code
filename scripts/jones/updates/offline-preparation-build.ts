@@ -314,6 +314,7 @@ class PreparationBuildScope {
         let outputBytes = 0;
         let killTimer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
         let drainTimer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
+        // @effect-diagnostics-next-line globalTimers:off -- This pre-runtime native boundary clears the captured child deadline on close.
         const deadline = NodeTimers.setTimeout(
           () => stop(new Error("Preparation native command timed out.")),
           120_000,
@@ -370,7 +371,9 @@ class PreparationBuildScope {
           stopping = true;
           failure = cause;
           signal("SIGTERM");
+          // @effect-diagnostics-next-line globalTimers:off -- This cleanup-owned timer escalates only the captured child and is cleared on close.
           killTimer = NodeTimers.setTimeout(() => signal("SIGKILL"), 1_000);
+          // @effect-diagnostics-next-line globalTimers:off -- Native close observation has a bounded deadline that retains unresolved custody instead of deleting scratch.
           drainTimer = NodeTimers.setTimeout(unknownClose, 3_000);
         };
         const receive = (chunks: Buffer[], bytes: Buffer) => {
@@ -451,6 +454,7 @@ class PreparationBuildScope {
         const chunks: Buffer[] = [];
         let size = 0;
         const onAbort = () => stop(this.controller.signal.reason);
+        // @effect-diagnostics-next-line globalTimers:off -- This captured HTTP request deadline is cleared with its native socket finalizer.
         const deadline = NodeTimers.setTimeout(
           () => stop(new Error("Official Node download timed out.")),
           60_000,
@@ -494,6 +498,7 @@ class PreparationBuildScope {
           failure ??= cause;
           response?.destroy();
           request.destroy();
+          // @effect-diagnostics-next-line globalTimers:off -- This native socket-close deadline records unresolved custody and is cleared after observed closure.
           drainTimer ??= NodeTimers.setTimeout(() => finish(true), 2_000);
         };
         let request: NodeHTTP.ClientRequest;
@@ -676,6 +681,7 @@ export async function runPreparationLifecycleFixture(
       await Promise.race([
         promise,
         new Promise<never>((_resolve, reject) => {
+          // @effect-diagnostics-next-line globalTimers:off -- The owned native fixture barrier must remain bounded and clears its timer in finally.
           timer = NodeTimers.setTimeout(() => reject(new Error(message)), 5_000);
         }),
       ]);
@@ -1019,13 +1025,18 @@ export function verifyPreparationSourceOverlay(
 async function observeSource(root: string, command: PreparationBuildScope["command"]) {
   const git = async (...args: string[]) =>
     (await command("/usr/bin/git", args, root)).toString("utf8").trim();
-  if (
-    NodeFS.realpathSync(await git("rev-parse", "--show-toplevel")) !== root ||
-    (await git("ls-files", "--others", "--exclude-standard")) !== ""
-  )
+  const observedRoot = NodeFS.realpathSync(await git("rev-parse", "--show-toplevel"));
+  if (observedRoot !== root)
     throw new Error(
-      "Preparation build requires an exact committed checkout without untracked source.",
+      `Preparation checkout root differs from the bound root: ${encode({ expected: root, observed: observedRoot })}`,
     );
+  const untracked = await git("ls-files", "--others", "--exclude-standard");
+  if (untracked !== "") {
+    const paths = untracked.split("\n");
+    throw new Error(
+      `Preparation build refuses untracked source (${paths.length} paths; bounded first paths): ${encode(paths.slice(0, 32)).slice(0, 8192)}`,
+    );
+  }
   const sha = await git("rev-parse", "HEAD");
   const tree = await git("rev-parse", "HEAD^{tree}");
   if (![sha, tree].every((value) => /^[a-f0-9]{40}$/.test(value)))
