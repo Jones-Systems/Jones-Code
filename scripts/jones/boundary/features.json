@@ -486,6 +486,7 @@
         "scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs",
         "scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs",
         "scripts/jones/updates/legacy-process-custody-fixture.node-test.mjs",
+        "scripts/jones/updates/legacy-identity-native-fixture.node-test.mjs",
         "scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ]
     },

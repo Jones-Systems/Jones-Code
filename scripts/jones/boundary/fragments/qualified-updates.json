@@ -2,6 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
+    "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
     "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.ts",
     "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts",
     "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
