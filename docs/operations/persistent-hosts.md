@@ -278,6 +278,18 @@ user unit, change the database, run migrations or claim child Install. Other
 active builds, homes with native service state or an adoption record, and
 already-owned drop-ins are refused.
 
+The unit's effective `ExecStart` must run the retained executable as `serve`
+with only `--host`, `--port`, `--base-dir` and `--mode`. The one other accepted
+form is the historical `start` with those flags, `--mode web`, and
+`--no-browser DIR` last, where `DIR` is exactly the unit's effective
+`WorkingDirectory`. The dry-run and the worker both refuse any other flag, a
+repeated flag, a boolean value instead of DIR after `--no-browser`, and a missing, extra, non-canonical
+or different directory. Adoption does not keep running `start`: the launcher
+runs the retained version as `serve` from the unchanged `WorkingDirectory`. That
+startup is headless and does not bootstrap a project from that directory
+automatically. Existing projects and state are not changed, and the plan states
+this transition.
+
 Root effects go through the closed worker
 [`systemServiceControl.pl`](../../apps/server/src/jones/hostService/systemServiceControl.pl),
 installed root-owned at `/usr/local/libexec/jones-code/jones-system-service-control`
@@ -288,7 +300,7 @@ worker accepts only `inspect`, `stop`, `install-launcher`, `start` and
 Its unit digest covers the fragment and every other drop-in by owner, mode and
 SHA-256. It reports metadata and digests, never unit contents, Environment values
 or a command line. It renders the owned drop-in itself from the policy home, the
-launcher version and the host, port and mode of the retained `serve` command.
+launcher version and the host, port and mode of the retained command.
 No sudoers rule grants it: the owner authenticates sudo for the session that
 runs the apply, and the CLI reaches the worker only with `sudo -n`. Normal
 Download and Install never use it.
