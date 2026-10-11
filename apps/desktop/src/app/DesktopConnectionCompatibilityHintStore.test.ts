@@ -129,7 +129,7 @@ it("serializes exact record operations across independent processes", async () =
     const second = startChild(directory);
     children.push(second);
     await Promise.all(children.map((child) => child.ready));
-    await Promise.all([
+    const writes = await Promise.all([
       first.call({
         operation: "set",
         environmentId,
@@ -143,8 +143,11 @@ it("serializes exact record operations across independent processes", async () =
         kind: "outdated-update",
       }),
     ]);
+    expect(writes).toEqual([true, true]);
     expect(await first.call({ operation: "read" })).toHaveLength(2);
-    await first.call({ operation: "set", environmentId, routeBinding: "route-a", kind: null });
+    expect(
+      await first.call({ operation: "set", environmentId, routeBinding: "route-a", kind: null }),
+    ).toBe(true);
     expect(await second.call({ operation: "read" })).toEqual([
       { environmentId, routeBinding: "route-b", kind: "outdated-update" },
     ]);
@@ -156,13 +159,16 @@ it("serializes exact record operations across independent processes", async () =
     const unresolved = stopped.filter((result) => result.status === "rejected");
     if (unresolved.length > 0)
       throw new AggregateError(
-        [failure, ...unresolved.map((result) => result.reason)],
+        [...(failure === undefined ? [] : [failure]), ...unresolved.map((result) => result.reason)],
         `Child custody unresolved; retained ${directory}`,
       );
     try {
       await NodeFs.rm(directory, { recursive: true });
     } catch (error) {
-      throw new AggregateError([failure, error], `Could not remove owned fixture ${directory}`);
+      throw new AggregateError(
+        [...(failure === undefined ? [] : [failure]), error],
+        `Could not remove owned fixture ${directory}`,
+      );
     }
   }
   if (failure !== undefined) throw failure;
@@ -274,7 +280,12 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
   const stop = async (): Promise<{ status: "closed" }> => {
     const channel = child.channel;
     try {
-      if (child.connected) child.disconnect();
+      // Node 24's parent-initiated IPC disconnect can omit the child's close event.
+      // Keep our read side open: the child drains requests, disconnects, then exits.
+      if (child.connected)
+        child.send({ operation: "shutdown" }, (error) => {
+          if (error) remember(error);
+        });
     } catch (error) {
       remember(error);
     }
@@ -296,6 +307,11 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
       ]);
       if (outcome === "closed") return { status: "closed" };
       fail(new Error("Owned child close was not observed before the five-second deadline"));
+      try {
+        if (child.connected) child.disconnect();
+      } catch (error) {
+        remember(error);
+      }
       // This fork has no owned stdio pipes (ignore/ignore/inherit/ipc). Release only
       // its process and IPC refs; neither action proves exit or permits scratch removal.
       for (const handle of new Set([child, channel, child.channel])) {
@@ -355,6 +371,72 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
   };
 }
 
+it("requests child-side shutdown and requires close after exit before releasing custody", async () => {
+  const directory = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "hint-close-control-"));
+  // No OS process exists; events below exercise the owner's actual shutdown state machine.
+  const child = new NodeChildProcess.ChildProcess();
+  let owner: ReturnType<typeof ownChild> | undefined;
+  let failure: unknown;
+  try {
+    const send = vi.fn(() => true);
+    const disconnect = vi.fn();
+    const kill = vi.fn(() => true);
+    Object.defineProperties(child, {
+      pid: { value: 4243 },
+      connected: { value: true },
+      spawnfile: { value: "controlled-fixture" },
+      spawnargs: { value: ["controlled-fixture", directory] },
+      send: { value: send },
+      disconnect: { value: disconnect },
+      kill: { value: kill },
+    });
+    owner = ownChild(child, directory);
+    child.emit("message", { ready: true });
+    await owner.ready;
+    let finished = false;
+    const stopping = owner.stop().then((result) => {
+      finished = true;
+      return result;
+    });
+    expect(send).toHaveBeenCalledExactlyOnceWith({ operation: "shutdown" }, expect.any(Function));
+    expect(disconnect).not.toHaveBeenCalled();
+    child.emit("disconnect");
+    child.emit("exit", 0, null);
+    // Drain the complete promise chain before testing that exit alone cannot settle stop.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(finished).toBe(false);
+    child.emit("close", 0, null);
+    expect(await stopping).toEqual({ status: "closed" });
+    expect(kill).not.toHaveBeenCalled();
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(await NodeFs.readdir(directory)).toEqual([]);
+  } catch (error) {
+    failure = error;
+  } finally {
+    const cleanupErrors: unknown[] = [];
+    try {
+      child.emit("close", 0, null);
+      await owner?.stop();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    child.unref();
+    child.removeAllListeners();
+    try {
+      await NodeFs.rm(directory, { recursive: true });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length > 0)
+      throw new AggregateError(
+        [...(failure === undefined ? [] : [failure]), ...cleanupErrors],
+        `Could not release controlled fixture ${directory}`,
+      );
+  }
+  if (failure !== undefined) throw failure;
+  await expect(NodeFs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 it.each(["declined", "throws"] as const)(
   "retains custody and releases owned refs when signaling %s and close never arrives",
   async (signalOutcome) => {
@@ -369,17 +451,20 @@ it.each(["declined", "throws"] as const)(
         () => child.removeAllListeners(),
       );
       const channel = { unref: vi.fn() };
+      const disconnect = vi.fn(() => {
+        throw new Error("controlled disconnect refusal");
+      });
+      const send = vi.fn(() => true);
       Object.defineProperties(child, {
         pid: { value: 4242 },
         connected: { value: true },
         channel: { value: channel },
         spawnfile: { value: "controlled-fixture" },
         spawnargs: { value: ["controlled-fixture", directory] },
+        // IPC methods exist only after Node's setupChannel; this handle was never spawned.
+        disconnect: { value: disconnect },
+        send: { value: send },
       });
-      const disconnect = vi.spyOn(child, "disconnect").mockImplementation(() => {
-        throw new Error("controlled disconnect refusal");
-      });
-      cleanup.push(() => disconnect.mockRestore());
       const kill = vi.spyOn(child, "kill").mockImplementation(() => {
         if (signalOutcome === "throws") throw new Error("controlled signal refusal");
         return false;
@@ -397,6 +482,8 @@ it.each(["declined", "throws"] as const)(
         () => undefined,
         (error: unknown) => error,
       );
+      expect(send).toHaveBeenCalledWith({ operation: "shutdown" }, expect.any(Function));
+      expect(disconnect).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(999);
       expect(kill).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
@@ -417,6 +504,7 @@ it.each(["declined", "throws"] as const)(
         signalCode: null,
         deadlineMs: 5000,
       });
+      expect(disconnect).toHaveBeenCalledExactlyOnceWith();
       expect(error.custody.errors).toContain("Error: controlled disconnect refusal");
       expect(error.custody.errors).toContain(
         signalOutcome === "throws"
