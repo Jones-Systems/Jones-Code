@@ -271,14 +271,159 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it.each(["intent-fsync", "receipt-fsync", "mount-inspect", "mount-delete"])(
+    "holds retirement at the exact %s boundary before trusting evidence or deleting payload",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const nativeFunctions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+        const scenario = String.raw`
+boundary_fault = sys.argv[3]
+activate(tx / 'intent.json')
+assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+acquire_writer_exclusion = native_exclusion
+selection_path.unlink()
+profile_payload = tx / 'previous-pair' / 'profile'
+before = {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()}
+def changed_device(info):
+    fields = list(info); fields[2] = info.st_dev + 1
+    return os.stat_result(fields)
+if boundary_fault == 'mount-inspect':
+    original_lstat = pathlib.Path.lstat
+    def mounted_lstat(path, *args, **kwargs):
+        info = original_lstat(path, *args, **kwargs)
+        return changed_device(info) if path == profile_payload or path.is_relative_to(profile_payload) else info
+    pathlib.Path.lstat = mounted_lstat
+    try:
+        outcome = retirement_command('inspect-retirement', expected, transaction_id)
+        assert outcome['status'] == 'refused' and outcome['reason'] == 'unknown-payload-device', outcome
+    finally: pathlib.Path.lstat = original_lstat
+    assert not (tx / 'retirement-intent.json').exists()
+elif boundary_fault == 'mount-delete':
+    _, plan = retirement_context(expected, transaction_id)
+    target = next(target for target in plan['targets'] if target['path'] == str(profile_payload))
+    target['parentDevice'] = str(int(target['parentDevice']) + 1)
+    original_open, original_fstat = os.open, os.fstat
+    parent_fd = None
+    def mounted_open(path, *args, **kwargs):
+        global parent_fd
+        fd = original_open(path, *args, **kwargs)
+        if path == profile_payload.parent: parent_fd = fd
+        return fd
+    def mounted_fstat(fd):
+        info = original_fstat(fd)
+        return changed_device(info) if fd == parent_fd else info
+    os.open, os.fstat = mounted_open, mounted_fstat
+    try:
+        try: remove_retirement_payload(target)
+        except SelectionRefused as error: assert error.reason == 'plan-changed'
+        else: raise AssertionError('A different-device payload root was deleted')
+    finally: os.open, os.fstat = original_open, original_fstat
+else:
+    inspected = retirement_command('inspect-retirement', expected, transaction_id)
+    assert inspected['status'] == 'ready', inspected
+    marker = 'retirement-intent.json' if boundary_fault == 'intent-fsync' else 'retirement-receipt.json'
+    original_link, original_fsync, original_sync_parent = os.link, os.fsync, sync_parent
+    linked, failed_initial, replay_failure, syncing = False, False, False, None
+    synced = []
+    calls = []
+    original_remove = remove_retirement_payload
+    def observed_remove(target):
+        calls.append(target['path'])
+        return original_remove(target)
+    remove_retirement_payload = observed_remove
+    def observed_link(source, destination, *args, **kwargs):
+        global linked
+        result = original_link(source, destination, *args, **kwargs)
+        if pathlib.Path(destination).name == marker: linked = True
+        return result
+    def failed_parent_fsync(fd):
+        global failed_initial
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            if linked and not failed_initial:
+                failed_initial = True
+                raise OSError('Synthetic marker link succeeded but parent fsync failed')
+            if syncing == marker and replay_failure:
+                raise OSError('Synthetic retained marker parent fsync still fails')
+        return original_fsync(fd)
+    def observed_sync_parent(path):
+        global syncing
+        syncing = pathlib.Path(path).name
+        try:
+            result = original_sync_parent(path)
+            synced.append(syncing)
+            return result
+        finally: syncing = None
+    os.link, os.fsync, sync_parent = observed_link, failed_parent_fsync, observed_sync_parent
+    try:
+        result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
+        assert linked and failed_initial and (tx / marker).exists()
+        assert result['status'] == 'uncertain', result
+        if boundary_fault == 'intent-fsync': assert calls == []
+        count = len(calls)
+        replay_failure = True
+        for operation in ('retire-transaction', 'inspect-retirement'):
+            result = retirement_command(operation, expected, transaction_id, inspected['planSha256'])
+            assert result['status'] == 'uncertain' and len(calls) == count, result
+        replay_failure = False
+        result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
+        assert result['status'] == 'retired' and marker in synced, result
+        if boundary_fault == 'receipt-fsync': assert len(calls) == count
+    finally: os.link, os.fsync, sync_parent = original_link, original_fsync, original_sync_parent
+if boundary_fault.startswith('mount-'):
+    assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
+assert database.exists() and (profile / 'opaque').read_text() == 'same-host-profile'
+`;
+        NodeChildProcess.execFileSync(
+          "python3",
+          [
+            "-c",
+            `${nativeFunctions}\n${runtime}\n${scenario}`,
+            f.directory,
+            "trial-mismatch",
+            fault,
+          ],
+          {
+            encoding: "utf8",
+            timeout: 10000,
+            maxBuffer: 1024 * 1024,
+          },
+        );
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
   it.each([
-    "success", "internal-symlink", "wrong-plan", "active", "parent", "pending", "stage", "unknown-journal",
-    "symlink-target", "changed-inode", "foreign-hardlink", "reference", "writer-busy",
-    "partial", "partial-new-file", "partial-replacement", "lost-reply", "reserve", "reserve-owner",
+    "success",
+    "internal-symlink",
+    "wrong-plan",
+    "active",
+    "parent",
+    "pending",
+    "stage",
+    "unknown-journal",
+    "symlink-target",
+    "changed-inode",
+    "foreign-hardlink",
+    "reference",
+    "writer-busy",
+    "partial",
+    "partial-new-file",
+    "partial-replacement",
+    "lost-reply",
+    "reserve",
+    "reserve-owner",
   ])("retires only the inspected obsolete payload for %s", async (fault) => {
     const f = await fixture();
     try {
-      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
       const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
       const scenario = String.raw`
 retirement_fault = sys.argv[3]
@@ -399,9 +544,15 @@ assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-ex
 assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
 if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch", fault], {
-        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch", fault],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
     } finally {
       await f.cleanup();
     }
@@ -410,7 +561,9 @@ if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').r
   it("takes a fresh SQLite and profile snapshot on a second attempt while preserving the rolled-back attempt", async () => {
     const f = await fixture();
     try {
-      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
       const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
       const scenario = String.raw`
 activate(tx / 'intent.json')
@@ -447,9 +600,15 @@ assert (tx / 'previous-pair' / 'profile' / 'opaque').read_text() == 'intervening
 assert {str(path): digest(path) for path in first.rglob('*') if path.is_file()} == retained
 assert read(staged['receiptPath'])['app'] == staged
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch"], {
-        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch"],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
     } finally {
       await f.cleanup();
     }

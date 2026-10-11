@@ -626,9 +626,10 @@ def attempt_selection_binding(active, staged_handle, transaction_id, selection_p
                 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': active}
     if type(value.get('protocol')) is not int or value != expected: raise SelectionRefused('selection-mismatch')
 
-def retirement_inventory(path):
+def retirement_inventory(path, parent_device):
     entries = []
     device = path.lstat().st_dev
+    if device != parent_device: raise SelectionRefused('unknown-payload-device')
     def visit(current, relative):
         info = current.lstat()
         if info.st_uid != os.getuid() or info.st_dev != device:
@@ -712,11 +713,11 @@ def retirement_context(active, transaction_id):
         if any(path == reference or path.is_relative_to(reference) or reference.is_relative_to(path) for reference in references):
             raise SelectionRefused('protected-reference')
         if path.parent.resolve(strict=True) != path.parent: raise SelectionRefused('unknown-payload-parent')
-        entries = retirement_inventory(path)
+        parent = path.parent.stat()
+        entries = retirement_inventory(path, parent.st_dev)
         first = entries[0]
         if reserve is not None and any(first[key] != reserve[key] for key in ('device', 'inode', 'bytes')):
             raise SelectionRefused('unknown-reserve-owner')
-        parent = path.parent.stat()
         targets.append({'path': str(path), 'kind': first['kind'], 'device': first['device'], 'inode': first['inode'],
                         'bytes': sum(entry['bytes'] for entry in entries), 'parentDevice': str(parent.st_dev), 'parentInode': str(parent.st_ino), 'entries': entries})
     if sum(len(target['entries']) for target in targets) > 200000: raise SelectionRefused('payload-bound')
@@ -753,7 +754,7 @@ def remove_retirement_payload(target):
             expected = entries[relative]
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             kind = 'directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode) else 'link' if stat.S_ISLNK(info.st_mode) else None
-            if kind != expected['kind'] or str(info.st_dev) != expected['device'] or str(info.st_ino) != expected['inode'] or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != expected['mode'] or (kind != 'directory' and (info.st_size != expected['bytes'] or info.st_nlink != 1)):
+            if kind != expected['kind'] or str(info.st_dev) != target['parentDevice'] or str(info.st_dev) != expected['device'] or str(info.st_ino) != expected['inode'] or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != expected['mode'] or (kind != 'directory' and (info.st_size != expected['bytes'] or info.st_nlink != 1)):
                 raise SelectionRefused('plan-changed')
             if kind == 'directory':
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -793,11 +794,13 @@ def retirement_command(operation, active, transaction_id, plan_sha=None):
             approved_sha = retirement_digest(approved)
             if intent.get('protocol') != PROTOCOL or intent.get('planSha256') != approved_sha or approved.get('transactionId') != transaction_id:
                 raise SelectionRefused('unknown-retirement')
+            sync_parent(intent_path)
             if receipt_path.exists():
                 receipt, _, _ = bounded_native_json(receipt_path)
                 if receipt != {'protocol': PROTOCOL, 'transactionId': transaction_id, 'planSha256': approved_sha, 'status': 'retired'}:
                     raise SelectionRefused('unknown-retirement')
                 if operation == 'retire-transaction' and plan_sha != approved_sha: raise SelectionRefused('plan-changed')
+                sync_parent(receipt_path)
                 return dict(result, status='retired', planSha256=approved_sha)
             reconcile_retirement(approved, current)
         else:
