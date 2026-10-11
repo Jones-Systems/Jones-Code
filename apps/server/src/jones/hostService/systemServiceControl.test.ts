@@ -51,9 +51,11 @@ function perl(args: readonly string[], env: Record<string, string>) {
 
 // Loads the worker without its entry point, points its fixed roots at task
 // scratch, accepts the test user as the owner of root files, and replaces only
-// systemctl: `show` returns the scripted state, and a mutation may switch it.
+// systemctl: `show` returns the scripted state, and a mutation may switch it,
+// queue a different state for the `show` after next, or remove scripted paths.
 const harness = `my ($worker, $state, $policy, $systemd, $archive, $proc, $cgroup, @operation) = @ARGV;
 do $worker or die($@ || $!);
+require File::Path;
 no warnings "redefine";
 $main::POLICY_PATH = $policy;
 $main::SYSTEMD_DIRECTORY = $systemd;
@@ -63,6 +65,15 @@ $main::CGROUP_ROOT = $cgroup;
 $main::ROOT_UID = $<;
 *main::trusted_self = sub { 1 };
 *main::trusted_chain = sub { 1 };
+# Fixture paths an event removes once, as the kernel removes a stopped cgroup.
+sub scripted_removal {
+  my ($event) = @_;
+  open(my $list, "<", "$state/remove-$event") or return;
+  chomp(my @paths = <$list>);
+  close($list);
+  unlink("$state/remove-$event");
+  File::Path::remove_tree(@paths);
+}
 *main::systemctl = sub {
   my @args = @_;
   open(my $log, ">>", "$state/calls") or die;
@@ -71,11 +82,22 @@ $main::ROOT_UID = $<;
   if ($args[0] eq "show") {
     open(my $show, "<", "$state/show") or die;
     local $/;
-    return (1, scalar <$show>);
+    my $text = <$show>;
+    close($show);
+    rename("$state/next-show", "$state/show") if -e "$state/next-show";
+    return (1, $text);
   }
   return (0, "") if -e "$state/fail-$args[0]";
   rename("$state/after-$args[0]", "$state/show") if -e "$state/after-$args[0]";
+  rename("$state/then-$args[0]", "$state/next-show") if -e "$state/then-$args[0]";
+  scripted_removal($args[0]);
   return (1, "");
+};
+# After an effect, a scripted cgroup may vanish as its event file is opened.
+my $read_small = \\&main::read_small;
+*main::read_small = sub {
+  scripted_removal("events") if $main::EFFECT_STARTED && $_[0] =~ m{/cgroup\\.events\\z};
+  return $read_small->(@_);
 };
 # Only install-launcher's second scan names its stage. A scripted action then
 # lands between the two scans: a foreign entry, or another inode at the stage.
@@ -221,8 +243,12 @@ async function createFixture() {
       .filter((line) => input.omit === undefined || !line.startsWith(`${input.omit}=`))
       .join("\n");
   };
-  const setShow = (input?: ShowState, after?: string) =>
-    file(NodePath.join(state, after === undefined ? "show" : `after-${after}`), show(input));
+  // `after-OP` is shown once OP ran; `then-OP` from the second `show` after it.
+  const setShow = (input?: ShowState, after?: string, when: "after" | "then" = "after") =>
+    file(NodePath.join(state, after === undefined ? "show" : `${when}-${after}`), show(input));
+  /** Paths removed once, when the mutation runs or the post-effect event file is read. */
+  const removeOn = (event: string, ...paths: readonly string[]) =>
+    file(NodePath.join(state, `remove-${event}`), paths.map((path) => `${path}\n`).join(""));
   await setShow();
   const run = async (
     operation: readonly string[],
@@ -259,6 +285,7 @@ async function createFixture() {
     serveCommand,
     file,
     setShow,
+    removeOn,
     run,
     digest,
   };
@@ -672,8 +699,21 @@ it.skipIf(!runnable)(
           uncertain("stop-readback"),
         );
 
+      // The second readback must report the same stopped state as the first;
+      // a drift between them is unknown and nothing follows the stop.
+      for (const later of [
+        { active: false },
+        { active: false, state: "failed failed", job: "731" },
+      ] satisfies ShowState[]) {
+        await f.setShow(later, "stop", "then");
+        const drifted = await attempt({ active: false, state: "failed failed" });
+        expect(drifted, JSON.stringify(later)).toMatchObject(uncertain("stop-readback"));
+        expect(drifted.calls.filter((call) => !call.startsWith("show "))).toEqual([`stop ${unit}`]);
+        expect(drifted.stdout).not.toMatch(/^policy /m);
+      }
+
       // Population covers descendants: the unit's own process list is empty
-      // while a child cgroup still holds a process.
+      // while a child cgroup still holds a process after the stop.
       const child = NodePath.join(group, "leftover");
       await NodeFSP.mkdir(child);
       await f.file(NodePath.join(group, "cgroup.procs"), "");
@@ -683,6 +723,18 @@ it.skipIf(!runnable)(
       expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
       await NodeFSP.rm(child, { recursive: true });
 
+      // Before the stop, the running unit's job and cgroup must allow the later
+      // proof. These refusals precede any effect: only the admission `show` ran.
+      const beforeStop = async (current: ShowState = {}) => {
+        await f.setShow(current);
+        return f.run(stop);
+      };
+      const refused = (reason: string) => ({
+        code: 2,
+        stdout: `${header}\nrejected ${reason}\n`,
+        calls: [expect.stringMatching(/^show /)],
+      });
+      expect(await beforeStop({ job: "731" })).toMatchObject(refused("unit-job"));
       for (const events of [
         "",
         "frozen 0\n",
@@ -696,15 +748,11 @@ it.skipIf(!runnable)(
         "populated 0\nfrozen\n",
       ]) {
         await f.file(f.events, events);
-        expect(await attempt({ active: false }), JSON.stringify(events)).toMatchObject(
-          uncertain("stop-readback"),
-        );
+        expect(await beforeStop(), JSON.stringify(events)).toMatchObject(refused("unit-cgroup"));
       }
-
-      // An existing cgroup without its event file proves nothing.
+      // An existing cgroup without its event file can prove nothing.
       await NodeFSP.rm(f.events);
-      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
-      // Unreadable or unexpected event files leave the stop unknown.
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
       const elsewhere = NodePath.join(f.root, "elsewhere.events");
       await f.file(elsewhere, unpopulated);
       for (const [label, place] of [
@@ -714,32 +762,31 @@ it.skipIf(!runnable)(
         ["oversized", () => f.file(f.events, `${unpopulated}${"frozen 0\n".repeat(600)}`)],
       ] as const) {
         await place();
-        expect(await attempt({ active: false }), label).toMatchObject(uncertain("read"));
+        expect(await beforeStop(), label).toMatchObject(refused("read"));
         await NodeFSP.rm(f.events, { recursive: true, force: true });
       }
-      // The cgroup path itself must be a real directory.
+      // The cgroup path itself must be a real directory, and present while running.
       await NodeFSP.rm(group, { recursive: true });
       await f.file(group, unpopulated);
-      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
       await NodeFSP.rm(group);
       const real = NodePath.join(f.root, "real-group");
       await NodeFSP.mkdir(real);
       await f.file(NodePath.join(real, "cgroup.events"), unpopulated);
       await NodeFSP.symlink(real, group);
-      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
       await NodeFSP.rm(group);
-
-      // The kernel removed the stopped unit's cgroup: absence counts only
-      // under a unified hierarchy at the cgroup root.
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
+      const running = async () => {
+        await NodeFSP.mkdir(group, { recursive: true });
+        await f.file(f.events, "populated 1\nfrozen 0\n");
+      };
+      await running();
+      // Without the unified hierarchy's root marker, nothing can be proved.
       const controllers = NodePath.join(f.cgroup, "cgroup.controllers");
       await NodeFSP.rm(controllers);
-      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
       await f.file(controllers, "cpu io memory pids\n");
-      expect(parse(await attempt({ active: false, state: "failed failed" }))).toMatchObject({
-        status: "complete",
-        inspection: { activeState: "failed", subState: "failed" },
-      });
-
       // Only systemd's path for the policy slice and unit is ever examined.
       const procCgroup = NodePath.join(f.root, "proc", "4242", "cgroup");
       for (const foreign of [
@@ -749,10 +796,34 @@ it.skipIf(!runnable)(
         await NodeFSP.mkdir(NodePath.join(f.cgroup, foreign), { recursive: true });
         await f.file(NodePath.join(f.cgroup, foreign, "cgroup.events"), unpopulated);
         await f.file(procCgroup, `0::${foreign}\n`);
-        await f.setShow({ controlGroup: foreign });
-        await f.setShow({ active: false }, "stop");
-        expect(await f.run(stop), foreign).toMatchObject(uncertain("stop-readback"));
+        expect(await beforeStop({ controlGroup: foreign }), foreign).toMatchObject(
+          refused("unit-cgroup"),
+        );
       }
+      await f.file(procCgroup, `0::${controlGroup}\n`);
+
+      // After the stop, an existing cgroup that lost its event file proves nothing.
+      await running();
+      await f.removeOn("stop", f.events);
+      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
+      // The kernel removed the stopped unit's cgroup, at the stop or as its
+      // event file was opened.
+      for (const event of ["stop", "events"]) {
+        await running();
+        await f.removeOn(event, group);
+        expect(
+          parse(await attempt({ active: false, state: "failed failed" })),
+          event,
+        ).toMatchObject({
+          status: "complete",
+          inspection: { activeState: "failed", subState: "failed" },
+        });
+      }
+      // The root marker is read before the cgroup in every reading, so without
+      // it after the stop a missing cgroup is not taken as absent.
+      await running();
+      await f.removeOn("stop", group, controllers);
+      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
     }),
 );
 
