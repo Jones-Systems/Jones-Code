@@ -279,14 +279,18 @@ def acquire_writer_exclusion(expected):
         release_writer_exclusion(connections)
         raise
 
-def storage_preflight(expected, staged, transaction):
-    state, profile, transaction = recovery_topology(expected, transaction)
+def recovery_state_bytes(expected):
     database = pathlib.Path(expected['databasePath'])
-    state_bytes = tree_storage_size(profile)
-    for path in [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')] + [state / name for name in SETTINGS]:
+    state_bytes = tree_storage_size(expected['profile'])
+    for path in [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')] + [database.parent / name for name in SETTINGS]:
         if path.exists():
             if path.is_symlink() or not path.is_file(): raise RuntimeError('Native recovery file type is unknown.')
             state_bytes += path.stat().st_size
+    return state_bytes
+
+def storage_preflight(expected, staged, transaction):
+    state, profile, transaction = recovery_topology(expected, transaction)
+    state_bytes = recovery_state_bytes(expected)
     app_parent = pathlib.Path(expected['appPath']).parent.resolve(strict=True)
     candidate_bytes = tree_storage_size(staged['appPath'])
     requirements = {}
@@ -296,12 +300,73 @@ def storage_preflight(expected, staged, transaction):
         requirements[device][1] += amount
     # Budget physical copies even when clonefile currently works: fallback and
     # later copy-on-write allocation must not consume rollback's entire budget.
-    for path, required in requirements.values():
+    capacity = []
+    for device, (path, required) in requirements.items():
         space = os.statvfs(path)
-        if space.f_bavail * space.f_frsize < required:
-            raise RuntimeError('Insufficient free space for native installation and paired recovery; installation held.')
+        available = space.f_bavail * space.f_frsize
+        capacity.append({'path': str(path), 'device': str(device), 'requiredBytes': required, 'availableBytes': available})
+        if available < required:
+            raise RuntimeError('Insufficient free space for native installation and paired recovery: needed ' + str(required) + ' bytes, available ' + str(available) + ' bytes; installation held.')
     return {'stateBytes': state_bytes, 'candidateBytes': candidate_bytes,
-            'requiredBytes': sum(required for _, required in requirements.values()), 'headroomBytesPerVolume': RECOVERY_HEADROOM}
+            'requiredBytes': sum(required for _, required in requirements.values()), 'headroomBytesPerVolume': RECOVERY_HEADROOM, 'volumes': capacity}
+
+def allocate_recovery_file(path, size):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    created = os.fstat(descriptor)
+    try:
+        try:
+            if sys.platform == 'darwin':
+                # Darwin fcntl(2): F_PREALLOCATE, F_ALLOCATEALL|F_ALLOCATEPERSIST,
+                # F_PEOFPOSMODE. Verify physical allocation again after close.
+                allocated = fcntl.fcntl(descriptor, 42, struct.pack('=Iiqqq', 12, 3, 0, size, 0))
+                if struct.unpack('=Iiqqq', allocated)[4] < size:
+                    raise RuntimeError('Native recovery reserve was only partially allocated.')
+                os.ftruncate(descriptor, size)
+            elif hasattr(os, 'posix_fallocate'):
+                os.posix_fallocate(descriptor, 0, size)
+            else:
+                remaining, chunk = size, bytes(1024 * 1024)
+                while remaining:
+                    written = os.write(descriptor, chunk[:min(remaining, len(chunk))])
+                    if written <= 0: raise RuntimeError('Native reserve allocation did not progress.')
+                    remaining -= written
+            os.fsync(descriptor)
+        finally: os.close(descriptor)
+        info = path.lstat()
+        if (info.st_dev, info.st_ino) != (created.st_dev, created.st_ino) or info.st_nlink != 1 or info.st_size != size or info.st_blocks * 512 < size:
+            raise RuntimeError('Native recovery capacity was not physically reserved.')
+        sync_parent(path)
+        return {'path': str(path), 'bytes': size, 'device': str(info.st_dev), 'inode': str(info.st_ino)}
+    except Exception:
+        current = path.lstat()
+        if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+            path.unlink()
+            sync_parent(path)
+        raise
+
+def release_recovery_reserve(reserves):
+    while reserves:
+        reserve = reserves[-1]
+        path = pathlib.Path(reserve['path'])
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or str(info.st_dev) != reserve['device'] or str(info.st_ino) != reserve['inode'] or info.st_size != reserve['bytes']:
+            raise RuntimeError('Native reserve ownership changed; capacity release held.')
+        path.unlink()
+        sync_parent(path)
+        reserves.pop()
+
+def reserve_recovery_capacity(expected, transaction, storage):
+    transaction = pathlib.Path(transaction)
+    app_parent = pathlib.Path(expected['appPath']).parent
+    reserves = []
+    try:
+        reserves.append(allocate_recovery_file(transaction / 'recovery-reserve.bin', storage['stateBytes'] + RECOVERY_HEADROOM))
+        if transaction.stat().st_dev != app_parent.stat().st_dev:
+            reserves.append(allocate_recovery_file(app_parent / ('.jones-recovery-reserve-' + transaction.name), RECOVERY_HEADROOM))
+        return reserves
+    except Exception:
+        release_recovery_reserve(reserves)
+        raise
 
 def pair_state(expected, directory):
     directory.mkdir(mode=0o700)
@@ -625,9 +690,12 @@ def activate(intent_file):
     incoming = previous = None
     startup_unknown = False
     exclusive_writers = []
+    recovery_reserves = []
     try:
         storage = storage_preflight(expected, staged, tx)
         record('preparing', storage=storage)
+        recovery_reserves = reserve_recovery_capacity(expected, tx, storage)
+        record('preparing', recoveryReserves=list(recovery_reserves))
         incoming, previous = prepare_bundle(expected, staged, intent['transactionId'])
         record('preparing', incomingBundle=str(incoming), previousBundle=str(previous))
         preserve_restart_tunnel(expected, intent['transactionId'])
@@ -635,6 +703,8 @@ def activate(intent_file):
         prove_quiescence(expected)
         exclusive_writers = acquire_writer_exclusion(expected)
         record('quiescent')
+        if recovery_state_bytes(expected) > storage['stateBytes'] + RECOVERY_HEADROOM // 2:
+            raise RuntimeError('Native state grew beyond reserved recovery capacity before shutdown.')
         pair_state(expected, tx / 'previous-pair')
         record('paired', pairedState=str(tx / 'previous-pair'), recovery=read(tx / 'previous-pair' / 'pair.json')['recovery'])
         record('swap-intent')
@@ -684,6 +754,13 @@ def activate(intent_file):
                     **{key: descriptor[key] for key in ('protocol', 'startupGateProtocol', 'transactionId', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')}), True)
         record('resumed')
     except Exception as failure:
+        try:
+            # Free reserved blocks before even the first recovery journal write.
+            # Successful generations retain the reserve for explicit retirement.
+            release_recovery_reserve(recovery_reserves)
+        except Exception:
+            record('blocked', message='Recovery reserve ownership or release is uncertain; state retained.')
+            return
         active = read(manifest_path)
         if startup_unknown or (tx / 'resume-dispatched.json').exists() or journal['phase'] in ('committed', 'resume-intent', 'resumed') or active != expected or (journal['phase'] == 'trial' and candidate is None):
             record('blocked', message='Unknown activation, startup, or resume effect; binaries and advanced state retained.')
