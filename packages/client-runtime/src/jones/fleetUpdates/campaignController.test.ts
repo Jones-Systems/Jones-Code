@@ -116,6 +116,58 @@ function fixture(committed = false) {
 }
 
 describe("fleet campaign driver", () => {
+  it("retains the staged host when the durable store refuses its activation grant", async () => {
+    const f = fixture(true);
+    const desktop = f.driver.desktop.getMockImplementation()!;
+    f.driver.desktop.mockImplementation((request) =>
+      request.action === "updateMember" && request.input.phase === "dispatching"
+        ? Promise.resolve(f.state())
+        : desktop(request),
+    );
+    await advanceFleetCampaigns(f.driver);
+    expect(f.state().campaigns[0]?.members[0]?.phase).toBe("staged");
+    expect(f.operation()?.phase).toBe("staged");
+    expect(
+      f.driver.host.mock.calls.filter(([, request]) => request.action === "activate"),
+    ).toHaveLength(0);
+  });
+
+  it("does not release an in-transit activation grant using an older preacceptance status", async () => {
+    const f = fixture(true);
+    const state = f.state();
+    f.setState({
+      ...state,
+      campaigns: state.campaigns.map((campaign) => ({
+        ...campaign,
+        members: campaign.members.map((member) => ({
+          ...member,
+          phase: "dispatching",
+          expectedInstalledSource: installed,
+        })),
+      })),
+    });
+    const operation: FleetHostOperation = {
+      input: {
+        operationId,
+        enrollmentId: enrollment.enrollmentId,
+        environmentId,
+        targetSource: source,
+        expectedInstalledSource: installed,
+      },
+      phase: "install-blocked",
+      currentVersion: "old",
+      stagedHandle: "old-stage",
+      continueRunningThreads: false,
+    };
+    f.setOperation(operation);
+    await advanceFleetCampaigns(f.driver);
+    expect(f.state().campaigns[0]?.members[0]?.phase).toBe("dispatching");
+    expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status"]);
+    f.setOperation({ ...operation, phase: "committed" });
+    await advanceFleetCampaigns(f.driver);
+    expect(f.state().campaigns[0]?.members[0]?.phase).toBe("committed");
+  });
+
   it("stages the frozen SHA and never activates from a prepared campaign", async () => {
     const f = fixture();
     await advanceFleetCampaigns(f.driver);

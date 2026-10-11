@@ -2,8 +2,13 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
+import type { FleetHostOperation, FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
+import {
+  advanceFleetCampaigns,
+  type FleetCampaignDriver,
+} from "@t3tools/client-runtime/jones/fleet-updates";
 import { createDesktopFleetStore } from "./store.ts";
 
 const campaignId = "11111111-1111-4111-8111-111111111111";
@@ -17,6 +22,125 @@ const enrollment = {
   enabled: true,
   continueRunningThreads: false,
 };
+const secondEnrollment = {
+  ...enrollment,
+  environmentId: EnvironmentId.make("fleet-second-host"),
+  enrollmentId: "44444444-4444-4444-8444-444444444444",
+};
+const twoHostCampaignId = "55555555-5555-4555-8555-555555555555";
+
+async function createTwoHostCampaign(
+  home: string,
+  store: ReturnType<typeof createDesktopFleetStore>,
+) {
+  await store.request({ action: "enroll", enrollment: secondEnrollment });
+  await store.request({
+    action: "prepare",
+    input: {
+      campaignId: twoHostCampaignId,
+      targetSource: source,
+      desktopStagedHandle: stagedHandle,
+    },
+  });
+  await store.bindInstall({
+    campaignId: twoHostCampaignId,
+    stagedHandle,
+    targetSource: source,
+    transactionId,
+    fromGeneration: "previous",
+  });
+  await store.recordOutcome({
+    transactionId,
+    status: "committed",
+    activeGeneration: transactionId,
+    activeSource: source,
+  });
+  const operations = new Map<string, FleetHostOperation>();
+  const active = new Set<EnvironmentId>();
+  const activations: EnvironmentId[] = [];
+  const offline = new Set<EnvironmentId>();
+  const lostReplies = new Set<EnvironmentId>();
+  const refusals = new Set<EnvironmentId>();
+  let maximumActive = 0;
+  const host = vi.fn<FleetCampaignDriver["host"]>(async (environmentId, request) => {
+    if (offline.has(environmentId)) throw new Error("Synthetic host offline.");
+    if (request.action === "enroll") throw new Error("Enrollment belongs to fixture setup.");
+    const selectedEnrollment =
+      environmentId === enrollment.environmentId ? enrollment : secondEnrollment;
+    const operationId =
+      request.action === "status" ? request.operationId : request.input.operationId;
+    if (operationId === undefined) throw new Error("Expected an exact operation.");
+    if (request.action === "stage")
+      operations.set(operationId, {
+        input: request.input,
+        phase: "staged",
+        currentVersion: "old",
+        stagedHandle: "host-stage",
+        continueRunningThreads: false,
+      });
+    if (request.action === "activate") {
+      const operation = operations.get(operationId)!;
+      activations.push(environmentId);
+      if (refusals.has(environmentId)) {
+        operations.set(operationId, {
+          ...operation,
+          phase: "install-blocked",
+          reason: "Preacceptance capacity refusal.",
+        });
+      } else {
+        active.add(environmentId);
+        maximumActive = Math.max(maximumActive, active.size);
+        operations.set(operationId, { ...operation, phase: "pending" });
+      }
+      if (lostReplies.has(environmentId)) throw new Error("Synthetic activation response lost.");
+    }
+    return {
+      environmentId,
+      enrollment: selectedEnrollment,
+      operationProtocol: 1,
+      operation: operations.get(operationId) ?? null,
+      update: {
+        source: "jones-actions",
+        channel: "jones-main",
+        phase: "available",
+        currentVersion: "old",
+        environmentId,
+        installedSource: "b".repeat(40),
+        capability: { check: true, download: true, install: true },
+      },
+    } satisfies FleetHostStatus;
+  });
+  const driver = (nativeStore = store): FleetCampaignDriver => ({
+    desktop: nativeStore.request,
+    host,
+    cancelled: () => false,
+  });
+  const restart = () => createDesktopFleetStore({ home, profile: undefined });
+  const members = async (nativeStore = store) =>
+    (await nativeStore.request({ action: "read" })).campaigns.find(
+      (campaign) => campaign.campaignId === twoHostCampaignId,
+    )!.members;
+  const finish = (environmentId: EnvironmentId) => {
+    const operation = [...operations.values()].find(
+      (entry) => entry.input.environmentId === environmentId,
+    )!;
+    operations.set(operation.input.operationId, { ...operation, phase: "committed" });
+    active.delete(environmentId);
+  };
+  return {
+    driver,
+    restart,
+    members,
+    operations,
+    active,
+    activations,
+    offline,
+    lostReplies,
+    refusals,
+    finish,
+    maximumActive: () => maximumActive,
+  };
+}
 async function fixture(
   run: (home: string, store: ReturnType<typeof createDesktopFleetStore>) => Promise<void>,
 ) {
@@ -31,10 +155,216 @@ async function fixture(
     await run(home, store);
   } finally {
     await NodeFSP.rm(home, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(home)).rejects.toMatchObject({ code: "ENOENT" });
   }
 }
 
 describe("native fleet commit gate", () => {
+  it("serializes native activations across two controllers and retains the occupied slot after restart", async () =>
+    fixture(async (home, store) => {
+      const f = await createTwoHostCampaign(home, store);
+      await Promise.all([advanceFleetCampaigns(f.driver()), advanceFleetCampaigns(f.driver())]);
+      expect(f.activations).toHaveLength(1);
+      expect((await f.members()).map((member) => member.phase).sort()).toEqual([
+        "pending",
+        "staged",
+      ]);
+      const restarted = f.restart();
+      await advanceFleetCampaigns(f.driver(restarted));
+      expect(f.activations).toHaveLength(1);
+      const first = f.activations[0]!;
+      f.finish(first);
+      // A parallel status read can precede terminal persistence; the next pass
+      // must observe that persistence before granting the waiting host.
+      await advanceFleetCampaigns(f.driver(restarted));
+      await advanceFleetCampaigns(f.driver(restarted));
+      expect(f.activations).toHaveLength(2);
+      expect(f.activations[1]).not.toBe(first);
+      expect(f.maximumActive()).toBe(1);
+    }));
+
+  it("keeps a lost reply and offline dispatched host occupying activation while another host stages", async () =>
+    fixture(async (home, store) => {
+      const f = await createTwoHostCampaign(home, store);
+      f.lostReplies.add(enrollment.environmentId);
+      f.lostReplies.add(secondEnrollment.environmentId);
+      await advanceFleetCampaigns(f.driver());
+      expect(f.activations).toHaveLength(1);
+      const first = f.activations[0]!;
+      f.offline.add(first);
+      const restarted = f.restart();
+      await advanceFleetCampaigns(f.driver(restarted));
+      expect(
+        (await f.members(restarted)).find((member) => member.enrollment.environmentId === first)
+          ?.phase,
+      ).toBe("dispatching");
+      expect(
+        (await f.members(restarted)).find((member) => member.enrollment.environmentId !== first)
+          ?.phase,
+      ).toBe("staged");
+      expect(f.activations).toHaveLength(1);
+      f.offline.delete(first);
+      const operation = [...f.operations.values()].find(
+        (entry) => entry.input.environmentId === first,
+      )!;
+      f.operations.delete(operation.input.operationId);
+      await advanceFleetCampaigns(f.driver(restarted));
+      expect(
+        (await f.members(restarted)).find((member) => member.enrollment.environmentId === first)
+          ?.phase,
+      ).toBe("reconciling");
+      expect(f.activations).toHaveLength(1);
+      f.operations.set(operation.input.operationId, operation);
+      f.finish(first);
+      await advanceFleetCampaigns(f.driver(restarted));
+      await advanceFleetCampaigns(f.driver(restarted));
+      expect(f.activations).toHaveLength(2);
+      expect(f.maximumActive()).toBe(1);
+    }));
+
+  it("lets a different ready host proceed after an exact preacceptance refusal", async () =>
+    fixture(async (home, store) => {
+      const f = await createTwoHostCampaign(home, store);
+      f.refusals.add(enrollment.environmentId);
+      f.refusals.add(secondEnrollment.environmentId);
+      await advanceFleetCampaigns(f.driver());
+      expect(f.activations).toHaveLength(1);
+      const refused = f.activations[0]!;
+      const other =
+        refused === enrollment.environmentId
+          ? secondEnrollment.environmentId
+          : enrollment.environmentId;
+      f.refusals.delete(other);
+      await advanceFleetCampaigns(f.driver(f.restart()));
+      expect(f.active.has(other)).toBe(true);
+      expect(f.activations.filter((entry) => entry === refused)).toHaveLength(1);
+      expect(f.maximumActive()).toBe(1);
+    }));
+
+  it("arbitrates separate native stores and carries activation occupancy into a newer campaign", async () =>
+    fixture(async (home, store) => {
+      const f = await createTwoHostCampaign(home, store);
+      const members = await f.members();
+      for (const member of members)
+        await store.request({
+          action: "updateMember",
+          input: {
+            campaignId: twoHostCampaignId,
+            operationId: member.operationId,
+            expectedPhase: "waiting",
+            phase: "staged",
+            expectedInstalledSource: "b".repeat(40),
+          },
+        });
+      const stores = [store, f.restart()];
+      const claims = await Promise.allSettled(
+        members.map((member, index) =>
+          stores[index]!.request({
+            action: "updateMember",
+            input: {
+              campaignId: twoHostCampaignId,
+              operationId: member.operationId,
+              expectedPhase: "staged",
+              phase: "dispatching",
+            },
+          }),
+        ),
+      );
+      expect(claims.some((claim) => claim.status === "fulfilled")).toBe(true);
+      const after = await f.members();
+      expect(after.filter((member) => member.phase === "dispatching")).toHaveLength(1);
+      const owner = after.find((member) => member.phase === "dispatching")!;
+      const waiting = after.find((member) => member.phase === "staged")!;
+      await expect(
+        store.request({
+          action: "updateMember",
+          input: {
+            campaignId: twoHostCampaignId,
+            operationId: owner.operationId,
+            expectedPhase: "dispatching",
+            phase: "dispatching",
+          },
+        }),
+      ).rejects.toThrow("grant is already outstanding");
+      await store.request({
+        action: "updateMember",
+        input: {
+          campaignId: twoHostCampaignId,
+          operationId: waiting.operationId,
+          expectedPhase: "staged",
+          phase: "superseded",
+        },
+      });
+      const nextCampaignId = "66666666-6666-4666-8666-666666666666";
+      await store.request({
+        action: "prepare",
+        input: {
+          campaignId: nextCampaignId,
+          targetSource: "f".repeat(40),
+          desktopStagedHandle: "e".repeat(64),
+        },
+      });
+      await store.bindInstall({
+        campaignId: nextCampaignId,
+        stagedHandle: "e".repeat(64),
+        targetSource: "f".repeat(40),
+        transactionId: "f".repeat(64),
+        fromGeneration: transactionId,
+      });
+      await store.recordOutcome({
+        transactionId: "f".repeat(64),
+        status: "committed",
+        activeGeneration: "f".repeat(64),
+        activeSource: "f".repeat(40),
+      });
+      const restarted = f.restart();
+      const state = await restarted.request({ action: "read" });
+      const next = state.campaigns
+        .find((campaign) => campaign.campaignId === nextCampaignId)!
+        .members.find(
+          (member) => member.enrollment.environmentId === waiting.enrollment.environmentId,
+        )!;
+      await restarted.request({
+        action: "updateMember",
+        input: {
+          campaignId: nextCampaignId,
+          operationId: next.operationId,
+          expectedPhase: "waiting",
+          phase: "staged",
+        },
+      });
+      const claim = {
+        action: "updateMember" as const,
+        input: {
+          campaignId: nextCampaignId,
+          operationId: next.operationId,
+          expectedPhase: "staged" as const,
+          phase: "dispatching" as const,
+        },
+      };
+      const refused = await restarted.request(claim);
+      expect(
+        refused.campaigns
+          .find((campaign) => campaign.campaignId === nextCampaignId)!
+          .members.find((member) => member.operationId === next.operationId)?.phase,
+      ).toBe("staged");
+      await restarted.request({
+        action: "updateMember",
+        input: {
+          campaignId: twoHostCampaignId,
+          operationId: owner.operationId,
+          expectedPhase: "dispatching",
+          phase: "committed",
+        },
+      });
+      const granted = await restarted.request(claim);
+      expect(
+        granted.campaigns
+          .find((campaign) => campaign.campaignId === nextCampaignId)!
+          .members.find((member) => member.operationId === next.operationId)?.phase,
+      ).toBe("dispatching");
+    }));
+
   it("requires the exact native transaction and retains its proof across a process restart", async () =>
     fixture(async (home, store) => {
       const before = await store.request({ action: "read" });
@@ -165,6 +495,12 @@ describe("native fleet commit gate", () => {
           input: { campaignId, operationId, expectedPhase: "pending", phase: "offline" },
         }),
       ).rejects.toThrow("must be reconciled");
+      await expect(
+        store.request({
+          action: "updateMember",
+          input: { campaignId, operationId, expectedPhase: "pending", phase: "install-blocked" },
+        }),
+      ).rejects.toThrow("without resubmission");
     }));
 });
 

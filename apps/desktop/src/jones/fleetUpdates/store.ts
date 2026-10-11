@@ -37,6 +37,9 @@ export interface DesktopFleetStore {
 const validState = Schema.is(FleetDesktopState);
 const validRequest = Schema.is(FleetDesktopRequest);
 const inFlight = new Set(["dispatching", "install-blocked", "reconciling", "pending"]);
+// install-blocked proves a preacceptance refusal; it retains its host slot but
+// does not prevent a different host from using the fleet's activation slot.
+const activationOccupied = new Set(["dispatching", "reconciling", "pending"]);
 const occupied = new Set([...inFlight, "retiring"]);
 const terminal = new Set(["current", "committed", "rolled-back", "blocked", "superseded"]);
 
@@ -94,7 +97,10 @@ function updateMember(state: FleetDesktopState, input: FleetUpdateMemberInput): 
     throw new Error("Fleet member changed; refresh before continuing.");
   if (terminal.has(member.phase) && input.phase !== member.phase)
     throw new Error("A completed fleet operation cannot be reopened.");
-  if (member.phase === "reconciling" && ["dispatching", "install-blocked"].includes(input.phase))
+  if (
+    ["pending", "reconciling"].includes(member.phase) &&
+    ["dispatching", "install-blocked"].includes(input.phase)
+  )
     throw new Error("Uncertain native acceptance must be observed without resubmission.");
   if (inFlight.has(member.phase) && !inFlight.has(input.phase) && !terminal.has(input.phase))
     throw new Error("An accepted operation must be reconciled before its state can change.");
@@ -131,6 +137,19 @@ function updateMember(state: FleetDesktopState, input: FleetUpdateMemberInput): 
     member.expectedInstalledSource !== input.expectedInstalledSource
   )
     throw new Error("Fleet operation installed-source binding changed.");
+  if (input.phase === "dispatching") {
+    if (activationOccupied.has(member.phase))
+      throw new Error("An activation grant is already outstanding; observe its exact outcome.");
+    if (
+      state.campaigns.some((other) =>
+        other.members.some(
+          (entry) =>
+            entry.operationId !== member.operationId && activationOccupied.has(entry.phase),
+        ),
+      )
+    )
+      return state;
+  }
   const { reason: _reason, ...previous } = member;
   const next = {
     ...previous,

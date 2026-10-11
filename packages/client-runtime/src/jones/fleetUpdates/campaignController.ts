@@ -32,6 +32,7 @@ const inflight = new Set<FleetMemberPhase>([
   "pending",
 ]);
 const occupied = new Set<FleetMemberPhase>([...inflight, "retiring"]);
+const activationOccupied = new Set<FleetMemberPhase>(["dispatching", "reconciling", "pending"]);
 
 function matches(
   campaign: FleetDesktopCampaign,
@@ -67,10 +68,14 @@ async function advanceMember(
         ...(source === undefined ? {} : { expectedInstalledSource: source }),
       },
     });
-    member = state.campaigns
-      .find((entry) => entry.campaignId === campaign.campaignId)!
-      .members.find((entry) => entry.operationId === member.operationId)!;
-    return true;
+    const next = state.campaigns
+      .find((entry) => entry.campaignId === campaign.campaignId)
+      ?.members.find((entry) => entry.operationId === member.operationId);
+    if (next === undefined) return false;
+    member = next;
+    return (
+      member.phase === phase && (source === undefined || member.expectedInstalledSource === source)
+    );
   };
   try {
     let status = await driver.host(member.enrollment.environmentId, {
@@ -82,7 +87,10 @@ async function advanceMember(
       status.environmentId !== member.enrollment.environmentId ||
       (status.operation !== null && !matches(campaign, member, status.operation))
     ) {
-      await set("blocked", "The host operation identity changed. No update was repeated.");
+      await set(
+        activationOccupied.has(member.phase) ? "reconciling" : "blocked",
+        "The host operation identity changed. No update was repeated.",
+      );
       return;
     }
     if (member.phase === "retiring") {
@@ -115,7 +123,10 @@ async function advanceMember(
           status.operation.phase,
         )
       ) {
-        await set(status.operation.phase, status.operation.reason);
+        await set(
+          status.operation.phase === "dispatching" ? "reconciling" : status.operation.phase,
+          status.operation.reason,
+        );
       } else {
         await set(
           "retiring",
@@ -134,6 +145,18 @@ async function advanceMember(
         status.operation.reason,
         status.operation.input.expectedInstalledSource,
       );
+      return;
+    }
+    if (activationOccupied.has(member.phase)) {
+      // A prior status response can still describe a preacceptance refusal while
+      // this grant's activation request is in transit. Only its caller's response
+      // or an authoritative terminal/pending receipt can settle the grant.
+      if (status.operation === null)
+        await set("reconciling", "The host lost the in-flight receipt; activation remains held.");
+      return;
+    }
+    if (status.operation?.phase === "dispatching") {
+      await set("reconciling", "An existing host dispatch still requires its exact outcome.");
       return;
     }
     if (
@@ -189,11 +212,11 @@ async function advanceMember(
       await set("blocked", "The host did not return the selected operation receipt.");
       return;
     }
-    if (
-      operation.phase !== "staged" &&
-      operation.phase !== "dispatching" &&
-      operation.phase !== "install-blocked"
-    ) {
+    if (operation.phase === "dispatching") {
+      await set("reconciling", "An existing host dispatch still requires its exact outcome.");
+      return;
+    }
+    if (operation.phase !== "staged" && operation.phase !== "install-blocked") {
       await set(operation.phase, operation.reason, operation.input.expectedInstalledSource);
       return;
     }
@@ -206,6 +229,16 @@ async function advanceMember(
       );
       return;
     }
+    if (operation.phase === "staged") {
+      if (
+        !(await set(
+          "staged",
+          "Ready; waiting for the fleet activation slot.",
+          operation.input.expectedInstalledSource,
+        ))
+      )
+        return;
+    }
     if (!(await set("dispatching", undefined, operation.input.expectedInstalledSource))) return;
     status = await driver.host(member.enrollment.environmentId, {
       action: "activate",
@@ -217,13 +250,16 @@ async function advanceMember(
     });
     if (driver.cancelled()) return;
     if (status.operation === null || !matches(campaign, member, status.operation)) {
-      await set("blocked", "Activation did not return the selected operation receipt.");
+      await set("reconciling", "Activation did not return the selected operation receipt.");
     } else {
-      await set(status.operation.phase, status.operation.reason);
+      await set(
+        status.operation.phase === "dispatching" ? "reconciling" : status.operation.phase,
+        status.operation.reason,
+      );
     }
   } catch {
-    // A lost activation response preserves dispatching. The next pass reads the exact
-    // host receipt before considering any resend; unrelated hosts keep progressing.
+    // A lost activation response preserves the outstanding grant. Later passes
+    // observe its receipt; unrelated hosts can still stage and report status.
     if (!driver.cancelled())
       await set(
         occupied.has(member.phase) ? member.phase : "offline",
@@ -264,9 +300,17 @@ export async function advanceFleetCampaigns(driver: FleetCampaignDriver): Promis
       }
     }
   }
+  const selected = [...byEnvironment.values()];
+  // A host with a proven preacceptance refusal retries after other ready hosts
+  // have had a chance to claim the durable slot, so it cannot starve the fleet.
   await Promise.all(
-    [...byEnvironment.values()].map(({ campaign, member }) =>
-      advanceMember(driver, campaign, member),
-    ),
+    selected
+      .filter(({ member }) => member.phase !== "install-blocked")
+      .map(({ campaign, member }) => advanceMember(driver, campaign, member)),
+  );
+  await Promise.all(
+    selected
+      .filter(({ member }) => member.phase === "install-blocked")
+      .map(({ campaign, member }) => advanceMember(driver, campaign, member)),
   );
 }
