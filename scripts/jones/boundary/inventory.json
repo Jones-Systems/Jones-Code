@@ -9,6 +9,7 @@
   "paths": {
     "docs/internals/server-updates.md": "accepted-shared",
     "scripts/jones/boundary/fragments/update-continuity.json": "jones-owned",
+    "scripts/jones/boundary/fragments/desktop-stage-attempts.json": "jones-owned",
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
     ".agents/skills/test-t3-app/SKILL.md": "policy",

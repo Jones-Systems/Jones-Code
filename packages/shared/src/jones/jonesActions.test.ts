@@ -331,7 +331,9 @@ describe("Jones Actions staging", () => {
     const root = await cache();
     const staged = await client.stage(candidate, root);
     expect(await NodeFSP.readFile(staged.payloadPath, "utf8")).toBe("verified archive fixture");
-    expect(await NodeFSP.readdir(root)).toEqual([staged.stagedHandle]);
+    expect(await NodeFSP.readdir(NodePath.join(root, "completed"))).toEqual([
+      `${staged.stagedHandle}.json`,
+    ]);
     expect(await client.stage(candidate, root)).toEqual(staged);
     expect(
       await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), candidate),
@@ -347,7 +349,7 @@ describe("Jones Actions staging", () => {
     const candidate = await available(client);
     const root = await cache();
     await expect(client.stage(candidate, root)).rejects.toMatchObject({ reason: "integrity" });
-    expect(await NodeFSP.readdir(root)).toEqual([]);
+    expect(await NodeFSP.readdir(NodePath.join(root, "attempts"))).toEqual([]);
   });
   it.each([
     { platform: "darwin" },
@@ -370,7 +372,7 @@ describe("Jones Actions staging", () => {
       const candidate = await available(client);
       const root = await cache();
       await expect(client.stage(candidate, root)).rejects.toBeInstanceOf(JonesActionsError);
-      expect(await NodeFSP.readdir(root)).toEqual([]);
+      expect(await NodeFSP.readdir(NodePath.join(root, "attempts"))).toEqual([]);
     },
   );
   it("does not overwrite occupied unknown cache paths", async () => {
@@ -380,7 +382,9 @@ describe("Jones Actions staging", () => {
     const occupied = NodePath.join(root, jonesCandidateHandle(candidate));
     await NodeFSP.mkdir(occupied);
     await NodeFSP.writeFile(NodePath.join(occupied, "owner-data"), "retain");
-    await expect(client.stage(candidate, root)).rejects.toMatchObject({ reason: "occupied-cache" });
+    const staged = await client.stage(candidate, root);
+    expect(NodePath.dirname(staged.payloadPath)).not.toBe(occupied);
+    expect(await NodeFSP.readdir(occupied)).toEqual(["owner-data"]);
     expect(await NodeFSP.readFile(NodePath.join(occupied, "owner-data"), "utf8")).toBe("retain");
   });
   it("rejects modified payload and forged cache receipt against original envelope", async () => {
@@ -415,7 +419,51 @@ describe("Jones Actions staging", () => {
     await expect(
       validateJonesStagedArtifact(NodePath.dirname(staged.value.payloadPath), candidate),
     ).resolves.toEqual(staged.value);
-    expect(await NodeFSP.readdir(root)).toEqual([staged.value.stagedHandle]);
+    expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(true);
+    expect(await NodeFSP.readdir(NodePath.join(root, "completed"))).toEqual([
+      `${staged.value.stagedHandle}.json`,
+    ]);
+    expect(await NodeFSP.readdir(NodePath.join(root, "attempts"))).toHaveLength(1);
+  });
+  it("retries an interrupted download without consuming a retained partial attempt", async () => {
+    const failed = fixture({ interrupted: true });
+    const next = fixture();
+    const candidate = await available(failed.client);
+    const root = await cache();
+    await expect(failed.client.stage(candidate, root)).rejects.toMatchObject({
+      reason: "unavailable",
+    });
+    const partial = NodePath.join(
+      root,
+      "attempts",
+      "stage-interrupted",
+      jonesCandidateHandle(candidate),
+    );
+    await NodeFSP.mkdir(partial, { recursive: true });
+    await NodeFSP.writeFile(NodePath.join(partial, "github-artifact.zip"), "partial");
+    const staged = await next.client.stage(candidate, root);
+    expect(await NodeFSP.readFile(staged.payloadPath, "utf8")).toBe("verified archive fixture");
+    expect(await NodeFSP.readFile(NodePath.join(partial, "github-artifact.zip"), "utf8")).toBe(
+      "partial",
+    );
+  });
+  it("continues to reuse a verified legacy stage", async () => {
+    const { client } = fixture();
+    const candidate = await available(client);
+    const root = await cache();
+    const initial = await client.stage(candidate, root);
+    const legacyRoot = await cache();
+    const legacy = NodePath.join(legacyRoot, initial.stagedHandle);
+    await NodeFSP.cp(NodePath.dirname(initial.payloadPath), legacy, { recursive: true });
+    const receipt = {
+      ...initial,
+      payloadPath: NodePath.join(legacy, NodePath.basename(initial.payloadPath)),
+    };
+    await NodeFSP.writeFile(
+      NodePath.join(legacy, JONES_ACTIONS_RECEIPT_FILE),
+      JSON.stringify(receipt),
+    );
+    expect(await client.stage(candidate, legacyRoot)).toEqual(receipt);
   });
   it("rechecks final run attempt rather than downloading a stale candidate", async () => {
     const f = fixture();
