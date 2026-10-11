@@ -14,6 +14,9 @@ import {
   inspectPreparationCandidateJavaScript,
   inspectPreparationCandidateCode,
   inspectPreparationCandidateExternal,
+  inspectPreparationCandidateImports,
+  inspectPreparationGeneratedRuntime,
+  inspectPreparationCandidateTools,
   requireEmptyPreparationCandidateOutput,
   runPreparationLifecycleFixture,
   verifyNodeArchive,
@@ -570,6 +573,148 @@ async function withCandidateRoot(run: (root: string) => Promise<void>) {
 }
 
 describe("unqualified preparation candidate graph", () => {
+  it("keeps emitted imports and builtin calls separate from stale bundler metadata", () => {
+    const report = inspectPreparationCandidateImports(
+      'import "node:fs"; process.getBuiltinModule("module"); process["getBuiltinModule"]("node:sqlite"); process.getBuiltinModule(selected); import("./actual.mjs");',
+      { imports: ["node:module", "node:fs"], dynamicImports: ["offlinePreparationEntry.mjs"] },
+    );
+    expect(report.static).toEqual({
+      emitted: ["node:fs"],
+      reported: ["node:fs", "node:module"],
+      metadataOnly: ["node:module"],
+      syntaxOnly: [],
+    });
+    expect(report.dynamic).toEqual({
+      emitted: ["./actual.mjs"],
+      reported: ["offlinePreparationEntry.mjs"],
+      metadataOnly: ["offlinePreparationEntry.mjs"],
+      syntaxOnly: ["./actual.mjs"],
+    });
+    expect(
+      report.processBuiltinCalls.map(({ specifier, computed, builtin }) => ({
+        specifier,
+        computed,
+        builtin,
+      })),
+    ).toEqual([
+      { specifier: "module", computed: false, builtin: true },
+      { specifier: "node:sqlite", computed: false, builtin: true },
+      { specifier: null, computed: true, builtin: false },
+    ]);
+    expect(report.qualification).toBe("unqualified");
+    expect(() => verifyPreparationClosure('process.getBuiltinModule("module");')).toThrow();
+  });
+
+  it("records the emitted globalThis process optional-chain builtin spelling", () => {
+    const report = inspectPreparationCandidateImports(
+      'function emitted() { return globalThis.process?.getBuiltinModule?.("node:async_hooks")?.AsyncResource; }',
+      { imports: [], dynamicImports: [] },
+    );
+    expect(report.processBuiltinCalls).toEqual([
+      {
+        kind: "process-builtin",
+        specifier: "node:async_hooks",
+        computed: false,
+        builtin: true,
+        expressionSha256: sha('globalThis.process?.getBuiltinModule?.("node:async_hooks")'),
+      },
+    ]);
+    expect(report.syntax.loaderHazards.length).toBeGreaterThan(0);
+    expect(report.qualification).toBe("unqualified");
+  });
+
+  it("does not promote strings, unrelated receivers or aliased builtin names into observed calls", () => {
+    const syntax = inspectPreparationCandidateJavaScript(
+      'const example = "process.getBuiltinModule(\\\"fs\\\")"; const optional = "globalThis.process?.getBuiltinModule?.(\\\"fs\\\")"; other.getBuiltinModule("fs"); other.process?.getBuiltinModule?.("fs"); globalThis.other?.getBuiltinModule?.("fs"); const load = process.getBuiltinModule; load("fs");',
+    );
+    expect(syntax.imports).toEqual([]);
+    expect(syntax.loaderHazards.length).toBeGreaterThan(0);
+  });
+
+  it("binds the generated runtime's exact bytes without approving its helpers", () => {
+    const body = "\nvar helper = () => 1;\n";
+    const prefix = 'import "node:fs";\n//#region \\0rolldown/runtime.js';
+    const source = prefix + body + "//#endregion\nexport const value = helper();\n";
+    expect(inspectPreparationGeneratedRuntime(source)).toEqual({
+      availability: "observed",
+      evidence: "emitted-top-level-region",
+      qualification: "unqualified",
+      sha256: sha(body),
+      size: Buffer.byteLength(body),
+      startByte: Buffer.byteLength(prefix),
+      endByte: Buffer.byteLength(prefix + body),
+    });
+    expect(inspectPreparationGeneratedRuntime(source.replace("=> 1", "=> 2"))).not.toEqual(
+      inspectPreparationGeneratedRuntime(source),
+    );
+  });
+
+  it.each([
+    'const marker = "//#region \\\\0rolldown/runtime.js";',
+    "//#region \\0rolldown/runtime.js\nvar helper = 1;",
+    "//#region \\0rolldown/runtime.js\nvar one = 1;\n//#endregion\n//#region \\0rolldown/runtime.js\nvar two = 2;\n//#endregion",
+  ])("leaves missing or ambiguous generated runtime evidence unavailable: %s", (source) => {
+    expect(inspectPreparationGeneratedRuntime(source).availability).toBe("unavailable");
+    expect(inspectPreparationGeneratedRuntime(source)).not.toHaveProperty("sha256");
+  });
+
+  it("observes installed tool entries through their own resolver without executing package code", () =>
+    withArtifact((allocated) => {
+      const root = NodeFS.realpathSync(allocated);
+      const tool = (directory: string, name: string, exports: Record<string, string>) => {
+        NodeFS.mkdirSync(directory, { recursive: true });
+        const manifest = JSON.stringify({ name, version: "1.2.3", exports });
+        NodeFS.writeFileSync(NodePath.join(directory, "package.json"), manifest, { flag: "wx" });
+        for (const file of Object.values(exports)) {
+          NodeFS.mkdirSync(NodePath.dirname(NodePath.join(directory, file)), { recursive: true });
+          NodeFS.writeFileSync(
+            NodePath.join(directory, file),
+            'throw new Error("must not execute");',
+            { flag: "wx" },
+          );
+        }
+        return manifest;
+      };
+      const vite = NodePath.join(root, "node_modules/vite-plus");
+      tool(vite, "vite-plus", { ".": "./dist/index.cjs", "./pack": "./dist/pack.cjs" });
+      const tsdown = NodePath.join(vite, "node_modules/tsdown");
+      const manifest = tool(tsdown, "tsdown", { ".": "./index.cjs" });
+      NodeFS.linkSync(
+        NodePath.join(tsdown, "package.json"),
+        NodePath.join(root, "manifest-hardlink"),
+      );
+      NodeFS.linkSync(NodePath.join(tsdown, "index.cjs"), NodePath.join(root, "entry-hardlink"));
+      const effect = NodePath.join(root, "node_modules/effect");
+      tool(effect, "effect", { ".": "./index.cjs" });
+      NodeFS.writeFileSync(
+        NodePath.join(effect, "package.json"),
+        JSON.stringify({ name: "effect", exports: { ".": "./index.cjs" } }),
+      );
+      const report = inspectPreparationCandidateTools(root, NodePath.join(root, "helper.cjs"));
+      const observed = report.attempts.find(
+        (attempt) => attempt.name === "tsdown" && attempt.package?.availability === "observed",
+      );
+      expect(observed?.resolverBase).toBe("node_modules/vite-plus/dist/index.cjs");
+      expect(observed?.entry).toMatchObject({
+        availability: "observed",
+        sha256: sha('throw new Error("must not execute");'),
+      });
+      expect(observed?.package).toMatchObject({
+        availability: "observed",
+        name: "tsdown",
+        version: "1.2.3",
+        manifest: { sha256: sha(manifest) },
+      });
+      expect(report.unresolved).toContain("rolldown");
+      expect(report.unresolved).toContain("effect");
+      expect(report.attempts.find((attempt) => attempt.name === "effect")?.package).toMatchObject({
+        availability: "observed",
+        version: null,
+        versionObservation: "not-declared",
+      });
+      expect(report.qualification).toBe("unqualified");
+    }));
+
   it("records actual static, dynamic and require edges without executing their code", () => {
     const report = inspectPreparationCandidateJavaScript(
       'import "node:sqlite"; export * from "external"; import("./lazy.mjs"); import(variable); require("addon.node"); globalThis["danger"]();',

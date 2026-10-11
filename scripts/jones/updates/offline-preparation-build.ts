@@ -14,7 +14,7 @@ import * as NodeTimers from "node:timers";
 import * as NodeHttp from "node:http";
 import * as NodeUtil from "node:util";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The sole download origin is the pinned official Node release over verified TLS.
-import * as NodeHttpS from "node:https";
+import * as NodeHttps from "node:https";
 import * as Schema from "effect/Schema";
 import ts from "typescript-legacy";
 import type { Plugin } from "vite-plus";
@@ -506,7 +506,7 @@ class PreparationBuildScope {
         };
         let request: NodeHttp.ClientRequest;
         try {
-          request = (secure ? NodeHttpS : NodeHttp).get(url, { agent: false }, (incoming) => {
+          request = (secure ? NodeHttps : NodeHttp).get(url, { agent: false }, (incoming) => {
             response = incoming;
             incoming.once("close", () => {
               responseClosed = true;
@@ -1440,7 +1440,7 @@ export function offlinePreparationPack(
     deps: {
       alwaysBundle: (id: string) => !NodeModule.isBuiltin(id),
       neverBundle: (id: string) => NodeModule.isBuiltin(id),
-      onlyBundle: false,
+      onlyBundle: false as const,
     },
     plugins: [plugin],
     async onSuccess() {
@@ -1637,7 +1637,7 @@ export function inspectPreparationCandidateJavaScript(source: string) {
     .parseDiagnostics;
   if (diagnostics.length) throw new Error("Candidate entry is not valid JavaScript.");
   const imports: {
-    kind: "static" | "dynamic" | "require";
+    kind: "static" | "dynamic" | "require" | "process-builtin";
     specifier: string | null;
     computed: boolean;
     builtin: boolean;
@@ -1645,7 +1645,7 @@ export function inspectPreparationCandidateJavaScript(source: string) {
   }[] = [];
   const loaderHazards: { kind: string; expressionSha256: string }[] = [];
   const record = (
-    kind: "static" | "dynamic" | "require",
+    kind: "static" | "dynamic" | "require" | "process-builtin",
     node: ts.Node | undefined,
     expression: ts.Node,
   ) => {
@@ -1670,6 +1670,20 @@ export function inspectPreparationCandidateJavaScript(source: string) {
         record("dynamic", node.arguments[0], node);
       if (ts.isIdentifier(node.expression) && /(?:^|_)require(?:_|$)/.test(node.expression.text))
         record("require", node.arguments[0], node);
+      const access = node.expression;
+      if (
+        (ts.isPropertyAccessExpression(access) || ts.isElementAccessExpression(access)) &&
+        ((ts.isIdentifier(access.expression) && access.expression.text === "process") ||
+          (ts.isPropertyAccessExpression(access.expression) &&
+            ts.isIdentifier(access.expression.expression) &&
+            access.expression.expression.text === "globalThis" &&
+            access.expression.name.text === "process")) &&
+        (ts.isPropertyAccessExpression(access)
+          ? access.name.text === "getBuiltinModule"
+          : ts.isStringLiteralLike(access.argumentExpression) &&
+            access.argumentExpression.text === "getBuiltinModule")
+      )
+        record("process-builtin", node.arguments[0], node);
     }
     if (
       ts.isElementAccessExpression(node) ||
@@ -1683,6 +1697,81 @@ export function inspectPreparationCandidateJavaScript(source: string) {
   };
   visit(file);
   return { imports, loaderHazards, scannerQualification: "syntax-observation-only" as const };
+}
+
+/** Final syntax and bundler metadata are separate observations, never interchangeable loader approval. */
+export function inspectPreparationCandidateImports(
+  source: string,
+  metadata: { readonly imports: readonly string[]; readonly dynamicImports: readonly string[] },
+) {
+  const syntax = inspectPreparationCandidateJavaScript(source);
+  const unique = (values: readonly string[]) => [...new Set(values)].sort();
+  const reconcile = (kind: "static" | "dynamic", values: readonly string[]) => {
+    const emitted = unique(
+      syntax.imports.flatMap((item) =>
+        item.kind === kind && item.specifier !== null ? [item.specifier] : [],
+      ),
+    );
+    const reported = unique(values);
+    return {
+      emitted,
+      reported,
+      metadataOnly: reported.filter((value) => !emitted.includes(value)),
+      syntaxOnly: emitted.filter((value) => !reported.includes(value)),
+    };
+  };
+  return {
+    syntax,
+    static: reconcile("static", metadata.imports),
+    dynamic: reconcile("dynamic", metadata.dynamicImports),
+    // This records spelling, including shadowed `process`; it makes no runtime identity claim.
+    processBuiltinCalls: syntax.imports.filter((item) => item.kind === "process-builtin"),
+    qualification: "unqualified" as const,
+  };
+}
+
+/** Generated region bytes remain review input, not an exemption for bundler helpers. */
+export function inspectPreparationGeneratedRuntime(source: string) {
+  if (Buffer.byteLength(source) > maxBundleBytes) throw new Error("Candidate entry exceeds bound.");
+  const file = ts.createSourceFile(
+    bundleName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const comments = new Map<number, ts.CommentRange>();
+  for (const statement of [...file.statements, file.endOfFileToken])
+    for (const comment of ts.getLeadingCommentRanges(source, statement.pos) ?? [])
+      comments.set(comment.pos, comment);
+  const ranges = [...comments.values()].sort((left, right) => left.pos - right.pos);
+  const starts = ranges.filter(
+    (range) => source.slice(range.pos, range.end) === "//#region \\0rolldown/runtime.js",
+  );
+  if (starts.length !== 1)
+    return {
+      availability: "unavailable" as const,
+      reason: starts.length === 0 ? "generated-region-not-observed" : "generated-region-ambiguous",
+    };
+  const start = starts[0]!;
+  const end = ranges.find(
+    (range) => range.pos > start.end && source.slice(range.pos, range.end).startsWith("//#"),
+  );
+  if (!end || source.slice(end.pos, end.end) !== "//#endregion")
+    return {
+      availability: "unavailable" as const,
+      reason: "generated-region-boundary-not-observed",
+    };
+  const bytes = source.slice(start.end, end.pos);
+  return {
+    availability: "observed" as const,
+    evidence: "emitted-top-level-region" as const,
+    sha256: digest(bytes),
+    size: Buffer.byteLength(bytes),
+    startByte: Buffer.byteLength(source.slice(0, start.end)),
+    endByte: Buffer.byteLength(source.slice(0, end.pos)),
+    qualification: "unqualified" as const,
+  };
 }
 
 /** A virtual or tree-shaken module without exposed code has no invented content hash. */
@@ -1786,7 +1875,45 @@ function candidateId(root: string, id: string): string {
     : id;
 }
 
-function candidateFile(root: string, id: string, limit = 8 * 1024 * 1024) {
+// Installed package files may be hardlinked by the package manager. Observe
+// their bounded bytes without relaxing the single-link artifact writer boundary.
+function readCandidateEvidence(file: string, limit: number): Buffer {
+  const fd = NodeFS.openSync(
+    file,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
+  try {
+    const before = NodeFS.fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.size > BigInt(limit) || before.nlink < 1n)
+      throw new Error("Candidate file is not a bounded regular file.");
+    const buffer = Buffer.alloc(Number(before.size) + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const count = NodeFS.readSync(fd, buffer, offset, buffer.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    const after = NodeFS.fstatSync(fd, { bigint: true });
+    const current = NodeFS.lstatSync(file, { bigint: true });
+    if (
+      offset !== Number(before.size) ||
+      (["dev", "ino", "size", "mtimeNs", "ctimeNs", "mode", "nlink"] as const).some(
+        (key) => before[key] !== after[key] || before[key] !== current[key],
+      )
+    )
+      throw new Error("Candidate file changed during observation.");
+    return buffer.subarray(0, offset);
+  } finally {
+    NodeFS.closeSync(fd);
+  }
+}
+
+function candidateFile(
+  root: string,
+  id: string,
+  limit = 8 * 1024 * 1024,
+  installedEvidence = false,
+) {
   const unavailable = (reason: string) => ({ availability: "unavailable" as const, reason });
   if (!NodePath.isAbsolute(id) || id.includes("\0") || id.includes("?"))
     return unavailable("non-file-module-id");
@@ -1795,7 +1922,9 @@ function candidateFile(root: string, id: string, limit = 8 * 1024 * 1024) {
     const relative = NodePath.relative(root, actual);
     if (relative.startsWith(".." + NodePath.sep) || NodePath.isAbsolute(relative))
       return unavailable("outside-bound-source-root");
-    const bytes = readFile(actual, limit);
+    const bytes = installedEvidence
+      ? readCandidateEvidence(actual, limit)
+      : readFile(actual, limit);
     return {
       availability: "observed" as const,
       path: candidateId(root, actual),
@@ -1816,10 +1945,10 @@ function candidatePackage(root: string, id: string) {
     if (relative.startsWith(".." + NodePath.sep) || NodePath.isAbsolute(relative)) break;
     const manifestPath = NodePath.join(parent, "package.json");
     if (NodeFS.existsSync(manifestPath)) {
-      const file = candidateFile(root, manifestPath, 1024 * 1024);
+      const file = candidateFile(root, manifestPath, 1024 * 1024, true);
       if (file.availability === "unavailable") return file;
       try {
-        const manifestBytes = readFile(NodePath.join(root, file.path), 1024 * 1024);
+        const manifestBytes = readCandidateEvidence(NodePath.join(root, file.path), 1048576);
         if (digest(manifestBytes) !== file.sha256)
           return {
             availability: "unavailable" as const,
@@ -1832,8 +1961,8 @@ function candidatePackage(root: string, id: string) {
         if (
           typeof manifest.name !== "string" ||
           manifest.name.length > 256 ||
-          typeof manifest.version !== "string" ||
-          manifest.version.length > 128
+          (manifest.version !== undefined &&
+            (typeof manifest.version !== "string" || manifest.version.length > 128))
         )
           return {
             availability: "unavailable" as const,
@@ -1843,7 +1972,8 @@ function candidatePackage(root: string, id: string) {
         return {
           availability: "observed" as const,
           name: manifest.name,
-          version: manifest.version,
+          version: manifest.version ?? null,
+          versionObservation: manifest.version === undefined ? "not-declared" : "observed",
           manifest: file,
         };
       } catch {
@@ -1858,6 +1988,71 @@ function candidatePackage(root: string, id: string) {
     parent = NodePath.dirname(parent);
   }
   return { availability: "unavailable" as const, reason: "package-manifest-not-found" };
+}
+
+/** Resolver attempts are recorded from concrete installed entries; no package code is loaded. */
+export function inspectPreparationCandidateTools(
+  root: string,
+  resolverBase: string | URL = import.meta.url,
+) {
+  const names = ["vite-plus", "typescript-legacy", "effect", "rolldown", "tsdown"];
+  const bases: (string | URL)[] = [resolverBase];
+  const visited = new Set<string>();
+  const attempts: {
+    name: string;
+    resolverBase: string;
+    resolvedId?: string;
+    entry?: ReturnType<typeof candidateFile>;
+    package?: ReturnType<typeof candidatePackage>;
+    reason?: string;
+  }[] = [];
+  // The pack entry can expose dependencies hidden from the repository's resolver.
+  const specifiers = [...names, "vite-plus/pack"];
+  for (let index = 0; index < bases.length && index < 16; index += 1) {
+    const base = bases[index]!;
+    const baseKey = String(base);
+    if (visited.has(baseKey)) continue;
+    visited.add(baseKey);
+    const baseLabel = index === 0 ? "build-helper-module" : candidateId(root, baseKey);
+    const resolver = NodeModule.createRequire(base);
+    for (const name of specifiers) {
+      try {
+        const resolved = resolver.resolve(name);
+        const entryEvidence = candidateFile(root, resolved, maxBundleBytes, true);
+        const packageEvidence = candidatePackage(root, resolved);
+        attempts.push({
+          name,
+          resolverBase: baseLabel,
+          resolvedId: candidateId(root, resolved),
+          entry: entryEvidence,
+          package: packageEvidence,
+        });
+        if (
+          entryEvidence.availability === "observed" &&
+          !bases.includes(resolved) &&
+          bases.length < 16
+        )
+          bases.push(resolved);
+      } catch {
+        attempts.push({ name, resolverBase: baseLabel, reason: "tool-package-not-resolved" });
+      }
+    }
+  }
+  return {
+    qualification: "unqualified" as const,
+    resolverBasis: "build-helper-and-resolved-installed-entries" as const,
+    attempts,
+    unresolved: names.filter(
+      (name) =>
+        !attempts.some(
+          (attempt) =>
+            attempt.name === name &&
+            attempt.entry?.availability === "observed" &&
+            attempt.package?.availability === "observed" &&
+            typeof attempt.package.version === "string",
+        ),
+    ),
+  };
 }
 
 function candidatePatches(root: string) {
@@ -1937,8 +2132,12 @@ export function offlinePreparationCandidatePack(
       const ids = [...this.getModuleIds()].sort();
       if (ids.length > candidateModuleLimit)
         throw new Error("Candidate graph exceeds module bound.");
+      const importEvidence = inspectPreparationCandidateImports(chunk.code, chunk);
       const renderedIds = new Set(Object.keys(chunk.modules));
-      const emittedImportIds = new Set([...chunk.imports, ...chunk.dynamicImports]);
+      const emittedImportIds = new Set([
+        ...importEvidence.static.emitted,
+        ...importEvidence.dynamic.emitted,
+      ]);
       const externalObservation = (id: string) =>
         inspectPreparationCandidateExternal(id, renderedIds, emittedImportIds);
       const packages = new Map<string, ReturnType<typeof candidatePackage>>();
@@ -1998,27 +2197,7 @@ export function offlinePreparationCandidatePack(
         if (bytes.length > maxBundleBytes) throw new Error("Candidate output exceeds bound.");
         return { fileName: item.fileName, sha256: digest(bytes), size: bytes.length };
       });
-      const resolver = NodeModule.createRequire(import.meta.url);
-      const tools = ["vite-plus", "typescript-legacy", "effect", "rolldown", "tsdown"].map(
-        (name) => {
-          try {
-            const resolved = resolver.resolve(name);
-            return {
-              name,
-              resolutionBasis: "build-helper-module",
-              resolvedId: candidateId(root, resolved),
-              package: candidatePackage(root, resolved),
-            };
-          } catch {
-            return {
-              name,
-              resolutionBasis: "build-helper-module",
-              availability: "unavailable",
-              reason: "tool-package-not-resolved",
-            };
-          }
-        },
-      );
+      const tools = inspectPreparationCandidateTools(root);
       const meta = this.meta as {
         rollupVersion?: string;
         rolldownVersion?: string;
@@ -2044,7 +2223,9 @@ export function offlinePreparationCandidatePack(
             : { availability: "absent" },
           assets: outputs.filter((item) => item.type === "asset").map((item) => item.fileName),
           files: outputHashes,
-          syntax: inspectPreparationCandidateJavaScript(chunk.code),
+          syntax: importEvidence.syntax,
+          importEvidence,
+          generatedRuntime: inspectPreparationGeneratedRuntime(chunk.code),
         },
         modules,
         packages: [...packages.entries()].map(([id, observation]) => ({ id, observation })),
@@ -2080,7 +2261,7 @@ export function offlinePreparationCandidatePack(
     deps: {
       alwaysBundle: (id: string) => !NodeModule.isBuiltin(id),
       neverBundle: (id: string) => NodeModule.isBuiltin(id),
-      onlyBundle: false,
+      onlyBundle: false as const,
     },
     plugins: [plugin],
     async onSuccess() {
