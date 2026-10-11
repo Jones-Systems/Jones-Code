@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   VoiceReviewDraft,
   VoiceReviewRecentList,
+  VoiceReviewRecentEntry,
   ThreadRegistryComposedSnapshot,
   ThreadRegistryWorkstreams,
 } from "@t3tools/contracts";
@@ -34,11 +35,15 @@ export function EnvironmentVoiceReview({
   pane,
   onDirtyChange,
   unavailable = false,
+  onRecentChange,
+  queuedEntriesOverride,
 }: {
   environmentId: EnvironmentId;
   pane?: "pending" | "queued" | "sent";
   onDirtyChange?: (dirty: boolean) => void;
   unavailable?: boolean;
+  onRecentChange?: (recent: VoiceReviewRecentList | null) => void;
+  queuedEntriesOverride?: readonly VoiceReviewRecentEntry[];
 }) {
   const viewId = useId();
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -54,6 +59,7 @@ export function EnvironmentVoiceReview({
   const { fetchList, transport, review } = useVoiceReview(environmentId);
   const [tab, setTab] = useState<"review" | "routing">("review");
   const [recent, setRecent] = useState<VoiceReviewRecentList | null>(null);
+  useEffect(() => { onRecentChange?.(recent); }, [recent, onRecentChange]);
   const [registry, setRegistry] = useState<ThreadRegistryComposedSnapshot | null>(null);
   const [workstreams, setWorkstreams] = useState<ThreadRegistryWorkstreams | null>(null);
   const [metadataError, setMetadataError] = useState(false);
@@ -139,7 +145,7 @@ export function EnvironmentVoiceReview({
     ).values(),
   ];
   const recentEntries = recent?.entries ?? [];
-  const queuedEntries = recentEntries.filter(
+  const queuedEntries = (queuedEntriesOverride ?? recentEntries).filter(
     (entry) => entry.draft.state === "released" || entry.command_id !== null,
   );
   return (

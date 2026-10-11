@@ -864,7 +864,9 @@
     "scripts/notify-discord-release.test.ts": "accepted-shared",
     "scripts/release-smoke.ts": "accepted-shared",
     "scripts/stamp-jones-build.test.ts": "jones-owned",
-    "scripts/stamp-jones-build.ts": "jones-owned"
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "apps/web/src/jones/workQueue/classifySentPrompts.ts": "jones-owned",
+    "apps/web/src/jones/workQueue/classifySentPrompts.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -11,6 +11,7 @@ export interface ConfirmedSentPrompt {
   };
   sourceLabel: string | null;
   workstreams: readonly string[];
+  providerState?: "pending" | "running" | "completed" | "interrupted" | "error";
 }
 
 export type SentPromptsState =
@@ -20,6 +21,7 @@ export type SentPromptsState =
       status: "ready";
       provenance: "live" | "sample";
       entries: readonly ConfirmedSentPrompt[];
+      observation?: { sampledAt: number; coverage: "complete" | "partial"; stale: boolean };
     };
 
 const sentTimeFormatter = new Intl.DateTimeFormat("en-US", {
@@ -69,12 +71,20 @@ export function SentPrompts({ state }: { state: SentPromptsState }) {
         </div>
       ) : null}
       <p className="text-sm text-muted-foreground">Sent confirms handoff, not completed work.</p>
+      {state.observation ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          {state.observation.stale ? "Previously observed confirmed handoffs" : "Confirmed handoffs in this sample"}
+          {" · Sampled "}{sentTimeFormatter.format(state.observation.sampledAt)}
+          {" · Coverage: "}{state.observation.coverage}
+          {" · This sample is not a complete sent history."}
+        </p>
+      ) : null}
       {omitted ? (
         <p role="status" className="text-sm text-muted-foreground">
           Some sent prompts are unavailable because delivery confirmation is missing or invalid.
         </p>
       ) : entries.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No sent prompts observed.</p>
+        <p className="text-sm text-muted-foreground">{state.observation ? "No confirmed handoffs in this sample; other sent prompts may be unavailable." : "No sent prompts observed."}</p>
       ) : null}
       {entries.map((entry) => (
         <article key={entry.id} className="min-w-0 space-y-3 rounded-lg border p-4">
@@ -93,6 +103,7 @@ export function SentPrompts({ state }: { state: SentPromptsState }) {
             <time dateTime={new Date(entry.sentAt).toISOString()}>
               {sentTimeFormatter.format(entry.sentAt)}
             </time>
+            {entry.providerState ? <span>Provider turn: {entry.providerState} · finish line not tracked</span> : null}
             {entry.sourceLabel ? <span className="wrap-anywhere">{entry.sourceLabel}</span> : null}
             {entry.workstreams.length > 0 ? (
               <span className="wrap-anywhere">{entry.workstreams.join(" · ")}</span>

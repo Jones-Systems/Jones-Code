@@ -2,7 +2,7 @@
 import { act, useEffect, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { WorkQueueMetadataResult } from "@t3tools/contracts";
+import type { WorkQueueMetadataResult, VoiceReviewRecentList } from "@t3tools/contracts";
 
 const fixture = vi.hoisted(() => ({
   environments: [
@@ -21,6 +21,7 @@ const fixture = vi.hoisted(() => ({
       serverConfig: { environment: { capabilities: { workQueueMetadata: true } } },
     },
   ],
+  recent: null as VoiceReviewRecentList | null,
   mounts: new Map<string, number>(),
   blockerOptions: null as null | {
     shouldBlockFn: () => boolean;
@@ -52,12 +53,17 @@ vi.mock("../../components/voiceReview/VoiceReviewPage", () => ({
     pane,
     unavailable,
     onDirtyChange,
+    onRecentChange,
+    queuedEntriesOverride,
   }: {
     environmentId: string;
     pane: string;
     unavailable: boolean;
     onDirtyChange: (dirty: boolean) => void;
+    onRecentChange?: (recent: VoiceReviewRecentList | null) => void;
+    queuedEntriesOverride?: readonly VoiceReviewRecentList["entries"][number][];
   }) => {
+    useEffect(() => { onRecentChange?.(fixture.recent); }, [onRecentChange]);
     const [text, setText] = useState("");
     const [uncertain, setUncertain] = useState(false);
     useEffect(() => {
@@ -68,7 +74,8 @@ vi.mock("../../components/voiceReview/VoiceReviewPage", () => ({
       return () => onDirtyChange(false);
     }, [onDirtyChange, text, uncertain]);
     return (
-      <div hidden={pane !== "pending"}>
+      <div hidden={pane === "sent"}>
+        {pane === "queued" ? queuedEntriesOverride?.map((entry) => <p key={entry.draft.id}>Queued voice: {entry.text}</p>) : null}
         <textarea
           aria-label={`Edit ${environmentId}`}
           value={text}
@@ -87,6 +94,7 @@ vi.mock("../../components/voiceReview/VoiceReviewPage", () => ({
   },
 }));
 
+import { voiceReviewRecentFixture } from "@t3tools/client-runtime/voice-review/fixtures";
 import { UnifiedQueuePage } from "./UnifiedQueuePage";
 
 describe("Prompts environment composition", () => {
@@ -98,6 +106,7 @@ describe("Prompts environment composition", () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     originals = structuredClone(fixture.environments);
     fixture.mounts.clear();
+    fixture.recent = null;
     fixture.blockerStatus = "idle";
     fixture.blockerOptions = null;
     fixture.load
@@ -261,6 +270,36 @@ describe("Prompts environment composition", () => {
     await click("Leave Prompts");
     expect(fixture.proceed).toHaveBeenCalledOnce();
     expect(container.textContent).toBe("Destination");
+  });
+
+  it("moves only a proved linked delivery from Queued to one Sent row", async () => {
+    fixture.environments = [{
+      ...fixture.environments[0]!,
+      serverConfig: { environment: { environmentId: "alpha", capabilities: { workQueueMetadata: true } } },
+    } as typeof fixture.environments[number]];
+    fixture.recent = { ...voiceReviewRecentFixture, entries: [{
+      ...voiceReviewRecentFixture.entries[0]!, text: "Linked prompt text",
+      queue_delivery_links: { status: "ready", reason: null, deliveries: [{
+        delivery_id: "delivery", queue_request_id: "request", payload_sha256: "b".repeat(64),
+        destination: { backend: "t3", instance: "opaque-instance", thread_id: "thread", project_id: null },
+      }] },
+    }] };
+    fixture.load.mockResolvedValue({ status: "partial", expires_at_ms: Date.now() + 60000, snapshot: {
+      schema: "codex.t3-work-queue-metadata/v2", source: { queue_id: "queue", host_id: "host", environment_ref: "alpha", exporter_instance_id: "exporter" },
+      observed_at_ms: Date.now(), snapshot_token: "a".repeat(64), coverage: "partial", authority_effect: "none",
+      items: [{ request_id: "request", workstream_id: "workstream", canonical_binding: null, entry_kind: "ordinary", request_kind: "initial", lane: "normal", queue_state: "waiting_remote", submitted_at_ms: null,
+        target: { host_id: "host", environment_ref: "alpha", thread_id: "thread" }, dispatch_status: "accepted", native_command_status: "accepted", finish_line: "not_tracked", payload_sha256: "b".repeat(64),
+        native_handoff: { command_id: "command", message_id: "message", command_status: "accepted", correlation_status: "exact", receipt_sequence: 0, turn_id: "turn", turn_state: "pending", observed_at_ms: Date.now() - 1000 },
+      }],
+    } });
+    await render();
+    await click("Queued");
+    expect(container.textContent).not.toContain("Queued voice: Linked prompt text");
+    await click("Sent");
+    expect(container.querySelectorAll('[aria-label="Sent prompts"] article')).toHaveLength(1);
+    expect(container.textContent).toContain("Linked prompt text");
+    expect(container.textContent).toContain("Provider turn: pending");
+    expect(container.textContent).toContain("Coverage: partial");
   });
 
   it("supports arrow, Home and End tab navigation with panel labelling and retained children", async () => {
