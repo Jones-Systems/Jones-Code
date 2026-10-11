@@ -106,6 +106,10 @@ export function materializeColdMaintenance(
   coldText,
   pairedText,
   ownerText = NodeFS.readFileSync(NodePath.join(updateSources, "jonesColdOwnerSource.ts"), "utf8"),
+  workerText = NodeFS.readFileSync(
+    NodePath.join(updateSources, "jonesPreparationWorkerSource.ts"),
+    "utf8",
+  ),
 ) {
   NodeAssert.ok(
     maintenanceText.includes('import { jonesColdPairSource } from "./jonesColdPairSource.ts";'),
@@ -115,9 +119,15 @@ export function materializeColdMaintenance(
     maintenanceText.includes('import { jonesColdOwnerSource } from "./jonesColdOwnerSource.ts";'),
   );
   NodeAssert.equal(maintenanceText.split("  jonesColdOwnerSource +").length, 2);
+  NodeAssert.ok(
+    maintenanceText.includes(
+      'import { jonesPreparationWorkerSource } from "./jonesPreparationWorkerSource.ts";',
+    ),
+  );
+  NodeAssert.equal(maintenanceText.split("  jonesPreparationWorkerSource +").length, 2);
   NodeAssert.match(
     maintenanceText,
-    /jonesColdPairSource \+\s+jonesColdOwnerSource \+\s+String\.raw`/,
+    /jonesColdPairSource \+\s+jonesColdOwnerSource \+\s+jonesPreparationWorkerSource \+\s+String\.raw`/,
   );
   const ownerDeclaration = "export const jonesColdOwnerSource = String.raw`";
   NodeAssert.equal(ownerText.split(ownerDeclaration).length, 2);
@@ -130,6 +140,20 @@ export function materializeColdMaintenance(
   );
   const owner = literal(ownerText);
   NodeAssert.ok(!owner.includes("${") && !owner.includes("`"), "Owner source must be one literal.");
+  const workerDeclaration = "export const jonesPreparationWorkerSource = String.raw`";
+  NodeAssert.equal(workerText.split(workerDeclaration).length, 2);
+  NodeAssert.equal(
+    workerText
+      .slice(0, workerText.indexOf(workerDeclaration))
+      .replace(/\/\*[^]*?\*\//g, "")
+      .trim(),
+    "",
+  );
+  const worker = literal(workerText);
+  NodeAssert.ok(
+    !worker.includes("${") && !worker.includes("`"),
+    "Worker source must be one literal.",
+  );
   NodeAssert.ok(
     coldText.includes('import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";'),
   );
@@ -148,7 +172,8 @@ export function materializeColdMaintenance(
   const bootstrap = literal(bootstrapText);
   const suffix = "if __name__ == '__main__':\n    sys.exit(main())\n";
   NodeAssert.ok(bootstrap.endsWith(suffix));
-  const result = bootstrap.slice(0, -suffix.length) + cold + owner + literal(maintenanceText);
+  const result =
+    bootstrap.slice(0, -suffix.length) + cold + owner + worker + literal(maintenanceText);
   NodeAssert.ok(
     !result.includes("${") && !result.includes("`"),
     "Unresolved maintenance substitution.",
@@ -165,6 +190,7 @@ export async function readColdMaintenanceSources() {
     coldText,
     nativeSource,
     ownerText,
+    workerText,
   ] = await Promise.all([
     NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyBootstrapSource.ts"), "utf8"),
     NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyMaintenanceSource.ts"), "utf8"),
@@ -173,6 +199,7 @@ export async function readColdMaintenanceSources() {
     NodeFSP.readFile(NodePath.join(updateSources, "jonesColdPairSource.ts"), "utf8"),
     NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyIdentityNative.c")),
     NodeFSP.readFile(NodePath.join(updateSources, "jonesColdOwnerSource.ts"), "utf8"),
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesPreparationWorkerSource.ts"), "utf8"),
   ]);
   const bootstrap = literal(bootstrapText);
   const suffix = "if __name__ == '__main__':\n    sys.exit(main())\n";
@@ -185,6 +212,7 @@ export async function readColdMaintenanceSources() {
       coldText,
       pairedText,
       ownerText,
+      workerText,
     ),
     executor: materializePairedExecutor(executorText, pairedText),
     nativeSourceSha256: digest(nativeSource),
@@ -1502,5 +1530,385 @@ export async function runColdOwnerFixture(scenario, { signal } = {}) {
       NodeAssert.equal(report.passed, true);
     }
     return report;
+  });
+}
+
+export const coldPreparationCases = [
+  "prepare-success",
+  "settled-query-restore",
+  "plan-query-restore",
+  "plan-id-drift",
+  "plan-publication-failure",
+  "intent-sync-failure",
+  "worker-exit-failure",
+  "worker-close-failure",
+  "paused-cancel",
+  "work-replaced",
+  "cold-c-reconcile",
+  "v2-held",
+  "unretained-runtime",
+];
+
+// This framed child models query results, not SQLite or native observations. The
+// real issuer, lock, pair, publishing, process handles and teardown remain in use.
+const preparationChild = String.raw`
+import sys
+sys.dont_write_bytecode = True
+import hashlib, json, os, pathlib, struct
+def canonical(value): return json.dumps(value, ensure_ascii=False, separators=(',', ':'), sort_keys=True).encode()
+def digest(raw): return hashlib.sha256(raw).hexdigest()
+args = sys.argv[1:]
+assert args[0] == '--jones-preparation-worker-v1' and args[1] == '--lock-fd' and args[3] == '--owner-directory-fd' and len(args) == 5
+lock = int(args[2])
+assert os.pread(lock, 4096, 0)
+os.fchdir(int(args[4]))
+directory = pathlib.Path.cwd()
+plan = json.loads((directory / 'plan.json').read_bytes())
+owner = json.loads((directory / 'journal.json').read_bytes())
+session = owner['coldOwner']['sessionId']
+dispatch = json.loads((directory / 'state' / ('worker-' + session + '.json')).read_bytes())
+assert dispatch['parentPid'] == os.getppid() and owner['coldOwner']['phase'] == 'entered'
+case = (directory / 'owned-fixture-case').read_text()
+runtime = plan['bundle']['preparation']
+sequence = 0
+def read_exact(length):
+    raw = b''
+    while len(raw) < length:
+        chunk = sys.stdin.buffer.read(length - len(raw))
+        assert chunk
+        raw += chunk
+    return raw
+def receive():
+    length = struct.unpack('>I', read_exact(4))[0]
+    assert 1 <= length <= 16384
+    raw = read_exact(length)
+    value = json.loads(raw)
+    assert canonical(value) == raw and value['sessionId'] == session and value['payloadBytes'] == 0
+    return value
+def send(kind, payload=b'', **fields):
+    value = dict(schema=1, type=kind, sessionId=session, sequence=sequence, payloadBytes=len(payload), **fields)
+    raw = canonical(value)
+    sys.stdout.buffer.write(struct.pack('>I', len(raw)) + raw + payload)
+    sys.stdout.buffer.flush()
+send('READY', runtimeSha256=runtime['executable']['sha256'], entrySha256=runtime['entry']['sha256'])
+while True:
+    command = receive()
+    sequence = command['sequence']
+    kind = command['type']
+    if kind in ('EXIT', 'ABORT'):
+        send(kind)
+        sys.exit(7 if case in ('worker-exit-failure', 'cold-c-reconcile') and dispatch['purpose'] == 'prepare' else 0)
+    assert kind in ('PLAN', 'APPLY', 'RECONCILE')
+    purpose = {'PLAN': 'plan', 'APPLY': 'apply', 'RECONCILE': 'reconcile'}[kind]
+    scope_id = digest((session + purpose).encode())
+    if kind != 'PLAN':
+        raw = (directory / 'state/preparation-plan.json').read_bytes()
+        envelope = (directory / 'state/preparation-envelope.json').read_bytes()
+        journal = json.loads((directory / 'state/journal.json').read_bytes())
+        assert digest(raw) == command['planSha256'] == json.loads(envelope)['planSha256'] == journal['planSha256']
+        assert digest(envelope) == command['envelopeSha256'] and journal['phase'] in ('preparation-intent', 'prepared')
+    send('SQL_SCOPE_OPENED', scopeId=scope_id, purpose=purpose, access='read-only' if kind == 'RECONCILE' else 'read-write')
+    continued = receive()
+    assert continued['type'] == 'CONTINUE' and continued['sequence'] == sequence and continued['scopeId'] == scope_id
+    if kind == 'PLAN':
+        if case == 'plan-query-restore':
+            send('CLOSED_RESULT', scopeId=scope_id, planSha256=None, outcome='query-failed', errorCode='query-rejected')
+        else:
+            value = dict(schema=1, id='00000000-0000-4000-8000-000000000000' if case == 'plan-id-drift' else command['planId'],
+                         timestamp=command['timestamp'], snapshotSha256=command['snapshotSha256'], settingsSha256=command['settingsSha256'],
+                         selections=[], expectedRows=[], preservedRows=[])
+            raw = json.dumps(value, separators=(',', ':')).encode()
+            send('PLAN_READY', payload=raw, planSha256=digest(raw))
+    else:
+        failed = case == 'settled-query-restore'
+        # Model WAL normalization: the live raw bytes may change while the retained pair stays exact.
+        original = json.loads(plan['originalManifest'])
+        if kind == 'APPLY': pathlib.Path(original['databasePath']).write_bytes(b'owned-query-normalized-db')
+        send('CLOSED_RESULT', scopeId=scope_id, planSha256=command['planSha256'],
+             outcome='query-failed' if failed else 'applied', errorCode='query-rejected' if failed else None)
+`;
+
+const preparationPrefix = ownerDriver.slice(0, ownerDriver.indexOf("def forbidden_child("));
+NodeAssert.ok(
+  preparationPrefix.endsWith("Maintenance.load, Maintenance.verify = load_owned, verify_owned\n"),
+);
+const preparationDriver =
+  preparationPrefix +
+  String.raw`
+import contextlib, fcntl, signal
+Process, Worker, Pair = scope['_PreparationProcess'], scope['_PreparationWorker'], scope['_ColdPairTransaction']
+commands = []
+real_start, real_close = Process.start, Process.close
+def tracked_start(self):
+    commands.append(self)
+    real_start(self)
+Process.start = tracked_start
+def closure():
+    complete = all(not item.spawn_unknown and (not item.spawn_attempted or item.reaped) and item.closed for item in commands)
+    value = {'schema': 1, 'complete': complete, 'processes': [item.evidence() for item in commands], 'pidSignalAuthority': False}
+    path = root / 'fixture-closure.json'
+    with path.open('w') as stream:
+        json.dump(value, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return complete
+def cancelled(signum, frame): raise KeyboardInterrupt('owned preparation fixture cancellation')
+signal.signal(signal.SIGTERM, cancelled)
+signal.signal(signal.SIGINT, cancelled)
+def portable_identity(owner, path, kind):
+    assert path.is_relative_to(root)
+    info = path.lstat()
+    result = [str(info.st_dev), str(info.st_ino), info.st_uid, stat.S_IMODE(info.st_mode)]
+    if kind == 'file': result += [info.st_size, info.st_mtime_ns]
+    return result
+scope['_cold_pair_identity'] = portable_identity
+scope['_cold_pair_clone'] = lambda source, parent, name: False
+scope['_COLD_PAIR_HEADROOM'] = 16384
+scope['_PREPARATION_LIMITS']['seconds'] = 5
+scope['_PREPARATION_LIMITS']['drainSeconds'] = 1
+runtime = directory / 'tools/jones-offline-preparation'
+runtime_raw = ('#!' + sys.executable + '\n' + payload['child']).encode()
+write(runtime, runtime_raw, 0o500)
+write(directory / 'owned-fixture-case', scenario.encode())
+config = b'{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n'
+bundle = dict(bundle, schema=3, repository='Jones-Systems/Jones-Code', sourceSha='3' * 40, sourceTree='4' * 40,
+              version='1.0.0-preview.20261011.1', bootstrapSha256='5' * 64, executorSha256='6' * 64,
+              identityNativeSourceSha256='7' * 64, nativeArchitecture='arm64',
+              preparation={'schema': 1, 'protocol': 1, 'provenanceSha256': '8' * 64,
+                           'sourceInputHashes': {key: '9' * 64 for key in scope['_PREPARATION_SOURCE_INPUTS']},
+                           'entry': {'sha256': 'a' * 64, 'size': 1}, 'seaConfig': {'sha256': sha(config), 'size': len(config)},
+                           'executable': {'name': runtime.name, 'sha256': sha(runtime_raw), 'size': len(runtime_raw)},
+                           'node': {'version': '26.8.2', 'platform': 'darwin', 'architecture': 'arm64', 'archiveSha256': 'b' * 64,
+                                    'archiveBytes': 1, 'checksumsSha256': 'c' * 64, 'runtimeSha256': 'd' * 64, 'runtimeBytes': 1},
+                           'sqlite': {'version': '3.50.0', 'sourceId': '2026-10-11 00:00:00 ' + 'e' * 64}})
+if scenario == 'v2-held':
+    bundle.pop('preparation')
+    bundle['schema'] = 2
+plan['bundle'] = bundle
+plan_raw = encode(plan) + b'\n'
+journal['planSha256'] = sha(plan_raw)
+owner_manifest = dict(original, owner='maintenance', generation=generation, maintenance={'schema': 1, 'planSha256': sha(plan_raw)})
+for path, raw, mode in ((directory / 'plan.json', plan_raw, 0o400),
+                        (directory / 'journal.json', encode(journal) + b'\n', 0o600),
+                        (maintenance_root / 'current.json', encode({'schema': 1, 'generation': generation, 'planSha256': sha(plan_raw)}) + b'\n', 0o400),
+                        (manifest, encode(owner_manifest) + b'\n', 0o600)):
+    path.chmod(0o600)
+    write(path, raw, mode)
+if scenario == 'unretained-runtime': runtime.unlink()
+real_durable = scope['durable_file']
+fault = {'fired': False}
+def durable(path, raw, mode, previous=None):
+    is_intent = path == directory / 'state/journal.json' and json.loads(raw)['phase'] == 'preparation-intent'
+    if scenario == 'plan-publication-failure' and path == directory / 'state/preparation-envelope.json':
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned envelope publication failure')
+    real_durable(path, raw, mode, previous)
+    if is_intent:
+        events.append('intent-durable')
+        assert (directory / 'state/preparation-plan.json').is_file() and (directory / 'state/preparation-envelope.json').is_file()
+        if scenario == 'intent-sync-failure':
+            fault['fired'] = True
+            raise OSError(errno.EIO, 'owned error after intent durability')
+scope['durable_file'] = durable
+def observed(self, path, capture=False, access=None):
+    self.check()
+    self.session.boundary()
+    assert self.process.child is not None and not self.process.reaped
+    assert len(self.inherited) == 2 and self.session.held['fd'] in self.inherited and len(set(self.inherited)) == 2
+    assert os.fstat(self.session.held['fd']).st_ino == (manifest.parent / 'jones-activation.lock').stat().st_ino
+    lock_test = os.open(manifest.parent / 'jones-activation.lock', os.O_RDWR)
+    try:
+        try: fcntl.flock(lock_test, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: pass
+        else: raise AssertionError('Captured worker lost the held lock')
+    finally: os.close(lock_test)
+    if capture:
+        assert access is None and path == database
+        events.append('ready-captured')
+    elif access is None: assert path == self.work / 'state.sqlite'
+    else:
+        purpose = 'plan' if self.work is not None and path == self.work / 'state.sqlite' else 'reconcile' if access == 'read-only' else 'apply'
+        events.append(purpose + '-paused')
+        if purpose != 'plan':
+            current = json.loads((directory / 'state/journal.json').read_bytes())
+            assert current['phase'] in ('preparation-intent', 'prepared')
+            assert (directory / 'state/preparation-plan.json').is_file() and (directory / 'state/preparation-envelope.json').is_file()
+        if scenario == 'paused-cancel':
+            fault['fired'] = True
+            raise KeyboardInterrupt('owned cancellation while child waits for CONTINUE')
+    self.save_receipt('mechanical-observer')
+Worker.observe = observed
+def close(self):
+    real_close(self)
+    if scenario == 'worker-close-failure' and not fault['fired']:
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned failure after actual descriptor close')
+Process.close = close
+real_clean = Worker.clean_work
+def clean(self):
+    assert self.process.reaped and self.process.closed
+    events.append('worker-reaped')
+    if scenario == 'work-replaced' and self.work is not None and not fault['fired']:
+        fault['fired'] = True
+        self.work.rename(self.work.with_name(self.work.name + '-retained'))
+        self.work.mkdir(mode=0o700)
+        write(self.work / 'state.sqlite', b'foreign-replacement')
+    real_clean(self)
+Worker.clean_work = clean
+real_observed = Pair.preparation_observed
+def preparation_observed(self, digest):
+    worker = sessions[-1].worker
+    assert worker.settled and worker.process.reaped and worker.process.closed and worker.work is None
+    events.append('prepared-observed')
+    return real_observed(self, digest)
+Pair.preparation_observed = preparation_observed
+def refusal(body, kind=BaseException):
+    try: body()
+    except kind as failure: return failure
+    raise AssertionError('Expected preparation refusal')
+def enter(body):
+    with scope['fixed_lock'](manifest) as current:
+        assert callable(current) and not hasattr(current, 'fd')
+        with scope['_cold_owner_session']() as session:
+            sessions.append(session)
+            body(session)
+def prepare(session):
+    refusal(lambda: session.prepare({'path': str(database), 'authorized': True}), TypeError)
+    result = session.prepare()
+    assert result['workerReaped'] is True and result['activationAllowed'] is False
+    if scenario in ('settled-query-restore', 'plan-query-restore'):
+        assert result['status'] == 'query-failed'
+        session.begin_restore()
+        assert session.reconcile_restore()['status'] == 'pair-restored-gates-retained'
+        assert database.read_bytes() == b'original-db'
+    else: assert result['status'] == 'applied'
+def failed_prepare(session):
+    failure = refusal(lambda: prepare(session), Refused)
+    if scenario == 'v2-held': assert not isinstance(failure, scope['_PreparationFailure'])
+    else:
+        assert isinstance(failure, scope['_PreparationFailure'])
+        primary = failure.errors[0]
+        if scenario in ('plan-publication-failure', 'intent-sync-failure', 'worker-close-failure'):
+            assert isinstance(primary, OSError) and primary.errno == errno.EIO
+        elif scenario == 'paused-cancel': assert isinstance(primary, KeyboardInterrupt)
+        else: assert isinstance(primary, Refused)
+    assert session.failure is not None
+    refusal(session.begin_restore, Refused)
+    refusal(session.prepare, Refused)
+fixture_failure = None
+try:
+    failures = {'plan-id-drift', 'plan-publication-failure', 'intent-sync-failure', 'worker-exit-failure',
+                'worker-close-failure', 'paused-cancel', 'work-replaced', 'cold-c-reconcile', 'v2-held', 'unretained-runtime'}
+    if scenario in failures:
+        refusal(lambda: enter(failed_prepare))
+        before = (directory / 'journal.json').read_bytes()
+        refusal(lambda: enter(prepare))
+        assert (directory / 'journal.json').read_bytes() == before
+        if scenario in ('v2-held', 'unretained-runtime'):
+            assert not (directory / 'state').exists() and not commands
+        else:
+            assert commands and all(item.reaped and item.closed for item in commands)
+            assert json.loads(before)['coldOwner']['phase'] == 'entered'
+            assert (directory / 'state/previous-pair/database').read_bytes() == b'original-db'
+            assert not list((directory / 'state').glob('preparation-evidence-*.json'))
+        if scenario in ('plan-id-drift', 'plan-publication-failure', 'intent-sync-failure', 'paused-cancel'):
+            assert 'apply-paused' not in events
+        if scenario == 'work-replaced':
+            assert sessions[-1].worker.work.joinpath('state.sqlite').read_bytes() == b'foreign-replacement'
+        if scenario == 'cold-c-reconcile':
+            original_plan = (directory / 'state/preparation-plan.json').read_bytes()
+            original_envelope = (directory / 'state/preparation-envelope.json').read_bytes()
+            assert database.read_bytes() == b'owned-query-normalized-db'
+            epoch['current'] = epoch_c
+            def recover(session):
+                assert session.recover_preparation()['status'] == 'applied'
+                assert (directory / 'state/preparation-plan.json').read_bytes() == original_plan
+                assert (directory / 'state/preparation-envelope.json').read_bytes() == original_envelope
+                session.begin_restore()
+                session.reconcile_restore()
+                assert database.read_bytes() == b'original-db'
+            enter(recover)
+            assert events.count('plan-paused') == 1 and events.count('reconcile-paused') == 1
+    else:
+        enter(prepare)
+        assert json.loads((directory / 'journal.json').read_bytes())['coldOwner']['phase'] == 'finalized'
+        assert all(item.reaped and item.closed for item in commands)
+        assert not list((directory / 'state/preparation-work').iterdir())
+        if scenario == 'prepare-success':
+            assert events.index('intent-durable') < events.index('apply-paused') < events.index('worker-reaped') < events.index('prepared-observed')
+        if scenario == 'plan-query-restore': assert not (directory / 'state/preparation-plan.json').exists()
+        refusal(lambda: enter(prepare))
+    assert all(not session.live for session in sessions)
+except BaseException as failure: fixture_failure = failure
+finally:
+    failures = [] if fixture_failure is None else [fixture_failure]
+    for command in commands:
+        try: command.stop()
+        except BaseException as failure: failures.append(failure)
+        try: real_close(command)
+        except BaseException as failure: failures.append(failure)
+    try:
+        if not closure(): failures.append(AssertionError('Owned preparation child custody is unproved'))
+    except BaseException as failure: failures.append(failure)
+    if failures: raise scope['_PreparationFailure'](failures, str(root / 'fixture-closure.json'))
+print(json.dumps({'case': scenario, 'passed': True, 'qualification': 'owned-mechanical-captured-preparation',
+                  'stateAdmissionAllowed': False, 'nativeColdOwnerQualified': False, 'sqliteQualified': False}))
+`;
+
+export async function runColdPreparationFixture(scenario, { signal } = {}) {
+  NodeAssert.ok(coldPreparationCases.includes(scenario));
+  const sources = await readColdMaintenanceSources();
+  return withLegacyIdentityScratch(async (root) => {
+    const payload = NodePath.join(root, "preparation.json");
+    const entry = NodePath.join(root, "preparation.py");
+    const evidence = NodePath.join(root, "fixture-closure.json");
+    await NodeFSP.writeFile(
+      payload,
+      JSON.stringify({ maintenance: sources.maintenance, case: scenario, child: preparationChild }),
+    );
+    await NodeFSP.writeFile(entry, preparationDriver);
+    await NodeFSP.writeFile(
+      evidence,
+      JSON.stringify({ schema: 1, complete: false, processes: [], pidSignalAuthority: false }),
+    );
+    let failure;
+    let result;
+    try {
+      result = await runLegacyIdentityFixtureCommand(
+        "/usr/bin/python3",
+        ["-I", "-B", entry, payload, root],
+        root,
+        { signal },
+      );
+      NodeAssert.equal(result.code, 0, result.stderr);
+      NodeAssert.equal(result.stderr, "");
+    } catch (cause) {
+      failure = cause;
+    }
+    try {
+      const raw = await NodeFSP.readFile(evidence);
+      NodeAssert.ok(raw.length <= 32768);
+      const closure = JSON.parse(raw);
+      NodeAssert.equal(closure.schema, 1);
+      NodeAssert.equal(closure.complete, true);
+      NodeAssert.equal(closure.pidSignalAuthority, false);
+      NodeAssert.ok(Array.isArray(closure.processes) && closure.processes.length <= 16);
+      for (const process of closure.processes) {
+        NodeAssert.equal(process.spawnUnknown, false);
+        NodeAssert.ok(!process.spawnAttempted || process.reaped === true);
+        NodeAssert.equal(process.streamsClosed, true);
+      }
+    } catch (cleanup) {
+      const retained = new AggregateError(
+        failure ? [failure, cleanup] : [cleanup],
+        "Owned preparation closure is unproved; exact scratch retained.",
+        { cause: failure ?? cleanup },
+      );
+      retained.preserveScratch = true;
+      retained.evidencePath = evidence;
+      throw retained;
+    }
+    if (failure) throw failure;
+    return JSON.parse(result.stdout.trim());
   });
 }

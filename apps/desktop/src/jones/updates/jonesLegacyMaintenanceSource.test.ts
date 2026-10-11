@@ -61,6 +61,15 @@ elif fault == 'cancel-before-state-fence':
     try: owner.cancel()
     except scope['Refused']: pass
     else: raise AssertionError('Entered session permitted PRE-STATE cancellation')
+elif fault == 'private-worker':
+    try: scope['_PreparationWorker']()
+    except scope['Refused']: pass
+    else: raise AssertionError('Unbound worker received a session')
+    for operation in ('prepare', 'recover_preparation', 'snapshot'):
+        with contextlib.redirect_stderr(io.StringIO()):
+            try: scope['maintenance_main']([operation, '--manifest', '/fixture/runtime/jones-active-install.json'])
+            except SystemExit as result: assert result.code == 2
+            else: raise AssertionError('Public entry exposed a state operation')
 elif fault == 'shim-bytes':
     active = {'appPath': '/fixture/Jones.app', 'executablePath': '/fixture/Jones.app/Contents/MacOS/Jones'}
     assert scope['expected_shim'](pathlib.Path('/fixture/home'), active).decode() == payload['expectedShim']
@@ -88,6 +97,7 @@ describe("standalone pre-state maintenance protocol", () => {
     "shim-bytes",
     "cold-owner-cursor",
     "cancel-before-state-fence",
+    "private-worker",
   ])("enforces %s before granting any maintenance effect", (scenario) => {
     const result = NodeChildProcess.spawnSync("python3", ["-I", "-B", "-c", protocolFixture], {
       input: JSON.stringify({

@@ -14,6 +14,7 @@ const sourceTexts = () =>
       "jonesColdPairSource.ts",
       "jonesPairedStateSource.ts",
       "jonesColdOwnerSource.ts",
+      "jonesPreparationWorkerSource.ts",
     ].map((name) => NodeFSP.readFile(new URL(name, import.meta.url), "utf8")),
   );
 
@@ -28,6 +29,54 @@ describe("continuous cold-owner source", () => {
     );
     expect(jonesLegacyMaintenanceSource).toContain("del _cold_owner_bindings");
   });
+
+  it("refuses missing, duplicate and nonliteral worker composition", async () => {
+    const [bootstrap, maintenance, pair, paired, owner, worker] = await sourceTexts();
+    for (const changed of [
+      maintenance!.replace("  jonesPreparationWorkerSource +", ""),
+      maintenance!.replace(
+        "  jonesPreparationWorkerSource +",
+        "  jonesPreparationWorkerSource +\n  jonesPreparationWorkerSource +",
+      ),
+      maintenance!.replace("  jonesPreparationWorkerSource +", "  unboundWorker +"),
+    ]) {
+      expect(() =>
+        ColdFixture.materializeColdMaintenance(bootstrap, changed, pair, paired, owner, worker),
+      ).toThrow();
+    }
+    for (const changed of [
+      worker! + "\nunbound();",
+      worker!.replace("String.raw`", "String.raw`${unbound}"),
+      worker! + worker!,
+      "unbound();\n" + worker!,
+    ]) {
+      expect(() =>
+        ColdFixture.materializeColdMaintenance(
+          bootstrap,
+          maintenance,
+          pair,
+          paired,
+          owner,
+          changed,
+        ),
+      ).toThrow();
+    }
+  });
+
+  it.each(ColdFixture.coldPreparationCases as string[])(
+    "holds the captured preparation boundary for %s",
+    async (scenario) => {
+      expect(await ColdFixture.runColdPreparationFixture(scenario)).toEqual({
+        case: scenario,
+        passed: true,
+        qualification: "owned-mechanical-captured-preparation",
+        stateAdmissionAllowed: false,
+        nativeColdOwnerQualified: false,
+        sqliteQualified: false,
+      });
+    },
+    30000,
+  );
 
   it("refuses missing, duplicate and nonliteral owner composition", async () => {
     const [bootstrap, maintenance, pair, paired, owner] = await sourceTexts();

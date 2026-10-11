@@ -1,5 +1,6 @@
 import { jonesColdPairSource } from "./jonesColdPairSource.ts";
 import { jonesColdOwnerSource } from "./jonesColdOwnerSource.ts";
+import { jonesPreparationWorkerSource } from "./jonesPreparationWorkerSource.ts";
 import { jonesLegacyBootstrapSource } from "./jonesLegacyBootstrapSource.ts";
 
 const bootstrapEntry = "if __name__ == '__main__':\n    sys.exit(main())\n";
@@ -12,6 +13,7 @@ export const jonesLegacyMaintenanceSource =
   jonesLegacyBootstrapSource.slice(0, -bootstrapEntry.length) +
   jonesColdPairSource +
   jonesColdOwnerSource +
+  jonesPreparationWorkerSource +
   String.raw`
 import fcntl, subprocess
 
@@ -469,7 +471,7 @@ def _maintenance_fixed_lock(manifest):
             def current():
                 require(identity(os.fstat(fd)) == proof and identity(os.stat(path.name, dir_fd=parent, follow_symlinks=False)) == proof)
             current()
-            yield current
+            yield {'current': current, 'fd': fd}
             current()
         finally: os.close(fd)
 
@@ -509,7 +511,8 @@ class Maintenance:
         require(self.journal['schema'] == 1 and self.journal['maintenanceGeneration'] == pointer['generation'] and self.journal['planSha256'] == pointer['planSha256'] and self.journal['phase'] in PHASES)
         self.native = self.directory / 'tools/identity-native'
         self.bundle = self.plan['bundle']
-        require(set(self.bundle) == BUNDLE_V2_KEYS and self.bundle['schema'] == 2 and self.bundle['nativeArchitecture'] == 'arm64')
+        if self.bundle.get('schema') == 3: _preparation_bundle(self.bundle)
+        else: require(set(self.bundle) == BUNDLE_V2_KEYS and type(self.bundle['schema']) is int and self.bundle['schema'] == 2 and self.bundle['nativeArchitecture'] == 'arm64')
         require(self.bundle['repository'] == REPOSITORY and all(hex_value(self.bundle[key], 64) for key in ('bootstrapSha256', 'executorSha256', 'maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256')))
         binding = self.plan['candidateBinding']
         require(binding['manifestPath'] == str(self.manifest) and binding['manifestSha256'] == self.plan['originalManifestSha256'])
@@ -579,6 +582,12 @@ class Maintenance:
         self.validate_cursor()
         self.current_lock()
         retained = [self.manifest.parent / 'jones-activation.lock', self.directory / 'tools/maintenance.py', self.native]
+        if self.bundle.get('schema') == 3:
+            preparation = _preparation_bundle(self.bundle)
+            runtime = self.directory / 'tools' / _PREPARATION_NAME
+            require(Observation().digest(runtime, 256 * 1024 * 1024) == preparation['executable']['sha256'])
+            require(os.stat(runtime, follow_symlinks=False).st_size == preparation['executable']['size'])
+            retained.append(runtime)
         identity_batch = native_identity(self.native, self.bundle['identityNativeSha256'], [('file', path) for path in retained])
         require(stable_native(identity_batch['objects'][0]) == self.plan['lockIdentity'])
         require([stable_native(item) for item in identity_batch['objects'][1:]] == self.plan['toolIdentities'])
@@ -702,8 +711,11 @@ class Maintenance:
         return maintenance_report('cancelled-pre-state', recoveredGeneration=cancellation['generation'], canonicalExecutionRestored=True)
 
     def sync_evidence(self):
-        for name in ('plan.json', 'journal.json', 'tools/maintenance.py', 'tools/identity-native'):
-            with Observation().file(self.directory / name, LIMITS['metadataBytes']) as stream: sync_fd(stream.fileno())
+        names = ['plan.json', 'journal.json', 'tools/maintenance.py', 'tools/identity-native']
+        if self.bundle.get('schema') == 3: names.append('tools/' + _PREPARATION_NAME)
+        for name in names:
+            limit = 256 * 1024 * 1024 if name == 'tools/' + _PREPARATION_NAME else LIMITS['metadataBytes']
+            with Observation().file(self.directory / name, limit) as stream: sync_fd(stream.fileno())
         with Observation().file(self.manifest, 131072) as stream: sync_fd(stream.fileno())
         with Observation().file(self.root / 'current.json', 8192) as stream: sync_fd(stream.fileno())
         for path in (self.directory / 'tools', self.directory, self.root, self.manifest.parent):
@@ -760,7 +772,7 @@ class Maintenance:
         self.sync_evidence()
         return self.reconcile()
 
-fixed_lock, _cold_owner_session, _cold_pair_runtime = _cold_owner_bindings()
+fixed_lock, _cold_owner_session, _cold_pair_runtime, _preparation_worker_runtime = _cold_owner_bindings()
 del _cold_owner_bindings
 
 def maintenance_main(argv=None):

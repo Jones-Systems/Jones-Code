@@ -3,9 +3,11 @@ import * as NodeTest from "node:test";
 import {
   coldMaintenanceCases,
   coldOwnerCases,
+  coldPreparationCases,
   readColdMaintenanceSources,
   runColdMaintenanceFixture,
   runColdOwnerFixture,
+  runColdPreparationFixture,
 } from "./legacy-cold-maintenance-fixture.mjs";
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- These standalone tests qualify the actual native identity ABI on an owned synthetic family.
@@ -40,4 +42,17 @@ for (const scenario of coldMaintenanceCases) {
       NodeAssert.equal(report.stateAdmissionAllowed, false);
     },
   );
+}
+
+for (const scenario of coldPreparationCases) {
+  NodeTest.test(`owned captured preparation: ${scenario}`, { timeout: 30000 }, async (context) => {
+    NodeAssert.deepEqual(await runColdPreparationFixture(scenario, { signal: context.signal }), {
+      case: scenario,
+      passed: true,
+      qualification: "owned-mechanical-captured-preparation",
+      stateAdmissionAllowed: false,
+      nativeColdOwnerQualified: false,
+      sqliteQualified: false,
+    });
+  });
 }

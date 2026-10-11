@@ -175,11 +175,10 @@ class _PreparationWorker:
         self.session = _preparation_worker_runtime()
         self.session.check(self.session.owner)
         require(self.session.worker is None)
-        self.session.worker = self
         self.owner, self.pair = self.session.owner, self.session.pair
         self.process, self.observers, self.tokens = None, [], None
         self.sequence, self.settled, self.failed = 0, False, False
-        self.receipt_raw, self.work = None, None
+        self.receipt_raw, self.work, self.work_identity = None, None, None
         self.session_id = self.session.record['sessionId']
         self.preparation = _preparation_bundle(self.owner.bundle)
         self.runtime = self.owner.directory / 'tools' / _PREPARATION_NAME
@@ -188,6 +187,7 @@ class _PreparationWorker:
         self.receipt = {'schema': 1, 'sessionId': self.session_id, 'pid': None, 'processes': None,
                         'phase': 'unspawned', 'reaped': False, 'streamsClosed': False,
                         'signals': [], 'failure': None, 'pidSignalAuthority': False}
+        self.session.worker = self
 
     def save_receipt(self, phase):
         self.receipt['phase'] = phase
@@ -308,6 +308,7 @@ class _PreparationWorker:
         if not self.pair.present(parent): self.pair.mkdir(parent)
         self.work = parent / self.session_id
         self.pair.mkdir(self.work)
+        self.work_identity = self.pair.root_identity(self.work)
         for role, suffix in (('database', ''), ('wal', '-wal'), ('shm', '-shm')):
             if pair['copied'][role] is not None:
                 self.pair.copy(self.state / 'previous-pair' / role, self.work / ('state.sqlite' + suffix), False)
@@ -316,7 +317,9 @@ class _PreparationWorker:
     def clean_work(self):
         if self.work is None: return
         require(self.settled and self.process.reaped and self.process.closed)
+        require(self.work_identity is not None and self.pair.root_identity(self.work) == self.work_identity)
         with Observation().directory(self.work) as parent:
+            require((str(os.fstat(parent).st_dev), str(os.fstat(parent).st_ino)) == (self.work_identity['device'], self.work_identity['inode']))
             names = self.pair.names(parent)
             require(set(names) <= {'state.sqlite', 'state.sqlite-wal', 'state.sqlite-shm'})
             for name in names:
@@ -325,6 +328,8 @@ class _PreparationWorker:
                 os.unlink(name, dir_fd=parent)
             sync_fd(parent)
         with Observation().directory(self.work.parent) as parent:
+            info = os.stat(self.work.name, dir_fd=parent, follow_symlinks=False)
+            require((str(info.st_dev), str(info.st_ino)) == (self.work_identity['device'], self.work_identity['inode']))
             os.rmdir(self.work.name, dir_fd=parent)
             sync_fd(parent)
         self.work = None
@@ -409,8 +414,9 @@ class _PreparationWorker:
                 settings = pair['copied']['settings.json']
                 settings_sha = sha(b'') if settings is None else settings['content'][0][4]
                 stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+                plan_id = str(uuid.uuid4())
                 self.send('PLAN', pairSha256=self.pair.journal['pairSha256'], snapshotSha256=snapshot,
-                          settingsSha256=settings_sha, planId=str(uuid.uuid4()), timestamp=stamp)
+                          settingsSha256=settings_sha, planId=plan_id, timestamp=stamp)
                 scope_id = self.scope('plan', self.work / 'state.sqlite')
                 result, plan_raw = self.receive({'PLAN_READY', 'CLOSED_RESULT'})
                 if result['type'] == 'CLOSED_RESULT':
@@ -420,7 +426,7 @@ class _PreparationWorker:
                     return {'status': 'query-failed', 'workerReaped': True, 'activationAllowed': False}
                 require(plan_raw and sha(plan_raw) == result['planSha256'])
                 plan = decode(plan_raw)
-                require(plan.get('snapshotSha256') == snapshot and plan.get('settingsSha256') == settings_sha and plan.get('timestamp') == stamp)
+                require(plan.get('id') == plan_id and plan.get('snapshotSha256') == snapshot and plan.get('settingsSha256') == settings_sha and plan.get('timestamp') == stamp)
                 durable_file(self.state / 'preparation-plan.json', plan_raw, 0o400)
                 envelope = dict(schema=1, maintenanceGeneration=dispatch['maintenanceGeneration'], maintenancePlanSha256=dispatch['maintenancePlanSha256'],
                                 transactionId=dispatch['transactionId'], intentSha256=dispatch['intentSha256'], pairSha256=dispatch['pairSha256'],
