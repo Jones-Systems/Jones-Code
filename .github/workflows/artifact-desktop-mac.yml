@@ -23,6 +23,10 @@ on:
       - scripts/jones/updates/legacy-identity-*
       - packages/shared/src/jones/nativeWriterFence*
       - apps/server/src/jones/updates/**
+      - apps/server/vite.config.ts
+      - vite.config.ts
+      - apps/server/package.json
+      - scripts/jones/updates/offline-preparation-build*
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - scripts/lib/**
       - native/resource-monitor/**
@@ -128,6 +132,31 @@ jobs:
 
       - name: Bind Jones source identity
         run: node scripts/stamp-jones-build.ts
+
+      - name: Build and qualify closed preparation executable
+        working-directory: apps/server
+        env:
+          JONES_PACK_PREPARATION: "1"
+        run: vp pack
+
+      - name: Verify preparation artifact provenance
+        run: >-
+          node --input-type=module -e
+          'import { verifyPreparationArtifact } from "./scripts/jones/updates/offline-preparation-build.ts";
+          verifyPreparationArtifact("apps/server/dist-exe/preparation")'
+
+      - name: Preserve held-entry preparation artifact
+        if: always() && hashFiles('apps/server/dist-exe/preparation/provenance.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: offline-preparation-held-entry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/server/dist-exe/preparation/jones-offline-preparation
+            apps/server/dist-exe/preparation/offlinePreparationEntry.mjs
+            apps/server/dist-exe/preparation/sea-config.json
+            apps/server/dist-exe/preparation/provenance.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Build unsigned preview DMG
         env:

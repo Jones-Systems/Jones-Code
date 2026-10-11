@@ -16,14 +16,12 @@ import {
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
-import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { decodePersistedServerSettings } from "../../ServerSettingsPersistence.ts";
-import { isEntrypoint } from "../../entrypoint.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import { findPendingServerUpdateContinuation } from "../../orchestration-v2/ServerUpdateContinuationPreparation.ts";
@@ -278,15 +276,7 @@ interface SyntheticFixture {
   }>;
 }
 
-export function offlinePreparationStatus() {
-  return {
-    status: "held",
-    reason: "maintenance-owner-binding-unqualified",
-    databaseOpened: false,
-    productionInvocation: false,
-    activation: false,
-  } as const;
-}
+export { offlinePreparationStatus } from "./offlinePreparationEntry.ts";
 
 const digest = (value: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
@@ -1304,14 +1294,3 @@ export async function withSyntheticPreparationFixture<A>(
   if (failure !== undefined) throw failure;
   return result as A;
 }
-
-// The packaged entry never parses a state path or opens a database. Owner
-// currentness and cold-custody verification require a future reviewed binding.
-if (
-  isEntrypoint({
-    moduleUrl: import.meta.url,
-    entryPath: process.argv[1],
-    runtimeMain: import.meta.main,
-  })
-)
-  Effect.runSync(encodeJson(offlinePreparationStatus()).pipe(Effect.flatMap(Console.log)));

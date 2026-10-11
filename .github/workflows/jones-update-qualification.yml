@@ -38,6 +38,9 @@ on:
       - apps/web/src/components/settings/ConnectionsSettings.tsx
       - apps/web/src/jones/fleetUpdates/**
       - apps/server/src/jones/updates/**
+      - apps/server/vite.config.ts
+      - vite.config.ts
+      - apps/server/package.json
       - apps/server/src/orchestration-v2/RestartContinuation*
       - apps/server/src/orchestration-v2/ServerUpdateContinuation*
       - apps/server/src/ServerSettingsPersistence*
@@ -135,6 +138,8 @@ jobs:
           apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts
           apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts
           apps/server/src/jones/updates/offlinePreparation.test.ts
+          apps/server/src/jones/updates/offlinePreparationEntry.test.ts
+          scripts/jones/updates/offline-preparation-build.test.ts
           apps/server/src/ServerSettingsPersistence.test.ts
           apps/server/src/serverSettings.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
