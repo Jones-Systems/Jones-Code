@@ -34,7 +34,15 @@ const bindingLabels: Record<string, string> = {
   expires_at: "Binding expires at",
 };
 
-export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader }) {
+export function WorkQueueMetadataPanel({
+  load,
+  onResult,
+  excludedRequests,
+}: {
+  load: WorkQueueMetadataLoader;
+  onResult?: (result: WorkQueueMetadataResult | null) => void;
+  excludedRequests?: ReadonlySet<string>;
+}) {
   const [result, setResult] = useState<WorkQueueMetadataResult | null>(null);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -74,7 +82,11 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
     );
     return () => window.clearTimeout(timer);
   }, [result, observedAt]);
+  useEffect(() => {
+    onResult?.(result);
+  }, [result, onResult]);
   const snapshot = result && "snapshot" in result ? result.snapshot : null;
+  const items = snapshot?.items.filter((item) => !excludedRequests?.has(item.request_id)) ?? [];
   const stale =
     result?.status === "stale" ||
     (result !== null && "snapshot" in result && result.expires_at_ms <= observedAt);
@@ -108,11 +120,15 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
         )}
       </div>
       {snapshot &&
-        (snapshot.items.length === 0 ? (
+        (items.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             {snapshot.coverage === "partial" || result?.status === "partial" || stale
-              ? "No rows in this sample; the current queue may contain work."
-              : "No submitted work in this sample."}
+              ? excludedRequests?.size
+                ? "No unconfirmed rows in this view; the current queue may contain work."
+                : "No rows in this sample; the current queue may contain work."
+              : excludedRequests?.size
+                ? "No unconfirmed work in this sample."
+                : "No submitted work in this sample."}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -127,7 +143,7 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
                 </tr>
               </thead>
               <tbody>
-                {snapshot.items.map((item) => (
+                {items.map((item) => (
                   <tr key={item.request_id} className="align-top">
                     <td className="max-w-64 break-words border-b p-3 [overflow-wrap:anywhere]">
                       <div className="font-medium">{item.workstream_id}</div>
@@ -195,7 +211,8 @@ export function WorkQueueMetadataPanel({ load }: { load: WorkQueueMetadataLoader
           <p>Requests from all supported producers. Prompt text and editing are unavailable.</p>
           <p>
             Accepted dispatch or native command status does not prove a handoff or completed work.
-            Historical, held and uncertain states remain here until handoff evidence is available.
+            Historical, held and uncertain states remain here until exact native handoff evidence is
+            available.
           </p>
           {snapshot ? (
             <>
