@@ -1,8 +1,8 @@
-import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import { extractFile } from "@electron/asar";
 import {
   assertStartupRefused,
@@ -25,20 +25,23 @@ import {
 
 // This gate is deliberately unavailable on developer hosts. Cocoa default paths
 // are not safely redirected by assuming HOME or CFFIXED_USER_HOME semantics.
-assert.equal(process.platform, "darwin");
-assert.equal(process.env.GITHUB_ACTIONS, "true");
-assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
+// oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone packaged-app qualifier must require the real native macOS host before touching fixture state.
+NodeAssert.equal(process.platform, "darwin");
+NodeAssert.equal(process.env.GITHUB_ACTIONS, "true");
+NodeAssert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
 const args = process.argv.slice(2);
-assert.equal(args.length, 4, "Usage: --dmg <artifact.dmg> --evidence <result.json>");
-assert.equal(args[0], "--dmg");
-assert.equal(args[2], "--evidence");
-const dmg = await fs.realpath(args[1]);
-const evidencePath = path.resolve(args[3]);
+NodeAssert.equal(args.length, 4, "Usage: --dmg <artifact.dmg> --evidence <result.json>");
+NodeAssert.equal(args[0], "--dmg");
+NodeAssert.equal(args[2], "--evidence");
+const dmg = await NodeFSP.realpath(args[1]);
+const evidencePath = NodePath.resolve(args[3]);
 const scratch = new FixtureOwnership();
 const ownership = new FixtureOwnership();
-const temporary = await scratch.temporary(path.join(os.tmpdir(), "jones-packaged-startup-"));
-const root = await fs.realpath(temporary);
-const mount = path.join(root, "mount");
+const temporary = await scratch.temporary(
+  NodePath.join(NodeOS.tmpdir(), "jones-packaged-startup-"),
+);
+const root = await NodeFSP.realpath(temporary);
+const mount = NodePath.join(root, "mount");
 const controller = new AbortController();
 const cancel = () => controller.abort();
 process.on("SIGINT", cancel);
@@ -64,26 +67,26 @@ const recordCleanupFailure = (error) => {
 };
 const persist = async () => {
   try {
-    await fs.mkdir(path.dirname(evidencePath), { recursive: true });
-    await fs.writeFile(evidencePath, JSON.stringify(evidence, null, 2) + "\n");
+    await NodeFSP.mkdir(NodePath.dirname(evidencePath), { recursive: true });
+    await NodeFSP.writeFile(evidencePath, JSON.stringify(evidence, null, 2) + "\n");
   } catch (error) {
     recordCleanupFailure(error);
   }
 };
 const command = async (executable, argv, timeout = 15000) => {
   const result = await runOwnedChild(executable, argv, { signal: controller.signal, timeout });
-  assert.equal(result.code, 0, result.stderr);
+  NodeAssert.equal(result.code, 0, result.stderr);
   return result.stdout;
 };
 const requireAbsent = async (filename) => {
-  await assert.rejects(
-    fs.lstat(filename),
+  await NodeAssert.rejects(
+    NodeFSP.lstat(filename),
     { code: "ENOENT" },
     `Refusing to inspect or replace pre-existing runner state: ${filename}`,
   );
 };
 try {
-  const executable = path.join(root, "observer");
+  const executable = NodePath.join(root, "observer");
   await command(
     "xcrun",
     [
@@ -96,45 +99,48 @@ try {
       "Foundation",
       "-framework",
       "CoreServices",
-      fileURLToPath(new URL("./native-startup-observer.m", import.meta.url)),
+      NodeURL.fileURLToPath(new URL("./native-startup-observer.m", import.meta.url)),
       "-o",
       executable,
     ],
     30000,
   );
   const native = JSON.parse(await command(executable, ["--paths"]));
-  assert.equal(native.uid, process.getuid());
-  assert.equal(native.home, native.accountHome);
-  assert.equal(native.home, await fs.realpath(os.homedir()));
-  assert.equal(native.home, await fs.realpath(process.env.HOME));
-  assert.equal(native.applicationSupport, path.join(native.home, "Library", "Application Support"));
-  assert.equal(native.caches, path.join(native.home, "Library", "Caches"));
+  NodeAssert.equal(native.uid, process.getuid());
+  NodeAssert.equal(native.home, native.accountHome);
+  NodeAssert.equal(native.home, await NodeFSP.realpath(NodeOS.homedir()));
+  NodeAssert.equal(native.home, await NodeFSP.realpath(process.env.HOME));
+  NodeAssert.equal(
+    native.applicationSupport,
+    NodePath.join(native.home, "Library", "Application Support"),
+  );
+  NodeAssert.equal(native.caches, NodePath.join(native.home, "Library", "Caches"));
   for (const directory of [native.applicationSupport, native.caches])
-    assert.ok((await fs.stat(directory)).isDirectory());
-  await fs.mkdir(mount);
+    NodeAssert.ok((await NodeFSP.stat(directory)).isDirectory());
+  await NodeFSP.mkdir(mount);
   // Once attempted, detach this exact mountpoint even if attach's response is
   // lost. No device-wide detach or unrelated mounted-image discovery is used.
   mounted = true;
   await command("hdiutil", ["attach", "-readonly", "-nobrowse", "-mountpoint", mount, dmg], 30000);
-  const applications = (await fs.readdir(mount)).filter((name) => name.endsWith(".app"));
-  assert.equal(applications.length, 1);
-  const app = path.join(mount, applications[0]);
+  const applications = (await NodeFSP.readdir(mount)).filter((name) => name.endsWith(".app"));
+  NodeAssert.equal(applications.length, 1);
+  const app = NodePath.join(mount, applications[0]);
   const metadata = JSON.parse(
-    extractFile(path.join(app, "Contents", "Resources", "app.asar"), "package.json").toString(
+    extractFile(NodePath.join(app, "Contents", "Resources", "app.asar"), "package.json").toString(
       "utf8",
     ),
   );
-  assert.equal(metadata.jonesSource.repository, "Jones-Systems/Jones-Code");
-  assert.equal(metadata.jonesSource.sha, process.env.GITHUB_SHA);
-  assert.match(metadata.jonesSource.tree, /^[a-f0-9]{40}$/);
+  NodeAssert.equal(metadata.jonesSource.repository, "Jones-Systems/Jones-Code");
+  NodeAssert.equal(metadata.jonesSource.sha, process.env.GITHUB_SHA);
+  NodeAssert.match(metadata.jonesSource.tree, /^[a-f0-9]{40}$/);
   const pinnedElectron = JSON.parse(
-    await fs.readFile(new URL("../../../apps/desktop/package.json", import.meta.url), "utf8"),
+    await NodeFSP.readFile(new URL("../../../apps/desktop/package.json", import.meta.url), "utf8"),
   ).dependencies.electron;
   const packagedElectron = (
     await command("/usr/libexec/PlistBuddy", [
       "-c",
       "Print :CFBundleVersion",
-      path.join(
+      NodePath.join(
         app,
         "Contents",
         "Frameworks",
@@ -144,46 +150,48 @@ try {
       ),
     ])
   ).trim();
-  assert.equal(packagedElectron, pinnedElectron);
+  NodeAssert.equal(packagedElectron, pinnedElectron);
   const executableName = (
     await command("/usr/libexec/PlistBuddy", [
       "-c",
       "Print :CFBundleExecutable",
-      path.join(app, "Contents", "Info.plist"),
+      NodePath.join(app, "Contents", "Info.plist"),
     ])
   ).trim();
   const bundleIdentifier = (
     await command("/usr/libexec/PlistBuddy", [
       "-c",
       "Print :CFBundleIdentifier",
-      path.join(app, "Contents", "Info.plist"),
+      NodePath.join(app, "Contents", "Info.plist"),
     ])
   ).trim();
   const bundleName = (
     await command("/usr/libexec/PlistBuddy", [
       "-c",
       "Print :CFBundleName",
-      path.join(app, "Contents", "Info.plist"),
+      NodePath.join(app, "Contents", "Info.plist"),
     ])
   ).trim();
-  assert.equal(path.basename(executableName), executableName);
-  const binary = path.join(app, "Contents", "MacOS", executableName);
-  const home = path.join(native.home, ".t3");
-  const profile = path.join(native.applicationSupport, "t3code-v2");
+  NodeAssert.equal(NodePath.basename(executableName), executableName);
+  const binary = NodePath.join(app, "Contents", "MacOS", executableName);
+  const home = NodePath.join(native.home, ".t3");
+  const profile = NodePath.join(native.applicationSupport, "t3code-v2");
   const names = packagedStartupNames(metadata, { executableName, bundleIdentifier, bundleName });
   const protectedPaths = [
     ...new Set([
       home,
       profile,
       ...[...names].flatMap((name) => [
-        path.join(native.applicationSupport, name),
-        path.join(native.caches, name),
+        NodePath.join(native.applicationSupport, name),
+        NodePath.join(native.caches, name),
       ]),
     ]),
   ];
   for (const filename of protectedPaths) await requireAbsent(filename);
   const active = await createNativeState(home, profile, metadata, ownership);
-  for (const filename of leasePaths(active).filter((name) => !name.startsWith(home + path.sep))) {
+  for (const filename of leasePaths(active).filter(
+    (name) => !name.startsWith(home + NodePath.sep),
+  )) {
     await requireAbsent(filename);
     await requireAbsent(`${filename}.identity.json`);
   }
@@ -219,12 +227,12 @@ try {
   await observer.flush();
   const mutations = protectedMutations(observer.events.slice(start), protectedPaths);
   evidence.protectedMutations = mutations.slice(0, 30);
-  assert.deepEqual(
+  NodeAssert.deepEqual(
     mutations,
     [],
     "The packaged process changed protected state, including a transient change.",
   );
-  assert.deepEqual(await Promise.all(protectedPaths.map(snapshotTree)), before);
+  NodeAssert.deepEqual(await Promise.all(protectedPaths.map(snapshotTree)), before);
   evidence.source = metadata.jonesSource;
   evidence.version = metadata.version;
   evidence.electron = packagedElectron;
@@ -260,7 +268,7 @@ try {
   if (mounted) {
     try {
       const detached = await runOwnedChild("hdiutil", ["detach", mount], { timeout: 30000 });
-      assert.equal(detached.code, 0, detached.stderr);
+      NodeAssert.equal(detached.code, 0, detached.stderr);
       mounted = false;
     } catch (error) {
       recordCleanupFailure(error);

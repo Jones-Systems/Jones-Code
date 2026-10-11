@@ -1,21 +1,21 @@
-import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import * as fs from "node:fs/promises";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 
 const outstandingGroups = new Set();
 
 export function packagedStartupNames(metadata, { executableName, bundleIdentifier, bundleName }) {
-  assert.equal(metadata.main, "apps/desktop/dist-electron/boot.cjs");
+  NodeAssert.equal(metadata.main, "apps/desktop/dist-electron/boot.cjs");
   const names = new Set([metadata.name, executableName, bundleIdentifier, bundleName]);
   if (metadata.productName !== undefined) names.add(metadata.productName);
   for (const name of names)
-    assert.ok(
+    NodeAssert.ok(
       typeof name === "string" &&
         name.length > 0 &&
-        path.basename(name) === name &&
+        NodePath.basename(name) === name &&
         name !== "." &&
         name !== "..",
     );
@@ -23,7 +23,7 @@ export function packagedStartupNames(metadata, { executableName, bundleIdentifie
 }
 
 export function assertFixtureProcessesStopped() {
-  assert.equal(
+  NodeAssert.equal(
     outstandingGroups.size,
     0,
     "An owned process group is unresolved; fixture cleanup is held.",
@@ -83,18 +83,18 @@ export class FixtureOwnership {
   }
 
   async mkdir(filename) {
-    await fs.mkdir(filename, { mode: 0o700 });
-    await this.#remember(filename, await fs.lstat(filename, { bigint: true }));
+    await NodeFSP.mkdir(filename, { mode: 0o700 });
+    await this.#remember(filename, await NodeFSP.lstat(filename, { bigint: true }));
   }
 
   async temporary(prefix) {
-    const filename = await fs.mkdtemp(prefix);
-    await this.#remember(filename, await fs.lstat(filename, { bigint: true }));
+    const filename = await NodeFSP.mkdtemp(prefix);
+    await this.#remember(filename, await NodeFSP.lstat(filename, { bigint: true }));
     return filename;
   }
 
   async file(filename, contents) {
-    const handle = await fs.open(filename, "wx", 0o600);
+    const handle = await NodeFSP.open(filename, "wx", 0o600);
     try {
       await this.#remember(filename, await handle.stat({ bigint: true }));
       await handle.writeFile(contents);
@@ -109,25 +109,25 @@ export class FixtureOwnership {
     const preserved = [];
     for (const receipt of [...this.#paths].reverse()) {
       try {
-        assert.ok(
-          !preserved.some((filename) => filename.startsWith(receipt.filename + path.sep)),
+        NodeAssert.ok(
+          !preserved.some((filename) => filename.startsWith(receipt.filename + NodePath.sep)),
           `A descendant's ownership changed; preserving ${receipt.filename}`,
         );
         let current;
         try {
-          current = await fs.lstat(receipt.filename, { bigint: true });
+          current = await NodeFSP.lstat(receipt.filename, { bigint: true });
         } catch (error) {
           if (error.code === "ENOENT") continue;
           throw error;
         }
-        assert.ok(
+        NodeAssert.ok(
           !current.isSymbolicLink() &&
             current.dev === receipt.device &&
             current.ino === receipt.inode &&
             current.isDirectory() === receipt.directory,
           `Fixture ownership changed; preserving ${receipt.filename}`,
         );
-        await fs.rm(receipt.filename, { recursive: receipt.directory, force: false });
+        await NodeFSP.rm(receipt.filename, { recursive: receipt.directory, force: false });
       } catch (error) {
         failures.push(error);
         preserved.push(receipt.filename);
@@ -164,7 +164,7 @@ export function cleanLaunchEnvironment(environment, temporary) {
 // by group absence, including on timeout, output overflow, and cancellation.
 export function runOwnedChild(command, args, { signal, timeout = 15000, ...options } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = NodeChildProcess.spawn(command, args, {
       ...options,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -216,45 +216,53 @@ export function runOwnedChild(command, args, { signal, timeout = 15000, ...optio
 export async function createNativeState(home, profile, metadata, ownership) {
   await ownership.mkdir(home);
   await ownership.mkdir(profile);
-  await fs.mkdir(path.join(home, "userdata"));
-  await fs.mkdir(path.join(home, "runtime"));
-  const databasePath = path.join(home, "userdata", "statev2.sqlite");
-  await fs.writeFile(databasePath, "synthetic application database; must never open", {
+  await NodeFSP.mkdir(NodePath.join(home, "userdata"));
+  await NodeFSP.mkdir(NodePath.join(home, "runtime"));
+  const databasePath = NodePath.join(home, "userdata", "statev2.sqlite");
+  await NodeFSP.writeFile(databasePath, "synthetic application database; must never open", {
     flag: "wx",
   });
-  await fs.writeFile(path.join(profile, "protected-sentinel"), "unchanged", { flag: "wx" });
+  await NodeFSP.writeFile(NodePath.join(profile, "protected-sentinel"), "unchanged", {
+    flag: "wx",
+  });
   const active = {
     protocol: 1,
     owner: "desktop",
     generation: "previous",
     transactionId: "bootstrap",
-    home: await fs.realpath(home),
-    profile: await fs.realpath(profile),
-    databasePath: await fs.realpath(databasePath),
+    home: await NodeFSP.realpath(home),
+    profile: await NodeFSP.realpath(profile),
+    databasePath: await NodeFSP.realpath(databasePath),
     environmentId: "native-startup-qualification",
     version: metadata.version,
     sourceSha: metadata.jonesSource.sha,
     sourceTree: metadata.jonesSource.tree,
   };
-  await fs.writeFile(
-    path.join(home, "runtime", "jones-active-install.json"),
+  await NodeFSP.writeFile(
+    NodePath.join(home, "runtime", "jones-active-install.json"),
     JSON.stringify(active),
     { flag: "wx", mode: 0o600 },
   );
-  const transaction = path.join(home, "runtime", "jones-updates", "transactions", "f".repeat(64));
-  await fs.mkdir(path.join(home, "runtime", "jones-updates"));
-  await fs.mkdir(path.dirname(transaction));
-  await fs.mkdir(transaction);
-  await fs.writeFile(path.join(transaction, "intent.json"), "{}", { flag: "wx" });
+  const transaction = NodePath.join(
+    home,
+    "runtime",
+    "jones-updates",
+    "transactions",
+    "f".repeat(64),
+  );
+  await NodeFSP.mkdir(NodePath.join(home, "runtime", "jones-updates"));
+  await NodeFSP.mkdir(NodePath.dirname(transaction));
+  await NodeFSP.mkdir(transaction);
+  await NodeFSP.writeFile(NodePath.join(transaction, "intent.json"), "{}", { flag: "wx" });
   return active;
 }
 
 export function leasePaths(active) {
   return [
-    path.join(active.home, "runtime", "jones-native-writer.sqlite"),
-    path.join(
-      path.dirname(active.profile),
-      `.jones-profile-writer-${createHash("sha256").update(active.profile).digest("hex")}.sqlite`,
+    NodePath.join(active.home, "runtime", "jones-native-writer.sqlite"),
+    NodePath.join(
+      NodePath.dirname(active.profile),
+      `.jones-profile-writer-${NodeCrypto.createHash("sha256").update(active.profile).digest("hex")}.sqlite`,
     ),
   ].sort();
 }
@@ -262,10 +270,10 @@ export function leasePaths(active) {
 export async function initializeFixtureLeases(active, ownership) {
   for (const filename of leasePaths(active)) {
     await ownership.file(filename, "");
-    const scope = filename.startsWith(active.home + path.sep)
+    const scope = filename.startsWith(active.home + NodePath.sep)
       ? `home:${active.home}`
       : `profile:${active.profile}`;
-    const connection = new DatabaseSync(filename);
+    const connection = new NodeSqlite.DatabaseSync(filename);
     try {
       connection.exec(
         "PRAGMA journal_mode=DELETE; CREATE TABLE jones_native_writer_lease (protocol INTEGER, scope TEXT);",
@@ -274,7 +282,7 @@ export async function initializeFixtureLeases(active, ownership) {
     } finally {
       connection.close();
     }
-    const info = await fs.stat(filename, { bigint: true });
+    const info = await NodeFSP.stat(filename, { bigint: true });
     await ownership.file(
       `${filename}.identity.json`,
       JSON.stringify({ protocol: 1, scope, device: String(info.dev), inode: String(info.ino) }),
@@ -287,7 +295,7 @@ export async function withExclusiveLeases(paths, body) {
   try {
     for (const filename of paths) {
       // Never hash or read these inodes while this process holds SQLite locks.
-      const connection = new DatabaseSync(filename);
+      const connection = new NodeSqlite.DatabaseSync(filename);
       connections.push(connection);
       connection.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
     }
@@ -298,35 +306,35 @@ export async function withExclusiveLeases(paths, body) {
 }
 
 export function assertStartupRefused(result, reason) {
-  assert.equal(result.signal, null, result.stderr);
-  assert.equal(result.code, 1, result.stderr);
-  assert.match(result.stderr, /Jones Code refused native startup:/);
-  assert.match(result.stderr, reason);
+  NodeAssert.equal(result.signal, null, result.stderr);
+  NodeAssert.equal(result.code, 1, result.stderr);
+  NodeAssert.match(result.stderr, /Jones Code refused native startup:/);
+  NodeAssert.match(result.stderr, reason);
 }
 
 export async function snapshotTree(root) {
   let info;
   try {
-    info = await fs.lstat(root);
+    info = await NodeFSP.lstat(root);
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
-  assert.ok(!info.isSymbolicLink(), `Qualification cannot follow a protected symlink: ${root}`);
+  NodeAssert.ok(!info.isSymbolicLink(), `Qualification cannot follow a protected symlink: ${root}`);
   if (info.isDirectory()) {
     const children = {};
-    for (const name of (await fs.readdir(root)).sort())
-      children[name] = await snapshotTree(path.join(root, name));
+    for (const name of (await NodeFSP.readdir(root)).sort())
+      children[name] = await snapshotTree(NodePath.join(root, name));
     return { mode: info.mode, children };
   }
-  assert.ok(info.isFile());
-  assert.ok(info.size <= 1024 * 1024);
+  NodeAssert.ok(info.isFile());
+  NodeAssert.ok(info.size <= 1024 * 1024);
   return {
     mode: info.mode,
     size: info.size,
     mtimeMs: info.mtimeMs,
-    sha256: createHash("sha256")
-      .update(await fs.readFile(root))
+    sha256: NodeCrypto.createHash("sha256")
+      .update(await NodeFSP.readFile(root))
       .digest("hex"),
   };
 }
