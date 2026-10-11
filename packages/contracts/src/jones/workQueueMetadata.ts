@@ -51,7 +51,7 @@ const CanonicalBinding = closed({
   store_generation: Positive,
   expires_at: Timestamp,
 });
-const Item = closed({
+const itemFields = {
   request_id: Id,
   workstream_id: Id,
   canonical_binding: Schema.NullOr(CanonicalBinding),
@@ -73,29 +73,61 @@ const Item = closed({
   dispatch_status: Schema.NullOr(Schema.Literals(["accepted", "rejected", "unknown"])),
   native_command_status: Schema.NullOr(Schema.Literals(["accepted", "rejected", "not_found"])),
   finish_line: Schema.Literal("not_tracked"),
+};
+const ItemV1 = closed(itemFields);
+const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+const NativeHandoff = closed({
+  command_id: NativeId,
+  message_id: NativeId,
+  command_status: Schema.Literal("accepted"),
+  correlation_status: Schema.Literal("exact"),
+  receipt_sequence: Integer,
+  turn_id: NativeId,
+  turn_state: Schema.Literals(["pending", "running", "completed", "interrupted", "error"]),
+  observed_at_ms: Integer,
 });
-export const WorkQueueMetadata = closed({
-  schema: Schema.Literal("codex.t3-work-queue-metadata/v1"),
+const ItemV2 = closed({
+  ...itemFields,
+  payload_sha256: Schema.NullOr(Digest),
+  native_handoff: Schema.NullOr(NativeHandoff),
+}).check(
+  Schema.makeFilter(
+    (item) =>
+      item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
+  ),
+);
+const snapshotFields = {
   source: WorkQueueMetadataSource,
   observed_at_ms: Integer,
   snapshot_token: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
   coverage: Schema.Literals(["complete", "partial"]),
-  items: Schema.Array(Item).check(Schema.isMaxLength(1000)),
+};
+const validSnapshot = (value: {
+  readonly items: readonly (typeof ItemV1.Type)[];
+  readonly observed_at_ms: number;
+}) =>
+  new Set(value.items.map((item) => item.request_id)).size === value.items.length &&
+  value.items.every(
+    (item) =>
+      (item.submitted_at_ms === null || item.submitted_at_ms <= value.observed_at_ms) &&
+      (item.canonical_binding === null ||
+        (Date.parse(item.canonical_binding.expires_at) > value.observed_at_ms &&
+          item.target !== null &&
+          item.target.thread_id === item.canonical_binding.native_thread_id)),
+  );
+export const WorkQueueMetadataV1 = closed({
+  schema: Schema.Literal("codex.t3-work-queue-metadata/v1"),
+  ...snapshotFields,
+  items: Schema.Array(ItemV1).check(Schema.isMaxLength(1000)),
   authority_effect: Schema.Literal("none"),
-}).check(
-  Schema.makeFilter(
-    (value) =>
-      new Set(value.items.map((item) => item.request_id)).size === value.items.length &&
-      value.items.every(
-        (item) =>
-          (item.submitted_at_ms === null || item.submitted_at_ms <= value.observed_at_ms) &&
-          (item.canonical_binding === null ||
-            (Date.parse(item.canonical_binding.expires_at) > value.observed_at_ms &&
-              item.target !== null &&
-              item.target.thread_id === item.canonical_binding.native_thread_id)),
-      ),
-  ),
-);
+}).check(Schema.makeFilter(validSnapshot));
+export const WorkQueueMetadataV2 = closed({
+  schema: Schema.Literal("codex.t3-work-queue-metadata/v2"),
+  ...snapshotFields,
+  items: Schema.Array(ItemV2).check(Schema.isMaxLength(1000)),
+  authority_effect: Schema.Literal("none"),
+}).check(Schema.makeFilter(validSnapshot));
+export const WorkQueueMetadata = Schema.Union([WorkQueueMetadataV1, WorkQueueMetadataV2]);
 export type WorkQueueMetadata = typeof WorkQueueMetadata.Type;
 export const WorkQueueMetadataResult = Schema.Union([
   closed({
