@@ -329,6 +329,7 @@ function makeProviderAdapter(
     readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
     readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
     readonly hangSessionScopeClose?: boolean;
+    readonly sessionCloseDelayMs?: number;
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
     readonly eventOriginMode?: "captured";
@@ -339,11 +340,14 @@ function makeProviderAdapter(
     readonly scopeCloseReached?: Deferred.Deferred<void>;
   } = {},
 ): ProviderAdapterV2Shape {
+  const recordClose = Ref.update(state, (current) => ({
+    ...current,
+    closeCount: current.closeCount + 1,
+  }));
   const countClose = Effect.addFinalizer(() =>
-    Ref.update(state, (current) => ({
-      ...current,
-      closeCount: current.closeCount + 1,
-    })),
+    options.sessionCloseDelayMs === undefined
+      ? recordClose
+      : Effect.sleep(options.sessionCloseDelayMs).pipe(Effect.andThen(recordClose)),
   );
   // Registered after countClose so it runs first on scope close, wedging the
   // close before the closeCount finalizer, like a provider process that never
@@ -491,6 +495,7 @@ function layerTest(input: {
   readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
   readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
   readonly hangSessionScopeClose?: boolean;
+  readonly sessionCloseDelayMs?: number;
   readonly startTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
   readonly eventOriginMode?: "captured";
@@ -527,6 +532,9 @@ function layerTest(input: {
       ...(input.captureRuntimeStop === undefined
         ? {}
         : { captureRuntimeStop: input.captureRuntimeStop }),
+      ...(input.sessionCloseDelayMs === undefined
+        ? {}
+        : { sessionCloseDelayMs: input.sessionCloseDelayMs }),
       ...(input.hangSessionScopeClose === undefined
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
@@ -2948,6 +2956,49 @@ it.effect("ProviderSessionManagerV2 persists release when session scope close ha
       Effect.provide(layerTest({ state, idleTimeoutMs: 1000, hangSessionScopeClose: true })),
     );
   }),
+);
+
+it.effect(
+  "server shutdown awaits every slow session close within one concurrent close window",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threads: ThreadId[] = [];
+        for (let index = 0; index < 3; index++) {
+          const threadId = ThreadId.make(`concurrent-slow-close-${index}`);
+          threads.push(threadId);
+          const providerSessionId = yield* idAllocator.allocate.providerSession({
+            providerInstanceId: modelSelection.instanceId,
+            threadId,
+          });
+          yield* eventSink.write({
+            events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+          });
+          yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        }
+        const stopping = yield* manager.shutdown.pipe(Effect.forkChild);
+        yield* TestClock.adjust("10 seconds");
+        const closedInOneWindow = (yield* Ref.get(state)).closeCount;
+        // Drain even a serial regression before asserting, so its slow fixture
+        // finalizers do not remain parked when the assertion fails.
+        yield* TestClock.adjust("20 seconds");
+        yield* Fiber.join(stopping);
+        assert.equal(closedInOneWindow, 3);
+        for (const threadId of threads)
+          assert.equal(
+            (yield* projections.getThreadProjection(threadId)).providerSessions.at(-1)?.status,
+            "stopped",
+          );
+      }).pipe(
+        Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, sessionCloseDelayMs: 10_000 })),
+      );
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 defers idle release while background work is pending", () =>

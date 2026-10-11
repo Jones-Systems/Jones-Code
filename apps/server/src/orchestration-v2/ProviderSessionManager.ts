@@ -1,4 +1,5 @@
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
+import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "../jones/cloud/shutdownBudget.ts";
 import type { CapturedRuntimeStop } from "./ProviderAdapter.ts";
 import type * as RuntimeAttachment from "../jones/runtime/CurrentThreadRuntimeAttachment.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
@@ -70,7 +71,6 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
-const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
 
 const busyTurnPrefix = (providerThreadId: ProviderThreadId) => `${providerThreadId}#`;
 /** The identity a turn's start and its `turn.terminal` share. */
@@ -1186,12 +1186,12 @@ export const layerWithOptions = (
             Effect.forkDetach({ startImmediately: true }),
           );
           const closeExit = yield* Fiber.join(closeFiber).pipe(
-            Effect.timeoutOption(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
+            Effect.timeoutOption(PROVIDER_SCOPE_CLOSE_TIMEOUT_MS),
           );
           if (Option.isNone(closeExit)) {
             yield* Effect.logWarning("orchestration-v2.provider-session-scope-close-timeout", {
               ...annotations,
-              timeoutMs: RELEASE_SCOPE_CLOSE_TIMEOUT_MS,
+              timeoutMs: PROVIDER_SCOPE_CLOSE_TIMEOUT_MS,
             });
             yield* Fiber.join(closeFiber).pipe(
               Effect.flatMap((exit) =>
@@ -2392,7 +2392,7 @@ export const layerWithOptions = (
                 }),
               ),
             ),
-          { discard: true },
+          { discard: true, concurrency: "unbounded" },
         );
       });
       yield* Effect.addFinalizer(() =>

@@ -96,6 +96,13 @@ readiness or the launcher's commit boundary. Graceful shutdown captures intent b
 closing providers, then reconciles after ingestion has stopped so a late completion
 cannot be overwritten by a stale cancellation.
 
+Shutdown releases captured provider sessions concurrently, retaining the existing
+30-second bound for each session scope. The launcher gives the child 75 seconds
+for both session and parent-scope cleanup plus reconciliation; generated systemd
+and launchd definitions explicitly allow 90 seconds. Timeout escalation still
+requires the qualified updater's writer-quiescence proof before backup or restore.
+These source defaults do not rewrite existing installed service definitions.
+
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)
 rechecks the preference, archive state, provider selection, newer user work, a stop
 the user requested, and maintenance turns such as `/compact` before dispatching. Stable
