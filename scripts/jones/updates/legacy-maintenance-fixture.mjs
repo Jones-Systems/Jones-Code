@@ -41,12 +41,13 @@ export async function readPinnedLegacyHelper(repositoryRoot) {
 }
 
 export class MaintenanceCustodyError extends AggregateError {
-  constructor(primary) {
+  constructor(primary, controllerCustody) {
     super(
       [primary, new Error("Owned child reaping was not proved.")],
       "Fixture failed; scratch is retained because child custody is unresolved.",
     );
     this.preservedScratchRoots = [];
+    this.controllerCustody = controllerCustody;
   }
 }
 
@@ -57,7 +58,26 @@ export async function withMaintenanceScratch(parent, body) {
     return await body(await NodeFSP.realpath(allocated));
   } catch (cause) {
     failure = cause;
-    if (cause instanceof MaintenanceCustodyError) cause.preservedScratchRoots.push(allocated);
+    if (cause instanceof MaintenanceCustodyError) {
+      cause.preservedScratchRoots.push(allocated);
+      if (cause.controllerCustody !== undefined) {
+        try {
+          const evidence = await NodeFSP.open(
+            NodePath.join(allocated, "maintenance-custody.json"),
+            "wx",
+            0o600,
+          );
+          try {
+            await evidence.writeFile(`${JSON.stringify(cause.controllerCustody)}\n`);
+            await evidence.sync();
+          } finally {
+            await evidence.close();
+          }
+        } catch (recordingFailure) {
+          cause.errors.push(recordingFailure);
+        }
+      }
+    }
     throw cause;
   } finally {
     if (!(failure instanceof MaintenanceCustodyError)) {
@@ -335,6 +355,8 @@ export async function runMaintenanceProcess(
   let exited = false;
   let stopping = false;
   let custodyUnresolved = false;
+  let driverHandleDetached = false;
+  const deniedSignals = [];
   let finish;
   const completion = new Promise((resolve) => {
     finish = resolve;
@@ -347,6 +369,10 @@ export async function runMaintenanceProcess(
       child.stdin.destroy();
       child.stdout.destroy();
       child.stderr.destroy();
+      // Retain custody evidence, but let a failed standalone driver exit even
+      // when permission denial leaves its captured controller alive.
+      child.unref();
+      driverHandleDetached = true;
       finish({ code: child.exitCode, stoppedBy: child.signalCode });
     }, 3000);
   };
@@ -359,6 +385,7 @@ export async function runMaintenanceProcess(
     } catch (error) {
       if (error.code !== "ESRCH") {
         custodyUnresolved = true;
+        deniedSignals.push({ signal: kind, code: error.code ?? "unknown" });
         failure = new AggregateError([failure, error]);
       }
     }
@@ -443,7 +470,22 @@ export async function runMaintenanceProcess(
     }
     // A closed controller is not evidence that its descendants were reaped.
     // Preserve the owned tree on every missing-proof path, even before readiness.
-    if (child.pid && (!reaped || custodyUnresolved)) throw new MaintenanceCustodyError(failure);
+    if (child.pid && (!reaped || custodyUnresolved)) {
+      throw new MaintenanceCustodyError(failure, {
+        schema: 1,
+        controllerPid: child.pid,
+        processGroupId: child.pid,
+        driverPid: process.pid,
+        executable: python,
+        argumentsSha256: sha256(JSON.stringify(arguments_)),
+        scratchRoot: root,
+        controllerExitObserved: controllerExited(),
+        descendantReapingProved: reaped,
+        driverHandleDetached,
+        deniedSignals,
+        recoveryAuthority: "evidence-only; numeric identity does not authorize signaling",
+      });
+    }
     if (failure !== undefined) throw failure;
     NodeAssert.equal(lines.length, 3);
     return JSON.parse(lines[2]);
@@ -509,7 +551,10 @@ if (
         status: "failed",
         message: String(cause).slice(0, 4000),
         ...(cause instanceof MaintenanceCustodyError
-          ? { preservedScratchRoots: cause.preservedScratchRoots }
+          ? {
+              preservedScratchRoots: cause.preservedScratchRoots,
+              controllerCustody: cause.controllerCustody,
+            }
           : {}),
       }),
     );
