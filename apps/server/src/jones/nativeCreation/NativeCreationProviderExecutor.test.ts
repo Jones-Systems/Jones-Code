@@ -698,6 +698,7 @@ const scenario = (mode: Mode) =>
               runtimePolicy: policy,
               nativeCreationGuard: guard,
               runtimeLifecycle: {
+                admit: () => Effect.void,
                 reserve: () => Effect.succeed("sql-generation"),
                 abandon: () => Effect.void,
                 invalidate: () => Effect.void,

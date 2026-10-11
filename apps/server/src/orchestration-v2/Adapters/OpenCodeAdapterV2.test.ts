@@ -2879,6 +2879,7 @@ it.effect(
         authorizeConsumption: () => Effect.void,
       };
       const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+        admit: () => Effect.void,
         reserve: () => Effect.succeed("synthetic-session-adoption-generation"),
         abandon: () => Effect.void,
         bind: ({ providerThread }) => Effect.succeed(providerThread),
