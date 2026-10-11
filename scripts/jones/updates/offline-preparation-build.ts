@@ -1616,3 +1616,417 @@ export function offlinePreparationPack(
     },
   };
 }
+
+const candidateRelative = "apps/server/dist-exe/preparation-candidate";
+const candidateReportName = "candidate-graph.json";
+const candidateModuleLimit = 4096;
+const candidateReportLimit = 16 * 1024 * 1024;
+
+/** Candidate inspection describes syntax; it never approves or executes a loader. */
+export function inspectPreparationCandidateJavaScript(source: string) {
+  if (Buffer.byteLength(source) > maxBundleBytes) throw new Error("Candidate entry exceeds bound.");
+  const file = ts.createSourceFile(
+    bundleName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const diagnostics = (file as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] })
+    .parseDiagnostics;
+  if (diagnostics.length) throw new Error("Candidate entry is not valid JavaScript.");
+  const imports: {
+    kind: "static" | "dynamic" | "require";
+    specifier: string | null;
+    computed: boolean;
+    builtin: boolean;
+    expressionSha256: string;
+  }[] = [];
+  const loaderHazards: { kind: string; expressionSha256: string }[] = [];
+  const record = (
+    kind: "static" | "dynamic" | "require",
+    node: ts.Node | undefined,
+    expression: ts.Node,
+  ) => {
+    const specifier = node && ts.isStringLiteralLike(node) ? node.text : null;
+    if (specifier !== null && Buffer.byteLength(specifier) > 4096)
+      throw new Error("Candidate import exceeds bound.");
+    imports.push({
+      kind,
+      specifier,
+      computed: specifier === null,
+      builtin: specifier !== null && NodeModule.isBuiltin(specifier),
+      expressionSha256: digest(expression.getText(file)),
+    });
+  };
+  const visit = (node: ts.Node): void => {
+    if (imports.length + loaderHazards.length > candidateModuleLimit)
+      throw new Error("Candidate loader observations exceed bound.");
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier)
+      record("static", node.moduleSpecifier, node);
+    if (ts.isCallExpression(node)) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword)
+        record("dynamic", node.arguments[0], node);
+      if (ts.isIdentifier(node.expression) && /(?:^|_)require(?:_|$)/.test(node.expression.text))
+        record("require", node.arguments[0], node);
+    }
+    if (
+      ts.isElementAccessExpression(node) ||
+      (ts.isIdentifier(node) && forbiddenNames.has(node.text))
+    )
+      loaderHazards.push({
+        kind: ts.isElementAccessExpression(node) ? "computed-access" : "loader-or-reflection-name",
+        expressionSha256: digest(node.getText(file)),
+      });
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return { imports, loaderHazards, scannerQualification: "syntax-observation-only" as const };
+}
+
+/** A virtual or tree-shaken module without exposed code has no invented content hash. */
+export function inspectPreparationCandidateCode(code: unknown) {
+  if (typeof code !== "string")
+    return { availability: "unavailable" as const, reason: "bundler-code-not-exposed" };
+  const size = Buffer.byteLength(code);
+  if (size > maxBundleBytes) throw new Error("Candidate module code exceeds bound.");
+  return { availability: "observed" as const, sha256: digest(code), size };
+}
+
+/** Prior candidate data is never a cleanup grant, including a report that claims completeness. */
+export function requireEmptyPreparationCandidateOutput(directory: string): void {
+  try {
+    const stat = NodeFS.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || NodeFS.readdirSync(directory).length !== 0)
+      throw new Error("Candidate output must be fresh or empty; existing evidence is retained.");
+  } catch (cause) {
+    if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT")
+      return;
+    throw cause;
+  }
+}
+
+function candidateId(root: string, id: string): string {
+  if (Buffer.byteLength(id) > 4096) throw new Error("Candidate module identifier exceeds bound.");
+  const relative = NodePath.relative(root, id).replaceAll("\\", "/");
+  return NodePath.isAbsolute(id) && !relative.startsWith("../") && !NodePath.isAbsolute(relative)
+    ? relative
+    : id;
+}
+
+function candidateFile(root: string, id: string, limit = 8 * 1024 * 1024) {
+  const unavailable = (reason: string) => ({ availability: "unavailable" as const, reason });
+  if (!NodePath.isAbsolute(id) || id.includes("\0") || id.includes("?"))
+    return unavailable("non-file-module-id");
+  try {
+    const actual = NodeFS.realpathSync(id);
+    const relative = NodePath.relative(root, actual);
+    if (relative.startsWith(".." + NodePath.sep) || NodePath.isAbsolute(relative))
+      return unavailable("outside-bound-source-root");
+    const bytes = readFile(actual, limit);
+    return {
+      availability: "observed" as const,
+      path: candidateId(root, actual),
+      sha256: digest(bytes),
+      size: bytes.length,
+    };
+  } catch {
+    return unavailable("file-content-not-observed");
+  }
+}
+
+function candidatePackage(root: string, id: string) {
+  if (!NodePath.isAbsolute(id) || id.includes("\0") || id.includes("?"))
+    return { availability: "unavailable" as const, reason: "non-file-module-id" };
+  let parent = NodePath.dirname(id);
+  for (let depth = 0; depth < 32; depth++) {
+    const relative = NodePath.relative(root, parent);
+    if (relative.startsWith(".." + NodePath.sep) || NodePath.isAbsolute(relative)) break;
+    const manifestPath = NodePath.join(parent, "package.json");
+    if (NodeFS.existsSync(manifestPath)) {
+      const file = candidateFile(root, manifestPath, 1024 * 1024);
+      if (file.availability === "unavailable") return file;
+      try {
+        const manifestBytes = readFile(NodePath.join(root, file.path), 1024 * 1024);
+        if (digest(manifestBytes) !== file.sha256)
+          return {
+            availability: "unavailable" as const,
+            reason: "package-manifest-changed",
+            manifest: file,
+          };
+        const manifest = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(
+          decode(manifestBytes.toString("utf8")),
+        );
+        if (
+          typeof manifest.name !== "string" ||
+          manifest.name.length > 256 ||
+          typeof manifest.version !== "string" ||
+          manifest.version.length > 128
+        )
+          return {
+            availability: "unavailable" as const,
+            reason: "package-identity-not-observed",
+            manifest: file,
+          };
+        return {
+          availability: "observed" as const,
+          name: manifest.name,
+          version: manifest.version,
+          manifest: file,
+        };
+      } catch {
+        return {
+          availability: "unavailable" as const,
+          reason: "package-manifest-not-decoded",
+          manifest: file,
+        };
+      }
+    }
+    if (parent === root) break;
+    parent = NodePath.dirname(parent);
+  }
+  return { availability: "unavailable" as const, reason: "package-manifest-not-found" };
+}
+
+function candidatePatches(root: string) {
+  const workspace = readFile(NodePath.join(root, "pnpm-workspace.yaml"), 8 * 1024 * 1024);
+  const lines = workspace.toString("utf8").split(/\r?\n/);
+  const start = lines.indexOf("patchedDependencies:");
+  const entries: {
+    selector: string;
+    declaredPath: string;
+    content: ReturnType<typeof candidateFile>;
+  }[] = [];
+  let complete = start >= 0;
+  if (start >= 0)
+    for (const line of lines.slice(start + 1)) {
+      if (/^\S/.test(line)) break;
+      if (/^\s*(?:#.*)?$/.test(line)) continue;
+      const match = /^  (?:"([^"]+)"|([^:]+)): (patches\/[^\s]+)\s*$/.exec(line);
+      if (!match || entries.length >= 128) {
+        complete = false;
+        continue;
+      }
+      entries.push({
+        selector: match[1] ?? match[2]!,
+        declaredPath: match[3]!,
+        content: candidateFile(root, NodePath.resolve(root, match[3]!)),
+      });
+    }
+  return {
+    configurationSha256: digest(workspace),
+    mappingObservation: complete ? "observed-simple-mapping" : "incomplete-or-unsupported-syntax",
+    applicationVerified: false,
+    entries,
+  };
+}
+
+/** A separate non-executing build path; its report cannot satisfy the held-artifact verifier or BUNDLE3. */
+export function offlinePreparationCandidatePack(
+  rootPath: string,
+  options: { readonly signal?: AbortSignal } = {},
+) {
+  const root = NodeFS.realpathSync(rootPath);
+  const outDir = NodePath.join(root, candidateRelative);
+  let source: Awaited<ReturnType<typeof observeSource>> | undefined;
+  let report: unknown;
+  let outputHashes: { fileName: string; sha256: string; size: number }[] = [];
+  const plugin: Plugin = {
+    name: "jones:unqualified-preparation-candidate",
+    async buildStart() {
+      requireEmptyPreparationCandidateOutput(outDir);
+      source = await withPreparationBuildScope(
+        NodeOS.tmpdir(),
+        "jones-preparation-candidate-source-",
+        options.signal,
+        (scope) => observeSource(root, scope.command),
+      );
+      options.signal?.throwIfAborted();
+      requireEmptyPreparationCandidateOutput(outDir);
+    },
+    generateBundle(_options, bundle) {
+      if (!source) throw new Error("Missing candidate source observation.");
+      const outputs = Object.values(bundle);
+      const chunks = outputs.filter((item) => item.type === "chunk");
+      const chunk = chunks[0];
+      if (
+        outputs.length > 128 ||
+        chunks.length !== 1 ||
+        !chunk ||
+        !chunk.isEntry ||
+        chunk.fileName !== bundleName
+      )
+        throw new Error("Candidate requires exactly one fixed ESM entry chunk.");
+      const ids = [...this.getModuleIds()].sort();
+      if (ids.length > candidateModuleLimit)
+        throw new Error("Candidate graph exceeds module bound.");
+      const packages = new Map<string, ReturnType<typeof candidatePackage>>();
+      let observedCodeBytes = 0;
+      const codeRecord = (code: unknown) => {
+        const observation = inspectPreparationCandidateCode(code);
+        if (observation.availability === "observed") observedCodeBytes += observation.size;
+        if (observedCodeBytes > 128 * 1024 * 1024)
+          throw new Error("Candidate code observations exceed bound.");
+        return observation;
+      };
+      const modules = ids.map((id) => {
+        const info = this.getModuleInfo(id);
+        const rendered = chunk.modules[id];
+        const packageObservation = candidatePackage(root, id);
+        const packageKey =
+          "manifest" in packageObservation &&
+          packageObservation.manifest?.availability === "observed"
+            ? packageObservation.manifest.path
+            : candidateId(root, id);
+        packages.set(packageKey, packageObservation);
+        const edge = (target: string) => ({
+          id: candidateId(root, target),
+          builtin: NodeModule.isBuiltin(target),
+          external: this.getModuleInfo(target)?.isExternal ?? null,
+        });
+        return {
+          id: candidateId(root, id),
+          virtualId: id.includes("\0"),
+          builtin: NodeModule.isBuiltin(id),
+          external: info?.isExternal ?? null,
+          entry: info?.isEntry ?? null,
+          informationAvailable: info !== null && info !== undefined,
+          sourceContent: candidateFile(root, id),
+          bundlerContent: codeRecord((info as { code?: unknown } | null)?.code),
+          rendered: rendered !== undefined,
+          renderedLength: rendered?.renderedLength ?? null,
+          renderedContent: codeRecord((rendered as { code?: unknown } | undefined)?.code),
+          staticImports: info?.importedIds.map(edge) ?? null,
+          dynamicImports: info?.dynamicallyImportedIds.map(edge) ?? null,
+          packageObservation: packageKey,
+        };
+      });
+      outputHashes = outputs.map((item) => {
+        if (
+          item.fileName.includes("/") ||
+          item.fileName.includes("\\") ||
+          [".", "..", candidateReportName].includes(item.fileName)
+        )
+          throw new Error("Unadmitted candidate output name.");
+        const bytes =
+          item.type === "chunk"
+            ? Buffer.from(item.code)
+            : typeof item.source === "string"
+              ? Buffer.from(item.source)
+              : Buffer.from(item.source);
+        if (bytes.length > maxBundleBytes) throw new Error("Candidate output exceeds bound.");
+        return { fileName: item.fileName, sha256: digest(bytes), size: bytes.length };
+      });
+      const resolver = NodeModule.createRequire(import.meta.url);
+      const tools = ["vite-plus", "typescript-legacy", "effect", "rolldown", "tsdown"].map(
+        (name) => {
+          try {
+            const resolved = resolver.resolve(name);
+            return {
+              name,
+              resolutionBasis: "build-helper-module",
+              resolvedId: candidateId(root, resolved),
+              package: candidatePackage(root, resolved),
+            };
+          } catch {
+            return {
+              name,
+              resolutionBasis: "build-helper-module",
+              availability: "unavailable",
+              reason: "tool-package-not-resolved",
+            };
+          }
+        },
+      );
+      const meta = this.meta as {
+        rollupVersion?: string;
+        rolldownVersion?: string;
+        watchMode?: boolean;
+      };
+      report = {
+        schemaVersion: 1,
+        classification: "preparation-candidate-graph",
+        qualification: "unqualified",
+        executed: false,
+        preparationCapable: false,
+        productionInvocation: false,
+        source,
+        entry,
+        emitted: {
+          format: "esm",
+          fileName: chunk.fileName,
+          imports: chunk.imports,
+          dynamicImports: chunk.dynamicImports,
+          mapPresent: chunk.map !== null && chunk.map !== undefined,
+          mapContent: chunk.map
+            ? inspectPreparationCandidateCode(encode(chunk.map))
+            : { availability: "absent" },
+          assets: outputs.filter((item) => item.type === "asset").map((item) => item.fileName),
+          files: outputHashes,
+          syntax: inspectPreparationCandidateJavaScript(chunk.code),
+        },
+        modules,
+        packages: [...packages.entries()].map(([id, observation]) => ({ id, observation })),
+        toolContext: {
+          rollupVersion: meta.rollupVersion ?? null,
+          rolldownVersion: meta.rolldownVersion ?? null,
+          watchMode: meta.watchMode ?? null,
+        },
+        tools,
+        patches: candidatePatches(root),
+        missingContentQualified: false,
+      };
+      if (Buffer.byteLength(encode(report)) > candidateReportLimit)
+        throw new Error("Candidate report exceeds bound.");
+    },
+  };
+  return {
+    entry: { offlinePreparationEntry: entry },
+    outDir,
+    format: "esm" as const,
+    platform: "node" as const,
+    sourcemap: false,
+    clean: false,
+    dts: false,
+    minify: false,
+    outExtensions: () => ({ js: ".mjs" }),
+    outputOptions: { codeSplitting: false },
+    deps: {
+      alwaysBundle: (id: string) => !NodeModule.isBuiltin(id),
+      neverBundle: (id: string) => NodeModule.isBuiltin(id),
+      onlyBundle: false,
+    },
+    plugins: [plugin],
+    async onSuccess() {
+      if (!source || report === undefined || outputHashes.length === 0)
+        throw new Error("Candidate graph observation is incomplete.");
+      await withPreparationBuildScope(
+        NodeOS.tmpdir(),
+        "jones-preparation-candidate-source-",
+        options.signal,
+        async (scope) => {
+          if (encode(await observeSource(root, scope.command)) !== encode(source))
+            throw new Error("Candidate source changed during bundling.");
+        },
+      );
+      options.signal?.throwIfAborted();
+      if (
+        encode(NodeFS.readdirSync(outDir).sort()) !==
+        encode(outputHashes.map((item) => item.fileName).sort())
+      )
+        throw new Error("Candidate output inventory changed before reporting.");
+      for (const item of outputHashes) {
+        const bytes = readFile(NodePath.join(outDir, item.fileName), maxBundleBytes);
+        if (bytes.length !== item.size || digest(bytes) !== item.sha256)
+          throw new Error("Candidate emitted bytes changed before reporting.");
+      }
+      const bytes = `${encode(report)}\n`;
+      if (Buffer.byteLength(bytes) > candidateReportLimit)
+        throw new Error("Candidate report exceeds bound.");
+      NodeFS.writeFileSync(NodePath.join(outDir, candidateReportName), bytes, {
+        flag: "wx",
+        mode: 0o400,
+      });
+    },
+  };
+}

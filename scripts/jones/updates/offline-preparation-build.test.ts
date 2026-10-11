@@ -10,6 +10,10 @@ import {
   preparationSeaConfig,
   preparePreparationOutput,
   offlinePreparationPack,
+  offlinePreparationCandidatePack,
+  inspectPreparationCandidateJavaScript,
+  inspectPreparationCandidateCode,
+  requireEmptyPreparationCandidateOutput,
   runPreparationLifecycleFixture,
   verifyNodeArchive,
   verifyPreparationArtifact,
@@ -536,5 +540,138 @@ describe("closed preparation SEA build", () => {
       NodeFS.unlinkSync(executable);
       NodeFS.symlinkSync("offlinePreparationEntry.mjs", executable);
       expect(() => verifyPreparationArtifact(root)).toThrow();
+    }));
+});
+
+async function withCandidateRoot(run: (root: string) => Promise<void>) {
+  const root = NodeFS.mkdtempSync(
+    NodePath.join(NodeOS.tmpdir(), "jones-preparation-candidate-test-"),
+  );
+  let failure: unknown;
+  try {
+    await run(root);
+  } catch (cause) {
+    failure = cause;
+    throw cause;
+  } finally {
+    try {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    } catch (cleanup) {
+      throw new AggregateError(
+        failure === undefined ? [cleanup] : [failure, cleanup],
+        `Candidate fixture cleanup failed: ${root}`,
+      );
+    }
+  }
+}
+
+describe("unqualified preparation candidate graph", () => {
+  it("records actual static, dynamic and require edges without executing their code", () => {
+    const report = inspectPreparationCandidateJavaScript(
+      'import "node:sqlite"; export * from "external"; import("./lazy.mjs"); import(variable); require("addon.node"); globalThis["danger"]();',
+    );
+    expect(
+      report.imports.map(({ kind, specifier, computed, builtin }) => ({
+        kind,
+        specifier,
+        computed,
+        builtin,
+      })),
+    ).toEqual([
+      { kind: "static", specifier: "node:sqlite", computed: false, builtin: true },
+      { kind: "static", specifier: "external", computed: false, builtin: false },
+      { kind: "dynamic", specifier: "./lazy.mjs", computed: false, builtin: false },
+      { kind: "dynamic", specifier: null, computed: true, builtin: false },
+      { kind: "require", specifier: "addon.node", computed: false, builtin: false },
+    ]);
+    expect(report.scannerQualification).toBe("syntax-observation-only");
+    expect(report.loaderHazards.length).toBeGreaterThan(0);
+  });
+
+  it("distinguishes missing virtual/rendered content from observed empty code", () => {
+    expect(inspectPreparationCandidateCode(null)).toEqual({
+      availability: "unavailable",
+      reason: "bundler-code-not-exposed",
+    });
+    expect(inspectPreparationCandidateCode(undefined)).not.toHaveProperty("sha256");
+    expect(inspectPreparationCandidateCode("")).toEqual({
+      availability: "observed",
+      size: 0,
+      sha256: sha(""),
+    });
+    expect(inspectPreparationCandidateCode("export const actual = 1;")).toEqual({
+      availability: "observed",
+      size: Buffer.byteLength("export const actual = 1;"),
+      sha256: sha("export const actual = 1;"),
+    });
+  });
+
+  it("does not confuse a candidate reflection observation with held-entry approval", () => {
+    const code = '(() => {}).constructor("return this")();';
+    expect(inspectPreparationCandidateJavaScript(code).loaderHazards.length).toBeGreaterThan(0);
+    expect(() => verifyPreparationClosure(code)).toThrow();
+  });
+
+  it.each(["import {", 'import("' + "a".repeat(4097) + '");'])(
+    "refuses invalid or unbounded candidate syntax",
+    (code) => {
+      expect(() => inspectPreparationCandidateJavaScript(code)).toThrow();
+    },
+  );
+
+  it("candidate configuration is non-cleaning, separate and has no executable builder", () =>
+    withArtifact((root) => {
+      const candidate = offlinePreparationCandidatePack(root);
+      const held = offlinePreparationPack(root);
+      expect(candidate.outDir).toBe(
+        NodePath.join(root, "apps/server/dist-exe/preparation-candidate"),
+      );
+      expect(candidate.outDir).not.toBe(held.outDir);
+      expect(candidate.clean).toBe(false);
+      expect("exe" in candidate).toBe(false);
+      expect(candidate.plugins[0]!.name).toBe("jones:unqualified-preparation-candidate");
+      expect(() => requireEmptyPreparationCandidateOutput(root)).toThrow(/retained/);
+      expect(() => verifyPreparationArtifact(root)).not.toThrow();
+    }));
+
+  it("preserves a frozen pre-cancellation cause before candidate source commands or output", () =>
+    withCandidateRoot(async (root) => {
+      const reason = Object.freeze(new Error("owned candidate cancellation"));
+      const candidate = offlinePreparationCandidatePack(root, {
+        signal: AbortSignal.abort(reason),
+      });
+      const start = candidate.plugins[0]!.buildStart;
+      if (typeof start !== "function") throw new Error("Missing candidate build hook.");
+      await expect(start.call({} as never, {} as never)).rejects.toBe(reason);
+      expect(NodeFS.existsSync(candidate.outDir)).toBe(false);
+    }));
+
+  it("refuses report publication before observing a graph", () =>
+    withCandidateRoot(async (root) => {
+      await expect(offlinePreparationCandidatePack(root).onSuccess()).rejects.toThrow(/incomplete/);
+    }));
+
+  it("refuses prior candidate evidence and only admits a fresh empty child", () =>
+    withArtifact((root) => {
+      const child = NodePath.join(root, "candidate");
+      requireEmptyPreparationCandidateOutput(child);
+      NodeFS.mkdirSync(child);
+      requireEmptyPreparationCandidateOutput(child);
+      NodeFS.writeFileSync(
+        NodePath.join(child, "candidate-graph.json"),
+        '{"qualification":"complete"}',
+      );
+      expect(() => requireEmptyPreparationCandidateOutput(child)).toThrow(/retained/);
+      expect(NodeFS.readFileSync(NodePath.join(child, "candidate-graph.json"), "utf8")).toBe(
+        '{"qualification":"complete"}',
+      );
+    }));
+
+  it("rejects symlink output without reading or deleting its target", () =>
+    withArtifact((root) => {
+      const alias = NodePath.join(root, "candidate-alias");
+      NodeFS.symlinkSync(root, alias);
+      expect(() => requireEmptyPreparationCandidateOutput(alias)).toThrow(/retained/);
+      expect(NodeFS.existsSync(NodePath.join(root, "provenance.json"))).toBe(true);
     }));
 });

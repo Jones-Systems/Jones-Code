@@ -166,6 +166,55 @@ jobs:
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
 
+  preparation-candidate:
+    name: Nonexecuted preparation graph (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - name: Checkout exact public candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Record the candidate checkout state
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          git -c core.quotePath=true ls-files --others --exclude-standard
+
+      - name: Collect the actual preparation bundle graph without executing it
+        working-directory: apps/server
+        env:
+          JONES_PACK_PREPARATION_CANDIDATE: "1"
+        run: vp pack
+
+      - name: Preserve unqualified graph evidence
+        if: always() && hashFiles('apps/server/dist-exe/preparation-candidate/candidate-graph.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preparation-candidate-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/server/dist-exe/preparation-candidate/
+          if-no-files-found: error
+          retention-days: 7
+
   preview:
     name: Jones native Preview evidence
     runs-on: ubuntu-24.04
