@@ -204,6 +204,134 @@ function milestoneFiles(root, label = "") {
   );
 }
 
+async function withFixtureCleanup(use) {
+  const cleanups = [];
+  let primary;
+  try {
+    return await use((cleanup) => cleanups.push(cleanup));
+  } catch (error) {
+    primary = error;
+    throw error;
+  } finally {
+    const results = await Promise.allSettled(
+      cleanups.reverse().map((cleanup) => Promise.resolve().then(cleanup)),
+    );
+    const errors = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    if (errors.length) {
+      if (primary) {
+        primary.cleanupErrors = errors;
+        primary.retainScratch = true;
+      } else {
+        throw Object.assign(new AggregateError(errors, "Owned fixture cleanup failed"), {
+          retainScratch: true,
+        });
+      }
+    }
+  }
+}
+
+async function assertChannelClosed(channel) {
+  NodeAssert.equal(channel.evidence().closed, true);
+  NodeAssert.equal(channel.evidence().pendingWaiters, 0);
+  NodeAssert.equal(channel.evidence().heldRequests, 0);
+  await NodeAssert.rejects(
+    fetch(channel.binding.endpoint, { signal: AbortSignal.timeout(5_000) }),
+    (error) => ["ECONNREFUSED", "UND_ERR_SOCKET"].includes(error.cause?.code),
+  );
+}
+
+NodeTest.test(
+  "a failed second channel acquisition closes the first owned listener",
+  { timeout: 10_000 },
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      let left;
+      const acquisitionError = new Error("forced second acquisition failure");
+      await NodeAssert.rejects(
+        withFixtureCleanup(async (defer) => {
+          left = await createMilestoneChannel({
+            runId: "acquisition",
+            caseId: "left",
+            files: milestoneFiles(root, "left-"),
+          });
+          defer(() => left.close());
+          const response = await fetch(left.binding.endpoint, { headers: { connection: "close" } });
+          NodeAssert.equal(response.status, 409);
+          await response.json();
+          const right = await createMilestoneChannel({
+            runId: "acquisition",
+            caseId: "right",
+            files: milestoneFiles(root, "right-"),
+            signal: AbortSignal.abort(acquisitionError),
+          });
+          defer(() => right.close());
+        }),
+        (error) => error === acquisitionError,
+      );
+      await assertChannelClosed(left);
+    });
+  },
+);
+
+NodeTest.test(
+  "a rejected child cleanup still closes its channel and readline without masking the primary failure",
+  { timeout: 10_000 },
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      for (const failBody of [false, true]) {
+        let channel;
+        let child;
+        let linesClosed = false;
+        const primary = new Error("forced fixture body failure");
+        const cleanupFailure = new Error("forced child cleanup rejection after reaping");
+        await NodeAssert.rejects(
+          withFixtureCleanup(async (defer) => {
+            channel = await createMilestoneChannel({
+              runId: "cleanup",
+              caseId: String(failBody),
+              files: milestoneFiles(root, `${failBody}-`),
+            });
+            defer(() => channel.close());
+            child = NodeChildProcess.spawn(
+              process.execPath,
+              ["--input-type=module", "-e", "process.stdin.resume()"],
+              { env: isolatedEnvironment(root), stdio: ["pipe", "pipe", "pipe"] },
+            );
+            defer(async () => {
+              await stopChild(child);
+              throw cleanupFailure;
+            });
+            defer(() => child.stdin.end());
+            const lines = NodeReadline.createInterface({ input: child.stdout });
+            defer(() => lines.close());
+            lines.once("close", () => {
+              linesClosed = true;
+            });
+            await NodeEvents.once(child, "spawn");
+            if (failBody) throw primary;
+          }),
+          (error) => {
+            NodeAssert.equal(error.retainScratch, true);
+            if (failBody) {
+              NodeAssert.equal(error, primary);
+              NodeAssert.deepEqual(error.cleanupErrors, [cleanupFailure]);
+            } else {
+              NodeAssert.ok(error instanceof AggregateError);
+              NodeAssert.deepEqual(error.errors, [cleanupFailure]);
+            }
+            return true;
+          },
+        );
+        NodeAssert.ok(child.exitCode !== null || child.signalCode !== null);
+        NodeAssert.equal(linesClosed, true);
+        await assertChannelClosed(channel);
+      }
+    });
+  },
+);
+
 NodeTest.test(
   "acknowledged milestones handle existing, new and cancelled waits without filesystem notifications",
   { timeout: 10_000 },
@@ -261,21 +389,23 @@ NodeTest.test(
   { timeout: 10_000 },
   async () => {
     await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
-      const leftFiles = milestoneFiles(root, "left-");
-      const rightFiles = milestoneFiles(root, "right-");
-      const left = await createMilestoneChannel({
-        runId: "same-run",
-        caseId: "left",
-        files: leftFiles,
-      });
-      const cancellation = new AbortController();
-      const right = await createMilestoneChannel({
-        runId: "same-run",
-        caseId: "right",
-        files: rightFiles,
-        signal: cancellation.signal,
-      });
-      try {
+      await withFixtureCleanup(async (defer) => {
+        const leftFiles = milestoneFiles(root, "left-");
+        const rightFiles = milestoneFiles(root, "right-");
+        const left = await createMilestoneChannel({
+          runId: "same-run",
+          caseId: "left",
+          files: leftFiles,
+        });
+        defer(() => left.close());
+        const cancellation = new AbortController();
+        const right = await createMilestoneChannel({
+          runId: "same-run",
+          caseId: "right",
+          files: rightFiles,
+          signal: cancellation.signal,
+        });
+        defer(() => right.close());
         const rejected = async (body) => {
           const response = await fetch(left.binding.endpoint, {
             method: "POST",
@@ -347,9 +477,7 @@ NodeTest.test(
         await NodeAssert.rejects(
           publishMilestone(left.binding, "final", leftFiles.final, { done: true }),
         );
-      } finally {
-        await Promise.all([left.close(), right.close()]);
-      }
+      });
     });
   },
 );
@@ -455,59 +583,64 @@ NodeTest.test(
   { timeout: 15_000 },
   async () => {
     await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
-      const report = NodePath.join(root, "report.json");
-      const files = {
-        started: `${report}.started`,
-        custody: `${report}.custody`,
-        report,
-        final: `${report}.final`,
-        release: NodePath.join(root, "release.json"),
-      };
-      const channel = await createMilestoneChannel({
-        runId: "actual-child",
-        caseId: "missing-injection",
-        files,
-      });
-      const child = NodeChildProcess.spawn(
-        process.execPath,
-        [NodePath.join(source, "scripts/jones/updates/install-preview-agent.mjs")],
-        {
-          env: {
-            ...isolatedEnvironment(root),
-            JONES_PREVIEW_SOURCE: source,
-            JONES_PREVIEW_REPORT: report,
-            JONES_PREVIEW_RELEASE: files.release,
-            JONES_PREVIEW_MILESTONE: JSON.stringify(channel.binding),
-          },
-          stdio: ["pipe", "pipe", "pipe"],
-        },
-      );
-      const lines = NodeReadline.createInterface({ input: child.stdout });
-      const pending = new Map();
-      let next = 0;
-      let stderr = "";
-      child.stderr.on("data", (bytes) => {
-        stderr += bytes;
-      });
-      lines.on("line", (line) => {
-        const response = JSON.parse(line);
-        pending.get(response.id)?.(response);
-        pending.delete(response.id);
-      });
-      const request = (method, params) =>
-        new Promise((resolve, reject) => {
-          const id = ++next;
-          const timer = setTimeout(() => {
-            pending.delete(id);
-            reject(new Error(`ACP ${method} timeout`));
-          }, 5_000);
-          pending.set(id, (value) => {
-            clearTimeout(timer);
-            resolve(value);
-          });
-          child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      let child;
+      await withFixtureCleanup(async (defer) => {
+        const report = NodePath.join(root, "report.json");
+        const files = {
+          started: `${report}.started`,
+          custody: `${report}.custody`,
+          report,
+          final: `${report}.final`,
+          release: NodePath.join(root, "release.json"),
+        };
+        const channel = await createMilestoneChannel({
+          runId: "actual-child",
+          caseId: "missing-injection",
+          files,
         });
-      try {
+        defer(() => channel.close());
+        child = NodeChildProcess.spawn(
+          process.execPath,
+          [NodePath.join(source, "scripts/jones/updates/install-preview-agent.mjs")],
+          {
+            env: {
+              ...isolatedEnvironment(root),
+              JONES_PREVIEW_SOURCE: source,
+              JONES_PREVIEW_REPORT: report,
+              JONES_PREVIEW_RELEASE: files.release,
+              JONES_PREVIEW_MILESTONE: JSON.stringify(channel.binding),
+            },
+            stdio: ["pipe", "pipe", "pipe"],
+          },
+        );
+        defer(() => stopChild(child));
+        defer(() => child.stdin.end());
+        const lines = NodeReadline.createInterface({ input: child.stdout });
+        defer(() => lines.close());
+        const pending = new Map();
+        let next = 0;
+        let stderr = "";
+        child.stderr.on("data", (bytes) => {
+          stderr += bytes;
+        });
+        lines.on("line", (line) => {
+          const response = JSON.parse(line);
+          pending.get(response.id)?.(response);
+          pending.delete(response.id);
+        });
+        const request = (method, params) =>
+          new Promise((resolve, reject) => {
+            const id = ++next;
+            const timer = setTimeout(() => {
+              pending.delete(id);
+              reject(new Error(`ACP ${method} timeout`));
+            }, 5_000);
+            pending.set(id, (value) => {
+              clearTimeout(timer);
+              resolve(value);
+            });
+            child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+          });
         await NodeEvents.once(child, "spawn");
         const initialized = await request("initialize", {
           protocolVersion: 1,
@@ -538,12 +671,7 @@ NodeTest.test(
         NodeAssert.equal(final.mcpBridgePid, undefined);
         NodeAssert.deepEqual(final.calls, []);
         NodeAssert.equal(stderr, "");
-      } finally {
-        child.stdin.end();
-        await stopChild(child);
-        lines.close();
-        await channel.close();
-      }
+      });
       NodeAssert.ok(child.exitCode !== null || child.signalCode !== null);
     });
   },
