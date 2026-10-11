@@ -3,7 +3,10 @@ import * as NodeCrypto from "node:crypto";
 import { describe, expect, it } from "vite-plus/test";
 import { jonesLegacyBootstrapSource } from "../../../apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts";
 import { jonesNativeHelperSource } from "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts";
-import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
+import {
+  createJonesLegacyBootstrapBundle,
+  verifyJonesLegacyIdentityMachO,
+} from "./legacy-bootstrap-bundle.ts";
 
 const identity = {
   repository: "Jones-Systems/Jones-Code" as const,
@@ -45,4 +48,87 @@ describe("standalone legacy bootstrap packaging", () => {
       "exact Jones preview provenance",
     );
   });
+});
+
+function inertArm64Executable() {
+  const bytes = Buffer.alloc(160);
+  [0xfeedfacf, 0x0100000c, 0, 2, 2, 96, 0, 0].forEach((value, index) =>
+    bytes.writeUInt32LE(value, index * 4),
+  );
+  bytes.writeUInt32LE(0x19, 32);
+  bytes.writeUInt32LE(72, 36);
+  bytes.write("__TEXT", 40, "ascii");
+  bytes.writeBigUInt64LE(160n, 80);
+  bytes.writeUInt32LE(0x80000028, 104);
+  bytes.writeUInt32LE(24, 108);
+  bytes.writeBigUInt64LE(128n, 112);
+  return bytes;
+}
+
+describe("schema 2 maintenance resources", () => {
+  it("binds binary bytes independently from the source and retains the v1 default", () => {
+    const binary = inertArm64Executable();
+    const files = createJonesLegacyBootstrapBundle(identity, {
+      identityNative: binary,
+      identityNativeSourceSha256: "c".repeat(64),
+      maintenanceSource: "# inert maintenance fixture\n",
+    });
+    expect(files.map((file) => file.relativePath)).toEqual([
+      "jones-bootstrap/bootstrap.py",
+      "jones-bootstrap/executor.py",
+      "jones-bootstrap/BUNDLE.json",
+      "jones-bootstrap/maintenance.py",
+      "jones-bootstrap/identity-native",
+    ]);
+    expect(files.map((file) => file.mode)).toEqual([0o500, 0o500, 0o400, 0o500, 0o500]);
+    const manifest = JSON.parse(String(files[2]!.content));
+    expect(Object.keys(manifest).sort()).toEqual(
+      [
+        "schema",
+        "repository",
+        "sourceSha",
+        "sourceTree",
+        "version",
+        "bootstrapSha256",
+        "executorSha256",
+        "maintenanceSha256",
+        "identityNativeSha256",
+        "identityNativeSourceSha256",
+        "nativeArchitecture",
+      ].sort(),
+    );
+    expect(manifest).toMatchObject({
+      schema: 2,
+      nativeArchitecture: "arm64",
+      identityNativeSourceSha256: "c".repeat(64),
+    });
+    expect(manifest.identityNativeSha256).toBe(
+      NodeCrypto.createHash("sha256").update(binary).digest("hex"),
+    );
+    expect(manifest.maintenanceSha256).toBe(
+      NodeCrypto.createHash("sha256").update(files[3]!.content).digest("hex"),
+    );
+    binary[159] = 255;
+    expect(files[4]!.content).not.toEqual(binary);
+    expect(JSON.parse(createJonesLegacyBootstrapBundle(identity)[2]!.content).schema).toBe(1);
+  });
+
+  it.each([
+    [0, 0xcafebabe],
+    [4, 0x01000007],
+    [8, 2],
+    [12, 6],
+    [16, 0],
+    [20, 4096],
+    [28, 1],
+    [36, 7],
+    [108, 16],
+  ])(
+    "rejects wrong architecture, ABI, or malformed command tables at offset %i",
+    (offset, value) => {
+      const binary = inertArm64Executable();
+      binary.writeUInt32LE(value, offset);
+      expect(() => verifyJonesLegacyIdentityMachO(binary)).toThrow("thin arm64 Mach-O executable");
+    },
+  );
 });

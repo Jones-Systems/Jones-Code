@@ -338,8 +338,19 @@ def inspect_inputs(manifest, selection_path, selection_sha, bootstrap_path):
     tools = candidate_app / 'Contents/Resources/jones-bootstrap'
     require(bootstrap_path == tools / 'bootstrap.py')
     bundle, bundle_digest = observed.metadata(tools / 'BUNDLE.json', 8192)
-    require(set(bundle) == {'schema', 'repository', 'sourceSha', 'sourceTree', 'version', 'bootstrapSha256', 'executorSha256'})
-    require(type(bundle['schema']) is int and bundle['schema'] == 1 and bundle['repository'] == REPOSITORY and bundle['sourceSha'] == candidate['source'] and bundle['sourceTree'] == candidate['tree'] and bundle['version'] == candidate['version'])
+    bundle_keys = {'schema', 'repository', 'sourceSha', 'sourceTree', 'version', 'bootstrapSha256', 'executorSha256'}
+    require(type(bundle.get('schema')) is int and bundle['schema'] in (1, 2))
+    if bundle['schema'] == 2:
+        bundle_keys |= {'maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256', 'nativeArchitecture'}
+    require(set(bundle) == bundle_keys)
+    require(bundle['repository'] == REPOSITORY and bundle['sourceSha'] == candidate['source'] and bundle['sourceTree'] == candidate['tree'] and bundle['version'] == candidate['version'])
+    if bundle['schema'] == 2:
+        require(bundle['nativeArchitecture'] == 'arm64' and all(hex_value(bundle[key], 64) for key in ('maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256')))
+        require(sha(observed.raw(tools / 'maintenance.py', 1048576)) == bundle['maintenanceSha256'])
+        native = observed.raw(tools / 'identity-native', 4 * 1024 * 1024)
+        require(sha(native) == bundle['identityNativeSha256'])
+        require(len(native) >= 32 and native[:16] == bytes.fromhex('cffaedfe0c0000010000000002000000'))
+        require(observed.files[tools / 'maintenance.py'][3] & 0o777 == 0o500 and observed.files[tools / 'identity-native'][3] & 0o777 == 0o500)
     bootstrap = observed.raw(bootstrap_path, 1048576)
     executor = observed.raw(tools / 'executor.py', 1048576)
     require(sha(bootstrap) == bundle['bootstrapSha256'] and sha(executor) == bundle['executorSha256'])

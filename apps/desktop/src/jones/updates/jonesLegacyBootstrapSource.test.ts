@@ -46,7 +46,7 @@ def metadata_app(app, source, tree, version, packaged=False):
     write(app / 'Contents/MacOS/Jones', b'fixture-executable-not-runnable', 0o500)
     if packaged:
         for item in files:
-            write(app / 'Contents/Resources' / item['relativePath'], item['content'].encode(), item['mode'])
+            write(app / 'Contents/Resources' / item['relativePath'], bytes.fromhex(item['binaryHex']) if 'binaryHex' in item else item['content'].encode(), item['mode'])
 
 def hash_app(app):
     return namespace['app_digest'](namespace['Observation'](), app)
@@ -258,9 +258,9 @@ const files = createJonesLegacyBootstrapBundle({
   version: "0.0.45-preview.20261011.123.1",
 });
 
-function scenario(fault: string) {
+function scenario(fault: string, bundle = files) {
   const output = NodeChildProcess.execFileSync("python3", ["-c", fixture], {
-    input: JSON.stringify({ files, fault }),
+    input: JSON.stringify({ files: bundle, fault }),
     encoding: "utf8",
     timeout: 15000,
     maxBuffer: 1024 * 1024,
@@ -539,7 +539,7 @@ print(json.dumps(result))
 
 function inventoryScenario(fault: string) {
   const output = NodeChildProcess.execFileSync("python3", ["-c", inventoryFixture], {
-    input: JSON.stringify({ files, fault }),
+    input: JSON.stringify({ files: bundle, fault }),
     encoding: "utf8",
     timeout: 15000,
     maxBuffer: 1024 * 1024,
@@ -687,4 +687,40 @@ describe("read-only installer route inventory", () => {
     expect(result.code).toBe(2);
     expect(result.report).toBeNull();
   });
+});
+
+it("schema 2 preserves standalone executor staging and never executes its extra tools", () => {
+  const binary = Buffer.alloc(160);
+  [0xfeedfacf, 0x0100000c, 0, 2, 2, 96, 0, 0].forEach((value, index) =>
+    binary.writeUInt32LE(value, index * 4),
+  );
+  binary.writeUInt32LE(0x19, 32);
+  binary.writeUInt32LE(72, 36);
+  binary.write("__TEXT", 40, "ascii");
+  binary.writeBigUInt64LE(160n, 80);
+  binary.writeUInt32LE(0x80000028, 104);
+  binary.writeUInt32LE(24, 108);
+  binary.writeBigUInt64LE(128n, 112);
+  const bundle = createJonesLegacyBootstrapBundle(
+    {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: "c".repeat(40),
+      sourceTree: "d".repeat(40),
+      version: "0.0.45-preview.20261011.123.1",
+    },
+    {
+      identityNative: binary,
+      identityNativeSourceSha256: "e".repeat(64),
+      maintenanceSource: "raise RuntimeError('must not execute')\n",
+    },
+  );
+  const wire = bundle.map((file) =>
+    typeof file.content === "string"
+      ? file
+      : { ...file, content: "", binaryHex: Buffer.from(file.content).toString("hex") },
+  );
+  const result = scenario("success", wire);
+  expect(result.code).toBe(0);
+  expect(result.retry).toBe("no-change");
+  expect(result.response.activationAllowed).toBe(false);
 });
