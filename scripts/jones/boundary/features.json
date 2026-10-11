@@ -503,8 +503,13 @@
     {
       "id": "fleet-update-access",
       "tests": [
+        "apps/desktop/src/jones/fleetUpdates/store.test.ts",
+        "apps/server/src/jones/fleetUpdates/service.test.ts",
+        "apps/server/src/jones/fleetUpdates/store.test.ts",
+        "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx",
         "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
         "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
         "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
         "packages/contracts/src/jones/fleetUpdates/source.test.ts"
       ]
