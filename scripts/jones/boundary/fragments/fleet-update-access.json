@@ -12,9 +12,7 @@
     "packages/contracts/src/jones/fleetUpdates/source.test.ts",
     "packages/contracts/src/jones/fleetUpdates/source.ts"
   ],
-  "hookPaths": [
-    "apps/web/vite.config.ts"
-  ],
+  "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],
   "allowedImports": [
     {

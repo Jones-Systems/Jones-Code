@@ -10,7 +10,10 @@ import * as Schema from "effect/Schema";
 
 import { APP_SOURCE_SHA, APP_VERSION } from "./branding";
 import { isJonesPreviewBuildPair } from "./jones/updates/versionSkew";
-import { resolveJonesSourceCurrency, type JonesSourceCurrency } from "./jones/fleetUpdates/sourceCurrency";
+import {
+  resolveJonesSourceCurrency,
+  type JonesSourceCurrency,
+} from "./jones/fleetUpdates/sourceCurrency";
 import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
 
 export interface VersionMismatch {
@@ -106,10 +109,13 @@ export function resolveVersionMismatch(
 export function resolveServerConfigVersionMismatch(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
 ): VersionMismatch | null {
-  return resolveVersionMismatch(serverConfig?.environment.serverVersion, resolveJonesSourceCurrency({
-    installedSource: serverConfig?.environment.jonesSource?.sha,
-    targetSource: APP_SOURCE_SHA,
-  }));
+  return resolveVersionMismatch(
+    serverConfig?.environment.serverVersion,
+    resolveJonesSourceCurrency({
+      installedSource: serverConfig?.environment.jonesSource?.sha,
+      targetSource: APP_SOURCE_SHA,
+    }),
+  );
 }
 
 /** The update path the connected server offers, or null when it only

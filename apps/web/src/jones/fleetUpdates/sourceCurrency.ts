@@ -20,13 +20,18 @@ export function resolveJonesSourceCurrency(input: {
     targetSource === undefined ||
     !sourceSha.test(installedSource) ||
     !sourceSha.test(targetSource)
-  ) return "unknown";
+  )
+    return "unknown";
   if (installedSource === targetSource) return "current";
   if (comparison?.base !== installedSource || comparison.head !== targetSource) return "unknown";
   switch (comparison.relation) {
-    case "ahead": return "behind";
-    case "behind": return "ahead";
-    case "diverged": return "diverged";
-    case "identical": return "unknown";
+    case "ahead":
+      return "behind";
+    case "behind":
+      return "ahead";
+    case "diverged":
+      return "diverged";
+    case "identical":
+      return "unknown";
   }
 }
