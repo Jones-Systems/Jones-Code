@@ -1,5 +1,4 @@
 export {
-  requestJonesUpdate,
   requestJonesUpdateWithDescriptor,
   JonesUpdateBindingError,
   type JonesUpdateBridgeInput,

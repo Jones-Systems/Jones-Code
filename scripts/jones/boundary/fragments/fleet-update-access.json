@@ -9,10 +9,7 @@
     "apps/web/src/jones/fleetUpdates/sourceCurrency.ts",
     "packages/client-runtime/src/jones/fleetUpdates/index.ts",
     "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
-    "packages/client-runtime/src/jones/fleetUpdates/updateBridge.ts",
-    "packages/contracts/src/jones/fleetUpdates/index.ts",
-    "packages/contracts/src/jones/fleetUpdates/source.test.ts",
-    "packages/contracts/src/jones/fleetUpdates/source.ts"
+    "packages/client-runtime/src/jones/fleetUpdates/updateBridge.ts"
   ],
   "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],
