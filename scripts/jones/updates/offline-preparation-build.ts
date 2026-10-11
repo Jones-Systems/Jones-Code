@@ -46,6 +46,7 @@ const sourceFiles = [
   "apps/server/src/jones/updates/offlinePreparation.ts",
   "apps/server/src/jones/updates/offlinePreparationCore.ts",
   "apps/server/src/jones/updates/offlinePreparationPlan.ts",
+  "apps/server/src/jones/updates/offlinePreparationWorker.ts",
 ];
 const maxBundleBytes = 32 * 1024 * 1024;
 const maxRuntimeBytes = 256 * 1024 * 1024;
@@ -1693,17 +1694,74 @@ export function inspectPreparationCandidateCode(code: unknown) {
   return { availability: "observed" as const, sha256: digest(code), size };
 }
 
-/** Prior candidate data is never a cleanup grant, including a report that claims completeness. */
-export function requireEmptyPreparationCandidateOutput(directory: string): void {
-  try {
-    const stat = NodeFS.lstatSync(directory);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || NodeFS.readdirSync(directory).length !== 0)
-      throw new Error("Candidate output must be fresh or empty; existing evidence is retained.");
-  } catch (cause) {
-    if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT")
-      return;
-    throw cause;
+/** Capture every existing ancestor before allowing the builder to create an output child. */
+function candidateDirectoryChain(directory: string) {
+  if (!NodePath.isAbsolute(directory) || NodePath.normalize(directory) !== directory)
+    throw new Error("Candidate output requires a canonical absolute path; evidence is retained.");
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("Candidate directory ownership is unavailable.");
+  const chain: { path: string; stat: NodeFS.Stats }[] = [];
+  let current = NodePath.parse(directory).root;
+  const paths = [current];
+  for (const part of directory.slice(current.length).split(NodePath.sep).filter(Boolean)) {
+    current = NodePath.join(current, part);
+    paths.push(current);
   }
+  let missing: string | undefined;
+  for (const path of paths) {
+    let stat: NodeFS.Stats;
+    try {
+      stat = NodeFS.lstatSync(path);
+    } catch (cause) {
+      if (
+        typeof cause === "object" &&
+        cause !== null &&
+        "code" in cause &&
+        cause.code === "ENOENT"
+      ) {
+        missing = path;
+        break;
+      }
+      throw cause;
+    }
+    // System scratch ancestors may be sticky; the output itself must remain privately writable.
+    const trustedStickyParent = path !== directory && stat.uid === 0 && (stat.mode & 0o1000) !== 0;
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      (stat.uid !== uid && stat.uid !== 0) ||
+      ((stat.mode & 0o022) !== 0 && !trustedStickyParent) ||
+      (path === directory && stat.uid !== uid)
+    )
+      throw new Error("Candidate output ancestor is aliased or unowned; evidence is retained.");
+    chain.push({ path, stat });
+  }
+  return { chain, missing };
+}
+
+/** Prior candidate data is never a cleanup grant, including a report that claims completeness. */
+export function requireEmptyPreparationCandidateOutput(directory: string): () => void {
+  const captured = candidateDirectoryChain(directory);
+  if (captured.missing === undefined && NodeFS.readdirSync(directory).length !== 0)
+    throw new Error("Candidate output must be fresh or empty; existing evidence is retained.");
+  return () => {
+    const current = candidateDirectoryChain(directory);
+    if (
+      captured.missing !== current.missing ||
+      captured.chain.length !== current.chain.length ||
+      captured.chain.some(({ path, stat }, index) => {
+        const actual = current.chain[index]!;
+        return (
+          path !== actual.path ||
+          stat.dev !== actual.stat.dev ||
+          stat.ino !== actual.stat.ino ||
+          stat.uid !== actual.stat.uid ||
+          stat.mode !== actual.stat.mode
+        );
+      })
+    )
+      throw new Error("Candidate output directory identity changed; evidence is retained.");
+  };
 }
 
 function candidateId(root: string, id: string): string {
@@ -1830,11 +1888,12 @@ export function offlinePreparationCandidatePack(
   const outDir = NodePath.join(root, candidateRelative);
   let source: Awaited<ReturnType<typeof observeSource>> | undefined;
   let report: unknown;
+  let verifyOutput: (() => void) | undefined;
   let outputHashes: { fileName: string; sha256: string; size: number }[] = [];
   const plugin: Plugin = {
     name: "jones:unqualified-preparation-candidate",
     async buildStart() {
-      requireEmptyPreparationCandidateOutput(outDir);
+      const verifyInitialOutput = requireEmptyPreparationCandidateOutput(outDir);
       source = await withPreparationBuildScope(
         NodeOS.tmpdir(),
         "jones-preparation-candidate-source-",
@@ -1842,10 +1901,14 @@ export function offlinePreparationCandidatePack(
         (scope) => observeSource(root, scope.command),
       );
       options.signal?.throwIfAborted();
+      verifyInitialOutput();
       requireEmptyPreparationCandidateOutput(outDir);
+      NodeFS.mkdirSync(outDir, { recursive: true, mode: 0o700 });
+      verifyOutput = requireEmptyPreparationCandidateOutput(outDir);
     },
     generateBundle(_options, bundle) {
-      if (!source) throw new Error("Missing candidate source observation.");
+      if (!source || !verifyOutput) throw new Error("Missing candidate source observation.");
+      verifyOutput();
       const outputs = Object.values(bundle);
       const chunks = outputs.filter((item) => item.type === "chunk");
       const chunk = chunks[0];
@@ -1978,6 +2041,11 @@ export function offlinePreparationCandidatePack(
       };
       if (Buffer.byteLength(encode(report)) > candidateReportLimit)
         throw new Error("Candidate report exceeds bound.");
+      verifyOutput();
+    },
+    writeBundle() {
+      if (!verifyOutput) throw new Error("Missing candidate output custody.");
+      verifyOutput();
     },
   };
   return {
@@ -1998,8 +2066,9 @@ export function offlinePreparationCandidatePack(
     },
     plugins: [plugin],
     async onSuccess() {
-      if (!source || report === undefined || outputHashes.length === 0)
+      if (!source || !verifyOutput || report === undefined || outputHashes.length === 0)
         throw new Error("Candidate graph observation is incomplete.");
+      verifyOutput();
       await withPreparationBuildScope(
         NodeOS.tmpdir(),
         "jones-preparation-candidate-source-",
@@ -2010,6 +2079,7 @@ export function offlinePreparationCandidatePack(
         },
       );
       options.signal?.throwIfAborted();
+      verifyOutput();
       if (
         encode(NodeFS.readdirSync(outDir).sort()) !==
         encode(outputHashes.map((item) => item.fileName).sort())
@@ -2023,10 +2093,12 @@ export function offlinePreparationCandidatePack(
       const bytes = `${encode(report)}\n`;
       if (Buffer.byteLength(bytes) > candidateReportLimit)
         throw new Error("Candidate report exceeds bound.");
+      verifyOutput();
       NodeFS.writeFileSync(NodePath.join(outDir, candidateReportName), bytes, {
         flag: "wx",
         mode: 0o400,
       });
+      verifyOutput();
     },
   };
 }

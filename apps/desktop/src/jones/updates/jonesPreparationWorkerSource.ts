@@ -12,7 +12,8 @@ _PREPARATION_SOURCE_INPUTS = {'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.
     'apps/server/src/jones/updates/offlinePreparationEntry.ts',
     'apps/server/src/jones/updates/offlinePreparation.ts',
     'apps/server/src/jones/updates/offlinePreparationCore.ts',
-    'apps/server/src/jones/updates/offlinePreparationPlan.ts'}
+    'apps/server/src/jones/updates/offlinePreparationPlan.ts',
+    'apps/server/src/jones/updates/offlinePreparationWorker.ts'}
 
 def _preparation_encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'), sort_keys=True, allow_nan=False).encode('utf8')

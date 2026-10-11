@@ -194,7 +194,9 @@ with owned_root() as root:
                 scope['durable_file'] = durable
         elif case.startswith('bundle-'):
             config = b'{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n'
-            inputs = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', 'apps/server/package.json', 'apps/desktop/package.json', 'apps/web/package.json', 'packages/contracts/package.json', 'apps/server/vite.config.ts', 'vite.config.ts', 'scripts/jones/updates/offline-preparation-build.ts', 'apps/server/src/jones/updates/offlinePreparationEntry.ts', 'apps/server/src/jones/updates/offlinePreparation.ts', 'apps/server/src/jones/updates/offlinePreparationCore.ts', 'apps/server/src/jones/updates/offlinePreparationPlan.ts']
+            worker_input = 'apps/server/src/jones/updates/offlinePreparationWorker.ts'
+            inputs = ['pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', 'apps/server/package.json', 'apps/desktop/package.json', 'apps/web/package.json', 'packages/contracts/package.json', 'apps/server/vite.config.ts', 'vite.config.ts', 'scripts/jones/updates/offline-preparation-build.ts', 'apps/server/src/jones/updates/offlinePreparationEntry.ts', 'apps/server/src/jones/updates/offlinePreparation.ts', 'apps/server/src/jones/updates/offlinePreparationCore.ts', 'apps/server/src/jones/updates/offlinePreparationPlan.ts', worker_input]
+            assert len(inputs) == 15 and set(inputs) == scope['_PREPARATION_SOURCE_INPUTS']
             preparation = {'schema': 1, 'protocol': 1, 'provenanceSha256': 'a' * 64, 'sourceInputHashes': {key: 'b' * 64 for key in inputs},
                 'entry': {'sha256': 'c' * 64, 'size': 1}, 'seaConfig': {'sha256': hashlib.sha256(config).hexdigest(), 'size': len(config)},
                 'executable': {'name': 'jones-offline-preparation', 'sha256': 'd' * 64, 'size': 1},
@@ -204,6 +206,11 @@ with owned_root() as root:
             bundle.update({key: 'c' * 64 for key in ('bootstrapSha256', 'executorSha256', 'maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256')})
             if case == 'bundle-missing-source': del preparation['sourceInputHashes'][inputs[0]]
             elif case == 'bundle-unknown-source': preparation['sourceInputHashes']['unreviewed.ts'] = 'a' * 64
+            elif case == 'bundle-missing-worker': del preparation['sourceInputHashes'][worker_input]
+            elif case == 'bundle-worker-hash': preparation['sourceInputHashes'][worker_input] = 'b' * 63 + '\n'
+            elif case == 'bundle-worker-rebound':
+                preparation['sourceInputHashes']['apps/server/src/jones/updates/../updates/offlinePreparationWorker.ts'] = preparation['sourceInputHashes'].pop(worker_input)
+            elif case == 'bundle-worker-extra': preparation['sourceInputHashes']['apps/server/src/jones/updates/offlinePreparationWorker.test.ts'] = 'b' * 64
             elif case == 'bundle-zero-size': preparation['entry']['size'] = 0
             elif case == 'bundle-boolean-size': preparation['executable']['size'] = True
             elif case == 'bundle-oversize': preparation['node']['archiveBytes'] = 128 * 1024 * 1024 + 1
@@ -326,6 +333,10 @@ describe("captured preparation controller", () => {
     "bundle-valid",
     "bundle-missing-source",
     "bundle-unknown-source",
+    "bundle-missing-worker",
+    "bundle-worker-hash",
+    "bundle-worker-rebound",
+    "bundle-worker-extra",
     "bundle-zero-size",
     "bundle-boolean-size",
     "bundle-oversize",

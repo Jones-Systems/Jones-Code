@@ -87,6 +87,7 @@ function artifactManifest(bundle: string, config: string, binary: string) {
           "apps/server/src/jones/updates/offlinePreparation.ts",
           "apps/server/src/jones/updates/offlinePreparationCore.ts",
           "apps/server/src/jones/updates/offlinePreparationPlan.ts",
+          "apps/server/src/jones/updates/offlinePreparationWorker.ts",
         ].map((file) => [file, sha(file)]),
       ),
     },
@@ -152,7 +153,7 @@ describe("closed preparation SEA build", () => {
         sha(NodeFS.readFileSync(NodePath.join(root, "provenance.json"), "utf8")),
       );
       expect(proof.source.hashes).toEqual(manifest.source.hashes);
-      expect(Object.keys(proof.source.hashes)).toHaveLength(14);
+      expect(Object.keys(proof.source.hashes)).toHaveLength(15);
       expect(proof.sqlite).toEqual(sqliteObservation().sqlite);
       expect(proof.node.runtime.sqlite).toEqual(proof.sqlite);
       expect(Object.isFrozen(proof.source.hashes)).toBe(true);
@@ -254,7 +255,7 @@ describe("closed preparation SEA build", () => {
       expect(() => verifyPreparationArtifact(root)).toThrow(/artifact changed/);
     }));
 
-  it.each(["sqlite", "core-input", "plan-input", "held-classification"] as const)(
+  it.each(["sqlite", "core-input", "plan-input", "worker-input", "held-classification"] as const)(
     "preserves old or unqualified output: %s",
     (fault) =>
       withArtifact((root, manifest) => {
@@ -264,6 +265,8 @@ describe("closed preparation SEA build", () => {
           delete changed.source.hashes["apps/server/src/jones/updates/offlinePreparationCore.ts"];
         if (fault === "plan-input")
           delete changed.source.hashes["apps/server/src/jones/updates/offlinePreparationPlan.ts"];
+        if (fault === "worker-input")
+          delete changed.source.hashes["apps/server/src/jones/updates/offlinePreparationWorker.ts"];
         if (fault === "held-classification") changed.classification = "cold-preparation-worker";
         const raw = JSON.stringify(changed);
         NodeFS.writeFileSync(NodePath.join(root, "provenance.json"), raw);
@@ -544,8 +547,8 @@ describe("closed preparation SEA build", () => {
 });
 
 async function withCandidateRoot(run: (root: string) => Promise<void>) {
-  const root = NodeFS.mkdtempSync(
-    NodePath.join(NodeOS.tmpdir(), "jones-preparation-candidate-test-"),
+  const root = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-preparation-candidate-test-")),
   );
   let failure: unknown;
   try {
@@ -624,13 +627,15 @@ describe("unqualified preparation candidate graph", () => {
       const candidate = offlinePreparationCandidatePack(root);
       const held = offlinePreparationPack(root);
       expect(candidate.outDir).toBe(
-        NodePath.join(root, "apps/server/dist-exe/preparation-candidate"),
+        NodePath.join(NodeFS.realpathSync(root), "apps/server/dist-exe/preparation-candidate"),
       );
       expect(candidate.outDir).not.toBe(held.outDir);
       expect(candidate.clean).toBe(false);
       expect("exe" in candidate).toBe(false);
       expect(candidate.plugins[0]!.name).toBe("jones:unqualified-preparation-candidate");
-      expect(() => requireEmptyPreparationCandidateOutput(root)).toThrow(/retained/);
+      expect(() => requireEmptyPreparationCandidateOutput(NodeFS.realpathSync(root))).toThrow(
+        /retained/,
+      );
       expect(() => verifyPreparationArtifact(root)).not.toThrow();
     }));
 
@@ -653,7 +658,7 @@ describe("unqualified preparation candidate graph", () => {
 
   it("refuses prior candidate evidence and only admits a fresh empty child", () =>
     withArtifact((root) => {
-      const child = NodePath.join(root, "candidate");
+      const child = NodePath.join(NodeFS.realpathSync(root), "candidate");
       requireEmptyPreparationCandidateOutput(child);
       NodeFS.mkdirSync(child);
       requireEmptyPreparationCandidateOutput(child);
@@ -669,9 +674,70 @@ describe("unqualified preparation candidate graph", () => {
 
   it("rejects symlink output without reading or deleting its target", () =>
     withArtifact((root) => {
-      const alias = NodePath.join(root, "candidate-alias");
+      const alias = NodePath.join(NodeFS.realpathSync(root), "candidate-alias");
       NodeFS.symlinkSync(root, alias);
       expect(() => requireEmptyPreparationCandidateOutput(alias)).toThrow(/retained/);
       expect(NodeFS.existsSync(NodePath.join(root, "provenance.json"))).toBe(true);
+    }));
+  it("canonicalizes an explicit temporary-parent alias without changing the fixed output", () =>
+    withCandidateRoot(async (root) => {
+      const actual = NodePath.join(root, "actual"),
+        alias = NodePath.join(root, "alias");
+      NodeFS.mkdirSync(actual, { mode: 0o700 });
+      NodeFS.symlinkSync(actual, alias);
+      expect(offlinePreparationCandidatePack(alias).outDir).toBe(
+        NodePath.join(NodeFS.realpathSync(actual), "apps/server/dist-exe/preparation-candidate"),
+      );
+      expect(NodeFS.readdirSync(actual)).toEqual([]);
+    }));
+
+  it("refuses a missing output beneath a foreign ancestor before source commands or child creation", () =>
+    withCandidateRoot(async (root) => {
+      const checkout = NodePath.join(root, "checkout"),
+        foreign = NodePath.join(root, "foreign");
+      NodeFS.mkdirSync(NodePath.join(checkout, "apps/server"), { recursive: true, mode: 0o700 });
+      NodeFS.mkdirSync(foreign, { mode: 0o700 });
+      NodeFS.writeFileSync(NodePath.join(foreign, "sentinel"), "preserved");
+      NodeFS.symlinkSync(foreign, NodePath.join(checkout, "apps/server/dist-exe"));
+      const candidate = offlinePreparationCandidatePack(checkout);
+      const start = candidate.plugins[0]!.buildStart;
+      if (typeof start !== "function") throw new Error("Missing candidate build hook.");
+      await expect(start.call({} as never, {} as never)).rejects.toThrow(/ancestor/);
+      expect(NodeFS.readdirSync(foreign)).toEqual(["sentinel"]);
+      expect(NodeFS.readFileSync(NodePath.join(foreign, "sentinel"), "utf8")).toBe("preserved");
+    }));
+
+  it("retains replaced ancestors and refuses their captured identity even when the leaf is empty", () =>
+    withCandidateRoot(async (root) => {
+      const parent = NodePath.join(root, "parent"),
+        output = NodePath.join(parent, "candidate");
+      NodeFS.mkdirSync(output, { recursive: true, mode: 0o700 });
+      const verify = requireEmptyPreparationCandidateOutput(output);
+      NodeFS.renameSync(parent, NodePath.join(root, "retained-parent"));
+      NodeFS.mkdirSync(output, { recursive: true, mode: 0o700 });
+      expect(verify).toThrow(/identity changed/);
+      expect(NodeFS.readdirSync(root).sort()).toEqual(["parent", "retained-parent"]);
+      expect(NodeFS.readdirSync(output)).toEqual([]);
+    }));
+
+  it("permits owned emitted files while preserving the captured directory chain", () =>
+    withCandidateRoot(async (root) => {
+      const output = NodePath.join(root, "candidate");
+      NodeFS.mkdirSync(output, { mode: 0o700 });
+      const verify = requireEmptyPreparationCandidateOutput(output);
+      NodeFS.writeFileSync(NodePath.join(output, "entry.mjs"), "export {};");
+      expect(verify).not.toThrow();
+      expect(() => requireEmptyPreparationCandidateOutput(output)).toThrow(/retained/);
+    }));
+
+  it("refuses writable output ancestors without creating or removing a child", () =>
+    withCandidateRoot(async (root) => {
+      const parent = NodePath.join(root, "parent");
+      NodeFS.mkdirSync(parent, { mode: 0o700 });
+      NodeFS.chmodSync(parent, 0o777);
+      expect(() =>
+        requireEmptyPreparationCandidateOutput(NodePath.join(parent, "candidate")),
+      ).toThrow(/ancestor/);
+      expect(NodeFS.readdirSync(parent)).toEqual([]);
     }));
 });

@@ -264,6 +264,7 @@ function preparationNativeFixture() {
 }
 
 const proofJson = (value: unknown) => JSON.stringify(value) + "\n";
+const preparationWorkerInput = "apps/server/src/jones/updates/offlinePreparationWorker.ts";
 
 describe("schema 3 preparation data contract", () => {
   it("describes one large streamed runtime while preserving every v2 resource and the v1 default", () => {
@@ -313,9 +314,14 @@ describe("schema 3 preparation data contract", () => {
       source,
     );
     const manifest = String(bundle.files[2]!.content);
+    const workerHash = decoded.preparation.sourceInputHashes[preparationWorkerInput];
+    Object.assign(source.preparation.sourceInputHashes, {
+      [preparationWorkerInput]: "f".repeat(64),
+    });
     Object.assign(source.preparation.executable, { size: 1, sha256: "9".repeat(64) });
     Object.assign(source.source, { sourceSha: "f".repeat(40) });
     expect(decoded.preparation.executable.size).toBe(96 * 1024 * 1024);
+    expect(decoded.preparation.sourceInputHashes[preparationWorkerInput]).toBe(workerHash);
     expect(bundle.runtime.size).toBe(decoded.preparation.executable.size);
     expect(String(bundle.files[2]!.content)).toBe(manifest);
     for (const value of [
@@ -411,8 +417,10 @@ describe("schema 3 preparation data contract", () => {
     },
   );
 
-  it("requires all fixed source inputs and hashes, including the durable core and plan codec", () => {
+  it("requires exactly fifteen source inputs including the core, plan codec and worker", () => {
     const evidence = preparationFixture();
+    expect(JONES_PREPARATION_SOURCE_INPUTS).toHaveLength(15);
+    expect(JONES_PREPARATION_SOURCE_INPUTS).toContain(preparationWorkerInput);
     expect(JONES_PREPARATION_SOURCE_INPUTS).toContain(
       "apps/server/src/jones/updates/offlinePreparationCore.ts",
     );
@@ -438,6 +446,45 @@ describe("schema 3 preparation data contract", () => {
       }
     }
   });
+
+  it.each(["missing-worker", "invalid-worker-hash", "rebound-worker", "extra-worker"] as const)(
+    "refuses %s in producer evidence, typed packaging and copied bundle proof",
+    (scenario) => {
+      const evidence = preparationFixture();
+      const valid = createJonesLegacyBootstrapPreparationBundle(
+        identity,
+        preparationNativeFixture(),
+        evidence,
+      );
+      const hashes: Record<string, string> = { ...evidence.preparation.sourceInputHashes };
+      if (scenario === "missing-worker") {
+        delete hashes[preparationWorkerInput];
+        expect(Object.keys(hashes)).toHaveLength(14);
+      }
+      if (scenario === "invalid-worker-hash")
+        hashes[preparationWorkerInput] = "2".repeat(63) + "\n";
+      if (scenario === "rebound-worker") {
+        delete hashes[preparationWorkerInput];
+        hashes["apps/server/src/jones/updates/../updates/offlinePreparationWorker.ts"] = "2".repeat(
+          64,
+        );
+      }
+      if (scenario === "extra-worker")
+        hashes["apps/server/src/jones/updates/offlinePreparationWorker.test.ts"] = "2".repeat(64);
+      const changed = {
+        ...evidence,
+        preparation: { ...evidence.preparation, sourceInputHashes: hashes },
+      };
+      expect(() => readJonesPreparationArtifactEvidence(proofJson(changed), identity)).toThrow();
+      Object.assign(evidence.preparation, { sourceInputHashes: hashes });
+      expect(() =>
+        createJonesLegacyBootstrapPreparationBundle(identity, preparationNativeFixture(), evidence),
+      ).toThrow();
+      const proof = JSON.parse(String(valid.files[2]!.content));
+      proof.preparation.sourceInputHashes = hashes;
+      expect(() => readJonesLegacyBootstrapPreparationProof(proofJson(proof), identity)).toThrow();
+    },
+  );
 
   it.each([
     ["version", "26.8.3"],

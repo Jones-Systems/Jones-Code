@@ -218,6 +218,7 @@ export const JONES_PREPARATION_SOURCE_INPUTS = Object.freeze([
   "apps/server/src/jones/updates/offlinePreparation.ts",
   "apps/server/src/jones/updates/offlinePreparationCore.ts",
   "apps/server/src/jones/updates/offlinePreparationPlan.ts",
+  "apps/server/src/jones/updates/offlinePreparationWorker.ts",
 ] as const);
 
 export const JONES_PREPARATION_BOUNDS = Object.freeze({
