@@ -341,6 +341,11 @@ Install admission refuses with `writer-proof-<reason>` before accepting, taking 
 recovery generation or stopping the server. It requires a complete lease result
 on the exact state snapshot, where the requesting server's own write-open files
 are expected to be busy, and a readiness observation with that server allowed.
+Busy alone never shows lease support: Linux reports a conflicting open before it
+checks `fs.leases-enable`, and NFS reports busy without a delegation. Each device
+holding selected files therefore needs at least one granted lease. If the server
+holds every selected file on a device open for writing, Install is refused and
+that server keeps running.
 The lease probe is bounded at 5 seconds, the helper at 10 and the launcher's wait
 for it at 15. The server abandons a launcher exchange after 30 seconds. The
 launcher therefore refuses an Install with `request-expired` once 25 seconds have

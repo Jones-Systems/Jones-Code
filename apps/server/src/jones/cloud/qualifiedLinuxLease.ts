@@ -148,6 +148,22 @@ export type LinuxLeaseObservation =
   | { readonly status: "complete"; readonly busy: readonly number[] }
   | { readonly status: "unavailable" | "proof-limit" | "identity-changed" };
 
+/**
+ * A busy result is EAGAIN, which Linux returns for a conflicting open before it
+ * consults fs.leases-enable, and which NFS returns whenever it holds no
+ * delegation. Only a granted lease shows that a filesystem answers lease
+ * proofs, so every distinct device among the selected files needs one.
+ */
+export function leaseGrantedOnEveryDevice(
+  files: readonly { readonly device: bigint }[],
+  busy: readonly number[],
+): boolean {
+  const granted = new Set(
+    files.filter((_, index) => !busy.includes(index)).map((file) => file.device),
+  );
+  return files.every((file) => granted.has(file.device));
+}
+
 /** Returns write-open file indexes, or undefined unless the probe completed exactly. */
 export function parseLinuxLeaseResult(
   result: {

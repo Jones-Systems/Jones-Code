@@ -8,7 +8,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { observeLinuxStateLeases } from "./qualifiedLinuxLease.ts";
+import { leaseGrantedOnEveryDevice, observeLinuxStateLeases } from "./qualifiedLinuxLease.ts";
 import { observeQualifiedWriters } from "./qualifiedWriterObserver.ts";
 
 export const QUALIFIED_STARTUP_STATE_FILES = [
@@ -375,13 +375,17 @@ export function linuxNativeQualifiedQuiescenceAdapter(
     scan: (input) => (input.allowedProcessIds.length === 0 ? leases : readiness).scan(input),
     async assertReadinessObservable(input) {
       // The requesting server holds the state open for writing, so busy files
-      // are expected here; only a complete lease result on the exact snapshot
-      // shows that later lease proofs can answer.
+      // are expected here. Later lease proofs can answer only where a lease on
+      // this exact snapshot was actually granted: busy alone does not show
+      // support, so every selected device needs one non-busy grant. A server
+      // holding every selected file on a device open for writing is refused
+      // here and keeps running.
       const support = await observeLinuxStateLeases(input.files, options.leases);
       if (support.status === "identity-changed")
         throw new QualifiedQuiescenceError("state-identity-changed");
       if (support.status === "proof-limit") throw new QualifiedQuiescenceError("proof-limit");
-      if (support.status !== "complete") throw unavailable();
+      if (support.status !== "complete" || !leaseGrantedOnEveryDevice(input.files, support.busy))
+        throw unavailable();
       if ((await readiness.scan(input)).length !== 0)
         throw new QualifiedQuiescenceError("writer-active");
     },

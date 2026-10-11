@@ -353,6 +353,30 @@ it("ends a helper run that outlasts its alarm with a typed incomplete result", a
   assert.deepEqual(result, { code: 0, stdout: "3 incomplete deadline\n", stderr: "" });
 });
 
+it("never reports complete after an inner eval swallowed the deadline alarm", async () => {
+  // The alarm is delivered at once by signalling the helper process itself and
+  // is caught by an inner eval, as observe_process's eval could when the
+  // observed process also vanished; the work then claims completion.
+  const swallowed = await perl([
+    "-e",
+    'do $ARGV[0] or die($@ || $!); my ($code, $output) = bounded(5, sub { eval { kill("ALRM", $$); my $spin = 0; $spin++ while $spin < 100000; 1 }; "complete 1\\n" }); print "$code $output";',
+    helper,
+  ]);
+  assert.deepEqual(swallowed, { code: 0, stdout: "3 incomplete deadline\n", stderr: "" });
+  await fixture(async ({ procRoot }) => {
+    // Once expired, the next observation boundary ends the scan, including
+    // for a listed process that has vanished.
+    await NodeFSP.mkdir(NodePath.join(procRoot, "126"));
+    const expired = await perl([
+      "-e",
+      "do $ARGV[0] or die($@ || $!); $main::DEADLINE_EXPIRED = 1; my $output = eval { emit_observation(observe($ARGV[1], [])) }; print defined $output ? $output : $@;",
+      helper,
+      procRoot,
+    ]);
+    assert.deepEqual(expired, { code: 0, stdout: "incomplete deadline\n", stderr: "" });
+  });
+});
+
 it("refuses the privileged entry point without root before reading any state", async () => {
   if (process.getuid?.() === 0) return;
   const result = await perl(["-T", helper, "--base", "/synthetic/home"]);

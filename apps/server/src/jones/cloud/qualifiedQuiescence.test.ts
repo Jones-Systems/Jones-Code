@@ -4,6 +4,7 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { leaseGrantedOnEveryDevice } from "./qualifiedLinuxLease.ts";
 import {
   assertQualifiedReadinessObservable,
   linuxLeaseQualifiedQuiescenceAdapter,
@@ -369,11 +370,20 @@ it("gates Install admission on a readiness proof with the captured writer allowe
 
 it("admits Install only when the exact snapshot supports later lease proofs", async () => {
   await fixture(async (baseDir) => {
-    // Stand-ins for the fixed lease program: one reports leases unsupported
-    // (its EINVAL exit), the other a complete result with the requester busy.
+    // Stand-ins for the fixed lease program, which receives the descriptor
+    // count as its fourth argument. One reports leases unsupported (its EINVAL
+    // exit); one reports every file busy, which is also what Linux returns for
+    // a conflicting open before it checks fs.leases-enable; one reports the
+    // requester's database busy while settings on the same device was granted.
     const unsupported = NodePath.join(baseDir, "unsupported-leases");
+    const allBusy = NodePath.join(baseDir, "all-busy-leases");
     const busy = NodePath.join(baseDir, "busy-leases");
     await NodeFSP.writeFile(unsupported, "#!/bin/sh\nexit 4\n", { mode: 0o755 });
+    await NodeFSP.writeFile(
+      allBusy,
+      '#!/bin/sh\ni=0\nwhile [ "$i" -lt "$4" ]; do echo "busy $i"; i=$((i + 1)); done\necho complete\n',
+      { mode: 0o755 },
+    );
     await NodeFSP.writeFile(busy, "#!/bin/sh\nprintf 'busy 0\\ncomplete\\n'\n", { mode: 0o755 });
     let readinessScans = 0;
     const adapter = (perl: string) =>
@@ -389,14 +399,16 @@ it("admits Install only when the exact snapshot supports later lease proofs", as
           },
         },
       });
-    await NodeAssert.rejects(
-      assertQualifiedReadinessObservable({
-        baseDir,
-        allowedProcessIds: [123],
-        adapter: adapter(unsupported),
-      }),
-      blocked("unavailable"),
-    );
+    for (const program of [unsupported, allBusy])
+      await NodeAssert.rejects(
+        assertQualifiedReadinessObservable({
+          baseDir,
+          allowedProcessIds: [123],
+          adapter: adapter(program),
+        }),
+        blocked("unavailable"),
+        program,
+      );
     assert.equal(readinessScans, 0);
     await assertQualifiedReadinessObservable({
       baseDir,
@@ -409,6 +421,17 @@ it("admits Install only when the exact snapshot supports later lease proofs", as
       "synthetic database",
     );
   });
+});
+
+it("requires a granted lease on every selected device, not only busy results", () => {
+  // Database files on one mount, startup files on another (synthetic devices).
+  const files = [{ device: 1n }, { device: 1n }, { device: 1n }, { device: 2n }, { device: 2n }];
+  assert.isTrue(leaseGrantedOnEveryDevice(files, [0, 3]));
+  // A granted settings lease elsewhere cannot conceal an all-busy database mount.
+  assert.isFalse(leaseGrantedOnEveryDevice(files, [0, 1, 2]));
+  assert.isFalse(leaseGrantedOnEveryDevice(files, [3, 4]));
+  assert.isFalse(leaseGrantedOnEveryDevice(files, [0, 1, 2, 3, 4]));
+  assert.isTrue(leaseGrantedOnEveryDevice([{ device: 1n }, { device: 1n }], [0]));
 });
 
 it("interprets bounded Darwin exact-file writer output without trusting unknown names", () => {

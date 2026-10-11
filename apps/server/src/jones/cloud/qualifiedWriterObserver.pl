@@ -31,8 +31,13 @@ my @STATE_FILES = qw(statev2.sqlite statev2.sqlite-wal statev2.sqlite-shm settin
 # The launcher waits 15 seconds; both sit inside the server's 30 second exchange.
 my $DEADLINE_SECONDS = 10;
 my $MAXIMUM_WRITERS = 256;
+# Set by the one-shot alarm before it dies. An inner eval may catch that die,
+# so observation boundaries and the final result check this flag as well.
+our $DEADLINE_EXPIRED = 0;
 
 sub incomplete { die "incomplete $_[0]\n" }
+
+sub deadline_boundary { incomplete("deadline") if $DEADLINE_EXPIRED }
 
 sub absent { return $! == ENOENT || $! == ESRCH }
 
@@ -141,6 +146,8 @@ sub observe_process {
     1;
   };
   my $error = $@;
+  # This eval would otherwise swallow the alarm when the process also vanished.
+  deadline_boundary();
   my $after = birth($process);
   # Missing evidence is harmless only when the observed process vanished.
   return unless defined $after;
@@ -166,11 +173,13 @@ sub observe {
     my $pids = entries($proc);
     incomplete("process-list") unless defined $pids;
     for my $pid (@$pids) {
+      deadline_boundary();
       next if $seen{$pid}++;
       $processes++;
       observe_process("$proc/$pid", $pid, \%targets, \%inodes, \%writers);
     }
   }
+  deadline_boundary();
   return (\%writers, $processes);
 }
 
@@ -209,11 +218,17 @@ sub trusted_self {
 # Returns (exit code, output); any failure, including the alarm, is typed.
 sub bounded {
   my ($seconds, $work) = @_;
-  local $SIG{ALRM} = sub { die "incomplete deadline\n" };
+  local $DEADLINE_EXPIRED = 0;
+  local $SIG{ALRM} = sub {
+    $DEADLINE_EXPIRED = 1;
+    die "incomplete deadline\n";
+  };
   alarm($seconds);
   my $output = eval { $work->() };
   my $error = $@;
   alarm(0);
+  # A swallowed alarm can never yield a complete result.
+  return (3, "incomplete deadline\n") if $DEADLINE_EXPIRED;
   return (0, $output) if defined $output;
   return (3, $error =~ /\A(incomplete [a-z-]+\n)\z/ ? $1 : "incomplete internal\n");
 }

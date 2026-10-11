@@ -599,48 +599,62 @@ it("refuses Install admission when its readiness writer proof cannot complete", 
   );
 });
 
-it("refuses Install before acceptance or stop when the state files cannot hold kernel leases", async () => {
-  const programs = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-lease-program-"));
-  try {
-    // Stands in for the fixed lease program reporting leases unsupported or
-    // disabled (its EINVAL exit) while the readiness observer itself passes.
-    const unsupported = NodePath.join(programs, "unsupported-leases");
-    await NodeFSP.writeFile(unsupported, "#!/bin/sh\nexit 4\n", { mode: 0o755 });
-    let readinessScans = 0;
-    await runScenario(
-      "commit",
-      async (base) => {
-        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
-        assert.equal(state.update, undefined);
-        assert.equal(state.activeVersion, baseline);
-        const rejected = JSON.parse(
-          await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
-        );
-        assert.match(rejected.reason, /^writer-proof-unavailable:/);
-        await NodeAssert.rejects(
-          NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
-        );
-        await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
-        assert.equal(readinessScans, 0);
-        assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
-      },
-      linuxNativeQualifiedQuiescenceAdapter({
-        leases: { perl: unsupported },
-        readiness: {
-          helperPath: NodePath.join(programs, "absent", "helper"),
-          fallback: {
-            scan: async () => {
-              readinessScans++;
-              return [];
+it.each([
+  // The fixed lease program's EINVAL exit: leases unsupported or disabled.
+  ["unsupported", "#!/bin/sh\nexit 4\n"],
+  // A complete result with every selected file busy (EAGAIN). Linux returns
+  // that for a conflicting open before checking fs.leases-enable, and NFS
+  // returns it without a delegation, so it never demonstrates support.
+  [
+    "all-busy",
+    '#!/bin/sh\ni=0\nwhile [ "$i" -lt "$4" ]; do echo "busy $i"; i=$((i + 1)); done\necho complete\n',
+  ],
+] as const)(
+  "refuses Install before acceptance or stop when %s leases show no granted proof",
+  async (_, program) => {
+    const programs = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-lease-program-"));
+    try {
+      // Stands in for the fixed lease program while the readiness observer passes.
+      const leaseProgram = NodePath.join(programs, "lease-program");
+      await NodeFSP.writeFile(leaseProgram, program, { mode: 0o755 });
+      let readinessScans = 0;
+      await runScenario(
+        "commit",
+        async (base) => {
+          const state = await readServiceState(
+            NodePath.join(base, "runtime", "service-state.json"),
+          );
+          assert.equal(state.update, undefined);
+          assert.equal(state.activeVersion, baseline);
+          const rejected = JSON.parse(
+            await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+          );
+          assert.match(rejected.reason, /^writer-proof-unavailable:/);
+          await NodeAssert.rejects(
+            NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+          );
+          await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
+          assert.equal(readinessScans, 0);
+          assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+        },
+        linuxNativeQualifiedQuiescenceAdapter({
+          leases: { perl: leaseProgram },
+          readiness: {
+            helperPath: NodePath.join(programs, "absent", "helper"),
+            fallback: {
+              scan: async () => {
+                readinessScans++;
+                return [];
+              },
             },
           },
-        },
-      }),
-    );
-  } finally {
-    await NodeFSP.rm(programs, { recursive: true, force: true });
-  }
-});
+        }),
+      );
+    } finally {
+      await NodeFSP.rm(programs, { recursive: true, force: true });
+    }
+  },
+);
 
 it("does not accept an Install whose admission outlasted the server's exchange", async () => {
   let clock = 0;
