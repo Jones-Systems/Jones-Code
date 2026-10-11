@@ -7,6 +7,11 @@ import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The build owns its checkout/output paths, never application state.
 import * as NodePath from "node:path";
 import * as NodeModule from "node:module";
+import * as NodeOS from "node:os";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Native deadlines bound captured build resources before their scratch can be removed.
+import * as NodeTimers from "node:timers";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Only the closed lifecycle fixture opens an owned loopback HTTP server.
+import * as NodeHTTP from "node:http";
 import * as NodeUtil from "node:util";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The sole download origin is the pinned official Node release over verified TLS.
 import * as NodeHTTPS from "node:https";
@@ -47,6 +52,9 @@ const forbiddenNames = new Set([
   "createRequire",
   "eval",
   "Function",
+  "constructor",
+  "prototype",
+  "__proto__",
   "dlopen",
   "getBuiltinModule",
   "binding",
@@ -66,7 +74,7 @@ const forbiddenBuiltins = new Set([
 const digest = (bytes: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 
-/** A closed SEA has no filesystem module resolver, including computed imports. */
+/** An oracle for the fixed held entry, not a sandbox for arbitrary JavaScript. */
 export function verifyPreparationClosure(source: string): readonly string[] {
   if (Buffer.byteLength(source) > maxBundleBytes)
     throw new Error("Preparation bundle exceeds bound.");
@@ -88,7 +96,23 @@ export function verifyPreparationClosure(source: string): readonly string[] {
       throw new Error(`Forbidden preparation import: ${id}`);
     imports.add(id);
   };
+  const heldProperties = new Set([
+    "JSON.stringify",
+    "process.stdout",
+    "process.stdout.write",
+    "process.argv",
+    "process.argv.length",
+    "process.exitCode",
+    "import.meta.main",
+  ]);
   const visit = (node: ts.Node): void => {
+    if (
+      ts.isElementAccessExpression(node) ||
+      ts.isComputedPropertyName(node) ||
+      (ts.isPropertyAccessExpression(node) &&
+        !heldProperties.has(node.getText(file).replace(/\s/g, "")))
+    )
+      throw new Error("Computed or reflective access is outside the fixed preparation entry.");
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       if (node.moduleSpecifier) inspectSpecifier(node.moduleSpecifier);
     }
@@ -153,27 +177,645 @@ export function verifyNodeArchive(checksums: string, bytes: Uint8Array): string 
   return sha256;
 }
 
-function command(
-  file: string,
-  args: readonly string[],
-  cwd: string,
-  maxBuffer = 1024 * 1024,
-): Buffer {
-  return NodeChildProcess.execFileSync(file, [...args], {
-    cwd,
-    maxBuffer,
-    timeout: 120_000,
-    killSignal: "SIGKILL",
-    env: {
-      PATH: "/usr/bin:/bin",
-      HOME: cwd,
-      TMPDIR: cwd,
-      LC_ALL: "C",
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
+interface BuildCustody {
+  readonly kind: "command" | "download";
+  readonly id: number;
+  readonly target: string;
+  readonly pid?: number | undefined;
+  readonly exitObserved?: boolean;
+  readonly closeObserved: false;
+  readonly failures: readonly string[];
+}
+
+interface LifecycleFixtureHooks {
+  readonly suppressCommandClose?: boolean;
+  readonly child?: (child: NodeChildProcess.ChildProcess) => void;
+  readonly stdout?: (bytes: Buffer) => void;
+}
+
+// Retention preserves actual captured handles during this process lifetime. The receipt's PID is diagnostic, never signalling authority.
+const retainedBuildHandles = new Set<object>();
+
+class PreparationBuildScope {
+  readonly controller = new AbortController();
+  readonly pending = new Set<Promise<unknown>>();
+  readonly unresolved: BuildCustody[] = [];
+  root: string | undefined;
+  private admitting = true;
+  private resourceId = 0;
+  private readonly onInterrupt = () => {
+    process.exitCode = 130;
+    this.abort(new Error("Preparation build interrupted by SIGINT."));
+  };
+  private readonly onTerminate = () => {
+    process.exitCode = 143;
+    this.abort(new Error("Preparation build interrupted by SIGTERM."));
+  };
+  private readonly onExternalAbort = () =>
+    this.abort(this.externalSignal?.reason ?? new Error("Preparation build aborted."));
+
+  private readonly externalSignal: AbortSignal | undefined;
+  private readonly fixture: LifecycleFixtureHooks | undefined;
+
+  constructor(externalSignal?: AbortSignal, fixture?: LifecycleFixtureHooks) {
+    this.externalSignal = externalSignal;
+    this.fixture = fixture;
+    process.on("SIGINT", this.onInterrupt);
+    process.on("SIGTERM", this.onTerminate);
+    externalSignal?.addEventListener("abort", this.onExternalAbort, { once: true });
+    if (externalSignal?.aborted) this.onExternalAbort();
+  }
+
+  get listenersInstalled() {
+    return (
+      process.listeners("SIGINT").includes(this.onInterrupt) &&
+      process.listeners("SIGTERM").includes(this.onTerminate)
+    );
+  }
+
+  get listenersDetached() {
+    return (
+      !process.listeners("SIGINT").includes(this.onInterrupt) &&
+      !process.listeners("SIGTERM").includes(this.onTerminate)
+    );
+  }
+
+  assertActive() {
+    this.controller.signal.throwIfAborted();
+    if (!this.admitting) throw new Error("Preparation build admission is closed.");
+  }
+
+  abort(cause: unknown) {
+    if (!this.controller.signal.aborted) this.controller.abort(cause);
+  }
+
+  private track<A>(operation: Promise<A>): Promise<A> {
+    const tracked: Promise<A> = operation.finally(() => this.pending.delete(tracked));
+    this.pending.add(tracked);
+    void tracked.catch(() => {});
+    return tracked;
+  }
+
+  async drain(): Promise<readonly unknown[]> {
+    this.admitting = false;
+    const pending = [...this.pending];
+    if (pending.length !== 0)
+      this.abort(new Error("Preparation build left admitted resources unfinished."));
+    const results = await Promise.allSettled(pending);
+    return results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason as unknown] : [],
+    );
+  }
+
+  detach() {
+    this.externalSignal?.removeEventListener("abort", this.onExternalAbort);
+    process.removeListener("SIGINT", this.onInterrupt);
+    process.removeListener("SIGTERM", this.onTerminate);
+  }
+
+  command = (
+    file: string,
+    args: readonly string[],
+    cwd: string,
+    maxBuffer = 1024 * 1024,
+  ): Promise<Buffer> => {
+    this.assertActive();
+    const id = ++this.resourceId;
+    return this.track(
+      new Promise<Buffer>((resolve, reject) => {
+        let child: NodeChildProcess.ChildProcessWithoutNullStreams;
+        try {
+          child = NodeChildProcess.spawn(file, [...args], {
+            cwd,
+            env: {
+              PATH: "/usr/bin:/bin",
+              HOME: cwd,
+              TMPDIR: cwd,
+              LC_ALL: "C",
+              GIT_CONFIG_NOSYSTEM: "1",
+              GIT_CONFIG_GLOBAL: "/dev/null",
+            },
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+        } catch (cause) {
+          reject(cause);
+          return;
+        }
+        // No command accepts input; closing this captured pipe cannot delegate a second control channel.
+        child.stdin.on("error", (cause) => stop(cause));
+        let settled = false;
+        let exited = false;
+        let stopping = false;
+        let failure: unknown;
+        const failures: string[] = [];
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+        let outputBytes = 0;
+        let killTimer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
+        let drainTimer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
+        const deadline = NodeTimers.setTimeout(
+          () => stop(new Error("Preparation native command timed out.")),
+          120_000,
+        );
+        const onAbort = () => stop(this.controller.signal.reason);
+        const finish = (cause?: unknown, output?: Buffer) => {
+          if (settled) return;
+          settled = true;
+          NodeTimers.clearTimeout(deadline);
+          if (killTimer) NodeTimers.clearTimeout(killTimer);
+          if (drainTimer) NodeTimers.clearTimeout(drainTimer);
+          this.controller.signal.removeEventListener("abort", onAbort);
+          if (cause !== undefined) reject(cause);
+          else resolve(output ?? Buffer.alloc(0));
+        };
+        const unknownClose = () => {
+          if (settled) return;
+          this.unresolved.push({
+            kind: "command",
+            id,
+            target: file,
+            pid: child.pid,
+            exitObserved: exited,
+            closeObserved: false,
+            failures,
+          });
+          retainedBuildHandles.add(child);
+          // The unresolved receipt retains scratch; unref only releases the build driver's event-loop dependency.
+          child.unref();
+          child.stdin.destroy();
+          child.stdout.destroy();
+          child.stderr.destroy();
+          finish(
+            new AggregateError(
+              failure === undefined ? [] : [failure],
+              "Native command close was not established; captured custody retained.",
+            ),
+          );
+        };
+        const signal = (name: "SIGTERM" | "SIGKILL") => {
+          if (exited || child.pid === undefined) return;
+          try {
+            if (!child.kill(name)) failures.push(`${name}:not-delivered`);
+          } catch (cause) {
+            failures.push(`${name}:${cause instanceof Error ? cause.message : String(cause)}`);
+            failure =
+              failure === undefined
+                ? cause
+                : new AggregateError([failure, cause], "Native command cancellation failed.");
+          }
+        };
+        const stop = (cause: unknown) => {
+          if (settled || stopping) return;
+          stopping = true;
+          failure = cause;
+          signal("SIGTERM");
+          killTimer = NodeTimers.setTimeout(() => signal("SIGKILL"), 1_000);
+          drainTimer = NodeTimers.setTimeout(unknownClose, 3_000);
+        };
+        const receive = (chunks: Buffer[], bytes: Buffer) => {
+          outputBytes += bytes.length;
+          if (outputBytes > maxBuffer) {
+            stop(new Error("Preparation native command output exceeds bound."));
+            return;
+          }
+          chunks.push(bytes);
+        };
+        child.stdout.on("data", (bytes: Buffer) => {
+          receive(stdout, bytes);
+          try {
+            this.fixture?.stdout?.(bytes);
+          } catch (cause) {
+            stop(cause);
+          }
+        });
+        child.stdout.on("error", stop);
+        child.stderr.on("error", stop);
+        child.stderr.on("data", (bytes: Buffer) => receive(stderr, bytes));
+        child.on("error", (cause) => stop(cause));
+        child.once("exit", () => {
+          exited = true;
+        });
+        child.once("close", (status, signalName) => {
+          if (this.fixture?.suppressCommandClose) {
+            unknownClose();
+            return;
+          }
+          retainedBuildHandles.delete(child);
+          const out = Buffer.concat(stdout);
+          const err = Buffer.concat(stderr);
+          const commandFailure =
+            status === 0 && signalName === null
+              ? undefined
+              : Object.assign(new Error("Preparation native command failed."), {
+                  status,
+                  signal: signalName,
+                  stdout: out,
+                  stderr: err,
+                });
+          finish(failure ?? commandFailure, out);
+        });
+        this.controller.signal.addEventListener("abort", onAbort, { once: true });
+        try {
+          this.fixture?.child?.(child);
+        } catch (cause) {
+          stop(cause);
+        }
+        child.stdin.end();
+        if (this.controller.signal.aborted) onAbort();
+      }),
+    );
+  };
+
+  download(name: string, limit: number) {
+    if (name !== archiveName && name !== "SHASUMS256.txt")
+      throw new Error("Unapproved Node download member.");
+    return this.request(new URL(name, releaseOrigin), limit, true);
+  }
+
+  // The non-TLS branch is reachable only from the closed loopback fixture below.
+  request(url: URL, limit: number, secure: boolean): Promise<Buffer> {
+    this.assertActive();
+    const id = ++this.resourceId;
+    return this.track(
+      new Promise<Buffer>((resolve, reject) => {
+        let failure: unknown;
+        let settled = false;
+        let ended = false;
+        let requestClosed = false;
+        let response: NodeHTTP.IncomingMessage | undefined;
+        let responseClosed = false;
+        let socket: import("node:net").Socket | undefined;
+        let socketClosed = false;
+        let drainTimer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
+        const chunks: Buffer[] = [];
+        let size = 0;
+        const onAbort = () => stop(this.controller.signal.reason);
+        const deadline = NodeTimers.setTimeout(
+          () => stop(new Error("Official Node download timed out.")),
+          60_000,
+        );
+        const finish = (unknownClose = false) => {
+          if (
+            settled ||
+            (!unknownClose &&
+              (!requestClosed || (socket && !socketClosed) || (response && !responseClosed)))
+          )
+            return;
+          settled = true;
+          NodeTimers.clearTimeout(deadline);
+          if (drainTimer) NodeTimers.clearTimeout(drainTimer);
+          this.controller.signal.removeEventListener("abort", onAbort);
+          if (unknownClose) {
+            this.unresolved.push({
+              kind: "download",
+              id,
+              target: url.origin + url.pathname,
+              closeObserved: false,
+              failures: ["request/socket close unobserved"],
+            });
+            retainedBuildHandles.add(request);
+            socket?.unref();
+            reject(
+              new AggregateError(
+                failure === undefined ? [] : [failure],
+                "Download close was not established; captured custody retained.",
+              ),
+            );
+          } else {
+            retainedBuildHandles.delete(request);
+            if (failure !== undefined || !ended)
+              reject(failure ?? new Error("Download ended without a complete response."));
+            else resolve(Buffer.concat(chunks));
+          }
+        };
+        const stop = (cause: unknown) => {
+          if (settled) return;
+          failure ??= cause;
+          response?.destroy();
+          request.destroy();
+          drainTimer ??= NodeTimers.setTimeout(() => finish(true), 2_000);
+        };
+        let request: NodeHTTP.ClientRequest;
+        try {
+          request = (secure ? NodeHTTPS : NodeHTTP).get(url, { agent: false }, (incoming) => {
+            response = incoming;
+            incoming.once("close", () => {
+              responseClosed = true;
+              finish();
+            });
+            incoming.on("error", stop);
+            incoming.on("data", (bytes: Buffer) => {
+              size += bytes.length;
+              if (size > limit) {
+                stop(new Error("Official Node download exceeds bound."));
+                return;
+              }
+              chunks.push(bytes);
+            });
+            incoming.once("end", () => {
+              ended = true;
+              finish();
+            });
+            if (incoming.statusCode !== 200) stop(new Error("Official Node download refused."));
+          });
+        } catch (cause) {
+          NodeTimers.clearTimeout(deadline);
+          reject(cause);
+          return;
+        }
+        request.once("socket", (captured) => {
+          socket = captured;
+          captured.once("close", () => {
+            socketClosed = true;
+            finish();
+          });
+        });
+        request.on("error", stop);
+        request.once("close", () => {
+          requestClosed = true;
+          finish();
+        });
+        this.controller.signal.addEventListener("abort", onAbort, { once: true });
+        if (this.controller.signal.aborted) onAbort();
+      }),
+    );
+  }
+}
+
+async function withPreparationBuildScope<A>(
+  parent: string,
+  prefix: string,
+  signal: AbortSignal | undefined,
+  operation: (scope: PreparationBuildScope & { root: string }) => Promise<A>,
+  fixture?: LifecycleFixtureHooks,
+): Promise<A> {
+  const scope = new PreparationBuildScope(signal, fixture);
+  let result: A | undefined;
+  const causes: unknown[] = [];
+  try {
+    scope.assertActive();
+    scope.root = NodeFS.mkdtempSync(NodePath.join(parent, prefix));
+    result = await operation(scope as PreparationBuildScope & { root: string });
+  } catch (cause) {
+    causes.push(cause);
+    scope.abort(cause);
+  }
+  try {
+    for (const cause of await scope.drain()) if (!causes.includes(cause)) causes.push(cause);
+    if (scope.controller.signal.aborted && !causes.includes(scope.controller.signal.reason))
+      causes.push(scope.controller.signal.reason);
+    if (scope.root && scope.unresolved.length !== 0) {
+      const evidence = {
+        observation: "incomplete",
+        classification: "unusable",
+        retainedRoot: scope.root,
+        signalAuthority: "captured-handle-only",
+        resources: scope.unresolved,
+      };
+      const fd = NodeFS.openSync(NodePath.join(scope.root, "retained-custody.json"), "wx", 0o600);
+      try {
+        NodeFS.writeFileSync(fd, `${encode(evidence)}\n`);
+        NodeFS.fsyncSync(fd);
+      } finally {
+        NodeFS.closeSync(fd);
+      }
+      const directory = NodeFS.openSync(scope.root, NodeFS.constants.O_RDONLY);
+      try {
+        NodeFS.fsyncSync(directory);
+      } finally {
+        NodeFS.closeSync(directory);
+      }
+      causes.push(
+        Object.assign(new Error(`Preparation build custody unresolved: ${scope.root}`), {
+          retainedRoot: scope.root,
+        }),
+      );
+    } else if (scope.root) NodeFS.rmSync(scope.root, { recursive: true, force: true });
+  } catch (cause) {
+    causes.push(cause);
+  } finally {
+    scope.detach();
+  }
+  if (causes.length === 1) throw causes[0];
+  if (causes.length > 1)
+    throw new AggregateError(
+      causes,
+      `Preparation build failed${scope.root ? `: ${scope.root}` : ""}`,
+    );
+  return result as A;
+}
+
+/** Fixed synthetic scenarios exercise the producer's actual resource scope without Node downloads or signing. */
+export async function runPreparationLifecycleFixture(
+  scenario:
+    | "success"
+    | "failure"
+    | "abort-command"
+    | "abort-download"
+    | "uncertain-close"
+    | "drain-unawaited-command"
+    | "signal-command"
+    | "await-signal-command",
+) {
+  if (
+    ![
+      "success",
+      "failure",
+      "abort-command",
+      "abort-download",
+      "uncertain-close",
+      "drain-unawaited-command",
+      "signal-command",
+      "await-signal-command",
+    ].includes(scenario)
+  )
+    throw new Error("Unknown closed preparation lifecycle fixture.");
+  const outer = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-preparation-lifecycle-"));
+  const controller = new AbortController();
+  const observed: {
+    scope?: PreparationBuildScope;
+    child?: NodeChildProcess.ChildProcess;
+    server?: NodeHTTP.Server;
+  } = {};
+  let childClosed = false;
+  let closeChild: (() => void) | undefined;
+  const childClose = new Promise<void>((resolve) => {
+    closeChild = resolve;
   });
+  let childReady: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => {
+    childReady = resolve;
+  });
+  let serverClosed = true;
+  let retainedBeforeFixtureCleanup = false;
+  let custodyEvidence: unknown;
+  let listenersInstalled = false;
+  let operationFailure: unknown;
+  let outcome: "complete" | "rejected" = "complete";
+  let cleanupFailure: unknown;
+  const bounded = async (promise: Promise<void>, message: string) => {
+    let timer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
+    try {
+      await Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = NodeTimers.setTimeout(() => reject(new Error(message)), 5_000);
+        }),
+      ]);
+    } finally {
+      if (timer) NodeTimers.clearTimeout(timer);
+    }
+  };
+  try {
+    try {
+      await withPreparationBuildScope(
+        outer,
+        ".build-",
+        controller.signal,
+        async (scope) => {
+          observed.scope = scope;
+          listenersInstalled = scope.listenersInstalled;
+          NodeFS.writeFileSync(NodePath.join(scope.root, "owned.bin"), Buffer.alloc(4096), {
+            flag: "wx",
+            mode: 0o600,
+          });
+          if (scenario === "abort-download") {
+            observed.server = NodeHTTP.createServer((_request, response) => {
+              response.on("error", () => {});
+              response.writeHead(200);
+              response.write("owned partial bytes");
+              controller.abort(new Error("owned download abort"));
+            });
+            serverClosed = false;
+            const listening = new Promise<void>((resolve, reject) => {
+              observed.server!.once("error", reject);
+              observed.server!.listen(0, "127.0.0.1", resolve);
+            });
+            await bounded(listening, "Owned loopback fixture did not listen.");
+            const address = observed.server.address();
+            if (!address || typeof address === "string")
+              throw new Error("Missing owned loopback address.");
+            await scope.request(new URL(`http://127.0.0.1:${address.port}/owned`), 4096, false);
+            return;
+          }
+          const waiting =
+            scenario === "abort-command" ||
+            scenario === "drain-unawaited-command" ||
+            scenario === "await-signal-command";
+          const signalDriver = `import(${encode(import.meta.url)}).then(async ({ runPreparationLifecycleFixture }) => {
+          const report = await runPreparationLifecycleFixture("await-signal-command");
+          process.stdout.write("signal-report:" + JSON.stringify(report) + "\\n");
+        }).catch((cause) => { process.stderr.write(String(cause)); process.exitCode = 1; });`;
+          const program =
+            scenario === "signal-command"
+              ? signalDriver
+              : waiting
+                ? 'process.stdout.write("ready"); setInterval(() => {}, 60000);'
+                : scenario === "failure"
+                  ? 'process.stderr.write("owned failure"); process.exitCode = 7;'
+                  : 'process.stdout.write("owned success");';
+          const operation = scope.command(process.execPath, ["-e", program], scope.root, 4096);
+          if (scenario === "drain-unawaited-command") {
+            await bounded(ready, "Owned fixture child did not become ready.");
+            return;
+          }
+          await operation;
+        },
+        {
+          suppressCommandClose: scenario === "uncertain-close",
+          child: (child) => {
+            observed.child = child;
+            child.once("close", () => {
+              childClosed = true;
+              closeChild?.();
+            });
+          },
+          stdout: (bytes) => {
+            if (!bytes.toString("utf8").includes("ready")) return;
+            childReady?.();
+            if (scenario === "signal-command") observed.child?.kill("SIGTERM");
+            if (scenario === "await-signal-command") process.stdout.write("signal-scope-ready\n");
+            if (scenario === "abort-command") controller.abort(new Error("owned command abort"));
+          },
+        },
+      );
+    } catch (cause) {
+      outcome = "rejected";
+      operationFailure = cause;
+    }
+    if (observed.scope?.root && NodeFS.existsSync(observed.scope.root)) {
+      retainedBeforeFixtureCleanup = true;
+      custodyEvidence = decode(
+        readFile(NodePath.join(observed.scope.root, "retained-custody.json"), 32 * 1024).toString(
+          "utf8",
+        ),
+      );
+    }
+  } finally {
+    try {
+      // This supervisor retains the exact child independently of the scope's deliberately withheld close proof.
+      if (observed.child && !childClosed) {
+        observed.child.kill("SIGKILL");
+        await bounded(childClose, "Fixture supervisor did not observe the captured child close.");
+      }
+      if (observed.server && !serverClosed) {
+        const closed = new Promise<void>((resolve, reject) =>
+          observed.server!.close((error) => {
+            if (error) reject(error);
+            else {
+              serverClosed = true;
+              resolve();
+            }
+          }),
+        );
+        observed.server.closeAllConnections();
+        await bounded(closed, "Fixture loopback server close is unresolved.");
+      }
+      if (observed.child && !childClosed) throw new Error("Fixture child custody is unresolved.");
+      NodeFS.rmSync(outer, { recursive: true, force: true });
+      if (observed.child) retainedBuildHandles.delete(observed.child);
+    } catch (cause) {
+      cleanupFailure = cause;
+    }
+  }
+  if (cleanupFailure !== undefined)
+    throw new AggregateError(
+      operationFailure === undefined ? [cleanupFailure] : [operationFailure, cleanupFailure],
+      `Preparation lifecycle fixture custody retained: ${outer}`,
+    );
+  let signalReport: unknown;
+  if (
+    scenario === "signal-command" &&
+    typeof operationFailure === "object" &&
+    operationFailure !== null &&
+    "stdout" in operationFailure &&
+    Buffer.isBuffer(operationFailure.stdout)
+  ) {
+    const line = operationFailure.stdout
+      .toString("utf8")
+      .split("\n")
+      .find((value) => value.startsWith("signal-report:"));
+    if (line) signalReport = decode(line.slice("signal-report:".length));
+  }
+  return {
+    scenario,
+    outcome,
+    signalReport,
+    listenersInstalled,
+    listenersRestored: observed.scope?.listenersDetached === true,
+    childCloseObserved: childClosed,
+    serverClosed,
+    retainedBeforeFixtureCleanup,
+    custodyEvidence,
+    rootRemoved: !NodeFS.existsSync(outer),
+    failureMessage: operationFailure instanceof Error ? operationFailure.message : undefined,
+    failureStatus:
+      typeof operationFailure === "object" &&
+      operationFailure !== null &&
+      "status" in operationFailure
+        ? operationFailure.status
+        : undefined,
+  };
 }
 
 function readFile(file: string, limit: number): Buffer {
@@ -238,32 +880,35 @@ export function verifyPreparationSourceOverlay(
   return version;
 }
 
-function observeSource(root: string) {
-  const git = (...args: string[]) => command("/usr/bin/git", args, root).toString("utf8").trim();
+async function observeSource(root: string, command: PreparationBuildScope["command"]) {
+  const git = async (...args: string[]) =>
+    (await command("/usr/bin/git", args, root)).toString("utf8").trim();
   if (
-    NodeFS.realpathSync(git("rev-parse", "--show-toplevel")) !== root ||
-    git("ls-files", "--others", "--exclude-standard") !== ""
+    NodeFS.realpathSync(await git("rev-parse", "--show-toplevel")) !== root ||
+    (await git("ls-files", "--others", "--exclude-standard")) !== ""
   )
     throw new Error(
       "Preparation build requires an exact committed checkout without untracked source.",
     );
-  const sha = git("rev-parse", "HEAD");
-  const tree = git("rev-parse", "HEAD^{tree}");
+  const sha = await git("rev-parse", "HEAD");
+  const tree = await git("rev-parse", "HEAD^{tree}");
   if (![sha, tree].every((value) => /^[a-f0-9]{40}$/.test(value)))
     throw new Error("Invalid source identity.");
-  const changed = git("diff", "--name-only", "--no-renames", "HEAD", "--")
+  const changed = (await git("diff", "--name-only", "--no-renames", "HEAD", "--"))
     .split("\n")
     .filter(Boolean);
   if (changed.some((file) => !releaseManifests.includes(file)))
     throw new Error("Preparation build source changed outside release stamping.");
-  const versions = releaseManifests.map((file) =>
-    verifyPreparationSourceOverlay(
-      file,
-      decode(git("show", `HEAD:${file}`)),
-      decode(readFile(NodePath.join(root, file), 1024 * 1024).toString("utf8")),
-      { sha, tree },
-    ),
-  );
+  const versions: string[] = [];
+  for (const file of releaseManifests)
+    versions.push(
+      verifyPreparationSourceOverlay(
+        file,
+        decode(await git("show", `HEAD:${file}`)),
+        decode(readFile(NodePath.join(root, file), 1024 * 1024).toString("utf8")),
+        { sha, tree },
+      ),
+    );
   if (new Set(versions).size !== 1) throw new Error("Release manifest versions differ.");
   const hashes = Object.fromEntries(
     sourceFiles.map((name) => [name, digest(readFile(NodePath.join(root, name), 8 * 1024 * 1024))]),
@@ -276,38 +921,6 @@ function observeSource(root: string) {
     hashes,
     buildOnlyOverlays: changed,
   };
-}
-
-function download(name: string, limit: number): Promise<Buffer> {
-  if (name !== archiveName && name !== "SHASUMS256.txt")
-    throw new Error("Unapproved Node download member.");
-  return new Promise((resolve, reject) => {
-    const request = NodeHTTPS.get(
-      new URL(name, releaseOrigin),
-      { timeout: 60_000, signal: AbortSignal.timeout(60_000) },
-      (response) => {
-        if (response.statusCode !== 200) {
-          response.destroy();
-          reject(new Error("Official Node download refused."));
-          return;
-        }
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > limit) {
-            response.destroy(new Error("Official Node download exceeds bound."));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        response.on("error", reject);
-        response.on("end", () => resolve(Buffer.concat(chunks)));
-      },
-    );
-    request.on("timeout", () => request.destroy(new Error("Official Node download timed out.")));
-    request.on("error", reject);
-  });
 }
 
 export function verifyPreparationHeldOutput(output: string): void {
@@ -324,9 +937,13 @@ export function verifyPreparationHeldOutput(output: string): void {
     throw new Error("Preparation entry output was not one exact held record.");
 }
 
-function verifyArgumentRefusal(executable: string, cwd: string): void {
+async function verifyArgumentRefusal(
+  command: PreparationBuildScope["command"],
+  executable: string,
+  cwd: string,
+): Promise<void> {
   try {
-    command(executable, ["--state", "/not-admitted", "--fixture"], cwd, 4096);
+    await command(executable, ["--state", "/not-admitted", "--fixture"], cwd, 4096);
   } catch (cause) {
     if (typeof cause !== "object" || cause === null) throw cause;
     const error = cause as {
@@ -437,18 +1054,43 @@ function verifyPreparationArtifactAt(
   }
 }
 
+/** Rebuild only an empty output or a fully observed completed artifact; uncertainty is never a cleanup grant. */
+export function preparePreparationOutput(directory: string): void {
+  if (!NodeFS.existsSync(directory)) return;
+  const stat = NodeFS.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new Error("Unadmitted preparation output directory.");
+  if (NodeFS.readdirSync(directory).length === 0) return;
+  // Verification rejects retained .build-* roots, incomplete receipts and extra members before any deletion.
+  verifyPreparationArtifact(directory);
+  // Invalidate completion before changing any bytes. A crash here leaves an unqualified output for explicit recovery.
+  NodeFS.unlinkSync(NodePath.join(directory, "provenance.json"));
+  for (const name of [bundleName, "sea-config.json", executableName])
+    NodeFS.unlinkSync(NodePath.join(directory, name));
+}
+
 /** Constructed only by the pack hook from its observed emitted graph. No caller-supplied provenance is admitted. */
-export function offlinePreparationPack(rootPath: string) {
+export function offlinePreparationPack(
+  rootPath: string,
+  options: { readonly signal?: AbortSignal } = {},
+) {
   const root = NodeFS.realpathSync(rootPath);
   const outDir = NodePath.join(root, outRelative);
-  let source: ReturnType<typeof observeSource> | undefined;
+  let source: Awaited<ReturnType<typeof observeSource>> | undefined;
   let emitted:
     | { sha256: string; size: number; builtins: readonly string[]; modules: readonly string[] }
     | undefined;
   const plugin: Plugin = {
     name: "jones:closed-offline-preparation",
-    buildStart() {
-      source = observeSource(root);
+    async buildStart() {
+      source = await withPreparationBuildScope(
+        NodeOS.tmpdir(),
+        "jones-preparation-source-",
+        options.signal,
+        (scope) => observeSource(root, scope.command),
+      );
+      options.signal?.throwIfAborted();
+      preparePreparationOutput(outDir);
     },
     generateBundle(_options, bundle) {
       const outputs = Object.values(bundle);
@@ -496,7 +1138,8 @@ export function offlinePreparationPack(rootPath: string) {
     format: "esm" as const,
     platform: "node" as const,
     sourcemap: false,
-    clean: true,
+    // Framework cleanup must never remove custody retained by a previous producer.
+    clean: false,
     dts: false,
     minify: false,
     outExtensions: () => ({ js: ".mjs" }),
@@ -508,143 +1151,146 @@ export function offlinePreparationPack(rootPath: string) {
     },
     plugins: [plugin],
     async onSuccess() {
-      if (!source || !emitted)
+      const sourceSnapshot = source;
+      const emittedSnapshot = emitted;
+      if (!sourceSnapshot || !emittedSnapshot)
         throw new Error("Missing observed preparation source or emitted graph.");
-      if (encode(observeSource(root)) !== encode(source))
-        throw new Error("Preparation source changed during bundling.");
       if (encode(NodeFS.readdirSync(outDir).sort()) !== encode([bundleName]))
         throw new Error("Unexpected preparation output inventory.");
       const bundle = readFile(NodePath.join(outDir, bundleName), maxBundleBytes);
-      if (digest(bundle) !== emitted.sha256)
+      if (digest(bundle) !== emittedSnapshot.sha256)
         throw new Error("Preparation bundle changed after closure verification.");
-      // The native producer is intentionally host-specific; no host package installation or cross-runtime fallback.
-      if (command("/usr/bin/uname", ["-sm"], root).toString("utf8").trim() !== "Darwin arm64")
-        throw new Error("Preparation SEA production requires a native Darwin arm64 build host.");
       const provenancePath = NodePath.join(outDir, "provenance.json");
       NodeFS.writeFileSync(
         provenancePath,
         `${encode({ observation: "incomplete", classification: "unusable", productionInvocation: false })}\n`,
         { flag: "wx", mode: 0o600 },
       );
-      const scratch = NodeFS.mkdtempSync(NodePath.join(outDir, ".build-"));
-      let failure: unknown;
-      let completed: { bytes: Buffer; configBytes: string; provenance: unknown } | undefined;
-      try {
-        const checksums = await download("SHASUMS256.txt", 128 * 1024);
-        const archive = await download(archiveName, 128 * 1024 * 1024);
-        const archiveHash = verifyNodeArchive(checksums.toString("utf8"), archive);
-        const archivePath = NodePath.join(scratch, archiveName);
-        NodeFS.writeFileSync(archivePath, archive, { flag: "wx", mode: 0o600 });
-        const member = `node-v${nodeVersion}-darwin-arm64/bin/node`;
-        if (
-          command("/usr/bin/tar", ["-tzf", archivePath, member], scratch).toString("utf8") !==
-          `${member}\n`
-        )
-          throw new Error("Official Node archive runtime member is not unique.");
-        const runtime = command(
-          "/usr/bin/tar",
-          ["-xOzf", archivePath, member],
-          scratch,
-          maxRuntimeBytes,
-        );
-        const runtimePath = NodePath.join(scratch, "node");
-        NodeFS.writeFileSync(runtimePath, runtime, { flag: "wx", mode: 0o500 });
-        const runtimeHash = digest(readFile(runtimePath, maxRuntimeBytes));
-        if (runtimeHash !== digest(runtime))
-          throw new Error("Extracted Node runtime changed before observation.");
-        if (
-          command(runtimePath, ["--version"], scratch).toString("utf8").trim() !==
-            `v${nodeVersion}` ||
-          command("/usr/bin/lipo", ["-archs", runtimePath], scratch).toString("utf8").trim() !==
-            "arm64"
-        )
-          throw new Error(
-            "Observed Node runtime does not match the pinned version and architecture.",
+      const completed = await withPreparationBuildScope(
+        outDir,
+        ".build-",
+        options.signal,
+        async (scope) => {
+          const scratch = scope.root;
+          const command = scope.command;
+          if (encode(await observeSource(root, command)) !== encode(sourceSnapshot))
+            throw new Error("Preparation source changed during bundling.");
+          // The native producer has no host-package installation or cross-runtime fallback.
+          if (
+            (await command("/usr/bin/uname", ["-sm"], root)).toString("utf8").trim() !==
+            "Darwin arm64"
+          )
+            throw new Error(
+              "Preparation SEA production requires a native Darwin arm64 build host.",
+            );
+          const checksums = await scope.download("SHASUMS256.txt", 128 * 1024);
+          const archive = await scope.download(archiveName, 128 * 1024 * 1024);
+          const archiveHash = verifyNodeArchive(checksums.toString("utf8"), archive);
+          const archivePath = NodePath.join(scratch, archiveName);
+          NodeFS.writeFileSync(archivePath, archive, { flag: "wx", mode: 0o600 });
+          const member = `node-v${nodeVersion}-darwin-arm64/bin/node`;
+          if (
+            (await command("/usr/bin/tar", ["-tzf", archivePath, member], scratch)).toString(
+              "utf8",
+            ) !== `${member}\n`
+          )
+            throw new Error("Official Node archive runtime member is not unique.");
+          const runtime = await command(
+            "/usr/bin/tar",
+            ["-xOzf", archivePath, member],
+            scratch,
+            maxRuntimeBytes,
           );
-        NodeFS.writeFileSync(NodePath.join(scratch, bundleName), bundle, {
-          flag: "wx",
-          mode: 0o400,
-        });
-        const config = preparationSeaConfig();
-        verifyPreparationSeaConfig(config);
-        const configBytes = `${encode(config)}\n`;
-        NodeFS.writeFileSync(NodePath.join(scratch, "sea-config.json"), configBytes, {
-          flag: "wx",
-          mode: 0o400,
-        });
-        // Node 26.8.2 documents direct SEA generation and module argv at:
-        // https://nodejs.org/download/release/v26.8.2/docs/api/single-executable-applications.html
-        command(runtimePath, ["--build-sea", "sea-config.json"], scratch);
-        const executable = NodePath.join(scratch, executableName);
-        command(
-          "/usr/bin/codesign",
-          ["--force", "--sign", "-", "--timestamp=none", executable],
-          scratch,
-        );
-        command("/usr/bin/codesign", ["--verify", "--strict", executable], scratch);
-        NodeFS.chmodSync(executable, 0o500);
-        verifyPreparationHeldOutput(command(executable, [], scratch, 4096).toString("utf8"));
-        verifyArgumentRefusal(executable, scratch);
-        const finalBytes = readFile(executable, maxRuntimeBytes);
-        if (digest(readFile(runtimePath, maxRuntimeBytes)) !== runtimeHash)
-          throw new Error("Node build runtime changed during use.");
-        if (encode(observeSource(root)) !== encode(source))
-          throw new Error("Preparation source changed during native build.");
-        const provenance = {
-          schemaVersion: 1,
-          classification: "held-entry-only",
-          preparationCapable: false,
-          productionInvocation: false,
-          observation: "complete",
-          source,
-          entry,
-          dependencyInventory: emitted.modules,
-          builtins: emitted.builtins,
-          bundle: { sha256: emitted.sha256, size: emitted.size },
-          seaConfig: {
-            value: config,
-            sha256: digest(configBytes),
-            size: Buffer.byteLength(configBytes),
-          },
-          upstream: {
-            archiveUrl: releaseOrigin + archiveName,
-            checksumsUrl: releaseOrigin + "SHASUMS256.txt",
-            verification: "official-https-checksum",
-            signedChecksumVerification: false,
-            archive: { sha256: archiveHash, size: archive.length },
-            checksumsSha256: digest(checksums),
-            runtime: {
-              version: nodeVersion,
-              platform: "darwin",
-              arch: "arm64",
-              sha256: runtimeHash,
-              size: runtime.length,
+          const runtimePath = NodePath.join(scratch, "node");
+          NodeFS.writeFileSync(runtimePath, runtime, { flag: "wx", mode: 0o500 });
+          const runtimeHash = digest(readFile(runtimePath, maxRuntimeBytes));
+          if (runtimeHash !== digest(runtime))
+            throw new Error("Extracted Node runtime changed before observation.");
+          if (
+            (await command(runtimePath, ["--version"], scratch)).toString("utf8").trim() !==
+              `v${nodeVersion}` ||
+            (await command("/usr/bin/lipo", ["-archs", runtimePath], scratch))
+              .toString("utf8")
+              .trim() !== "arm64"
+          )
+            throw new Error(
+              "Observed Node runtime does not match the pinned version and architecture.",
+            );
+          NodeFS.writeFileSync(NodePath.join(scratch, bundleName), bundle, {
+            flag: "wx",
+            mode: 0o400,
+          });
+          const config = preparationSeaConfig();
+          verifyPreparationSeaConfig(config);
+          const configBytes = `${encode(config)}\n`;
+          NodeFS.writeFileSync(NodePath.join(scratch, "sea-config.json"), configBytes, {
+            flag: "wx",
+            mode: 0o400,
+          });
+          // Node 26.8.2 documents direct SEA generation and module argv at:
+          // https://nodejs.org/download/release/v26.8.2/docs/api/single-executable-applications.html
+          await command(runtimePath, ["--build-sea", "sea-config.json"], scratch);
+          const executable = NodePath.join(scratch, executableName);
+          await command(
+            "/usr/bin/codesign",
+            ["--force", "--sign", "-", "--timestamp=none", executable],
+            scratch,
+          );
+          await command("/usr/bin/codesign", ["--verify", "--strict", executable], scratch);
+          NodeFS.chmodSync(executable, 0o500);
+          verifyPreparationHeldOutput(
+            (await command(executable, [], scratch, 4096)).toString("utf8"),
+          );
+          await verifyArgumentRefusal(command, executable, scratch);
+          const finalBytes = readFile(executable, maxRuntimeBytes);
+          if (digest(readFile(runtimePath, maxRuntimeBytes)) !== runtimeHash)
+            throw new Error("Node build runtime changed during use.");
+          if (encode(await observeSource(root, command)) !== encode(sourceSnapshot))
+            throw new Error("Preparation source changed during native build.");
+          const provenance = {
+            schemaVersion: 1,
+            classification: "held-entry-only",
+            preparationCapable: false,
+            productionInvocation: false,
+            observation: "complete",
+            source: sourceSnapshot,
+            entry,
+            dependencyInventory: emittedSnapshot.modules,
+            builtins: emittedSnapshot.builtins,
+            bundle: { sha256: emittedSnapshot.sha256, size: emittedSnapshot.size },
+            seaConfig: {
+              value: config,
+              sha256: digest(configBytes),
+              size: Buffer.byteLength(configBytes),
             },
-          },
-          executable: {
-            name: executableName,
-            sha256: digest(finalBytes),
-            size: finalBytes.length,
-            signature: "ad-hoc-verified",
-            heldOutputObserved: true,
-            argumentRefusalObserved: true,
-          },
-        };
-        completed = { bytes: finalBytes, configBytes, provenance };
-      } catch (cause) {
-        failure = cause;
-        throw cause;
-      } finally {
-        try {
-          NodeFS.rmSync(scratch, { recursive: true, force: true });
-        } catch (cleanup) {
-          throw new AggregateError(
-            failure === undefined ? [cleanup] : [failure, cleanup],
-            `Preparation build cleanup failed: ${scratch}`,
-          );
-        }
-      }
-      if (!completed) throw new Error("Preparation build observation is incomplete.");
+            upstream: {
+              archiveUrl: releaseOrigin + archiveName,
+              checksumsUrl: releaseOrigin + "SHASUMS256.txt",
+              verification: "official-https-checksum",
+              signedChecksumVerification: false,
+              archive: { sha256: archiveHash, size: archive.length },
+              checksumsSha256: digest(checksums),
+              runtime: {
+                version: nodeVersion,
+                platform: "darwin",
+                arch: "arm64",
+                sha256: runtimeHash,
+                size: runtime.length,
+              },
+            },
+            executable: {
+              name: executableName,
+              sha256: digest(finalBytes),
+              size: finalBytes.length,
+              signature: "ad-hoc-verified",
+              heldOutputObserved: true,
+              argumentRefusalObserved: true,
+            },
+          };
+          return { bytes: finalBytes, configBytes, provenance };
+        },
+      );
+      options.signal?.throwIfAborted();
       NodeFS.writeFileSync(NodePath.join(outDir, executableName), completed.bytes, {
         flag: "wx",
         mode: 0o500,
@@ -653,7 +1299,7 @@ export function offlinePreparationPack(rootPath: string) {
         flag: "wx",
         mode: 0o400,
       });
-      // Failed cleanup or publication leaves the explicit unusable marker; it never becomes a complete receipt.
+      // Cancellation, failed close or failed cleanup cannot publish a complete receipt.
       const completePath = NodePath.join(outDir, "provenance.complete.json");
       NodeFS.writeFileSync(completePath, `${encode(completed.provenance)}\n`, {
         flag: "wx",

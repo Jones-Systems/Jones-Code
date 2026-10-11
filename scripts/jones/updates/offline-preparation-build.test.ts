@@ -8,6 +8,9 @@ import * as NodeCrypto from "node:crypto";
 import { describe, expect, it } from "vite-plus/test";
 import {
   preparationSeaConfig,
+  preparePreparationOutput,
+  offlinePreparationPack,
+  runPreparationLifecycleFixture,
   verifyNodeArchive,
   verifyPreparationArtifact,
   verifyPreparationClosure,
@@ -136,9 +139,89 @@ describe("closed preparation SEA build", () => {
     "function initializeFixture() {}",
     'const sql = "CREATE TABLE fixture (id TEXT)";',
     "import {",
+    '(() => {}).constructor("return globalThis")()["pro" + "cess"]["get" + "BuiltinModule"]("node:fs");',
+    '(() => {})["con" + "structor"]("return this")();',
+    'Object.getPrototypeOf(async function () {}).constructor("return 1")();',
+    'Reflect.get(() => {}, "constructor")("return this")();',
+    'const { constructor: compile } = (() => {}); compile("return this")();',
   ])("rejects loader/initializer escape %s", (source) => {
     expect(() => verifyPreparationClosure(source)).toThrow();
   });
+
+  it.each([
+    "success",
+    "failure",
+    "abort-command",
+    "abort-download",
+    "uncertain-close",
+    "drain-unawaited-command",
+    "signal-command",
+  ] as const)("owns real producer resources through %s", async (scenario) => {
+    const report = await runPreparationLifecycleFixture(scenario);
+    expect(report.outcome).toBe(scenario === "success" ? "complete" : "rejected");
+    expect(report.listenersInstalled).toBe(true);
+    expect(report.listenersRestored).toBe(true);
+    expect(report.rootRemoved).toBe(true);
+    expect(report.serverClosed).toBe(true);
+    expect(report.childCloseObserved).toBe(scenario !== "abort-download");
+    expect(report.retainedBeforeFixtureCleanup).toBe(scenario === "uncertain-close");
+    if (scenario === "uncertain-close")
+      expect(report.custodyEvidence).toMatchObject({
+        observation: "incomplete",
+        classification: "unusable",
+        signalAuthority: "captured-handle-only",
+        resources: [{ kind: "command", closeObserved: false, exitObserved: true }],
+      });
+    if (scenario === "signal-command") {
+      expect(report.failureStatus).toBe(143);
+      expect(report.signalReport).toMatchObject({
+        outcome: "rejected",
+        listenersInstalled: true,
+        listenersRestored: true,
+        childCloseObserved: true,
+        rootRemoved: true,
+        failureMessage: "Preparation build interrupted by SIGTERM.",
+      });
+    }
+    if (scenario === "failure") expect(report.failureStatus).toBe(7);
+    if (scenario === "abort-command") expect(report.failureMessage).toBe("owned command abort");
+    if (scenario === "abort-download") expect(report.failureMessage).toBe("owned download abort");
+    if (scenario === "drain-unawaited-command")
+      expect(report.failureMessage).toMatch(/admitted resources unfinished/);
+  });
+
+  it("disables framework cleanup and retires only a verified completed output", () =>
+    withArtifact((root) => {
+      expect(offlinePreparationPack(root).clean).toBe(false);
+      expect(NodeFS.existsSync(NodePath.join(root, "provenance.json"))).toBe(true);
+      preparePreparationOutput(root);
+      expect(NodeFS.readdirSync(root)).toEqual([]);
+    }));
+
+  it.each(["retained-root", "incomplete-receipt"] as const)(
+    "preserves prior uncertainty: %s",
+    (fault) =>
+      withArtifact((root) => {
+        const retained = NodePath.join(root, ".build-owned");
+        if (fault === "retained-root") {
+          NodeFS.mkdirSync(retained);
+          NodeFS.writeFileSync(NodePath.join(retained, "retained-custody.json"), "owned evidence");
+        } else
+          NodeFS.writeFileSync(
+            NodePath.join(root, "provenance.json"),
+            '{"observation":"incomplete"}',
+          );
+        const before = NodeFS.readdirSync(root).sort();
+        const receipt = NodeFS.readFileSync(NodePath.join(root, "provenance.json"));
+        expect(() => preparePreparationOutput(root)).toThrow();
+        expect(NodeFS.readdirSync(root).sort()).toEqual(before);
+        expect(NodeFS.readFileSync(NodePath.join(root, "provenance.json"))).toEqual(receipt);
+        if (fault === "retained-root")
+          expect(
+            NodeFS.readFileSync(NodePath.join(retained, "retained-custody.json"), "utf8"),
+          ).toBe("owned evidence");
+      }),
+  );
 
   it("refuses code cache, snapshot, extension, alternate entry and asset configuration", () => {
     const fixed = preparationSeaConfig();
