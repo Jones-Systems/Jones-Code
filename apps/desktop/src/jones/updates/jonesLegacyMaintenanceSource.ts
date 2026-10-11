@@ -1,4 +1,5 @@
 import { jonesColdPairSource } from "./jonesColdPairSource.ts";
+import { jonesColdOwnerSource } from "./jonesColdOwnerSource.ts";
 import { jonesLegacyBootstrapSource } from "./jonesLegacyBootstrapSource.ts";
 
 const bootstrapEntry = "if __name__ == '__main__':\n    sys.exit(main())\n";
@@ -6,10 +7,11 @@ if (!jonesLegacyBootstrapSource.endsWith(bootstrapEntry)) {
   throw new Error("Legacy bootstrap entry changed; maintenance composition needs review.");
 }
 
-/** External maintenance with private recovery definitions; no state admission or launch operation. */
+/** External pre-state commands with an internal continuous owner for paired recovery. */
 export const jonesLegacyMaintenanceSource =
   jonesLegacyBootstrapSource.slice(0, -bootstrapEntry.length) +
   jonesColdPairSource +
+  jonesColdOwnerSource +
   String.raw`
 import fcntl, subprocess
 
@@ -443,7 +445,7 @@ def durable_file(path, raw, mode, previous=None):
     with Observation().file(path, LIMITS['metadataBytes']) as stream: sync_fd(stream.fileno())
 
 @contextlib.contextmanager
-def fixed_lock(manifest):
+def _maintenance_fixed_lock(manifest):
     path = manifest.parent / 'jones-activation.lock'
     observed = Observation()
     with observed.directory(path.parent) as parent:
@@ -503,7 +505,7 @@ class Maintenance:
         self.journal_raw = read_owned(self.directory / 'journal.json')
         self.journal = decode(self.journal_raw)
         journal_keys = {'schema', 'maintenanceGeneration', 'planSha256', 'phase', 'done', 'intent', 'armedBootSessionUuid', 'cancel'}
-        require(set(self.journal) in (journal_keys, journal_keys | {'stateTransaction'}))
+        require(journal_keys <= set(self.journal) <= journal_keys | {'stateTransaction', 'coldOwner'})
         require(self.journal['schema'] == 1 and self.journal['maintenanceGeneration'] == pointer['generation'] and self.journal['planSha256'] == pointer['planSha256'] and self.journal['phase'] in PHASES)
         self.native = self.directory / 'tools/identity-native'
         self.bundle = self.plan['bundle']
@@ -527,6 +529,7 @@ class Maintenance:
 
     def validate_cursor(self):
         phase = self.journal['phase']
+        _validate_cold_owner_cursor(self.journal)
         if 'stateTransaction' in self.journal:
             fence = self.journal['stateTransaction']
             require(phase == 'armed' and isinstance(fence, dict) and set(fence) == {'schema', 'transactionId', 'intentSha256'})
@@ -653,8 +656,9 @@ class Maintenance:
         return maintenance_report(status, maintenanceGeneration=self.plan['maintenanceGeneration'], recoveryEntry=str(self.directory / 'tools/maintenance.py'))
 
     def cancel(self):
-        # Missing child evidence cannot turn a possible state effect into PRE-STATE cancellation.
-        require('stateTransaction' not in self.journal)
+        # Entry consumes an epoch before stateTransaction exists; neither fence
+        # can be removed by PRE-STATE cancellation or missing child evidence.
+        require('stateTransaction' not in self.journal and 'coldOwner' not in self.journal)
         self.verify()
         if not self.journal['phase'].startswith('cancel'):
             recovered = uuid.uuid4().hex + uuid.uuid4().hex
@@ -755,6 +759,9 @@ class Maintenance:
         require(self.gates and any(item['path'] == active['executablePath'] for item in self.gates))
         self.sync_evidence()
         return self.reconcile()
+
+fixed_lock, _cold_owner_session, _cold_pair_runtime = _cold_owner_bindings()
+del _cold_owner_bindings
 
 def maintenance_main(argv=None):
     parser = argparse.ArgumentParser(description='Pre-state legacy maintenance; state admission is unavailable.')

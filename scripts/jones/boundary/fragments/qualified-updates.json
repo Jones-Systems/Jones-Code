@@ -90,7 +90,9 @@
     "apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
     "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
     "apps/desktop/src/jones/updates/jonesColdPairSource.ts",
-    "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts"
+    "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
+    "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

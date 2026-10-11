@@ -1,5 +1,6 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
@@ -43,6 +44,11 @@ export const coldMaintenanceCases = [
   "state-fence",
   "state-fence-missing",
   "state-fence-corrupt",
+  "owner-same-boot",
+  "owner-lock-binding",
+  "owner-native-gate",
+  "owner-native-lock",
+  "owner-cancel-entered",
 ];
 
 function literal(source) {
@@ -94,11 +100,36 @@ export function materializePairedExecutor(executorSource, pairedSource) {
   return executor;
 }
 
-export function materializeColdMaintenance(bootstrapText, maintenanceText, coldText, pairedText) {
+export function materializeColdMaintenance(
+  bootstrapText,
+  maintenanceText,
+  coldText,
+  pairedText,
+  ownerText = NodeFS.readFileSync(NodePath.join(updateSources, "jonesColdOwnerSource.ts"), "utf8"),
+) {
   NodeAssert.ok(
     maintenanceText.includes('import { jonesColdPairSource } from "./jonesColdPairSource.ts";'),
   );
   NodeAssert.equal(maintenanceText.split("  jonesColdPairSource +").length, 2);
+  NodeAssert.ok(
+    maintenanceText.includes('import { jonesColdOwnerSource } from "./jonesColdOwnerSource.ts";'),
+  );
+  NodeAssert.equal(maintenanceText.split("  jonesColdOwnerSource +").length, 2);
+  NodeAssert.match(
+    maintenanceText,
+    /jonesColdPairSource \+\s+jonesColdOwnerSource \+\s+String\.raw`/,
+  );
+  const ownerDeclaration = "export const jonesColdOwnerSource = String.raw`";
+  NodeAssert.equal(ownerText.split(ownerDeclaration).length, 2);
+  NodeAssert.equal(
+    ownerText
+      .slice(0, ownerText.indexOf(ownerDeclaration))
+      .replace(/\/\*[^]*?\*\//g, "")
+      .trim(),
+    "",
+  );
+  const owner = literal(ownerText);
+  NodeAssert.ok(!owner.includes("${") && !owner.includes("`"), "Owner source must be one literal.");
   NodeAssert.ok(
     coldText.includes('import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";'),
   );
@@ -117,7 +148,7 @@ export function materializeColdMaintenance(bootstrapText, maintenanceText, coldT
   const bootstrap = literal(bootstrapText);
   const suffix = "if __name__ == '__main__':\n    sys.exit(main())\n";
   NodeAssert.ok(bootstrap.endsWith(suffix));
-  const result = bootstrap.slice(0, -suffix.length) + cold + literal(maintenanceText);
+  const result = bootstrap.slice(0, -suffix.length) + cold + owner + literal(maintenanceText);
   NodeAssert.ok(
     !result.includes("${") && !result.includes("`"),
     "Unresolved maintenance substitution.",
@@ -126,21 +157,35 @@ export function materializeColdMaintenance(bootstrapText, maintenanceText, coldT
 }
 
 export async function readColdMaintenanceSources() {
-  const [bootstrapText, maintenanceText, executorText, pairedText, coldText, nativeSource] =
-    await Promise.all([
-      NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyBootstrapSource.ts"), "utf8"),
-      NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyMaintenanceSource.ts"), "utf8"),
-      NodeFSP.readFile(NodePath.join(updateSources, "jonesNativeHelperSource.ts"), "utf8"),
-      NodeFSP.readFile(NodePath.join(updateSources, "jonesPairedStateSource.ts"), "utf8"),
-      NodeFSP.readFile(NodePath.join(updateSources, "jonesColdPairSource.ts"), "utf8"),
-      NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyIdentityNative.c")),
-    ]);
+  const [
+    bootstrapText,
+    maintenanceText,
+    executorText,
+    pairedText,
+    coldText,
+    nativeSource,
+    ownerText,
+  ] = await Promise.all([
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyBootstrapSource.ts"), "utf8"),
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyMaintenanceSource.ts"), "utf8"),
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesNativeHelperSource.ts"), "utf8"),
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesPairedStateSource.ts"), "utf8"),
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesColdPairSource.ts"), "utf8"),
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyIdentityNative.c")),
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesColdOwnerSource.ts"), "utf8"),
+  ]);
   const bootstrap = literal(bootstrapText);
   const suffix = "if __name__ == '__main__':\n    sys.exit(main())\n";
   NodeAssert.ok(bootstrap.endsWith(suffix));
   return {
     bootstrap,
-    maintenance: materializeColdMaintenance(bootstrapText, maintenanceText, coldText, pairedText),
+    maintenance: materializeColdMaintenance(
+      bootstrapText,
+      maintenanceText,
+      coldText,
+      pairedText,
+      ownerText,
+    ),
     executor: materializePairedExecutor(executorText, pairedText),
     nativeSourceSha256: digest(nativeSource),
   };
@@ -373,7 +418,53 @@ try:
             assert report['status'] == 'armed-awaiting-cold-restart'
             code, repeat = invoke('reconcile')
             assert code == 0 and repeat['status'] == 'armed-awaiting-cold-restart'
-        if case.startswith('state-fence'):
+        if case.startswith('owner-'):
+            pointer = json.loads((home / 'runtime/jones-maintenance/current.json').read_text())
+            directory = home / 'runtime/jones-maintenance' / pointer['generation']
+            journal_path = directory / 'journal.json'
+            before = journal_path.read_bytes()
+            if case == 'owner-cancel-entered':
+                journal = json.loads(before)
+                # This injected record tests only cancellation's durable fence;
+                # it is not a native reboot or admission observation.
+                epoch = '00000000-0000-4000-8000-000000000001'
+                assert epoch.lower() != journal['armedBootSessionUuid'].lower()
+                journal['coldOwner'] = {'schema': 1, 'sessionId': '9' * 64, 'bootSessionUuid': epoch, 'phase': 'entered'}
+                journal_path.write_bytes(encode(journal) + b'\n')
+                code, report = invoke('cancel')
+                assert code == 1 and report['status'] == 'held'
+                assert json.loads(journal_path.read_text()) == journal and 'stateTransaction' not in journal
+            else:
+                if case == 'owner-native-gate': (old / 'Contents/MacOS/Jones').chmod(0o500)
+                if case == 'owner-native-lock':
+                    lock = manifest.parent / 'jones-activation.lock'
+                    lock.unlink()
+                    write(lock, scope['LOCK_BYTES'])
+                guard['enabled'] = True
+                refused = False
+                verified = []
+                real_verify = scope['Maintenance'].verify
+                def tracked_verify(owner):
+                    result = real_verify(owner)
+                    verified.append(result)
+                    return result
+                scope['Maintenance'].verify = tracked_verify
+                try:
+                    if case == 'owner-lock-binding':
+                        with scope['_cold_owner_session']():
+                            raise AssertionError('Unbound native fixture issued a state capability')
+                    with scope['fixed_lock'](manifest) as current:
+                        with scope['_cold_owner_session']():
+                            raise AssertionError('Same-kernel native fixture issued a state capability')
+                except scope['Refused']: refused = True
+                finally:
+                    guard['enabled'] = False
+                    scope['Maintenance'].verify = real_verify
+                assert refused and journal_path.read_bytes() == before
+                assert len(verified) == (1 if case == 'owner-same-boot' else 0)
+                assert not (directory / 'state').exists()
+            assert json.loads(manifest.read_text())['owner'] == 'maintenance'
+        elif case.startswith('state-fence'):
             pointer = json.loads((home / 'runtime/jones-maintenance/current.json').read_text())
             directory = home / 'runtime/jones-maintenance' / pointer['generation']
             journal_path = directory / 'journal.json'
@@ -861,6 +952,376 @@ export async function runColdPairFixture(scenario, { signal, nativeStorage = fal
     const report = JSON.parse(result.stdout.trim());
     NodeAssert.equal(report.case, scenario);
     NodeAssert.equal(report.passed, true);
+    return report;
+  });
+}
+
+export const coldOwnerCases = [
+  "unbound-lock",
+  "same-boot",
+  "entry-order",
+  "before-entered",
+  "after-entered",
+  "entry-sync",
+  "stale-session",
+  "same-boot-reentry",
+  "fresh-process-reentry",
+  "cold-c-fence",
+  "cold-c-incomplete",
+  "paired-restore",
+  "legacy-state-fence",
+  "sticky-pair-sync",
+  "journal-drift",
+  "owner-drift",
+  "plan-drift",
+  "tool-drift",
+  "lock-replaced",
+  "walk-lock-replaced",
+  "finalize-sync",
+  "lock-close",
+  "cancel-entered",
+];
+
+// Simulated epochs are confined to this owned fixture's metadata observer.
+// The issuer, fixed lock, durable journal and paired FD operations are real;
+// this driver does not qualify a reboot, launch closure, SQLite or child custody.
+const ownerDriver = String.raw`
+import sys
+sys.dont_write_bytecode = True
+import errno, json, os, pathlib, stat, subprocess
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+root = pathlib.Path(sys.argv[2]).resolve(strict=True)
+scenario = payload['case']
+scope = {'__name__': 'owned_cold_owner_fixture'}
+exec(compile(payload['maintenance'], 'maintenance.py', 'exec'), scope)
+encode, sha = scope['encoded'], scope['sha']
+Refused, Maintenance = scope['Refused'], scope['Maintenance']
+class Cancelled(BaseException): pass
+epoch_a, epoch_b, epoch_c = ('00000000-0000-4000-8000-00000000000' + str(n) for n in (1, 2, 3))
+epoch = {'current': epoch_a if scenario == 'same-boot' else epoch_b}
+events, sessions = [], []
+generation = '2' * 64
+manifest = root / 'runtime/jones-active-install.json'
+maintenance_root = manifest.parent / 'jones-maintenance'
+directory = maintenance_root / generation
+database, profile = root / 'userdata/state.sqlite', root / 'profile'
+for path in (directory / 'tools', database.parent, profile): path.mkdir(mode=0o700, parents=True, exist_ok=payload.get('reenter', False))
+gate = root / 'owned-gate'
+def write(path, raw, mode=0o600):
+    path.write_bytes(raw)
+    path.chmod(mode)
+def seed(path, raw, mode=0o600):
+    if not payload.get('reenter', False): write(path, raw, mode)
+seed(database, b'original-db')
+seed(profile / 'Preferences', b'original-profile')
+seed(database.parent / 'settings.json', b'{"owned":true}')
+seed(gate, b'owned-executable-content', 0o400)
+original = {'owner': 'desktop', 'generation': '1' * 64, 'sourceSha': '3' * 40,
+            'databasePath': str(database), 'profile': str(profile),
+            'appPath': str(root / 'Old.app'), 'executablePath': str(gate)}
+maintenance_bytes, native_bytes = b'owned-maintenance-tool', b'owned-native-tool'
+bundle = {'maintenanceSha256': sha(maintenance_bytes), 'identityNativeSha256': sha(native_bytes)}
+plan = {'maintenanceGeneration': generation, 'originalManifest': encode(original).decode(),
+        'originalManifestSha256': sha(encode(original)), 'bundle': bundle,
+        'candidateBinding': {'sourceSha': '4' * 40, 'executorSha256': '5' * 64}}
+plan_raw = encode(plan) + b'\n'
+journal = {'schema': 1, 'maintenanceGeneration': generation, 'planSha256': sha(plan_raw),
+           'phase': 'armed', 'done': [str(gate)], 'intent': None, 'armedBootSessionUuid': epoch_a, 'cancel': None}
+seed(directory / 'plan.json', plan_raw, 0o400)
+seed(directory / 'journal.json', encode(journal) + b'\n')
+seed(maintenance_root / 'current.json', encode({'schema': 1, 'generation': generation, 'planSha256': sha(plan_raw)}) + b'\n', 0o400)
+seed(directory / 'tools/maintenance.py', maintenance_bytes, 0o500)
+seed(directory / 'tools/identity-native', native_bytes, 0o500)
+owner_manifest = dict(original, owner='maintenance', generation=generation,
+                      maintenance={'schema': 1, 'planSha256': sha(plan_raw)})
+seed(manifest, encode(owner_manifest) + b'\n')
+def load_owned(self):
+    # Only the native inventory/packaging inputs are replaced. The production
+    # issuer still calls load itself and cannot accept a caller's boot value.
+    assert self.manifest == manifest
+    self.directory, self.native = directory, directory / 'tools/identity-native'
+    self.plan, self.original, self.bundle = json.loads(plan_raw), dict(original), dict(bundle)
+    self.journal_raw = (directory / 'journal.json').read_bytes()
+    self.journal = json.loads(self.journal_raw)
+    self.gates = [{'path': str(gate), 'app': original['appPath']}]
+    self.validate_cursor()
+def verify_owned(self):
+    events.append('verify')
+    self.current_lock()
+    self.validate_cursor()
+    scope['require'](stat.S_IMODE(gate.stat().st_mode) == 0o400)
+    scope['require'](json.loads(manifest.read_bytes()) == self.owner())
+    scope['require']((directory / 'tools/identity-native').read_bytes() == native_bytes)
+    return epoch['current']
+Maintenance.load, Maintenance.verify = load_owned, verify_owned
+def forbidden_child(*args, **kwargs): raise AssertionError('Mechanical owner fixture launched a child')
+subprocess.Popen = forbidden_child
+def portable_identity(owner, path, kind):
+    assert path.is_relative_to(root)
+    info = path.lstat()
+    result = [str(info.st_dev), str(info.st_ino), info.st_uid, stat.S_IMODE(info.st_mode)]
+    if kind == 'file': result += [info.st_size, info.st_mtime_ns]
+    return result
+scope['_cold_pair_identity'] = portable_identity
+scope['_cold_pair_clone'] = lambda source, parent, name: False
+scope['_COLD_PAIR_HEADROOM'] = 16384
+fault = {'enabled': True, 'fired': False}
+real_durable, real_sync_evidence = scope['durable_file'], Maintenance.sync_evidence
+def durable(path, raw, mode, previous=None):
+    entered = path == directory / 'journal.json' and json.loads(raw).get('coldOwner', {}).get('phase') == 'entered'
+    if entered: events.append('entered-write')
+    if entered and fault['enabled'] and scenario == 'before-entered':
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned before entered write')
+    real_durable(path, raw, mode, previous)
+    if entered:
+        events.append('entered-durable')
+        if fault['enabled'] and scenario == 'after-entered':
+            fault['fired'] = True
+            raise OSError(errno.EIO, 'owned after entered write')
+scope['durable_file'] = durable
+def sync_evidence(self):
+    phase = self.journal.get('coldOwner', {}).get('phase')
+    real_sync_evidence(self)
+    if phase == 'entered': events.append('entered-synced')
+    if fault['enabled'] and ((scenario == 'entry-sync' and phase == 'entered') or
+                             (scenario == 'finalize-sync' and phase == 'finalized')):
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned owner evidence sync failure')
+Maintenance.sync_evidence = sync_evidence
+def audit(event, args):
+    if event not in ('open', 'os.scandir', 'os.listdir') or not args or not isinstance(args[0], (str, bytes)): return
+    path = pathlib.Path(os.fsdecode(args[0]))
+    if any(path == item or path.is_relative_to(item) for item in (database.parent, profile, directory / 'state')):
+        assert 'entered-synced' in events, 'State was accessed before entered durability'
+        current = json.loads((directory / 'journal.json').read_bytes())
+        assert current.get('coldOwner', {}).get('bootSessionUuid') == epoch['current']
+sys.addaudithook(audit)
+def refusal(operation, error=Refused):
+    try: operation()
+    except error as failure: return failure
+    raise AssertionError('Expected retained owner refusal')
+def enter_once(body=None, unbound=False):
+    started = len(events)
+    if unbound:
+        fake_owner = Maintenance(manifest, lambda: None)
+        refusal(lambda: scope['_cold_owner_session'](fake_owner), TypeError)
+        with scope['_cold_owner_session'](): raise AssertionError('Unbound lock admitted')
+    with scope['fixed_lock'](manifest) as current:
+        with scope['_cold_owner_session']() as session:
+            owner = session.owner
+            sessions.append(session)
+            events.append('issued')
+            on_disk = json.loads((directory / 'journal.json').read_bytes())
+            assert on_disk['coldOwner']['phase'] == 'entered' and on_disk['coldOwner']['bootSessionUuid'] == epoch['current']
+            observed = events[started:]
+            assert observed.index('entered-durable') < observed.index('entered-synced') < observed.index('issued')
+            if body is not None: body(session, owner)
+def current_journal(): return json.loads((directory / 'journal.json').read_bytes())
+def snapshot(session, owner):
+    result = session.snapshot()
+    assert result['source']['database']['content'] == result['copied']['database']['content']
+    assert current_journal()['stateTransaction'] == owner.journal['stateTransaction']
+    return result
+if scenario == 'fresh-process-reentry' and payload.get('reenter', False):
+    before = (directory / 'journal.json').read_bytes()
+    assert current_journal()['coldOwner']['phase'] == 'finalized'
+    assert current_journal()['coldOwner']['bootSessionUuid'] == epoch_b
+    assert current_journal()['stateTransaction']
+    refusal(enter_once)
+    assert (directory / 'journal.json').read_bytes() == before and not sessions
+    assert 'entered-write' not in events
+elif scenario in ('same-boot', 'unbound-lock', 'legacy-state-fence'):
+    if scenario == 'legacy-state-fence':
+        journal['stateTransaction'] = {'schema': 1, 'transactionId': '7' * 64, 'intentSha256': '8' * 64}
+        write(directory / 'journal.json', encode(journal) + b'\n')
+    refusal(lambda: enter_once(unbound=scenario == 'unbound-lock'))
+    assert 'coldOwner' not in current_journal() and not sessions
+    assert 'entered-write' not in events
+elif scenario in ('before-entered', 'after-entered', 'entry-sync'):
+    failure = refusal(enter_once, OSError)
+    assert failure.errno == errno.EIO and fault['fired'] and not sessions
+    fault['enabled'] = False
+    if scenario == 'before-entered':
+        assert 'coldOwner' not in current_journal()
+        enter_once(snapshot)
+    else:
+        assert current_journal()['coldOwner']['phase'] == 'entered'
+        refusal(enter_once)
+        assert not sessions
+elif scenario == 'cold-c-incomplete':
+    original_mkdir = scope['_ColdPairTransaction'].mkdir
+    def interrupted_mkdir(self, path):
+        original_mkdir(self, path)
+        raise OSError(errno.EIO, 'owned interruption after state fence and directory creation')
+    scope['_ColdPairTransaction'].mkdir = interrupted_mkdir
+    refusal(lambda: enter_once(snapshot), OSError)
+    before = current_journal()['stateTransaction']
+    assert current_journal()['coldOwner']['phase'] == 'entered'
+    refusal(enter_once)
+    scope['_ColdPairTransaction'].mkdir = original_mkdir
+    epoch['current'] = epoch_c
+    refusal(lambda: enter_once(snapshot), FileNotFoundError)
+    assert current_journal()['coldOwner']['bootSessionUuid'] == epoch_c
+    assert current_journal()['coldOwner']['phase'] == 'entered'
+    assert current_journal()['stateTransaction'] == before
+    refusal(enter_once)
+elif scenario == 'walk-lock-replaced':
+    original_clone = scope['_cold_pair_clone']
+    def replace_lock(source, parent, name):
+        assert not fault['fired']
+        fault['fired'] = True
+        lock = manifest.parent / 'jones-activation.lock'
+        lock.unlink()
+        write(lock, scope['LOCK_BYTES'])
+        return original_clone(source, parent, name)
+    scope['_cold_pair_clone'] = replace_lock
+    refusal(lambda: enter_once(snapshot))
+    assert fault['fired'] and current_journal()['stateTransaction']
+    assert current_journal()['coldOwner']['phase'] == 'entered'
+    assert not (directory / 'state/pair-descriptor.json').exists()
+    refusal(enter_once)
+elif scenario in ('journal-drift', 'owner-drift', 'plan-drift', 'tool-drift', 'lock-replaced', 'sticky-pair-sync'):
+    def changed(session, owner):
+        if scenario == 'journal-drift': write(directory / 'journal.json', owner.journal_raw + b' ')
+        if scenario == 'owner-drift': write(manifest, encode(dict(owner_manifest, owner='desktop')))
+        if scenario == 'plan-drift':
+            (directory / 'plan.json').chmod(0o600)
+            write(directory / 'plan.json', plan_raw + b' ', 0o400)
+        if scenario == 'tool-drift':
+            (directory / 'tools/maintenance.py').chmod(0o600)
+            write(directory / 'tools/maintenance.py', b'changed-tool', 0o500)
+        if scenario == 'lock-replaced':
+            lock = manifest.parent / 'jones-activation.lock'
+            lock.unlink()
+            write(lock, scope['LOCK_BYTES'])
+        if scenario == 'sticky-pair-sync':
+            original_sync = scope['_ColdPairTransaction'].sync_directory
+            def failed_sync(self, path):
+                original_sync(self, path)
+                fault['fired'] = True
+                raise OSError(errno.EIO, 'owned paired directory sync failure')
+            scope['_ColdPairTransaction'].sync_directory = failed_sync
+            failure = refusal(session.snapshot, OSError)
+            assert failure.errno == errno.EIO and fault['fired']
+            assert current_journal()['stateTransaction']
+        else: refusal(session.snapshot)
+        refusal(session.snapshot)
+    refusal(lambda: enter_once(changed))
+    assert current_journal()['coldOwner']['phase'] == 'entered'
+    refusal(enter_once)
+elif scenario == 'finalize-sync':
+    failure = refusal(lambda: enter_once(snapshot), OSError)
+    assert failure.errno == errno.EIO and fault['fired']
+    assert current_journal()['coldOwner']['phase'] == 'finalized'
+    fault['enabled'] = False
+    refusal(enter_once)
+elif scenario == 'lock-close':
+    real_close = os.close
+    def failed_close(fd):
+        info = os.fstat(fd)
+        proof = (manifest.parent / 'jones-activation.lock').stat()
+        matched = (info.st_dev, info.st_ino) == (proof.st_dev, proof.st_ino)
+        if matched: assert all(not session.live for session in sessions)
+        real_close(fd)
+        if fault['enabled'] and matched:
+            fault['fired'] = True
+            raise OSError(errno.EIO, 'owned failure after actual lock close')
+    os.close = failed_close
+    try: failure = refusal(lambda: enter_once(snapshot), OSError)
+    finally: os.close = real_close
+    assert failure.errno == errno.EIO and fault['fired']
+    refusal(sessions[0].snapshot)
+    refusal(enter_once)
+elif scenario == 'cancel-entered':
+    def cancel_scope(session, owner): raise Cancelled()
+    refusal(lambda: enter_once(cancel_scope), Cancelled)
+    assert current_journal()['coldOwner']['phase'] == 'entered'
+    assert 'stateTransaction' not in current_journal()
+    before = (directory / 'journal.json').read_bytes()
+    with scope['fixed_lock'](manifest) as current:
+        owner = Maintenance(manifest, current)
+        owner.load()
+        refusal(owner.cancel)
+    assert (directory / 'journal.json').read_bytes() == before
+    assert stat.S_IMODE(gate.stat().st_mode) == 0o400
+elif scenario == 'paired-restore':
+    def restore(session, owner):
+        snapshot(session, owner)
+        fence = dict(owner.journal['stateTransaction'])
+        write(database, b'advanced-db')
+        write(profile / 'Preferences', b'advanced-profile')
+        session.begin_restore()
+        result = session.reconcile_restore()
+        assert result['status'] == 'pair-restored-gates-retained'
+        assert database.read_bytes() == b'original-db' and (profile / 'Preferences').read_bytes() == b'original-profile'
+        assert (directory / 'state/advanced-state/database').read_bytes() == b'advanced-db'
+        assert owner.journal['stateTransaction'] == fence
+        refusal(lambda: session.pair.snapshot())
+    # A direct call on retained pair mechanics is outside the operation facade
+    # and poisons the session even if its caller catches the refusal.
+    refusal(lambda: enter_once(restore))
+    assert current_journal()['coldOwner']['phase'] == 'entered'
+else:
+    enter_once(snapshot)
+    assert current_journal()['coldOwner']['phase'] == 'finalized'
+    if scenario == 'stale-session':
+        refusal(sessions[0].snapshot)
+        refusal(lambda: scope['_ColdPairTransaction'](sessions[0].owner))
+    if scenario in ('same-boot-reentry', 'entry-order'): refusal(enter_once)
+    if scenario == 'cold-c-fence':
+        before = current_journal()['stateTransaction']
+        prior_session = current_journal()['coldOwner']['sessionId']
+        epoch['current'] = epoch_c
+        enter_once(snapshot)
+        assert current_journal()['stateTransaction'] == before
+        assert current_journal()['coldOwner']['sessionId'] != prior_session
+        assert current_journal()['coldOwner']['bootSessionUuid'] == epoch_c
+        refusal(enter_once)
+assert all(not session.live for session in sessions)
+print(json.dumps({'case': scenario, 'passed': True, 'qualification': 'owned-mechanical-cold-owner',
+                  'stateAdmissionAllowed': False, 'nativeColdOwnerQualified': False}))
+`;
+
+export async function runColdOwnerFixture(scenario, { signal } = {}) {
+  NodeAssert.ok(coldOwnerCases.includes(scenario));
+  const sources = await readColdMaintenanceSources();
+  return withLegacyIdentityScratch(async (root) => {
+    const payload = NodePath.join(root, "owner.json");
+    const entry = NodePath.join(root, "owner.py");
+    await NodeFSP.writeFile(
+      payload,
+      JSON.stringify({ maintenance: sources.maintenance, case: scenario }),
+    );
+    await NodeFSP.writeFile(entry, ownerDriver);
+    const result = await runLegacyIdentityFixtureCommand(
+      "/usr/bin/python3",
+      ["-I", "-B", entry, payload, root],
+      root,
+      { signal },
+    );
+    NodeAssert.equal(result.code, 0, result.stderr);
+    NodeAssert.equal(result.stderr, "");
+    let report = JSON.parse(result.stdout.trim());
+    NodeAssert.equal(report.case, scenario);
+    NodeAssert.equal(report.passed, true);
+    if (scenario === "fresh-process-reentry") {
+      await NodeFSP.writeFile(
+        payload,
+        JSON.stringify({ maintenance: sources.maintenance, case: scenario, reenter: true }),
+      );
+      const repeated = await runLegacyIdentityFixtureCommand(
+        "/usr/bin/python3",
+        ["-I", "-B", entry, payload, root],
+        root,
+        { signal },
+      );
+      NodeAssert.equal(repeated.code, 0, repeated.stderr);
+      NodeAssert.equal(repeated.stderr, "");
+      report = JSON.parse(repeated.stdout.trim());
+      NodeAssert.equal(report.case, scenario);
+      NodeAssert.equal(report.passed, true);
+    }
     return report;
   });
 }

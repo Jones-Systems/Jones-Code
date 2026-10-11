@@ -43,6 +43,24 @@ elif fault == 'cursor':
 elif fault == 'no-bytecode':
     assert sys.dont_write_bytecode is True
     assert payload['source'].index('sys.dont_write_bytecode = True') < payload['source'].index('import argparse')
+elif fault == 'cold-owner-cursor':
+    value = {'phase': 'armed', 'armedBootSessionUuid': '00000000-0000-4000-8000-000000000001',
+             'coldOwner': {'schema': 1, 'sessionId': 'a' * 64, 'phase': 'entered',
+                           'bootSessionUuid': '00000000-0000-4000-8000-000000000002'}}
+    scope['_validate_cold_owner_cursor'](value)
+    for changed in (dict(value['coldOwner'], schema=True), dict(value['coldOwner'], phase='released'),
+                    dict(value['coldOwner'], bootSessionUuid=value['armedBootSessionUuid']),
+                    dict(value['coldOwner'], callerAuthorized=True), dict(value['coldOwner'], sessionId='a')):
+        try: scope['_validate_cold_owner_cursor'](dict(value, coldOwner=changed))
+        except scope['Refused']: pass
+        else: raise AssertionError('Malformed owner epoch accepted')
+elif fault == 'cancel-before-state-fence':
+    owner = scope['Maintenance'](pathlib.Path('/fixture/runtime/jones-active-install.json'), lambda: None)
+    owner.journal = {'coldOwner': {'phase': 'entered'}}
+    owner.verify = lambda: (_ for _ in ()).throw(AssertionError('Cancellation crossed entered fence'))
+    try: owner.cancel()
+    except scope['Refused']: pass
+    else: raise AssertionError('Entered session permitted PRE-STATE cancellation')
 elif fault == 'shim-bytes':
     active = {'appPath': '/fixture/Jones.app', 'executablePath': '/fixture/Jones.app/Contents/MacOS/Jones'}
     assert scope['expected_shim'](pathlib.Path('/fixture/home'), active).decode() == payload['expectedShim']
@@ -62,36 +80,41 @@ describe("standalone pre-state maintenance protocol", () => {
     expect(jonesLegacyMaintenanceSource).not.toContain("`");
   });
 
-  it.each(["anchor", "arguments", "cursor", "no-bytecode", "shim-bytes"])(
-    "enforces %s before granting any maintenance effect",
-    (scenario) => {
-      const result = NodeChildProcess.spawnSync("python3", ["-I", "-B", "-c", protocolFixture], {
-        input: JSON.stringify({
-          source: jonesLegacyMaintenanceSource,
-          case: scenario,
-          expectedShim: [
-            "#!/bin/sh",
-            "# Written by T3 Code: runs the desktop app's bundled t3 CLI.",
-            "export T3CODE_CLI_PATH='/fixture/home/bin/t3'",
-            "home='/fixture/home'",
-            'export T3CODE_HOME="${T3CODE_HOME:-$home}"',
-            "export ELECTRON_RUN_AS_NODE=1",
-            "app='/fixture/Jones.app/Contents/MacOS/Jones'",
-            'if [ ! -x "$app" ]; then',
-            '  echo "T3 Code has moved or been removed. Open the app once to update this command." >&2',
-            "  exit 127",
-            "fi",
-            'exec "$app" \'/fixture/Jones.app/Contents/Resources/app.asar/apps/server/dist/bin.mjs\' "$@"',
-            "",
-          ].join("\n"),
-        }),
-        encoding: "utf8",
-        timeout: 10000,
-        maxBuffer: 1024 * 1024,
-      });
-      expect(result.error).toBeUndefined();
-      expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ case: scenario, passed: true });
-    },
-  );
+  it.each([
+    "anchor",
+    "arguments",
+    "cursor",
+    "no-bytecode",
+    "shim-bytes",
+    "cold-owner-cursor",
+    "cancel-before-state-fence",
+  ])("enforces %s before granting any maintenance effect", (scenario) => {
+    const result = NodeChildProcess.spawnSync("python3", ["-I", "-B", "-c", protocolFixture], {
+      input: JSON.stringify({
+        source: jonesLegacyMaintenanceSource,
+        case: scenario,
+        expectedShim: [
+          "#!/bin/sh",
+          "# Written by T3 Code: runs the desktop app's bundled t3 CLI.",
+          "export T3CODE_CLI_PATH='/fixture/home/bin/t3'",
+          "home='/fixture/home'",
+          'export T3CODE_HOME="${T3CODE_HOME:-$home}"',
+          "export ELECTRON_RUN_AS_NODE=1",
+          "app='/fixture/Jones.app/Contents/MacOS/Jones'",
+          'if [ ! -x "$app" ]; then',
+          '  echo "T3 Code has moved or been removed. Open the app once to update this command." >&2',
+          "  exit 127",
+          "fi",
+          'exec "$app" \'/fixture/Jones.app/Contents/Resources/app.asar/apps/server/dist/bin.mjs\' "$@"',
+          "",
+        ].join("\n"),
+      }),
+      encoding: "utf8",
+      timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ case: scenario, passed: true });
+  });
 });
