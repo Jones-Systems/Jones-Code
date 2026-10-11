@@ -1,11 +1,15 @@
-import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { readFile, writeFile, rename, rm } from "node:fs/promises";
-import { watch } from "node:fs";
-import { createInterface } from "node:readline";
-import { pathToFileURL } from "node:url";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeModule from "node:module";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeHttp from "node:http";
+import * as NodeEvents from "node:events";
+import * as NodeReadline from "node:readline";
+import * as NodeURL from "node:url";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone native fixture must identify the actual host for Linux process custody and qualification without loading the application runtime.
+const nativePlatform = process.platform;
 
 export function toolValue(result) {
   if (result?.isError) throw new Error(`Preview tool refused: ${JSON.stringify(result.content)}`);
@@ -20,10 +24,10 @@ export function toolValue(result) {
 }
 
 export function assertVisible(snapshot, expected, absent = false) {
-  assert.equal(typeof expected, "string");
-  assert.ok(expected.length > 0);
+  NodeAssert.equal(typeof expected, "string");
+  NodeAssert.ok(expected.length > 0);
   const visible = snapshot.visibleText ?? snapshot.text ?? "";
-  assert.equal(
+  NodeAssert.equal(
     visible.includes(expected),
     !absent,
     `${absent ? "Unexpected" : "Missing"} visible text: ${expected}`,
@@ -31,63 +35,232 @@ export function assertVisible(snapshot, expected, absent = false) {
 }
 
 export async function atomicJson(file, value) {
-  const temporary = `${file}.${randomUUID()}.partial`;
+  const temporary = `${file}.${NodeCrypto.randomUUID()}.partial`;
   try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-    await rename(temporary, file);
+    await NodeFSP.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    await NodeFSP.rename(temporary, file);
   } finally {
-    await rm(temporary, { force: true });
+    await NodeFSP.rm(temporary, { force: true });
   }
 }
 
-export async function waitFile(file, signal) {
+const milestoneSchema = "jones-install-fixture-milestone/v1";
+const milestoneNames = ["started", "custody", "report", "final", "release"];
+const milestoneDigest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+
+function validateMilestoneBinding(binding) {
+  NodeAssert.equal(binding.schema, milestoneSchema);
+  for (const key of ["runId", "caseId"]) NodeAssert.match(binding[key], /^[A-Za-z0-9_-]{1,80}$/);
+  NodeAssert.match(binding.nonce, /^[a-f0-9]{64}$/);
+  const url = new URL(binding.endpoint);
+  NodeAssert.equal(url.protocol, "http:");
+  NodeAssert.equal(url.hostname, "127.0.0.1");
+  NodeAssert.ok(
+    url.port &&
+      url.pathname === "/milestone" &&
+      !url.search &&
+      !url.hash &&
+      !url.username &&
+      !url.password,
+  );
+}
+
+async function milestoneRequest(binding, payload, signal) {
+  validateMilestoneBinding(binding);
+  const response = await fetch(binding.endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      schema: binding.schema,
+      runId: binding.runId,
+      caseId: binding.caseId,
+      nonce: binding.nonce,
+      ...payload,
+    }),
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(90_000)])
+      : AbortSignal.timeout(90_000),
+  });
+  NodeAssert.equal(response.status, 200, "Owned milestone channel refused the message");
+  const receipt = await response.json();
+  NodeAssert.equal(receipt.schema, milestoneSchema);
+  NodeAssert.equal(receipt.runId, binding.runId);
+  NodeAssert.equal(receipt.caseId, binding.caseId);
+  NodeAssert.equal(receipt.name, payload.name);
+  NodeAssert.match(receipt.sha256, /^[a-f0-9]{64}$/);
+  return receipt;
+}
+
+export async function readAcknowledgedMilestone(file, receipt) {
+  const bytes = await NodeFSP.readFile(file);
+  NodeAssert.equal(
+    milestoneDigest(bytes),
+    receipt.sha256,
+    "Acknowledged milestone changed before readback",
+  );
+  return JSON.parse(bytes);
+}
+
+export async function publishMilestone(binding, name, file, value, signal) {
+  NodeAssert.ok(milestoneNames.includes(name) && name !== "release");
+  await atomicJson(file, value);
+  const sha256 = milestoneDigest(await NodeFSP.readFile(file));
+  const receipt = await milestoneRequest(binding, { kind: "publish", name, sha256 }, signal);
+  NodeAssert.equal(receipt.sha256, sha256);
+  return receipt;
+}
+
+export async function awaitMilestoneRelease(binding, file, signal) {
+  const receipt = await milestoneRequest(binding, { kind: "wait", name: "release" }, signal);
+  return readAcknowledgedMilestone(file, receipt);
+}
+
+export async function createMilestoneChannel({ runId, caseId, files, signal }) {
   signal?.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    let watcher;
-    let closed = false;
-    let reading = false;
-    let changed = false;
-    const finish = (error, value) => {
-      if (closed) return;
-      closed = true;
-      watcher?.close();
-      signal?.removeEventListener("abort", cancel);
-      if (error) reject(error);
-      else resolve(value);
-    };
-    const cancel = () => finish(signal.reason ?? new Error("Milestone observation cancelled"));
-    const inspect = async () => {
-      if (closed) return;
-      changed = true;
-      if (reading) return;
-      reading = true;
-      try {
-        do {
-          changed = false;
-          try {
-            finish(undefined, JSON.parse(await readFile(file, "utf8")));
-          } catch (error) {
-            if (error.code !== "ENOENT") throw error;
-          }
-          // A notification received during the read must trigger another read before idling.
-        } while (changed && !closed);
-      } catch (error) {
-        finish(error);
-      } finally {
-        reading = false;
-      }
-    };
+  NodeAssert.deepEqual(Object.keys(files).sort(), [...milestoneNames].sort());
+  const nonce = NodeCrypto.randomBytes(32).toString("hex");
+  const receipts = new Map();
+  const waiters = new Set();
+  const held = new Set();
+  let markReleaseWaiting;
+  const waitingForRelease = new Promise((resolve) => {
+    markReleaseWaiting = resolve;
+  });
+  let closed = false;
+  let closing;
+  let requestCount = 0;
+  const binding = { schema: milestoneSchema, runId, caseId, nonce, endpoint: "" };
+  const reply = (response, status, value) => {
+    response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(JSON.stringify(value));
+  };
+  const record = (name, sha256) => {
+    NodeAssert.ok(!closed, "Milestone channel is closed");
+    NodeAssert.ok(!receipts.has(name), "Duplicate milestone");
+    const receipt = { schema: milestoneSchema, runId, caseId, name, sha256 };
+    receipts.set(name, receipt);
+    for (const waiter of [...waiters])
+      if (waiter.names.includes(name)) waiter.finish(undefined, receipt);
+    if (name === "release") for (const response of [...held]) reply(response, 200, receipt);
+    return receipt;
+  };
+  const server = NodeHttp.createServer(async (request, response) => {
     try {
-      // Register synchronously before the first read; callbacks remain attached between reads.
-      watcher = watch(path.dirname(file), () => void inspect());
-      watcher.on("error", (error) => finish(error));
-      signal?.addEventListener("abort", cancel, { once: true });
-      if (signal?.aborted) cancel();
-      else void inspect();
-    } catch (error) {
-      finish(error);
+      NodeAssert.ok(!closed && ++requestCount <= 32);
+      NodeAssert.equal(request.method, "POST");
+      NodeAssert.equal(request.url, "/milestone");
+      let text = "";
+      for await (const chunk of request) {
+        text += chunk;
+        NodeAssert.ok(Buffer.byteLength(text) <= 2048, "Milestone message exceeds bound");
+      }
+      const message = JSON.parse(text);
+      NodeAssert.equal(message.schema, milestoneSchema);
+      NodeAssert.equal(message.runId, runId);
+      NodeAssert.equal(message.caseId, caseId);
+      NodeAssert.equal(message.nonce, nonce);
+      NodeAssert.ok(milestoneNames.includes(message.name));
+      if (message.kind === "publish") {
+        NodeAssert.notEqual(message.name, "release", "Only the driver can release the provider");
+        NodeAssert.match(message.sha256, /^[a-f0-9]{64}$/);
+        const bytes = await NodeFSP.readFile(files[message.name]);
+        NodeAssert.equal(milestoneDigest(bytes), message.sha256);
+        JSON.parse(bytes);
+        reply(response, 200, record(message.name, message.sha256));
+      } else {
+        NodeAssert.equal(message.kind, "wait");
+        NodeAssert.equal(message.name, "release");
+        NodeAssert.ok(held.size < 1, "Only one provider may await release");
+        const receipt = receipts.get("release");
+        if (receipt) reply(response, 200, receipt);
+        else {
+          held.add(response);
+          markReleaseWaiting(true);
+          response.once("close", () => held.delete(response));
+        }
+      }
+    } catch {
+      if (!response.destroyed && !response.headersSent)
+        reply(response, 409, { error: "invalid_fixture_milestone" });
     }
   });
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 15_000;
+  const close = () => {
+    if (closing) return closing;
+    closed = true;
+    signal?.removeEventListener("abort", cancel);
+    for (const waiter of [...waiters]) waiter.finish(new Error("Milestone channel closed"));
+    for (const response of [...held]) reply(response, 503, { error: "fixture_channel_closed" });
+    held.clear();
+    markReleaseWaiting(false);
+    server.closeAllConnections();
+    closing = new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    return closing;
+  };
+  const cancel = () => {
+    void close().catch(() => {});
+  };
+  server.listen(0, "127.0.0.1");
+  try {
+    await NodeEvents.once(server, "listening", { signal });
+    binding.endpoint = `http://127.0.0.1:${server.address().port}/milestone`;
+    validateMilestoneBinding(binding);
+    signal?.addEventListener("abort", cancel, { once: true });
+    signal?.throwIfAborted();
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  return {
+    binding,
+    waitingForRelease,
+    wait(names, waitSignal) {
+      return new Promise((resolve, reject) => {
+        NodeAssert.ok(!closed, "Milestone channel closed");
+        NodeAssert.ok(names.length > 0 && names.every((name) => milestoneNames.includes(name)));
+        NodeAssert.ok(waiters.size < 4, "Too many milestone waiters");
+        const cancelWait = () => finish(waitSignal.reason ?? new Error("Milestone wait cancelled"));
+        const waiter = { names, finish: (error, receipt) => finish(error, receipt) };
+        const finish = (error, receipt) => {
+          waiters.delete(waiter);
+          waitSignal?.removeEventListener("abort", cancelWait);
+          if (error) reject(error);
+          else resolve(receipt);
+        };
+        if (waitSignal?.aborted) {
+          cancelWait();
+          return;
+        }
+        const receipt = names.map((name) => receipts.get(name)).find(Boolean);
+        if (receipt) {
+          resolve(receipt);
+          return;
+        }
+        waiters.add(waiter);
+        waitSignal?.addEventListener("abort", cancelWait, { once: true });
+      });
+    },
+    async release(value) {
+      NodeAssert.ok(!closed, "Milestone channel closed");
+      await atomicJson(files.release, value);
+      return record("release", milestoneDigest(await NodeFSP.readFile(files.release)));
+    },
+    evidence: () => ({
+      runId,
+      caseId,
+      receipts: [...receipts.values()],
+      closed,
+      pendingWaiters: waiters.size,
+      heldRequests: held.size,
+    }),
+    close,
+  };
 }
 
 export function redact(value, secrets = []) {
@@ -101,24 +274,24 @@ export function redact(value, secrets = []) {
 }
 
 async function connectInjectedMcp(descriptor, source, onTransportCreated) {
-  assert.equal(descriptor?.name, "t3-code", "Normal T3 MCP injection is required");
-  assert.equal(typeof descriptor.command, "string");
-  assert.ok(Array.isArray(descriptor.args));
+  NodeAssert.equal(descriptor?.name, "t3-code", "Normal T3 MCP injection is required");
+  NodeAssert.equal(typeof descriptor.command, "string");
+  NodeAssert.ok(Array.isArray(descriptor.args));
   const injected = Object.fromEntries(
     (descriptor.env ?? []).map(({ name, value }) => [name, value]),
   );
-  assert.ok(
+  NodeAssert.ok(
     injected.T3_ACP_MCP_ENDPOINT && injected.T3_ACP_MCP_AUTHORIZATION,
     "Injected session credential is absent",
   );
   const endpoint = new URL(injected.T3_ACP_MCP_ENDPOINT);
-  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname));
-  const require = createRequire(path.join(source, "apps/server/package.json"));
+  NodeAssert.ok(["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname));
+  const require = NodeModule.createRequire(NodePath.join(source, "apps/server/package.json"));
   const { Client } = await import(
-    pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/index.js")).href
+    NodeURL.pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/index.js")).href
   );
   const { StdioClientTransport } = await import(
-    pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/stdio.js")).href
+    NodeURL.pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/stdio.js")).href
   );
   const transport = new StdioClientTransport({
     command: descriptor.command,
@@ -154,7 +327,7 @@ export async function runScenario(client, scenario, report) {
   report.initialStatus = await call("preview_status");
   const opened = await call("preview_open", { open: false, reuseExistingTab: false });
   const tabId = opened.tabId;
-  assert.equal(typeof tabId, "string");
+  NodeAssert.equal(typeof tabId, "string");
   report.tabId = tabId;
   report.opened = opened;
   let scenarioError;
@@ -186,12 +359,12 @@ export async function runScenario(client, scenario, report) {
         for (const absent of step.excludes ?? []) assertVisible(snapshot, absent, true);
       } else if (step.action === "assert-evaluate") {
         const result = await call("preview_evaluate", { tabId, expression: step.expression });
-        assert.deepEqual(result.value ?? result.result ?? result, step.expected, step.label);
+        NodeAssert.deepEqual(result.value ?? result.result ?? result, step.expected, step.label);
       } else throw new Error(`Unknown bounded scenario action: ${step.action}`);
     }
     const snapshot = await call("preview_snapshot", { tabId, save: true, includeImage: true });
-    const sentinel = `jones-deliberate-wrong-UI-${randomUUID()}`;
-    assert.throws(() => assertVisible(snapshot, sentinel), /Missing visible text/);
+    const sentinel = `jones-deliberate-wrong-UI-${NodeCrypto.randomUUID()}`;
+    NodeAssert.throws(() => assertVisible(snapshot, sentinel), /Missing visible text/);
     report.negativeControls.wrongUiAssertion = "rejected";
     report.viewport = await call("preview_status", { tabId });
   } catch (error) {
@@ -215,15 +388,15 @@ export function scenarioFromPrompt(prompt) {
     .map((part) => part.text)
     .join("\n");
   const match = text.match(/(?:^|\n)JONES_PREVIEW_SCENARIO:([A-Za-z0-9+/=]+)(?:\n|$)/);
-  assert.ok(match, "Owned scenario marker is absent from the normal ACP prompt");
+  NodeAssert.ok(match, "Owned scenario marker is absent from the normal ACP prompt");
   return JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
 }
 
 export async function processIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 1) return null;
-  if (process.platform !== "linux") return { pid, startTime: null };
+  if (nativePlatform !== "linux") return { pid, startTime: null };
   try {
-    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+    const stat = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
     return { pid, startTime: stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] };
   } catch (error) {
     if (error.code === "ENOENT") return null;
@@ -236,21 +409,21 @@ export async function assertInactiveDenied(client) {
   try {
     stopped = await client.callTool({ name: "preview_open", arguments: { open: false } });
   } catch (error) {
-    assert.match(
+    NodeAssert.match(
       error.message,
       /\b401\b|invalid_mcp_credential|\bparent_not_active\b/i,
       "A transport failure alone does not prove revoked authority",
     );
     return "transport authorization refused";
   }
-  assert.equal(stopped?.isError, true, "An inactive provider must not act as a live caller");
-  assert.match(JSON.stringify(stopped), /\bparent_not_active\b|invalid_mcp_credential/i);
+  NodeAssert.equal(stopped?.isError, true, "An inactive provider must not act as a live caller");
+  NodeAssert.match(JSON.stringify(stopped), /\bparent_not_active\b|invalid_mcp_credential/i);
   return "tool authorization refused";
 }
 
 export function assertBrowserDisabledDenied(result) {
-  assert.equal(result?.isError, true, "Disabled browser must reject Preview");
-  assert.match(
+  NodeAssert.equal(result?.isError, true, "Disabled browser must reject Preview");
+  NodeAssert.match(
     JSON.stringify(result),
     /MCP credential does not grant the preview capability/,
     "A browser startup failure does not prove disabled capability enforcement",
@@ -261,12 +434,14 @@ export async function runAgent() {
   const source = process.env.JONES_PREVIEW_SOURCE;
   const reportFile = process.env.JONES_PREVIEW_REPORT;
   const releaseFile = process.env.JONES_PREVIEW_RELEASE;
-  assert.ok(
+  const milestone = JSON.parse(process.env.JONES_PREVIEW_MILESTONE ?? "null");
+  validateMilestoneBinding(milestone);
+  NodeAssert.ok(
     source && reportFile && releaseFile,
     "Verifier must be launched with owned output bindings",
   );
   const sessions = new Map();
-  const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const input = NodeReadline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   let active;
   let activePrompt;
   const lifetime = new AbortController();
@@ -276,7 +451,7 @@ export async function runAgent() {
   const fail = (id, error) => send({ id, error: { code: -32603, message: redact(error.message) } });
   const runPrompt = async (message) => {
     const session = sessions.get(message.params.sessionId);
-    assert.ok(session, "Unknown ACP session");
+    NodeAssert.ok(session, "Unknown ACP session");
     const scenario = scenarioFromPrompt(message.params.prompt);
     const report = {
       schema: "jones-install-preview/v1",
@@ -291,21 +466,34 @@ export async function runAgent() {
     let mcp;
     let replied = false;
     const secrets = [
+      milestone.nonce,
       scenario.pairingUrl,
       ...(scenario.steps?.filter((step) => step.action === "type").map((step) => step.text) ?? []),
     ];
     const providerIdentity = await processIdentity(process.pid);
-    await atomicJson(`${reportFile}.started`, { provider: providerIdentity });
     try {
+      await publishMilestone(
+        milestone,
+        "started",
+        `${reportFile}.started`,
+        { provider: providerIdentity },
+        lifetime.signal,
+      );
       mcp = await connectInjectedMcp(session.mcp, source, () => {
         report.transportCreated = true;
       });
       active = mcp;
       report.mcpBridgePid = mcp.transport.pid;
-      await atomicJson(`${reportFile}.started`, {
-        provider: providerIdentity,
-        bridge: await processIdentity(report.mcpBridgePid),
-      });
+      await publishMilestone(
+        milestone,
+        "custody",
+        `${reportFile}.custody`,
+        {
+          provider: providerIdentity,
+          bridge: await processIdentity(report.mcpBridgePid),
+        },
+        lifetime.signal,
+      );
       secrets.push(mcp.injected.T3_ACP_MCP_AUTHORIZATION);
       for (const variant of ["missing", "invalid"]) {
         const headers = {
@@ -332,13 +520,13 @@ export async function runAgent() {
           }),
           signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(15_000)]),
         });
-        assert.equal(
+        NodeAssert.equal(
           response.status,
           401,
           `${variant} credential must be rejected by the actual MCP endpoint`,
         );
         const rejection = await response.json();
-        assert.equal(
+        NodeAssert.equal(
           rejection.error,
           "invalid_mcp_credential",
           "Native MCP authentication must supply the refusal",
@@ -354,7 +542,13 @@ export async function runAgent() {
         report.negativeControls.browserDisabled = "rejected";
       } else await runScenario(mcp.client, scenario, report);
       report.outcome = "actions-complete";
-      await atomicJson(reportFile, JSON.parse(redact(report, secrets)));
+      await publishMilestone(
+        milestone,
+        "report",
+        reportFile,
+        JSON.parse(redact(report, secrets)),
+        lifetime.signal,
+      );
       send({
         method: "session/update",
         params: {
@@ -368,7 +562,8 @@ export async function runAgent() {
       finish(message.id, { stopReason: "end_turn" });
       replied = true;
       // The driver releases this only after native projection readback says the run is no longer active.
-      await waitFile(releaseFile, AbortSignal.any([lifetime.signal, AbortSignal.timeout(90_000)]));
+      const release = await awaitMilestoneRelease(milestone, releaseFile, lifetime.signal);
+      NodeAssert.deepEqual(release, { inactive: true });
       report.negativeControls.stoppedProviderMechanism = await assertInactiveDenied(mcp.client);
       report.negativeControls.stoppedProvider = "rejected";
       report.outcome = "passed";
@@ -385,7 +580,14 @@ export async function runAgent() {
         report.error = redact(error.message, secrets);
       }
       active = undefined;
-      await atomicJson(`${reportFile}.final`, JSON.parse(redact(report, secrets)));
+      // Preserve the final report even when cancellation has already closed coordination.
+      await publishMilestone(
+        milestone,
+        "final",
+        `${reportFile}.final`,
+        JSON.parse(redact(report, secrets)),
+        lifetime.signal,
+      );
     }
   };
   const shutdown = async () => {
@@ -415,7 +617,7 @@ export async function runAgent() {
         authMethods: [],
       });
     else if (message.method === "session/new") {
-      const sessionId = randomUUID();
+      const sessionId = NodeCrypto.randomUUID();
       sessions.set(sessionId, {
         mcp: message.params.mcpServers?.find((server) => server.name === "t3-code"),
       });
@@ -450,7 +652,10 @@ export async function runAgent() {
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === NodeURL.pathToFileURL(NodePath.resolve(process.argv[1])).href
+) {
   runAgent().catch((error) => {
     process.stderr.write(`${redact(error.stack ?? error)}\n`);
     process.exitCode = 1;

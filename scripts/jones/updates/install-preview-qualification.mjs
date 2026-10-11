@@ -1,32 +1,33 @@
-import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeHttp from "node:http";
+import * as NodeNet from "node:net";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import * as NodeEvents from "node:events";
+import * as NodeTimersPromises from "node:timers/promises";
 import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  writeFile,
-  readdir,
-  lstat,
-  realpath,
-  rm,
-  cp,
-} from "node:fs/promises";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { once } from "node:events";
-import { setTimeout as delay } from "node:timers/promises";
-import { atomicJson, waitFile, redact, processIdentity } from "./install-preview-agent.mjs";
+  atomicJson,
+  createMilestoneChannel,
+  readAcknowledgedMilestone,
+  redact,
+  processIdentity,
+} from "./install-preview-agent.mjs";
 
-const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const id = () => randomUUID();
+const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+const id = () => NodeCrypto.randomUUID();
 const deadline = (signal) =>
   signal ? AbortSignal.any([signal, AbortSignal.timeout(240_000)]) : AbortSignal.timeout(240_000);
 
-export async function withOwnedScratch(parent, use, cleanup = rm) {
-  const root = await mkdtemp(path.join(await realpath(parent), "jones-install-preview-"));
+// oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone native fixture must identify the actual host for Linux process custody and qualification without loading the application runtime.
+const nativePlatform = process.platform;
+
+export async function withOwnedScratch(parent, use, cleanup = NodeFSP.rm) {
+  const root = await NodeFSP.mkdtemp(
+    NodePath.join(await NodeFSP.realpath(parent), "jones-install-preview-"),
+  );
   let primary;
   try {
     return await use(root);
@@ -39,7 +40,7 @@ export async function withOwnedScratch(parent, use, cleanup = rm) {
     } else
       try {
         await cleanup(root, { recursive: true, force: false });
-        await assert.rejects(lstat(root), { code: "ENOENT" });
+        await NodeAssert.rejects(NodeFSP.lstat(root), { code: "ENOENT" });
       } catch (error) {
         if (primary) primary.cleanupError = error.message;
         else {
@@ -54,11 +55,11 @@ export function isolatedEnvironment(root) {
   // An allowlist prevents inherited provider credentials, app homes and diagnostic sinks from entering the fixture.
   return {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
-    HOME: path.join(root, "home"),
-    TMPDIR: path.join(root, "tmp"),
-    XDG_CONFIG_HOME: path.join(root, "home/config"),
-    XDG_CACHE_HOME: path.join(root, "home/cache"),
-    XDG_DATA_HOME: path.join(root, "home/data"),
+    HOME: NodePath.join(root, "home"),
+    TMPDIR: NodePath.join(root, "tmp"),
+    XDG_CONFIG_HOME: NodePath.join(root, "home/config"),
+    XDG_CACHE_HOME: NodePath.join(root, "home/cache"),
+    XDG_DATA_HOME: NodePath.join(root, "home/data"),
     LANG: "C.UTF-8",
     CI: "true",
     NO_COLOR: "1",
@@ -70,14 +71,14 @@ export function isolatedEnvironment(root) {
 export async function hashTree(root) {
   const output = {};
   async function visit(directory, prefix) {
-    for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
+    for (const entry of (await NodeFSP.readdir(directory, { withFileTypes: true })).sort((a, b) =>
       a.name.localeCompare(b.name),
     )) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const file = path.join(directory, entry.name);
-      assert.ok(!entry.isSymbolicLink(), `Build output contains a symlink: ${relative}`);
+      const file = NodePath.join(directory, entry.name);
+      NodeAssert.ok(!entry.isSymbolicLink(), `Build output contains a symlink: ${relative}`);
       if (entry.isDirectory()) await visit(file, relative);
-      else if (entry.isFile()) output[relative] = digest(await readFile(file));
+      else if (entry.isFile()) output[relative] = digest(await NodeFSP.readFile(file));
       else throw new Error(`Unexpected build object: ${relative}`);
     }
   }
@@ -87,7 +88,7 @@ export async function hashTree(root) {
 
 export async function recordBuild(source, out, rendererDir) {
   const git = (...args) =>
-    execFileSync("git", ["-C", source, ...args], { encoding: "utf8" }).trim();
+    NodeChildProcess.execFileSync("git", ["-C", source, ...args], { encoding: "utf8" }).trim();
   const sourceSha = git("rev-parse", "HEAD");
   const sourceTree = git("rev-parse", "HEAD^{tree}");
   const patch = git("diff", "HEAD", "--", ".");
@@ -100,8 +101,8 @@ export async function recordBuild(source, out, rendererDir) {
     sourceTree,
     trackedPatchSha256: digest(patch),
     cleanTrackedSource: patch.length === 0,
-    server: await hashTree(path.join(source, "apps/server/dist")),
-    web: await hashTree(path.join(source, "apps/web/dist")),
+    server: await hashTree(NodePath.join(source, "apps/server/dist")),
+    web: await hashTree(NodePath.join(source, "apps/web/dist")),
     ...(rendererDir ? { renderer: await hashTree(rendererDir), rendererManifest } : {}),
   };
   await atomicJson(out, receipt);
@@ -110,13 +111,17 @@ export async function recordBuild(source, out, rendererDir) {
 
 export async function readRendererManifest(directory, sourceSha, sourceTree) {
   const manifest = JSON.parse(
-    await readFile(path.join(directory, "jones-install-fixture-manifest.json"), "utf8"),
+    await NodeFSP.readFile(NodePath.join(directory, "jones-install-fixture-manifest.json"), "utf8"),
   );
-  assert.equal(manifest.schema, "jones-install-renderer-fixture/v1");
-  assert.equal(manifest.sourceSha, sourceSha, "Fixture must bind the candidate source revision");
-  assert.equal(manifest.sourceTree, sourceTree, "Fixture must bind the candidate source tree");
-  assert.equal(manifest.entry, "jones-install-fixture.html");
-  assert.equal(
+  NodeAssert.equal(manifest.schema, "jones-install-renderer-fixture/v1");
+  NodeAssert.equal(
+    manifest.sourceSha,
+    sourceSha,
+    "Fixture must bind the candidate source revision",
+  );
+  NodeAssert.equal(manifest.sourceTree, sourceTree, "Fixture must bind the candidate source tree");
+  NodeAssert.equal(manifest.entry, "jones-install-fixture.html");
+  NodeAssert.equal(
     manifest.boundary,
     "Production renderer components with synthetic desktop bridge; no Electron IPC or native installation",
   );
@@ -126,7 +131,7 @@ export async function readRendererManifest(directory, sourceSha, sourceTree) {
 export async function openRpc(url, signal) {
   const socket = new WebSocket(url);
   try {
-    await once(socket, "open", { signal });
+    await NodeEvents.once(socket, "open", { signal });
   } catch (error) {
     socket.close();
     throw error;
@@ -194,9 +199,9 @@ export async function openRpc(url, signal) {
 }
 
 async function unusedPort() {
-  const server = createNetServer();
+  const server = NodeNet.createServer();
   server.listen(0, "127.0.0.1");
-  await once(server, "listening");
+  await NodeEvents.once(server, "listening");
   const port = server.address().port;
   await new Promise((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve())),
@@ -205,16 +210,16 @@ async function unusedPort() {
 }
 
 async function startServer(source, root, label, processes, signal) {
-  const owned = path.join(root, label);
-  await mkdir(owned);
-  const baseDir = path.join(owned, "t3");
+  const owned = NodePath.join(root, label);
+  await NodeFSP.mkdir(owned);
+  const baseDir = NodePath.join(owned, "t3");
   const env = isolatedEnvironment(owned);
-  await Promise.all([mkdir(env.HOME), mkdir(env.TMPDIR)]);
+  await Promise.all([NodeFSP.mkdir(env.HOME), NodeFSP.mkdir(env.TMPDIR)]);
   const port = await unusedPort();
-  const child = spawn(
+  const child = NodeChildProcess.spawn(
     process.execPath,
     [
-      path.join(source, "apps/server/dist/bin.mjs"),
+      NodePath.join(source, "apps/server/dist/bin.mjs"),
       "serve",
       "--base-dir",
       baseDir,
@@ -267,12 +272,16 @@ async function startServer(source, root, label, processes, signal) {
     body: JSON.stringify({ credential }),
     signal: deadline(signal),
   });
-  assert.equal(response.status, 200, "Ordinary pairing must establish the fixture driver session");
+  NodeAssert.equal(
+    response.status,
+    200,
+    "Ordinary pairing must establish the fixture driver session",
+  );
   const cookies = response.headers
     .getSetCookie()
     .map((cookie) => cookie.split(";")[0])
     .join("; ");
-  assert.ok(cookies);
+  NodeAssert.ok(cookies);
   const api = async (pathname, payload) => {
     const result = await fetch(`${origin}${pathname}`, {
       method: payload === undefined ? "GET" : "POST",
@@ -280,13 +289,13 @@ async function startServer(source, root, label, processes, signal) {
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
       signal: deadline(signal),
     });
-    assert.ok(result.ok, `Fixture API ${pathname} returned ${result.status}`);
+    NodeAssert.ok(result.ok, `Fixture API ${pathname} returned ${result.status}`);
     return result.json();
   };
   const descriptor = await (
     await fetch(`${origin}/.well-known/t3/environment`, { signal: deadline(signal) })
   ).json();
-  assert.equal(typeof descriptor.orchestrationProtocolVersion, "number");
+  NodeAssert.equal(typeof descriptor.orchestrationProtocolVersion, "number");
   const ticket = await api("/api/auth/websocket-ticket", {});
   const rpc = await openRpc(
     `${origin.replace("http:", "ws:")}/ws?orchestrationProtocol=${descriptor.orchestrationProtocolVersion}&wsTicket=${encodeURIComponent(ticket.ticket)}`,
@@ -308,7 +317,7 @@ async function startServer(source, root, label, processes, signal) {
 
 export async function stopChild(child) {
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, "exit");
+  const exited = NodeEvents.once(child, "exit");
   child.kill("SIGTERM");
   const timer = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) {
@@ -334,20 +343,22 @@ async function stopOwnedDescendant(identity) {
     }
     for (let attempt = 0; attempt < 50; attempt += 1) {
       if (!(await same())) return;
-      await delay(100);
+      await NodeTimersPromises.setTimeout(100);
     }
   }
-  assert.ok(!(await same()), `Owned process ${identity.pid} was not reaped`);
+  NodeAssert.ok(!(await same()), `Owned process ${identity.pid} was not reaped`);
 }
 
 async function preserveCaptures(result, baseDir, out, mode) {
   for (const capture of result.captures ?? []) {
-    const resolved = await realpath(capture.snapshot.screenshotPath);
-    const artifactRoot = await realpath(path.join(baseDir, "userdata/browser-artifacts"));
-    assert.ok(resolved.startsWith(`${artifactRoot}${path.sep}`));
-    assert.match(capture.name, /^[a-z0-9-]+$/);
+    const resolved = await NodeFSP.realpath(capture.snapshot.screenshotPath);
+    const artifactRoot = await NodeFSP.realpath(
+      NodePath.join(baseDir, "userdata/browser-artifacts"),
+    );
+    NodeAssert.ok(resolved.startsWith(`${artifactRoot}${NodePath.sep}`));
+    NodeAssert.match(capture.name, /^[a-z0-9-]+$/);
     const target = `${mode}-${capture.name}.png`;
-    await cp(resolved, path.join(out, target), { errorOnExist: true, force: false });
+    await NodeFSP.cp(resolved, NodePath.join(out, target), { errorOnExist: true, force: false });
     capture.snapshot.screenshotPath = target;
   }
 }
@@ -356,7 +367,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
   let checks = 0;
   let websocketAttempts = 0;
   const requests = [];
-  const server = createServer(async (request, response) => {
+  const server = NodeHttp.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, "http://fixture.invalid");
       if (request.method === "OPTIONS") {
@@ -431,7 +442,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
         );
         return;
       }
-      assert.ok(
+      NodeAssert.ok(
         url.pathname === "/.well-known/t3/environment" ||
           url.pathname.startsWith("/api/auth/") ||
           url.pathname === "/oauth/token",
@@ -464,7 +475,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
     socket.destroy();
   });
   server.listen(0, "127.0.0.1");
-  await once(server, "listening");
+  await NodeEvents.once(server, "listening");
   return {
     origin: `http://127.0.0.1:${server.address().port}`,
     evidence: () => ({
@@ -483,7 +494,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
 }
 
 export async function serveRendererFixture(directory) {
-  const root = await realpath(directory);
+  const root = await NodeFSP.realpath(directory);
   const requests = [];
   const types = {
     ".html": "text/html",
@@ -495,16 +506,16 @@ export async function serveRendererFixture(directory) {
     ".woff2": "font/woff2",
     ".wasm": "application/wasm",
   };
-  const server = createServer(async (request, response) => {
+  const server = NodeHttp.createServer(async (request, response) => {
     try {
-      assert.ok(request.method === "GET" || request.method === "HEAD");
+      NodeAssert.ok(request.method === "GET" || request.method === "HEAD");
       const pathname = decodeURIComponent(new URL(request.url, "http://fixture.invalid").pathname);
-      const file = await realpath(path.resolve(root, `.${pathname}`));
-      assert.ok(file.startsWith(`${root}${path.sep}`));
-      const bytes = await readFile(file);
-      requests.push({ path: path.relative(root, file), sha256: digest(bytes) });
+      const file = await NodeFSP.realpath(NodePath.resolve(root, `.${pathname}`));
+      NodeAssert.ok(file.startsWith(`${root}${NodePath.sep}`));
+      const bytes = await NodeFSP.readFile(file);
+      requests.push({ path: NodePath.relative(root, file), sha256: digest(bytes) });
       response.writeHead(200, {
-        "content-type": types[path.extname(file)] ?? "application/octet-stream",
+        "content-type": types[NodePath.extname(file)] ?? "application/octet-stream",
         "cache-control": "no-store",
       });
       response.end(request.method === "HEAD" ? undefined : bytes);
@@ -514,7 +525,7 @@ export async function serveRendererFixture(directory) {
     }
   });
   server.listen(0, "127.0.0.1");
-  await once(server, "listening");
+  await NodeEvents.once(server, "listening");
   return {
     origin: `http://127.0.0.1:${server.address().port}`,
     evidence: () => ({ requests }),
@@ -790,24 +801,24 @@ async function waitInactive(rpc, threadId) {
 }
 
 export async function qualify({ source, buildReceipt, out, scratchParent, rendererDir, signal }) {
-  assert.equal(process.platform, "linux", "This qualification runs on an isolated Linux CI host");
-  await mkdir(out, { recursive: false });
-  const expected = JSON.parse(await readFile(buildReceipt, "utf8"));
+  NodeAssert.equal(nativePlatform, "linux", "This qualification runs on an isolated Linux CI host");
+  await NodeFSP.mkdir(out, { recursive: false });
+  const expected = JSON.parse(await NodeFSP.readFile(buildReceipt, "utf8"));
   const nativeGit = (...args) =>
-    execFileSync("git", ["-C", source, ...args], { encoding: "utf8" }).trim();
-  assert.equal(expected.sourceSha, nativeGit("rev-parse", "HEAD"));
-  assert.equal(expected.sourceTree, nativeGit("rev-parse", "HEAD^{tree}"));
-  assert.equal(expected.trackedPatchSha256, digest(nativeGit("diff", "HEAD", "--", ".")));
-  assert.deepEqual(await hashTree(path.join(source, "apps/server/dist")), expected.server);
-  assert.deepEqual(await hashTree(path.join(source, "apps/web/dist")), expected.web);
-  assert.equal(
+    NodeChildProcess.execFileSync("git", ["-C", source, ...args], { encoding: "utf8" }).trim();
+  NodeAssert.equal(expected.sourceSha, nativeGit("rev-parse", "HEAD"));
+  NodeAssert.equal(expected.sourceTree, nativeGit("rev-parse", "HEAD^{tree}"));
+  NodeAssert.equal(expected.trackedPatchSha256, digest(nativeGit("diff", "HEAD", "--", ".")));
+  NodeAssert.deepEqual(await hashTree(NodePath.join(source, "apps/server/dist")), expected.server);
+  NodeAssert.deepEqual(await hashTree(NodePath.join(source, "apps/web/dist")), expected.web);
+  NodeAssert.equal(
     Boolean(rendererDir),
     Boolean(expected.renderer),
     "Renderer fixture must be bound into the build receipt",
   );
   if (rendererDir) {
-    assert.deepEqual(await hashTree(rendererDir), expected.renderer);
-    assert.deepEqual(
+    NodeAssert.deepEqual(await hashTree(rendererDir), expected.renderer);
+    NodeAssert.deepEqual(
       await readRendererManifest(rendererDir, expected.sourceSha, expected.sourceTree),
       expected.rendererManifest,
     );
@@ -842,11 +853,11 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
         const descriptor = await (
           await fetch(`${primary.origin}/.well-known/t3/environment`, { signal: deadline(signal) })
         ).json();
-        assert.ok(
+        NodeAssert.ok(
           descriptor.serverVersion.includes("-preview."),
           "Build a matching Jones preview version before source stamping",
         );
-        assert.deepEqual(
+        NodeAssert.deepEqual(
           descriptor.jonesSource,
           {
             repository: "Jones-Systems/Jones-Code",
@@ -858,7 +869,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
         const servedIndex = Buffer.from(
           await (await fetch(primary.origin, { signal: deadline(signal) })).arrayBuffer(),
         );
-        assert.equal(
+        NodeAssert.equal(
           digest(servedIndex),
           expected.web["index.html"],
           "Served index must match the qualified web build",
@@ -868,8 +879,8 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
         if (rendererDir) renderer = await serveRendererFixture(rendererDir);
         const remotePairing = (await remote.pairing()).replace(remote.origin, proxy.origin);
         const projectId = id();
-        const workspace = path.join(root, "synthetic-project");
-        await mkdir(workspace);
+        const workspace = NodePath.join(root, "synthetic-project");
+        await NodeFSP.mkdir(workspace);
         await primary.api("/api/projects/mutate", {
           type: "project.create",
           commandId: id(),
@@ -878,9 +889,24 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
           workspaceRoot: workspace,
         });
         for (const mode of ["active", "browser-disabled"]) {
-          const reportFile = path.join(root, `${mode}.json`);
-          const releaseFile = path.join(root, `${mode}.release.json`);
+          const reportFile = NodePath.join(root, `${mode}.json`);
+          const releaseFile = NodePath.join(root, `${mode}.release.json`);
           const instanceId = `preview-${mode}`;
+          const threadId = id();
+          const files = {
+            started: `${reportFile}.started`,
+            custody: `${reportFile}.custody`,
+            report: reportFile,
+            final: `${reportFile}.final`,
+            release: releaseFile,
+          };
+          const channel = await createMilestoneChannel({
+            runId: threadId,
+            caseId: mode,
+            files,
+            signal: deadline(signal),
+          });
+          jobs.push({ mode, reportFile, threadId, baseDir: primary.baseDir, channel });
           await primary.rpc.call("server.updateSettings", {
             patch: { enableAgentBrowserAccess: mode === "active" },
             providerInstanceMutation: {
@@ -894,20 +920,23 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
                   JONES_PREVIEW_SOURCE: source,
                   JONES_PREVIEW_REPORT: reportFile,
                   JONES_PREVIEW_RELEASE: releaseFile,
-                }).map(([name, value]) => ({ name, value, sensitive: false })),
+                  JONES_PREVIEW_MILESTONE: JSON.stringify(channel.binding),
+                }).map(([name, value]) => ({
+                  name,
+                  value,
+                  sensitive: name === "JONES_PREVIEW_MILESTONE",
+                })),
                 config: {
                   source: "local",
                   commandPath: process.execPath,
                   commandArgs: [
-                    path.join(source, "scripts/jones/updates/install-preview-agent.mjs"),
+                    NodePath.join(source, "scripts/jones/updates/install-preview-agent.mjs"),
                   ],
                   customModels: ["preview-verifier"],
                 },
               },
             },
           }).result;
-          const threadId = id();
-          jobs.push({ mode, reportFile, threadId, baseDir: primary.baseDir });
           const scenario = {
             mode,
             origin: primary.origin,
@@ -934,49 +963,47 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
               attachments: [],
             },
           }).result;
-          const observation = new AbortController();
-          let preliminary;
-          try {
-            const observationSignal = AbortSignal.any([deadline(signal), observation.signal]);
-            preliminary = await Promise.race([
-              waitFile(reportFile, observationSignal),
-              waitFile(`${reportFile}.final`, observationSignal),
-            ]);
-          } finally {
-            observation.abort();
-          }
+          const acknowledged = await channel.wait(["report", "final"], deadline(signal));
+          const preliminary = await readAcknowledgedMilestone(
+            files[acknowledged.name],
+            acknowledged,
+          );
           if (preliminary.outcome === "failed") throw new Error(preliminary.error);
-          assert.equal(preliminary.outcome, "actions-complete");
+          NodeAssert.equal(preliminary.outcome, "actions-complete");
           const inactive = await waitInactive(primary.rpc, threadId);
-          assert.equal(inactive.thread.activeRunId, null);
-          await atomicJson(releaseFile, { inactive: true });
-          const result = await waitFile(`${reportFile}.final`, deadline(signal));
+          NodeAssert.equal(inactive.thread.activeRunId, null);
+          await channel.release({ inactive: true });
+          const result = await readAcknowledgedMilestone(
+            files.final,
+            await channel.wait(["final"], deadline(signal)),
+          );
           jobs.at(-1).nativeInactiveReadback = true;
-          assert.equal(result.outcome, "passed", result.error);
+          NodeAssert.equal(result.outcome, "passed", result.error);
+          await channel.close();
         }
         evidence.remoteFixture = proxy.evidence();
-        assert.equal(
+        NodeAssert.equal(
           evidence.remoteFixture.websocketAttempts,
           0,
           "An incompatible host must never receive orchestration traffic",
         );
-        assert.ok(
+        NodeAssert.ok(
           evidence.remoteFixture.requests.some(
             (request) => request.path === "/api/jones-updates/check" && request.authenticated,
           ),
         );
         if (renderer) {
           const served = renderer.evidence();
-          assert.ok(
+          NodeAssert.ok(
             served.requests.some((request) => request.path === expected.rendererManifest.entry),
             "The native browser must request the candidate renderer entry",
           );
-          assert.ok(
+          NodeAssert.ok(
             served.requests.some((request) => request.path.endsWith(".js")),
             "The native browser must request the candidate renderer bundle",
           );
           for (const request of served.requests)
-            assert.equal(
+            NodeAssert.equal(
               request.sha256,
               expected.renderer[request.path],
               `Served fixture bytes changed: ${request.path}`,
@@ -992,7 +1019,13 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
         const identities = [];
         for (const job of jobs) {
           try {
-            const started = JSON.parse(await readFile(`${job.reportFile}.started`, "utf8"));
+            let started;
+            try {
+              started = JSON.parse(await NodeFSP.readFile(`${job.reportFile}.custody`, "utf8"));
+            } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+              started = JSON.parse(await NodeFSP.readFile(`${job.reportFile}.started`, "utf8"));
+            }
             identities.push(...[started.provider, started.bridge].filter(Boolean));
           } catch (error) {
             if (error.code !== "ENOENT") errors.push(redact(error.message));
@@ -1000,15 +1033,16 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
           try {
             let result;
             try {
-              result = JSON.parse(await readFile(`${job.reportFile}.final`, "utf8"));
+              result = JSON.parse(await NodeFSP.readFile(`${job.reportFile}.final`, "utf8"));
             } catch (error) {
               if (error.code !== "ENOENT") throw error;
-              result = JSON.parse(await readFile(job.reportFile, "utf8"));
+              result = JSON.parse(await NodeFSP.readFile(job.reportFile, "utf8"));
             }
             evidence.scenarios.push({
               threadId: job.threadId,
               nativeInactiveReadback: job.nativeInactiveReadback === true,
               ...result,
+              milestones: job.channel.evidence(),
             });
             await preserveCaptures(result, job.baseDir, out, job.mode);
           } catch (error) {
@@ -1023,12 +1057,15 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
           };
         const preserved = await Promise.allSettled([
           ...servers.map((server, index) =>
-            writeFile(
-              path.join(out, `${index === 0 ? "primary" : "remote"}-server.log`),
-              server.output(),
+            NodeFSP.writeFile(
+              NodePath.join(out, `${index === 0 ? "primary" : "remote"}-server.log`),
+              redact(
+                server.output(),
+                jobs.map((job) => job.channel.binding.nonce),
+              ),
             ),
           ),
-          atomicJson(path.join(out, "qualification.json"), evidence),
+          atomicJson(NodePath.join(out, "qualification.json"), evidence),
         ]);
         errors.push(
           ...preserved
@@ -1036,6 +1073,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
             .map((entry) => redact(String(entry.reason))),
         );
         const cleanup = await Promise.allSettled([
+          ...jobs.map((job) => job.channel.close()),
           ...servers.map((server) => server.rpc.close()),
           ...(proxy ? [proxy.close()] : []),
           ...(renderer ? [renderer.close()] : []),
@@ -1065,6 +1103,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
         );
         const remaining = await Promise.all(identities.map(({ pid }) => processIdentity(pid)));
         evidence.cleanup = {
+          milestoneChannels: jobs.map((job) => job.channel.evidence()),
           servers: processes.map((child) => ({
             identity: child.ownedIdentity,
             exitCode: child.exitCode,
@@ -1091,7 +1130,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
           evidence.retainedScratch = root;
         }
         try {
-          await atomicJson(path.join(out, "qualification.json"), evidence);
+          await atomicJson(NodePath.join(out, "qualification.json"), evidence);
         } catch (error) {
           primaryError ??= error;
           primaryError.retainScratch = true;
@@ -1106,12 +1145,15 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
     throw error;
   } finally {
     evidence.scratchRemoved = scratchCreated && !evidence.scratchCleanupError;
-    await atomicJson(path.join(out, "qualification.json"), evidence);
+    await atomicJson(NodePath.join(out, "qualification.json"), evidence);
   }
   return evidence;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === NodeURL.pathToFileURL(NodePath.resolve(process.argv[1])).href
+) {
   const [command, ...args] = process.argv.slice(2);
   const options = Object.fromEntries(
     Array.from({ length: args.length / 2 }, (_, index) => [
@@ -1119,8 +1161,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       args[index * 2 + 1],
     ]),
   );
-  const source = path.resolve(options.source ?? ".");
-  const rendererDir = options["fixture-build"] ? path.resolve(options["fixture-build"]) : undefined;
+  const source = NodePath.resolve(options.source ?? ".");
+  const rendererDir = options["fixture-build"]
+    ? NodePath.resolve(options["fixture-build"])
+    : undefined;
   const cancellation = new AbortController();
   const onSignal = (name) => {
     process.exitCode = name === "SIGINT" ? 130 : 143;
@@ -1132,13 +1176,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   process.once("SIGTERM", onTerminate);
   const run =
     command === "record-build"
-      ? recordBuild(source, path.resolve(options.out), rendererDir)
+      ? recordBuild(source, NodePath.resolve(options.out), rendererDir)
       : command === "run"
         ? qualify({
             source,
-            buildReceipt: path.resolve(options.receipt),
-            out: path.resolve(options.out),
-            scratchParent: path.resolve(options["scratch-parent"]),
+            buildReceipt: NodePath.resolve(options.receipt),
+            out: NodePath.resolve(options.out),
+            scratchParent: NodePath.resolve(options["scratch-parent"]),
             rendererDir,
             signal: cancellation.signal,
           })
