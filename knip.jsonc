@@ -93,8 +93,13 @@
     "apps/web": {
       // Vitest loads this through the per-file @vitest-environment directive.
       "ignoreDependencies": ["jsdom"],
-      // Worktree setup (scripts/setup-worktree.ts) runs this directly.
-      "entry": ["scripts/warm-dep-cache.ts"],
+      "entry": [
+        // Worktree setup (scripts/setup-worktree.ts) runs this directly.
+        "scripts/warm-dep-cache.ts",
+        // Qualification invokes the config by CLI and the fixture entry through HTML.
+        "vite.install-preview.config.ts",
+        "src/jones/updates/fixtures/install-preview-entry.ts",
+      ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
       // reports an entire component module when nothing imports it.
