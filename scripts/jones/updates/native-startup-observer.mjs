@@ -1,28 +1,30 @@
-import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import * as fs from "node:fs/promises";
-import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeTimersPromises from "node:timers/promises";
 import { FixtureOwnership } from "./native-startup-fixture.mjs";
 
 const historyLost = 0x01 | 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80;
 const mutation = 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000 | 0x4000 | 0x8000;
 
 export function protectedMutations(events, protectedPaths) {
-  assert.ok(
+  NodeAssert.ok(
     events.every((event) => (event.flags & historyLost) === 0),
     "FSEvents lost history or a watched root changed; qualification is unknown.",
   );
   return events.filter(
     (event) =>
       (event.flags & mutation) !== 0 &&
-      protectedPaths.some((root) => event.path === root || event.path.startsWith(root + path.sep)),
+      protectedPaths.some(
+        (root) => event.path === root || event.path.startsWith(root + NodePath.sep),
+      ),
   );
 }
 
 export async function startObserver(executable, roots, signal) {
-  const child = spawn(executable, roots, { stdio: ["pipe", "pipe", "pipe"] });
+  const child = NodeChildProcess.spawn(executable, roots, { stdio: ["pipe", "pipe", "pipe"] });
   const events = [];
   const messages = [];
   const waiters = new Set();
@@ -69,8 +71,8 @@ export async function startObserver(executable, roots, signal) {
       try {
         const message = JSON.parse(line);
         if (message.type === "event") {
-          assert.equal(typeof message.path, "string");
-          assert.ok(Number.isInteger(message.flags));
+          NodeAssert.equal(typeof message.path, "string");
+          NodeAssert.ok(Number.isInteger(message.flags));
           events.push(message);
           if (events.length > 10000) throw new Error("Observer event history exceeded its bound.");
         } else {
@@ -124,7 +126,7 @@ export async function startObserver(executable, roots, signal) {
     if (failure) throw failure;
   };
   const flush = async () => {
-    const token = randomUUID();
+    const token = NodeCrypto.randomUUID();
     const acknowledgement = wait(
       (message) => message.type === "flushed" && message.token === token,
     );
@@ -151,10 +153,10 @@ export class ObserverControlError extends Error {
     this.control = {
       phase,
       root: root.slice(0, 1024),
-      paths: names.map((name) => path.relative(root, name).slice(0, 512)),
+      paths: names.map((name) => NodePath.relative(root, name).slice(0, 512)),
       observedCount: observed.length,
       events: observed.slice(-12).map((event) => ({
-        path: path.relative(root, event.path).slice(0, 512),
+        path: NodePath.relative(root, event.path).slice(0, 512),
         flags: event.flags,
       })),
     };
@@ -177,8 +179,10 @@ export async function observerControl(observer, roots, { timeoutMs = 5000 } = {}
             .some((event) => names.includes(event.path) && (event.flags & flags) !== 0)
         )
           return;
-        assert.ok(performance.now() < deadline, "Observer missed the required leaf mutation.");
-        await delay(Math.min(25, Math.max(1, deadline - performance.now())));
+        NodeAssert.ok(performance.now() < deadline, "Observer missed the required leaf mutation.");
+        await NodeTimersPromises.setTimeout(
+          Math.min(25, Math.max(1, deadline - performance.now())),
+        );
       }
     } catch (cause) {
       throw new ObserverControlError(phase, root, names, observer.events.slice(offset), cause);
@@ -187,33 +191,34 @@ export async function observerControl(observer, roots, { timeoutMs = 5000 } = {}
   try {
     await observer.flush();
     for (const root of roots) {
-      const directory = await ownership.temporary(path.join(root, ".jones-observer-control-"));
-      const name = path.join(directory, "sentinel");
+      const directory = await ownership.temporary(NodePath.join(root, ".jones-observer-control-"));
+      const name = NodePath.join(directory, "sentinel");
       const renamed = `${name}.renamed`;
       const names = [name, renamed];
       let offset = observer.events.length;
-      await fs.writeFile(name, "created", { flag: "wx", mode: 0o600 });
-      await fs.appendFile(name, "-changed");
+      await NodeFSP.writeFile(name, "created", { flag: "wx", mode: 0o600 });
+      await NodeFSP.appendFile(name, "-changed");
       await observe("created", root, [name], 0x100 | 0x1000, offset);
       offset = observer.events.length;
-      await fs.rename(name, renamed);
+      await NodeFSP.rename(name, renamed);
       await observe("renamed", root, names, 0x800, offset);
       offset = observer.events.length;
-      await fs.unlink(renamed);
+      await NodeFSP.unlink(renamed);
       await observe("removed", root, names, 0x200, offset);
-      for (const filename of names) await assert.rejects(fs.lstat(filename), { code: "ENOENT" });
+      for (const filename of names)
+        await NodeAssert.rejects(NodeFSP.lstat(filename), { code: "ENOENT" });
 
-      const burst = path.join(directory, "burst");
+      const burst = NodePath.join(directory, "burst");
       const burstNames = [burst, `${burst}.renamed`];
       offset = observer.events.length;
       // A separate rapid burst must disappear before the first flush. Paced
       // controls alone cannot qualify observation of short-lived mutations.
-      await fs.writeFile(burst, "created", { flag: "wx", mode: 0o600 });
-      await fs.appendFile(burst, "-changed");
-      await fs.rename(burst, burstNames[1]);
-      await fs.unlink(burstNames[1]);
+      await NodeFSP.writeFile(burst, "created", { flag: "wx", mode: 0o600 });
+      await NodeFSP.appendFile(burst, "-changed");
+      await NodeFSP.rename(burst, burstNames[1]);
+      await NodeFSP.unlink(burstNames[1]);
       for (const filename of burstNames)
-        await assert.rejects(fs.lstat(filename), { code: "ENOENT" });
+        await NodeAssert.rejects(NodeFSP.lstat(filename), { code: "ENOENT" });
       await observe("rapid-burst", root, burstNames, mutation, offset);
     }
   } finally {
