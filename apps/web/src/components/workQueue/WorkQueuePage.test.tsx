@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { voiceReviewRecentFixture } from "@t3tools/client-runtime/voice-review/fixtures";
@@ -534,7 +534,8 @@ describe("submitted work page integration", () => {
           environment: { capabilities: supported ? { workQueueMetadata: true } : {} },
         },
       };
-      const environments = [environment];
+      let environmentSnapshot = { environments: [environment] };
+      const environmentListeners = new Set<() => void>();
       let hydrationStatus = "pending";
       const retryPreferences = vi.fn(async () => undefined);
       vi.doMock("../../hooks/useSettings", () => ({
@@ -543,7 +544,16 @@ describe("submitted work page integration", () => {
         ensureClientSettingsHydrated: retryPreferences,
       }));
       vi.doMock("../../state/environments", () => ({
-        useEnvironments: () => ({ environments }),
+        useEnvironments: () =>
+          useSyncExternalStore(
+            (listener) => {
+              environmentListeners.add(listener);
+              return () => {
+                environmentListeners.delete(listener);
+              };
+            },
+            () => environmentSnapshot,
+          ),
         usePrimaryEnvironmentId: () => environment.environmentId,
       }));
       vi.doMock("../../jones/workQueue/useWorkQueueMetadata", () => ({
@@ -694,12 +704,19 @@ describe("submitted work page integration", () => {
       expect(container.textContent).toContain(
         supported ? "not configured" : "Queue metadata unsupported by this environment",
       );
-      environments.push({
-        ...environment,
-        environmentId: "fixture-second",
-        label: "Second environment",
+      await act(() => {
+        environmentSnapshot = {
+          environments: [
+            ...environmentSnapshot.environments,
+            {
+              ...environment,
+              environmentId: "fixture-second",
+              label: "Second environment",
+            },
+          ],
+        };
+        for (const listener of environmentListeners) listener();
       });
-      await act(() => root.render(<WorkQueuePage />));
       const viewGroups = container.querySelectorAll('[aria-label="Voice review views"]');
       expect(viewGroups).toHaveLength(2);
       const reviewIds = [...viewGroups].flatMap((group) =>

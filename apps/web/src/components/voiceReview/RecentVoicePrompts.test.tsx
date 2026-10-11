@@ -218,7 +218,11 @@ describe("recent voice prompt interactions", () => {
     expect(correctAssociation).not.toHaveBeenCalled();
   });
   it("requires successful metadata refresh after an uncertain correction without retrying it", async () => {
-    const correctAssociation = vi.fn().mockRejectedValue(new Error("Lost receipt"));
+    let rejectCorrection!: (error: Error) => void;
+    const correction = new Promise<never>((_, reject) => {
+      rejectCorrection = reject;
+    });
+    const correctAssociation = vi.fn(() => correction);
     const onRefresh = vi
       .fn()
       .mockRejectedValueOnce(new Error("Offline"))
@@ -235,21 +239,30 @@ describe("recent voice prompt interactions", () => {
         />,
       ),
     );
-    const remove = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Remove Voice review workstream"]',
-    )!;
-    await act(() => remove.click());
-    expect(remove.disabled).toBe(true);
+    const remove = () => {
+      const current = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Remove Voice review workstream"]',
+      )!;
+      expect(current.isConnected).toBe(true);
+      return current;
+    };
+    await act(() => remove().click());
+    expect(remove().disabled).toBe(true);
+    expect(container.querySelector("select")!.disabled).toBe(true);
+    await act(() => remove().click());
+    expect(correctAssociation).toHaveBeenCalledTimes(1);
+    await act(() => rejectCorrection(new Error("Lost receipt")));
+    expect(remove().disabled).toBe(true);
     expect(container.textContent).toContain("Correction is unconfirmed");
-    await act(() => remove.click());
+    await act(() => remove().click());
     expect(correctAssociation).toHaveBeenCalledTimes(1);
     await act(() => button("Check current workstreams").click());
     expect(container.textContent).toContain("Correction remains unconfirmed");
-    expect(remove.disabled).toBe(true);
-    await act(() => remove.click());
+    expect(remove().disabled).toBe(true);
+    await act(() => remove().click());
     expect(correctAssociation).toHaveBeenCalledTimes(1);
     await act(() => button("Check current workstreams").click());
-    expect(remove.disabled).toBe(false);
+    expect(remove().disabled).toBe(false);
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(correctAssociation).toHaveBeenCalledTimes(1);
     expect(onRefresh).toHaveBeenCalledTimes(2);

@@ -79,6 +79,10 @@ export function RecentVoicePrompts({
   );
 }
 
+function correctionState(actions: RegistryCorrectionActions) {
+  return { busy: actions.busy, uncertain: actions.uncertain, error: actions.error };
+}
+
 function RecentPromptRow({
   entry,
   thread,
@@ -98,7 +102,7 @@ function RecentPromptRow({
 }) {
   const [selected, setSelected] = useState("");
   const [actions] = useState(() => new RegistryCorrectionActions(transport));
-  const [, render] = useState(0);
+  const [actionState, setActionState] = useState(() => correctionState(actions));
   const [acknowledged, setAcknowledged] = useState<readonly ThreadRegistryAssociation[]>([]);
   const [refreshError, setRefreshError] = useState(false);
   const subject = entry.command_id ? `prompt:${entry.command_id}` : null;
@@ -115,7 +119,7 @@ function RecentPromptRow({
     if (record.state === "active") refs.add(record.workstream_ref);
     else refs.delete(record.workstream_ref);
   }
-  const disabled = unavailable || actions.busy || actions.uncertain;
+  const disabled = unavailable || actionState.busy || actionState.uncertain;
   const correct = async (
     ref: string,
     state: "active" | "suppressed",
@@ -133,7 +137,7 @@ function RecentPromptRow({
       request_id: randomUUID(),
       command_id: entry.command_id,
     });
-    render((value) => value + 1);
+    setActionState(correctionState(actions));
     const receipt = await pending;
     if (receipt && "subject" in receipt.record) {
       const updated = receipt.record;
@@ -146,7 +150,7 @@ function RecentPromptRow({
       ]);
       setSelected("");
     }
-    render((value) => value + 1);
+    setActionState(correctionState(actions));
   };
   const refresh = async () => {
     try {
@@ -157,7 +161,7 @@ function RecentPromptRow({
     } catch {
       setRefreshError(true);
     }
-    render((value) => value + 1);
+    setActionState(correctionState(actions));
   };
   const title =
     textField(thread?.registration ?? null, "purpose") ??
@@ -275,14 +279,14 @@ function RecentPromptRow({
           Prompt corrections are unavailable until command and association revisions are observed.
         </p>
       ) : null}
-      {actions.error || refreshError ? (
+      {actionState.error || refreshError ? (
         <p role="alert" className="text-sm">
           {refreshError
             ? "Workstream refresh unavailable. Correction remains unconfirmed."
-            : actions.error}
+            : actionState.error}
         </p>
       ) : null}
-      {actions.uncertain ? (
+      {actionState.uncertain ? (
         <div>
           <Button variant="outline" size="compact" onClick={() => void refresh()}>
             Check current workstreams
