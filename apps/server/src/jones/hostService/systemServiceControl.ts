@@ -18,7 +18,7 @@ export const SYSTEM_SERVICE_CONTROL_PATH =
 export const SYSTEM_SERVICE_POLICY_PATH = "/etc/jones-code/system-service.policy";
 /** SHA-256 of systemServiceControl.pl; a root installation reads this digest back. */
 export const SYSTEM_SERVICE_CONTROL_SHA256 =
-  "c5613b95562664146e8c30d1113c627e6bf9d5757c60031a5526e56cababefd6";
+  "93fd38b9a1038725cd8deea90d829a7927618cba616f4f40d5281c76fb808551";
 export const OWNED_SYSTEM_DROPIN = "zzzz-jones-qualified-launcher.conf";
 const OWNED_MARKER = "# Jones qualified system launcher protocol 1";
 const HEADER = "jones-system-service-control 1";
@@ -291,18 +291,38 @@ export interface RetainedServeCommand {
   readonly port?: number;
   readonly host?: string;
   readonly mode?: "web" | "desktop";
+  /**
+   * Only for the historical `start` form: the directory it names, equal to the
+   * unit's effective WorkingDirectory. The launcher runs the retained version
+   * with `serve` from that inherited directory, so `start`'s automatic project
+   * bootstrap from it does not continue.
+   */
+  readonly workingDirectory?: string;
 }
 
-/** The closed serve grammar the worker accepts for the retained executable. */
+/**
+ * The closed grammar the worker accepts for the retained executable: `serve`
+ * with known flags, or `start` with the same flags, `--mode web` and
+ * exactly `--no-browser DIR` last, where DIR is the unit's WorkingDirectory.
+ */
 export function parseRetainedServeCommand(
   argv: string,
   retainedEntry: string,
   base: string,
+  workingDirectory?: string,
 ): RetainedServeCommand | undefined {
   const words = argv.split(/ +/).filter((word) => word !== "");
   if (words.some((word) => !/^[A-Za-z0-9._@+/-]+$/.test(word))) return undefined;
-  if (words.shift() !== retainedEntry || words.shift() !== "serve" || words.length % 2 !== 0)
-    return undefined;
+  if (words.shift() !== retainedEntry) return undefined;
+  const verb = words.shift();
+  let directory: string | undefined;
+  if (verb === "start") {
+    if (words.length < 2 || words.at(-2) !== "--no-browser") return undefined;
+    directory = words.pop()!;
+    words.pop();
+    if (!isCanonicalSystemPath(directory) || directory !== workingDirectory) return undefined;
+  } else if (verb !== "serve") return undefined;
+  if (words.length % 2 !== 0) return undefined;
   const flags = new Map<string, string>();
   for (let index = 0; index < words.length; index += 2) {
     const name = /^--(host|port|base-dir|mode)$/.exec(words[index]!)?.[1];
@@ -316,13 +336,15 @@ export function parseRetainedServeCommand(
     (flags.has("base-dir") && flags.get("base-dir") !== base) ||
     (port !== undefined && (!/^[1-9]\d{0,4}$/.test(port) || Number(port) > 65535)) ||
     (host !== undefined && !/^(?:(?:\d{1,3}\.){3}\d{1,3}|localhost)$/.test(host)) ||
-    (mode !== undefined && mode !== "web" && mode !== "desktop")
+    (mode !== undefined && mode !== "web" && mode !== "desktop") ||
+    (directory !== undefined && mode !== "web")
   )
     return undefined;
   return {
     ...(port === undefined ? {} : { port: Number(port) }),
     ...(host === undefined ? {} : { host }),
     ...(mode === undefined ? {} : { mode: mode as "web" | "desktop" }),
+    ...(directory === undefined ? {} : { workingDirectory: directory }),
   };
 }
 
