@@ -28,12 +28,18 @@ it("does not select incomplete attempts and retries without touching their data"
     const interrupted = await createJonesStageAttempt(root, handle);
     await NodeFSP.writeFile(NodePath.join(interrupted.directory, "partial"), "retain");
     expect(await findJonesCompletedStage(root, handle, receipt)).toBeUndefined();
-    await expect(publishJonesCompletedStage(root, handle, interrupted.directory, receipt)).rejects.toThrow();
+    await expect(
+      publishJonesCompletedStage(root, handle, interrupted.directory, receipt),
+    ).rejects.toThrow();
     const retry = await createJonesStageAttempt(root, handle);
     await NodeFSP.writeFile(NodePath.join(retry.directory, receipt), "complete");
-    expect(await publishJonesCompletedStage(root, handle, retry.directory, receipt)).toBe(retry.directory);
+    expect(await publishJonesCompletedStage(root, handle, retry.directory, receipt)).toBe(
+      retry.directory,
+    );
     expect(await findJonesCompletedStage(root, handle, receipt)).toBe(retry.directory);
-    expect(await NodeFSP.readFile(NodePath.join(interrupted.directory, "partial"), "utf8")).toBe("retain");
+    expect(await NodeFSP.readFile(NodePath.join(interrupted.directory, "partial"), "utf8")).toBe(
+      "retain",
+    );
   }));
 
 it("publishes one complete winner when two attempts race", () =>
@@ -48,8 +54,11 @@ it("publishes one complete winner when two attempts race", () =>
     ]);
     expect(published[0]).toBe(published[1]);
     expect([first.directory, second.directory]).toContain(published[0]);
-    expect(JSON.parse(await NodeFSP.readFile(NodePath.join(root, "completed", `${handle}.json`), "utf8")))
-      .toEqual({ schema: 1, handle, directory: published[0] });
+    expect(
+      JSON.parse(
+        await NodeFSP.readFile(NodePath.join(root, "completed", `${handle}.json`), "utf8"),
+      ),
+    ).toEqual({ schema: 1, handle, directory: published[0] });
   }));
 
 it("preserves and rejects unknown occupied completion indexes", () =>
@@ -59,16 +68,24 @@ it("preserves and rejects unknown occupied completion indexes", () =>
     await NodeFSP.mkdir(NodePath.join(root, "completed"));
     const index = NodePath.join(root, "completed", `${handle}.json`);
     await NodeFSP.writeFile(index, "unowned");
-    await expect(publishJonesCompletedStage(root, handle, attempt.directory, receipt)).rejects.toThrow();
+    await expect(
+      publishJonesCompletedStage(root, handle, attempt.directory, receipt),
+    ).rejects.toThrow();
     expect(await NodeFSP.readFile(index, "utf8")).toBe("unowned");
-    expect(await NodeFSP.readFile(NodePath.join(attempt.directory, receipt), "utf8")).toBe("complete");
+    expect(await NodeFSP.readFile(NodePath.join(attempt.directory, receipt), "utf8")).toBe(
+      "complete",
+    );
   }));
 
 it("refuses traversal and symlinked attempt roots", () =>
   withRoot(async (root) => {
     const attempt = await createJonesStageAttempt(root, handle);
-    await expect(requireJonesStageDirectory(root, handle, NodePath.dirname(root))).rejects.toThrow();
+    await expect(
+      requireJonesStageDirectory(root, handle, NodePath.dirname(root)),
+    ).rejects.toThrow();
     const alias = NodePath.join(root, "attempts", "stage-alias");
     await NodeFSP.symlink(attempt.attemptRoot, alias);
-    await expect(requireJonesStageDirectory(root, handle, NodePath.join(alias, handle))).rejects.toThrow();
+    await expect(
+      requireJonesStageDirectory(root, handle, NodePath.join(alias, handle)),
+    ).rejects.toThrow();
   }));

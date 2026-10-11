@@ -148,6 +148,7 @@ export async function publishJonesCompletedStage(
   await syncDirectory(completed);
   await syncDirectory(canonicalRoot);
   const selected = await findJonesCompletedStage(canonicalRoot, handle, receiptName);
-  if (selected === undefined) throw new Error("Jones completion publication could not be read back.");
+  if (selected === undefined)
+    throw new Error("Jones completion publication could not be read back.");
   return selected;
 }

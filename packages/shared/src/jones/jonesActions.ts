@@ -454,7 +454,11 @@ export class JonesActionsClient {
     await NodeFSP.mkdir(NodePath.resolve(cacheRoot), { recursive: true, mode: 0o700 });
     const root = await NodeFSP.realpath(NodePath.resolve(cacheRoot));
     try {
-      const completed = await findJonesCompletedStage(root, stagedHandle, JONES_ACTIONS_RECEIPT_FILE);
+      const completed = await findJonesCompletedStage(
+        root,
+        stagedHandle,
+        JONES_ACTIONS_RECEIPT_FILE,
+      );
       if (completed !== undefined) return await validateJonesStagedArtifact(completed, candidate);
     } catch (error) {
       throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");
