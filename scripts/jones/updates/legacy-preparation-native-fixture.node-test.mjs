@@ -1,14 +1,22 @@
 import * as NodeAssert from "node:assert/strict";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import {
   PreparationNativeUnavailable,
   preparationFixtureLiteral,
   preparationNativeSourceInputs,
+  preparationInputOpenFlags,
+  preparationRepeatOracleSource,
   runLegacyPreparationNativeFixture,
   validatePreparationNativeClosure,
   validatePreparationNativeInput,
 } from "./legacy-preparation-native-fixture.mjs";
+import {
+  runLegacyIdentityFixtureCommand,
+  withLegacyIdentityScratch,
+} from "./legacy-identity-native-fixture.mjs";
 
 function input() {
   const file = (name, maximum = 32) => ({
@@ -220,3 +228,119 @@ NodeTest.test("unreturned constructor and PID-only evidence cannot settle fixtur
 
 // Native cases run through the fixture CLI with a required artifact record. These
 // ordinary tests establish data/cleanup refusal contracts, never a native pass.
+
+NodeTest.test("all fixture input acquisition uses nonblocking nofollow descriptors", () => {
+  NodeAssert.equal(
+    preparationInputOpenFlags & NodeFS.constants.O_NONBLOCK,
+    NodeFS.constants.O_NONBLOCK,
+  );
+  NodeAssert.equal(
+    preparationInputOpenFlags & NodeFS.constants.O_NOFOLLOW,
+    NodeFS.constants.O_NOFOLLOW,
+  );
+});
+
+NodeTest.test(
+  "repeat oracle rejects accepting peers outside the controller catch-all",
+  async () => {
+    await withLegacyIdentityScratch(async (root) => {
+      const script = NodePath.join(root, "oracle.py");
+      await NodeFSP.writeFile(
+        script,
+        String.raw`
+import json, struct, time
+class Refused(Exception): pass
+` +
+          preparationRepeatOracleSource +
+          String.raw`
+class Process:
+    def __init__(self, response, code=70, stdin=True, signals=None):
+        self.response, self.code = response, code
+        self.input_open, self.signals = stdin, [] if signals is None else signals
+        self.output, self.error, self.eof = bytearray(), bytearray(), set()
+        self.child, self.reaped, self.waits = self, False, 0
+    def pump(self, deadline):
+        assert time.monotonic() < deadline
+        if self.response is not None:
+            raw = json.dumps(self.response, sort_keys=True, separators=(',', ':')).encode()
+            self.output.extend(struct.pack('>I', len(raw)) + raw)
+        else:
+            self.error.extend(b'Closed preparation worker refused.\n')
+            self.eof = {'out', 'err'}
+    def wait(self, timeout):
+        assert timeout > 0
+        self.waits += 1
+        return self.code
+def caught(process, evidence):
+    try: observe_repeat_rejection(process, evidence)
+    except BaseException as cause: return {'wrappedControllerFailure': cause}
+    raise AssertionError('Expected controller failure')
+controls = 0
+for operation, sequence in (('PLAN', 2), ('APPLY', 3)):
+    for response in ('SQL_SCOPE_OPENED', 'CLOSED_RESULT'):
+        header = dict(schema=1, sessionId='a'*64, sequence=sequence, type=response, payloadBytes=0)
+        if response == 'SQL_SCOPE_OPENED': header.update(scopeId='b'*64, purpose='plan' if operation == 'PLAN' else 'apply', access='read-write')
+        else: header.update(scopeId='b'*64, planSha256='c'*64, outcome='applied', errorCode=None)
+        process, evidence = Process(header), {}
+        assert caught(process, evidence)['wrappedControllerFailure'] is not None
+        assert evidence['firstHeader']['type'] == response and evidence['outputBytes'] > 0
+        # This is deliberately outside caught(): the original false-positive catch-all must not absorb it.
+        try: require_repeat_rejection(evidence)
+        except AssertionError: pass
+        else: raise AssertionError('An accepting peer passed the repeat oracle')
+        assert process.waits == 0 and not process.reaped
+        controls += 1
+process, evidence = Process(None), {}
+caught(process, evidence); require_repeat_rejection(evidence)
+assert process.waits == 1 and process.reaped and process.input_open
+for process in (Process(None, code=0), Process(None, stdin=False), Process(None, signals=['parent-stop'])):
+    evidence = {}; caught(process, evidence)
+    try: require_repeat_rejection(evidence)
+    except AssertionError: pass
+    else: raise AssertionError('Controller-induced closure passed the repeat oracle')
+print(json.dumps({'acceptingControlsRejected': controls, 'realRefusalShapeAccepted': True, 'inducedClosureRejected': 3}))
+`,
+        { flag: "wx", mode: 0o400 },
+      );
+      const result = await runLegacyIdentityFixtureCommand(
+        "/usr/bin/python3",
+        ["-I", "-B", script],
+        root,
+      );
+      NodeAssert.equal(result.code, 0, result.stderr);
+      NodeAssert.deepEqual(JSON.parse(result.stdout), {
+        acceptingControlsRejected: 4,
+        realRefusalShapeAccepted: true,
+        inducedClosureRejected: 3,
+      });
+    });
+  },
+);
+
+NodeTest.test("FIFO inputs refuse before reading or creating a copied artifact", async () => {
+  await withLegacyIdentityScratch(async (root) => {
+    const fifo = NodePath.join(root, "input.fifo");
+    const created = await runLegacyIdentityFixtureCommand("/usr/bin/mkfifo", [fifo], root);
+    NodeAssert.equal(created.code, 0, created.stderr);
+    const moduleUrl = new URL("./legacy-preparation-native-fixture.mjs", import.meta.url).href;
+    const script = String.raw`
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+const fixture = await import(process.argv[1]);
+const fifo = process.argv[2], target = process.argv[3];
+await assert.rejects(fixture.readPreparationNativeInputFile(fifo), { code: 'ERR_ASSERTION' });
+await assert.rejects(fixture.copyPreparationNativeArtifact({path: fifo, sha256: 'a'.repeat(64), size: 32}, target), { code: 'ERR_ASSERTION' });
+await assert.rejects(fs.lstat(target), { code: 'ENOENT' });
+assert.equal((await fs.lstat(fifo)).isFIFO(), true);
+process.stdout.write('fifo-refused');
+`;
+    // A regressed blocking open is contained in this exact captured child, never in the test runner.
+    const result = await runLegacyIdentityFixtureCommand(
+      process.execPath,
+      ["--input-type=module", "-e", script, moduleUrl, fifo, NodePath.join(root, "copied")],
+      root,
+    );
+    NodeAssert.equal(result.code, 0, result.stderr);
+    NodeAssert.equal(result.stdout, "fifo-refused");
+  });
+});

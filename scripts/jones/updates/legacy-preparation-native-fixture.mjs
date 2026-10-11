@@ -145,20 +145,83 @@ export function validatePreparationNativeInput(value) {
   return value;
 }
 
-async function copyArtifact(file, destination) {
-  const source = await NodeFSP.open(
+export const preparationInputOpenFlags =
+  NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK;
+
+async function openRegularInput(path, maximum, signal) {
+  signal?.throwIfAborted();
+  const handle = await NodeFSP.open(path, preparationInputOpenFlags);
+  try {
+    signal?.throwIfAborted();
+    const info = await handle.stat({ bigint: true });
+    NodeAssert.ok(
+      info.isFile() && info.nlink === 1n && info.size > 0n && info.size <= BigInt(maximum),
+    );
+    return { handle, info };
+  } catch (primary) {
+    try {
+      await handle.close();
+    } catch (cleanup) {
+      const failure = new AggregateError(
+        [primary, cleanup],
+        "Fixture input descriptor closure failed.",
+        { cause: primary },
+      );
+      failure.preserveScratch = true;
+      throw failure;
+    }
+    throw primary;
+  }
+}
+
+export async function readPreparationNativeInputFile(path, signal) {
+  const { handle, info } = await openRegularInput(path, 65536, signal);
+  let raw, primary;
+  try {
+    signal?.throwIfAborted();
+    const buffer = Buffer.alloc(Number(info.size) + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      signal?.throwIfAborted();
+      const read = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    NodeAssert.equal(offset, Number(info.size));
+    raw = buffer.subarray(0, offset);
+  } catch (error) {
+    primary = error;
+  }
+  try {
+    await handle.close();
+  } catch (cleanup) {
+    const failure = new AggregateError(
+      primary ? [primary, cleanup] : [cleanup],
+      "Fixture input descriptor closure failed.",
+      { cause: primary ?? cleanup },
+    );
+    failure.preserveScratch = true;
+    throw failure;
+  }
+  if (primary) throw primary;
+  return raw;
+}
+
+export async function copyPreparationNativeArtifact(file, destination, signal) {
+  const { handle: source, info: before } = await openRegularInput(
     file.path,
-    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+    maximumRuntime,
+    signal,
   );
   let target, primary;
   try {
-    const before = await source.stat({ bigint: true });
-    NodeAssert.ok(before.isFile() && before.nlink === 1n && before.size === BigInt(file.size));
+    NodeAssert.equal(before.size, BigInt(file.size));
     target = await NodeFSP.open(destination, "wx", 0o600);
     const digest = NodeCrypto.createHash("sha256"),
       buffer = Buffer.alloc(1024 * 1024);
     let offset = 0;
     while (offset < file.size) {
+      signal?.throwIfAborted();
       const read = await source.read(
         buffer,
         0,
@@ -428,7 +491,53 @@ function seedRows(capabilities) {
   ];
 }
 
-export const preparationNativeDriver = String.raw`
+export const preparationRepeatOracleSource = String.raw`
+def observe_repeat_rejection(process, evidence):
+    # Keep stdin open and send no signal: EOF must originate from the worker's own refusal.
+    assert process.input_open and not process.signals
+    evidence.update(started=True, outputBytes=0, firstHeader=None, exitCode=None,
+                    reapedBeforeCleanup=False, stdinStayedOpen=True, signalsBeforeCleanup=[])
+    deadline = time.monotonic() + 5
+    while True:
+        evidence['outputBytes'] = len(process.output)
+        if process.output:
+            # Observe bytes before any controller allowed-kinds filter. Every response,
+            # including a valid SQL_SCOPE_OPENED or CLOSED_RESULT, disproves this oracle.
+            if len(process.output) >= 4:
+                length = struct.unpack('>I', process.output[:4])[0]
+                if 1 <= length <= 16384 and len(process.output) >= 4 + length:
+                    try:
+                        header = json.loads(bytes(process.output[4:4 + length]))
+                        if isinstance(header, dict):
+                            evidence['firstHeader'] = {key: header.get(key) for key in ('schema', 'type', 'sequence', 'payloadBytes')}
+                    except (UnicodeError, ValueError): pass
+                    break
+                if length < 1 or length > 16384: break
+        if process.eof == {'out', 'err'}: break
+        process.pump(deadline)
+    if process.output:
+        evidence['outputBytes'] = len(process.output)
+        raise Refused('Repeated command produced response bytes before refusal.')
+    evidence['stdinStayedOpen'] = process.input_open
+    evidence['signalsBeforeCleanup'] = list(process.signals)
+    evidence['exitCode'] = process.child.wait(timeout=max(0.001, deadline - time.monotonic()))
+    process.reaped = True
+    evidence['reapedBeforeCleanup'] = True
+    evidence['stderr'] = bytes(process.error).decode('utf8', errors='replace')
+    # The outer oracle runs after the controller's catch-all, so neither this
+    # assertion nor an accepting peer can be relabeled an expected refusal.
+    raise Refused('Repeated command peer exited; evaluate its independent evidence.')
+
+def require_repeat_rejection(evidence):
+    assert evidence.get('started') is True
+    assert evidence.get('outputBytes') == 0 and evidence.get('firstHeader') is None
+    assert evidence.get('exitCode') == 70 and evidence.get('reapedBeforeCleanup') is True
+    assert evidence.get('stdinStayedOpen') is True and evidence.get('signalsBeforeCleanup') == []
+    assert evidence.get('stderr') == 'Closed preparation worker refused.\n'
+`;
+
+export const preparationNativeDriver =
+  String.raw`
 import sys
 sys.dont_write_bytecode = True
 import contextlib, errno, hashlib, io, json, os, pathlib, plistlib, shutil, signal, sqlite3, stat, struct, subprocess, time, uuid, zipfile
@@ -438,6 +547,9 @@ scope = {'__name__': 'owned_preparation_native_fixture'}
 exec(compile(payload['maintenance'], 'maintenance.py', 'exec'), scope)
 encode, sha, Refused = scope['encoded'], scope['sha'], scope['Refused']
 Process, Worker, Maintenance = scope['_PreparationProcess'], scope['_PreparationWorker'], scope['Maintenance']
+` +
+  preparationRepeatOracleSource +
+  String.raw`
 commands, children, constructor_unknown, results = [], [], [], []
 real_popen, real_start, real_close, real_stop = subprocess.Popen, Process.start, Process.close, Process.stop
 
@@ -623,6 +735,7 @@ def run_case(case, bundle):
     manifest, directory, database, actual_boot = setup(base, bundle)
     baseline = readonly_rows(database)
     events, observations, sessions, sent, faults = [], [], [], {}, []
+    repeat_evidence = {}
     held_receipt = None
     original_receive, original_observe, original_send, original_finish = Worker.receive, Worker.observe, Worker.send, Worker.finish
     original_durable = scope['durable_file']
@@ -659,7 +772,9 @@ def run_case(case, bundle):
         if kind == 'APPLY':
             assert 'intent-durable' in events
             if case == 'repeat-plan':
-                faults.append('repeat'); return original_send(self, 'PLAN', **sent['PLAN'])
+                faults.append('repeat')
+                original_send(self, 'PLAN', **sent['PLAN'])
+                observe_repeat_rejection(self.process, repeat_evidence)
             if case == 'durable-plan-drift':
                 faults.append('plan-drift')
                 plan_path = directory / 'state/preparation-plan.json'
@@ -670,8 +785,7 @@ def run_case(case, bundle):
         if case == 'repeat-apply' and not faults:
             faults.append('repeat'); self.sequence += 1
             original_send(self, 'APPLY', **sent['APPLY'])
-            self.receive({'CLOSED_RESULT'})
-            raise AssertionError('Repeated APPLY was accepted')
+            observe_repeat_rejection(self.process, repeat_evidence)
         original_finish(self)
         assert self.process.reaped and self.process.closed
         events.append('reaped')
@@ -720,6 +834,7 @@ def run_case(case, bundle):
             assert result['status'] == 'applied' and result['workerReaped']
         else:
             failure = refusal(lambda: enter(lambda session: session.prepare()))
+            if case in ('repeat-plan', 'repeat-apply'): require_repeat_rejection(repeat_evidence)
             assert isinstance(failure, scope['_PreparationFailure']), type(failure).__name__
             assert faults and sessions[-1].failure is not None and not sessions[-1].live
             assert json.loads((directory / 'journal.json').read_bytes())['coldOwner']['phase'] == 'entered'
@@ -790,7 +905,8 @@ def run_case(case, bundle):
                     sqliteDescriptorObservations=True, rawPairPreserved=True, currentBootObserved=actual_boot,
                     priorBootModeled=True, workerReaped=True, productionAdmission=False,
                     productionCustodyHeld=held_receipt is not None,
-                    independentCleanupRecovered=case == 'custody-uncertainty', heldCustodyReceipt=held_receipt)
+                    independentCleanupRecovered=case == 'custody-uncertainty', heldCustodyReceipt=held_receipt,
+                    repeatRejection=repeat_evidence if case in ('repeat-plan', 'repeat-apply') else None)
     finally:
         Worker.receive, Worker.observe, Worker.send, Worker.finish = original_receive, original_observe, original_send, original_finish
         scope['durable_file'], Process.close, Process.stop = original_durable, real_close, real_stop
@@ -940,7 +1056,7 @@ export async function runLegacyPreparationNativeFixture({
       async (root) => {
         await NodeFSP.mkdir(NodePath.join(root, "inputs"), { mode: 0o700 });
         for (const [name, file] of Object.entries(artifact.files))
-          await copyArtifact(file, NodePath.join(root, "inputs", name));
+          await copyPreparationNativeArtifact(file, NodePath.join(root, "inputs", name), signal);
         const payload = NodePath.join(root, "fixture.json"),
           driver = NodePath.join(root, "fixture.py");
         const evidence = NodePath.join(root, "fixture-closure.json");
@@ -1044,19 +1160,7 @@ if (
     const args = process.argv.slice(2);
     if (args.length !== 2 || args[0] !== "--input")
       throw new PreparationNativeUnavailable("use --input with a source-bound final SEA record");
-    const inputFile = await NodeFSP.open(
-      args[1],
-      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
-    );
-    let raw;
-    try {
-      const info = await inputFile.stat();
-      NodeAssert.ok(info.isFile() && info.size > 0 && info.size <= 65536);
-      raw = await inputFile.readFile();
-      NodeAssert.ok(raw.length <= 65536);
-    } finally {
-      await inputFile.close();
-    }
+    const raw = await readPreparationNativeInputFile(args[1], abort.signal);
     const result = await runLegacyPreparationNativeFixture({
       input: JSON.parse(raw),
       signal: abort.signal,
