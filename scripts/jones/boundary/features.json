@@ -9,7 +9,15 @@
         "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
         "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
         "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
-        "packages/contracts/src/jones/fleetUpdates/source.test.ts"
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts",
+        "packages/client-runtime/src/platform/storageDocument.test.ts",
+        "packages/client-runtime/src/connection/registry.test.ts",
+        "apps/web/src/connection/storage.test.ts",
+        "apps/mobile/src/connection/storage.test.ts",
+        "apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts",
+        "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
+        "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx",
+        "packages/contracts/src/ipc.test.ts"
       ]
     },
     {

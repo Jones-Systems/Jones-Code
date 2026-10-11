@@ -9,7 +9,11 @@
     "apps/web/src/jones/fleetUpdates/sourceCurrency.ts",
     "packages/client-runtime/src/jones/fleetUpdates/index.ts",
     "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
-    "packages/client-runtime/src/jones/fleetUpdates/updateBridge.ts"
+    "packages/client-runtime/src/jones/fleetUpdates/updateBridge.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
+    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx"
   ],
   "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],
@@ -33,6 +37,10 @@
     {
       "from": "apps/web/src/components/ServerUpdateAction.tsx",
       "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
+    },
+    {
+      "from": "apps/desktop/src/ipc/methods/connectionCatalog.ts",
+      "to": "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts"
     }
   ]
 }

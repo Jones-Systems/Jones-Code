@@ -885,7 +885,20 @@
     "scripts/jones/boundary/fragments/fleet-update-access.json": "jones-owned",
     "apps/web/src/versionSkew.test.ts": "accepted-shared",
     "packages/client-runtime/src/connection/resolver.ts": "accepted-shared",
-    "apps/web/src/vite-env.d.ts": "accepted-shared"
+    "apps/web/src/vite-env.d.ts": "accepted-shared",
+    "packages/client-runtime/src/platform/storageDocument.ts": "accepted-shared",
+    "packages/client-runtime/src/platform/storageDocument.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/connection/storage.ts": "accepted-shared",
+    "apps/web/src/connection/storage.test.ts": "jones-tests-in-upstream",
+    "apps/mobile/src/connection/catalog-store.ts": "accepted-shared",
+    "apps/mobile/src/connection/storage.ts": "accepted-shared",
+    "apps/mobile/src/connection/storage.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/app/DesktopConnectionCatalogStore.ts": "accepted-shared",
+    "apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts": "jones-tests-in-upstream",
+    "apps/desktop/src/ipc/methods/connectionCatalog.ts": "accepted-shared",
+    "packages/client-runtime/src/connection/catalog.ts": "accepted-shared",
+    "packages/client-runtime/src/connection/registry.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/threads-atoms.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

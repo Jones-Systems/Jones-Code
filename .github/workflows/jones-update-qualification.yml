@@ -7,6 +7,28 @@ on:
       - .github/workflows/artifact-desktop-mac.yml
       - .github/workflows/artifact-cli-linux.yml
       - apps/desktop/src/jones/updates/**
+      - packages/client-runtime/src/platform/storageDocument.ts
+      - packages/client-runtime/src/platform/storageDocument.test.ts
+      - packages/client-runtime/src/platform/persistence.ts
+      - packages/client-runtime/src/connection/registry.ts
+      - packages/client-runtime/src/connection/registry.test.ts
+      - apps/web/src/connection/storage.ts
+      - apps/web/src/connection/storage.test.ts
+      - apps/mobile/src/connection/catalog-store.ts
+      - apps/mobile/src/connection/storage.ts
+      - apps/mobile/src/connection/storage.test.ts
+      - apps/desktop/src/app/DesktopConnectionCatalogStore.ts
+      - apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts
+      - apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts
+      - apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts
+      - apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts
+      - apps/desktop/src/ipc/methods/connectionCatalog.ts
+      - apps/desktop/src/ipc/channels.ts
+      - apps/desktop/src/ipc/DesktopIpcHandlers.ts
+      - apps/desktop/src/preload.ts
+      - packages/contracts/src/ipc.ts
+      - apps/web/src/components/settings/ConnectionsSettings.tsx
+      - apps/web/src/jones/fleetUpdates/**
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - apps/web/src/jones/updates/**
@@ -56,6 +78,18 @@ jobs:
           apps/desktop/src/jones/updates/preloadInstall.test.ts
           apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
           apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
+          apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts
+          apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts
+          packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts
+          packages/contracts/src/jones/fleetUpdates/source.test.ts
+          packages/client-runtime/src/platform/storageDocument.test.ts
+          packages/client-runtime/src/connection/registry.test.ts
+          apps/web/src/connection/storage.test.ts
+          apps/mobile/src/connection/storage.test.ts
+          apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts
+          apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts
+          apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx
+          packages/contracts/src/ipc.test.ts
           apps/desktop/src/jones/updates/jonesMacStaging.test.ts
           apps/server/src/jones/updates/trialGate.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
