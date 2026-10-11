@@ -23,7 +23,13 @@ import {
   type LauncherCapabilityProcessGuard,
 } from "../cloud/launcherCapability.ts";
 import { extractQualifiedLinuxArchive } from "../cloud/qualifiedArchive.ts";
-import { proveQualifiedStateQuiescence } from "../cloud/qualifiedQuiescence.ts";
+import type { observeLinuxStateLeases } from "../cloud/qualifiedLinuxLease.ts";
+import {
+  assertLeaseProofFilesystems,
+  linuxLeaseQualifiedQuiescenceAdapter,
+  proveQualifiedStateQuiescence,
+  type FilesystemTypeReader,
+} from "../cloud/qualifiedQuiescence.ts";
 import {
   enrollQualifiedRuntime,
   qualifiedPayloadDigest,
@@ -1086,6 +1092,20 @@ export async function observeSystemReadiness(
     if (!stat.isFile() || stat.uid !== BigInt(owner ?? -1)) return { status: "unavailable" };
     files.push({ path, device: stat.dev, inode: stat.ino });
   }
+  // The helper reports the inodes it observed; the selected files must still
+  // be those inodes once the exchange ends, or its answer is about other state.
+  const unchangedFiles = async () => {
+    for (const file of files) {
+      const stat = await NodeFSP.lstat(file.path, { bigint: true }).catch(() => undefined);
+      if (stat?.dev !== file.device || stat.ino !== file.inode) return false;
+    }
+    for (const name of QUALIFIED_WRITER_OBSERVER_FILES) {
+      const path = NodePath.join(input.baseDir, "userdata", name);
+      if (!files.some((file) => file.path === path) && !(await absent(path).catch(() => false)))
+        return false;
+    }
+    return true;
+  };
   const birth = async (pid: number) =>
     (await processIdentity(procRoot, pid).catch(() => undefined))?.birth;
   const allowed = new Map<number, string>();
@@ -1111,7 +1131,35 @@ export async function observeSystemReadiness(
   if (result === undefined) return { status: "unavailable" };
   for (const [pid, value] of allowed)
     if ((await birth(pid)) !== value) return { status: "unavailable" };
-  return evaluateWriterObservation(result, files, allowed);
+  const observation = evaluateWriterObservation(result, files, allowed);
+  if (observation.status === "complete" && !(await unchangedFiles()))
+    return { status: "identity-changed" };
+  return observation;
+}
+
+/**
+ * Stopped-writer proof for system adoption: the selected files must be on a
+ * filesystem whose lease grant is a kernel proof before any lease is taken,
+ * then the kernel lease scan answers. The shared quiescence proof still owns
+ * the file selection and its before-and-after identity check.
+ */
+export async function proveSystemStoppedWriters(
+  baseDir: string,
+  options: {
+    readonly filesystemType?: FilesystemTypeReader;
+    readonly leases?: Parameters<typeof observeLinuxStateLeases>[1];
+  } = {},
+): Promise<void> {
+  const leases = linuxLeaseQualifiedQuiescenceAdapter(options.leases);
+  await proveQualifiedStateQuiescence({
+    baseDir,
+    adapter: {
+      async scan(input) {
+        await assertLeaseProofFilesystems(input.files, options.filesystemType);
+        return leases.scan(input);
+      },
+    },
+  });
 }
 
 /** Native host capabilities for the service user's CLI; transports supply the runner and descriptor. */
@@ -1151,6 +1199,6 @@ export function nativeSystemAdoptionHost(input: {
       (await writerObserverSocketInstallation(QUALIFIED_WRITER_OBSERVER_SOCKET, account.uid))
         .status,
     readiness: (request) => observeSystemReadiness(request),
-    stoppedWriterProof: (baseDir) => proveQualifiedStateQuiescence({ baseDir }),
+    stoppedWriterProof: (baseDir) => proveSystemStoppedWriters(baseDir),
   };
 }

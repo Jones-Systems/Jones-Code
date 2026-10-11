@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeZlib from "node:zlib";
@@ -8,9 +9,13 @@ import { expect, it as vitestIt } from "vite-plus/test";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import { ADOPTION_RECEIPT, planHostAdoption, SYSTEM_ADOPTION_RECEIPT } from "./adoption.ts";
+import { QualifiedQuiescenceError } from "../cloud/qualifiedQuiescence.ts";
+import type { SocketPathMetadata } from "../cloud/qualifiedWriterObserverSocket.ts";
 import {
   adoptSystemHost,
+  observeSystemReadiness,
   planSystemAdoption,
+  proveSystemStoppedWriters,
   type SystemAdoptInput,
   type SystemAdoptionHost,
 } from "./systemAdoption.ts";
@@ -820,4 +825,290 @@ it("fences user adoption from a home that holds a system adoption record", () =>
         },
       ),
     ).rejects.toThrow(/system-unit adoption record/);
+  }));
+
+/** Task scratch removed in `finally`, whatever the body leaves behind. */
+async function scratch(prefix: string, body: (root: string) => Promise<void>) {
+  const root = await NodeFSP.realpath(
+    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), prefix)),
+  );
+  try {
+    await body(root);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  }
+}
+
+it("checks every selected file's filesystem before the native lease scan proves no writer", () =>
+  scratch("jones-system-stopped-proof-", async (root) => {
+    const userdata = NodePath.join(root, "home", "userdata");
+    await NodeFSP.mkdir(userdata, { recursive: true });
+    const database = NodePath.join(userdata, "statev2.sqlite");
+    const settings = NodePath.join(userdata, "settings.json");
+    await NodeFSP.writeFile(database, "unchanged database bytes");
+    await NodeFSP.writeFile(settings, "{}");
+    // Stands in for the kernel lease probe at its fixed program boundary; it
+    // records each run and grants every lease, or reports the database busy.
+    const runs = NodePath.join(root, "lease-runs");
+    const granted = NodePath.join(root, "grant-leases");
+    const busy = NodePath.join(root, "busy-leases");
+    await NodeFSP.writeFile(granted, `#!/bin/sh\necho run >> '${runs}'\necho complete\n`, {
+      mode: 0o755,
+    });
+    await NodeFSP.writeFile(
+      busy,
+      `#!/bin/sh\necho run >> '${runs}'\nprintf 'busy 0\\ncomplete\\n'\n`,
+      {
+        mode: 0o755,
+      },
+    );
+    const prove = async (perl: string, filesystemType: (path: string) => Promise<bigint>) => {
+      const observed: string[] = [];
+      const runsBefore = await NodeFSP.readFile(runs, "utf8").catch(() => "");
+      const result = await proveSystemStoppedWriters(NodePath.join(root, "home"), {
+        leases: { perl },
+        filesystemType: async (path) => {
+          observed.push(path);
+          return filesystemType(path);
+        },
+      }).then(
+        () => "proved" as const,
+        (cause: unknown) =>
+          cause instanceof QualifiedQuiescenceError ? cause.reason : "untyped-failure",
+      );
+      const leaseRan = (await NodeFSP.readFile(runs, "utf8").catch(() => "")) !== runsBefore;
+      return { result, observed, leaseRan };
+    };
+    expect(await prove(granted, async () => 0xef53n)).toEqual({
+      result: "proved",
+      observed: [database, settings],
+      leaseRan: true,
+    });
+    // An allowed filesystem only admits the lease scan; a write-open holder still refuses.
+    expect(await prove(busy, async () => 0x58465342n)).toEqual({
+      result: "writer-active",
+      observed: [database, settings],
+      leaseRan: true,
+    });
+    for (const filesystemType of [
+      async () => 0x6969n,
+      async () => 0x65735546n,
+      async (path: string) => (path === settings ? 0x794c7630n : 0xef53n),
+      async (): Promise<bigint> => {
+        throw Object.assign(new Error("synthetic statfs failure"), { code: "EIO" });
+      },
+    ]) {
+      const refused = await prove(granted, filesystemType);
+      expect(refused).toMatchObject({ result: "unavailable", leaseRan: false });
+    }
+    expect(await NodeFSP.readFile(database, "utf8")).toBe("unchanged database bytes");
+  }));
+
+const observerHeader = "jones-qualified-writer-observer 1";
+const rootOwnedDirectory: SocketPathMetadata = {
+  isDirectory: () => true,
+  isSocket: () => false,
+  isSymbolicLink: () => false,
+  uid: 0,
+  mode: 0o040755,
+  dev: 1,
+  ino: 1,
+};
+
+/**
+ * A stand-in observer socket over task scratch. Each connection records the
+ * request bytes it received and whether the client half-closed; the listener
+ * replies only after that half-close. Every peer is destroyed and its close
+ * awaited before the listener closes and the scratch is removed.
+ */
+async function readinessFixture(
+  body: (r: {
+    readonly userdata: string;
+    readonly proc: string;
+    readonly connections: readonly {
+      readonly received: number;
+      readonly halfClosed: boolean;
+      readonly closed: Promise<void>;
+    }[];
+    readonly respond: (handler: (socket: NodeNet.Socket) => void) => void;
+    readonly fileLine: (index: number, name: string, inodeOffset?: bigint) => Promise<string>;
+    readonly observe: (
+      options?: Parameters<typeof observeSystemReadiness>[1],
+      allowedProcessIds?: readonly number[],
+    ) => ReturnType<typeof observeSystemReadiness>;
+  }) => Promise<void>,
+) {
+  await scratch("jones-system-readiness-", async (root) => {
+    const connections: {
+      received: number;
+      halfClosed: boolean;
+      closed: Promise<void>;
+      socket: NodeNet.Socket;
+    }[] = [];
+    let handler: (socket: NodeNet.Socket) => void = () => undefined;
+    const server = NodeNet.createServer({ allowHalfOpen: true }, (socket) => {
+      const entry = {
+        received: 0,
+        halfClosed: false,
+        socket,
+        closed: new Promise<void>((resolve) => socket.once("close", () => resolve())),
+      };
+      connections.push(entry);
+      socket.on("error", () => undefined);
+      socket.on("data", (bytes: Buffer) => {
+        entry.received += bytes.length;
+      });
+      socket.once("end", () => {
+        entry.halfClosed = true;
+        handler(socket);
+      });
+    });
+    const socketPath = NodePath.join(root, "o.sock");
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, () => resolve());
+      });
+      await NodeFSP.chmod(socketPath, 0o600);
+      const base = NodePath.join(root, "home");
+      const userdata = NodePath.join(base, "userdata");
+      await NodeFSP.mkdir(userdata, { recursive: true });
+      await NodeFSP.writeFile(
+        NodePath.join(userdata, "statev2.sqlite"),
+        "unchanged database bytes",
+      );
+      await NodeFSP.writeFile(NodePath.join(userdata, "settings.json"), "{}");
+      const proc = NodePath.join(root, "proc");
+      await processEntry(proc, 4242, NodePath.join(root, "t3"), "777");
+      // The real test-owned socket below synthetic root-owned ancestors.
+      const trusted = async (path: string): Promise<SocketPathMetadata> => {
+        const stat = await NodeFSP.lstat(path);
+        return stat.isDirectory() ? rootOwnedDirectory : stat;
+      };
+      await body({
+        userdata,
+        proc,
+        connections,
+        respond: (next) => {
+          handler = next;
+        },
+        fileLine: async (index, name, inodeOffset = 0n) => {
+          const stat = await NodeFSP.lstat(NodePath.join(userdata, name), { bigint: true });
+          return `file ${index} ${stat.dev} ${stat.ino + inodeOffset}`;
+        },
+        observe: (options = {}, allowedProcessIds = [4242]) =>
+          observeSystemReadiness(
+            { baseDir: base, allowedProcessIds },
+            { socketPath, socketMetadata: trusted, procRoot: proc, deadlineMs: 5_000, ...options },
+          ),
+      });
+    } finally {
+      for (const connection of connections) connection.socket.destroy();
+      await Promise.all(connections.map((connection) => connection.closed));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+}
+
+it("observes readiness through the socket bound to the exact inodes and captured birth", () =>
+  readinessFixture(async (r) => {
+    const files = [await r.fileLine(0, "statev2.sqlite"), await r.fileLine(3, "settings.json")];
+    const reply = (...lines: string[]) =>
+      r.respond((socket) => socket.end(`${[observerHeader, ...lines].join("\n")}\n`));
+    reply(...files, "writer 0 4242 777 read-write", "complete 9");
+    expect(await r.observe()).toEqual({ status: "complete", writers: [] });
+    // Any other writer is reported, so adoption refuses to stop.
+    reply(...files, "writer 0 4242 777 read-write", "writer 3 999 5 write", "complete 9");
+    expect(await r.observe()).toEqual({
+      status: "complete",
+      writers: [{ pid: 999, path: NodePath.join(r.userdata, "settings.json") }],
+    });
+    // The same PID with a different birth is a different process.
+    reply(...files, "writer 0 4242 778 read-write", "complete 9");
+    expect(await r.observe()).toMatchObject({ status: "complete", writers: [{ pid: 4242 }] });
+    // An answer about another inode than this snapshot.
+    reply(files[0]!, await r.fileLine(3, "settings.json", 1n), "complete 9");
+    expect(await r.observe()).toEqual({ status: "identity-changed" });
+    for (const lines of [
+      ["rejected base-owner"],
+      [...files, "incomplete deadline"],
+      [...files],
+      ["garbage"],
+      [...files, "writer 0 999 5 write", "writer 0 999 5 write", "complete 9"],
+    ]) {
+      reply(...lines);
+      expect(await r.observe(), lines.join("|")).toEqual({ status: "unavailable" });
+    }
+    r.respond((socket) => socket.end("x".repeat(64 * 1024 + 1)));
+    expect(await r.observe()).toEqual({ status: "unavailable" });
+    for (const connection of r.connections)
+      expect(connection).toMatchObject({ received: 0, halfClosed: true });
+  }));
+
+it("fails closed when the captured birth, socket or selected state changes across the exchange", () =>
+  readinessFixture(async (r) => {
+    const files = [await r.fileLine(0, "statev2.sqlite"), await r.fileLine(3, "settings.json")];
+    const complete = `${[observerHeader, ...files, "complete 9"].join("\n")}\n`;
+    // A captured process that is gone before the exchange: nothing is requested.
+    expect(await r.observe({}, [4243])).toEqual({ status: "unavailable" });
+    expect(r.connections).toHaveLength(0);
+
+    r.respond(
+      (socket) =>
+        void processEntry(r.proc, 4242, "/synthetic/t3", "778").then(() => socket.end(complete)),
+    );
+    expect(await r.observe()).toEqual({ status: "unavailable" });
+    await processEntry(r.proc, 4242, "/synthetic/t3", "777");
+
+    // A selected file replaced, or a selected file appearing, after the
+    // helper observed the snapshot: its answer is about other state.
+    r.respond((socket) => {
+      const settings = NodePath.join(r.userdata, "settings.json");
+      void NodeFSP.writeFile(`${settings}.next`, "{}")
+        .then(() => NodeFSP.rename(`${settings}.next`, settings))
+        .then(() => socket.end(complete));
+    });
+    expect(await r.observe()).toEqual({ status: "identity-changed" });
+    const current = [await r.fileLine(0, "statev2.sqlite"), await r.fileLine(3, "settings.json")];
+    const currentComplete = `${[observerHeader, ...current, "complete 9"].join("\n")}\n`;
+    r.respond((socket) => {
+      void NodeFSP.writeFile(NodePath.join(r.userdata, "keybindings.json"), "[]").then(() =>
+        socket.end(currentComplete),
+      );
+    });
+    expect(await r.observe()).toEqual({ status: "identity-changed" });
+    await NodeFSP.rm(NodePath.join(r.userdata, "keybindings.json"));
+
+    // A socket replaced during the exchange voids its answer.
+    r.respond((socket) => socket.end(currentComplete));
+    let socketReads = 0;
+    const drifting = async (path: string): Promise<SocketPathMetadata> => {
+      const stat = await NodeFSP.lstat(path);
+      if (stat.isDirectory()) return rootOwnedDirectory;
+      return socketReads++ === 0
+        ? stat
+        : {
+            ...rootOwnedDirectory,
+            isDirectory: () => false,
+            isSocket: () => true,
+            uid: stat.uid,
+            mode: stat.mode,
+            ino: stat.ino + 1,
+          };
+    };
+    expect(await r.observe({ socketMetadata: drifting })).toEqual({ status: "unavailable" });
+
+    // A silent observer reaches the bounded deadline; finally owns its half-open peer.
+    const before = r.connections.length;
+    r.respond(() => undefined);
+    expect(await r.observe({ deadlineMs: 200 })).toEqual({ status: "unavailable" });
+    expect(r.connections).toHaveLength(before + 1);
+
+    // An untrusted socket path is never contacted.
+    const contacted = r.connections.length;
+    expect(await r.observe({ socketMetadata: (path) => NodeFSP.lstat(path) })).toEqual({
+      status: "unavailable",
+    });
+    expect(r.connections).toHaveLength(contacted);
   }));

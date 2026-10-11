@@ -326,11 +326,16 @@ each phase in `runtime/jones-system-adoption.json` before acting:
    extracted archive.
 4. Reads the launcher's pending migration IDs without writing them.
 5. Proves through the observer socket that only the retained server writes the
-   selected state.
+   selected state. The answer counts only if the retained process birth, the
+   socket and every selected state file's inode are unchanged after the
+   exchange.
 6. Rechecks the unit, process birth, executable, cgroup, descriptor, database
    inode and environment.
 7. Stops the unit through the worker.
-8. Proves with kernel leases that nothing holds the state open for writing.
+8. Checks that every selected state file is on one of the local filesystems
+   Install admission accepts, then proves with kernel leases that nothing holds
+   the state open for writing. Any other filesystem, or a failed check, keeps
+   the unit stopped.
 9. Creates `service-state.json` exclusively with protocol 4 and the retained
    version.
 10. Installs the owned drop-in and starts the unit.

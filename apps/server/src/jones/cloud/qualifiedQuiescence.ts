@@ -372,6 +372,28 @@ const LEASE_PROOF_FILESYSTEMS: ReadonlySet<bigint> = new Set([
   0x01021994n, // tmpfs
 ]);
 
+/** statfs f_type for one path; injectable for portable fixtures. */
+export type FilesystemTypeReader = (path: string) => Promise<bigint>;
+
+const statfsType: FilesystemTypeReader = async (path) =>
+  (await NodeFSP.statfs(path, { bigint: true })).type;
+
+/**
+ * Refuses unless every selected file is on a filesystem whose lease grant is a
+ * kernel proof. Metadata only, on each file rather than its directory, so a
+ * network or FUSE bind mount over one state file is refused as well. A failed
+ * read is refused like an unlisted type. Run it before any lease probe.
+ */
+export async function assertLeaseProofFilesystems(
+  files: readonly { readonly path: string }[],
+  filesystemType: FilesystemTypeReader = statfsType,
+): Promise<void> {
+  for (const file of files) {
+    const type = await filesystemType(file.path).catch(() => undefined);
+    if (type === undefined || !LEASE_PROOF_FILESYSTEMS.has(type)) throw unavailable();
+  }
+}
+
 /**
  * Linux routing: proofs with no allowed writer use kernel leases, the readiness
  * commit uses the readiness observer. Install admission exercises both before
@@ -382,24 +404,15 @@ export function linuxNativeQualifiedQuiescenceAdapter(
   options: {
     readonly leases?: Parameters<typeof observeLinuxStateLeases>[1];
     readonly readiness?: Parameters<typeof linuxReadinessQualifiedQuiescenceAdapter>[0];
-    /** statfs f_type for one path; injectable for portable fixtures. */
-    readonly filesystemType?: (path: string) => Promise<bigint>;
+    readonly filesystemType?: FilesystemTypeReader;
   } = {},
 ): QualifiedQuiescenceAdapter {
   const leases = linuxLeaseQualifiedQuiescenceAdapter(options.leases);
   const readiness = linuxReadinessQualifiedQuiescenceAdapter(options.readiness);
-  const filesystemType =
-    options.filesystemType ??
-    (async (path: string) => (await NodeFSP.statfs(path, { bigint: true })).type);
   return {
     scan: (input) => (input.allowedProcessIds.length === 0 ? leases : readiness).scan(input),
     async assertReadinessObservable(input) {
-      // Metadata only, on every selected file rather than its directory, so a
-      // network or FUSE bind mount over one state file is refused as well.
-      for (const file of input.files) {
-        const type = await filesystemType(file.path).catch(() => undefined);
-        if (type === undefined || !LEASE_PROOF_FILESYSTEMS.has(type)) throw unavailable();
-      }
+      await assertLeaseProofFilesystems(input.files, options.filesystemType);
       // The requesting server holds the state open for writing, so busy files
       // are expected here. Later lease proofs can answer only where a lease on
       // this exact snapshot was actually granted: busy alone does not show
