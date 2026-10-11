@@ -94,6 +94,10 @@
     {
       "from": "apps/desktop/src/ipc/methods/connectionCatalog.ts",
       "to": "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
     }
   ]
 }
