@@ -170,6 +170,27 @@ with tempfile.TemporaryDirectory(prefix='jones-legacy-bootstrap-') as temporary:
                 write(manifest, original_manifest + b' ')
         import stat
         os.fsync = racing_sync
+    elif fault in ('final-output-sync-failed', 'final-output-sync-persistent', 'bootstrap-parent-sync-failed', 'bootstrap-parent-sync-persistent'):
+        real_sync = os.fsync
+        durability = {'failures': 0, 'retry': False, 'synced': []}
+        sync_paths = {'updater': updater, 'bootstrap-root': output.parent, 'output': output,
+                      'executor': output / 'executor.py', 'receipt': output / 'receipt.json'}
+        def failing_sync(fd):
+            info = os.fstat(fd)
+            label = None
+            for name, path in sync_paths.items():
+                try: target = path.stat()
+                except FileNotFoundError: continue
+                if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+                    label = name
+                    break
+            boundary = (fault.startswith('final-output-') and label == 'output' and (output / 'receipt.json').exists()) or (fault.startswith('bootstrap-parent-') and label == 'updater')
+            if boundary and (fault.endswith('-persistent') or durability['failures'] == 0):
+                durability['failures'] += 1
+                raise OSError('injected directory durability failure')
+            real_sync(fd)
+            if durability['retry'] and label is not None: durability['synced'].append(label)
+        os.fsync = failing_sync
     elif fault == 'unsupported-command':
         try: invoke('activate')
         except SystemExit as error: result['argumentExit'] = error.code
@@ -193,6 +214,27 @@ with tempfile.TemporaryDirectory(prefix='jones-legacy-bootstrap-') as temporary:
             again, retry = invoke('stage-executor')
             assert again == 1 and retry['status'] == 'refused'
             result['partialPreserved'] = True
+        elif fault in ('final-output-sync-failed', 'final-output-sync-persistent', 'bootstrap-parent-sync-failed', 'bootstrap-parent-sync-persistent'):
+            assert code == 1 and response['status'] == 'refused' and durability['failures'] == 1
+            root_identity = output.parent.stat().st_ino
+            retained = None
+            if fault.startswith('final-output-'):
+                retained = {name: (output / name).read_bytes() for name in ('executor.py', 'receipt.json')}
+            else:
+                assert not output.exists()
+            durability['retry'] = True
+            again, retry = invoke('stage-executor')
+            assert output.parent.stat().st_ino == root_identity
+            if fault.endswith('-persistent'):
+                assert again == 1 and retry['status'] == 'refused' and durability['failures'] == 2
+            else:
+                expected = 'no-change' if retained is not None else 'created'
+                assert again == 0 and retry['result'] == expected
+                assert set(sync_paths) <= set(durability['synced'])
+            if retained is not None:
+                assert all((output / name).read_bytes() == data for name, data in retained.items())
+            assert manifest.read_bytes() == original_manifest
+            result.update(retryCode=again, retryResult=retry.get('result'), synced=durability['synced'])
     assert database.read_bytes() == b'private-database-must-not-open'
     assert (profile / 'profile-sentinel').read_bytes() == b'private-profile-must-not-open'
     assert guard['forbidden'] == []
@@ -261,6 +303,29 @@ describe("standalone legacy bootstrap", () => {
       const result = scenario(fault);
       expect(result.code).toBe(1);
       expect(result.partialPreserved).toBe(true);
+    },
+  );
+
+  it.each([
+    ["final-output-sync-failed", "no-change"],
+    ["bootstrap-parent-sync-failed", "created"],
+  ])("re-establishes retained output durability after %s", (fault, expected) => {
+    const result = scenario(fault);
+    expect(result.code).toBe(1);
+    expect(result.retryCode).toBe(0);
+    expect(result.retryResult).toBe(expected);
+    expect(result.synced).toEqual(
+      expect.arrayContaining(["updater", "bootstrap-root", "output", "executor", "receipt"]),
+    );
+  });
+
+  it.each(["final-output-sync-persistent", "bootstrap-parent-sync-persistent"])(
+    "refuses repeated staging while durability remains uncertain: %s",
+    (fault) => {
+      const result = scenario(fault);
+      expect(result.code).toBe(1);
+      expect(result.retryCode).toBe(1);
+      expect(result.retryResult).toBeNull();
     },
   );
 

@@ -356,21 +356,30 @@ def inspect_inputs(manifest, selection_path, selection_sha, bootstrap_path):
                    blocker='DESK-FIRST-01', nextRequirement='qualified-maintenance-admission')
     return observed, active, updater, transaction_names, output, executor, receipt
 
-def verify_output(observed, output, executor, receipt):
+def verify_and_sync_output(observed, output, executor, receipt):
     with observed.directory(output) as fd:
         require(set(os.listdir(fd)) == {'executor.py', 'receipt.json'})
     require(observed.raw(output / 'executor.py', 1048576) == executor)
     require(observed.files[output / 'executor.py'][3] & 0o777 == 0o500)
     actual, _ = observed.metadata(output / 'receipt.json')
     require(actual == receipt)
+    # A prior invocation may have linked the receipt before its directory sync failed.
+    for name in ('executor.py', 'receipt.json'):
+        with observed.file(output / name, 1048576) as stream:
+            os.fsync(stream.fileno())
+    with observed.directory(output) as fd:
+        require(set(os.listdir(fd)) == {'executor.py', 'receipt.json'})
+        os.fsync(fd)
+    with observed.directory(output.parent) as fd:
+        os.fsync(fd)
 
 def ensure_directory(observed, parent, name):
     with observed.directory(parent) as fd:
         try:
             os.mkdir(name, 0o700, dir_fd=fd)
-            os.fsync(fd)
         except FileExistsError:
             pass
+        os.fsync(fd)
     path = parent / name
     with observed.directory(path): pass
     return path
@@ -382,7 +391,7 @@ def stage_executor(observed, active, updater, transaction_names, output, executo
             os.mkdir(output.name, 0o700, dir_fd=parent_fd)
             os.fsync(parent_fd)
         except FileExistsError:
-            verify_output(observed, output, executor, receipt)
+            verify_and_sync_output(observed, output, executor, receipt)
             observed.current()
             require(transactions(observed, updater / 'transactions', active['home']) == transaction_names)
             return 'no-change'
@@ -408,7 +417,7 @@ def stage_executor(observed, active, updater, transaction_names, output, executo
         finally:
             os.unlink(temporary, dir_fd=fd)
         os.fsync(fd)
-    verify_output(observed, output, executor, receipt)
+    verify_and_sync_output(observed, output, executor, receipt)
     observed.current()
     return 'created'
 

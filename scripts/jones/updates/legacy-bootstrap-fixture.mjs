@@ -4,11 +4,34 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
 import { cleanLaunchEnvironment, runOwnedChild, snapshotTree } from "./native-startup-fixture.mjs";
+import { protectedMutations } from "./native-startup-observer.mjs";
 
 const sha256 = (contents) => NodeCrypto.createHash("sha256").update(contents).digest("hex");
 const json = (value) => JSON.stringify(value);
 const writeJson = (filename, value) =>
   NodeFSP.writeFile(filename, json(value), { flag: "wx", mode: 0o600 });
+
+// Closing drains the observer's process output. Validate that final history,
+// including events received during close, before starting the separate bootstrap
+// audit; its copy/staging activity is outside this FSEvents qualification.
+export async function closeStartupObservation(observer, start, protectedPaths, evidence = {}) {
+  await observer.close();
+  const events = observer.events.slice();
+  protectedMutations(events, []);
+  const mutations = protectedMutations(events.slice(start), protectedPaths);
+  evidence.protectedMutations = mutations.slice(0, 30);
+  NodeAssert.deepEqual(
+    mutations,
+    [],
+    "The packaged process changed protected state, including a transient change.",
+  );
+  return Object.freeze({
+    scope: "packaged-normal-startup-refusal",
+    historyLoss: false,
+    eventCount: events.length,
+    closedBeforeBootstrap: true,
+  });
+}
 
 export async function verifyPackagedBootstrap(app, metadata) {
   const files = createJonesLegacyBootstrapBundle({

@@ -65,11 +65,7 @@
     "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
     "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts",
     "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
-    "scripts/jones/updates/legacy-bootstrap-bundle.ts",
-    "scripts/jones/updates/legacy-bootstrap-bundle.test.ts",
-    "docs/operations/desktop-bootstrap.md",
-    "scripts/jones/updates/legacy-bootstrap-fixture.mjs",
-    "scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs"
+    "docs/operations/desktop-bootstrap.md"
   ],
   "hookPaths": [
     "apps/desktop/src/boot.ts",

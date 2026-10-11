@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { extractFile } from "@electron/asar";
 import {
+  closeStartupObservation,
   createLegacyBootstrapFixture,
   qualifyLegacyBootstrap,
 } from "./legacy-bootstrap-fixture.mjs";
@@ -23,7 +24,6 @@ import {
 import {
   ObserverControlError,
   observerControl,
-  protectedMutations,
   startObserver,
 } from "./native-startup-observer.mjs";
 
@@ -230,14 +230,13 @@ try {
   await observer.flush();
   await observerControl(observer, watchRoots);
   await observer.flush();
-  const mutations = protectedMutations(observer.events.slice(start), protectedPaths);
-  evidence.protectedMutations = mutations.slice(0, 30);
-  NodeAssert.deepEqual(
-    mutations,
-    [],
-    "The packaged process changed protected state, including a transient change.",
-  );
+  evidence.observer = {
+    positiveControls: "before-and-after",
+    ...(await closeStartupObservation(observer, start, protectedPaths, evidence)),
+  };
+  observer = undefined;
   NodeAssert.deepEqual(await Promise.all(protectedPaths.map(snapshotTree)), before);
+  evidence.protectedStateUnchanged = true;
   evidence.bootstrap = { outcome: "unknown", scenarios: [] };
   bootstrapFixture = await createLegacyBootstrapFixture({
     root,
@@ -253,12 +252,6 @@ try {
   evidence.version = metadata.version;
   evidence.electron = packagedElectron;
   evidence.leasesReleased = true;
-  evidence.observer = {
-    positiveControls: "before-and-after",
-    historyLoss: false,
-    eventCount: observer.events.length,
-  };
-  evidence.protectedStateUnchanged = true;
   evidence.outcome = "passed";
 } catch (error) {
   failure = error;

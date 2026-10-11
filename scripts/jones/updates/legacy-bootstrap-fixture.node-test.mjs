@@ -4,7 +4,11 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
-import { assertBootstrapResponse, verifyPackagedBootstrap } from "./legacy-bootstrap-fixture.mjs";
+import {
+  assertBootstrapResponse,
+  closeStartupObservation,
+  verifyPackagedBootstrap,
+} from "./legacy-bootstrap-fixture.mjs";
 import { FixtureOwnership } from "./native-startup-fixture.mjs";
 
 const metadata = {
@@ -156,3 +160,60 @@ NodeTest.test("fixture success and deliberate failure clean only their own roots
   });
   await NodeAssert.rejects(NodeFSP.lstat(survivor), { code: "ENOENT" });
 });
+
+NodeTest.test(
+  "startup closure rejects history loss and protected mutations received during close",
+  async () => {
+    for (const event of [
+      { path: "/unrelated", flags: 0x01 },
+      { path: "/protected/transient", flags: 0x100 },
+    ]) {
+      const observer = {
+        events: [],
+        async close() {
+          this.events.push(event);
+        },
+      };
+      await NodeAssert.rejects(closeStartupObservation(observer, 0, ["/protected"]));
+    }
+    const failure = new Error("observer failed while closing");
+    await NodeAssert.rejects(
+      closeStartupObservation(
+        {
+          events: [],
+          async close() {
+            throw failure;
+          },
+        },
+        0,
+        ["/protected"],
+      ),
+      (error) => error === failure,
+    );
+  },
+);
+
+NodeTest.test(
+  "startup evidence is fixed at observer closure and excludes subsequent bootstrap activity",
+  async () => {
+    let closed = false;
+    const observer = {
+      events: [],
+      async close() {
+        this.events.push({ path: "/unrelated", flags: 0x100 });
+        closed = true;
+      },
+    };
+    const evidence = await closeStartupObservation(observer, 0, ["/protected"]);
+    NodeAssert.equal(closed, true);
+    NodeAssert.deepEqual(evidence, {
+      scope: "packaged-normal-startup-refusal",
+      historyLoss: false,
+      eventCount: 1,
+      closedBeforeBootstrap: true,
+    });
+    observer.events.push({ path: "/unrelated", flags: 0x01 });
+    NodeAssert.equal(evidence.eventCount, 1);
+    NodeAssert.ok(Object.isFrozen(evidence));
+  },
+);
