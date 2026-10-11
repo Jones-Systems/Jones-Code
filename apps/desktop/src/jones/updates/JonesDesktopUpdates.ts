@@ -309,6 +309,7 @@ export class JonesDesktopUpdateController {
     const jones: JonesUpdateState = {
       source: "jones-actions",
       channel: "jones-main",
+      ...(this.#source === undefined ? {} : { installedSource: this.#source }),
       phase,
       ...((phase === "preparing" || phase === "installing") && this.#staged !== undefined
         ? { updateId: this.#staged.handle }

@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
 
-import { JonesUpdateState } from "./jones/jonesUpdates.ts";
+import { JonesUpdateState, type JonesUpdateDownloadInput } from "./jones/jonesUpdates.ts";
 import type {
   DesktopDeviceMediaTunnelInput,
   DesktopDeviceMediaTunnel,
@@ -1293,7 +1293,7 @@ export interface DesktopBridge {
   getUpdateState: () => Promise<DesktopUpdateState>;
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
-  downloadUpdate: () => Promise<DesktopUpdateActionResult>;
+  downloadUpdate: (selection?: JonesUpdateDownloadInput) => Promise<DesktopUpdateActionResult>;
   installUpdate: (stagedHandle?: string) => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /** Settings → `t3` command. Optional: older desktop builds lack it. */

@@ -8,7 +8,7 @@ import {
   isDesktopUpdateButtonDisabled,
 } from "../../components/desktopUpdate.logic";
 import { showDesktopUpdateDownloadedToast } from "../../components/desktopUpdate.toast";
-import { installLocalDesktopUpdate } from "./localDesktopUpdate";
+import { downloadLocalDesktopUpdate, getJonesDesktopUpdateBuildUrl, installLocalDesktopUpdate } from "./localDesktopUpdate";
 
 const toast = vi.hoisted(() => ({ add: vi.fn() }));
 vi.mock("../../components/ui/toast", () => ({ toastManager: toast }));
@@ -44,6 +44,42 @@ function result(state = downloaded): DesktopUpdateActionResult {
 }
 
 describe("Jones local desktop update UI", () => {
+  it("forwards the displayed artifact and source for Download", async () => {
+    const provenance = {
+      repository: "Jones-Systems/Jones-Code", sourceSha: "a".repeat(40), sourceTree: "b".repeat(40),
+      workflow: "artifact-desktop-mac.yml", runId: 123, runAttempt: 1, artifactId: 456,
+      artifactDigest: "c".repeat(64), platform: "darwin", architecture: "arm64",
+    } as const;
+    const state: DesktopUpdateState = { ...downloaded, jones: { ...downloaded.jones!, provenance } };
+    const bridge = { downloadUpdate: vi.fn().mockResolvedValue(result(state)) };
+    await downloadLocalDesktopUpdate(bridge, state);
+    expect(bridge.downloadUpdate).toHaveBeenCalledExactlyOnceWith({ artifactId: 456, sourceSha: "a".repeat(40) });
+    expect(getJonesDesktopUpdateBuildUrl(state)).toBe("https://github.com/Jones-Systems/Jones-Code/actions/runs/123");
+    await expect(downloadLocalDesktopUpdate(bridge, downloaded)).rejects.toThrow("Check for builds");
+    expect(bridge.downloadUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("keeps upstream Download argument-free", async () => {
+    const { jones: _jones, ...state } = downloaded;
+    const bridge = { downloadUpdate: vi.fn().mockResolvedValue(result(state)) };
+    await downloadLocalDesktopUpdate(bridge, state);
+    expect(bridge.downloadUpdate).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it.each(["preparing", "installing"] as const)("does not report accepted %s as an error", (phase) => {
+    expect(getDesktopUpdateActionError({
+      accepted: true, completed: false,
+      state: { ...downloaded, message: "Restart underway", jones: { ...downloaded.jones!, phase } },
+    })).toBeNull();
+  });
+
+  it("reports a fulfilled failed Download result", () => {
+    expect(getDesktopUpdateActionError({
+      accepted: true, completed: false,
+      state: { ...downloaded, message: "Could not stage", jones: { ...downloaded.jones!, phase: "error" } },
+    })).toBe("Could not stage");
+  });
+
   it("installs the downloaded handle even when another version is available", async () => {
     const bridge = { installUpdate: vi.fn().mockResolvedValue(result()) };
     await installLocalDesktopUpdate(bridge, downloaded);

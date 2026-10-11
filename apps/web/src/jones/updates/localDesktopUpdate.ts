@@ -62,3 +62,25 @@ export function getJonesDesktopUpdateRefusal(result: DesktopUpdateActionResult):
   if (result.accepted || !result.state.jones) return null;
   return result.state.jones.message ?? result.state.message ?? "The update could not be applied.";
 }
+
+export function downloadLocalDesktopUpdate(
+  bridge: Pick<DesktopBridge, "downloadUpdate">,
+  state: DesktopUpdateState | null,
+): Promise<DesktopUpdateActionResult> {
+  if (!state?.jones) return bridge.downloadUpdate();
+  const blocked = getJonesDesktopUpdateBlockedMessage(state, "download");
+  if (blocked) return Promise.reject(new Error(blocked));
+  const provenance = state.jones.provenance;
+  if (!provenance) return Promise.reject(new Error("Check for builds before downloading."));
+  return bridge.downloadUpdate({ artifactId: provenance.artifactId, sourceSha: provenance.sourceSha });
+}
+
+export function isJonesDesktopUpdatePending(result: DesktopUpdateActionResult): boolean {
+  return result.accepted && !result.completed && result.state.jones !== undefined &&
+    ["checking", "downloading", "verifying", "preparing", "installing"].includes(result.state.jones.phase);
+}
+
+export function getJonesDesktopUpdateBuildUrl(state: DesktopUpdateState): string | null {
+  const provenance = state.jones?.provenance;
+  return provenance ? `https://github.com/Jones-Systems/Jones-Code/actions/runs/${provenance.runId}` : null;
+}

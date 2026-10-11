@@ -1,3 +1,4 @@
+import { JonesUpdateDownloadInput } from "@t3tools/contracts/jones/jonesUpdates";
 import {
   DesktopUpdateActionResultSchema,
   DesktopUpdateChannelSchema,
@@ -33,10 +34,16 @@ export const setUpdateChannel = DesktopIpc.makeIpcMethod({
 
 export const downloadUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_DOWNLOAD_CHANNEL,
-  payload: Schema.Void,
+  payload: Schema.Union([Schema.Undefined, JonesUpdateDownloadInput]),
   result: DesktopUpdateActionResultSchema,
-  handler: Effect.fn("desktop.ipc.updates.download")(function* () {
+  handler: Effect.fn("desktop.ipc.updates.download")(function* (selection) {
     const updates = yield* DesktopUpdates.DesktopUpdates;
+    if (selection !== undefined) {
+      if (updates.downloadSelected !== undefined) return yield* updates.downloadSelected(selection);
+      return { accepted: false, completed: false, state: yield* updates.getState };
+    }
+    const state = yield* updates.getState;
+    if (state.jones !== undefined) return { accepted: false, completed: false, state };
     return yield* updates.download;
   }),
 });

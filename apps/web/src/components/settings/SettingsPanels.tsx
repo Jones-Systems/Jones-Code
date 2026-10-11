@@ -67,6 +67,7 @@ import {
 import {
   getJonesDesktopUpdateBlockedMessage,
   installLocalDesktopUpdate,
+  downloadLocalDesktopUpdate,
 } from "../../jones/updates/localDesktopUpdate";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
@@ -332,7 +333,12 @@ function AboutVersionSection() {
     const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
 
     if (action === "download") {
-      void bridge.downloadUpdate().catch((error: unknown) => {
+      if (isUpdateActionPending) return;
+      setIsUpdateActionPending(true);
+      void downloadLocalDesktopUpdate(bridge, updateState).then((result) => {
+        const failure = getDesktopUpdateActionError(result);
+        if (failure) throw new Error(failure);
+      }).catch((error: unknown) => {
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -340,7 +346,7 @@ function AboutVersionSection() {
             description: error instanceof Error ? error.message : "Download failed.",
           }),
         );
-      });
+      }).finally(() => setIsUpdateActionPending(false));
       return;
     }
 
@@ -464,7 +470,13 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
-      {hasDesktopBridge ? (
+      {hasDesktopBridge && updateState?.jones ? (
+        <SettingsRow
+          title="Update track"
+          description="Qualified builds from Jones Code main."
+          control={<span className="text-sm text-muted-foreground">Jones main</span>}
+        />
+      ) : hasDesktopBridge ? (
         <SettingsRow
           title="Update track"
           description="Use stable releases or nightly builds. Switch back anytime."

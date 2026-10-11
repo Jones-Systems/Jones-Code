@@ -1,3 +1,4 @@
+import { getJonesDesktopUpdateBuildUrl } from "../jones/updates/localDesktopUpdate";
 import { getJonesDesktopUpdateBlockedMessage } from "../jones/updates/localDesktopUpdate";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { ArrowRightIcon } from "lucide-react";
@@ -51,7 +52,9 @@ export function showDesktopUpdateDownloadedToast(
   shell: DesktopUpdateShell,
   state: DesktopUpdateState,
 ): void {
-  const releaseUrl = getDesktopUpdateReleaseUrl(getDesktopUpdateDownloadedVersion(state));
+  const releaseUrl = state.jones
+    ? getJonesDesktopUpdateBuildUrl(state)
+    : getDesktopUpdateReleaseUrl(getDesktopUpdateDownloadedVersion(state));
   toastManager.add({
     type: "success",
     title: "Update downloaded",

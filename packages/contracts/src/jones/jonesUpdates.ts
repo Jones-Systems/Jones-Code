@@ -62,6 +62,7 @@ export const JonesUpdateState = Schema.Struct({
   checkedAt: Schema.optionalKey(Schema.String),
   environmentId: Schema.optionalKey(EnvironmentId),
   currentVersion: Schema.optionalKey(Schema.String),
+  installedSource: Schema.optionalKey(TrimmedNonEmptyString),
   updateId: Schema.optionalKey(TrimmedNonEmptyString),
   outcome: Schema.optionalKey(
     Schema.Struct({
