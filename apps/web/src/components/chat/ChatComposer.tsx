@@ -1,3 +1,5 @@
+import { ComposerShortcutPlate } from "../../jones/composer/ComposerShortcutPlate";
+import type { ComposerModelSelectOptions } from "../../jones/composer/composerModelEffortShortcuts";
 import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
@@ -1689,7 +1691,7 @@ export interface ChatComposerProps {
   onProviderModelSelect: (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean },
+    options?: ComposerModelSelectOptions,
   ) => void;
   onOpenProviderSetup: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
@@ -6776,39 +6778,47 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               data-chat-composer-shortcut-rails="true"
               aria-hidden={!shortcutRails.visible || undefined}
               inert={!shortcutRails.visible || undefined}
-              className="relative w-full bg-background"
+              className="relative w-full"
               style={{ height: shortcutRails.height }}
             >
               <div className="pointer-events-auto absolute bottom-0 left-0">
-                <ProviderInstanceShortcuts
-                  instanceEntries={providerInstanceEntries}
-                  settings={settings}
-                  modelOptionsByInstance={modelOptionsByInstance}
-                  rememberedSelections={composerDraft.modelSelectionByProvider}
-                  activeInstanceId={selectedInstanceId}
-                  model={selectedModelForPickerWithCustomFallback}
-                  lockedProvider={lockedProvider}
-                  lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
-                  lockedInstanceId={
-                    activeThread?.runtime?.providerInstanceId ??
-                    activeThreadModelSelection?.instanceId ??
-                    null
-                  }
-                  disabled={isSendBusy}
-                  visible={shortcutRails.visible}
-                  groupRef={accountShortcutGroupRef}
-                  getModelDisabledReason={getModelDisabledReason}
-                  onSelect={onProviderModelSelect}
-                />
+                <ComposerShortcutPlate visible={shortcutRails.visible}>
+                  <ProviderInstanceShortcuts
+                    instanceEntries={providerInstanceEntries}
+                    settings={settings}
+                    modelOptionsByInstance={modelOptionsByInstance}
+                    rememberedSelections={composerDraft.modelSelectionByProvider}
+                    activeInstanceId={selectedInstanceId}
+                    model={selectedModelForPickerWithCustomFallback}
+                    lockedProvider={lockedProvider}
+                    lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
+                    lockedInstanceId={
+                      activeThread?.runtime?.providerInstanceId ??
+                      activeThreadModelSelection?.instanceId ??
+                      null
+                    }
+                    disabled={isSendBusy}
+                    visible={shortcutRails.visible}
+                    groupRef={accountShortcutGroupRef}
+                    getModelDisabledReason={getModelDisabledReason}
+                    onSelect={onProviderModelSelect}
+                  />
+                </ComposerShortcutPlate>
               </div>
               <div className="pointer-events-auto absolute right-0 bottom-0 w-max">
-                {providerTraitsPicker ? (
-                  <ReasoningEffortShortcuts
-                    {...providerTraitsPickerInput}
-                    {...effectiveTraitsOptions}
-                    groupRef={effortShortcutGroupRef}
-                    visible={shortcutRails.visible}
-                  />
+                {providerTraitsPicker ||
+                selectedProvider === "codex" ||
+                selectedProvider === "claudeAgent" ? (
+                  <ComposerShortcutPlate visible={shortcutRails.visible}>
+                    <ReasoningEffortShortcuts
+                      {...providerTraitsPickerInput}
+                      {...effectiveTraitsOptions}
+                      onProviderModelSelect={onProviderModelSelect}
+                      getModelDisabledReason={getModelDisabledReason}
+                      groupRef={effortShortcutGroupRef}
+                      visible={shortcutRails.visible}
+                    />
+                  </ComposerShortcutPlate>
                 ) : null}
               </div>
             </div>,
