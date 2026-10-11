@@ -7,6 +7,8 @@ import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { stageJonesMacApp } from "./jonesMacStaging.ts";
 
+const syncFailure = vi.hoisted(() => ({ enabled: false }));
+
 vi.mock("node:child_process", async (original) => ({
   ...await original<typeof import("node:child_process")>(),
   execFile: vi.fn(),
@@ -20,6 +22,17 @@ vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        if (syncFailure.enabled && typeof args[0] === "string" && args[0].includes(".app/")) {
+          throw new Error("Injected app payload sync failure");
+        }
+        await sync();
+      };
+      return handle;
+    },
     readFile: (path: Parameters<typeof actual.readFile>[0], options: Parameters<typeof actual.readFile>[1]) =>
       actual.readFile(
         typeof path === "string" && path.endsWith("/app.asar/package.json")
@@ -30,12 +43,15 @@ vi.mock("node:fs/promises", async (original) => {
   };
 });
 
-afterEach(() => vi.mocked(NodeChildProcess.execFile).mockReset());
+afterEach(() => {
+  vi.mocked(NodeChildProcess.execFile).mockReset();
+  syncFailure.enabled = false;
+});
 
 async function fixture(run: (input: {
   root: string;
   artifact: JonesStagedArtifact;
-  fail: (phase: "attach" | "copy" | "metadata" | "detach" | undefined) => void;
+  fail: (phase: "attach" | "copy" | "metadata" | "sync" | "detach" | undefined) => void;
 }) => Promise<void>) {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-mac-stage-test-"));
   try {
@@ -65,7 +81,7 @@ async function fixture(run: (input: {
     };
     const stageRoot = NodePath.join(root, "apps");
     await NodeFSP.mkdir(stageRoot);
-    let fail: "attach" | "copy" | "metadata" | "detach" | undefined;
+    let fail: "attach" | "copy" | "metadata" | "sync" | "detach" | undefined;
     vi.mocked(NodeChildProcess.execFile).mockImplementation((command, rawArgs, _options, callback) => {
       if (typeof callback !== "function") throw new Error("Missing native callback.");
       const args = rawArgs as string[];
@@ -103,14 +119,17 @@ async function fixture(run: (input: {
       })().then((stdout) => callback(null, stdout, ""), (cause: Error) => callback(cause, "", ""));
       return {} as ReturnType<typeof NodeChildProcess.execFile>;
     });
-    await run({ root: stageRoot, artifact, fail: (phase) => { fail = phase; } });
+    await run({ root: stageRoot, artifact, fail: (phase) => {
+      fail = phase;
+      syncFailure.enabled = phase === "sync";
+    } });
   } finally {
     await NodeFSP.rm(allocated, { recursive: true, force: true });
     await expect(NodeFSP.lstat(allocated)).rejects.toMatchObject({ code: "ENOENT" });
   }
 }
 
-it.each(["attach", "copy", "metadata", "detach"] as const)(
+it.each(["attach", "copy", "metadata", "sync", "detach"] as const)(
   "retries after %s failure without selecting or overwriting the incomplete attempt",
   (phase) => fixture(async ({ root, artifact, fail }) => {
     fail(phase);

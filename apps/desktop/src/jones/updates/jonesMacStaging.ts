@@ -132,6 +132,25 @@ export function bundleFileSystem(
   return versions.electron === undefined ? NodeFS : (load("original-fs") as typeof NodeFS);
 }
 
+/** Publish a completion receipt only after its copied app payload is durable. */
+async function syncMacAppTree(path: string): Promise<void> {
+  const info = await NodeFSP.lstat(path);
+  if (info.isSymbolicLink()) return; // The validated internal target is synced during traversal.
+  if (info.isDirectory()) {
+    for (const name of await NodeFSP.readdir(path)) {
+      await syncMacAppTree(NodePath.join(path, name));
+    }
+  } else if (!info.isFile()) {
+    throw new Error("Unsupported staged app entry during synchronization.");
+  }
+  const handle = await NodeFSP.open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function hashMacFile(file: string): Promise<string> {
   const hash = NodeCrypto.createHash("sha256");
   for await (const block of bundleFileSystem().createReadStream(file)) hash.update(block);
@@ -339,6 +358,7 @@ export async function stageJonesMacApp(
       executableDigest: await hashMacFile(executablePath),
       ...(startupGateProtocol === undefined ? {} : { startupGateProtocol }),
     };
+    await syncMacAppTree(appPath);
     await writeJonesNativeFile(
       receiptPath,
       JSON.stringify({ app, artifact, candidate: artifact.candidate }) + "\n",
