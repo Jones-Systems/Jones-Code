@@ -5,13 +5,10 @@
   "hookPaths": [
     "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts",
     "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
-    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
     "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.ts",
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.ts",
     "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.ts",
     "apps/server/src/orchestration-v2/ProviderAdapter.ts",
-    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
-    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
     "apps/server/src/orchestration-v2/RunExecutionService.ts",
     "apps/server/src/orchestration-v2/assistantStreaming.ts"
   ],
