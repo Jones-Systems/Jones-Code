@@ -202,6 +202,19 @@ export async function observerControl(observer, roots, { timeoutMs = 5000 } = {}
       await fs.unlink(renamed);
       await observe("removed", root, names, 0x200, offset);
       for (const filename of names) await assert.rejects(fs.lstat(filename), { code: "ENOENT" });
+
+      const burst = path.join(directory, "burst");
+      const burstNames = [burst, `${burst}.renamed`];
+      offset = observer.events.length;
+      // A separate rapid burst must disappear before the first flush. Paced
+      // controls alone cannot qualify observation of short-lived mutations.
+      await fs.writeFile(burst, "created", { flag: "wx", mode: 0o600 });
+      await fs.appendFile(burst, "-changed");
+      await fs.rename(burst, burstNames[1]);
+      await fs.unlink(burstNames[1]);
+      for (const filename of burstNames)
+        await assert.rejects(fs.lstat(filename), { code: "ENOENT" });
+      await observe("rapid-burst", root, burstNames, mutation, offset);
     }
   } finally {
     await ownership.cleanup();
