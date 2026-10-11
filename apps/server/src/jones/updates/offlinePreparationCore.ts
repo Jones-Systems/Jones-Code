@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { decodePersistedServerSettings } from "../../ServerSettingsPersistence.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
-import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as EffectOutbox from "../../orchestration-v2/EffectOutboxEnqueue.ts";
 import { findPendingServerUpdateContinuation } from "../../orchestration-v2/ServerUpdateContinuationPreparation.ts";
 import {
   serverUpdateContinuationEffect,
@@ -491,7 +491,6 @@ export const applyContinuationPlan = (
       catch: (cause) => new OfflinePreparationError({ reason: "invalid-plan", cause }),
     });
     const sql = yield* SqlClient.SqlClient;
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* verifyPreparationSchema;
@@ -513,17 +512,15 @@ export const applyContinuationPlan = (
           );
         for (const row of captured.expectedRows) {
           const request = decodeRequest(row.payload_json);
-          yield* outbox
-            .enqueue([
-              {
-                id: row.effect_id,
-                commandId: CommandId.make(row.command_id),
-                threadId: ThreadId.make(row.thread_id),
-                request,
-                availableAt: DateTime.makeUnsafe(captured.timestamp),
-              },
-            ])
-            .pipe(Effect.provideService(Clock.Clock, preparationClock(captured.timestamp)));
+          yield* EffectOutbox.enqueue([
+            {
+              id: row.effect_id,
+              commandId: CommandId.make(row.command_id),
+              threadId: ThreadId.make(row.thread_id),
+              request,
+              availableAt: DateTime.makeUnsafe(captured.timestamp),
+            },
+          ]).pipe(Effect.provideService(Clock.Clock, preparationClock(captured.timestamp)));
         }
         const rows = yield* readPreparationRows;
         if (

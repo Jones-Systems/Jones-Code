@@ -17,7 +17,6 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
-import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import {
   applyContinuationPlan,
   classifyPreparation,
@@ -975,7 +974,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
         readonly = type === "RECONCILE";
       const uri = NodeURL.pathToFileURL(database);
       uri.searchParams.set("mode", readonly ? "ro" : "rw");
-      const sqlLayer = Layer.mergeAll(ProjectionStore.layer, EffectOutbox.layer).pipe(
+      const sqlLayer = ProjectionStore.layer.pipe(
         Layer.provideMerge(NodeSqliteClient.layer({ filename: uri.href, readonly })),
       );
       let abortSequence: number | undefined;

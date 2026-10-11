@@ -16,7 +16,6 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
-import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import {
   createContinuationPlan,
   classifyPreparation,
@@ -510,7 +509,7 @@ function seedEligibleHistoricalThread(path: string) {
 function sqlLayer(path: string, readonly = false) {
   const uri = NodeURL.pathToFileURL(path);
   uri.searchParams.set("mode", readonly ? "ro" : "rw");
-  return Layer.mergeAll(ProjectionStore.layer, EffectOutbox.layer).pipe(
+  return ProjectionStore.layer.pipe(
     Layer.provideMerge(NodeSqliteClient.layer({ filename: uri.href, readonly })),
   );
 }

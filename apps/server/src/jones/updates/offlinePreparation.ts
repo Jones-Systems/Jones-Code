@@ -19,7 +19,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
-import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import { serverUpdateContinuationEffect } from "../../orchestration-v2/ServerUpdateContinuationPolicy.ts";
 import {
   OfflinePreparationError,
@@ -495,11 +494,7 @@ export async function withSyntheticPreparationFixture<A>(
   const withDatabase = async <T, E>(
     path: string,
     readonly: boolean,
-    effect: Effect.Effect<
-      T,
-      E,
-      SqlClient.SqlClient | ProjectionStore.ProjectionStoreV2 | EffectOutbox.EffectOutboxV2
-    >,
+    effect: Effect.Effect<T, E, SqlClient.SqlClient | ProjectionStore.ProjectionStoreV2>,
   ): Promise<T> => {
     assertCustody();
     const stat = await existingFile(path);
@@ -510,7 +505,7 @@ export async function withSyntheticPreparationFixture<A>(
     )
       throw new OfflinePreparationError({ reason: "database-identity-changed" });
     audit.push(readonly ? "database:read-only-open" : "database:write-open");
-    const layer = Layer.mergeAll(ProjectionStore.layer, EffectOutbox.layer).pipe(
+    const layer = ProjectionStore.layer.pipe(
       Layer.provideMerge(NodeSqliteClient.layer({ filename: path, readonly })),
     );
     const program = readonly

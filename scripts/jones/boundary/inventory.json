@@ -931,7 +931,9 @@
     "packages/client-runtime/src/platform/persistence.ts": "accepted-shared",
     "scripts/jones/updates/legacy-bootstrap-after-pack.d.mts": "jones-owned",
     "scripts/jones/updates/legacy-preparation-native-fixture.mjs": "jones-owned",
-    "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs": "jones-owned"
+    "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs": "jones-owned",
+    "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -991,10 +993,6 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/provider/providerGoal.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
-      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
@@ -1415,6 +1413,10 @@
     {
       "from": "apps/desktop/src/shell/DesktopShellEnvironment.ts",
       "to": "apps/desktop/src/jones/workstreams/shellActivation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
     }
   ]
 }

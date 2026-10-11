@@ -379,7 +379,8 @@
         "apps/server/src/jones/updates/offlinePreparationCore.test.ts",
         "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
         "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
-        "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs"
+        "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs",
+        "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/ServerSettingsPersistence.test.ts apps/server/src/serverSettings.test.ts",
@@ -404,7 +405,8 @@
         "vp test run apps/server/src/jones/updates/offlinePreparationCore.test.ts",
         "vp test run apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
         "vp test run apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
-        "node --test --test-concurrency=1 scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs"
+        "node --test --test-concurrency=1 scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs",
+        "vp test run apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts"
       ]
     },
     {
