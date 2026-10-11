@@ -8,7 +8,13 @@
     "apps/server/src/jones/updates/serverCapability.test.ts",
     "apps/server/src/jones/updates/launcherOperation.ts",
     "apps/server/src/jones/updates/launcherOperation.test.ts",
-    "apps/server/src/jones/updates/operationHandoff.test.ts"
+    "apps/server/src/jones/updates/operationHandoff.test.ts",
+    "apps/server/src/jones/persistence/Migrations/106_JonesPlannedUpdateContinuity.ts",
+    "apps/server/src/jones/updates/PlannedUpdateContinuity.ts",
+    "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+    "apps/server/src/jones/updates/plannedContinuityPolicy.ts",
+    "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+    "apps/server/src/jones/updates/plannedContinuityStartup.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -24,6 +30,30 @@
     {
       "from": "apps/server/src/cloud/selfUpdate.ts",
       "to": "apps/server/src/jones/updates/launcherOperation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/updates/plannedContinuityStartup.ts"
     }
   ]
 }

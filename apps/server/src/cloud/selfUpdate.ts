@@ -93,6 +93,7 @@ export class ServerSelfUpdate extends Context.Service<
         readonly operationId?: string;
       },
       onHandoffAccepted?: () => Effect.Effect<void>,
+      onPrepared?: (staged: StagedQualifiedRuntime) => Effect.Effect<void, ServerSelfUpdateError>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -210,6 +211,9 @@ export const withRunningThreadContinuation = Effect.fn(
               readonly operationId?: string;
             },
             onAccepted?: () => Effect.Effect<void>,
+            onPrepared?: (
+              staged: StagedQualifiedRuntime,
+            ) => Effect.Effect<void, ServerSelfUpdateError>,
           ) => {
             let handoffAccepted = false;
             let continuationThreadIds: ReadonlyArray<ThreadId> = [];
@@ -239,10 +243,13 @@ export const withRunningThreadContinuation = Effect.fn(
                 Effect.gen(function* () {
                   continuationThreadIds =
                     request.continueRunningThreads === true ? yield* input.prepare : [];
-                  return yield* input.selfUpdate.installQualified!(request, () =>
-                    Effect.sync(() => {
-                      handoffAccepted = true;
-                    }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
+                  return yield* input.selfUpdate.installQualified!(
+                    request,
+                    () =>
+                      Effect.sync(() => {
+                        handoffAccepted = true;
+                      }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
+                    onPrepared,
                   );
                 }),
                 () => continuationThreadIds,
@@ -594,6 +601,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const installQualified: NonNullable<ServerSelfUpdate["Service"]["installQualified"]> = (
     input,
     onHandoffAccepted = () => Effect.void,
+    onPrepared = () => Effect.void,
   ) =>
     Effect.gen(function* () {
       const staged = yield* Effect.tryPromise({
@@ -621,6 +629,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         staged.binding.dbPath,
         staged.receipt.version,
       );
+      yield* onPrepared(staged);
       const updateId = yield* Effect.uninterruptible(
         launcher
           .requestUpdate({

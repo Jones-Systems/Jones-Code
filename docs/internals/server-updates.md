@@ -65,8 +65,11 @@ outside the database rollback pair.
 
 An absent reservation and absent matching service state permit submission with the
 same ID. A reservation without matching native state or a retained terminal outcome
-requires reconciliation; it does not authorize another replacement. Readback of an
-operation and observation of the currently installed source are separate checks.
+requires reconciliation; it does not authorize another replacement with any ID. The
+launcher inspects at most 4,096 receipt entries and fails closed on malformed,
+unreadable, or larger receipt stores. Receipt preparation failures preserve the old
+child and any partial reservation. Only an exact operation proven absent can clear
+its uncertain in-memory handoff fence. Readback of an operation and observation of the currently installed source are separate checks.
 
 Desktop updates have a separate two-phase handoff because installing the app stops
 its bundled backend. Preparation returns a token while the connection is alive;
@@ -81,8 +84,8 @@ Restart continuation is an environment-owned preference, off by default. The
 [v2 recovery service](../../apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts)
 requires matching durable run, provider thread, session, and native resume identity.
 Queued runs never started, so recovery holds them and continues the run they wait
-behind. Recovery does not release those queued runs automatically. Completed roots
-and roots waiting for approval or user input do not start a restart continuation.
+behind. Ordinary restart recovery leaves those queues held. Completed roots and
+roots waiting for approval or user input do not start a restart continuation.
 If a completed root lost background work, the cancellation note is retained for its
 next ordinary turn.
 
@@ -109,3 +112,29 @@ listener ignores reconciliation's cancellations. A cancelled child whose restart
 continuation is still pending in the outbox is not a result yet; the continuation's run
 settles it, or the handler settles it when it declines to continue. Schedulers wait for
 activation so they cannot start runs that reconciliation would then cancel.
+
+Qualified planned updates with caller-bound operation support capture eligible queues
+and live Work Mode conversations before handoff. Jones migration 106 stores this
+eligibility separately from upstream projections. Saved continuation preferences or
+the explicit one-install continuation option authorize capture; enrollment does not
+change those preferences. Startup verifies the exact native operation outcome and
+the actual selected source, environment, home, and database before consuming a
+one-shot activation claim. Rollback must prove the restored previous source as well.
+A later ordinary restart cannot grant the same captured eligibility again.
+
+A captured queue is released through the existing deterministic `queue.resume`
+command only after its root or exact restart-continuation chain completes
+successfully. Its messages, ordering, provider selection, and control receipts must
+remain unchanged. Preexisting holds, later Stop or hold commands (including no-op
+commands), edits, new user work, approvals, failures, and identity variance keep it
+held. Existing continuation and queue outbox identities provide retry idempotence.
+
+Work Mode captures only eligible completed roots whose provider conversation was
+still live before this update. One cold admission may reopen that same native
+conversation at its original due time; it adds no immediate prompt or interval
+reset. Current Work Mode and continuation controls are checked again. A failed
+native resume or a changed native identity sends no keep-warm prompt and does not
+fall back to a fresh conversation. Previously evicted sessions and generic crashes
+do not acquire this planned-update permission. Both the capturing runtime and the
+runtime performing recovery need this implementation; older installed binaries do
+not gain it from source publication alone.
