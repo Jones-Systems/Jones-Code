@@ -20,6 +20,9 @@ import {
 
 const toast = vi.hoisted(() => ({ add: vi.fn() }));
 vi.mock("../../components/ui/toast", () => ({ toastManager: toast }));
+vi.mock("../../lib/runtime", () => ({
+  runtime: { runPromise: vi.fn(async () => "33333333-3333-4333-8333-333333333333") },
+}));
 
 const downloaded: DesktopUpdateState = {
   enabled: true,

@@ -384,7 +384,7 @@ export const make = Effect.gen(function* () {
       disabledByEnv: config.disableAutoUpdate,
       onState: (state) => Effect.runPromiseWith(context)(setState(state)),
       timestamp: () => Effect.runPromiseWith(context)(currentIsoTimestamp),
-      prepareNative: async (handle, active) => {
+      prepareNative: async (handle, transactionId, active) => {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
         const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
         if (Option.isNone(backend)) throw new Error("Native backend preparation is unavailable.");
@@ -395,6 +395,7 @@ export const make = Effect.gen(function* () {
           listener: backend.value.httpBaseUrl.toString(),
           bootstrapToken: token,
           stagedHandle: handle,
+          transactionId,
           active,
         });
       },

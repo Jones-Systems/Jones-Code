@@ -390,7 +390,7 @@ describe("Jones desktop updates", () => {
       const controller = new JonesDesktopUpdateController({
         ...f.options,
         fleet,
-        prepareNative: async (selected) => {
+        prepareNative: async (selected, transactionId) => {
           order.push("prepare");
           expect(order).toEqual(["claim", "prepare"]);
           await NodeFSP.writeFile(
@@ -399,10 +399,15 @@ describe("Jones desktop updates", () => {
               "runtime",
               "jones-updates",
               "transactions",
-              selected,
+              transactionId,
               "continuation.json",
             ),
-            JSON.stringify({ prepared: true, transactionId: selected }),
+            JSON.stringify({
+              prepared: true,
+              preparationClaimProtocol: 2,
+              stagedHandle: selected,
+              transactionId,
+            }),
           );
         },
       });
@@ -424,6 +429,7 @@ describe("Jones desktop updates", () => {
               protocol: 1,
               operation: "claim-preparation",
               handle,
+              transactionId: args?.[6],
               status: "preparation-claimed",
             }),
             "",
@@ -440,12 +446,22 @@ describe("Jones desktop updates", () => {
         campaignId,
         stagedHandle: handle,
         targetSource: candidate.source,
-        transactionId: handle,
+        transactionId: expect.stringMatching(/^[a-f0-9]{64}$/),
         fromGeneration: f.active.generation,
       });
+      const transactionId = nativeCommand.mock.calls[1]?.[1]?.[6];
+      if (typeof transactionId !== "string") throw new Error("Missing attempt ID.");
+      expect(transactionId).not.toBe(handle);
       await expect(
         NodeFSP.lstat(
-          NodePath.join(f.home, "runtime", "jones-updates", "transactions", handle, "intent.json"),
+          NodePath.join(
+            f.home,
+            "runtime",
+            "jones-updates",
+            "transactions",
+            transactionId,
+            "intent.json",
+          ),
         ),
       ).rejects.toMatchObject({ code: "ENOENT" });
       expect(nativeCommand).toHaveBeenCalledTimes(2);
@@ -472,6 +488,7 @@ describe("Jones desktop updates", () => {
     "uncertain",
     "malformed",
     "wrong-handle",
+    "wrong-transaction",
     "wrong-operation",
     "transport",
   ] as const)("does not prepare the backend after a %s preparation claim", async (outcome) => {
@@ -492,8 +509,9 @@ describe("Jones desktop updates", () => {
         else {
           expect(args?.[3]).toBe("--claim-preparation");
           expect(args?.[4]).toBe(handle);
-          expect(args?.[5]).toBe("--selection");
-          expect(args?.[7]).toBe("--selection-sha256");
+          expect(args?.[5]).toBe("--transaction");
+          expect(args?.[7]).toBe("--selection");
+          expect(args?.[9]).toBe("--selection-sha256");
           if (outcome === "transport") callback(new Error("helper response lost"), "", "");
           else if (outcome === "malformed") callback(null, "invalid JSON", "");
           else
@@ -503,6 +521,7 @@ describe("Jones desktop updates", () => {
                 protocol: 1,
                 operation: outcome === "wrong-operation" ? "claim-activation" : "claim-preparation",
                 handle: outcome === "wrong-handle" ? "different" : handle,
+                transactionId: outcome === "wrong-transaction" ? "0".repeat(64) : args?.[6],
                 status:
                   outcome === "uncertain"
                     ? "uncertain"
@@ -524,9 +543,9 @@ describe("Jones desktop updates", () => {
       expect(prepareNative).not.toHaveBeenCalled();
       expect(nativeCommand).toHaveBeenCalledTimes(2);
       const claimArgs = nativeCommand.mock.calls[1]?.[1];
-      const selectionPath = claimArgs?.[6];
+      const selectionPath = claimArgs?.[8];
       if (typeof selectionPath !== "string") throw new Error("Missing fixed selection path.");
-      expect(claimArgs?.[8]).toBe(
+      expect(claimArgs?.[10]).toBe(
         NodeCrypto.createHash("sha256")
           .update(await NodeFSP.readFile(selectionPath, "utf8"))
           .digest("hex"),
@@ -540,6 +559,232 @@ describe("Jones desktop updates", () => {
         expect(await controller.install(handle)).toMatchObject({ accepted: false, failed: false });
         expect(nativeCommand).toHaveBeenCalledTimes(2);
       }
+    } finally {
+      preflight.mockReset();
+      nativeCommand.mockReset();
+      await f.cleanup();
+    }
+  });
+
+  it("binds activation to the prepared transaction while preserving the staged handle", async () => {
+    const f = await fixture();
+    const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+    const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+    let transactionId = "";
+    try {
+      const controller = new JonesDesktopUpdateController({
+        ...f.options,
+        prepareNative: async (stagedHandle, selectedTransaction, active) => {
+          expect(stagedHandle).toBe(handle);
+          expect(selectedTransaction).toBe(transactionId);
+          expect(active).toEqual(f.active);
+          await NodeFSP.writeFile(
+            NodePath.join(
+              f.home,
+              "runtime",
+              "jones-updates",
+              "transactions",
+              transactionId,
+              "continuation.json",
+            ),
+            JSON.stringify({
+              prepared: true,
+              preparationClaimProtocol: 2,
+              stagedHandle,
+              transactionId,
+            }),
+          );
+        },
+      });
+      await controller.configure();
+      await controller.check();
+      await controller.download();
+      preflight.mockResolvedValueOnce(undefined);
+      nativeCommand.mockImplementation((_command, args, _options, callback) => {
+        if (typeof callback !== "function") throw new Error("Missing callback.");
+        if (args?.[0] === "--version") callback(null, "Python 3", "");
+        else if (args?.[3] === "--claim-preparation") {
+          const selected = args?.[6];
+          if (typeof selected !== "string") throw new Error("Missing attempt ID.");
+          transactionId = selected;
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation: "claim-preparation",
+              handle,
+              transactionId,
+              status: "preparation-claimed",
+            }),
+            "",
+          );
+        } else {
+          expect(args?.[3]).toBe("--claim-activation");
+          expect(args?.[4]).toBe(
+            NodePath.join(
+              f.home,
+              "runtime",
+              "jones-updates",
+              "transactions",
+              transactionId,
+              "activation-request.json",
+            ),
+          );
+          expect(args?.[5]).toBe("--staged-handle");
+          expect(args?.[6]).toBe(handle);
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation: "claim-activation",
+              handle,
+              transactionId,
+              status: "refused",
+              reason: "busy",
+            }),
+            "",
+          );
+        }
+        return new NodeChildProcess.ChildProcess();
+      });
+      expect(await controller.install(handle)).toMatchObject({ failed: true });
+      expect(nativeCommand).toHaveBeenCalledTimes(3);
+      expect(transactionId).not.toBe(handle);
+      const request = JSON.parse(
+        await NodeFSP.readFile(
+          NodePath.join(
+            f.home,
+            "runtime",
+            "jones-updates",
+            "transactions",
+            transactionId,
+            "activation-request.json",
+          ),
+          "utf8",
+        ),
+      );
+      expect(request).toMatchObject({ transactionId, staged: { handle }, expected: f.active });
+      expect(request.continuationReceipt).toBe(
+        NodePath.join(
+          f.home,
+          "runtime",
+          "jones-updates",
+          "transactions",
+          transactionId,
+          "continuation.json",
+        ),
+      );
+    } finally {
+      preflight.mockReset();
+      nativeCommand.mockReset();
+      await f.cleanup();
+    }
+  });
+
+  it("reuses the persisted attempt after a lost helper response and controller recreation", async () => {
+    const f = await fixture();
+    const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+    const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+    const attempts: string[] = [];
+    const prepareNative = vi.fn();
+    try {
+      await f.controller.configure();
+      await f.controller.check();
+      await f.controller.download();
+      preflight.mockResolvedValue(undefined);
+      nativeCommand.mockImplementation((_command, args, _options, callback) => {
+        if (typeof callback !== "function") throw new Error("Missing callback.");
+        if (args?.[0] === "--version") callback(null, "Python 3", "");
+        else {
+          expect(args?.[3]).toBe("--claim-preparation");
+          const transactionId = args?.[6];
+          if (typeof transactionId !== "string") throw new Error("Missing attempt ID.");
+          attempts.push(transactionId);
+          callback(new Error("response lost"), "", "");
+        }
+        return new NodeChildProcess.ChildProcess();
+      });
+      expect(await f.controller.install(handle)).toMatchObject({ failed: true });
+      const directory = NodePath.join(f.home, "runtime", "jones-updates", "attempt-selections");
+      const files = await NodeFSP.readdir(directory);
+      expect(files).toHaveLength(1);
+      const recordPath = NodePath.join(directory, files[0]!);
+      const before = await NodeFSP.readFile(recordPath, "utf8");
+      const restarted = new JonesDesktopUpdateController({ ...f.options, prepareNative });
+      await restarted.configure();
+      expect(await restarted.install(handle)).toMatchObject({ failed: true });
+      expect(attempts).toHaveLength(2);
+      expect(attempts[1]).toBe(attempts[0]);
+      expect(attempts[0]).not.toBe(handle);
+      expect(await NodeFSP.readFile(recordPath, "utf8")).toBe(before);
+      expect(await NodeFSP.readdir(directory)).toEqual(files);
+      expect(prepareNative).not.toHaveBeenCalled();
+      expect(f.stages()).toBe(1);
+    } finally {
+      preflight.mockReset();
+      nativeCommand.mockReset();
+      await f.cleanup();
+    }
+  });
+
+  it("uses a fresh attempt after a reconciled rollback without changing its evidence or stage", async () => {
+    const f = await fixture(true, "rolled-back");
+    const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+    const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+    const journalPath = NodePath.join(
+      f.home,
+      "runtime",
+      "jones-updates",
+      "transactions",
+      handle,
+      "journal.json",
+    );
+    try {
+      const journal = await NodeFSP.readFile(journalPath, "utf8");
+      await f.controller.configure();
+      await f.controller.check();
+      await f.controller.download();
+      const appPath = NodePath.join(
+        f.home,
+        "runtime",
+        "jones-updates",
+        "apps",
+        handle,
+        "Candidate.app",
+      );
+      const receiptPath = NodePath.join(NodePath.dirname(appPath), "mac-app-receipt.json");
+      const receipt = await NodeFSP.readFile(receiptPath, "utf8");
+      const digest = await hashMacApp(appPath);
+      preflight.mockResolvedValueOnce(undefined);
+      nativeCommand.mockImplementation((_command, args, _options, callback) => {
+        if (typeof callback !== "function") throw new Error("Missing callback.");
+        if (args?.[0] === "--version") callback(null, "Python 3", "");
+        else {
+          expect(args?.[3]).toBe("--claim-preparation");
+          expect(args?.[4]).toBe(handle);
+          expect(args?.[6]).toMatch(/^[a-f0-9]{64}$/);
+          expect(args?.[6]).not.toBe(handle);
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation: "claim-preparation",
+              handle,
+              transactionId: args?.[6],
+              status: "refused",
+              reason: "busy",
+            }),
+            "",
+          );
+        }
+        return new NodeChildProcess.ChildProcess();
+      });
+      expect(await f.controller.install(handle)).toMatchObject({ failed: true });
+      expect(nativeCommand).toHaveBeenCalledTimes(2);
+      expect(await NodeFSP.readFile(journalPath, "utf8")).toBe(journal);
+      expect(await NodeFSP.readFile(receiptPath, "utf8")).toBe(receipt);
+      expect(await hashMacApp(appPath)).toBe(digest);
+      expect(f.stages()).toBe(1);
     } finally {
       preflight.mockReset();
       nativeCommand.mockReset();

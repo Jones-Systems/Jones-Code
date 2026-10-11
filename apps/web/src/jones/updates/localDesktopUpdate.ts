@@ -1,3 +1,6 @@
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
+import { runtime } from "../../lib/runtime";
 import type {
   DesktopBridge,
   DesktopUpdateActionResult,
@@ -144,7 +147,9 @@ async function prepareLocalFleetCampaign(
     throw new Error(
       "The staged desktop source is unavailable; enrolled updates cannot be prepared.",
     );
-  const campaignId = globalThis.crypto.randomUUID();
+  const campaignId = await runtime.runPromise(
+    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4)),
+  );
   const prepared = await bridge.fleetUpdates({
     action: "prepare",
     input: {

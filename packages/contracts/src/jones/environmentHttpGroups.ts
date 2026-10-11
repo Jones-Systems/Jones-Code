@@ -8,6 +8,7 @@ import {
 } from "./importedHistory.ts";
 import {
   JonesUpdateDownloadInput,
+  JonesNativePrepareInput,
   JonesUpdateInstallInput,
   JonesUpdateState,
 } from "./jonesUpdates.ts";
@@ -412,7 +413,7 @@ export const makeJonesHttpGroups = ({
     .add(
       HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
         headers: OptionalBearerHeaders,
-        payload: JonesUpdateInstallInput,
+        payload: JonesNativePrepareInput,
         success: JonesUpdateState,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),

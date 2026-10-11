@@ -80,6 +80,7 @@ const decodeNativeSelectionResult = Schema.decodeUnknownSync(
     protocol: Schema.Literal(1),
     operation: Schema.Literals(["discard-staged", "claim-preparation", "claim-activation"]),
     handle: Schema.String,
+    transactionId: Schema.optionalKey(Schema.String),
     status: Schema.Literals([
       "discarded",
       "preparation-claimed",
@@ -99,15 +100,26 @@ const decodeActivationJournal = Schema.decodeUnknownSync(ActivationJournal);
 const decodeEnvironmentId = Schema.decodeUnknownSync(EnvironmentId);
 const decodeStageSelection = Schema.decodeUnknownSync(StageSelection);
 const decodeNativeStageReceipt = Schema.decodeUnknownSync(NativeStageReceipt);
+const decodeAttemptSelection = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    transactionId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+    stagedHandle: Schema.String,
+    selectionPath: Schema.String,
+    selectionSha256: Schema.String,
+    expected: JonesActiveInstall,
+  }),
+);
 
-function jonesContinuationReceiptPath(home: string, handle: string): string {
-  if (!/^[a-zA-Z0-9_-]+$/.test(handle)) throw new Error("Invalid Jones staged handle.");
+function jonesContinuationReceiptPath(home: string, transactionId: string): string {
+  if (!/^[a-f0-9]{64}$/.test(transactionId))
+    throw new Error("Invalid Jones native transaction ID.");
   return NodePath.join(
     home,
     "runtime",
     "jones-updates",
     "transactions",
-    handle,
+    transactionId,
     "continuation.json",
   );
 }
@@ -151,7 +163,11 @@ export interface JonesDesktopUpdateOptions {
   readonly disabledByEnv: boolean;
   readonly fleet?: Pick<DesktopFleetStore, "bindInstall" | "recordOutcome">;
   readonly onState: (state: DesktopUpdateState) => Promise<void>;
-  readonly prepareNative?: (handle: string, active: ActiveInstall) => Promise<void>;
+  readonly prepareNative?: (
+    stagedHandle: string,
+    transactionId: string,
+    active: ActiveInstall,
+  ) => Promise<void>;
   readonly processProofs: () => Promise<readonly { pid: number; identity: string }[]>;
   readonly listener: () => Promise<string>;
   readonly timestamp: () => Promise<string>;
@@ -219,6 +235,85 @@ export class JonesDesktopUpdateController {
       )
       .digest("hex");
     return NodePath.join(this.updaterRoot, "staging", `${binding.installedSource}-${digest}.json`);
+  }
+
+  async #selectAttempt(
+    stagedHandle: string,
+    selectionPath: string,
+    selectionSha256: string,
+    expected: ActiveInstall,
+  ): Promise<string> {
+    const binding = {
+      protocol: 1 as const,
+      stagedHandle,
+      selectionPath,
+      selectionSha256,
+      expected,
+    };
+    const directory = NodePath.join(this.updaterRoot, "attempt-selections");
+    const key = NodeCrypto.createHash("sha256")
+      .update(`${selectionPath}\n${selectionSha256}`)
+      .digest("hex");
+    const path = NodePath.join(directory, `${key}.json`);
+    const read = async () => {
+      const info = await NodeFSP.lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 131072)
+        throw new Error("Native attempt selection is not a bounded regular file.");
+      const attempt = decodeAttemptSelection(JSON.parse(await NodeFSP.readFile(path, "utf8")));
+      for (const key of [
+        "protocol",
+        "stagedHandle",
+        "selectionPath",
+        "selectionSha256",
+        "expected",
+      ] as const)
+        if (JSON.stringify(attempt[key]) !== JSON.stringify(binding[key]))
+          throw new Error("The persisted native attempt binding changed.");
+      for (const parentPath of [directory, this.updaterRoot]) {
+        const parent = await NodeFSP.open(parentPath, "r");
+        try {
+          await parent.sync();
+        } finally {
+          await parent.close();
+        }
+      }
+      return attempt.transactionId;
+    };
+    try {
+      return await read();
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+    }
+    await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+    const scratch = NodePath.join(
+      directory,
+      `${key}.${NodeCrypto.randomBytes(16).toString("hex")}.pending`,
+    );
+    try {
+      await writeJonesNativeFile(
+        scratch,
+        JSON.stringify({ ...binding, transactionId: NodeCrypto.randomBytes(32).toString("hex") }) +
+          "\n",
+        0o600,
+      );
+      try {
+        await NodeFSP.link(scratch, path);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+      }
+      const parent = await NodeFSP.open(directory, "r");
+      try {
+        await parent.sync();
+      } finally {
+        await parent.close();
+      }
+    } finally {
+      await NodeFSP.unlink(scratch).catch((cause: NodeJS.ErrnoException) => {
+        if (cause.code !== "ENOENT") throw cause;
+      });
+    }
+    // Read the winning immutable record before dispatch; a lost reply must retain this attempt ID.
+    return read();
   }
 
   async #hydrateStage(): Promise<void> {
@@ -871,14 +966,21 @@ export class JonesDesktopUpdateController {
         throw new Error("Active install changed.");
       decodeStagedApp(staged);
       await preflightJonesCandidateStartupGate(staged);
-      const tx = NodePath.dirname(jonesContinuationReceiptPath(this.#options.home, handle));
-      await NodeFSP.mkdir(tx, { recursive: true, mode: 0o700 });
       const helper = await this.#helperPath();
       const selectionPath = await this.#selectionFile();
       const selectionRaw = await NodeFSP.readFile(selectionPath, "utf8");
       if (decodeStageSelection(JSON.parse(selectionRaw)).app.handle !== handle)
         throw new Error("The selected native stage changed.");
       await runNativeCommand("/usr/bin/python3", ["--version"]);
+      const selectionSha256 = NodeCrypto.createHash("sha256").update(selectionRaw).digest("hex");
+      const transactionId = await this.#selectAttempt(
+        handle,
+        selectionPath,
+        selectionSha256,
+        expected,
+      );
+      const tx = NodePath.dirname(jonesContinuationReceiptPath(this.#options.home, transactionId));
+      await NodeFSP.mkdir(tx, { recursive: true, mode: 0o700 });
       const intentPath = NodePath.join(tx, "intent.json");
       try {
         await NodeFSP.lstat(intentPath);
@@ -897,6 +999,8 @@ export class JonesDesktopUpdateController {
             this.manifestPath,
             "--claim-preparation",
             handle,
+            "--transaction",
+            transactionId,
             "--selection",
             selectionPath,
             "--selection-sha256",
@@ -904,23 +1008,32 @@ export class JonesDesktopUpdateController {
           ]),
         ),
       );
-      if (preparation.operation !== "claim-preparation" || preparation.handle !== handle)
+      if (
+        preparation.operation !== "claim-preparation" ||
+        preparation.handle !== handle ||
+        preparation.transactionId !== transactionId
+      )
         throw new Error("Native preparation claim identity changed.");
       if (preparation.status === "refused" && preparation.reason === "selection-mismatch")
         this.#activationBlocked = false;
       if (preparation.status !== "preparation-claimed")
         throw new Error("Native preparation claim was not confirmed.");
-      await this.#options.prepareNative?.(handle, expected);
+      await this.#options.prepareNative?.(handle, transactionId, expected);
       // A missing preparation receipt is a real capability blocker; never manufacture it.
-      const continuationReceipt = jonesContinuationReceiptPath(this.#options.home, handle);
+      const continuationReceipt = jonesContinuationReceiptPath(this.#options.home, transactionId);
       const continuation = JSON.parse(
         await NodeFSP.readFile(continuationReceipt, "utf8"),
       ) as Record<string, unknown>;
-      if (continuation.prepared !== true || continuation.transactionId !== handle)
+      if (
+        continuation.prepared !== true ||
+        continuation.preparationClaimProtocol !== 2 ||
+        continuation.transactionId !== transactionId ||
+        continuation.stagedHandle !== handle
+      )
         throw new Error("Native continuation preparation is required.");
       const intent = {
         protocol: 1,
-        transactionId: handle,
+        transactionId,
         staged,
         expected,
         continuationReceipt,
@@ -944,7 +1057,7 @@ export class JonesDesktopUpdateController {
           campaignId,
           stagedHandle: handle,
           targetSource: staged.sourceSha,
-          transactionId: handle,
+          transactionId,
           fromGeneration: expected.generation,
         });
       }
@@ -957,6 +1070,8 @@ export class JonesDesktopUpdateController {
             this.manifestPath,
             "--claim-activation",
             requestPath,
+            "--staged-handle",
+            handle,
             "--selection",
             selectionPath,
             "--selection-sha256",
@@ -967,6 +1082,7 @@ export class JonesDesktopUpdateController {
       if (
         claim.operation !== "claim-activation" ||
         claim.handle !== handle ||
+        claim.transactionId !== transactionId ||
         claim.status !== "claimed" ||
         claim.intentPath !== intentPath
       )
@@ -1007,7 +1123,7 @@ export class JonesDesktopUpdateController {
       await this.#publish(
         "installing",
         "downloaded",
-        `Installing update ${handle}; Jones Code is restarting. The outcome appears after restart.`,
+        `Installing update ${transactionId}; Jones Code is restarting. The outcome appears after restart.`,
       );
       return { accepted: true, completed: false, failed: false };
     } catch (cause) {
