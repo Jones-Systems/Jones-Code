@@ -19,6 +19,14 @@
 #   start --expect-unit SHA --expect-owned absent|SHA
 #   archive-launcher --expect-unit SHA --expect-owned SHA
 #
+# `install-launcher` and `start` act only on a stopped unit: exactly
+# inactive/dead or failed/failed, with no main process, queued job or cgroup.
+# `stop` runs only when the running unit has no queued job and its cgroup can
+# be read under a unified hierarchy, and completes only once the unit is
+# stopped so and that cgroup, with every descendant, is unpopulated or gone.
+# Only `stop` examines that original cgroup. No operation resets a failed unit
+# or changes its exit-status settings.
+#
 # The unit preimage is the fragment plus every drop-in other than the one
 # owned file, recorded by owner, mode and SHA-256. Every mutation compares it
 # and the owned file first. Only the owned drop-in is ever written; it is
@@ -60,7 +68,8 @@ our $OUTPUT_LIMIT = 65536;
 my $PATH = qr{\A((?:/[A-Za-z0-9._@+-]{1,255}){1,64})\z};
 my $SHA = qr{\A([a-f0-9]{64})\z};
 my $VERSION = qr{\A([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}-preview\.[0-9]{8}\.[0-9]{1,20}(?:\.[0-9]{1,20})?)\z};
-my @SHOW = qw(FragmentPath DropInPaths User Group NoNewPrivileges KillMode Slice ControlGroup ActiveState SubState MainPID ExecStart WorkingDirectory);
+# Job is read only for the stopped check below and is never reported.
+my @SHOW = qw(FragmentPath DropInPaths User Group NoNewPrivileges KillMode Slice ControlGroup ActiveState SubState Job MainPID ExecStart WorkingDirectory);
 
 # Set immediately before the first systemctl mutation or owned-file rename,
 # link or unlink; any later refusal is no longer proof of no effect.
@@ -466,11 +475,42 @@ sub process_bound {
   return @uids == 4 && !grep { $_ != $policy->{uid} } @uids;
 }
 
-sub cgroup_empty {
+# Stopped: exactly `inactive dead`, or the `failed failed` a unit is left in
+# when its main process exits unclean on stop, with no main process, no queued
+# job and no current cgroup. Nothing here resets a failed unit or changes its
+# exit-status settings; a later start replaces systemd's recorded result.
+sub stopped_unit {
   my ($show) = @_;
-  my ($group) = $show->{ControlGroup} =~ m{\A((?:/[A-Za-z0-9._\@:\\-]+)+)\z} or return 0;
-  my $procs = read_small("$CGROUP_ROOT$group/cgroup.procs", 1048576);
-  return !defined $procs || $procs eq "";
+  my $state = "$show->{ActiveState} $show->{SubState}";
+  return ($state eq "inactive dead" || $state eq "failed failed")
+    && $show->{MainPID} eq "0" && $show->{Job} eq "" && $show->{ControlGroup} eq "";
+}
+
+# One reading of the unit's cgroup under a unified hierarchy, whose root marker
+# must be readable first: `absent`, or the single `populated` value (0 or 1,
+# covering every descendant) in the same existing directory's cgroup.events;
+# undef when neither can be shown. The path is only systemd's ControlGroup
+# ending in the policy slice and unit.
+sub cgroup_population {
+  my ($policy, $control_group) = @_;
+  my ($group) = $control_group =~ m{\A((?:/[A-Za-z0-9._\@:\\-]+)+)\z} or return undef;
+  return undef if grep { $_ eq "." || $_ eq ".." } split m{/}, $group;
+  my $suffix = quotemeta("/$policy->{slice}/$policy->{unit}");
+  return undef unless $group =~ /$suffix\z/;
+  return undef unless defined read_small("$CGROUP_ROOT/cgroup.controllers", 4096);
+  my $directory = "$CGROUP_ROOT$group";
+  my @before = lstat($directory);
+  return $! == ENOENT ? "absent" : undef unless @before;
+  return undef unless -d _;
+  # A kernel file reports size 0, so only the bounded read limits it.
+  my $events = read_small("$directory/cgroup.events", 4096);
+  my @after = lstat($directory);
+  # The kernel removes a cgroup's files only with the directory itself.
+  return !@after && $! == ENOENT ? "absent" : undef unless defined $events;
+  return undef unless @after && -d _ && $after[0] == $before[0] && $after[1] == $before[1];
+  return undef unless $events =~ /\A(?:[a-z_]+ [0-9]+\n)+\z/;
+  my @populated = $events =~ /^populated ([0-9]+)$/mg;
+  return @populated == 1 && $populated[0] =~ /\A([01])\z/ ? $1 : undef;
 }
 
 sub compare_and_hold {
@@ -519,20 +559,33 @@ sub stop {
     unless $show->{ActiveState} eq "active" && $show->{MainPID} eq $pid
     && (process_birth($pid) // "") eq $values->{"expect-main-birth"}
     && process_bound($policy, $show, $pid);
+  reject("unit-job") unless $show->{Job} eq "";
+  # The proof after the stop must be possible: the running unit's cgroup is
+  # read now by the same rules. It may still be populated; this shows only
+  # that the later reading can answer, not that anything has stopped.
+  my $running = cgroup_population($policy, $show->{ControlGroup});
+  reject("unit-cgroup") unless defined $running && $running ne "absent";
   $EFFECT_STARTED = 1;
   my ($ok) = systemctl("stop", $policy->{unit});
   unknown("stop") unless $ok;
-  my $after = show($policy);
-  # An inactive unit reports no cgroup, so the running unit's path is checked.
+  # A stopped unit reports no cgroup, so the one captured while it ran is read
+  # again, then the same stopped state is read again with the unit identity.
+  my $first = show($policy);
+  unknown("stop-readback") unless stopped_unit($first);
+  my $remaining = cgroup_population($policy, $show->{ControlGroup}) // "";
+  unknown("stop-readback") unless $remaining eq "0" || $remaining eq "absent";
+  my $after = unit_preimage($policy);
+  my $readback = verified_show($policy, $after, $serve);
   unknown("stop-readback")
-    unless $after->{ActiveState} eq "inactive" && $after->{MainPID} eq "0" && cgroup_empty($show);
-  report($policy, unit_preimage($policy), $serve, $after);
+    unless stopped_unit($readback)
+    && "$readback->{ActiveState} $readback->{SubState}" eq "$first->{ActiveState} $first->{SubState}";
+  report($policy, $after, $serve, $readback);
 }
 
 sub install_launcher {
   my ($policy, $values) = @_;
   my ($preimage, $serve, $show) = compare_and_hold($policy, $values);
-  reject("unit-active") unless $show->{ActiveState} eq "inactive" && $show->{MainPID} eq "0";
+  reject("unit-active") unless stopped_unit($show);
   my $version = $values->{"launcher-version"};
   my @entry = lstat(launcher_entry($policy, $version));
   reject("launcher-entry")
@@ -592,13 +645,16 @@ sub install_launcher {
   unknown("launcher-readback") unless exec_kind($policy, $serve, $readback) eq "launcher $version";
   unknown("hardening-readback")
     unless $readback->{KillMode} eq $show->{KillMode} && $readback->{ControlGroup} eq $show->{ControlGroup};
+  unknown("stopped-readback")
+    unless stopped_unit($readback)
+    && "$readback->{ActiveState} $readback->{SubState}" eq "$show->{ActiveState} $show->{SubState}";
   report($policy, $after, $serve, $readback);
 }
 
 sub start {
   my ($policy, $values) = @_;
   my ($preimage, $serve, $show) = compare_and_hold($policy, $values);
-  reject("unit-active") unless $show->{ActiveState} eq "inactive" && $show->{MainPID} eq "0";
+  reject("unit-active") unless stopped_unit($show);
   $EFFECT_STARTED = 1;
   my ($ok) = systemctl("start", $policy->{unit});
   unknown("start") unless $ok;
