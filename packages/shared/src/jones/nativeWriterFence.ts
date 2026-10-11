@@ -293,6 +293,7 @@ export function holdJonesNativeWriterFence(input: {
       if (
         descriptor.protocol !== 1 || descriptor.startupGateProtocol !== 1 ||
         descriptor.transactionId !== entry.name || descriptor.home !== home ||
+        descriptor.stagedHandle !== staged.handle ||
         descriptor.databasePath !== databasePath || descriptor.profile !== profile ||
         descriptor.environmentId !== active.environmentId ||
         ["version", "sourceSha", "sourceTree"].some((key) => descriptor[key] !== staged[key])

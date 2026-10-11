@@ -14,6 +14,7 @@ const TrialIdentity = Schema.Struct({
   protocol: Schema.Literal(1),
   startupGateProtocol: Schema.Literal(1),
   transactionId: Schema.NonEmptyString,
+  stagedHandle: Schema.NonEmptyString,
   home: Schema.NonEmptyString,
   databasePath: Schema.NonEmptyString,
   profile: Schema.NonEmptyString,
@@ -52,7 +53,10 @@ const TrialReceipt = Schema.Struct({
 });
 const ResumedJournal = Schema.Struct({
   phase: Schema.Literal("resumed"),
-  intent: Schema.Struct({ protocol: Schema.Literal(1), transactionId: Schema.NonEmptyString }),
+  intent: Schema.Struct({
+    protocol: Schema.Literal(1), transactionId: Schema.NonEmptyString,
+    staged: Schema.Struct({ handle: Schema.NonEmptyString }),
+  }),
 });
 const BuildIdentity = Schema.Struct({
   jonesSource: Schema.Struct({
@@ -261,6 +265,7 @@ async function isCommittedRestart(
   if (
     grant.generation !== descriptor.transactionId ||
     journal.intent.transactionId !== descriptor.transactionId ||
+    journal.intent.staged.handle !== descriptor.stagedHandle ||
     identityKeys.some(
       (key) =>
         grant[key] !== descriptor[key] ||

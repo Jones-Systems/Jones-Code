@@ -210,9 +210,9 @@ it("admits only the exact source-bound trial permit before application state ope
     const directory = NodePath.join(root, "runtime", "jones-updates", "transactions", handle);
     await NodeFSP.mkdir(directory, { recursive: true });
     const descriptorPath = NodePath.join(directory, "trial-descriptor.json");
-    const staged = { version: "candidate", sourceSha: "c".repeat(40), sourceTree: "d".repeat(40) };
+    const staged = { handle: "a".repeat(64), version: "candidate", sourceSha: "c".repeat(40), sourceTree: "d".repeat(40) };
     await NodeFSP.writeFile(descriptorPath, JSON.stringify({
-      ...input, ...staged, protocol: 1, startupGateProtocol: 1, transactionId: handle,
+      ...input, ...staged, stagedHandle: staged.handle, protocol: 1, startupGateProtocol: 1, transactionId: handle,
     }));
     await NodeFSP.writeFile(NodePath.join(directory, "journal.json"), JSON.stringify({
       phase: "trial", intent: { protocol: 1, transactionId: handle, staged },

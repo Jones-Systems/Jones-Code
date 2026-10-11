@@ -18,9 +18,10 @@ async function fixture(body: (value: Awaited<ReturnType<typeof setup>>) => Promi
 
 async function setup(home: string) {
   const handle = "c".repeat(64);
+  const transactionId = "d".repeat(64);
   const databasePath = NodePath.join(home, "userdata", "statev2.sqlite");
   const profile = NodePath.join(home, "profile");
-  const directory = NodePath.join(home, "runtime", "jones-updates", "transactions", handle);
+  const directory = NodePath.join(home, "runtime", "jones-updates", "transactions", transactionId);
   const selectionPath = NodePath.join(home, "runtime", "jones-updates", "staging", `${"a".repeat(40)}-fixture.json`);
   await NodeFSP.mkdir(NodePath.dirname(databasePath), { recursive: true });
   await NodeFSP.mkdir(profile);
@@ -33,7 +34,7 @@ async function setup(home: string) {
   const raw = JSON.stringify(selection) + "\n";
   await NodeFSP.writeFile(selectionPath, raw);
   const claim = {
-    protocol: 1, preparationClaimProtocol: 1, transactionId: handle,
+    protocol: 1, preparationClaimProtocol: 2, stagedHandle: handle, transactionId,
     selectionPath, selectionSha256: NodeCrypto.createHash("sha256").update(raw).digest("hex"),
     home, databasePath, profile, environmentId: "fixture",
   };
@@ -41,7 +42,7 @@ async function setup(home: string) {
   await NodeFSP.writeFile(claimPath, JSON.stringify(claim));
   let prepares = 0;
   const input = {
-    home, databasePath, environmentId: "fixture", version: "v", handle,
+    home, databasePath, environmentId: "fixture", version: "v", handle, transactionId,
     prepare: async () => {
       expect(JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "prepare-dispatched.json"), "utf8"))).toEqual(claim);
       prepares++;
@@ -72,7 +73,7 @@ it("retains uncertain preparation dispatch and refuses replay", async () =>
     await expect(NodeFSP.stat(NodePath.join(directory, "continuation.json"))).rejects.toMatchObject({ code: "ENOENT" });
   }));
 
-it.each(["missing-claim", "legacy-claim", "wrong-protocol", "wrong-selection-hash", "wrong-selection-handle", "discarded-selection", "wrong-selection-path"])(
+it.each(["missing-claim", "legacy-claim", "wrong-protocol", "wrong-transaction", "wrong-selection-hash", "wrong-selection-handle", "discarded-selection", "wrong-selection-path"])(
   "refuses %s before any continuation side effect",
   async (fault) => fixture(async ({ directory, selectionPath, claimPath, claim, input, prepares }) => {
     if (fault === "missing-claim") await NodeFSP.unlink(claimPath);
@@ -83,7 +84,8 @@ it.each(["missing-claim", "legacy-claim", "wrong-protocol", "wrong-selection-has
         environmentId: claim.environmentId, prepared: true,
       }));
     }
-    if (fault === "wrong-protocol") await NodeFSP.writeFile(claimPath, JSON.stringify({ ...claim, preparationClaimProtocol: 2 }));
+    if (fault === "wrong-protocol") await NodeFSP.writeFile(claimPath, JSON.stringify({ ...claim, preparationClaimProtocol: 1 }));
+    if (fault === "wrong-transaction") await NodeFSP.writeFile(claimPath, JSON.stringify({ ...claim, transactionId: input.handle }));
     if (fault === "wrong-selection-hash") await NodeFSP.writeFile(selectionPath, (await NodeFSP.readFile(selectionPath, "utf8")) + " ");
     if (fault === "wrong-selection-handle") {
       const value = JSON.parse(await NodeFSP.readFile(selectionPath, "utf8"));

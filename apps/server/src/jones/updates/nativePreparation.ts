@@ -51,10 +51,12 @@ export async function prepareNativeContinuationReceipt(input: {
   environmentId: string;
   version: string;
   handle: string;
+  transactionId: string;
   prepare: () => Promise<ReadonlyArray<string>>;
   clear: (threadIds: ReadonlyArray<string>) => Promise<void>;
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.handle)) throw new Error("Invalid staged handle.");
+  if (!/^[a-f0-9]{64}$/.test(input.transactionId)) throw new Error("Invalid native transaction ID.");
   const manifestPath = NodePath.join(input.home, "runtime", "jones-active-install.json");
   const active = await boundedJson(manifestPath);
   const manifest = decodeManifest(active.raw);
@@ -68,7 +70,7 @@ export async function prepareNativeContinuationReceipt(input: {
   ) {
     throw new Error("The active native manifest changed before preparation.");
   }
-  const directory = NodePath.join(home, "runtime", "jones-updates", "transactions", input.handle);
+  const directory = NodePath.join(home, "runtime", "jones-updates", "transactions", input.transactionId);
   if (await NodeFSP.realpath(directory) !== directory)
     throw new Error("Native preparation transaction path is not canonical.");
   const claimPath = NodePath.join(directory, "prepare-intent.json");
@@ -83,8 +85,9 @@ export async function prepareNativeContinuationReceipt(input: {
   ) throw new Error("Native preparation requires an exact selection claim.");
   const expectedClaim = {
     protocol: 1,
-    preparationClaimProtocol: 1,
-    transactionId: input.handle,
+    preparationClaimProtocol: 2,
+    stagedHandle: input.handle,
+    transactionId: input.transactionId,
     selectionPath,
     selectionSha256,
     home,

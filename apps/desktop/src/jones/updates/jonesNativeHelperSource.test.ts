@@ -48,7 +48,8 @@ expected = {'protocol': 1, 'owner': 'desktop', 'generation': 'previous', 'transa
     'version': 'same-preview-version', 'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40, 'appDigest': app_digest(previous_app)}
 manifest_path = root / 'runtime' / 'jones-active-install.json'
 durable(manifest_path, expected, True)
-tx = root / 'runtime' / 'jones-updates' / 'transactions' / ('f' * 64)
+transaction_id = 'e' * 64
+tx = root / 'runtime' / 'jones-updates' / 'transactions' / transaction_id
 tx.mkdir(parents=True)
 payload = root / 'native.dmg'; payload.write_text('synthetic-qualified-dmg')
 (root / 'github-artifact.zip').write_text('synthetic-qualified-zip')
@@ -71,12 +72,15 @@ selection = {'schema': 1, 'source': 'jones-actions', 'home': expected['home'], '
              'artifactDirectory': str(root / 'artifact'), 'app': staged}
 durable(selection_path, selection, True)
 selection_digest = digest(selection_path)
-claim = preparation_claim(expected, staged['handle'], selection_path, selection_digest)
+claim = preparation_claim(expected, staged['handle'], transaction_id, selection_path, selection_digest)
+attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
+attempt_path = manifest_path.parent / 'jones-updates' / 'attempt-selections' / (attempt_key + '.json')
+durable(attempt_path, {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
 durable(tx / 'prepare-intent.json', claim, True)
 durable(tx / 'prepare-dispatched.json', claim, True)
 continuation = dict(claim, prepared=True)
 durable(tx / 'continuation.json', continuation, True)
-intent = {'protocol': 1, 'transactionId': staged['handle'], 'expected': expected, 'staged': staged,
+intent = {'protocol': 1, 'transactionId': transaction_id, 'expected': expected, 'staged': staged,
     'continuationReceipt': str(tx / 'continuation.json'), 'processes': [{'pid': 123, 'identity': 'owned-native-process'}],
     'listener': 'http://127.0.0.1:3777'}
 durable(tx / 'intent.json', intent, True)
@@ -132,7 +136,7 @@ def synthetic_launch(active, descriptor=None):
     (profile / 'opaque').write_text('advanced-profile')
     if fault == 'untracked-launch': raise RuntimeError('Candidate identity was not captured.')
     wanted = read(descriptor)
-    receipt = {key: wanted[key] for key in ('protocol', 'startupGateProtocol', 'transactionId', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')}
+    receipt = {key: wanted[key] for key in ('protocol', 'startupGateProtocol', 'transactionId', 'stagedHandle', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')}
     receipt['resumeHeld'] = True
     receipt['backendProcess'] = {'pid': 654, 'identity': 'tracked-native-backend'}
     if fault == 'legacy-receipt':
@@ -203,7 +207,7 @@ else:
         assert events.count('candidate-launch') == 1
         descriptor = read(tx / 'trial-descriptor.json')
         grant = read(tx / 'commit-grant.json')
-        fields = ('protocol', 'startupGateProtocol', 'transactionId', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')
+        fields = ('protocol', 'startupGateProtocol', 'transactionId', 'stagedHandle', 'home', 'databasePath', 'profile', 'environmentId', 'version', 'sourceSha', 'sourceTree', 'listener')
         assert descriptor['startupGateProtocol'] == 1
         assert grant == dict(generation=descriptor['transactionId'], **{key: descriptor[key] for key in fields})
         assert read(manifest_path)['sourceSha'] == staged['sourceSha']
@@ -242,6 +246,51 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it.each(["rolled-back", "resumed", "blocked", "wrong-active", "occupied-attempt", "lost-reply"])(
+    "binds a fresh transaction to the immutable stage after %s",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+        const setup = activationScenario.split("\nevents = []")[0];
+        const scenario = String.raw`
+prior_intent = intent if fault != 'wrong-active' else dict(intent, expected=dict(expected, sourceSha='0' * 40))
+durable(tx / 'intent.json', prior_intent)
+prior_journal = {'intent': prior_intent, 'phase': fault if fault in ('resumed', 'blocked') else 'rolled-back'}
+durable(tx / 'journal.json', prior_journal, True)
+(tx / 'retained-evidence').write_text('previous attempt retained')
+new_transaction = transaction_id if fault == 'occupied-attempt' else 'c' * 64
+new_selection = selection_path.with_name(expected['sourceSha'] + '-' + 'd' * 64 + '.json')
+durable(new_selection, selection, True)
+new_digest = digest(new_selection)
+key = hashlib.sha256((str(new_selection) + '\n' + new_digest).encode()).hexdigest()
+attempt_record = {'protocol': 1, 'transactionId': new_transaction, 'stagedHandle': staged['handle'], 'selectionPath': str(new_selection), 'selectionSha256': new_digest, 'expected': expected}
+durable(attempt_path.parent / (key + '.json'), attempt_record, True)
+def retry(): return selection_command('claim-preparation', expected, staged['handle'], str(new_selection), new_digest, transaction_id=new_transaction)
+result = retry()
+if fault in ('rolled-back', 'lost-reply'):
+    assert result['status'] == 'preparation-claimed' and result['transactionId'] != staged['handle'], result
+    new_claim = read(tx.parent / new_transaction / 'prepare-intent.json')
+    assert new_claim['transactionId'] == new_transaction and new_claim['stagedHandle'] == staged['handle']
+    if fault == 'lost-reply':
+        assert retry()['reason'] == 'activation-pending'
+        assert read(attempt_path.parent / (key + '.json')) == attempt_record
+else:
+    assert result['status'] == 'refused', result
+    if new_transaction != transaction_id: assert not (tx.parent / new_transaction).exists()
+assert read(tx / 'journal.json') == prior_journal
+assert (tx / 'retained-evidence').read_text() == 'previous attempt retained'
+assert read(staged['receiptPath'])['app']['handle'] == staged['handle']
+`;
+        NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault], {
+          encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+        });
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
   it("physically reserves rollback capacity, preserves changed ownership, and removes only its failed allocation", async () => {
     const f = await fixture();
     try {
@@ -298,10 +347,10 @@ assert not path.exists() and sibling.read_text() == 'keep'
 request = tx / 'activation-request.json'; os.rename(tx / 'intent.json', request)
 for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
 def run(operation, selection_hash=selection_digest):
-    return selection_command(operation, expected, staged['handle'], str(selection_path), selection_hash, str(request))
+    return selection_command(operation, expected, staged['handle'], str(selection_path), selection_hash, str(request), transaction_id if operation != 'discard-staged' else None)
 if fault == 'discard-first':
     assert run('discard-staged')['status'] == 'discarded'
-    assert run('claim-preparation') == {'protocol': 1, 'operation': 'claim-preparation', 'handle': staged['handle'], 'status': 'refused', 'reason': 'selection-mismatch'}
+    assert run('claim-preparation') == {'protocol': 1, 'operation': 'claim-preparation', 'handle': staged['handle'], 'transactionId': transaction_id, 'status': 'refused', 'reason': 'selection-mismatch'}
     assert not (tx / 'prepare-intent.json').exists()
 else:
     if fault == 'claim-sync-failed':
@@ -360,7 +409,7 @@ def durable(path, value, exclusive=False):
 for name in ('intent.json', 'prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
 command = ['python3', str(root / 'interleaved-helper.py'), '--manifest', str(manifest_path),
            '--selection', str(selection_path), '--selection-sha256', selection_digest]
-child = subprocess.Popen(command + ['--claim-preparation', staged['handle']], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+child = subprocess.Popen(command + ['--claim-preparation', staged['handle'], '--transaction', transaction_id], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 try:
     deadline = time.monotonic() + 5
     while not (root / 'claim-entered').exists():
@@ -463,7 +512,7 @@ assert old.exists()
 request = tx / 'activation-request.json'
 os.rename(tx / 'intent.json', request)
 def run(operation):
-    return selection_command(operation, expected, staged['handle'], str(selection_path), selection_digest, str(request))
+    return selection_command(operation, expected, staged['handle'], str(selection_path), selection_digest, str(request), transaction_id if operation != 'discard-staged' else None)
 claiming = fault in ('claim', 'discard-before-claim', 'wrong-request', 'wrong-candidate', 'wrong-continuation', 'claim-sync-failed')
 if not claiming or fault == 'discard-before-claim':
     for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
@@ -474,7 +523,7 @@ if fault == 'wrong-candidate': durable(request, dict(intent, staged=dict(staged,
 if fault == 'wrong-continuation': durable(tx / 'continuation.json', dict(continuation, environmentId='wrong'))
 if fault == 'associated-preparation': durable(tx / 'prepare-intent.json', claim, True)
 if fault in ('other-pending', 'other-terminal', 'unknown-journal'):
-    other = tx.parent / ('e' * 64); other.mkdir()
+    other = tx.parent / ('d' * 64); other.mkdir()
     prior = dict(intent, transactionId=other.name)
     durable(other / 'intent.json', prior, True)
     if fault == 'other-terminal': durable(other / 'journal.json', {'intent': prior, 'phase': 'rolled-back'}, True)
@@ -494,7 +543,7 @@ if fault in ('discard', 'other-terminal'):
     assert outcome['status'] == 'discarded', outcome
     assert not selection_path.exists()
 elif fault == 'claim':
-    assert outcome == {'protocol': 1, 'operation': 'claim-activation', 'handle': staged['handle'], 'status': 'claimed', 'intentPath': str(tx / 'intent.json')}
+    assert outcome == {'protocol': 1, 'operation': 'claim-activation', 'handle': staged['handle'], 'transactionId': transaction_id, 'status': 'claimed', 'intentPath': str(tx / 'intent.json')}
     assert read(tx / 'intent.json') == intent
     assert run('claim-activation')['reason'] == 'activation-pending'
     assert run('discard-staged')['reason'] == 'activation-pending'
@@ -605,6 +654,7 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["missing-protocol", "rolled-back"],
     ["missing-startupGateProtocol", "blocked"],
     ["missing-transactionId", "rolled-back"],
+    ["missing-stagedHandle", "rolled-back"],
     ["missing-home", "rolled-back"],
     ["missing-databasePath", "rolled-back"],
     ["missing-profile", "rolled-back"],
