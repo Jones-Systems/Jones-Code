@@ -1,3 +1,4 @@
+import type { FleetDesktopRequest, FleetDesktopState } from "./jones/fleetUpdates/campaign.ts";
 import * as Schema from "effect/Schema";
 import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
 
@@ -1295,7 +1296,8 @@ export interface DesktopBridge {
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: (selection?: JonesUpdateDownloadInput) => Promise<DesktopUpdateActionResult>;
   discardUpdate?: (stagedHandle: string) => Promise<DesktopUpdateActionResult>;
-  installUpdate: (stagedHandle?: string) => Promise<DesktopUpdateActionResult>;
+  installUpdate: (stagedHandle?: string, campaignId?: string) => Promise<DesktopUpdateActionResult>;
+  fleetUpdates?: (request: FleetDesktopRequest) => Promise<FleetDesktopState>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /** Settings → `t3` command. Optional: older desktop builds lack it. */
   cliCommand?: {

@@ -14,11 +14,16 @@ import {
   type JonesDesktopUpdateOptions,
 } from "./JonesDesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
-import { hashMacApp, hashMacFile } from "./jonesMacStaging.ts";
+import { hashMacApp, hashMacFile, preflightJonesCandidateStartupGate } from "./jonesMacStaging.ts";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
   return { ...original, execFile: vi.fn(original.execFile) };
+});
+
+vi.mock("./jonesMacStaging.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./jonesMacStaging.ts")>();
+  return { ...original, preflightJonesCandidateStartupGate: vi.fn(original.preflightJonesCandidateStartupGate) };
 });
 
 const candidate: JonesActionsCandidate = {
@@ -364,6 +369,66 @@ describe("Jones desktop updates", () => {
       await f.cleanup();
     }
   });
+
+  it("blocks native activation when its explicit fleet binding cannot persist", async () => {
+    const f = await fixture();
+    const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+    const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+    const campaignId = "11111111-1111-4111-8111-111111111111";
+    const fleet = { bindInstall: vi.fn().mockRejectedValue(new Error("storage unavailable")), recordOutcome: vi.fn() };
+    try {
+      const controller = new JonesDesktopUpdateController({ ...f.options, fleet,
+        prepareNative: async (selected) => {
+          await NodeFSP.writeFile(NodePath.join(f.home, "runtime", "jones-updates", "transactions", selected, "continuation.json"),
+            JSON.stringify({ prepared: true, transactionId: selected }));
+        },
+      });
+      await controller.configure();
+      await controller.check();
+      await controller.download();
+      preflight.mockResolvedValueOnce(undefined);
+      nativeCommand.mockImplementation((command, args, _options, callback) => {
+        expect(command).toBe("/usr/bin/python3");
+        expect(args).toEqual(["--version"]);
+        if (typeof callback !== "function") throw new Error("Missing callback.");
+        callback(null, "Python 3", "");
+        return new NodeChildProcess.ChildProcess();
+      });
+      expect(await controller.install(handle, campaignId)).toMatchObject({ accepted: false, completed: false, failed: true });
+      expect(fleet.bindInstall).toHaveBeenCalledExactlyOnceWith({
+        campaignId, stagedHandle: handle, targetSource: candidate.source,
+        transactionId: handle, fromGeneration: f.active.generation,
+      });
+      await expect(NodeFSP.lstat(NodePath.join(f.home, "runtime", "jones-updates", "transactions", handle, "intent.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(nativeCommand).toHaveBeenCalledOnce();
+      expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+    } finally {
+      preflight.mockReset();
+      nativeCommand.mockReset();
+      await f.cleanup();
+    }
+  });
+
+  it.each(["committed", "rolled-back"] as const)(
+    "records fleet %s proof only after native journal and active-install reconciliation",
+    async (terminal) => {
+      const f = await fixture(true, terminal);
+      const fleet = { bindInstall: vi.fn(), recordOutcome: vi.fn().mockResolvedValue(undefined) };
+      try {
+        const controller = new JonesDesktopUpdateController({ ...f.options, fleet });
+        await controller.configure();
+        expect(fleet.recordOutcome).toHaveBeenCalledExactlyOnceWith({
+          transactionId: handle, status: terminal,
+          activeGeneration: f.active.generation, activeSource: f.active.sourceSha,
+        });
+        fleet.recordOutcome.mockClear();
+        await NodeFSP.writeFile(controller.manifestPath, JSON.stringify({ ...f.active, sourceSha: "0".repeat(40) }));
+        const invalid = new JonesDesktopUpdateController({ ...f.options, fleet });
+        await invalid.configure();
+        expect(fleet.recordOutcome).not.toHaveBeenCalled();
+      } finally { await f.cleanup(); }
+    },
+  );
 
   it.each(["discarded", "refused", "uncertain"] as const)(
     "handles native discard %s without removing candidate bytes or live state",

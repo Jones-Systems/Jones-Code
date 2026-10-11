@@ -1,3 +1,4 @@
+import { FleetDesktopRequest, FleetDesktopState, FleetOperationId } from "@t3tools/contracts/jones/fleet-updates";
 import { JonesUpdateDownloadInput } from "@t3tools/contracts/jones/jonesUpdates";
 import {
   DesktopUpdateActionResultSchema,
@@ -50,12 +51,15 @@ export const downloadUpdate = DesktopIpc.makeIpcMethod({
 
 export const installUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_INSTALL_CHANNEL,
-  payload: Schema.Union([Schema.Undefined, Schema.String]),
+  payload: Schema.Union([Schema.Undefined, Schema.String, Schema.Struct({ stagedHandle: Schema.String, campaignId: FleetOperationId })]),
   result: DesktopUpdateActionResultSchema,
-  handler: Effect.fn("desktop.ipc.updates.install")(function* (stagedHandle) {
+  handler: Effect.fn("desktop.ipc.updates.install")(function* (request) {
     const updates = yield* DesktopUpdates.DesktopUpdates;
+    const stagedHandle = typeof request === "object" ? request.stagedHandle : request;
+    const campaignId = typeof request === "object" ? request.campaignId : undefined;
     if (stagedHandle !== undefined) {
-      if (updates.installStaged !== undefined) return yield* updates.installStaged(stagedHandle);
+      if (updates.installStaged !== undefined) return yield* (campaignId === undefined
+        ? updates.installStaged(stagedHandle) : updates.installStaged(stagedHandle, campaignId));
       return { accepted: false, completed: false, state: yield* updates.getState };
     }
     return yield* updates.install;
@@ -80,5 +84,16 @@ export const discardUpdate = DesktopIpc.makeIpcMethod({
     const updates = yield* DesktopUpdates.DesktopUpdates;
     if (updates.discardStaged !== undefined) return yield* updates.discardStaged(handle);
     return { accepted: false, completed: false, state: yield* updates.getState };
+  }),
+});
+
+export const fleetUpdates = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.FLEET_UPDATES_CHANNEL,
+  payload: FleetDesktopRequest,
+  result: FleetDesktopState,
+  handler: Effect.fn("desktop.ipc.updates.fleet")(function* (request) {
+    const updates = yield* DesktopUpdates.DesktopUpdates;
+    if (updates.fleetUpdates === undefined) return yield* Effect.die(new Error("Fleet updates are unavailable in this desktop build."));
+    return yield* updates.fleetUpdates(request);
   }),
 });

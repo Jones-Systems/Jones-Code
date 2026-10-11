@@ -5,7 +5,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { UPDATE_INSTALL_CHANNEL, UPDATE_DOWNLOAD_CHANNEL, UPDATE_DISCARD_CHANNEL } from "../../ipc/channels.ts";
+import { UPDATE_INSTALL_CHANNEL, UPDATE_DOWNLOAD_CHANNEL, UPDATE_DISCARD_CHANNEL, FLEET_UPDATES_CHANNEL } from "../../ipc/channels.ts";
 import { discardUpdate, downloadUpdate, installUpdate } from "../../ipc/methods/updates.ts";
 import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
@@ -44,6 +44,14 @@ describe("desktop preload install bridge", () => {
   it("forwards the exact discard handle", async () => {
     await bridge.discardUpdate!("staged-build-123");
     expect(mocks.invoke).toHaveBeenLastCalledWith(UPDATE_DISCARD_CHANNEL, "staged-build-123");
+  });
+
+  it("forwards an explicit native campaign and exposes no outcome setter", async () => {
+    const campaignId = "11111111-1111-4111-8111-111111111111";
+    await bridge.installUpdate("staged-build-123", campaignId);
+    expect(mocks.invoke).toHaveBeenLastCalledWith(UPDATE_INSTALL_CHANNEL, { stagedHandle: "staged-build-123", campaignId });
+    await bridge.fleetUpdates!({ action: "read" });
+    expect(mocks.invoke).toHaveBeenLastCalledWith(FLEET_UPDATES_CHANNEL, { action: "read" });
   });
 
   it("preserves the exact Jones staged handle across Electron IPC", async () => {
@@ -103,6 +111,17 @@ describe("desktop install IPC decoding", () => {
     );
     return { invoke, installStaged, install, invokeDownload, download, downloadSelected, invokeDiscard, discardStaged };
   }
+
+  effectIt.effect("binds a valid campaign ID at the real install decoder", () =>
+    Effect.gen(function* () {
+      const { invoke, installStaged } = harness(true);
+      const campaignId = "11111111-1111-4111-8111-111111111111";
+      yield* invoke({ stagedHandle: "staged-build-123", campaignId });
+      expect(installStaged).toHaveBeenCalledExactlyOnceWith("staged-build-123", campaignId);
+      expect(Exit.isFailure(yield* Effect.exit(invoke({ stagedHandle: "staged-build-123", campaignId: "bad" })))).toBe(true);
+      expect(installStaged).toHaveBeenCalledOnce();
+    }),
+  );
 
   effectIt.effect("decodes exact discard handles and rejects malformed requests", () =>
     Effect.gen(function* () {

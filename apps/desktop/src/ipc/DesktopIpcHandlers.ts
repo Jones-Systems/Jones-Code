@@ -36,6 +36,7 @@ import {
   checkForUpdate,
   downloadUpdate,
   discardUpdate,
+  fleetUpdates,
   getUpdateState,
   installUpdate,
   setUpdateChannel,
@@ -161,6 +162,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setUpdateChannel);
   yield* ipc.handle(downloadUpdate);
   yield* ipc.handle(discardUpdate);
+  yield* ipc.handle(fleetUpdates);
   yield* ipc.handle(installUpdate);
   yield* ipc.handle(checkForUpdate);
   yield* ipc.handle(getCliCommandState);

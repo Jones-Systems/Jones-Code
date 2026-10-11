@@ -1,3 +1,5 @@
+import { FleetDesktopState } from "@t3tools/contracts/jones/fleet-updates";
+import * as Schema from "effect/Schema";
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -90,6 +92,44 @@ describe("Jones local desktop update UI", () => {
     await expect(discardLocalDesktopUpdate(bridge, installing)).rejects.toThrow("cannot be discarded");
     await expect(discardLocalDesktopUpdate({}, downloaded)).rejects.toThrow("cannot be discarded");
     expect(bridge.discardUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("persists an enrolled campaign before installing its exact selected build", async () => {
+    const campaignId = "11111111-1111-4111-8111-111111111111";
+    const fleet = Schema.decodeUnknownSync(FleetDesktopState)({
+      schema: 1, campaigns: [], enrollments: [{
+        enrollmentId: campaignId, environmentId: "remote-host", enabled: true, continueRunningThreads: false,
+      }],
+    });
+    const state: DesktopUpdateState = { ...downloaded, jones: { ...downloaded.jones!, provenance: {
+      repository: "Jones-Systems/Jones-Code", sourceSha: "a".repeat(40), sourceTree: "b".repeat(40),
+      workflow: "artifact-desktop-mac.yml", runId: 123, runAttempt: 1, artifactId: 456,
+      artifactDigest: "c".repeat(64), platform: "darwin", architecture: "arm64",
+    } } };
+    const order: string[] = [];
+    const bridge = {
+      fleetUpdates: vi.fn(async (request: Parameters<NonNullable<import("@t3tools/contracts").DesktopBridge["fleetUpdates"]>>[0]) => {
+        order.push(request.action);
+        return request.action === "prepare" ? { ...fleet, campaigns: [{ ...request.input, phase: "prepared" as const, members: [] }] } : fleet;
+      }),
+      installUpdate: vi.fn(async (_handle?: string, _campaign?: string) => {
+        order.push("install");
+        return result(state);
+      }),
+    };
+    await installLocalDesktopUpdate(bridge, state);
+    const prepare = bridge.fleetUpdates.mock.calls[1]![0];
+    expect(prepare.action).toBe("prepare");
+    if (prepare.action !== "prepare") throw new Error("Expected campaign preparation.");
+    expect(prepare.input).toMatchObject({ targetSource: "a".repeat(40), desktopStagedHandle: "downloaded-1.1.0" });
+    expect(bridge.installUpdate).toHaveBeenCalledExactlyOnceWith("downloaded-1.1.0", prepare.input.campaignId);
+    expect(order).toEqual(["read", "prepare", "install"]);
+  });
+
+  it("blocks installation when durable fleet state cannot be read", async () => {
+    const bridge = { fleetUpdates: vi.fn().mockRejectedValue(new Error("journal unavailable")), installUpdate: vi.fn() };
+    await expect(installLocalDesktopUpdate(bridge, downloaded)).rejects.toThrow("journal unavailable");
+    expect(bridge.installUpdate).not.toHaveBeenCalled();
   });
 
   it("installs the downloaded handle even when another version is available", async () => {

@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Native updater uses ordinary-UID filesystem and process operations.
+import type { DesktopFleetStore } from "../fleetUpdates/store.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -140,6 +141,7 @@ export interface JonesDesktopUpdateOptions {
   readonly platform: "darwin";
   readonly initialState: DesktopUpdateState;
   readonly disabledByEnv: boolean;
+  readonly fleet?: Pick<DesktopFleetStore, "bindInstall" | "recordOutcome">;
   readonly onState: (state: DesktopUpdateState) => Promise<void>;
   readonly prepareNative?: (handle: string, active: ActiveInstall) => Promise<void>;
   readonly processProofs: () => Promise<readonly { pid: number; identity: string }[]>;
@@ -557,6 +559,14 @@ export class JonesDesktopUpdateController {
           }
         }
       }
+      if (this.#lastJournal !== undefined && this.#terminalPhase !== undefined) {
+        await this.#options.fleet?.recordOutcome({
+          transactionId: this.#lastJournal.intent.transactionId,
+          status: this.#terminalPhase,
+          activeGeneration: active.generation,
+          activeSource: active.sourceSha,
+        });
+      }
     } catch (cause) {
       if (boundManifest) this.#activationBlocked = true;
       this.#activationMessage =
@@ -784,7 +794,7 @@ export class JonesDesktopUpdateController {
     }
   }
 
-  async install(handle?: string): Promise<{
+  async install(handle?: string, campaignId?: string): Promise<{
     accepted: boolean;
     completed: boolean;
     failed: boolean;
@@ -852,6 +862,13 @@ export class JonesDesktopUpdateController {
       } catch (cause) {
         if ((cause as NodeJS.ErrnoException).code !== "EEXIST" ||
           (await NodeFSP.readFile(requestPath, "utf8")) !== requestBytes) throw cause;
+      }
+      if (campaignId !== undefined) {
+        if (this.#options.fleet === undefined) throw new Error("Fleet persistence is unavailable.");
+        await this.#options.fleet.bindInstall({
+          campaignId, stagedHandle: handle, targetSource: staged.sourceSha,
+          transactionId: handle, fromGeneration: expected.generation,
+        });
       }
       this.#activationBlocked = true;
       const claim = decodeNativeSelectionResult(JSON.parse(await runNativeCommand("/usr/bin/python3", [
