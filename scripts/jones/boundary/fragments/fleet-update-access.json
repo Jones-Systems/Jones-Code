@@ -2,6 +2,8 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "fleet-update-access",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/fleetUpdates/blockedHostCommand.ts",
+    "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
     "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx",
     "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
     "apps/web/src/jones/fleetUpdates/sourceCurrency.ts",

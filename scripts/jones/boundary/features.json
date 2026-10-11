@@ -6,6 +6,7 @@
     {
       "id": "fleet-update-access",
       "tests": [
+        "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
         "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
         "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
         "packages/contracts/src/jones/fleetUpdates/source.test.ts"

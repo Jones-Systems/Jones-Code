@@ -1,56 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
-import {
-  EnvironmentRegistry,
-  orchestrationProtocolCompatibilityError,
-} from "@t3tools/client-runtime/connection";
-import {
-  requestJonesUpdateWithDescriptor,
-  type JonesUpdateBridgeInput,
-} from "@t3tools/client-runtime/jones/fleet-updates";
+import type { JonesUpdateBridgeInput } from "@t3tools/client-runtime/jones/fleet-updates";
 import { createRuntimeCommand } from "@t3tools/client-runtime/state/runtime";
-import * as Effect from "effect/Effect";
-import * as SubscriptionRef from "effect/SubscriptionRef";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../../components/ui/button";
-import { APP_SOURCE_SHA } from "../../branding";
-import { resolveJonesSourceCurrency, type JonesSourceCurrency } from "./sourceCurrency";
+import type { JonesSourceCurrency } from "./sourceCurrency";
+import { executeBlockedHostUpdate } from "./blockedHostCommand";
 
 const command = createRuntimeCommand(connectionAtomRuntime, {
   label: "jones:update-incompatible-host",
   concurrency: { mode: "serial", key: (input) => input.environmentId },
-  execute: Effect.fn(function* (input: {
-    readonly environmentId: EnvironmentId;
-    readonly request: JonesUpdateBridgeInput;
-  }) {
-    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
-    const entry = (yield* SubscriptionRef.get(registry.entries)).get(input.environmentId);
-    if (entry === undefined) {
-      return yield* new EnvironmentRegistry.EnvironmentNotRegisteredError({
-        environmentId: input.environmentId,
-      });
-    }
-    const result = yield* requestJonesUpdateWithDescriptor(entry, input.request);
-    if (
-      input.request.action === "state" &&
-      result.state !== null &&
-      entry.serverUpdateRequired === true &&
-      orchestrationProtocolCompatibilityError(result.descriptor) === null &&
-      (yield* SubscriptionRef.get(registry.entries)).get(input.environmentId) === entry
-    ) {
-      yield* registry.setCompatibility(input.environmentId, null);
-      yield* registry.setEnabled(input.environmentId, true);
-    }
-    return {
-      state: result.state,
-      currency: resolveJonesSourceCurrency({
-        installedSource: result.descriptor.jonesSource?.sha,
-        targetSource: APP_SOURCE_SHA,
-      }),
-    };
-  }),
+  execute: executeBlockedHostUpdate,
 });
 
 /** An incompatible host cannot mount the ordinary connected-environment updater. */
