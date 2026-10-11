@@ -181,7 +181,7 @@ async function advanceMember(
         );
         return;
       }
-      const source = member.expectedInstalledSource ?? status.update?.installedSource;
+      const source = member.expectedInstalledSource ?? status.update?.installedSource?.sha;
       if (
         status.operationProtocol !== 1 ||
         source === undefined ||

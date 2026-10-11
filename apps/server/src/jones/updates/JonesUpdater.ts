@@ -144,7 +144,10 @@ export class JonesUpdater {
     return this.publish({
       phase: "blocked",
       message,
-      ...(this.state.currentVersion === undefined || this.state.provenance?.version === undefined
+      // An offered build reports its version for display; only a staged build is an attempt.
+      ...(this.state.currentVersion === undefined ||
+      this.state.stagedHandle === undefined ||
+      this.state.provenance?.version === undefined
         ? {}
         : {
             outcome: {
@@ -195,6 +198,7 @@ export class JonesUpdater {
             artifactDigest: candidate.artifactDigest,
             platform: candidate.platform,
             architecture: candidate.architecture,
+            version: candidate.version,
           },
         });
       }

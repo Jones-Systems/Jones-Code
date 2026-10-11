@@ -37,7 +37,11 @@ const status: FleetHostStatus = {
     phase: "no-new",
     environmentId,
     currentVersion: "preview",
-    installedSource: "a".repeat(40),
+    installedSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    },
     capability: { check: true, download: true, install: true },
   },
 };
