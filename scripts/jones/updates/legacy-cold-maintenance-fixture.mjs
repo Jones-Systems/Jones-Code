@@ -1384,22 +1384,34 @@ elif scenario == 'finalize-sync':
     fault['enabled'] = False
     refusal(enter_once)
 elif scenario == 'lock-close':
-    real_close = os.close
+    fcntl = scope['fcntl']
+    real_close, real_flock = os.close, fcntl.flock
+    held_fd = {'value': None, 'closed': False}
+    def acquired_flock(fd, operation):
+        result = real_flock(fd, operation)
+        assert operation == (fcntl.LOCK_EX | fcntl.LOCK_NB) and held_fd['value'] is None
+        held_fd['value'] = fd
+        return result
     def failed_close(fd):
-        info = os.fstat(fd)
-        proof = (manifest.parent / 'jones-activation.lock').stat()
-        matched = (info.st_dev, info.st_ino) == (proof.st_dev, proof.st_ino)
-        if matched: assert all(not session.live for session in sessions)
+        matched = fd == held_fd['value'] and not held_fd['closed']
+        if matched: assert len(sessions) == 1 and all(not session.live for session in sessions)
         real_close(fd)
+        if matched: held_fd['closed'] = True
         if fault['enabled'] and matched:
             fault['fired'] = True
             raise OSError(errno.EIO, 'owned failure after actual lock close')
-    os.close = failed_close
+    os.close, fcntl.flock = failed_close, acquired_flock
     try: failure = refusal(lambda: enter_once(snapshot), OSError)
-    finally: os.close = real_close
-    assert failure.errno == errno.EIO and fault['fired']
+    finally: os.close, fcntl.flock = real_close, real_flock
+    assert failure.errno == errno.EIO and fault['fired'] and held_fd['closed']
+    assert refusal(lambda: os.fstat(held_fd['value']), OSError).errno == errno.EBADF
     refusal(sessions[0].snapshot)
+    sticky = sessions[0].failure
+    refusal(sessions[0].snapshot)
+    assert sticky is not None and sessions[0].failure is sticky and sessions[0].held['failure'] is sticky
+    retained_journal = (directory / 'journal.json').read_bytes()
     refusal(enter_once)
+    assert (directory / 'journal.json').read_bytes() == retained_journal and len(sessions) == 1
 elif scenario == 'cancel-entered':
     def cancel_scope(session, owner): raise Cancelled()
     refusal(lambda: enter_once(cancel_scope), Cancelled)
