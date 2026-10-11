@@ -224,3 +224,28 @@ it("preserves a stage after ambiguous native acceptance or revocation publicatio
   );
   expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);
 });
+
+it("retries directory durability after a pointer removal succeeded but fsync failed", async () => {
+  const f = await fixture();
+  await retainStagedSelection(f.selection);
+  const expected = {
+    environmentId: f.selection.binding.environmentId,
+    expectedInstalledSource: f.selection.binding.activeSourceSha,
+    targetSource: f.selection.receipt.sourceSha,
+    stagedHandle: f.selection.stagedHandle,
+  };
+  const synced: string[] = [];
+  const syncDirectory = async (directory: string) => {
+    synced.push(directory);
+    if (synced.length <= 2)
+      throw Object.assign(new Error("injected directory fsync failure"), { code: "EIO" });
+    const parent = await NodeFSP.open(directory, "r");
+    try { await parent.sync(); } finally { await parent.close(); }
+  };
+  await expect(retireStagedSelection(f.root, f.baseline, expected, syncDirectory)).rejects.toThrow("fsync failure");
+  expect(await restoreStagedSelection(f.root, f.baseline)).toBeUndefined();
+  await expect(retireStagedSelection(f.root, f.baseline, expected, syncDirectory)).rejects.toThrow("fsync failure");
+  await retireStagedSelection(f.root, f.baseline, expected, syncDirectory);
+  expect(synced).toEqual(Array(3).fill(NodePath.join(f.root, "runtime", "jones-updates", "selections")));
+  expect(JSON.parse(await NodeFSP.readFile(NodePath.join(f.root, "runtime", "staged-updates", `${f.selection.stagedHandle}.json`), "utf8"))).toEqual(f.selection);
+});
