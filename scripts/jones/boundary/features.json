@@ -472,7 +472,8 @@
         "packages/shared/src/jones/nativeWriterFence.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
         "apps/server/src/jones/updates/nativePreparation.test.ts",
-        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts"
+        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "scripts/jones/updates/native-startup-fixture.node-test.mjs"
       ]
     },
     {
