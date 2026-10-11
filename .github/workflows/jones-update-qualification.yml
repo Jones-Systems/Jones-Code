@@ -177,15 +177,23 @@ jobs:
         os: [ubuntu-24.04, macos-15]
     steps:
       - name: Checkout exact public candidate
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-          fetch-depth: 0
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          # Public-only fetch avoids auth cleanup traversing unmapped vendored gitlinks.
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1

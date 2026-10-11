@@ -53,7 +53,7 @@ jobs:
     timeout-minutes: 45
     env:
       T3CODE_DESKTOP_UPDATE_REPOSITORY: Jones-Systems/Jones-Code
-      TMPDIR: ${{ github.workspace }}/.artifact-desktop-scratch
+      TMPDIR: ${{ runner.temp }}/jones-desktop-mac-${{ github.run_id }}-${{ github.run_attempt }}
       T3CODE_DESKTOP_SIGNED: "false"
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
@@ -274,7 +274,7 @@ jobs:
           (steps.legacy_primitives.outcome == 'success' || steps.legacy_primitives.outcome == 'skipped') &&
           (steps.legacy_primitive_reports.outcome == 'success' || steps.legacy_primitive_reports.outcome == 'skipped') &&
           (steps.preparation_producer.outcome == 'success' || steps.preparation_producer.outcome == 'skipped')
-        run: rm -rf -- "$GITHUB_WORKSPACE/.artifact-desktop-scratch"
+        run: rm -rf -- "$TMPDIR"
 
       - name: Report retained qualification scratch
         if: >-
