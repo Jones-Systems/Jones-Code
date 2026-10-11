@@ -174,9 +174,11 @@ at source `d3e6f8e843a0477542380a4ec0d9ae02a1084053`, tree
 Other sources, trees and platforms retain the ordinary child capability requirement.
 A version string alone never selects this exception.
 
-The old matching artifact's genuine private setup must run with `umask 0077`;
-adoption requires an owner-only `.jones-provenance.json` and checks its actual
-metadata. Adoption authenticates all nine provenance fields against
+Run both the old matching artifact's genuine private setup and the qualified
+adoption commands with `umask 0077`. Payload qualification compares executable
+permission bits, so both extractions must use the same mask. Adoption requires an
+owner-only `.jones-provenance.json` and checks its actual metadata. It authenticates
+all nine provenance fields against
 the Actions artifact and executable bytes, and requires the exact old root layout.
 The native pending receipt records the file's exact preimage and a new exclusive
 evidence archive under `runtime/jones-adoption`, outside the selected version root.
