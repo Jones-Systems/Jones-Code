@@ -480,7 +480,8 @@
         "scripts/jones/updates/native-startup-fixture.node-test.mjs",
         "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
         "scripts/jones/updates/legacy-bootstrap-bundle.test.ts",
-        "scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs"
+        "scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs",
+        "scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs"
       ]
     },
     {

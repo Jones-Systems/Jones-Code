@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { createPackageWithOptions, extractFile, statFile } from "@electron/asar";
@@ -8,6 +7,7 @@ import { createPackageWithOptions, extractFile, statFile } from "@electron/asar"
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -765,6 +765,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
         true,
       );
+      const companion = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3-preview.20261011.1.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "arm64",
+        "preview-companion",
+        true,
+      );
       assert.deepStrictEqual(mac.extraResources, [
         ...DESKTOP_EXTRA_RESOURCES,
         JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE,
@@ -775,87 +788,88 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ...LINUX_CAPTURE_EXTRA_RESOURCES,
         ...LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
       ]);
+      assert.isString(mac.afterPack);
+      assert.isTrue(NodePath.isAbsolute(mac.afterPack as string));
+      assert.equal(NodePath.basename(mac.afterPack as string), "legacy-bootstrap-after-pack.mjs");
+      assert.equal(JSON.parse(JSON.stringify(mac)).afterPack, mac.afterPack);
+      for (const config of [ordinaryMac, linux, companion]) assert.notProperty(config, "afterPack");
+      assert.deepStrictEqual(companion.extraResources, DESKTOP_EXTRA_RESOURCES);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
-  it.effect.skipIf(!["linux", "darwin"].includes(NodeOS.platform()))(
-    "identifies Mac startup metadata, bootstrap modes, bytes, and missing files separately",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const root = yield* fs.makeTempDirectoryScoped({ prefix: "jones-mac-proof-" });
-          const sourceDirectory = path.join(root, "source");
-          const resources = path.join(root, "Resources");
-          const packagedAsar = path.join(resources, "app.asar");
-          const source = {
-            repository: "Jones-Systems/Jones-Code" as const,
-            sha: "a".repeat(40),
-            tree: "b".repeat(40),
-          };
-          const version = "1.0.0-preview.20261011.1.1";
-          const file = {
-            relativePath: "jones-bootstrap/bootstrap.py",
-            content: "synthetic bootstrap bytes\n",
-            mode: 0o500,
-          };
-          const resource = path.join(resources, file.relativePath);
-          yield* fs.makeDirectory(sourceDirectory);
-          yield* fs.makeDirectory(path.dirname(resource), { recursive: true });
-          yield* fs.writeFileString(
-            path.join(sourceDirectory, "package.json"),
-            JSON.stringify({ version, jonesSource: source, startupGateProtocol: 1 }),
-          );
-          yield* Effect.tryPromise(() =>
-            createPackageWithOptions(sourceDirectory, packagedAsar, {}),
-          );
-          yield* fs.writeFileString(resource, file.content);
-          yield* fs.chmod(resource, file.mode);
-          const input = { packagedAsar, source, version, bootstrapBundle: [file] };
-          yield* verifyJonesPackagedMacResources(input);
+  it.effect.skipIf(
+    !["linux", "darwin"].includes(Context.get(Context.empty(), HostProcessPlatform)),
+  )("identifies Mac startup metadata, bootstrap modes, bytes, and missing files separately", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "jones-mac-proof-" });
+        const sourceDirectory = path.join(root, "source");
+        const resources = path.join(root, "Resources");
+        const packagedAsar = path.join(resources, "app.asar");
+        const source = {
+          repository: "Jones-Systems/Jones-Code" as const,
+          sha: "a".repeat(40),
+          tree: "b".repeat(40),
+        };
+        const version = "1.0.0-preview.20261011.1.1";
+        const file = {
+          relativePath: "jones-bootstrap/bootstrap.py",
+          content: "synthetic bootstrap bytes\n",
+          mode: 0o500,
+        };
+        const resource = path.join(resources, file.relativePath);
+        yield* fs.makeDirectory(sourceDirectory);
+        yield* fs.makeDirectory(path.dirname(resource), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(sourceDirectory, "package.json"),
+          JSON.stringify({ version, jonesSource: source, startupGateProtocol: 1 }),
+        );
+        yield* Effect.tryPromise(() => createPackageWithOptions(sourceDirectory, packagedAsar, {}));
+        yield* fs.writeFileString(resource, file.content);
+        yield* fs.chmod(resource, file.mode);
+        const input = { packagedAsar, source, version, bootstrapBundle: [file] };
+        yield* verifyJonesPackagedMacResources(input);
 
-          const metadataFailure = yield* verifyJonesPackagedMacResources({
-            ...input,
-            version: "different",
-          }).pipe(Effect.flip);
-          assert.instanceOf(metadataFailure, BundleNotSelfContainedError);
-          assert.include(metadataFailure.output, "startup gate failed for app.asar/package.json");
-          assert.include(metadataFailure.output, "does not prove its source-bound startup gate");
-          assert.notInclude(metadataFailure.output, "UnknownError");
+        const metadataFailure = yield* verifyJonesPackagedMacResources({
+          ...input,
+          version: "different",
+        }).pipe(Effect.flip);
+        assert.instanceOf(metadataFailure, BundleNotSelfContainedError);
+        assert.include(metadataFailure.output, "startup gate failed for app.asar/package.json");
+        assert.include(metadataFailure.output, "does not prove its source-bound startup gate");
+        assert.notInclude(metadataFailure.output, "UnknownError");
 
-          yield* fs.chmod(resource, 0o755);
-          const modeFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
-          assert.include(
-            modeFailure.output,
-            `bootstrap file identity/mode failed for ${file.relativePath}`,
-          );
-          assert.include(modeFailure.output, "expected regular file mode 0o500");
-          assert.include(modeFailure.output, "observed regular file mode 0o755");
+        yield* fs.chmod(resource, 0o755);
+        const modeFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
+        assert.include(
+          modeFailure.output,
+          `bootstrap file identity/mode failed for ${file.relativePath}`,
+        );
+        assert.include(modeFailure.output, "expected regular file mode 0o500");
+        assert.include(modeFailure.output, "observed regular file mode 0o755");
 
-          yield* fs.chmod(resource, 0o600);
-          yield* fs
-            .writeFileString(resource, "changed fixture bytes\n")
-            .pipe(Effect.ensuring(fs.chmod(resource, file.mode).pipe(Effect.orDie)));
-          const bytesFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
-          assert.include(
-            bytesFailure.output,
-            `bootstrap file bytes failed for ${file.relativePath}`,
-          );
-          assert.include(bytesFailure.output, "expected SHA-256");
-          assert.include(bytesFailure.output, "observed");
-          assert.notInclude(bytesFailure.output, "changed fixture bytes");
+        yield* fs.chmod(resource, 0o600);
+        yield* fs
+          .writeFileString(resource, "changed fixture bytes\n")
+          .pipe(Effect.ensuring(fs.chmod(resource, file.mode).pipe(Effect.orDie)));
+        const bytesFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
+        assert.include(bytesFailure.output, `bootstrap file bytes failed for ${file.relativePath}`);
+        assert.include(bytesFailure.output, "expected SHA-256");
+        assert.include(bytesFailure.output, "observed");
+        assert.notInclude(bytesFailure.output, "changed fixture bytes");
 
-          yield* fs.remove(resource);
-          const missingFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
-          assert.include(
-            missingFailure.output,
-            `bootstrap file stat failed for ${file.relativePath}`,
-          );
-          assert.include(missingFailure.output, "ENOENT");
-          assert.notInclude(missingFailure.output, "UnknownError");
-        }),
-      ),
+        yield* fs.remove(resource);
+        const missingFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
+        assert.include(
+          missingFailure.output,
+          `bootstrap file stat failed for ${file.relativePath}`,
+        );
+        assert.include(missingFailure.output, "ENOENT");
+        assert.notInclude(missingFailure.output, "UnknownError");
+      }),
+    ),
   );
 
   it("excludes foreign node-pty prebuilds from macOS and Linux packages", () => {

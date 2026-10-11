@@ -2805,6 +2805,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac") {
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
+    if (variant !== "preview-companion" && legacyBootstrapBundled) {
+      buildConfig.afterPack = path.join(
+        repoRoot,
+        "scripts/jones/updates/legacy-bootstrap-after-pack.mjs",
+      );
+    }
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
