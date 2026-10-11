@@ -358,6 +358,21 @@ export function linuxReadinessQualifiedQuiescenceAdapter(
 }
 
 /**
+ * statfs f_type values (include/uapi/linux/magic.h) of local kernel
+ * filesystems that take leases through the generic VFS path
+ * (kernel_setlease → generic_setlease), where a grant means no write-open
+ * description exists. Network filesystems answer leases from per-file
+ * delegations or oplocks, and FUSE and overlay add another layer, so those
+ * and every type not listed here are refused.
+ */
+const LEASE_PROOF_FILESYSTEMS: ReadonlySet<bigint> = new Set([
+  0xef53n, // ext2, ext3, ext4
+  0x58465342n, // XFS
+  0x9123683en, // Btrfs
+  0x01021994n, // tmpfs
+]);
+
+/**
  * Linux routing: proofs with no allowed writer use kernel leases, the readiness
  * commit uses the readiness observer. Install admission exercises both before
  * acceptance, because the post-stop, restart and rollback proofs all need
@@ -367,13 +382,24 @@ export function linuxNativeQualifiedQuiescenceAdapter(
   options: {
     readonly leases?: Parameters<typeof observeLinuxStateLeases>[1];
     readonly readiness?: Parameters<typeof linuxReadinessQualifiedQuiescenceAdapter>[0];
+    /** statfs f_type for one path; injectable for portable fixtures. */
+    readonly filesystemType?: (path: string) => Promise<bigint>;
   } = {},
 ): QualifiedQuiescenceAdapter {
   const leases = linuxLeaseQualifiedQuiescenceAdapter(options.leases);
   const readiness = linuxReadinessQualifiedQuiescenceAdapter(options.readiness);
+  const filesystemType =
+    options.filesystemType ??
+    (async (path: string) => (await NodeFSP.statfs(path, { bigint: true })).type);
   return {
     scan: (input) => (input.allowedProcessIds.length === 0 ? leases : readiness).scan(input),
     async assertReadinessObservable(input) {
+      // Metadata only, on every selected file rather than its directory, so a
+      // network or FUSE bind mount over one state file is refused as well.
+      for (const file of input.files) {
+        const type = await filesystemType(file.path).catch(() => undefined);
+        if (type === undefined || !LEASE_PROOF_FILESYSTEMS.has(type)) throw unavailable();
+      }
       // The requesting server holds the state open for writing, so busy files
       // are expected here. Later lease proofs can answer only where a lease on
       // this exact snapshot was actually granted: busy alone does not show

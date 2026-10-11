@@ -346,6 +346,17 @@ checks `fs.leases-enable`, and NFS reports busy without a delegation. Each devic
 holding selected files therefore needs at least one granted lease. If the server
 holds every selected file on a device open for writing, Install is refused and
 that server keeps running.
+
+Before any lease or readiness work, Linux admission reads `statfs` metadata for
+every selected state file itself, not just its directory. A network or FUSE bind
+mount over one file is therefore caught. Admission accepts only local
+filesystems whose leases use the kernel's generic implementation: ext2/3/4
+(`0xef53`), XFS (`0x58465342`), Btrfs (`0x9123683e`) and tmpfs (`0x01021994`).
+Network filesystems (NFS, SMB/CIFS, Ceph) answer leases from per-file delegations
+or oplocks. They, FUSE, overlay, any unlisted type and a failed `statfs` refuse
+with `writer-proof-unavailable` before acceptance or stop. Check with
+`findmnt -T <home>/userdata` and the same for each state file. Darwin admission
+is unchanged.
 The lease probe is bounded at 5 seconds, the helper at 10 and the launcher's wait
 for it at 15. The server abandons a launcher exchange after 30 seconds. The
 launcher therefore refuses an Install with `request-expired` once 25 seconds have

@@ -389,6 +389,8 @@ it("admits Install only when the exact snapshot supports later lease proofs", as
     const adapter = (perl: string) =>
       linuxNativeQualifiedQuiescenceAdapter({
         leases: { perl },
+        // These fixtures run on any host; the filesystem gate has its own test.
+        filesystemType: async () => 0xef53n,
         readiness: {
           helperPath: NodePath.join(baseDir, "absent", "helper"),
           fallback: {
@@ -420,6 +422,95 @@ it("admits Install only when the exact snapshot supports later lease proofs", as
       await NodeFSP.readFile(NodePath.join(baseDir, "userdata", "statev2.sqlite"), "utf8"),
       "synthetic database",
     );
+  });
+});
+
+it("admits only listed local filesystems for every selected file before any lease or readiness work", async () => {
+  await fixture(async (baseDir) => {
+    // The snapshot names files under the canonical home.
+    const home = await NodeFSP.realpath(baseDir);
+    const database = NodePath.join(home, "userdata", "statev2.sqlite");
+    const settings = NodePath.join(home, "userdata", "settings.json");
+    // A lease program reporting the requester's database busy and a granted
+    // settings lease; it records each run so refusals can show it never ran.
+    const probeRuns = NodePath.join(baseDir, "probe-runs");
+    const grant = NodePath.join(baseDir, "grant-leases");
+    await NodeFSP.writeFile(
+      grant,
+      `#!/bin/sh\necho run >> '${probeRuns}'\nprintf 'busy 0\\ncomplete\\n'\n`,
+      { mode: 0o755 },
+    );
+    let readinessScans = 0;
+    const admit = async (filesystemType: (path: string) => Promise<bigint>) => {
+      const observed: string[] = [];
+      const runsBefore = await NodeFSP.readFile(probeRuns, "utf8").catch(() => "");
+      const scansBefore = readinessScans;
+      const result = await assertQualifiedReadinessObservable({
+        baseDir,
+        allowedProcessIds: [123],
+        adapter: linuxNativeQualifiedQuiescenceAdapter({
+          leases: { perl: grant },
+          filesystemType: async (path) => {
+            observed.push(path);
+            return filesystemType(path);
+          },
+          readiness: {
+            helperPath: NodePath.join(baseDir, "absent", "helper"),
+            fallback: {
+              scan: async () => {
+                readinessScans++;
+                return [];
+              },
+            },
+          },
+        }),
+      }).then(
+        () => "admitted" as const,
+        (cause: unknown) =>
+          cause instanceof QualifiedQuiescenceError ? cause.reason : "untyped-failure",
+      );
+      const ran = (await NodeFSP.readFile(probeRuns, "utf8").catch(() => "")) !== runsBefore;
+      return { result, observed, ran, scanned: readinessScans !== scansBefore };
+    };
+    // ext2/3/4, XFS, Btrfs and tmpfs admit, statfs having seen every selected
+    // file itself rather than only its directory.
+    for (const type of [0xef53n, 0x58465342n, 0x9123683en, 0x01021994n])
+      assert.deepEqual(await admit(async () => type), {
+        result: "admitted",
+        observed: [database, settings],
+        ran: true,
+        scanned: true,
+      });
+    // NFS, SMB2, CIFS, Ceph, FUSE, overlay, an unknown type and a statfs
+    // failure all refuse before the lease probe or readiness scan, even though
+    // the lease program would report a granted settings lease.
+    for (const type of [
+      0x6969n,
+      0xfe534d42n,
+      0xff534d42n,
+      0x00c36400n,
+      0x65735546n,
+      0x794c7630n,
+      0x12345678n,
+    ])
+      assert.deepEqual(
+        await admit(async () => type),
+        { result: "unavailable", observed: [database], ran: false, scanned: false },
+        type.toString(16),
+      );
+    assert.deepEqual(
+      await admit(async () => {
+        throw Object.assign(new Error("synthetic statfs failure"), { code: "EIO" });
+      }),
+      { result: "unavailable", observed: [database], ran: false, scanned: false },
+    );
+    // One state file bind-mounted from a network filesystem refuses the set.
+    assert.deepEqual(await admit(async (path) => (path === settings ? 0x6969n : 0xef53n)), {
+      result: "unavailable",
+      observed: [database, settings],
+      ran: false,
+      scanned: false,
+    });
   });
 });
 

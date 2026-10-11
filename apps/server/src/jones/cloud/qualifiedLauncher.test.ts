@@ -601,17 +601,21 @@ it("refuses Install admission when its readiness writer proof cannot complete", 
 
 it.each([
   // The fixed lease program's EINVAL exit: leases unsupported or disabled.
-  ["unsupported", "#!/bin/sh\nexit 4\n"],
+  ["unsupported", "#!/bin/sh\nexit 4\n", 0xef53n],
   // A complete result with every selected file busy (EAGAIN). Linux returns
   // that for a conflicting open before checking fs.leases-enable, and NFS
   // returns it without a delegation, so it never demonstrates support.
   [
     "all-busy",
     '#!/bin/sh\ni=0\nwhile [ "$i" -lt "$4" ]; do echo "busy $i"; i=$((i + 1)); done\necho complete\n',
+    0xef53n,
   ],
+  // NFS: the program would report the database busy and a granted lease, but
+  // a delegation-backed grant is not a generic local proof.
+  ["nfs", "#!/bin/sh\nprintf 'busy 0\\ncomplete\\n'\n", 0x6969n],
 ] as const)(
   "refuses Install before acceptance or stop when %s leases show no granted proof",
-  async (_, program) => {
+  async (_, program, filesystem) => {
     const programs = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-lease-program-"));
     try {
       // Stands in for the fixed lease program while the readiness observer passes.
@@ -639,6 +643,7 @@ it.each([
         },
         linuxNativeQualifiedQuiescenceAdapter({
           leases: { perl: leaseProgram },
+          filesystemType: async () => filesystem,
           readiness: {
             helperPath: NodePath.join(programs, "absent", "helper"),
             fallback: {
