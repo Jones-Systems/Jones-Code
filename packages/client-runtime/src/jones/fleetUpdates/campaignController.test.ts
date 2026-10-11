@@ -109,3 +109,43 @@ describe("fleet campaign driver", () => {
     expect(f.driver.host.mock.calls).toHaveLength(1);
   });
 });
+
+it("retires an occupied old stage before driving a newer campaign, including after laptop rollback", async () => {
+  const f = fixture();
+  const old = f.state().campaigns[0]!;
+  const nextId = "55555555-5555-4555-8555-555555555555";
+  f.setState({ ...f.state(), campaigns: [
+    { ...old, phase: "rolled-back", members: [{ ...old.members[0]!, phase: "retiring", expectedInstalledSource: installed }] },
+    { ...old, campaignId: "66666666-6666-4666-8666-666666666666", targetSource: "c".repeat(40), members: [{ ...old.members[0]!, operationId: nextId, phase: "waiting" }] },
+  ] });
+  f.setOperation({ input: { operationId, enrollmentId: enrollment.enrollmentId, environmentId, expectedInstalledSource: installed, targetSource: source }, phase: "staged", currentVersion: "old", stagedHandle: "old-stage", continueRunningThreads: false });
+  const original = f.driver.host.getMockImplementation()!;
+  f.driver.host.mockImplementation(async (id, request) => {
+    if (request.action === "retire") f.setOperation({ ...f.operation()!, phase: "superseded" });
+    return original(id, request);
+  });
+  await advanceFleetCampaigns(f.driver);
+  expect(f.state().campaigns[0]?.members[0]?.phase).toBe("superseded");
+  expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status", "retire"]);
+  // The next pass observes no operation for the fresh UUID.
+  f.driver.host.mockImplementation(async (id, request) => {
+    const result = await original(id, request);
+    return request.action === "status" && request.operationId === nextId ? { ...result, operation: null } : result;
+  });
+  await advanceFleetCampaigns(f.driver);
+  expect(f.state().campaigns[1]?.members[0]?.phase).toBe("staged");
+  expect(f.operation()?.input.targetSource).toBe("c".repeat(40));
+});
+
+it("keeps uncertain native acceptance occupying its host while observing it", async () => {
+  const f = fixture(true);
+  const old = f.state().campaigns[0]!;
+  f.setState({ ...f.state(), campaigns: [
+    { ...old, members: [{ ...old.members[0]!, phase: "reconciling", expectedInstalledSource: installed }] },
+    { ...old, campaignId: "66666666-6666-4666-8666-666666666666", targetSource: "c".repeat(40), members: [{ ...old.members[0]!, operationId: "55555555-5555-4555-8555-555555555555", phase: "waiting" }] },
+  ] });
+  f.setOperation({ input: { operationId, enrollmentId: enrollment.enrollmentId, environmentId, expectedInstalledSource: installed, targetSource: source }, phase: "reconciling", currentVersion: "old", stagedHandle: "old-stage", continueRunningThreads: false });
+  await advanceFleetCampaigns(f.driver);
+  expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status"]);
+  expect(f.state().campaigns[1]?.members[0]?.phase).toBe("waiting");
+});

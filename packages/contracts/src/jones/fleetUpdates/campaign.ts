@@ -4,7 +4,7 @@ import { FleetEnrollment, FleetOperationId, FleetSourceSha } from "./host.ts";
 
 export const FleetMemberPhase = Schema.Literals([
   "waiting", "offline", "bootstrap-required", "staging", "stage-blocked", "staged",
-  "dispatching", "pending", "current", "committed", "rolled-back", "blocked", "superseded",
+  "dispatching", "install-blocked", "reconciling", "retiring", "pending", "current", "committed", "rolled-back", "blocked", "superseded",
 ]);
 export type FleetMemberPhase = typeof FleetMemberPhase.Type;
 export const FleetCampaignMember = Schema.Struct({

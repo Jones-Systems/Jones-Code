@@ -29,6 +29,11 @@ export const fleetUpdatesHttpApiLayer = HttpApiBuilder.group(EnvironmentHttpApi,
         yield* noStore;
         return yield* fleet.stage(payload);
       }))
+      .handle("retire", ({ payload }) => Effect.gen(function* () {
+        yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+        yield* noStore;
+        return yield* fleet.retire(payload);
+      }))
       .handle("activate", ({ payload }) => Effect.gen(function* () {
         yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
         yield* noStore;

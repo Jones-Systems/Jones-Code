@@ -5,7 +5,7 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 import type { makeJonesHttpGroups } from "../environmentHttpGroups.ts";
 import {
   FLEET_UPDATES_HTTP_BASE, FleetActivateInput, FleetEnrollmentInput, FleetHostError,
-  FleetHostStatus, FleetOperationId, FleetStageInput,
+  FleetHostStatus, FleetOperationId, FleetStageInput, FleetRetireInput,
 } from "./host.ts";
 
 export function makeFleetUpdatesHttpGroup({
@@ -26,6 +26,9 @@ export function makeFleetUpdatesHttpGroup({
     }).middleware(EnvironmentAuthenticatedAuth))
     .add(HttpApiEndpoint.post("stage", `${FLEET_UPDATES_HTTP_BASE}/stage`, {
       ...common, payload: FleetStageInput,
+    }).middleware(EnvironmentAuthenticatedAuth))
+    .add(HttpApiEndpoint.post("retire", `${FLEET_UPDATES_HTTP_BASE}/retire`, {
+      ...common, payload: FleetRetireInput,
     }).middleware(EnvironmentAuthenticatedAuth))
     .add(HttpApiEndpoint.post("activate", `${FLEET_UPDATES_HTTP_BASE}/activate`, {
       ...common, payload: FleetActivateInput,

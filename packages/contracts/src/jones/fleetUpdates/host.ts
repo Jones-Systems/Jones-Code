@@ -29,6 +29,8 @@ export const FleetStageInput = Schema.Struct({
   expectedInstalledSource: FleetSourceSha,
 });
 export type FleetStageInput = typeof FleetStageInput.Type;
+export const FleetRetireInput = FleetStageInput;
+export type FleetRetireInput = FleetStageInput;
 export const FleetActivateInput = Schema.Struct({
   operationId: FleetOperationId,
   enrollmentId: FleetOperationId,
@@ -39,7 +41,7 @@ export type FleetActivateInput = typeof FleetActivateInput.Type;
 export const FleetHostOperation = Schema.Struct({
   input: FleetStageInput,
   phase: Schema.Literals([
-    "staging", "stage-blocked", "staged", "dispatching", "pending", "current", "committed", "rolled-back", "blocked",
+    "staging", "stage-blocked", "staged", "dispatching", "install-blocked", "reconciling", "pending", "current", "committed", "rolled-back", "blocked", "superseded",
   ]),
   continueRunningThreads: Schema.Boolean,
   currentVersion: TrimmedNonEmptyString,

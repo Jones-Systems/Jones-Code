@@ -11,7 +11,8 @@ export interface FleetCampaignDriver {
   readonly cancelled: () => boolean;
 }
 const finished = new Set<FleetMemberPhase>(["current", "committed", "rolled-back", "blocked", "superseded"]);
-const inflight = new Set<FleetMemberPhase>(["dispatching", "pending"]);
+const inflight = new Set<FleetMemberPhase>(["dispatching", "install-blocked", "reconciling", "pending"]);
+const occupied = new Set<FleetMemberPhase>([...inflight, "retiring"]);
 
 function matches(campaign: FleetDesktopCampaign, member: FleetCampaignMember, operation: FleetHostOperation) {
   return operation.input.operationId === member.operationId &&
@@ -42,7 +43,27 @@ async function advanceMember(driver: FleetCampaignDriver, campaign: FleetDesktop
       await set("blocked", "The host operation identity changed. No update was repeated.");
       return;
     }
-    if (status.operation !== null && (finished.has(status.operation.phase) || status.operation.phase === "pending")) {
+    if (member.phase === "retiring") {
+      const source = member.expectedInstalledSource ?? status.operation?.input.expectedInstalledSource;
+      if (source === undefined) { await set("superseded"); return; }
+      status = await driver.host(member.enrollment.environmentId, { action: "retire", input: {
+        operationId: member.operationId, enrollmentId: member.enrollment.enrollmentId,
+        environmentId: member.enrollment.environmentId, targetSource: campaign.targetSource,
+        expectedInstalledSource: source,
+      } });
+      if (driver.cancelled()) return;
+      if (status.operation === null || !matches(campaign, member, status.operation)) {
+        await set("retiring", "The exact retirement receipt could not be confirmed; the stage was preserved.");
+      } else if (status.operation.phase === "superseded" || finished.has(status.operation.phase)) {
+        await set(status.operation.phase, status.operation.reason);
+      } else if (["reconciling", "dispatching", "install-blocked", "pending"].includes(status.operation.phase)) {
+        await set(status.operation.phase, status.operation.reason);
+      } else {
+        await set("retiring", status.operation.reason ?? "Waiting to retire the exact unaccepted host stage.");
+      }
+      return;
+    }
+    if (status.operation !== null && (finished.has(status.operation.phase) || ["pending", "reconciling"].includes(status.operation.phase))) {
       await set(status.operation.phase, status.operation.reason, status.operation.input.expectedInstalledSource);
       return;
     }
@@ -73,7 +94,7 @@ async function advanceMember(driver: FleetCampaignDriver, campaign: FleetDesktop
       await set("blocked", "The host did not return the selected operation receipt.");
       return;
     }
-    if (operation.phase !== "staged" && operation.phase !== "dispatching") {
+    if (operation.phase !== "staged" && operation.phase !== "dispatching" && operation.phase !== "install-blocked") {
       await set(operation.phase, operation.reason, operation.input.expectedInstalledSource);
       return;
     }
@@ -96,7 +117,7 @@ async function advanceMember(driver: FleetCampaignDriver, campaign: FleetDesktop
   } catch {
     // A lost activation response preserves dispatching. The next pass reads the exact
     // host receipt before considering any resend; unrelated hosts keep progressing.
-    if (!driver.cancelled()) await set(inflight.has(member.phase) ? member.phase : "offline",
+    if (!driver.cancelled()) await set(occupied.has(member.phase) ? member.phase : "offline",
       "Host unavailable or authorization needs attention; this operation will be reconciled after reconnect.").catch(() => undefined);
   }
 }
@@ -109,11 +130,11 @@ export async function advanceFleetCampaigns(driver: FleetCampaignDriver): Promis
   for (const campaign of state.campaigns) {
     for (const member of campaign.members) {
       if (finished.has(member.phase)) continue;
-      if ((campaign.phase === "rolled-back" || campaign.phase === "blocked") && !inflight.has(member.phase)) continue;
+      if ((campaign.phase === "rolled-back" || campaign.phase === "blocked") && !occupied.has(member.phase)) continue;
       const enrolled = state.enrollments.some((entry) => entry.enabled && entry.environmentId === member.enrollment.environmentId && entry.enrollmentId === member.enrollment.enrollmentId);
-      if (!enrolled && !inflight.has(member.phase)) continue;
+      if (!enrolled && !occupied.has(member.phase)) continue;
       const previous = byEnvironment.get(member.enrollment.environmentId);
-      if (previous === undefined || (!inflight.has(previous.member.phase) && inflight.has(member.phase))) {
+      if (previous === undefined || (!occupied.has(previous.member.phase) && occupied.has(member.phase))) {
         byEnvironment.set(member.enrollment.environmentId, { campaign, member });
       }
     }

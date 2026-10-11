@@ -83,3 +83,26 @@ export async function restoreStagedSelection(
     throw new Error("The retained staged selection changed; native installation is held.");
   return verified;
 }
+
+
+/** Retires only an exact unaccepted selection pointer; staged receipts and payload stay intact. */
+export async function retireStagedSelection(
+  baseDir: string,
+  activeVersion: string,
+  expected: { readonly environmentId: string; readonly expectedInstalledSource: string; readonly targetSource: string; readonly stagedHandle: string },
+): Promise<void> {
+  const binding = await currentQualifiedRuntimeBinding(baseDir, activeVersion);
+  if (binding.environmentId !== expected.environmentId || binding.activeSourceSha !== expected.expectedInstalledSource)
+    throw new Error("The running environment changed; the staged selection was preserved.");
+  const path = selectionPath(binding);
+  const stored = await readSelection(path);
+  if (stored === undefined) return;
+  if (JSON.stringify(stored.binding) !== JSON.stringify(binding) || stored.stagedHandle !== expected.stagedHandle || stored.receipt.sourceSha !== expected.targetSource)
+    throw new Error("Another staged selection occupies this binding; it was preserved.");
+  const verified = await verifyStagedQualifiedRuntime(baseDir, activeVersion, stored.stagedHandle);
+  if (JSON.stringify(verified) !== JSON.stringify(stored))
+    throw new Error("The retained stage changed; its pointer was preserved.");
+  await NodeFSP.unlink(path);
+  const parent = await NodeFSP.open(NodePath.dirname(path), "r");
+  try { await parent.sync(); } finally { await parent.close(); }
+}

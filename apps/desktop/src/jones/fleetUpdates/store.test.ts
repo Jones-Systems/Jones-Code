@@ -58,3 +58,16 @@ describe("native fleet commit gate", () => {
     await expect(store.request({ action: "updateMember", input: { campaignId, operationId, expectedPhase: "pending", phase: "offline" } })).rejects.toThrow("must be reconciled");
   }));
 });
+
+it("holds an old unaccepted stage for exact retirement instead of forgetting its occupied slot", async () => fixture(async (_home, store) => {
+  const state = await store.request({ action: "read" });
+  const operationId = state.campaigns[0]!.members[0]!.operationId;
+  await store.request({ action: "updateMember", input: { campaignId, operationId, expectedPhase: "waiting", phase: "staged", expectedInstalledSource: "b".repeat(40) } });
+  const nextId = "33333333-3333-4333-8333-333333333333";
+  const next = await store.request({ action: "prepare", input: { campaignId: nextId, targetSource: "c".repeat(40), desktopStagedHandle: "new-stage" } });
+  expect(next.campaigns[0]?.members[0]?.phase).toBe("retiring");
+  const nextOperation = next.campaigns[1]!.members[0]!.operationId;
+  await expect(store.request({ action: "updateMember", input: { campaignId: nextId, operationId: nextOperation, expectedPhase: "waiting", phase: "staging" } })).rejects.toThrow("requires reconciliation");
+  await store.request({ action: "updateMember", input: { campaignId, operationId, expectedPhase: "retiring", phase: "superseded" } });
+  expect((await store.request({ action: "updateMember", input: { campaignId: nextId, operationId: nextOperation, expectedPhase: "waiting", phase: "staging" } })).campaigns[1]?.members[0]?.phase).toBe("staging");
+}));

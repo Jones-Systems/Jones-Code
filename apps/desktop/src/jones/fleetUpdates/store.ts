@@ -32,7 +32,8 @@ export interface DesktopFleetStore {
 }
 const validState = Schema.is(FleetDesktopState);
 const validRequest = Schema.is(FleetDesktopRequest);
-const inFlight = new Set(["dispatching", "pending"]);
+const inFlight = new Set(["dispatching", "install-blocked", "reconciling", "pending"]);
+const occupied = new Set([...inFlight, "retiring"]);
 const terminal = new Set(["current", "committed", "rolled-back", "blocked", "superseded"]);
 
 function prepare(state: FleetDesktopState, input: FleetPrepareCampaignInput): FleetDesktopState {
@@ -49,8 +50,8 @@ function prepare(state: FleetDesktopState, input: FleetPrepareCampaignInput): Fl
     })),
   };
   return { ...state, campaigns: [...state.campaigns.map((previous) => ({
-    ...previous, members: previous.members.map((member) => terminal.has(member.phase) || inFlight.has(member.phase)
-      ? member : { ...member, phase: "superseded" as const }),
+    ...previous, members: previous.members.map((member) => terminal.has(member.phase) || occupied.has(member.phase)
+      ? member : { ...member, phase: member.expectedInstalledSource === undefined ? "superseded" as const : "retiring" as const }),
   })), campaign] };
 }
 
@@ -60,15 +61,16 @@ function updateMember(state: FleetDesktopState, input: FleetUpdateMemberInput): 
   if (campaign === undefined || member === undefined) throw new Error("Unknown fleet campaign member.");
   if (member.phase !== input.expectedPhase) throw new Error("Fleet member changed; refresh before continuing.");
   if (terminal.has(member.phase) && input.phase !== member.phase) throw new Error("A completed fleet operation cannot be reopened.");
+  if (member.phase === "reconciling" && ["dispatching", "install-blocked"].includes(input.phase)) throw new Error("Uncertain native acceptance must be observed without resubmission.");
   if (inFlight.has(member.phase) && !inFlight.has(input.phase) && !terminal.has(input.phase)) throw new Error("An accepted operation must be reconciled before its state can change.");
-  if ((input.phase === "dispatching" || input.phase === "pending") &&
+  if ((["dispatching", "install-blocked", "reconciling", "pending"].includes(input.phase)) &&
       (campaign.phase !== "committed" || campaign.committedGeneration === undefined)) {
     throw new Error("The laptop update has not committed; remote activation is forbidden.");
   }
   if (input.phase === "staging" || input.phase === "dispatching") {
     const enrolled = state.enrollments.some((entry) => entry.enabled && entry.environmentId === member.enrollment.environmentId && entry.enrollmentId === member.enrollment.enrollmentId);
     if (!enrolled) throw new Error("Fleet enrollment was disabled or replaced.");
-    if (state.campaigns.some((other) => other.members.some((entry) => entry.operationId !== member.operationId && entry.enrollment.environmentId === member.enrollment.environmentId && inFlight.has(entry.phase)))) {
+    if (state.campaigns.some((other) => other.members.some((entry) => entry.operationId !== member.operationId && entry.enrollment.environmentId === member.enrollment.environmentId && occupied.has(entry.phase)))) {
       throw new Error("Another operation on this host still requires reconciliation.");
     }
   }

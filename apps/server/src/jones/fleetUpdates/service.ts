@@ -2,7 +2,7 @@ import type { JonesUpdateInstallInput, JonesUpdateState } from "@t3tools/contrac
 import {
   FleetHostError,
   type FleetActivateInput, type FleetEnrollment, type FleetEnrollmentInput,
-  type FleetHostOperation, type FleetHostStatus, type FleetStageInput,
+  type FleetHostOperation, type FleetHostStatus, type FleetStageInput, type FleetRetireInput,
 } from "@t3tools/contracts/jones/fleet-updates";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -27,6 +27,7 @@ export interface FleetHostUpdater {
   readonly installForOperation: (input: JonesUpdateInstallInput & {
     readonly operationId: string; readonly targetSource: string; readonly expectedInstalledSource: string;
   }) => Effect.Effect<JonesUpdateState>;
+  readonly retireStagedOperation: (input: NativeBinding & { readonly operationId: string }) => Effect.Effect<{ readonly retired: boolean; readonly reason?: string }>;
   readonly reconcileOperation: (operationId: string) => Effect.Effect<{
     readonly state: "absent" | "pending" | "committed" | "rolled-back" | "blocked";
     readonly operationId: string;
@@ -40,6 +41,7 @@ export class FleetUpdates extends Context.Service<FleetUpdates, {
   readonly status: (operationId?: string) => Effect.Effect<FleetHostStatus, FleetHostError>;
   readonly enroll: (input: FleetEnrollmentInput) => Effect.Effect<FleetHostStatus, FleetHostError>;
   readonly stage: (input: FleetStageInput) => Effect.Effect<FleetHostStatus, FleetHostError>;
+  readonly retire: (input: FleetRetireInput) => Effect.Effect<FleetHostStatus, FleetHostError>;
   readonly activate: (input: FleetActivateInput) => Effect.Effect<FleetHostStatus, FleetHostError>;
 }>()("t3/jones/fleetUpdates/FleetUpdates") {}
 
@@ -69,6 +71,7 @@ export const makeFleetUpdates = (options: {
 }) => Effect.gen(function* () {
   const { environmentId, store, updates } = options;
   const gate = yield* Semaphore.make(1);
+  const activeNative = new Set<string>();
   const requireEnrollment = (input: { environmentId: string; enrollmentId: string }) => Effect.gen(function* () {
     if (input.environmentId !== environmentId) return yield* fail("binding", "The connected environment changed.");
     const enrollment = yield* storage(store.readEnrollment);
@@ -80,21 +83,23 @@ export const makeFleetUpdates = (options: {
   });
   const save = (operation: FleetHostOperation) => storage(() => store.editOperation(operation.input.operationId, (old) => {
     if (old !== null && !sameIntent(old.input, operation.input)) throw fail("conflict", "The operation identifier already belongs to another update.");
-    if (old !== null && (["current", "committed", "rolled-back", "blocked"].includes(old.phase) ||
-        (old.phase === "pending" && ["staging", "stage-blocked", "staged", "dispatching"].includes(operation.phase)) ||
-        (old.phase === "dispatching" && ["staging", "stage-blocked", "staged"].includes(operation.phase)))) return old;
+    if (old !== null && (["current", "committed", "rolled-back", "blocked", "superseded"].includes(old.phase) ||
+        (["pending", "reconciling"].includes(old.phase) && ["staging", "stage-blocked", "staged", "dispatching", "install-blocked"].includes(operation.phase)) ||
+        (["dispatching", "install-blocked"].includes(old.phase) && ["staging", "stage-blocked", "staged"].includes(operation.phase)))) return old;
     return operation;
   }));
   const reconcile = (operation: FleetHostOperation) => Effect.gen(function* () {
-    if (operation.phase !== "dispatching" && operation.phase !== "pending") return operation;
+    if (!["dispatching", "install-blocked", "pending", "reconciling"].includes(operation.phase) || activeNative.has(operation.input.operationId)) return operation;
     const native = yield* updates.reconcileOperation(operation.input.operationId);
-    if (native.state === "absent" && operation.phase === "dispatching") return operation;
-    if (native.operationId !== operation.input.operationId || !nativeMatches(operation, native.binding)) {
-      return yield* save({ ...operation, phase: "blocked", reason: "Native operation identity is missing or changed; automatic dispatch is stopped." });
+    if (native.state === "absent" && ["dispatching", "install-blocked"].includes(operation.phase)) return operation;
+    const bound = native.operationId === operation.input.operationId && nativeMatches(operation, native.binding);
+    const provenFailure = native.state === "blocked" && bound && native.updateId === operation.input.operationId;
+    if (!bound || native.state === "absent" || (native.state === "blocked" && !provenFailure)) {
+      return yield* save({ ...operation, phase: "reconciling", reason: native.reason ?? "Native acceptance is uncertain. Status will be observed without repeating installation." });
     }
+    const { reason: _reason, ...previous } = operation;
     return yield* save({
-      ...operation,
-      phase: native.state === "absent" ? "blocked" : native.state,
+      ...previous, phase: native.state,
       ...(native.updateId === undefined ? {} : { updateId: native.updateId }),
       ...(native.reason === undefined ? {} : { reason: native.reason }),
     });
@@ -150,31 +155,77 @@ export const makeFleetUpdates = (options: {
       });
     return yield* status(operation.input.operationId);
   });
+  const retire = (input: FleetRetireInput) => Effect.gen(function* () {
+    if (input.environmentId !== environmentId) return yield* fail("binding", "The connected environment changed.");
+    let operation = yield* storage(() => store.readOperation(input.operationId));
+    if (operation !== null && !sameIntent(operation.input, input)) return yield* fail("conflict", "The retired operation binding changed.");
+    if (operation !== null && !["staging", "stage-blocked", "staged"].includes(operation.phase)) return yield* status(input.operationId);
+    const native = yield* updates.reconcileOperation(input.operationId);
+    if (native.state !== "absent") {
+      if (operation === null) return yield* fail("conflict", "A native operation exists without its fleet stage receipt; it was preserved.");
+      yield* save({ ...operation, phase: "reconciling", reason: "Native acceptance must be reconciled before this stage can be retired." });
+      return yield* status(input.operationId);
+    }
+    const update = yield* updates.state();
+    if (operation === null) {
+      if (!update?.currentVersion) return yield* fail("bootstrap-required", "The host cannot bind a retirement receipt.");
+      operation = { input, phase: "staging", currentVersion: update.currentVersion, continueRunningThreads: false };
+    }
+    const handle = operation.stagedHandle;
+    if (handle !== undefined) {
+      const result = yield* updates.retireStagedOperation({ ...operation.input, currentVersion: operation.currentVersion, stagedHandle: handle });
+      if (!result.retired) {
+        yield* save({ ...operation, reason: result.reason ?? "The exact staged selection could not be retired safely." });
+        return yield* status(input.operationId);
+      }
+    } else if (update?.stagedHandle !== undefined && update.provenance?.sourceSha === input.targetSource) {
+      // A crash after native staging may precede the fleet staged receipt. Recover the
+      // exact current slot only when its source/environment/version still match.
+      if (update.environmentId !== environmentId || update.currentVersion !== operation.currentVersion || update.installedSource !== input.expectedInstalledSource)
+        return yield* fail("binding", "The stage identity changed before retirement.");
+      const result = yield* updates.retireStagedOperation({ ...input, currentVersion: operation.currentVersion, stagedHandle: update.stagedHandle });
+      if (!result.retired) return yield* fail("conflict", result.reason ?? "The stage could not be retired safely.");
+    }
+    yield* save({ ...operation, phase: "superseded", reason: "The unaccepted stage pointer was retired. Its payload was retained." });
+    return yield* status(input.operationId);
+  });
   const activate = (input: FleetActivateInput) => Effect.gen(function* () {
     const enrollment = yield* requireEnrollment(input);
     let operation = yield* storage(() => store.readOperation(input.operationId));
     if (operation === null || operation.input.enrollmentId !== input.enrollmentId ||
         operation.input.environmentId !== input.environmentId) return yield* fail("binding", "The selected staged operation does not exist in this enrollment.");
     operation = yield* reconcile(operation);
-    if (operation.phase !== "staged" && operation.phase !== "dispatching") return yield* status(input.operationId);
+    if (!["staged", "dispatching", "install-blocked"].includes(operation.phase)) return yield* status(input.operationId);
     if (enrollment.continueRunningThreads !== operation.continueRunningThreads) return yield* fail("conflict", "Continuation consent changed after staging; stage a new operation.");
     if (operation.stagedHandle === undefined) return yield* fail("binding", "The selected operation has no staged artifact.");
-    // This durable marker precedes IPC. Replaying it requires authoritative native absence;
-    // the launcher's UUID binding serializes a late or duplicate request.
     operation = yield* save({ ...operation, phase: "dispatching" });
     if (operation.phase !== "dispatching") return yield* status(input.operationId);
-    yield* updates.installForOperation({
-      operationId: input.operationId, environmentId, currentVersion: operation.currentVersion,
-      stagedHandle: operation.stagedHandle!, targetSource: operation.input.targetSource,
-      expectedInstalledSource: operation.input.expectedInstalledSource,
-      continueRunningThreads: operation.continueRunningThreads,
-    });
+    const selected = operation;
+    // Status reads remain available while preparation runs, but cannot turn the
+    // reservation-before-state interval of this invocation into a terminal result.
+    activeNative.add(input.operationId);
+    const result = yield* updates.installForOperation({
+      operationId: input.operationId, environmentId, currentVersion: selected.currentVersion,
+      stagedHandle: selected.stagedHandle!, targetSource: selected.input.targetSource,
+      expectedInstalledSource: selected.input.expectedInstalledSource,
+      continueRunningThreads: selected.continueRunningThreads,
+    }).pipe(Effect.ensuring(Effect.sync(() => activeNative.delete(input.operationId))));
+    operation = yield* reconcile(selected);
+    if (operation.phase === "dispatching" && ["blocked", "error"].includes(result.phase)) {
+      const current = yield* updates.state();
+      const bindingStillValid = current?.environmentId === environmentId && current.currentVersion === selected.currentVersion &&
+        current.installedSource === selected.input.expectedInstalledSource && current.stagedHandle === selected.stagedHandle &&
+        current.provenance?.sourceSha === selected.input.targetSource;
+      yield* save({ ...operation, phase: bindingStillValid ? "install-blocked" : "blocked",
+        reason: result.message ?? "The launcher refused preparation before native acceptance. Refresh the selected host before retrying." });
+    }
     return yield* status(input.operationId);
   });
   return FleetUpdates.of({
     status,
     enroll: (input) => gate.withPermits(1)(enroll(input)),
     stage: (input) => gate.withPermits(1)(stage(input)),
+    retire: (input) => gate.withPermits(1)(retire(input)),
     activate: (input) => gate.withPermits(1)(activate(input)),
   });
 });

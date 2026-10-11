@@ -1,4 +1,4 @@
-import type { FleetActivateInput, FleetEnrollmentInput, FleetStageInput } from "@t3tools/contracts/jones/fleet-updates";
+import type { FleetActivateInput, FleetEnrollmentInput, FleetStageInput, FleetRetireInput } from "@t3tools/contracts/jones/fleet-updates";
 import { FLEET_UPDATES_HTTP_BASE } from "@t3tools/contracts/jones/fleet-updates";
 import * as Effect from "effect/Effect";
 import type { ConnectionCatalogEntry } from "../../connection/catalog.ts";
@@ -14,6 +14,7 @@ export type FleetHostRequest =
   | { readonly action: "status"; readonly operationId?: string }
   | { readonly action: "enroll"; readonly input: FleetEnrollmentInput }
   | { readonly action: "stage"; readonly input: FleetStageInput }
+  | { readonly action: "retire"; readonly input: FleetRetireInput }
   | { readonly action: "activate"; readonly input: FleetActivateInput };
 
 /** Uses the narrow authenticated update transport even when orchestration is incompatible. */
@@ -42,6 +43,7 @@ export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFle
           case "status": return client.status({ headers, query: input.operationId === undefined ? {} : { operationId: input.operationId } });
           case "enroll": return client.enroll({ headers, payload: input.input });
           case "stage": return client.stage({ headers, payload: input.input });
+          case "retire": return client.retire({ headers, payload: input.input });
           case "activate": return client.activate({ headers, payload: input.input });
         }
       },
