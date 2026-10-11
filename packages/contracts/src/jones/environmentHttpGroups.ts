@@ -477,8 +477,11 @@ export const makeJonesHttpGroups = ({
 
   return {
     EnvironmentFleetUpdatesHttpApi: makeFleetUpdatesHttpGroup({
-      OptionalBearerHeaders, EnvironmentAuthenticatedAuth, EnvironmentScopeRequiredError,
-      EnvironmentInternalError, EnvironmentHttpBadRequestError,
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
     }),
     EnvironmentPreviewCompanionHttpApi: makePreviewCompanionHttpGroup({
       OptionalBearerHeaders,

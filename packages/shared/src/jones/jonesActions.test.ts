@@ -222,24 +222,40 @@ describe("Jones Actions qualification", () => {
       },
     });
     const result = await client.check({
-      installedSource: OLD, targetSource: CURRENT, platform: "linux", architecture: "x64",
+      installedSource: OLD,
+      targetSource: CURRENT,
+      platform: "linux",
+      architecture: "x64",
     });
     expect(result).toMatchObject({ state: "available", candidate: { source: CURRENT } });
     expect(f.calls.some((call) => call.includes(`head_sha=${CURRENT}&per_page=50`))).toBe(true);
   });
   it("never substitutes a different successful source for the requested source", async () => {
     const f = fixture({ run: { head_sha: OLD } });
-    expect(await f.client.check({
-      installedSource: OLD, targetSource: CURRENT, platform: "linux", architecture: "x64",
-    })).toMatchObject({ state: "blocked", reason: "unavailable" });
+    expect(
+      await f.client.check({
+        installedSource: OLD,
+        targetSource: CURRENT,
+        platform: "linux",
+        architecture: "x64",
+      }),
+    ).toMatchObject({ state: "blocked", reason: "unavailable" });
   });
   it("reports an already installed requested source only after canonical qualification", async () => {
-    const input = { installedSource: OLD, targetSource: OLD, platform: "linux", architecture: "x64" } as const;
+    const input = {
+      installedSource: OLD,
+      targetSource: OLD,
+      platform: "linux",
+      architecture: "x64",
+    } as const;
     expect(await fixture().client.check(input)).toEqual({ state: "no-new" });
-    expect(await fixture({ comparison: { status: "diverged" } }).client.check(input))
-      .toMatchObject({ state: "blocked", reason: "unqualified" });
-    expect(await fixture().client.check({ ...input, targetSource: "invalid" }))
-      .toMatchObject({ state: "blocked", reason: "unqualified" });
+    expect(await fixture({ comparison: { status: "diverged" } }).client.check(input)).toMatchObject(
+      { state: "blocked", reason: "unqualified" },
+    );
+    expect(await fixture().client.check({ ...input, targetSource: "invalid" })).toMatchObject({
+      state: "blocked",
+      reason: "unqualified",
+    });
   });
   it.each([
     { event: "pull_request" },

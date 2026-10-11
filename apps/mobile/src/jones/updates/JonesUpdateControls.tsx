@@ -1,4 +1,7 @@
-import { jonesUpdateActionError, jonesUpdatePresentation } from "@t3tools/client-runtime/jones/updates";
+import {
+  jonesUpdateActionError,
+  jonesUpdatePresentation,
+} from "@t3tools/client-runtime/jones/updates";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useState } from "react";
@@ -21,8 +24,10 @@ export function JonesUpdateControls({
   const action = useAtomCommand(jonesUpdates.action);
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  if (state === null) return observation.freshness === "stale"
-    ? <Text className="p-4 text-sm text-foreground-muted">{observation.message}</Text> : null;
+  if (state === null)
+    return observation.freshness === "stale" ? (
+      <Text className="p-4 text-sm text-foreground-muted">{observation.message}</Text>
+    ) : null;
   const run = async (input: Parameters<typeof action>[0]["input"]) => {
     setPending(true);
     setActionError(null);
@@ -39,8 +44,14 @@ export function JonesUpdateControls({
     <SettingsSection title="Jones main builds">
       <View className="gap-2 p-4">
         <Text className="text-sm text-foreground-muted">{presentation.message}</Text>
-        {observation.freshness !== "fresh" ? <Text className="text-sm text-foreground-muted">{observation.message}</Text> : null}
-        {actionError ? <Text accessibilityRole="alert" className="text-sm text-foreground-muted">{actionError}</Text> : null}
+        {observation.freshness !== "fresh" ? (
+          <Text className="text-sm text-foreground-muted">{observation.message}</Text>
+        ) : null}
+        {actionError ? (
+          <Text accessibilityRole="alert" className="text-sm text-foreground-muted">
+            {actionError}
+          </Text>
+        ) : null}
         {state.updateId ? (
           <Text className="text-sm text-foreground-muted">Update {state.updateId}</Text>
         ) : null}

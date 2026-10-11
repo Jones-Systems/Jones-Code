@@ -75,7 +75,9 @@ describe("native update operation receipts", () => {
     await assertNoUnreconciledUpdateOperations(baseDir, undefined);
     await reserveUpdateOperation(baseDir, operationId, operationBinding(qualified));
     expect((await reconcileUpdateOperation(baseDir, operationId, undefined)).state).toBe("blocked");
-    await expect(assertNoUnreconciledUpdateOperations(baseDir, undefined)).rejects.toThrow("requires reconciliation");
+    await expect(assertNoUnreconciledUpdateOperations(baseDir, undefined)).rejects.toThrow(
+      "requires reconciliation",
+    );
     await expect(
       reserveUpdateOperation(baseDir, operationId, operationBinding(qualified)),
     ).rejects.toMatchObject({ code: "EEXIST" });

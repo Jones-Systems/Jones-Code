@@ -76,26 +76,41 @@ export async function downloadLocalDesktopUpdate(
   if (blocked) return Promise.reject(new Error(blocked));
   const provenance = state.jones.provenance;
   if (!provenance) return Promise.reject(new Error("Check for builds before downloading."));
-  const result = await bridge.downloadUpdate({ artifactId: provenance.artifactId, sourceSha: provenance.sourceSha });
+  const result = await bridge.downloadUpdate({
+    artifactId: provenance.artifactId,
+    sourceSha: provenance.sourceSha,
+  });
   if (result.completed) await prepareLocalFleetCampaign(bridge, result.state);
   return result;
 }
 
 export function isJonesDesktopUpdatePending(result: DesktopUpdateActionResult): boolean {
-  return result.accepted && !result.completed && result.state.jones !== undefined &&
-    ["checking", "downloading", "verifying", "preparing", "installing"].includes(result.state.jones.phase);
+  return (
+    result.accepted &&
+    !result.completed &&
+    result.state.jones !== undefined &&
+    ["checking", "downloading", "verifying", "preparing", "installing"].includes(
+      result.state.jones.phase,
+    )
+  );
 }
 
 export function getJonesDesktopUpdateBuildUrl(state: DesktopUpdateState): string | null {
   const provenance = state.jones?.provenance;
-  return provenance ? `https://github.com/Jones-Systems/Jones-Code/actions/runs/${provenance.runId}` : null;
+  return provenance
+    ? `https://github.com/Jones-Systems/Jones-Code/actions/runs/${provenance.runId}`
+    : null;
 }
 
 export function canDiscardLocalDesktopUpdate(state: DesktopUpdateState | null): boolean {
   const jones = state?.jones;
-  return jones !== undefined && jones.stagedHandle !== undefined &&
+  return (
+    jones !== undefined &&
+    jones.stagedHandle !== undefined &&
     !["checking", "downloading", "verifying", "preparing", "installing"].includes(jones.phase) &&
-    jones.capability.reason !== "blocked" && jones.capability.reason !== "bootstrap-required";
+    jones.capability.reason !== "blocked" &&
+    jones.capability.reason !== "bootstrap-required"
+  );
 }
 
 export function discardLocalDesktopUpdate(
@@ -117,19 +132,36 @@ async function prepareLocalFleetCampaign(
   const targetSource = state.jones?.provenance?.sourceSha;
   // Preparing another campaign retires prior members; reselecting that build needs fresh operation IDs.
   const selected = fleet.campaigns.at(-1);
-  if (selected !== undefined &&
+  if (
+    selected !== undefined &&
     (selected.phase === "prepared" || selected.phase === "installing") &&
-    selected.desktopStagedHandle === stagedHandle && selected.targetSource === targetSource)
+    selected.desktopStagedHandle === stagedHandle &&
+    selected.targetSource === targetSource
+  )
     return selected.campaignId;
   if (!fleet.enrollments.some((entry) => entry.enabled)) return undefined;
   if (stagedHandle === undefined || targetSource === undefined)
-    throw new Error("The staged desktop source is unavailable; enrolled updates cannot be prepared.");
+    throw new Error(
+      "The staged desktop source is unavailable; enrolled updates cannot be prepared.",
+    );
   const campaignId = globalThis.crypto.randomUUID();
-  const prepared = await bridge.fleetUpdates({ action: "prepare", input: {
-    campaignId, targetSource, desktopStagedHandle: stagedHandle,
-  } });
-  if (!prepared.campaigns.some((campaign) => campaign.campaignId === campaignId &&
-    campaign.targetSource === targetSource && campaign.desktopStagedHandle === stagedHandle &&
-    campaign.phase === "prepared")) throw new Error("The enrolled update campaign was not saved.");
+  const prepared = await bridge.fleetUpdates({
+    action: "prepare",
+    input: {
+      campaignId,
+      targetSource,
+      desktopStagedHandle: stagedHandle,
+    },
+  });
+  if (
+    !prepared.campaigns.some(
+      (campaign) =>
+        campaign.campaignId === campaignId &&
+        campaign.targetSource === targetSource &&
+        campaign.desktopStagedHandle === stagedHandle &&
+        campaign.phase === "prepared",
+    )
+  )
+    throw new Error("The enrolled update campaign was not saved.");
   return campaignId;
 }

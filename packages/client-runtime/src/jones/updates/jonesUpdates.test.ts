@@ -9,7 +9,12 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { JonesUpdateState as JonesUpdateStateSchema } from "@t3tools/contracts/jones/jonesUpdates";
-import { jonesUpdateActionError, jonesUpdatePresentation, observeJonesUpdateSnapshot, observeJonesUpdateState } from "./jonesUpdates.ts";
+import {
+  jonesUpdateActionError,
+  jonesUpdatePresentation,
+  observeJonesUpdateSnapshot,
+  observeJonesUpdateState,
+} from "./jonesUpdates.ts";
 
 const decodeJonesUpdateState = Schema.decodeUnknownSync(JonesUpdateStateSchema);
 
@@ -154,21 +159,31 @@ it("decodes older Jones update payloads without outcome metadata", () => {
   expect(decodeJonesUpdateState(staged)).toEqual(staged);
 });
 
-it.effect("retains the cursor and visible state across a transient GET failure, then recovers", () =>
-  Effect.gen(function* () {
-    const cursors: Array<number | undefined> = [];
-    const delays: number[] = [];
-    const states = yield* observeJonesUpdateSnapshot(Stream.succeed(Option.some("prepared")), (after) => {
-      cursors.push(after);
-      if (cursors.length === 1) return Effect.succeed(staged);
-      if (cursors.length === 2) return Effect.fail({ _tag: "RemoteEnvironmentAuthTimeoutError" });
-      return Effect.succeed({ ...staged, revision: 3 });
-    }, (failure) => Effect.sync(() => { delays.push(failure); })).pipe(Stream.take(3), Stream.runCollect);
-    expect(states.map((snapshot) => snapshot.freshness)).toEqual(["fresh", "stale", "fresh"]);
-    expect(states[1]?.state).toEqual(staged);
-    expect(cursors).toEqual([undefined, 2, 2]);
-    expect(delays).toEqual([1]);
-  }),
+it.effect(
+  "retains the cursor and visible state across a transient GET failure, then recovers",
+  () =>
+    Effect.gen(function* () {
+      const cursors: Array<number | undefined> = [];
+      const delays: number[] = [];
+      const states = yield* observeJonesUpdateSnapshot(
+        Stream.succeed(Option.some("prepared")),
+        (after) => {
+          cursors.push(after);
+          if (cursors.length === 1) return Effect.succeed(staged);
+          if (cursors.length === 2)
+            return Effect.fail({ _tag: "RemoteEnvironmentAuthTimeoutError" });
+          return Effect.succeed({ ...staged, revision: 3 });
+        },
+        (failure) =>
+          Effect.sync(() => {
+            delays.push(failure);
+          }),
+      ).pipe(Stream.take(3), Stream.runCollect);
+      expect(states.map((snapshot) => snapshot.freshness)).toEqual(["fresh", "stale", "fresh"]);
+      expect(states[1]?.state).toEqual(staged);
+      expect(cursors).toEqual([undefined, 2, 2]);
+      expect(delays).toEqual([1]);
+    }),
 );
 
 it.effect("connection replacement cancels a pending read retry and resets its cursor", () =>
@@ -178,13 +193,21 @@ it.effect("connection replacement cancels a pending read retry and resets its cu
     const canceled = yield* Deferred.make<void>();
     let reads = 0;
     const cursors: Array<number | undefined> = [];
-    const observer = yield* observeJonesUpdateSnapshot(SubscriptionRef.changes(connections), (after) => {
-      reads++;
-      cursors.push(after);
-      return reads === 1 ? Effect.fail({ _tag: "RemoteEnvironmentAuthTimeoutError" }) : Effect.succeed(staged);
-    }, () => Deferred.succeed(waiting, undefined).pipe(
-      Effect.andThen(Effect.never), Effect.onInterrupt(() => Deferred.succeed(canceled, undefined)),
-    )).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    const observer = yield* observeJonesUpdateSnapshot(
+      SubscriptionRef.changes(connections),
+      (after) => {
+        reads++;
+        cursors.push(after);
+        return reads === 1
+          ? Effect.fail({ _tag: "RemoteEnvironmentAuthTimeoutError" })
+          : Effect.succeed(staged);
+      },
+      () =>
+        Deferred.succeed(waiting, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() => Deferred.succeed(canceled, undefined)),
+        ),
+    ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(waiting);
     yield* SubscriptionRef.set(connections, Option.some("replacement"));
     yield* Deferred.await(canceled);
@@ -198,9 +221,16 @@ it.effect("authorization refusal marks retained data stale without retrying", ()
   Effect.gen(function* () {
     let reads = 0;
     let delays = 0;
-    const results = yield* observeJonesUpdateSnapshot(Stream.succeed(Option.some("prepared")), () =>
-      ++reads === 1 ? Effect.succeed(staged) : Effect.fail({ _tag: "EnvironmentAuthInvalidError" }),
-      () => Effect.sync(() => { delays++; }),
+    const results = yield* observeJonesUpdateSnapshot(
+      Stream.succeed(Option.some("prepared")),
+      () =>
+        ++reads === 1
+          ? Effect.succeed(staged)
+          : Effect.fail({ _tag: "EnvironmentAuthInvalidError" }),
+      () =>
+        Effect.sync(() => {
+          delays++;
+        }),
     ).pipe(Stream.take(2), Stream.runCollect);
     expect(results[1]).toMatchObject({ state: staged, freshness: "stale" });
     expect(delays).toBe(0);
@@ -208,9 +238,14 @@ it.effect("authorization refusal marks retained data stale without retrying", ()
 );
 
 it("distinguishes fulfilled remote failures from accepted restart progress", () => {
-  expect(jonesUpdateActionError(AsyncResult.success({ ...staged, phase: "blocked", message: "Source changed" })))
-    .toBe("Source changed");
-  expect(jonesUpdateActionError(AsyncResult.success({ ...staged, phase: "installing" }))).toBeNull();
+  expect(
+    jonesUpdateActionError(
+      AsyncResult.success({ ...staged, phase: "blocked", message: "Source changed" }),
+    ),
+  ).toBe("Source changed");
+  expect(
+    jonesUpdateActionError(AsyncResult.success({ ...staged, phase: "installing" })),
+  ).toBeNull();
 });
 
 it.effect("marks a replaced live connection stale before its first status read completes", () =>
@@ -219,10 +254,14 @@ it.effect("marks a replaced live connection stale before its first status read c
     const ready = yield* Deferred.make<void>();
     const observer = yield* observeJonesUpdateSnapshot(
       SubscriptionRef.changes(connections),
-      (after) => after === undefined ? Effect.succeed(staged) : Effect.never,
+      (after) => (after === undefined ? Effect.succeed(staged) : Effect.never),
     ).pipe(
-      Stream.tap((snapshot) => snapshot.freshness === "fresh" ? Deferred.succeed(ready, undefined) : Effect.void),
-      Stream.take(3), Stream.runCollect, Effect.forkChild({ startImmediately: true }),
+      Stream.tap((snapshot) =>
+        snapshot.freshness === "fresh" ? Deferred.succeed(ready, undefined) : Effect.void,
+      ),
+      Stream.take(3),
+      Stream.runCollect,
+      Effect.forkChild({ startImmediately: true }),
     );
     yield* Deferred.await(ready);
     yield* SubscriptionRef.set(connections, Option.some("replacement"));

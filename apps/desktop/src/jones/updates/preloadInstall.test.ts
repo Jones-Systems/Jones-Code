@@ -5,7 +5,12 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { UPDATE_INSTALL_CHANNEL, UPDATE_DOWNLOAD_CHANNEL, UPDATE_DISCARD_CHANNEL, FLEET_UPDATES_CHANNEL } from "../../ipc/channels.ts";
+import {
+  UPDATE_INSTALL_CHANNEL,
+  UPDATE_DOWNLOAD_CHANNEL,
+  UPDATE_DISCARD_CHANNEL,
+  FLEET_UPDATES_CHANNEL,
+} from "../../ipc/channels.ts";
 import { discardUpdate, downloadUpdate, installUpdate } from "../../ipc/methods/updates.ts";
 import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
@@ -49,7 +54,10 @@ describe("desktop preload install bridge", () => {
   it("forwards an explicit native campaign and exposes no outcome setter", async () => {
     const campaignId = "11111111-1111-4111-8111-111111111111";
     await bridge.installUpdate("staged-build-123", campaignId);
-    expect(mocks.invoke).toHaveBeenLastCalledWith(UPDATE_INSTALL_CHANNEL, { stagedHandle: "staged-build-123", campaignId });
+    expect(mocks.invoke).toHaveBeenLastCalledWith(UPDATE_INSTALL_CHANNEL, {
+      stagedHandle: "staged-build-123",
+      campaignId,
+    });
     await bridge.fleetUpdates!({ action: "read" });
     expect(mocks.invoke).toHaveBeenLastCalledWith(FLEET_UPDATES_CHANNEL, { action: "read" });
   });
@@ -72,10 +80,13 @@ describe("desktop install IPC decoding", () => {
       { hostArch: "arm64", appArch: "arm64", runningUnderArm64Translation: false },
       "latest",
     );
-    if (jones) state.jones = {
-      source: "jones-actions", channel: "jones-main", phase: "available",
-      capability: { check: true, download: true, install: false },
-    };
+    if (jones)
+      state.jones = {
+        source: "jones-actions",
+        channel: "jones-main",
+        phase: "available",
+        capability: { check: true, download: true, install: false },
+      };
     const result = { accepted: true, completed: false, state };
     const discardStaged = vi.fn(() => Effect.succeed(result));
     const downloadSelected = vi.fn(() => Effect.succeed(result));
@@ -103,13 +114,24 @@ describe("desktop install IPC decoding", () => {
       installUpdate
         .handler(payload)
         .pipe(Effect.provideService(DesktopUpdates.DesktopUpdates, service));
-    const invokeDownload = (payload: unknown) => downloadUpdate.handler(payload).pipe(
-      Effect.provideService(DesktopUpdates.DesktopUpdates, service),
-    );
-    const invokeDiscard = (payload: unknown) => discardUpdate.handler(payload).pipe(
-      Effect.provideService(DesktopUpdates.DesktopUpdates, service),
-    );
-    return { invoke, installStaged, install, invokeDownload, download, downloadSelected, invokeDiscard, discardStaged };
+    const invokeDownload = (payload: unknown) =>
+      downloadUpdate
+        .handler(payload)
+        .pipe(Effect.provideService(DesktopUpdates.DesktopUpdates, service));
+    const invokeDiscard = (payload: unknown) =>
+      discardUpdate
+        .handler(payload)
+        .pipe(Effect.provideService(DesktopUpdates.DesktopUpdates, service));
+    return {
+      invoke,
+      installStaged,
+      install,
+      invokeDownload,
+      download,
+      downloadSelected,
+      invokeDiscard,
+      discardStaged,
+    };
   }
 
   effectIt.effect("binds a valid campaign ID at the real install decoder", () =>
@@ -118,7 +140,11 @@ describe("desktop install IPC decoding", () => {
       const campaignId = "11111111-1111-4111-8111-111111111111";
       yield* invoke({ stagedHandle: "staged-build-123", campaignId });
       expect(installStaged).toHaveBeenCalledExactlyOnceWith("staged-build-123", campaignId);
-      expect(Exit.isFailure(yield* Effect.exit(invoke({ stagedHandle: "staged-build-123", campaignId: "bad" })))).toBe(true);
+      expect(
+        Exit.isFailure(
+          yield* Effect.exit(invoke({ stagedHandle: "staged-build-123", campaignId: "bad" })),
+        ),
+      ).toBe(true);
       expect(installStaged).toHaveBeenCalledOnce();
     }),
   );

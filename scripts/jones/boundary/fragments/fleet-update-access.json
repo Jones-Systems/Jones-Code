@@ -28,9 +28,7 @@
     "packages/client-runtime/src/jones/fleetUpdates/campaignController.ts",
     "packages/client-runtime/src/jones/fleetUpdates/hostBridge.ts"
   ],
-  "hookPaths": [
-    "apps/web/vite.config.ts"
-  ],
+  "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],
   "allowedImports": [
     {

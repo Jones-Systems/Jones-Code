@@ -1,4 +1,7 @@
-import type { FleetDesktopRequest, FleetDesktopState } from "@t3tools/contracts/jones/fleet-updates";
+import type {
+  FleetDesktopRequest,
+  FleetDesktopState,
+} from "@t3tools/contracts/jones/fleet-updates";
 import { createDesktopFleetStore } from "../jones/fleetUpdates/store.ts";
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
@@ -200,7 +203,10 @@ export class DesktopUpdates extends Context.Service<
     ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
     readonly discardStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
-    readonly installStaged?: (handle: string, campaignId?: string) => Effect.Effect<DesktopUpdateActionResult>;
+    readonly installStaged?: (
+      handle: string,
+      campaignId?: string,
+    ) => Effect.Effect<DesktopUpdateActionResult>;
     readonly fleetUpdates?: (request: FleetDesktopRequest) => Effect.Effect<FleetDesktopState>;
     readonly installPrepared: (
       expectedVersion: string,
@@ -474,9 +480,10 @@ export const make = Effect.gen(function* () {
       install: install().pipe(
         Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
       ),
-      discardStaged: (handle) => Effect.promise(() => controller.discard(handle)).pipe(
-        Effect.map((result) => ({ ...result, state: controller.state })),
-      ),
+      discardStaged: (handle) =>
+        Effect.promise(() => controller.discard(handle)).pipe(
+          Effect.map((result) => ({ ...result, state: controller.state })),
+        ),
       fleetUpdates: (request) => Effect.promise(() => fleet.request(request)),
       installStaged: (handle, campaignId) =>
         install(handle, campaignId).pipe(

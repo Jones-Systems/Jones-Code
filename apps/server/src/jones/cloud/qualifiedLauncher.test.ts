@@ -282,14 +282,28 @@ it.each(["archive", "reserve"] as const)(
 );
 
 it("refuses a different operation ID after a preacceptance reservation became uncertain", async () => {
-  await runScenario("commit", async (base) => {
-    const rejected = JSON.parse(await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"));
-    assert.equal(rejected.operationId, "32345678-1234-4234-8234-123456789abc");
-    assert.match(rejected.reason, /^operation-reconciliation-required:/);
-    await NodeFSP.access(NodePath.join(base, "runtime", "old-child-survived.json"));
-    assert.deepEqual(await readServiceState(NodePath.join(base, "runtime", "service-state.json")), {protocol: 4, activeVersion: baseline});
-    assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "jones-update-operations")), ["12345678-1234-4234-8234-123456789abc.json"]);
-  }, undefined, undefined, {operationFailure: "reserve", retryWithDifferentOperation: true});
+  await runScenario(
+    "commit",
+    async (base) => {
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+      );
+      assert.equal(rejected.operationId, "32345678-1234-4234-8234-123456789abc");
+      assert.match(rejected.reason, /^operation-reconciliation-required:/);
+      await NodeFSP.access(NodePath.join(base, "runtime", "old-child-survived.json"));
+      assert.deepEqual(
+        await readServiceState(NodePath.join(base, "runtime", "service-state.json")),
+        { protocol: 4, activeVersion: baseline },
+      );
+      assert.deepEqual(
+        await NodeFSP.readdir(NodePath.join(base, "runtime", "jones-update-operations")),
+        ["12345678-1234-4234-8234-123456789abc.json"],
+      );
+    },
+    undefined,
+    undefined,
+    { operationFailure: "reserve", retryWithDifferentOperation: true },
+  );
 });
 
 it("commits a qualified trial after readiness and retains its previous binary/state pair", async () => {

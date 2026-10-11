@@ -19,7 +19,10 @@ import {
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
-import { downloadLocalDesktopUpdate, installLocalDesktopUpdate } from "../../jones/updates/localDesktopUpdate";
+import {
+  downloadLocalDesktopUpdate,
+  installLocalDesktopUpdate,
+} from "../../jones/updates/localDesktopUpdate";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";

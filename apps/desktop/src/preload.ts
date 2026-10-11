@@ -305,14 +305,15 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     selection === undefined
       ? ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL)
       : ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL, selection),
-  discardUpdate: (stagedHandle) => ipcRenderer.invoke(IpcChannels.UPDATE_DISCARD_CHANNEL, stagedHandle),
+  discardUpdate: (stagedHandle) =>
+    ipcRenderer.invoke(IpcChannels.UPDATE_DISCARD_CHANNEL, stagedHandle),
   fleetUpdates: (request) => ipcRenderer.invoke(IpcChannels.FLEET_UPDATES_CHANNEL, request),
   installUpdate: (stagedHandle, campaignId) =>
     campaignId !== undefined
       ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, { stagedHandle, campaignId })
       : stagedHandle === undefined
-      ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL)
-      : ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, stagedHandle),
+        ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL)
+        : ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, stagedHandle),
   cliCommand: {
     getState: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_GET_STATE_CHANNEL),
     install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),

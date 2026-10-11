@@ -337,18 +337,21 @@ function AboutVersionSection() {
     if (action === "download") {
       if (isUpdateActionPending) return;
       setIsUpdateActionPending(true);
-      void downloadLocalDesktopUpdate(bridge, updateState).then((result) => {
-        const failure = getDesktopUpdateActionError(result);
-        if (failure) throw new Error(failure);
-      }).catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not download update",
-            description: error instanceof Error ? error.message : "Download failed.",
-          }),
-        );
-      }).finally(() => setIsUpdateActionPending(false));
+      void downloadLocalDesktopUpdate(bridge, updateState)
+        .then((result) => {
+          const failure = getDesktopUpdateActionError(result);
+          if (failure) throw new Error(failure);
+        })
+        .catch((error: unknown) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not download update",
+              description: error instanceof Error ? error.message : "Download failed.",
+            }),
+          );
+        })
+        .finally(() => setIsUpdateActionPending(false));
       return;
     }
 
@@ -472,7 +475,9 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
-      {hasDesktopBridge && updateState?.jones?.stagedHandle && window.desktopBridge?.discardUpdate ? (
+      {hasDesktopBridge &&
+      updateState?.jones?.stagedHandle &&
+      window.desktopBridge?.discardUpdate ? (
         <SettingsRow
           title="Downloaded build"
           description="Discard this selection to check for another build. The active app keeps running."
@@ -485,15 +490,21 @@ function AboutVersionSection() {
                 const bridge = window.desktopBridge;
                 if (!bridge || isUpdateActionPending) return;
                 setIsUpdateActionPending(true);
-                void discardLocalDesktopUpdate(bridge, updateState).then((result) => {
-                  const failure = getDesktopUpdateActionError(result);
-                  if (failure) throw new Error(failure);
-                }).catch((error: unknown) => {
-                  toastManager.add(stackedThreadToast({
-                    type: "error", title: "Could not discard downloaded build",
-                    description: error instanceof Error ? error.message : "Discard failed.",
-                  }));
-                }).finally(() => setIsUpdateActionPending(false));
+                void discardLocalDesktopUpdate(bridge, updateState)
+                  .then((result) => {
+                    const failure = getDesktopUpdateActionError(result);
+                    if (failure) throw new Error(failure);
+                  })
+                  .catch((error: unknown) => {
+                    toastManager.add(
+                      stackedThreadToast({
+                        type: "error",
+                        title: "Could not discard downloaded build",
+                        description: error instanceof Error ? error.message : "Discard failed.",
+                      }),
+                    );
+                  })
+                  .finally(() => setIsUpdateActionPending(false));
               }}
             >
               Discard download

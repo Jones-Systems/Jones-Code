@@ -261,7 +261,8 @@ export class JonesActionsClient {
   }): Promise<JonesActionsCheckResult> {
     try {
       source(input.installedSource);
-      const targetSource = input.targetSource === undefined ? undefined : source(input.targetSource);
+      const targetSource =
+        input.targetSource === undefined ? undefined : source(input.targetSource);
       const approved = spec(input.platform, input.architecture);
       const main = record(await this.transport.api(`${API_ROOT}/commits/main`));
       const mainSource = source(main.sha);
@@ -287,7 +288,8 @@ export class JonesActionsClient {
           if (
             !canonicalRun(listed, approved.workflow) ||
             (targetSource !== undefined && listed.head_sha !== targetSource)
-          ) continue;
+          )
+            continue;
           if (listed.status !== "completed") {
             building = true;
             continue;

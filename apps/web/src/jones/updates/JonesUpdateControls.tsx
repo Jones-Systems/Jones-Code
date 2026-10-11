@@ -1,4 +1,7 @@
-import { jonesUpdateActionError, jonesUpdatePresentation } from "@t3tools/client-runtime/jones/updates";
+import {
+  jonesUpdateActionError,
+  jonesUpdatePresentation,
+} from "@t3tools/client-runtime/jones/updates";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
@@ -12,8 +15,12 @@ export function JonesUpdateControls({ environmentId }: { readonly environmentId:
   const action = useAtomCommand(jonesUpdates.action, { reportFailure: false });
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  if (state === null) return observation.freshness === "stale"
-    ? <p role="status" className="mt-2 text-xs text-muted-foreground">{observation.message}</p> : null;
+  if (state === null)
+    return observation.freshness === "stale" ? (
+      <p role="status" className="mt-2 text-xs text-muted-foreground">
+        {observation.message}
+      </p>
+    ) : null;
   const run = async (input: Parameters<typeof action>[0]["input"]) => {
     setPending(true);
     setActionError(null);
