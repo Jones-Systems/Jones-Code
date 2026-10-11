@@ -30,9 +30,7 @@
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
     "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx"
   ],
-  "hookPaths": [
-    "apps/web/vite.config.ts"
-  ],
+  "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],
   "allowedImports": [
     {
