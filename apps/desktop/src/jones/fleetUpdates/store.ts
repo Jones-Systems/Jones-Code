@@ -1,10 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // This native journal is outside the application profile restored by an update rollback.
-import * as Fs from "node:fs/promises";
-import * as Path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeSqlite from "node:sqlite";
 import * as Schema from "effect/Schema";
 import {
   FleetDesktopState,
@@ -59,7 +59,7 @@ function prepare(state: FleetDesktopState, input: FleetPrepareCampaignInput): Fl
       .filter((entry) => entry.enabled)
       .map((enrollment) => ({
         enrollment,
-        operationId: randomUUID(),
+        operationId: NodeCrypto.randomUUID(),
         phase: "waiting",
       })),
   };
@@ -159,20 +159,20 @@ export function createDesktopFleetStore(options: {
   readonly home: string;
   readonly profile: string | undefined;
 }): DesktopFleetStore {
-  const runtime = Path.join(options.home, "runtime");
-  const profileKey = createHash("sha256")
+  const runtime = NodePath.join(options.home, "runtime");
+  const profileKey = NodeCrypto.createHash("sha256")
     .update(options.profile ?? "")
     .digest("hex");
-  const directory = Path.join(runtime, "jones-fleet", `desktop-${profileKey}`);
-  const destination = Path.join(directory, "campaigns.json");
+  const directory = NodePath.join(runtime, "jones-fleet", `desktop-${profileKey}`);
+  const destination = NodePath.join(directory, "campaigns.json");
   let queue: Promise<unknown> = Promise.resolve();
   const transact = <T>(
     change: (state: FleetDesktopState) => { state: FleetDesktopState; result: T },
   ): Promise<T> => {
     const run = async () => {
-      for (const path of [runtime, Path.dirname(directory), directory]) {
-        await Fs.mkdir(path, { recursive: true, mode: 0o700 });
-        const stat = await Fs.lstat(path);
+      for (const path of [runtime, NodePath.dirname(directory), directory]) {
+        await NodeFSP.mkdir(path, { recursive: true, mode: 0o700 });
+        const stat = await NodeFSP.lstat(path);
         if (
           !stat.isDirectory() ||
           stat.isSymbolicLink() ||
@@ -180,20 +180,20 @@ export function createDesktopFleetStore(options: {
           (typeof process.getuid === "function" && stat.uid !== process.getuid())
         )
           throw new Error("Fleet storage ownership is unknown.");
-        const parent = await Fs.open(Path.dirname(path), "r");
+        const parent = await NodeFSP.open(NodePath.dirname(path), "r");
         try {
           await parent.sync();
         } finally {
           await parent.close();
         }
       }
-      const lockPath = Path.join(directory, "lock.sqlite");
-      await Fs.open(lockPath, "ax", 0o600)
+      const lockPath = NodePath.join(directory, "lock.sqlite");
+      await NodeFSP.open(lockPath, "ax", 0o600)
         .then((file) => file.close())
         .catch((error: NodeJS.ErrnoException) => {
           if (error.code !== "EEXIST") throw error;
         });
-      const lockStat = await Fs.lstat(lockPath);
+      const lockStat = await NodeFSP.lstat(lockPath);
       if (
         !lockStat.isFile() ||
         lockStat.isSymbolicLink() ||
@@ -202,15 +202,16 @@ export function createDesktopFleetStore(options: {
         (typeof process.getuid === "function" && lockStat.uid !== process.getuid())
       )
         throw new Error("Fleet storage lock ownership is unknown.");
-      const lock = new DatabaseSync(lockPath);
+      const lock = new NodeSqlite.DatabaseSync(lockPath);
       try {
         lock.exec("PRAGMA busy_timeout=0; BEGIN EXCLUSIVE");
-        const file = await Fs.open(destination, constants.O_RDONLY | constants.O_NOFOLLOW).catch(
-          (error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return null;
-            throw error;
-          },
-        );
+        const file = await NodeFSP.open(
+          destination,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        ).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
         let state: FleetDesktopState = { schema: 1, enrollments: [], campaigns: [] };
         if (file !== null) {
           try {
@@ -237,8 +238,8 @@ export function createDesktopFleetStore(options: {
           const encoded = `${JSON.stringify(next.state)}\n`;
           if (Buffer.byteLength(encoded) > 8 * 1024 * 1024)
             throw new Error("Fleet campaign history reached its retained storage limit.");
-          const temporary = Path.join(directory, `${randomUUID()}.tmp`);
-          const output = await Fs.open(temporary, "wx", 0o600);
+          const temporary = NodePath.join(directory, `${NodeCrypto.randomUUID()}.tmp`);
+          const output = await NodeFSP.open(temporary, "wx", 0o600);
           try {
             try {
               await output.writeFile(encoded);
@@ -246,15 +247,15 @@ export function createDesktopFleetStore(options: {
             } finally {
               await output.close();
             }
-            await Fs.rename(temporary, destination);
-            const parent = await Fs.open(directory, "r");
+            await NodeFSP.rename(temporary, destination);
+            const parent = await NodeFSP.open(directory, "r");
             try {
               await parent.sync();
             } finally {
               await parent.close();
             }
           } finally {
-            await Fs.unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+            await NodeFSP.unlink(temporary).catch((error: NodeJS.ErrnoException) => {
               if (error.code !== "ENOENT") throw error;
             });
           }
@@ -308,11 +309,16 @@ export function createDesktopFleetStore(options: {
           (campaign.phase !== "prepared" && campaign.phase !== "installing")
         )
           throw new Error("The selected desktop update does not match its fleet campaign.");
-        if (state.campaigns.some((entry) =>
-          entry.campaignId !== binding.campaignId &&
-          entry.installation?.transactionId === binding.transactionId
-        ))
-          throw new Error("The native installation attempt already belongs to another fleet campaign.");
+        if (
+          state.campaigns.some(
+            (entry) =>
+              entry.campaignId !== binding.campaignId &&
+              entry.installation?.transactionId === binding.transactionId,
+          )
+        )
+          throw new Error(
+            "The native installation attempt already belongs to another fleet campaign.",
+          );
         if (
           campaign.installation !== undefined &&
           (campaign.installation.transactionId !== binding.transactionId ||

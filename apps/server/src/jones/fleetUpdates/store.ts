@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // Durable receipts live outside userdata so a native rollback cannot erase dispatch history.
-import * as Fs from "node:fs/promises";
-import * as Path from "node:path";
-import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as Schema from "effect/Schema";
 import {
   FleetEnrollment,
@@ -29,8 +29,8 @@ const isOperation = Schema.is(FleetHostOperation);
 const isOperationId = Schema.is(FleetOperationId);
 
 async function ownedDirectory(path: string, privateMode: boolean) {
-  await Fs.mkdir(path, { recursive: true, mode: 0o700 });
-  const stat = await Fs.lstat(path);
+  await NodeFSP.mkdir(path, { recursive: true, mode: 0o700 });
+  const stat = await NodeFSP.lstat(path);
   if (
     !stat.isDirectory() ||
     stat.isSymbolicLink() ||
@@ -39,7 +39,7 @@ async function ownedDirectory(path: string, privateMode: boolean) {
   ) {
     throw new Error("Fleet receipt directory ownership is unknown.");
   }
-  const parent = await Fs.open(Path.dirname(path), "r");
+  const parent = await NodeFSP.open(NodePath.dirname(path), "r");
   try {
     await parent.sync();
   } finally {
@@ -48,12 +48,13 @@ async function ownedDirectory(path: string, privateMode: boolean) {
 }
 
 async function read<T>(path: string, valid: (value: unknown) => value is T): Promise<T | null> {
-  const file = await Fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    },
-  );
+  const file = await NodeFSP.open(
+    path,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+  ).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
   if (file === null) return null;
   try {
     const stat = await file.stat();
@@ -76,8 +77,8 @@ async function read<T>(path: string, valid: (value: unknown) => value is T): Pro
 }
 
 async function replace(path: string, value: unknown) {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  const file = await Fs.open(temporary, "wx", 0o600);
+  const temporary = `${path}.${NodeCrypto.randomUUID()}.tmp`;
+  const file = await NodeFSP.open(temporary, "wx", 0o600);
   try {
     try {
       await file.writeFile(`${JSON.stringify(value)}\n`);
@@ -85,27 +86,27 @@ async function replace(path: string, value: unknown) {
     } finally {
       await file.close();
     }
-    await Fs.rename(temporary, path);
-    const directory = await Fs.open(Path.dirname(path), "r");
+    await NodeFSP.rename(temporary, path);
+    const directory = await NodeFSP.open(NodePath.dirname(path), "r");
     try {
       await directory.sync();
     } finally {
       await directory.close();
     }
   } finally {
-    await Fs.unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+    await NodeFSP.unlink(temporary).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
   }
 }
 
 export function createFleetHostStore(baseDir: string): FleetHostStore {
-  const runtime = Path.join(baseDir, "runtime");
-  const directory = Path.join(runtime, "jones-fleet");
-  const enrollment = Path.join(directory, "enrollment.json");
+  const runtime = NodePath.join(baseDir, "runtime");
+  const directory = NodePath.join(runtime, "jones-fleet");
+  const enrollment = NodePath.join(directory, "enrollment.json");
   const operationPath = (id: string) => {
     if (!isOperationId(id)) throw new Error("Invalid fleet operation identifier.");
-    return Path.join(directory, `${id}.json`);
+    return NodePath.join(directory, `${id}.json`);
   };
   const locked = async <T>(operation: () => Promise<T>) => {
     await ownedDirectory(runtime, false);
