@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeProcess from "node:process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -618,6 +620,92 @@ it("archives authenticated private setup evidence before qualification and retai
     },
     { privateSetup: true },
   ));
+it(
+  "enrolls genuine private modes with authenticated 0755 archive extraction under isolated umask 0077",
+  () =>
+    fixture(
+      async (f) => {
+        const active = NodePath.join(f.runtime, "versions", oldVersion);
+        for (const directory of [
+          f.base,
+          f.runtime,
+          NodePath.dirname(active),
+          active,
+          ...["client", "node_modules", "resource-monitor"].map((name) =>
+            NodePath.join(active, name),
+          ),
+        ])
+          await NodeFSP.chmod(directory, 0o700);
+        await NodeFSP.chmod(NodePath.join(active, "t3"), 0o700);
+        for (const name of [".install-complete", ".jones-provenance.json"])
+          await NodeFSP.chmod(NodePath.join(active, name), 0o600);
+        const verified = await verifyAdoptionArtifact(
+          f.input.activeArtifactDir,
+          privateSetupSource,
+          f.host,
+        );
+        const scratch = await NodeFSP.mkdtemp(NodePath.join(f.root, "private-mode-proof-"));
+        const script = `
+        process.umask(0o077);
+        const assert = (await import("node:assert/strict")).default;
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const { extractQualifiedLinuxArchive } = await import(${JSON.stringify(new URL("../cloud/qualifiedArchive.ts", import.meta.url).href)});
+        const { enrollQualifiedRuntime, qualifiedPayloadDigest } = await import(${JSON.stringify(new URL("../cloud/qualifiedRuntime.ts", import.meta.url).href)});
+        const { inspectPrivateSetupRuntime, archivePrivateSetupProvenance } = await import(${JSON.stringify(new URL("./privateSetupCompatibility.ts", import.meta.url).href)});
+        const input = JSON.parse(process.argv[1]);
+        const payload = path.join(input.scratch, "payload");
+        await fs.mkdir(payload, { mode: 0o700 });
+        await extractQualifiedLinuxArchive(input.archive, payload);
+        assert.equal((await fs.stat(path.join(payload, "t3"))).mode & 0o777, 0o700);
+        const preimage = await inspectPrivateSetupRuntime(input.privateSetup);
+        assert.equal(await qualifiedPayloadDigest(payload), preimage.payloadSha256);
+        const archive = path.join(input.scratch, "archive");
+        const before = await fs.stat(preimage.path);
+        const receipt = await enrollQualifiedRuntime({
+          baseDir: input.baseDir,
+          artifact: { ...input.artifact, payloadDirectory: payload },
+          host: { platform: "linux", architecture: "x64" },
+          prepareExistingRuntime: () => archivePrivateSetupProvenance(preimage, archive, input.privateSetup.uid),
+          validate: async () => {},
+        });
+        assert.equal(receipt.payloadSha256, preimage.payloadSha256);
+        assert.equal((await fs.stat(path.join(input.privateSetup.directory, "t3"))).mode & 0o777, 0o700);
+        const preserved = await fs.stat(path.join(archive, ".jones-provenance.json"));
+        assert.equal(preserved.ino, before.ino);
+        assert.equal(preserved.dev, before.dev);
+        assert.equal(await fs.readFile(path.join(archive, ".jones-provenance.json"), "utf8"), preimage.text);
+        process.stdout.write(JSON.stringify({ source: receipt.sourceSha, mode: 0o700 }));
+      `;
+        const input = JSON.stringify({
+          scratch,
+          archive: verified.archive,
+          baseDir: f.base,
+          artifact: verified.artifact,
+          privateSetup: {
+            directory: active,
+            uid: f.host.uid,
+            artifact: verified.metadata,
+            entrySha256: sha(runtimeExecutable(oldVersion)),
+          },
+        });
+        const stdout = await new Promise<string>((resolve, reject) =>
+          NodeChildProcess.execFile(
+            NodeProcess.execPath,
+            ["--experimental-strip-types", "--input-type=module", "-e", script, input],
+            { timeout: 30_000, maxBuffer: 64 * 1024 },
+            (error, stdout) => (error === null ? resolve(stdout) : reject(error)),
+          ),
+        );
+        expect(JSON.parse(stdout)).toEqual({ source: privateSetupSource, mode: 0o700 });
+        await expect(
+          NodeFSP.lstat(NodePath.join(active, ".jones-provenance.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      },
+      { privateSetup: true },
+    ),
+  35_000,
+);
 it.each(["missing-acceptance", "current-child-receipt", "stale-child-receipt"])(
   "refuses private setup %s before pending intent or service stop",
   (kind) =>
