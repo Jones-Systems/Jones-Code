@@ -7,6 +7,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+// oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone native qualifier needs the actual host platform without loading the application runtime.
+const nativePlatform = process.platform;
 const source = NodeURL.fileURLToPath(new URL("./legacy-admission-native.c", import.meta.url));
 const LIMIT = 1024 * 1024;
 
@@ -233,12 +235,12 @@ export async function runLegacyAdmissionNativeFixture({
   onSuspended,
 } = {}) {
   abortIfRequested(signal);
-  if (process.platform !== "darwin")
+  if (nativePlatform !== "darwin")
     return {
       schema: 1,
       status: "unsupported",
       reason: "darwin-required",
-      platform: process.platform,
+      platform: nativePlatform,
       activationAllowed: false,
       productionCustodyQualified: false,
     };
@@ -302,7 +304,7 @@ export async function runLegacyAdmissionNativeFixture({
   return {
     schema: 1,
     status: "passed",
-    platform: process.platform,
+    platform: nativePlatform,
     scenarios,
     activationAllowed: false,
     productionCustodyQualified: false,

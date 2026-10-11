@@ -1,14 +1,17 @@
-import * as Assert from "node:assert/strict";
-import * as ChildProcess from "node:child_process";
-import * as Crypto from "node:crypto";
-import * as FS from "node:fs/promises";
-import * as OS from "node:os";
-import * as Path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import * as NodeUtil from "node:util";
 
-const execFile = promisify(ChildProcess.execFile);
-const sha256 = (bytes) => Crypto.createHash("sha256").update(bytes).digest("hex");
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone native qualification observes the actual host without loading the application runtime.
+const nativePlatform = process.platform;
+
+const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
+const sha256 = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 export const legacyMaintenanceSource = Object.freeze({
   repository: "Jones-Systems/Jones-Code",
   commit: "bd20d2d2fc0ba89797698192b877a7f1312f8fe3",
@@ -19,12 +22,12 @@ export const legacyMaintenanceSource = Object.freeze({
 });
 
 export function extractPinnedLegacyHelper(source) {
-  Assert.equal(sha256(source), legacyMaintenanceSource.sourceSha256);
+  NodeAssert.equal(sha256(source), legacyMaintenanceSource.sourceSha256);
   const marker = "export const jonesNativeHelperSource = String.raw`";
-  Assert.equal(source.split(marker).length, 2);
-  Assert.ok(source.endsWith("`;\n"));
+  NodeAssert.equal(source.split(marker).length, 2);
+  NodeAssert.ok(source.endsWith("`;\n"));
   const helper = source.slice(source.indexOf(marker) + marker.length, -3);
-  Assert.equal(sha256(helper), legacyMaintenanceSource.helperSha256);
+  NodeAssert.equal(sha256(helper), legacyMaintenanceSource.helperSha256);
   return helper;
 }
 
@@ -32,7 +35,7 @@ export async function readPinnedLegacyHelper(repositoryRoot) {
   const reference = `${legacyMaintenanceSource.commit}:${legacyMaintenanceSource.path}`;
   const options = { cwd: repositoryRoot, encoding: "utf8", maxBuffer: 128 * 1024, timeout: 10000 };
   const { stdout: blob } = await execFile("git", ["rev-parse", reference], options);
-  Assert.equal(blob.trim(), legacyMaintenanceSource.blob);
+  NodeAssert.equal(blob.trim(), legacyMaintenanceSource.blob);
   const { stdout: source } = await execFile("git", ["cat-file", "blob", reference], options);
   return extractPinnedLegacyHelper(source);
 }
@@ -48,10 +51,10 @@ export class MaintenanceCustodyError extends AggregateError {
 }
 
 export async function withMaintenanceScratch(parent, body) {
-  const allocated = await FS.mkdtemp(Path.join(parent, "jones-maintenance-"));
+  const allocated = await NodeFSP.mkdtemp(NodePath.join(parent, "jones-maintenance-"));
   let failure;
   try {
-    return await body(await FS.realpath(allocated));
+    return await body(await NodeFSP.realpath(allocated));
   } catch (cause) {
     failure = cause;
     if (cause instanceof MaintenanceCustodyError) cause.preservedScratchRoots.push(allocated);
@@ -59,8 +62,8 @@ export async function withMaintenanceScratch(parent, body) {
   } finally {
     if (!(failure instanceof MaintenanceCustodyError)) {
       try {
-        await FS.rm(allocated, { recursive: true, force: false });
-        await Assert.rejects(FS.lstat(allocated), { code: "ENOENT" });
+        await NodeFSP.rm(allocated, { recursive: true, force: false });
+        await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
       } catch (cleanup) {
         if (failure !== undefined)
           throw new AggregateError([failure, cleanup], "Fixture failed and cleanup failed.");
@@ -309,7 +312,7 @@ else: event(run(json.loads(sys.argv[1])))
 
 export async function runMaintenanceProcess(python, arguments_, root, signal, onChildrenReady) {
   signal?.throwIfAborted();
-  const child = ChildProcess.spawn(python, arguments_, {
+  const child = NodeChildProcess.spawn(python, arguments_, {
     cwd: root,
     detached: true,
     env: { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root, PYTHONDONTWRITEBYTECODE: "1" },
@@ -356,7 +359,7 @@ export async function runMaintenanceProcess(python, arguments_, root, signal, on
       ready = true;
       try {
         const event = JSON.parse(stdout.slice(0, stdout.indexOf("\n")));
-        Assert.deepEqual(event, { event: "children-ready", childCount: 2 });
+        NodeAssert.deepEqual(event, { event: "children-ready", childCount: 2 });
         onChildrenReady?.(event);
         if (failure === undefined)
           child.stdin.end("G", (cause) => {
@@ -388,10 +391,10 @@ export async function runMaintenanceProcess(python, arguments_, root, signal, on
       }
     });
     try {
-      Assert.deepEqual(outcome, { code: 0, stoppedBy: null }, stderr.slice(0, 4000));
-      Assert.equal(stderr, "");
-      Assert.equal(ready, true);
-      Assert.equal(reaped, true);
+      NodeAssert.deepEqual(outcome, { code: 0, stoppedBy: null }, stderr.slice(0, 4000));
+      NodeAssert.equal(stderr, "");
+      NodeAssert.equal(ready, true);
+      NodeAssert.equal(reaped, true);
     } catch (cause) {
       failure ??= cause;
     }
@@ -399,7 +402,7 @@ export async function runMaintenanceProcess(python, arguments_, root, signal, on
     // Preserve the owned tree on every missing-proof path, even before readiness.
     if (child.pid && !reaped) throw new MaintenanceCustodyError(failure);
     if (failure !== undefined) throw failure;
-    Assert.equal(lines.length, 3);
+    NodeAssert.equal(lines.length, 3);
     return JSON.parse(lines[2]);
   } finally {
     clearTimeout(timeout);
@@ -409,22 +412,25 @@ export async function runMaintenanceProcess(python, arguments_, root, signal, on
 }
 
 export async function runLegacyMaintenanceFixture({
-  repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url)),
-  scratchParent = process.env.RUNNER_TEMP ?? OS.tmpdir(),
+  repositoryRoot = NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
+  scratchParent = process.env.RUNNER_TEMP ?? NodeOS.tmpdir(),
   python = "/usr/bin/python3",
   signal,
   onChildrenReady,
 } = {}) {
-  Assert.equal(
-    process.platform,
+  NodeAssert.equal(
+    nativePlatform,
     "darwin",
     "Native qualification requires macOS; no platform substitution is permitted.",
   );
   const helper = await readPinnedLegacyHelper(repositoryRoot);
   const result = await withMaintenanceScratch(scratchParent, async (root) => {
-    await FS.writeFile(Path.join(root, "legacy-exact.py"), helper, { flag: "wx", mode: 0o400 });
-    const runner = Path.join(root, "fixture.py");
-    await FS.writeFile(runner, pythonFixture, { flag: "wx", mode: 0o400 });
+    await NodeFSP.writeFile(NodePath.join(root, "legacy-exact.py"), helper, {
+      flag: "wx",
+      mode: 0o400,
+    });
+    const runner = NodePath.join(root, "fixture.py");
+    await NodeFSP.writeFile(runner, pythonFixture, { flag: "wx", mode: 0o400 });
     return runMaintenanceProcess(
       python,
       ["-I", "-B", runner, JSON.stringify({ root, ...legacyMaintenanceSource })],
@@ -436,13 +442,16 @@ export async function runLegacyMaintenanceFixture({
   return { ...result, source: legacyMaintenanceSource, scratchRemoved: true };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(Path.resolve(process.argv[1])).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === NodeURL.pathToFileURL(NodePath.resolve(process.argv[1])).href
+) {
   const controller = new AbortController();
   const cancel = () => controller.abort(new Error("Legacy maintenance fixture cancelled."));
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
-    Assert.equal(
+    NodeAssert.equal(
       process.argv.length,
       2,
       "This fixture accepts no installed-state or command arguments.",

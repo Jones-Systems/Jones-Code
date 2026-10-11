@@ -9,7 +9,9 @@ import {
   withProcessCustodyScratch,
 } from "./legacy-process-custody-fixture.mjs";
 
-const darwin = { skip: process.platform !== "darwin" };
+// oxlint-disable-next-line t3code/no-global-process-runtime -- These standalone native tests need the actual host platform without loading the application runtime.
+const nativePlatform = process.platform;
+const darwin = { skip: nativePlatform !== "darwin" };
 
 NodeTest.test(
   "rootless native audit-token signaling rejects wrong and pre-exec identities",
@@ -19,7 +21,7 @@ NodeTest.test(
     NodeAssert.equal(result.productionMembershipQualified, false);
     NodeAssert.equal(result.hardenedAppQualified, false);
     NodeAssert.equal(result.pidOnlyAdmissionFallback, false);
-    if (process.platform !== "darwin") {
+    if (nativePlatform !== "darwin") {
       NodeAssert.equal(result.status, "unsupported");
       NodeAssert.equal(result.reason, "darwin-required");
       return;

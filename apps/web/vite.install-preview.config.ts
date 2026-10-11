@@ -1,5 +1,5 @@
 import * as NodePath from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeURL from "node:url";
 import { defineConfig, mergeConfig, type Plugin } from "vite-plus";
 import webConfig from "./vite.config";
 
@@ -14,7 +14,7 @@ export default defineConfig(async (environment) => {
   const outDir = process.env.JONES_INSTALL_FIXTURE_OUT;
   const sourceSha = process.env.JONES_INSTALL_FIXTURE_SOURCE_SHA;
   const sourceTree = process.env.JONES_INSTALL_FIXTURE_SOURCE_TREE;
-  const webRoot = fileURLToPath(new URL(".", import.meta.url));
+  const webRoot = NodeURL.fileURLToPath(new URL(".", import.meta.url));
   const repositoryRoot = NodePath.resolve(webRoot, "../..");
   if (!outDir || !NodePath.isAbsolute(outDir)) {
     throw new Error("JONES_INSTALL_FIXTURE_OUT must name an owned absolute scratch directory.");
@@ -69,7 +69,7 @@ export default defineConfig(async (environment) => {
       emptyOutDir: false,
       manifest: true,
       rolldownOptions: {
-        input: fileURLToPath(new URL("./jones-install-fixture.html", import.meta.url)),
+        input: NodeURL.fileURLToPath(new URL("./jones-install-fixture.html", import.meta.url)),
       },
     },
   });

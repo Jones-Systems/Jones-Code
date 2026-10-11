@@ -10,7 +10,9 @@ import {
   withNativeAdmissionScratch,
 } from "./legacy-admission-native-fixture.mjs";
 
-const unix = { skip: process.platform === "win32" };
+// oxlint-disable-next-line t3code/no-global-process-runtime -- These standalone native tests need the actual host platform without loading the application runtime.
+const nativePlatform = process.platform;
+const unix = { skip: nativePlatform === "win32" };
 
 async function executable(root, mode = 0o751) {
   const filename = NodePath.join(root, "console-fixture");
@@ -25,7 +27,7 @@ NodeTest.test(
     const result = await runLegacyAdmissionNativeFixture();
     NodeAssert.equal(result.activationAllowed, false);
     NodeAssert.equal(result.productionCustodyQualified, false);
-    if (process.platform !== "darwin") {
+    if (nativePlatform !== "darwin") {
       NodeAssert.equal(result.status, "unsupported");
       NodeAssert.equal(result.reason, "darwin-required");
       NodeAssert.equal(result.scenarios, undefined);
@@ -169,7 +171,7 @@ NodeTest.test(
 
 NodeTest.test(
   "cancellation after suspended admission drains the captured child and cleans scratch",
-  { skip: process.platform !== "darwin" },
+  { skip: nativePlatform !== "darwin" },
   async () => {
     await withNativeAdmissionScratch(async (parent) => {
       const cancellation = new AbortController();

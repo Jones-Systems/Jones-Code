@@ -6,6 +6,10 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+// oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone native qualifier needs the actual host platform without loading the application runtime.
+const nativePlatform = process.platform;
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Native ABI qualification must report the actual host architecture without loading the application runtime.
+const nativeArchitecture = process.arch;
 const source = NodeURL.fileURLToPath(new URL("./legacy-process-custody-native.c", import.meta.url));
 const scenarios = new Set(["run", "missing-symbol", "missing-flavor"]);
 const outputLimit = 64 * 1024;
@@ -239,10 +243,10 @@ export async function runLegacyProcessCustodyFixture({
   checkCancellation(signal);
   const metadata = {
     schema: 1,
-    platform: process.platform,
+    platform: nativePlatform,
     kernel: NodeOS.release(),
     osVersion: NodeOS.version(),
-    architecture: process.arch,
+    architecture: nativeArchitecture,
     nodeVersion: process.version,
     symbol: "proc_signal_with_audittoken",
     identitySchema: {
@@ -258,7 +262,7 @@ export async function runLegacyProcessCustodyFixture({
     hardenedAppQualified: false,
     pidOnlyAdmissionFallback: false,
   };
-  if (process.platform !== "darwin")
+  if (nativePlatform !== "darwin")
     return { ...metadata, status: "unsupported", reason: "darwin-required" };
   const started = performance.now();
   return await withProcessCustodyScratch(
