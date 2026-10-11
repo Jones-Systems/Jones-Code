@@ -18,6 +18,28 @@ on:
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - apps/web/src/jones/updates/**
+      - apps/web/jones-install-fixture.html
+      - apps/web/vite.install-preview.config.ts
+      - apps/web/vite.config.ts
+      - apps/web/src/index.css
+      - apps/web/src/env.ts
+      - apps/web/src/state/desktopUpdate.ts
+      - apps/web/src/rpc/atomRegistry.ts
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/SettingsGroup.tsx
+      - apps/web/src/components/sidebar/SidebarUpdatePill.tsx
+      - apps/web/src/components/desktopUpdate.logic.ts
+      - apps/web/src/components/desktopUpdate.toast.tsx
+      - apps/web/src/components/ConfirmDialogHost.tsx
+      - apps/web/src/components/ui/toast.tsx
+      - apps/web/src/components/ui/tooltip.tsx
+      - apps/web/src/jones/fleetUpdates/**
+      - packages/client-runtime/src/jones/updates/**
+      - packages/client-runtime/src/jones/fleetUpdates/**
+      - packages/contracts/src/jones/jonesUpdates.ts
+      - packages/contracts/src/jones/fleetUpdates/**
+      - packages/contracts/src/ipc.ts
+      - packages/contracts/src/resourceTelemetry.ts
       - apps/web/src/versionSkew.ts
       - scripts/stamp-jones-build*
       - scripts/build-desktop-artifact.ts
