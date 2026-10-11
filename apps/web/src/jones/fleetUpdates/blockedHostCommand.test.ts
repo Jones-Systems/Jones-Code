@@ -96,6 +96,7 @@ describe("blocked-host update command", () => {
           ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
         >(new Map([[id, entry]]));
         const recordUpdateCompatibility = vi.fn(() => Effect.succeed(false));
+        const networkStatus = yield* SubscriptionRef.make<NetworkStatus>("online");
         const execute = makeBlockedHostUpdate(() =>
           Effect.succeed({
             state: null,
@@ -104,7 +105,7 @@ describe("blocked-host update command", () => {
               label: "Synthetic",
               platform: { os: "linux", arch: "x64" },
               serverVersion: "0.0.45-preview.20261011.1.1",
-              capabilities: {},
+              capabilities: { repositoryIdentity: false },
               orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
             },
           }),
@@ -115,6 +116,7 @@ describe("blocked-host update command", () => {
           Effect.provide(
             Layer.mock(EnvironmentRegistry.EnvironmentRegistry)({
               entries,
+              networkStatus,
               recordUpdateCompatibility,
             }),
           ),
