@@ -106,13 +106,19 @@ export function observeJonesUpdateSnapshot<A, E, R>(
 ): Stream.Stream<JonesUpdateObservation, never, R> {
   return Stream.suspend(() => {
     let latest: JonesUpdateState | null = null;
+    let latestIsFresh = false;
     type Cursor = { after?: number; failures: number; wait?: "retry" | "wait"; done?: boolean };
     return connections.pipe(Stream.switchMap((connection) => {
-      if (Option.isNone(connection)) return Stream.succeed<JonesUpdateObservation>({
+      if (Option.isNone(connection)) {
+        latestIsFresh = false;
+        return Stream.succeed<JonesUpdateObservation>({
         state: latest, freshness: latest === null ? "loading" : "stale",
         message: "Update status is waiting for a connection.",
       });
-      return Stream.unfold({ failures: 0 } as Cursor, (cursor): Effect.Effect<readonly [JonesUpdateObservation, Cursor] | undefined, never, R> =>
+      }
+      const replacingFreshConnection = latestIsFresh;
+      latestIsFresh = false;
+      const reads = Stream.unfold({ failures: 0 } as Cursor, (cursor): Effect.Effect<readonly [JonesUpdateObservation, Cursor] | undefined, never, R> =>
         Effect.gen(function* () {
           if (cursor.done) return undefined;
           if (cursor.wait === "wait") return yield* Effect.never;
@@ -120,12 +126,14 @@ export function observeJonesUpdateSnapshot<A, E, R>(
           return yield* read(cursor.after).pipe(
             Effect.map((state): readonly [JonesUpdateObservation, Cursor] => {
               latest = state;
+              latestIsFresh = state !== null;
               return [{ state, freshness: state === null ? "unsupported" : "fresh" }, {
                 ...(state?.revision === undefined ? {} : { after: state.revision }),
                 failures: 0, done: state === null,
               }];
             }),
             Effect.catch((error) => {
+              latestIsFresh = false;
               const disposition = readFailure(error);
               if (disposition === "unsupported") latest = null;
               return Effect.succeed<readonly [JonesUpdateObservation, Cursor]>([{
@@ -141,6 +149,9 @@ export function observeJonesUpdateSnapshot<A, E, R>(
           );
         }),
       );
+      return replacingFreshConnection ? Stream.succeed<JonesUpdateObservation>({
+        state: latest, freshness: "stale", message: "Refreshing update status for the new connection.",
+      }).pipe(Stream.concat(reads)) : reads;
     }));
   });
 }

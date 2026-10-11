@@ -212,3 +212,22 @@ it("distinguishes fulfilled remote failures from accepted restart progress", () 
     .toBe("Source changed");
   expect(jonesUpdateActionError(AsyncResult.success({ ...staged, phase: "installing" }))).toBeNull();
 });
+
+it.effect("marks a replaced live connection stale before its first status read completes", () =>
+  Effect.gen(function* () {
+    const connections = yield* SubscriptionRef.make(Option.some("first"));
+    const ready = yield* Deferred.make<void>();
+    const observer = yield* observeJonesUpdateSnapshot(
+      SubscriptionRef.changes(connections),
+      (after) => after === undefined ? Effect.succeed(staged) : Effect.never,
+    ).pipe(
+      Stream.tap((snapshot) => snapshot.freshness === "fresh" ? Deferred.succeed(ready, undefined) : Effect.void),
+      Stream.take(3), Stream.runCollect, Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.await(ready);
+    yield* SubscriptionRef.set(connections, Option.some("replacement"));
+    const snapshots = yield* Fiber.join(observer);
+    expect(snapshots.map((snapshot) => snapshot.freshness)).toEqual(["fresh", "stale", "fresh"]);
+    expect(snapshots[1]?.state).toEqual(staged);
+  }),
+);
