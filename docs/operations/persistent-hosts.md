@@ -331,11 +331,13 @@ cannot express. Linux reads that evidence through the root-owned writer observer
 It reports only the matching file index, PID, process birth and access kind for
 the eight fixed state files, and never excludes a process. The launcher excludes
 only its captured trial, matched by PID and process birth read before and after
-the helper, and then checks that the captured child is still live. If the
-observer is not installed, or the service runs with `NoNewPrivileges=yes` where
-sudo cannot elevate, the launcher falls back to the same-user descriptor scan.
-That scan fails closed on non-dumpable processes such as the protected service
-manager and SSH sessions observed on the VPS.
+the helper, and then checks that the captured child is still live. Without
+`NoNewPrivileges` the launcher runs the helper through one exact sudo command.
+A service with `NoNewPrivileges=yes` cannot cross sudo; there the launcher uses
+the [observer socket](#observer-socket-for-nonewprivileges-services) when one
+is present. With neither route installed, the launcher falls back to the
+same-user descriptor scan. That scan fails closed on non-dumpable processes such
+as the protected service manager and SSH sessions observed on the VPS.
 
 Install admission refuses with `writer-proof-<reason>` before accepting, taking a
 recovery generation or stopping the server. It requires a complete lease result
@@ -358,12 +360,14 @@ with `writer-proof-unavailable` before acceptance or stop. Check with
 `findmnt -T <home>/userdata` and the same for each state file. Darwin admission
 is unchanged.
 The lease probe is bounded at 5 seconds, the helper at 10 and the launcher's wait
-for it at 15. The server abandons a launcher exchange after 30 seconds. The
+for it at 15; the socket unit stops a helper instance at 12. The server abandons
+a launcher exchange after 30 seconds. The
 launcher therefore refuses an Install with `request-expired` once 25 seconds have
 passed since the request arrived. At readiness it rolls back with
 `prepared-exchange-expired` instead of writing the pointer. On timeout the
 launcher signals only its captured sudo or probe child: SIGTERM, which sudo
-relays to the helper, then SIGKILL after a grace period.
+relays to the helper, then SIGKILL after a grace period. Through the socket it
+closes only its own connection.
 
 Installing the observer is a separate, per-host approved root operation. Use the
 helper bytes from the exact source commit of the adopted launcher. Install them
@@ -396,6 +400,67 @@ inode metadata only. A `requiretty` refusal, a `use_pty` carriage return or any
 sudo warning makes the launcher report `unavailable`. With the helper file
 present, a sudo refusal blocks instead of falling back. Source changes reach a
 host only through an adopted qualified launcher artifact.
+
+### Observer socket for NoNewPrivileges services
+
+A service started with `NoNewPrivileges=yes` keeps that setting, so the launcher
+reaches the same helper through a root socket unit instead of sudo. Systemd
+accepts each connection on `/run/jones-code/writer-observer.sock` and runs one
+helper instance as `--socket --base CANONICAL_HOME`, with the home fixed in the
+unit. The connection is the helper's stdin and stdout. The helper requires
+`SUDO_UID` to be absent and stdin and stdout to be the same connected Unix
+stream. It takes the caller's UID from the kernel's peer credentials
+(`SO_PEERCRED`), and that UID must own the fixed home and its `userdata`.
+The launcher sends no request bytes. It closes its sending side at once and
+reads one protocol-1 result within 15 seconds and 64 KiB.
+
+The socket's peer credentials only identify the caller. Readiness still needs
+the helper's complete result. The launcher binds every reported inode to its own
+state snapshot and excludes only its captured trial by PID and process birth,
+both read before and after the exchange. The helper runs as root so that it can
+read descriptor, descriptor-flag and mapping metadata for every process,
+including the service user's non-dumpable ones. It reads no application or
+database content and no command lines. It returns only indexed file device and
+inode lines, writer index, PID, process birth and access kind, and a status
+line. It returns no process names or mapped paths.
+
+The launcher considers the socket only when its own `NoNewPrivs` is 1. A missing
+socket keeps the same-user fallback. A present socket is trusted only when every
+directory from `/` to it is real, owned by root and not group- or other-writable,
+and the socket is owned by the service user with mode 0600 and is not a symlink.
+An untrusted socket, a missing helper file, a refused or timed-out connection, a
+truncated, malformed or oversized reply, or a socket replaced during the exchange
+reports `unavailable`. None of these falls back to the same-user scan.
+
+`renderWriterObserverSocketUnits` in
+[`qualifiedWriterObserver.ts`](../../apps/server/src/jones/cloud/qualifiedWriterObserver.ts)
+renders `jones-qualified-writer-observer.socket` and
+`jones-qualified-writer-observer@.service` for one approved service user and
+canonical home. It rejects other names, systemd specifiers, quoting, whitespace
+and control characters, and returns text only. The units accept up to four
+connections, run the helper as root in `system.slice` outside the service's own
+slice, and limit it to 12 seconds, with small CPU, memory and task limits,
+`NoNewPrivileges=yes` and no network. They keep the host PID namespace and full
+`/proc` visibility: `PrivatePIDs`, `ProtectProc` and `ProcSubset` would hide the
+processes the helper must observe.
+
+Installing the socket is a separate, one-time, per-host approved root operation.
+Use the helper bytes from the adopted launcher's exact source commit, whose
+SHA-256 is `QUALIFIED_WRITER_OBSERVER_SHA256` in that source, with the ownership
+chain required above. Install the rendered units, reload systemd and enable the
+socket. No sudoers rule is needed. Read back the helper hash, `namei -l` for the
+helper and socket paths, the socket unit's listen path, owner and mode, and one
+complete observation through the socket as the service user. After that
+bootstrap, Install needs no owner sudo, password or terminal; the owner still
+starts each Install from the update controls.
+
+Source support for the socket does not install units, adopt a service or change
+a running host. It also does not adopt a system service unit. A system-unit host
+needs its own closed adoption, which keeps `NoNewPrivileges=yes`,
+`KillMode=control-group` and the shared slice's aggregate limits, restarts no
+process whose writer state is unknown, and hashes or copies no database. That
+adoption also owns the launcher's requirement that the home's `runtime`
+directory is not group- or other-writable (0755 or stricter).
 
 Inspect first after an interrupted setup or pairing operation:
 
