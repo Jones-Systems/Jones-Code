@@ -19,6 +19,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
+  allocateDesktopStageRoot,
   BundleNotSelfContainedError,
   BuildCommandFailedError,
   parseWslRuntimeArchiveMembers,
@@ -726,6 +727,55 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }
       assert.deepStrictEqual(mac.electronLanguages, DESKTOP_ELECTRON_LANGUAGES);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "canonicalizes an aliased staging parent while preserving cleanup and keep-stage behavior",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixtureRoot = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const ownedRoot = yield* fs.makeTempDirectoryScoped({ prefix: "jones-stage-alias-" });
+            const parent = path.join(yield* fs.realPath(ownedRoot), "parent");
+            const alias = path.join(ownedRoot, "alias");
+            yield* fs.makeDirectory(parent);
+            yield* fs.symlink(parent, alias);
+            for (const keepStage of [false, true]) {
+              for (const fail of [false, true]) {
+                const allocation = Effect.scoped(
+                  Effect.gen(function* () {
+                    const stageRoot = yield* allocateDesktopStageRoot("mac", keepStage, alias);
+                    assert.equal(path.dirname(stageRoot), parent);
+                    assert.equal(stageRoot, yield* fs.realPath(stageRoot));
+                    const stageAppDir = path.join(stageRoot, "app");
+                    yield* fs.makeDirectory(stageAppDir);
+                    assert.equal(stageAppDir, yield* fs.realPath(stageAppDir));
+                    yield* fs.writeFileString(path.join(stageAppDir, "owned-fixture"), "fixture");
+                    if (fail) return yield* Effect.fail(stageRoot);
+                    return stageRoot;
+                  }),
+                );
+                const result = yield* fail ? Effect.flip(allocation) : allocation;
+                assert.isString(result);
+                const stageRoot = result as string;
+                assert.equal(yield* fs.exists(stageRoot), keepStage);
+                const allocatedAlias = path.join(alias, path.basename(stageRoot));
+                assert.equal(yield* fs.exists(allocatedAlias), keepStage);
+                if (keepStage) {
+                  assert.equal(
+                    yield* fs.readFileString(path.join(stageRoot, "app", "owned-fixture")),
+                    "fixture",
+                  );
+                }
+              }
+            }
+            return ownedRoot;
+          }),
+        );
+        assert.isFalse(yield* fs.exists(fixtureRoot));
+      }),
   );
 
   it.effect("copies the standalone bootstrap only when the Mac bundle was staged", () =>

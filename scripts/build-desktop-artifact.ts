@@ -3486,6 +3486,22 @@ export const validateWindowsPackagedPayload = Effect.fn(
   return { packagedAppDir, fileCount, unpackedFiles } as const;
 });
 
+export const allocateDesktopStageRoot = Effect.fn("allocateDesktopStageRoot")(function* (
+  platform: typeof BuildPlatform.Type,
+  keepStage: boolean,
+  directory?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const allocate = keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
+  const allocatedRoot = yield* allocate({
+    prefix: `t3code-desktop-${platform}-stage-`,
+    ...(directory === undefined ? {} : { directory }),
+  });
+  // Preserve the allocator's cleanup path while passing canonical paths to
+  // electron-builder and its source-bound afterPack verification.
+  return yield* fs.realPath(allocatedRoot);
+});
+
 const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   options: ResolvedBuildOptions,
 ) {
@@ -3565,10 +3581,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const appVersion = options.version ?? serverPackageJson.version;
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
-  const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
-  const stageRoot = yield* mkdir({
-    prefix: `t3code-desktop-${options.platform}-stage-`,
-  });
+  const stageRoot = yield* allocateDesktopStageRoot(options.platform, options.keepStage);
 
   const stageAppDir = path.join(stageRoot, "app");
   const stageResourcesDir = path.join(stageAppDir, "apps/desktop/resources");
