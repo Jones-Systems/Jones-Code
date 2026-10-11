@@ -18,6 +18,8 @@ import {
   publishMilestone,
   awaitMilestoneRelease,
   readAcknowledgedMilestone,
+  runScenario,
+  scenarioSecrets,
 } from "./install-preview-agent.mjs";
 import {
   hashTree,
@@ -26,6 +28,7 @@ import {
   serveRendererFixture,
   stopChild,
   withOwnedScratch,
+  fixtureProxy,
 } from "./install-preview-qualification.mjs";
 
 const source = NodePath.resolve(
@@ -70,6 +73,63 @@ NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
 });
 
 NodeTest.test(
+  "a failed controlled page action is captured before native tab closure without retry",
+  async () => {
+    const failure = new Error(
+      "Preview automation waitFor timed out; reconcile via preview_snapshot before repeating",
+    );
+    const calls = [];
+    const snapshot = { visibleText: "Could not add backend", screenshotPath: "/owned/failure.png" };
+    let waits = 0;
+    const client = {
+      callTool: async ({ name }) => {
+        calls.push(name);
+        if (name === "preview_wait_for" && ++waits === 2) throw failure;
+        return {
+          structuredContent:
+            name === "preview_open"
+              ? { tabId: "owned-tab" }
+              : name === "preview_snapshot"
+                ? snapshot
+                : {},
+        };
+      },
+    };
+    const report = { calls: [], captures: [], negativeControls: {} };
+    await NodeAssert.rejects(
+      runScenario(
+        client,
+        {
+          origin: "http://127.0.0.1",
+          pairingUrl: "http://127.0.0.1/pair",
+          initialText: "Project",
+          steps: [{ action: "wait", text: "Source matches this app." }],
+        },
+        report,
+      ),
+      (error) => error === failure,
+    );
+    NodeAssert.deepEqual(calls.slice(-3), [
+      "preview_wait_for",
+      "preview_snapshot",
+      "t3_preview_close",
+    ]);
+    NodeAssert.equal(waits, 2);
+    NodeAssert.deepEqual(report.failedAction, {
+      index: 0,
+      action: "wait",
+      text: "Source matches this app.",
+    });
+    NodeAssert.equal(report.calls.filter((call) => call.ok === false).length, 1);
+    NodeAssert.deepEqual(report.captures, []);
+    NodeAssert.equal(report.failureReconciliation.kind, "text-only");
+    NodeAssert.equal(report.failureReconciliation.contentOmitted, true);
+    NodeAssert.equal(report.controlledPageReconciled, true);
+    NodeAssert.equal(report.nativeTabClosed, true);
+  },
+);
+
+NodeTest.test(
   "inactive-provider qualification rejects unrelated failures and successful calls",
   async () => {
     for (const response of [
@@ -110,6 +170,103 @@ NodeTest.test(
       }),
       "transport authorization refused",
     );
+  },
+);
+
+NodeTest.test(
+  "failed pairing reconciliation publishes no pixels, pasted URL or separated pairing code",
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      await withFixtureCleanup(async (defer) => {
+        const code = "SYNTHETIC+PAIRING/CODE";
+        const pairingUrl = `http://127.0.0.1:41001/pair#token=${encodeURIComponent(code)}`;
+        const primaryCode = "SYNTHETIC-PRIMARY-CODE";
+        const scenario = {
+          origin: "http://127.0.0.1:41000",
+          pairingUrl: `http://127.0.0.1:41000/pair#token=${primaryCode}`,
+          initialText: "Project",
+          steps: [
+            { action: "type", locator: 'role=textbox[name="Host"]', text: pairingUrl },
+            { action: "click", locator: 'role=button[name="Add environment"]' },
+            { action: "wait", text: "Source matches this app." },
+          ],
+        };
+        const failure = new Error(`Pairing failed for ${pairingUrl}; displayed code ${code}`);
+        const imageBytes = Buffer.from(`pixels containing ${code}`).toString("base64");
+        const snapshotCalls = [];
+        let waits = 0;
+        const client = {
+          callTool: async ({ name, arguments: args }) => {
+            if (name === "preview_wait_for" && ++waits === 2) throw failure;
+            if (name === "preview_snapshot") {
+              snapshotCalls.push(args);
+              return {
+                structuredContent: {
+                  url: pairingUrl,
+                  visibleText: `Could not add backend: Failed to fetch remote environment endpoint. Host 127.0.0.1 Pairing code ${code}`,
+                  interactiveElements: [{ value: code }],
+                  screenshot: { data: imageBytes },
+                  screenshotPath: "/owned/must-not-publish.png",
+                },
+              };
+            }
+            return { structuredContent: name === "preview_open" ? { tabId: "pairing-tab" } : {} };
+          },
+        };
+        const report = { calls: [], captures: [], negativeControls: {} };
+        await NodeAssert.rejects(
+          runScenario(client, scenario, report),
+          (error) => error === failure,
+        );
+        report.error = failure.message;
+        NodeAssert.deepEqual(snapshotCalls, [
+          { tabId: "pairing-tab", save: false, includeImage: false },
+        ]);
+        NodeAssert.equal(waits, 2);
+        NodeAssert.deepEqual(report.captures, []);
+        NodeAssert.equal(report.nativeTabClosed, true);
+        const secrets = scenarioSecrets(scenario);
+        NodeAssert.ok(secrets.includes(code) && secrets.includes(primaryCode));
+        NodeAssert.ok(
+          scenarioSecrets({
+            pairingUrl: `http://127.0.0.1/pair?token=${encodeURIComponent(code)}`,
+          }).includes(code),
+        );
+        const files = milestoneFiles(root);
+        const channel = await createMilestoneChannel({
+          runId: "failed-pairing",
+          caseId: "redaction",
+          files,
+        });
+        defer(() => channel.close());
+        const published = JSON.parse(redact(report, secrets));
+        await publishMilestone(channel.binding, "final", files.final, published);
+        const readback = await readAcknowledgedMilestone(
+          files.final,
+          await channel.wait(["final"]),
+        );
+        const text = JSON.stringify(readback);
+        for (const secret of [pairingUrl, scenario.pairingUrl, code, primaryCode, imageBytes])
+          NodeAssert.equal(text.includes(secret), false);
+        NodeAssert.equal(text.includes("screenshotPath"), false);
+        NodeAssert.deepEqual(Object.keys(readback.failureReconciliation).sort(), [
+          "contentOmitted",
+          "kind",
+          "ui",
+          "visibleTextLength",
+        ]);
+        NodeAssert.equal(readback.failureReconciliation.contentOmitted, true);
+        NodeAssert.equal(readback.failureReconciliation.ui.addFailed, true);
+        NodeAssert.equal(readback.failureReconciliation.ui.fetchFailed, true);
+        NodeAssert.equal(readback.failureReconciliation.ui.sourceMatches, false);
+        NodeAssert.ok(
+          Object.values(readback.failureReconciliation.ui).every(
+            (value) => typeof value === "boolean",
+          ),
+        );
+        NodeAssert.deepEqual(await NodeFSP.readdir(root), ["final.json"]);
+      });
+    });
   },
 );
 
@@ -241,6 +398,119 @@ async function assertChannelClosed(channel) {
     (error) => ["ECONNREFUSED", "UND_ERR_SOCKET"].includes(error.cause?.code),
   );
 }
+
+NodeTest.test(
+  "the synthetic older host explicitly advertises its supervised update route",
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      await withFixtureCleanup(async (defer) => {
+        const descriptorPath = NodePath.join(root, ".well-known/t3/environment");
+        await NodeFSP.mkdir(NodePath.dirname(descriptorPath), { recursive: true });
+        await atomicJson(descriptorPath, {
+          label: "Unmanaged fixture origin",
+          capabilities: { serverBrowser: true },
+          orchestrationProtocolVersion: 42,
+        });
+        const upstream = await serveRendererFixture(root);
+        defer(() => upstream.close());
+        const sourceIdentity = {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "a".repeat(40),
+          tree: "b".repeat(40),
+        };
+        const proxy = await fixtureProxy(upstream, sourceIdentity);
+        defer(() => proxy.close());
+        const response = await fetch(`${proxy.origin}/.well-known/t3/environment`);
+        NodeAssert.equal(response.status, 200);
+        const descriptor = await response.json();
+        NodeAssert.deepEqual(descriptor.capabilities, {
+          serverBrowser: true,
+          serverSelfUpdate: "boot-service",
+        });
+        NodeAssert.equal(descriptor.orchestrationProtocolVersion, 0);
+        NodeAssert.deepEqual(descriptor.jonesSource, sourceIdentity);
+        NodeAssert.deepEqual(proxy.evidence().requests, [
+          {
+            method: "GET",
+            path: "/.well-known/t3/environment",
+            status: 200,
+            forwardingStarted: true,
+          },
+        ]);
+        NodeAssert.match(
+          proxy.evidence().fixtureBoundary,
+          /synthetic older boot-service descriptor/,
+        );
+        NodeAssert.equal(proxy.evidence().checks, 0);
+      });
+    });
+  },
+);
+
+NodeTest.test(
+  "fixture preflight permits native trace headers and omits unknown header values from evidence",
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      await withFixtureCleanup(async (defer) => {
+        const upstream = await serveRendererFixture(root);
+        defer(() => upstream.close());
+        const proxy = await fixtureProxy(upstream, {});
+        defer(() => proxy.close());
+        const headers = [
+          "authorization",
+          "b3",
+          "traceparent",
+          "content-type",
+          "dpop",
+          "x-t3-orchestration-protocol",
+        ];
+        const rejectedHeader = "x-synthetic-secret-must-not-be-recorded";
+        const response = await fetch(`${proxy.origin}/.well-known/t3/environment`, {
+          method: "OPTIONS",
+          headers: {
+            origin: "http://127.0.0.1:41000",
+            "access-control-request-method": "GET",
+            "access-control-request-headers": [...headers, rejectedHeader].join(","),
+          },
+        });
+        NodeAssert.equal(response.status, 204);
+        NodeAssert.deepEqual(
+          response.headers.get("access-control-allow-headers").split(","),
+          headers,
+        );
+        NodeAssert.equal(
+          response.headers.get("access-control-allow-headers").includes(rejectedHeader),
+          false,
+        );
+        NodeAssert.equal(
+          response.headers.get("access-control-allow-origin"),
+          "http://127.0.0.1:41000",
+        );
+        NodeAssert.deepEqual(proxy.evidence().requests, [
+          {
+            method: "OPTIONS",
+            path: "/.well-known/t3/environment",
+            status: 204,
+            requestedHeaders: Object.fromEntries(headers.map((name) => [name, true])),
+            unsupportedHeaders: true,
+          },
+        ]);
+        NodeAssert.deepEqual(upstream.evidence().requests, []);
+        NodeAssert.equal(JSON.stringify(proxy.evidence()).includes(rejectedHeader), false);
+        const invalid = await fetch(
+          `${proxy.origin}/unexpected-SYNTHETIC-SECRET?token=SYNTHETIC-SECRET`,
+        );
+        NodeAssert.equal(invalid.status, 500);
+        NodeAssert.deepEqual(proxy.evidence().requests.at(-1), {
+          method: "GET",
+          path: "other",
+          status: 500,
+        });
+        NodeAssert.equal(JSON.stringify(proxy.evidence()).includes("SYNTHETIC-SECRET"), false);
+      });
+    });
+  },
+);
 
 NodeTest.test(
   "a failed second channel acquisition closes the first owned listener",

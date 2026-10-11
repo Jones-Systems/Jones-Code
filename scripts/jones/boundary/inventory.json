@@ -898,7 +898,9 @@
     "packages/contracts/src/jones/fixtures/work_queue_metadata_v2_runtime_v1.json.fixture": "jones-owned",
     "packages/contracts/src/jones/fixtures/work_queue_metadata_v2_runtime_v2.json.fixture": "jones-owned",
     "apps/web/src/jones/workQueue/classifySentPrompts.ts": "jones-owned",
-    "apps/web/src/jones/workQueue/classifySentPrompts.test.ts": "jones-owned"
+    "apps/web/src/jones/workQueue/classifySentPrompts.test.ts": "jones-owned",
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts": "jones-owned",
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

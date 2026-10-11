@@ -367,15 +367,52 @@ export async function fixtureProxy(upstream, sourceIdentity) {
   let checks = 0;
   let websocketAttempts = 0;
   const requests = [];
+  // Match apps/server/src/httpCors.ts, including Effect HTTP trace propagation headers.
+  const allowedHeaders = [
+    "authorization",
+    "b3",
+    "traceparent",
+    "content-type",
+    "dpop",
+    "x-t3-orchestration-protocol",
+  ];
+  let omittedRequests = 0;
   const server = NodeHttp.createServer(async (request, response) => {
+    let receipt;
     try {
       const url = new URL(request.url, "http://fixture.invalid");
+      const knownPath = [
+        "/.well-known/t3/environment",
+        "/api/auth/session",
+        "/api/auth/browser-session",
+        "/api/auth/pairing-token",
+        "/oauth/token",
+        "/api/jones-updates",
+        "/api/jones-updates/check",
+      ].includes(url.pathname);
+      receipt = {
+        method: ["GET", "POST", "OPTIONS"].includes(request.method) ? request.method : "other",
+        path: knownPath ? url.pathname : "other",
+        status: null,
+      };
+      if (requests.length < 128) requests.push(receipt);
+      else omittedRequests += 1;
       if (request.method === "OPTIONS") {
+        const requested = String(request.headers["access-control-request-headers"] ?? "")
+          .toLowerCase()
+          .split(",")
+          .map((name) => name.trim())
+          .filter(Boolean);
+        receipt.requestedHeaders = Object.fromEntries(
+          allowedHeaders.map((name) => [name, requested.includes(name)]),
+        );
+        receipt.unsupportedHeaders = requested.some((name) => !allowedHeaders.includes(name));
+        receipt.status = 204;
         response.writeHead(204, {
           "access-control-allow-origin": request.headers.origin ?? "*",
           "access-control-allow-credentials": "true",
           "access-control-allow-methods": "GET,POST,OPTIONS",
-          "access-control-allow-headers": "authorization,content-type,dpop",
+          "access-control-allow-headers": allowedHeaders.join(","),
         });
         response.end();
         return;
@@ -392,12 +429,14 @@ export async function fixtureProxy(upstream, sourceIdentity) {
         signal: deadline(),
       };
       if (url.pathname.startsWith("/api/jones-updates")) {
+        receipt.forwardingStarted = true;
         const session = await fetch(`${upstream.origin}/api/auth/session`, {
           headers,
           signal: deadline(),
         });
         const auth = await session.json();
         if (!auth.authenticated) {
+          receipt.status = 401;
           response.writeHead(401);
           response.end();
           return;
@@ -405,19 +444,22 @@ export async function fixtureProxy(upstream, sourceIdentity) {
         const requiredScope =
           request.method === "GET" ? "orchestration:read" : "orchestration:operate";
         if (!auth.scopes?.includes(requiredScope)) {
+          receipt.status = 403;
           response.writeHead(403);
           response.end();
           return;
         }
-        requests.push({ method: request.method, path: url.pathname, authenticated: true });
+        receipt.authenticated = true;
         if (url.pathname === "/api/jones-updates/check" && request.method === "POST") checks += 1;
         else if (url.pathname !== "/api/jones-updates" || request.method !== "GET") {
+          receipt.status = 409;
           response.writeHead(409, { "content-type": "application/json" });
           response.end(
             JSON.stringify({ message: "This synthetic host never installs or downloads" }),
           );
           return;
         }
+        receipt.status = 200;
         response.writeHead(200, {
           "content-type": "application/json",
           "access-control-allow-origin": request.headers.origin ?? "*",
@@ -448,6 +490,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
           url.pathname === "/oauth/token",
         "Unexpected fixture endpoint",
       );
+      receipt.forwardingStarted = true;
       const result = await fetch(`${upstream.origin}${url.pathname}${url.search}`, init);
       let bytes = Buffer.from(await result.arrayBuffer());
       if (url.pathname === "/.well-known/t3/environment") {
@@ -455,9 +498,12 @@ export async function fixtureProxy(upstream, sourceIdentity) {
         descriptor.label = "Synthetic incompatible Jones host";
         descriptor.serverVersion = "0.0.45-preview.20261011.1.1";
         descriptor.orchestrationProtocolVersion = 0;
+        // Model an older supervised host; the update response still requires qualified bootstrap.
+        descriptor.capabilities = { ...descriptor.capabilities, serverSelfUpdate: "boot-service" };
         descriptor.jonesSource = { ...sourceIdentity, ...(checks ? { sha: "0".repeat(40) } : {}) };
         bytes = Buffer.from(JSON.stringify(descriptor));
       }
+      receipt.status = result.status;
       const forwarded = Object.fromEntries(result.headers);
       delete forwarded["content-length"];
       delete forwarded["content-encoding"];
@@ -466,6 +512,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
       response.writeHead(result.status, forwarded);
       response.end(bytes);
     } catch (error) {
+      if (receipt) receipt.status = 500;
       response.writeHead(500, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: redact(error.message) }));
     }
@@ -480,10 +527,11 @@ export async function fixtureProxy(upstream, sourceIdentity) {
     origin: `http://127.0.0.1:${server.address().port}`,
     evidence: () => ({
       requests,
+      omittedRequests,
       websocketAttempts,
       checks,
       fixtureBoundary:
-        "Real T3 pairing/auth; synthetic descriptor and update responses; no installation",
+        "Real T3 pairing/auth; synthetic older boot-service descriptor and bootstrap-blocked update responses; no installation",
     }),
     close: () =>
       new Promise((resolve, reject) => {

@@ -273,6 +273,26 @@ export function redact(value, secrets = []) {
     .replace(/JONES_PREVIEW_SCENARIO:[A-Za-z0-9+/=]+/g, "JONES_PREVIEW_SCENARIO:[redacted]");
 }
 
+export function scenarioSecrets(scenario) {
+  const inputs = [
+    scenario.pairingUrl,
+    ...(scenario.steps?.filter((step) => step.action === "type").map((step) => step.text) ?? []),
+  ].filter(Boolean);
+  const secrets = new Set(inputs);
+  for (const input of inputs) {
+    try {
+      const url = new URL(input);
+      // Match shared/remote.getPairingTokenFromUrl: the UI separates this code from the pasted URL.
+      const hashToken = new URLSearchParams(url.hash.slice(1)).get("token")?.trim() ?? "";
+      const token = hashToken || url.searchParams.get("token")?.trim();
+      if (token) secrets.add(token);
+    } catch {
+      // Non-URL typed input is already included verbatim.
+    }
+  }
+  return [...secrets];
+}
+
 async function connectInjectedMcp(descriptor, source, onTransportCreated) {
   NodeAssert.equal(descriptor?.name, "t3-code", "Normal T3 MCP injection is required");
   NodeAssert.equal(typeof descriptor.command, "string");
@@ -316,13 +336,18 @@ async function connectInjectedMcp(descriptor, source, onTransportCreated) {
 
 export async function runScenario(client, scenario, report) {
   const call = async (name, args = {}) => {
-    const result = await client.callTool({ name, arguments: args }, undefined, {
-      timeout: 180_000,
-    });
-    const value = toolValue(result);
-    // Keep only results, never the pairing URL carried by a navigation input.
-    report.calls.push({ name, ok: true });
-    return value;
+    try {
+      const result = await client.callTool({ name, arguments: args }, undefined, {
+        timeout: 180_000,
+      });
+      const value = toolValue(result);
+      // Keep only results, never the pairing URL carried by a navigation input.
+      report.calls.push({ name, ok: true });
+      return value;
+    } catch (error) {
+      report.calls.push({ name, ok: false, error: String(error.message) });
+      throw error;
+    }
   };
   report.initialStatus = await call("preview_status");
   const opened = await call("preview_open", { open: false, reuseExistingTab: false });
@@ -341,7 +366,14 @@ export async function runScenario(client, scenario, report) {
       text: scenario.initialText,
       timeoutMs: 30_000,
     });
-    for (const step of scenario.steps) {
+    for (const [index, step] of scenario.steps.entries()) {
+      report.currentAction = {
+        index,
+        action: step.action,
+        ...(step.action === "wait" ? { text: step.text } : {}),
+        ...(step.locator ? { locator: step.locator } : {}),
+        ...(step.name ? { name: step.name } : {}),
+      };
       if (step.action === "navigate")
         await call("preview_navigate", { tabId, url: new URL(step.path, scenario.origin).href });
       else if (step.action === "click")
@@ -369,6 +401,34 @@ export async function runScenario(client, scenario, report) {
     report.viewport = await call("preview_status", { tabId });
   } catch (error) {
     scenarioError = error;
+    report.failedAction = report.currentAction ?? { action: "initial-navigation" };
+    try {
+      // A failed pairing dialog can still display a plain-text code. Never persist its pixels or text.
+      const snapshot = await call("preview_snapshot", { tabId, save: false, includeImage: false });
+      report.failureReconciliation = {
+        kind: "text-only",
+        visibleTextLength: (snapshot.visibleText ?? "").length,
+        contentOmitted: true,
+        // Fixed UI phrases only: ConnectionsSettings and connection/errors supply these messages.
+        ui: Object.fromEntries(
+          Object.entries({
+            addFailed: "Could not add backend",
+            hostMissing: "Enter a backend host.",
+            codeMissing: "Enter a pairing code.",
+            fetchFailed: "Failed to fetch remote environment endpoint",
+            invalidResponse: "Remote environment endpoint returned an invalid response",
+            invalidCredential: "The environment credential is invalid.",
+            authenticationRejected: "The environment rejected the authentication request.",
+            remoteListed: "Synthetic incompatible Jones host",
+            sourceMatches: "Source matches this app.",
+          }).map(([name, phrase]) => [name, (snapshot.visibleText ?? "").includes(phrase)]),
+        ),
+      };
+      report.controlledPageReconciled = true;
+    } catch (snapshotError) {
+      report.controlledPageReconciled = false;
+      report.reconciliationError = String(snapshotError.message);
+    }
     throw error;
   } finally {
     try {
@@ -465,11 +525,7 @@ export async function runAgent() {
     };
     let mcp;
     let replied = false;
-    const secrets = [
-      milestone.nonce,
-      scenario.pairingUrl,
-      ...(scenario.steps?.filter((step) => step.action === "type").map((step) => step.text) ?? []),
-    ];
+    const secrets = [milestone.nonce, ...scenarioSecrets(scenario)];
     const providerIdentity = await processIdentity(process.pid);
     try {
       await publishMilestone(
