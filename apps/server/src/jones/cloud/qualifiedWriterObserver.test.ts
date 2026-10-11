@@ -522,7 +522,11 @@ it("reads the observer socket only under NoNewPrivileges and never falls back fr
     const socketPath = NodePath.join(base, "o.sock");
     let respond: (connection: NodeNet.Socket) => void = () => undefined;
     const requests: number[] = [];
+    const accepted = new Set<NodeNet.Socket>();
+    const closed: Promise<void>[] = [];
     const server = NodeNet.createServer({ allowHalfOpen: true }, (connection) => {
+      accepted.add(connection);
+      closed.push(new Promise<void>((resolve) => connection.once("close", () => resolve())));
       let received = 0;
       connection.on("error", () => undefined);
       connection.on("data", (bytes: Buffer) => {
@@ -533,11 +537,11 @@ it("reads the observer socket only under NoNewPrivileges and never falls back fr
         respond(connection);
       });
     });
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(socketPath, () => resolve());
-    });
     try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, () => resolve());
+      });
       await NodeFSP.chmod(socketPath, 0o600);
       // Real metadata, with each real ancestor directory presented as root-owned.
       const trusted = async (path: string): Promise<SocketPathMetadata> => {
@@ -664,7 +668,10 @@ it("reads the observer socket only under NoNewPrivileges and never falls back fr
       assert.deepEqual(await observe(), { status: "unavailable" });
       assert.equal(requests.length, before);
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      // Client EOF does not close a deliberately half-open silent peer.
+      for (const connection of accepted) connection.destroy();
+      await Promise.all(closed);
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });
