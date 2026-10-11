@@ -47,6 +47,13 @@ import {
   qualifiedServicePreflightFailure,
 } from "./cloud/servicePreflight.ts";
 import type { MigrationPlan } from "./jones/updates/migrationPlan.ts";
+import {
+  archiveUpdateOperation,
+  operationBinding,
+  readOperationReservation,
+  reconcileUpdateOperation,
+  reserveUpdateOperation,
+} from "./jones/updates/launcherOperation.ts";
 
 import type {
   PendingServiceUpdate,
@@ -518,6 +525,10 @@ export class Launcher {
   readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
   readonly #startupGateProtocol: 1 | undefined;
   readonly #backupAdapter: QualifiedBackupAdapter | undefined;
+  readonly #updateOperationIO: {
+    readonly archive: typeof archiveUpdateOperation;
+    readonly reserve: typeof reserveUpdateOperation;
+  };
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
@@ -535,6 +546,10 @@ export class Launcher {
       readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
       readonly startupGateProtocol?: 1;
       readonly backupAdapter?: QualifiedBackupAdapter;
+      readonly updateOperationIO?: {
+        readonly archive: typeof archiveUpdateOperation;
+        readonly reserve: typeof reserveUpdateOperation;
+      };
     } = {},
   ) {
     this.#baseDir = baseDir;
@@ -543,6 +558,10 @@ export class Launcher {
     this.#quiescenceAdapter = options.quiescenceAdapter;
     this.#startupGateProtocol = options.startupGateProtocol;
     this.#backupAdapter = options.backupAdapter;
+    this.#updateOperationIO = options.updateOperationIO ?? {
+      archive: archiveUpdateOperation,
+      reserve: reserveUpdateOperation,
+    };
   }
 
   async run(): Promise<void> {
@@ -796,6 +815,7 @@ export class Launcher {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      updateOperationsProtocol: 1,
       ...(this.#startupGateProtocol === undefined
         ? {}
         : { startupGateProtocol: this.#startupGateProtocol }),
@@ -888,7 +908,11 @@ export class Launcher {
     message: Extract<ServiceLauncherChildMessage, { readonly type: "request-update" }>,
   ): Promise<void> {
     const reject = (reason: string) =>
-      sendMessage(child.process, { type: "update-rejected", reason });
+      sendMessage(child.process, {
+        type: "update-rejected",
+        reason,
+        ...(message.operationId === undefined ? {} : { operationId: message.operationId }),
+      });
     if (child.role !== "active") {
       await reject("Only the active server can request an update.");
       return;
@@ -896,6 +920,36 @@ export class Launcher {
     if (child.version !== this.#state.activeVersion) {
       await reject("The requesting server is not the selected active version.");
       return;
+    }
+    if (message.operationId !== undefined) {
+      const existing = await reconcileUpdateOperation(
+        this.#baseDir,
+        message.operationId,
+        this.#state.update,
+      );
+      if (existing.state !== "absent") {
+        if (existing.state === "blocked") {
+          await reject("The update operation is ambiguous and requires reconciliation.");
+          return;
+        }
+        const reserved = await readOperationReservation(this.#baseDir, message.operationId).catch(
+          () => undefined,
+        );
+        if (
+          reserved === undefined ||
+          reserved.binding.stagedHandle !== message.stagedHandle ||
+          reserved.binding.dbPath !== message.dbPath ||
+          reserved.binding.targetVersion !== message.targetVersion
+        ) {
+          await reject("The update operation is ambiguous or its immutable binding changed.");
+          return;
+        }
+        await sendMessage(child.process, {
+          type: "update-accepted",
+          updateId: message.operationId,
+        });
+        return;
+      }
     }
     if (this.#state.update?.status === "pending") {
       await reject("Another server update is already pending.");
@@ -968,8 +1022,29 @@ export class Launcher {
         return;
       }
     }
+    try {
+      await this.#updateOperationIO.archive(this.#baseDir, this.#state.update);
+      if (message.operationId !== undefined) {
+        if (qualified === undefined) {
+          await reject("An operation ID requires a qualified staged runtime.");
+          return;
+        }
+        await this.#updateOperationIO.reserve(
+          this.#baseDir,
+          message.operationId,
+          operationBinding(qualified),
+        );
+      }
+    } catch {
+      // A failed fsync may leave a reservation. Preserve it for reconciliation
+      // while the unchanged active child continues serving.
+      await reject(
+        "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
+      );
+      return;
+    }
     const pending: PendingServiceUpdate = {
-      id: NodeCrypto.randomUUID(),
+      id: message.operationId ?? NodeCrypto.randomUUID(),
       fromVersion: child.version,
       targetVersion: message.targetVersion,
       dbPath: message.dbPath,

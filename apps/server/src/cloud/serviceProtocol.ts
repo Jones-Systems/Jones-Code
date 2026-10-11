@@ -61,6 +61,7 @@ export interface ServiceLauncherContext {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL | typeof LEGACY_SERVICE_LAUNCHER_PROTOCOL;
   readonly childVersion: string;
   readonly qualifiedUpdatesProtocol?: 1;
+  readonly updateOperationsProtocol?: 1;
   readonly startupGateProtocol?: 1;
   readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
 }
@@ -71,6 +72,7 @@ export type ServiceLauncherChildMessage =
       readonly targetVersion: string;
       readonly dbPath: string;
       readonly stagedHandle?: string;
+      readonly operationId?: string;
     }
   | {
       readonly type: "prepared";
@@ -88,6 +90,7 @@ export type ServiceLauncherParentMessage =
   | {
       readonly type: "update-rejected";
       readonly reason: string;
+      readonly operationId?: string;
     }
   | {
       readonly type: "committed";
@@ -322,6 +325,7 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
     protocol: parsed.protocol,
     childVersion: parsed.childVersion,
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
+    ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
     ...(parsed.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
@@ -358,11 +362,21 @@ export function decodeServiceLauncherChildMessage(
   ) {
     if (value.stagedHandle !== undefined && typeof value.stagedHandle !== "string")
       return undefined;
+    if (
+      value.operationId !== undefined &&
+      (typeof value.operationId !== "string" ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+          value.operationId,
+        ) ||
+        value.stagedHandle === undefined)
+    )
+      return undefined;
     return {
       type: value.type,
       targetVersion: value.targetVersion,
       dbPath: value.dbPath,
       ...(typeof value.stagedHandle === "string" ? { stagedHandle: value.stagedHandle } : {}),
+      ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
     };
   }
   if (value.type !== "prepared" || typeof value.updateId !== "string") return undefined;
@@ -384,7 +398,12 @@ export function decodeServiceLauncherParentMessage(
 ): ServiceLauncherParentMessage | undefined {
   if (!isRecord(value)) return undefined;
   if (value.type === "update-rejected" && typeof value.reason === "string") {
-    return { type: value.type, reason: value.reason };
+    if (value.operationId !== undefined && typeof value.operationId !== "string") return undefined;
+    return {
+      type: value.type,
+      reason: value.reason,
+      ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
+    };
   }
   if (value.type === "update-accepted" && typeof value.updateId === "string") {
     const migrationPlan =

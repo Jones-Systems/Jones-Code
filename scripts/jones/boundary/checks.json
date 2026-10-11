@@ -978,6 +978,18 @@
       "commands": [
         "vp test run apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts"
       ]
+    },
+    {
+      "id": "jones-update-continuity",
+      "tests": [
+        "apps/server/src/jones/updates/launcherOperation.test.ts",
+        "apps/server/src/jones/updates/operationHandoff.test.ts",
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/updates/launcherOperation.test.ts apps/server/src/jones/updates/operationHandoff.test.ts apps/server/src/jones/updates/continuationPrompt.test.ts apps/server/src/jones/updates/serverCapability.test.ts"
+      ]
     }
   ]
 }

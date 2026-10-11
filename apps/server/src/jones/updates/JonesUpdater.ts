@@ -22,7 +22,7 @@ export interface JonesUpdaterHost {
     version: string;
     migrationPlan?: JonesUpdateState["migrationPlan"];
   }>;
-  readonly install: (request: JonesUpdateInstallInput) => Promise<void | {
+  readonly install: (request: JonesUpdaterInstallInput) => Promise<void | {
     readonly updateId?: string;
     readonly migrationPlan?: JonesUpdateState["migrationPlan"];
   }>;
@@ -37,6 +37,8 @@ export interface JonesUpdaterHost {
       }
     | undefined;
 }
+
+export type JonesUpdaterInstallInput = JonesUpdateInstallInput & { readonly operationId?: string };
 
 /** One checker belongs to the host. Connected clients observe the same fixed staging handle. */
 export class JonesUpdater {
@@ -145,7 +147,7 @@ export class JonesUpdater {
     });
   }
 
-  async check(): Promise<JonesUpdateState> {
+  async check(targetSource?: string): Promise<JonesUpdateState> {
     if (
       this.busy ||
       this.state.phase === "installing" ||
@@ -161,6 +163,7 @@ export class JonesUpdater {
         installedSource: await this.host.installedSource(),
         platform: this.host.platform,
         architecture: this.host.architecture,
+        ...(targetSource === undefined ? {} : { targetSource }),
       });
       const checkedAt = new Date().toISOString();
       if (result.state === "available") {
@@ -203,6 +206,19 @@ export class JonesUpdater {
     }
   }
 
+  async stageExact(targetSource: string): Promise<JonesUpdateState> {
+    if (this.state.stagedHandle !== undefined) {
+      return this.state.provenance?.sourceSha === targetSource
+        ? this.snapshot()
+        : { ...this.snapshot(), phase: "blocked", message: "Another source is already staged." };
+    }
+    await this.check(targetSource);
+    const candidate = this.candidate;
+    if (this.state.phase !== "available" || candidate?.source !== targetSource)
+      return this.snapshot();
+    return this.download({ artifactId: candidate.artifactId, sourceSha: targetSource });
+  }
+
   async download(input: JonesUpdateDownloadInput): Promise<JonesUpdateState> {
     if (this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
       return this.snapshot();
@@ -242,7 +258,7 @@ export class JonesUpdater {
     }
   }
 
-  async install(input: JonesUpdateInstallInput): Promise<JonesUpdateState> {
+  async install(input: JonesUpdaterInstallInput): Promise<JonesUpdateState> {
     if (this.busy || this.state.phase === "installing") return this.snapshot();
     if (!this.state.capability.install)
       return this.publish({
