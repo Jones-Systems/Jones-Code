@@ -321,7 +321,9 @@ each phase in `runtime/jones-system-adoption.json` before acting:
 1. Compares the worker's inspection with the plan.
 2. Changes an owned 0775 `runtime` directory to 0755 when the plan says so. The
    launcher requires that nothing else can write it; `versions` and the rest of
-   the home are unchanged.
+   the home are unchanged. Every later record carries `runtimeMode`: `applied`
+   is `false` before the attempt, missing while the change or its readback is
+   unsettled, and `true` once read back on the same directory.
 3. Enrolls both authenticated runtimes. The full retained payload must equal the
    extracted archive.
 4. Reads the launcher's pending migration IDs without writing them.
@@ -349,8 +351,11 @@ and `childCapability:"unattested"`. Whether the retained child offers Download
 and Install is observed afterwards through its own update capability; a
 `bootstrap-required` result is a gap to report, not a reason to retry.
 
-A refusal before an effect leaves the record `partial`. An uncertain stop,
-state creation, launcher installation, start or readback leaves it `unknown`.
+A failure whose effects are all known leaves the record `partial` at its
+recorded phase. That does not mean nothing changed: the permission correction
+and runtimes enrolled before that phase remain, and a failure while `enrolling`
+can leave only some of them. An uncertain permission change, stop, state
+creation, launcher installation, start or readback leaves it `unknown`.
 Neither is retried, reversed or restarted automatically, and a record of either
 kind blocks a second adoption. If the writer proof fails after the stop, the
 unit stays stopped. The retained executable directory, every original unit file

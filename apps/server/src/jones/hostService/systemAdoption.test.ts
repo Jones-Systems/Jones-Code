@@ -5,7 +5,7 @@ import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeZlib from "node:zlib";
-import { expect, it as vitestIt } from "vite-plus/test";
+import { expect, it as vitestIt, vi } from "vite-plus/test";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import { ADOPTION_RECEIPT, planHostAdoption, SYSTEM_ADOPTION_RECEIPT } from "./adoption.ts";
@@ -32,6 +32,15 @@ import {
 } from "./systemServiceControl.ts";
 import { QUALIFIED_WRITER_OBSERVER_PATH } from "../cloud/qualifiedWriterObserver.ts";
 
+// Passes through to the native call; one test makes the runtime correction's
+// change unobservable to exercise its unsettled-effect record.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const native = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...native, chmod: vi.fn(native.chmod) };
+});
+
+// Every fixture plans the runtime correction; once read back it stays in every record.
+const verifiedRuntimeMode = { from: "0775", to: "0755", applied: true };
 const oldVersion = "0.0.45-preview.20261008.37762212730.1";
 const newVersion = "0.0.46-preview.20261011.1";
 const privateSetupSource = "d3e6f8e843a0477542380a4ec0d9ae02a1084053";
@@ -556,6 +565,7 @@ it("adopts in order and records applied launcher-only evidence without touching 
     expect(await f.receipt()).toMatchObject({
       status: "applied",
       phase: "applied",
+      runtimeMode: verifiedRuntimeMode,
       planSha256,
       attestation: "launcher-only",
       attestationBasis: "pre-publisher-child",
@@ -706,7 +716,11 @@ it("keeps the unit stopped after a failed writer proof and never starts it autom
       expect(f.events.filter((event) => event.startsWith("control")).slice(-1)).toEqual([
         "control stop",
       ]);
-      expect(await f.receipt()).toMatchObject({ status: "partial", phase: "stopped" });
+      expect(await f.receipt()).toMatchObject({
+        status: "partial",
+        phase: "stopped",
+        runtimeMode: verifiedRuntimeMode,
+      });
       await expect(
         NodeFSP.lstat(NodePath.join(f.runtime, "service-state.json")),
       ).rejects.toMatchObject({ code: "ENOENT" });
@@ -719,7 +733,11 @@ it("records an uncertain stop as unknown and attempts nothing after it", () =>
     async (f) => {
       await expect(applyApproved(f)).rejects.toThrow(/unknown stop/);
       expect(f.events.at(-1)).toBe("control stop");
-      expect(await f.receipt()).toMatchObject({ status: "unknown", phase: "stop-requested" });
+      expect(await f.receipt()).toMatchObject({
+        status: "unknown",
+        phase: "stop-requested",
+        runtimeMode: verifiedRuntimeMode,
+      });
     },
     { stopResult: "unknown" },
   ));
@@ -774,7 +792,13 @@ it("compares the full retained payload with the authenticated archive before sto
       adoptSystemHost({ ...f.input, approvedPlanSha256: approved.planSha256 }, f.host),
     ).rejects.toThrow(/retained payload differs/);
     expect(f.events).not.toContain("control stop");
-    expect(await f.receipt()).toMatchObject({ status: "partial", phase: "enrolling" });
+    // A partial record keeps the known setup effects before its phase.
+    expect(await f.receipt()).toMatchObject({
+      status: "partial",
+      phase: "enrolling",
+      runtimeMode: verifiedRuntimeMode,
+    });
+    expect((await NodeFSP.lstat(f.runtime)).mode & 0o777).toBe(0o755);
   }));
 
 it("does not stop when the observer socket reports another writer", () =>
@@ -782,10 +806,35 @@ it("does not stop when the observer socket reports another writer", () =>
     async (f) => {
       await expect(applyApproved(f)).rejects.toThrow(/only the retained server/);
       expect(f.events).not.toContain("control stop");
-      expect(await f.receipt()).toMatchObject({ status: "partial", phase: "enrolled" });
+      expect(await f.receipt()).toMatchObject({
+        status: "partial",
+        phase: "enrolled",
+        runtimeMode: verifiedRuntimeMode,
+      });
     },
     { writers: true },
   ));
+
+it("records an unverified runtime correction as unknown and attempts nothing after it", () =>
+  fixture(async (f) => {
+    const { planSha256 } = await planSystemAdoption(f.input, f.host);
+    // The permission call reports success but the directory never changes.
+    vi.mocked(NodeFSP.chmod).mockImplementationOnce(async () => undefined);
+    await expect(
+      adoptSystemHost({ ...f.input, approvedPlanSha256: planSha256 }, f.host),
+    ).rejects.toThrow(/permission readback differs/);
+    const receipt = await f.receipt();
+    expect(receipt).toMatchObject({
+      status: "unknown",
+      phase: "runtime-mode-requested",
+      runtimeMode: { from: "0775", to: "0755" },
+    });
+    // Unsettled: neither applied nor known unattempted.
+    expect(receipt.runtimeMode).not.toHaveProperty("applied");
+    expect(f.events.filter((event) => event.startsWith("control"))).toEqual(["control inspect"]);
+    expect(f.events.some((event) => event.startsWith("preflight"))).toBe(false);
+    expect(await NodeFSP.readdir(NodePath.join(f.runtime, "versions"))).toEqual([]);
+  }));
 
 it("leaves an unexpected child capability receipt unknown instead of claiming Install", () =>
   fixture(

@@ -673,10 +673,11 @@ async function createServiceState(path: string, activeVersion: string): Promise<
 }
 
 /**
- * Applies only the approved plan. Each step records its phase first; on a
- * refusal before an effect the record becomes `partial`, after an effect whose
- * result is uncertain it becomes `unknown`. Neither is retried, reversed or
- * restarted here.
+ * Applies only the approved plan. Each step records its phase first. A failure
+ * whose effects are all known records `partial`: the completed setup effects
+ * up to its recorded phase remain, so it never means that nothing changed. A
+ * failure during an attempt whose result is not settled records `unknown`.
+ * Neither is retried, reversed or restarted here.
  */
 export async function adoptSystemHost(
   input: SystemAdoptInput,
@@ -714,10 +715,25 @@ export async function adoptSystemHost(
     let phase = "prepared";
     let outcome: "partial" | "unknown" = "partial";
     let recorded = false;
+    // Carried by every record once the plan includes the correction: `applied`
+    // is false while it is known unattempted, absent while the change or its
+    // readback is unsettled, and true once read back on the same directory.
+    let runtimeMode:
+      | { readonly from: "0775"; readonly to: "0755"; readonly applied?: boolean }
+      | undefined = plan.runtimeMode === null ? undefined : { ...plan.runtimeMode, applied: false };
     const record = async (status: string, extra: Record<string, unknown> = {}) => {
       await durableReplace(
         receiptPath,
-        `${JSON.stringify({ schema: 1, kind: "system-unit", status, phase, planSha256, plan, ...extra })}\n`,
+        `${JSON.stringify({
+          schema: 1,
+          kind: "system-unit",
+          status,
+          phase,
+          planSha256,
+          plan,
+          ...(runtimeMode === undefined ? {} : { runtimeMode }),
+          ...extra,
+        })}\n`,
       );
       recorded = true;
     };
@@ -863,12 +879,28 @@ export async function adoptSystemHost(
 
       if (plan.runtimeMode !== null) {
         const before = await NodeFSP.lstat(runtime);
-        if (!before.isDirectory() || before.uid !== plan.uid || (before.mode & 0o7777) !== 0o775)
+        if (
+          !before.isDirectory() ||
+          before.isSymbolicLink() ||
+          before.uid !== plan.uid ||
+          (before.mode & 0o7777) !== 0o775
+        )
           refuse("Runtime directory permissions changed before correction.");
+        runtimeMode = { ...plan.runtimeMode };
+        await step("runtime-mode-requested", true);
         await NodeFSP.chmod(runtime, 0o755);
-        if (((await NodeFSP.lstat(runtime)).mode & 0o7777) !== 0o755)
+        const after = await NodeFSP.lstat(runtime);
+        if (
+          !after.isDirectory() ||
+          after.isSymbolicLink() ||
+          after.dev !== before.dev ||
+          after.ino !== before.ino ||
+          after.uid !== before.uid ||
+          (after.mode & 0o7777) !== 0o755
+        )
           refuse("Runtime directory permission readback differs.");
-        await record("pending", { runtimeMode: { ...plan.runtimeMode, applied: true } });
+        runtimeMode = { ...plan.runtimeMode, applied: true };
+        await step("runtime-mode-applied", false);
       }
 
       await step("enrolling", false);
