@@ -39,20 +39,62 @@ function literal(source) {
   return source.slice(start + marker.length, source.lastIndexOf("`;"));
 }
 
+export function materializePairedExecutor(executorSource, pairedSource) {
+  const declaration = "export const jonesPairedStateSource = Object.freeze({";
+  NodeAssert.equal(pairedSource.split(declaration).length, 2);
+  NodeAssert.ok(
+    executorSource.includes(
+      'import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";',
+    ),
+  );
+  let remaining = pairedSource
+    .slice(pairedSource.indexOf(declaration) + declaration.length)
+    .trimStart();
+  let executor = literal(executorSource);
+  // Read only the four declared literals; never evaluate TypeScript or expand
+  // arbitrary substitutions in a source-qualified native fixture.
+  for (const name of ["syncTree", "copyAndTopology", "recoveryAndPair", "syncParent"]) {
+    const prefix = name + ": String.raw`";
+    NodeAssert.ok(remaining.startsWith(prefix), "Unexpected paired source fragment.");
+    const end = remaining.indexOf("`", prefix.length);
+    NodeAssert.ok(end >= prefix.length, "Unterminated paired source fragment.");
+    const fragment = remaining.slice(prefix.length, end);
+    NodeAssert.ok(!fragment.includes("${"), "Paired source fragments must be literal.");
+    remaining = remaining.slice(end + 1).trimStart();
+    NodeAssert.ok(remaining.startsWith(","), "Unexpected paired source expression.");
+    remaining = remaining.slice(1).trimStart();
+    const reference = "${jonesPairedStateSource." + name + "}";
+    NodeAssert.equal(
+      executor.split(reference).length,
+      2,
+      "Each paired source fragment must occur exactly once.",
+    );
+    executor = executor.replace(reference, () => fragment);
+  }
+  NodeAssert.equal(remaining.trimEnd(), "} as const);");
+  NodeAssert.ok(
+    !executor.includes("${") && !executor.includes("`"),
+    "Unresolved executor substitution.",
+  );
+  return executor;
+}
+
 export async function readColdMaintenanceSources() {
-  const [bootstrapText, maintenanceText, executorText, nativeSource] = await Promise.all([
-    NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyBootstrapSource.ts"), "utf8"),
-    NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyMaintenanceSource.ts"), "utf8"),
-    NodeFSP.readFile(NodePath.join(updateSources, "jonesNativeHelperSource.ts"), "utf8"),
-    NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyIdentityNative.c")),
-  ]);
+  const [bootstrapText, maintenanceText, executorText, pairedText, nativeSource] =
+    await Promise.all([
+      NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyBootstrapSource.ts"), "utf8"),
+      NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyMaintenanceSource.ts"), "utf8"),
+      NodeFSP.readFile(NodePath.join(updateSources, "jonesNativeHelperSource.ts"), "utf8"),
+      NodeFSP.readFile(NodePath.join(updateSources, "jonesPairedStateSource.ts"), "utf8"),
+      NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyIdentityNative.c")),
+    ]);
   const bootstrap = literal(bootstrapText);
   const suffix = "if __name__ == '__main__':\n    sys.exit(main())\n";
   NodeAssert.ok(bootstrap.endsWith(suffix));
   return {
     bootstrap,
     maintenance: bootstrap.slice(0, -suffix.length) + literal(maintenanceText),
-    executor: literal(executorText),
+    executor: materializePairedExecutor(executorText, pairedText),
     nativeSourceSha256: digest(nativeSource),
   };
 }
