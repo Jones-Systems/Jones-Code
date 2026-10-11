@@ -908,7 +908,8 @@
     "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts": "jones-owned",
     "apps/server/src/jones/updates/offlinePreparation.ts": "jones-owned",
-    "apps/server/src/jones/updates/offlinePreparation.test.ts": "jones-owned"
+    "apps/server/src/jones/updates/offlinePreparation.test.ts": "jones-owned",
+    "apps/server/vite.config.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
