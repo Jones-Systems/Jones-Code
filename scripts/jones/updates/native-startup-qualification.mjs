@@ -5,6 +5,10 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { extractFile } from "@electron/asar";
 import {
+  createLegacyBootstrapFixture,
+  qualifyLegacyBootstrap,
+} from "./legacy-bootstrap-fixture.mjs";
+import {
   assertStartupRefused,
   cleanLaunchEnvironment,
   createNativeState,
@@ -59,6 +63,7 @@ const evidence = {
 };
 let mounted = false;
 let observer;
+let bootstrapFixture;
 let failure;
 const recordCleanupFailure = (error) => {
   failure ??= error;
@@ -233,6 +238,17 @@ try {
     "The packaged process changed protected state, including a transient change.",
   );
   NodeAssert.deepEqual(await Promise.all(protectedPaths.map(snapshotTree)), before);
+  evidence.bootstrap = { outcome: "unknown", scenarios: [] };
+  bootstrapFixture = await createLegacyBootstrapFixture({
+    root,
+    app,
+    metadata,
+    executableName,
+    ownership,
+    signal: controller.signal,
+    environment: process.env,
+  });
+  await qualifyLegacyBootstrap(bootstrapFixture, evidence.bootstrap);
   evidence.source = metadata.jonesSource;
   evidence.version = metadata.version;
   evidence.electron = packagedElectron;
@@ -248,6 +264,7 @@ try {
   failure = error;
   evidence.outcome = "failed";
   evidence.error = String(error).slice(0, 2048);
+  if (evidence.bootstrap?.outcome === "unknown") evidence.bootstrap.outcome = "failed";
   if (error instanceof ObserverControlError) evidence.observerControlFailure = error.control;
 } finally {
   if (observer) {
@@ -262,6 +279,10 @@ try {
   await persist();
   try {
     await ownership.cleanup();
+    if (bootstrapFixture) {
+      await NodeAssert.rejects(NodeFSP.lstat(bootstrapFixture.fixture), { code: "ENOENT" });
+      if (evidence.bootstrap) evidence.bootstrap.fixtureRemoved = true;
+    }
   } catch (error) {
     recordCleanupFailure(error);
   }
@@ -278,6 +299,8 @@ try {
   if (!mounted) {
     try {
       await scratch.cleanup();
+      await NodeAssert.rejects(NodeFSP.lstat(root), { code: "ENOENT" });
+      evidence.scratchRemoved = true;
     } catch (error) {
       recordCleanupFailure(error);
     }

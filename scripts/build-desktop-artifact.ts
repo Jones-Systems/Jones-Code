@@ -31,6 +31,7 @@ import {
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   decodeJonesDesktopBuildMetadata,
+  bundlesJonesNativeHelper,
   verifyJonesPackagedStartupGate,
   type JonesBuildSource,
 } from "./jones/updates/build-provenance.ts";
@@ -45,6 +46,7 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import { createJonesLegacyBootstrapBundle } from "./jones/updates/legacy-bootstrap-bundle.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
@@ -1101,6 +1103,10 @@ export const DESKTOP_EXTRA_RESOURCES = [
     to: "resource-monitor",
   },
 ] as const;
+export const JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE = {
+  from: "apps/desktop/prod-resources/jones-bootstrap",
+  to: "jones-bootstrap",
+} as const;
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
   {
     from: "apps/desktop/prod-resources/hyprland-capture",
@@ -2686,6 +2692,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
   variant?: DesktopPackageVariant,
+  legacyBootstrapBundled = false,
 ) {
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
@@ -2711,6 +2718,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       : {}),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,
+      ...(platform === "mac" && variant !== "preview-companion" && legacyBootstrapBundled
+        ? [JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE]
+        : []),
       ...(platform === "linux" ? LINUX_CAPTURE_EXTRA_RESOURCES : []),
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
@@ -3725,20 +3735,23 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
+  const jonesBuildMetadata = yield* decodeJonesDesktopBuildMetadata({
+    ...("jonesSource" in desktopPackageJson ? { jonesSource: desktopPackageJson.jonesSource } : {}),
+    ...("startupGateProtocol" in desktopPackageJson
+      ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
+      : {}),
+  });
+  const legacyBootstrapBundled =
+    bundlesJonesNativeHelper(options.platform, appVersion, options.signed) &&
+    options.variant !== "preview-companion" &&
+    jonesBuildMetadata.jonesSource !== undefined;
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     ...companionPackageMetadata(options.variant),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
-    ...(yield* decodeJonesDesktopBuildMetadata({
-      ...("jonesSource" in desktopPackageJson
-        ? { jonesSource: desktopPackageJson.jonesSource }
-        : {}),
-      ...("startupGateProtocol" in desktopPackageJson
-        ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
-        : {}),
-    })),
+    ...jonesBuildMetadata,
     private: true,
     packageManager: rootPackageJson.packageManager,
     description:
@@ -3764,12 +3777,32 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
       options.variant,
+      legacyBootstrapBundled,
     ),
     dependencies: stageDependencies,
     devDependencies: {
       electron: electronVersion,
     },
   };
+
+  const legacyBootstrapSource = stagePackageJson.jonesSource;
+  const legacyBootstrapBundle =
+    legacyBootstrapBundled && legacyBootstrapSource !== undefined
+      ? yield* Effect.try(() =>
+          createJonesLegacyBootstrapBundle({
+            repository: legacyBootstrapSource.repository,
+            sourceSha: legacyBootstrapSource.sha,
+            sourceTree: legacyBootstrapSource.tree,
+            version: appVersion,
+          }),
+        )
+      : [];
+  for (const file of legacyBootstrapBundle) {
+    const destination = path.join(stageProdResourcesDir, file.relativePath);
+    yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
+    yield* fs.writeFileString(destination, file.content);
+    yield* fs.chmod(destination, file.mode);
+  }
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
@@ -3964,6 +3997,19 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       yield* Effect.try(() =>
         verifyJonesPackagedStartupGate(metadata, { version: appVersion, source }),
       );
+      for (const file of legacyBootstrapBundle) {
+        const packagedFile = path.join(path.dirname(packagedAsar), file.relativePath);
+        const observed = yield* Effect.tryPromise(() => NodeFSP.lstat(packagedFile));
+        yield* Effect.try(() => {
+          if (!observed.isFile() || (observed.mode & 0o777) !== file.mode)
+            throw new Error("Packaged Jones bootstrap has an unexpected file identity or mode.");
+        });
+        const content = yield* fs.readFileString(packagedFile);
+        yield* Effect.try(() => {
+          if (content !== file.content)
+            throw new Error("Packaged Jones bootstrap differs from its source-bound bundle.");
+        });
+      }
     }).pipe(
       Effect.mapError(
         (cause) =>

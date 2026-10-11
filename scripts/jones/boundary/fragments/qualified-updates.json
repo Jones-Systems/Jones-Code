@@ -62,7 +62,14 @@
     "packages/shared/src/jones/jonesActions.ts",
     "packages/shared/src/jones/nativeWriterFence.test.ts",
     "packages/shared/src/jones/nativeWriterFence.ts",
-    "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts"
+    "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+    "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts",
+    "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
+    "scripts/jones/updates/legacy-bootstrap-bundle.ts",
+    "scripts/jones/updates/legacy-bootstrap-bundle.test.ts",
+    "docs/operations/desktop-bootstrap.md",
+    "scripts/jones/updates/legacy-bootstrap-fixture.mjs",
+    "scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs"
   ],
   "hookPaths": [
     "apps/desktop/src/boot.ts",
@@ -301,6 +308,10 @@
     {
       "from": "apps/server/src/serviceLauncher.ts",
       "to": "apps/server/src/jones/cloud/launcherCapability.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/updates/legacy-bootstrap-bundle.ts"
     }
   ]
 }

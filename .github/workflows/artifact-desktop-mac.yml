@@ -14,6 +14,7 @@ on:
       - scripts/stamp-jones-build.ts
       - scripts/jones/updates/build-provenance.ts
       - scripts/jones/updates/native-startup-*
+      - scripts/jones/updates/legacy-bootstrap-*
       - packages/shared/src/jones/nativeWriterFence*
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualifiedStartup.ts

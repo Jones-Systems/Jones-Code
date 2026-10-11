@@ -473,7 +473,10 @@
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
         "apps/server/src/jones/updates/nativePreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
-        "scripts/jones/updates/native-startup-fixture.node-test.mjs"
+        "scripts/jones/updates/native-startup-fixture.node-test.mjs",
+        "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
+        "scripts/jones/updates/legacy-bootstrap-bundle.test.ts",
+        "scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs"
       ]
     },
     {

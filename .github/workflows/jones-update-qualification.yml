@@ -71,12 +71,14 @@ jobs:
           scripts/stamp-jones-build.test.ts
           scripts/jones/updates/build-provenance.test.ts
           scripts/build-desktop-artifact.test.ts
+          apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts
+          scripts/jones/updates/legacy-bootstrap-bundle.test.ts
 
       - name: Install virtual display for Chromium startup qualification
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Check startup qualification fixtures
-        run: node --test scripts/jones/updates/native-startup-fixture.node-test.mjs
+        run: node --test --test-concurrency=1 scripts/jones/updates/native-startup-fixture.node-test.mjs scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs
 
       - name: Qualify Chromium-mode native startup refusal
         run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
