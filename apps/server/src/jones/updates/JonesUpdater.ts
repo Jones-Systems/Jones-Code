@@ -268,28 +268,49 @@ export class JonesUpdater {
     }
   }
 
-  async retireStagedOperation(input: JonesStagedRetirementInput): Promise<{ retired: boolean; reason?: string }> {
+  async retireStagedOperation(
+    input: JonesStagedRetirementInput,
+  ): Promise<{ retired: boolean; reason?: string }> {
     if (this.busy || ["preparing", "installing"].includes(this.state.phase))
       return { retired: false, reason: "An update operation is still active." };
     if (this.host.retireStaged === undefined)
       return { retired: false, reason: "Exact staged retirement is unavailable on this host." };
-    if (input.environmentId !== this.state.environmentId || input.currentVersion !== this.state.currentVersion ||
-        (this.state.stagedHandle !== undefined && (input.stagedHandle !== this.state.stagedHandle || input.targetSource !== this.state.provenance?.sourceSha)))
+    if (
+      input.environmentId !== this.state.environmentId ||
+      input.currentVersion !== this.state.currentVersion ||
+      (this.state.stagedHandle !== undefined &&
+        (input.stagedHandle !== this.state.stagedHandle ||
+          input.targetSource !== this.state.provenance?.sourceSha))
+    )
       return { retired: false, reason: "The retained stage belongs to another immutable binding." };
     this.busy = true;
     try {
-      if (await this.host.installedSource() !== input.expectedInstalledSource)
+      if ((await this.host.installedSource()) !== input.expectedInstalledSource)
         return { retired: false, reason: "The installed source changed before staged retirement." };
       // The host rechecks authoritative native absence before removing only the pointer.
       // Payload and operation evidence remain available for reconciliation.
       await this.host.retireStaged(input);
-      const { stagedHandle: _handle, provenance: _provenance, migrationPlan: _plan, ...rest } = this.state;
+      const {
+        stagedHandle: _handle,
+        provenance: _provenance,
+        migrationPlan: _plan,
+        ...rest
+      } = this.state;
       this.state = rest;
       this.candidate = undefined;
-      this.publish({ phase: "no-new", message: "The unaccepted staged selection was retired; its payload was retained." });
+      this.publish({
+        phase: "no-new",
+        message: "The unaccepted staged selection was retired; its payload was retained.",
+      });
       return { retired: true };
     } catch (cause) {
-      return { retired: false, reason: cause instanceof Error ? cause.message : "The retained stage could not be retired safely." };
+      return {
+        retired: false,
+        reason:
+          cause instanceof Error
+            ? cause.message
+            : "The retained stage could not be retired safely.",
+      };
     } finally {
       this.busy = false;
     }

@@ -1,7 +1,12 @@
 import { useEffect } from "react";
 import { advanceFleetCampaigns } from "@t3tools/client-runtime/jones/fleet-updates";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
-import { fleetDesktopState, fleetHost, fleetStatusError, refreshFleetDesktopState } from "./runtime";
+import {
+  fleetDesktopState,
+  fleetHost,
+  fleetStatusError,
+  refreshFleetDesktopState,
+} from "./runtime";
 
 /** Native proof gates activation; ordinary app startup and source equality do not. */
 export function FleetController() {
@@ -23,12 +28,19 @@ export function FleetController() {
         });
         if (!cancelled) await refreshFleetDesktopState();
       } catch {
-        if (!cancelled) appAtomRegistry.set(fleetStatusError, "Fleet campaign storage could not be read. Automatic updates are waiting for reconciliation.");
+        if (!cancelled)
+          appAtomRegistry.set(
+            fleetStatusError,
+            "Fleet campaign storage could not be read. Automatic updates are waiting for reconciliation.",
+          );
       }
       if (!cancelled) timer = setTimeout(() => void tick(), 60_000);
     };
     void tick();
-    return () => { cancelled = true; if (timer !== undefined) clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, []);
   return null;
 }

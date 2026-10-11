@@ -3,8 +3,22 @@ import { TrimmedNonEmptyString } from "../../baseSchemas.ts";
 import { FleetEnrollment, FleetOperationId, FleetSourceSha } from "./host.ts";
 
 export const FleetMemberPhase = Schema.Literals([
-  "waiting", "offline", "bootstrap-required", "staging", "stage-blocked", "staged",
-  "dispatching", "install-blocked", "reconciling", "retiring", "pending", "current", "committed", "rolled-back", "blocked", "superseded",
+  "waiting",
+  "offline",
+  "bootstrap-required",
+  "staging",
+  "stage-blocked",
+  "staged",
+  "dispatching",
+  "install-blocked",
+  "reconciling",
+  "retiring",
+  "pending",
+  "current",
+  "committed",
+  "rolled-back",
+  "blocked",
+  "superseded",
 ]);
 export type FleetMemberPhase = typeof FleetMemberPhase.Type;
 export const FleetCampaignMember = Schema.Struct({
@@ -20,10 +34,12 @@ export const FleetDesktopCampaign = Schema.Struct({
   targetSource: FleetSourceSha,
   desktopStagedHandle: TrimmedNonEmptyString,
   phase: Schema.Literals(["prepared", "installing", "committed", "rolled-back", "blocked"]),
-  installation: Schema.optionalKey(Schema.Struct({
-    transactionId: TrimmedNonEmptyString,
-    fromGeneration: TrimmedNonEmptyString,
-  })),
+  installation: Schema.optionalKey(
+    Schema.Struct({
+      transactionId: TrimmedNonEmptyString,
+      fromGeneration: TrimmedNonEmptyString,
+    }),
+  ),
   committedGeneration: Schema.optionalKey(TrimmedNonEmptyString),
   members: Schema.Array(FleetCampaignMember),
 });

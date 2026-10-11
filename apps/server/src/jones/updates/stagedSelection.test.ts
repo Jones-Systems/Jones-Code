@@ -10,7 +10,11 @@ import {
   type QualifiedRuntimeReceipt,
   type StagedQualifiedRuntime,
 } from "../cloud/qualifiedRuntime.ts";
-import { retainStagedSelection, restoreStagedSelection, retireStagedSelection } from "./stagedSelection.ts";
+import {
+  retainStagedSelection,
+  restoreStagedSelection,
+  retireStagedSelection,
+} from "./stagedSelection.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -124,16 +128,34 @@ describe("durable native staging selection", () => {
   });
 });
 
-
 it("retires an exact selection pointer while retaining its qualified receipt and payload", async () => {
   const f = await fixture();
   await retainStagedSelection(f.selection);
-  const expected = { environmentId: f.selection.binding.environmentId, expectedInstalledSource: f.selection.binding.activeSourceSha, targetSource: f.selection.receipt.sourceSha, stagedHandle: f.selection.stagedHandle };
-  await expect(retireStagedSelection(f.root, f.baseline, { ...expected, stagedHandle: "other" })).rejects.toThrow("preserved");
+  const expected = {
+    environmentId: f.selection.binding.environmentId,
+    expectedInstalledSource: f.selection.binding.activeSourceSha,
+    targetSource: f.selection.receipt.sourceSha,
+    stagedHandle: f.selection.stagedHandle,
+  };
+  await expect(
+    retireStagedSelection(f.root, f.baseline, { ...expected, stagedHandle: "other" }),
+  ).rejects.toThrow("preserved");
   expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);
   await retireStagedSelection(f.root, f.baseline, expected);
   await retireStagedSelection(f.root, f.baseline, expected);
   expect(await restoreStagedSelection(f.root, f.baseline)).toBeUndefined();
-  expect(JSON.parse(await NodeFSP.readFile(NodePath.join(f.root, "runtime", "staged-updates", `${f.selection.stagedHandle}.json`), "utf8"))).toEqual(f.selection);
-  expect(await NodeFSP.readFile(NodePath.join(f.root, "runtime", "versions", f.selection.receipt.version, "t3"), "utf8")).toContain("echo b");
+  expect(
+    JSON.parse(
+      await NodeFSP.readFile(
+        NodePath.join(f.root, "runtime", "staged-updates", `${f.selection.stagedHandle}.json`),
+        "utf8",
+      ),
+    ),
+  ).toEqual(f.selection);
+  expect(
+    await NodeFSP.readFile(
+      NodePath.join(f.root, "runtime", "versions", f.selection.receipt.version, "t3"),
+      "utf8",
+    ),
+  ).toContain("echo b");
 });
