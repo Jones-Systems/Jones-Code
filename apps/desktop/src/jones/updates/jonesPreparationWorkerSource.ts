@@ -54,22 +54,38 @@ def _preparation_bundle(bundle):
 def _preparation_worker_runtime():
     raise Refused('A captured preparation worker requires the actual live cold owner.')
 
+class _PreparationFailure(Refused):
+    def __init__(self, failures, evidence_path=None):
+        self.errors = tuple(item for failure in failures for item in
+                            (failure.errors if isinstance(failure, _PreparationFailure) else (failure,)))
+        require(bool(self.errors))
+        self.evidence_path = evidence_path
+        super().__init__('Preparation operation has unresolved failure or custody; original causes are retained.')
+        self.__cause__ = self.errors[0]
+
 class _PreparationProcess:
     # Every process retains its real Popen handle. PID values in reports never authorize adoption.
     def __init__(self, args, descriptors, output_limit, child_input=True):
         self.child, self.selector, self.closed = None, selectors.DefaultSelector(), False
         self.output, self.error, self.pending = bytearray(), bytearray(), bytearray()
         self.eof, self.signals, self.reaped = set(), [], False
+        self.spawn_attempted, self.spawn_unknown = False, False
         self.output_limit, self.input_open = output_limit, child_input
         self.args, self.descriptors = args, tuple(descriptors)
 
     def start(self):
         # The owning registry must capture this object before even pipe setup can fail.
-        require(self.child is None and not self.closed)
-        self.child = subprocess.Popen(self.args, stdin=subprocess.PIPE if self.input_open else subprocess.DEVNULL,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
-                                      shell=False, close_fds=True, pass_fds=self.descriptors,
-                                      env={'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C'})
+        require(not self.spawn_attempted and self.child is None and not self.closed)
+        self.spawn_attempted = True
+        try:
+            self.child = subprocess.Popen(self.args, stdin=subprocess.PIPE if self.input_open else subprocess.DEVNULL,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+                                          shell=False, close_fds=True, pass_fds=self.descriptors,
+                                          env={'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C'})
+        except BaseException:
+            # Popen can raise after fork but before returning its handle. No PID adoption or retry follows.
+            self.spawn_unknown = True
+            raise
         for label, stream in (('out', self.child.stdout), ('err', self.child.stderr)):
             os.set_blocking(stream.fileno(), False)
             self.selector.register(stream, selectors.EVENT_READ, label)
@@ -120,6 +136,7 @@ class _PreparationProcess:
         return code
 
     def stop(self):
+        if self.spawn_unknown: raise Refused('Preparation spawn started without a returned handle; custody is unknown.')
         if self.child is None or self.reaped: return
         # wait(), including after a failed signal, is the only reaping proof.
         for label, action in (('terminate', self.child.terminate), ('kill', self.child.kill)):
@@ -140,11 +157,18 @@ class _PreparationProcess:
         for stream in (() if self.child is None else (self.child.stdin, self.child.stdout, self.child.stderr)):
             if stream is not None:
                 try: stream.close()
-                except OSError as failure: failures.append(failure)
+                except BaseException as failure: failures.append(failure)
         try: self.selector.close()
-        except OSError as failure: failures.append(failure)
+        except BaseException as failure: failures.append(failure)
+        if self.spawn_unknown: failures.append(Refused('Local descriptor cleanup cannot settle an unknown spawn.'))
         self.closed = not failures
-        if failures: raise failures[0]
+        if failures: raise _PreparationFailure(failures)
+
+    def evidence(self):
+        return {'pid': None if self.child is None else self.child.pid,
+                'spawnAttempted': self.spawn_attempted, 'spawnUnknown': self.spawn_unknown,
+                'reaped': self.reaped, 'streamsClosed': self.closed, 'signals': list(self.signals),
+                'pidSignalAuthority': False}
 
 class _PreparationWorker:
     def __init__(self):
@@ -167,9 +191,8 @@ class _PreparationWorker:
 
     def save_receipt(self, phase):
         self.receipt['phase'] = phase
-        if self.process is not None and self.process.child is not None:
-            self.receipt.update(pid=self.process.child.pid, reaped=self.process.reaped,
-                                streamsClosed=self.process.closed, signals=self.process.signals)
+        if self.process is not None: self.receipt.update(self.process.evidence())
+        self.receipt['observers'] = [command.evidence() for command in self.observers]
         raw = _preparation_encoded(self.receipt) + b'\n'
         durable_file(self.receipt_path, raw, 0o600, self.receipt_raw)
         self.receipt_raw = raw
@@ -235,15 +258,21 @@ class _PreparationWorker:
                 requested.append((role, path))
                 args += ['--' + role, str(stream.fileno()), str(path)]
             command = _PreparationProcess(args, descriptors, _PREPARATION_LIMITS['observer'], False)
+            require(len(self.observers) < 8)
             self.observers.append(command)
+            failures = []
             try:
                 command.start()
                 code = command.finish(time.monotonic() + 15)
                 require(code == 0 and not command.error)
                 result = decode(bytes(command.output))
+            except BaseException as failure: failures.append(failure)
             finally:
                 try: command.stop()
-                finally: command.close()
+                except BaseException as failure: failures.append(failure)
+                try: command.close()
+                except BaseException as failure: failures.append(failure)
+            if failures: raise _PreparationFailure(failures, str(self.receipt_path))
             observed.current()
         require(result.get('schema') == 1 and result.get('status') == 'observed' and result.get('operation') == args[1])
         require(result.get('bootSessionUuid') == self.session.record['bootSessionUuid'])
@@ -327,7 +356,7 @@ class _PreparationWorker:
             except BaseException as failure: failures.append(failure)
             try: command.close()
             except BaseException as failure: failures.append(failure)
-        if failures: raise failures[0]
+        if failures: raise _PreparationFailure(failures, str(self.receipt_path))
 
     def run(self, recovery):
         try:
@@ -335,13 +364,14 @@ class _PreparationWorker:
         except BaseException as failure:
             self.failed = True
             self.session.poison(failure)
-            self.receipt['failure'] = {'type': type(failure).__name__, 'errno': getattr(failure, 'errno', None)}
+            failures = [failure]
             try: self.drain()
-            except BaseException as cleanup:
-                self.receipt['cleanupFailure'] = {'type': type(cleanup).__name__, 'errno': getattr(cleanup, 'errno', None)}
+            except BaseException as cleanup: failures.append(cleanup)
+            aggregate = _PreparationFailure(failures, str(self.receipt_path))
+            self.receipt['failures'] = [{'type': type(item).__name__, 'errno': getattr(item, 'errno', None)} for item in aggregate.errors[:16]]
             try: self.save_receipt('custody-held')
-            except BaseException: pass
-            raise
+            except BaseException as publication: failures.append(publication)
+            raise _PreparationFailure(failures, str(self.receipt_path)) from failure
 
     def perform(self, recovery):
         self.check()
