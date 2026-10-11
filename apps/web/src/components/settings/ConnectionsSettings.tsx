@@ -1,4 +1,5 @@
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
+import { JonesBlockedHostUpdates } from "~/jones/fleetUpdates/JonesBlockedHostUpdates";
 import {
   ChevronRightIcon,
   ChevronsLeftRightEllipsisIcon,
@@ -1589,6 +1590,7 @@ function SavedBackendListRow({
   const [routesOpen, setRoutesOpen] = useState(false);
   const environmentId = environment.environmentId;
   const unsupported = environment.connection.phase === "unsupported";
+  const historicalUpdate = environment.entry.compatibilityHint?.kind === "outdated-update";
   const enabled = environment.entry.enabled && !unsupported;
   const isConnected = environment.connection.phase === "connected";
   const isRemoving = removingEnvironmentId === environmentId;
@@ -1786,6 +1788,9 @@ function SavedBackendListRow({
           label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
         />
       ) : null}
+      {!unsupported && historicalUpdate ? (
+        <JonesBlockedHostUpdates environmentId={environmentId} historical />
+      ) : null}
       {showUpdateAction ? (
         <ServerUpdateAction
           environmentId={environmentId}
@@ -1805,14 +1810,20 @@ function SavedBackendListRow({
             <Switch
               size="sm"
               checked={enabled}
-              disabled={isRemoving || unsupported}
+              disabled={isRemoving || unsupported || historicalUpdate}
               aria-label={`${enabled ? "Switch off" : "Switch on"} ${environment.label}`}
               onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
             />
           }
         />
         <TooltipPopup side="top">
-          {unsupported ? "Client not supported" : enabled ? "Switch off" : "Switch on"}
+          {unsupported
+            ? "Client not supported"
+            : historicalUpdate
+              ? "Previously required an update; refresh host status"
+              : enabled
+                ? "Switch off"
+                : "Switch on"}
         </TooltipPopup>
       </Tooltip>
       <Menu>
