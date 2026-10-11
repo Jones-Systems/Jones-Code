@@ -24,8 +24,10 @@ import {
 } from "./jones/cloud/qualifiedRuntime.ts";
 
 import {
+  assertQualifiedReadinessObservable,
   proveQualifiedStateQuiescence,
   QUALIFIED_STARTUP_STATE_FILES,
+  QualifiedQuiescenceError,
   type QualifiedQuiescenceAdapter,
 } from "./jones/cloud/qualifiedQuiescence.ts";
 import {
@@ -952,18 +954,29 @@ export class Launcher {
           qualified.binding.dbPath !== message.dbPath
         )
           throw new Error("Install target differs from its staged handle.");
+        if (child.process.pid === undefined)
+          throw new Error("The requesting child has no native process identity.");
+        // Refuse before acceptance when the readiness commit could never prove
+        // that its captured writer alone holds the state.
+        await assertQualifiedReadinessObservable({
+          baseDir: this.#baseDir,
+          allowedProcessIds: [child.process.pid],
+          ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
+        });
         migrationPlan = await preflightQualifiedCandidate(this.#baseDir, qualified);
         await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter);
         if (this.#child !== child || this.#stopRequested || this.#stopping)
           throw new Error("The requesting child stopped during candidate preflight.");
       } catch (cause) {
         await reject(
-          cause instanceof QualifiedCandidatePreflightError ||
-            (cause instanceof Error &&
-              (cause.message.startsWith("startup-gate-unavailable:") ||
-                cause.message.startsWith("recovery-capacity:")))
-            ? cause.message
-            : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
+          cause instanceof QualifiedQuiescenceError
+            ? `writer-proof-${cause.reason}: The readiness commit cannot prove exclusive state ownership on this host; Install was not admitted.`
+            : cause instanceof QualifiedCandidatePreflightError ||
+                (cause instanceof Error &&
+                  (cause.message.startsWith("startup-gate-unavailable:") ||
+                    cause.message.startsWith("recovery-capacity:")))
+              ? cause.message
+              : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
         );
         return;
       }

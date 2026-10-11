@@ -9,7 +9,7 @@ import packageJson from "../../../package.json" with { type: "json" };
 import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
 import { readQualifiedBackupReceipt, type QualifiedBackupAdapter } from "./qualifiedBackup.ts";
 import type { QualifiedQuiescenceAdapter } from "./qualifiedQuiescence.ts";
-import { QUALIFIED_STARTUP_STATE_FILES } from "./qualifiedQuiescence.ts";
+import { QUALIFIED_STARTUP_STATE_FILES, QualifiedQuiescenceError } from "./qualifiedQuiescence.ts";
 import {
   currentQualifiedRuntimeBinding,
   qualifiedPayloadDigest,
@@ -554,6 +554,42 @@ it("retains the active pointer and unchanged state when an unknown same-home wri
       assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
     },
     { scan: async ({ files }) => [{ pid: 999, path: files[0]!.path }] },
+  );
+});
+
+it("refuses Install admission when its readiness writer proof cannot complete", async () => {
+  const admissions: number[][] = [];
+  let scans = 0;
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update, undefined);
+      assert.equal(state.activeVersion, baseline);
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+      );
+      assert.match(rejected.reason, /^writer-proof-unavailable:/);
+      // The active child never saw acceptance, and no stop or trial proof ran.
+      await NodeAssert.rejects(
+        NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+      );
+      // Only the requesting active child was offered as the captured writer.
+      assert.equal(admissions.length, 1);
+      assert.equal(admissions[0]!.length, 1);
+      assert.equal(scans, 0);
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    },
+    {
+      scan: async () => {
+        scans++;
+        return [];
+      },
+      assertReadinessObservable: async ({ allowedProcessIds }) => {
+        admissions.push([...allowedProcessIds]);
+        throw new QualifiedQuiescenceError("unavailable");
+      },
+    },
   );
 });
 

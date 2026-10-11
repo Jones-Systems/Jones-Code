@@ -5,7 +5,10 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
+  assertQualifiedReadinessObservable,
+  linuxLeaseQualifiedQuiescenceAdapter,
   linuxQualifiedQuiescenceAdapter,
+  linuxReadinessQualifiedQuiescenceAdapter,
   nativeQualifiedQuiescenceAdapter,
   parseDarwinWriterOutput,
   parseDarwinWriterResult,
@@ -254,6 +257,108 @@ it("refuses state changed during observation and unavailable native platforms", 
     await NodeAssert.rejects(
       proveQualifiedStateQuiescence({
         baseDir,
+        adapter: nativeQualifiedQuiescenceAdapter("unsupported"),
+      }),
+      blocked("unavailable"),
+    );
+  });
+});
+
+it("never uses a kernel lease proof to exclude an allowed writer", async () => {
+  await NodeAssert.rejects(
+    linuxLeaseQualifiedQuiescenceAdapter().scan({
+      uid: 1000,
+      files: [{ path: "/synthetic/statev2.sqlite", device: 1n, inode: 2n }],
+      allowedProcessIds: [123],
+    }),
+    blocked("unavailable"),
+  );
+});
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Kernel lease evidence exists only on a native Linux host.
+it.skipIf(NodeOS.platform() !== "linux")(
+  "proves restart quiescence on Linux independently of unreadable processes",
+  async () => {
+    await fixture(async (baseDir) => {
+      const adapter = nativeQualifiedQuiescenceAdapter("linux");
+      await proveQualifiedStateQuiescence({ baseDir, adapter });
+      const writer = await NodeFSP.open(NodePath.join(baseDir, "userdata", "settings.json"), "r+");
+      try {
+        await NodeAssert.rejects(
+          proveQualifiedStateQuiescence({ baseDir, adapter }),
+          blocked("writer-active"),
+        );
+      } finally {
+        await writer.close();
+      }
+      assert.equal(
+        await NodeFSP.readFile(NodePath.join(baseDir, "userdata", "settings.json"), "utf8"),
+        "unchanged settings",
+      );
+    });
+  },
+);
+
+it("answers readiness from the descriptor scan only when no root helper is installed", async () => {
+  await fixture(async (baseDir, procRoot) => {
+    const database = NodePath.join(baseDir, "userdata", "statev2.sqlite");
+    const stat = await NodeFSP.stat(database, { bigint: true });
+    const input = {
+      uid: (await NodeFSP.stat(baseDir)).uid,
+      files: [{ path: database, device: stat.dev, inode: stat.ino }],
+      allowedProcessIds: [123],
+    };
+    const fallback: QualifiedQuiescenceAdapter = {
+      scan: async (scan) => [{ pid: 999, path: scan.files[0]!.path }],
+    };
+    assert.deepEqual(
+      await linuxReadinessQualifiedQuiescenceAdapter({
+        helperPath: NodePath.join(baseDir, "absent", "helper"),
+        procRoot,
+        fallback,
+      }).scan(input),
+      [{ pid: 999, path: database }],
+    );
+    // An installed helper the service user could replace blocks instead of falling back.
+    await NodeAssert.rejects(
+      linuxReadinessQualifiedQuiescenceAdapter({
+        helperPath: NodePath.join(procRoot, "123", "status"),
+        procRoot,
+        fallback,
+      }).scan(input),
+      blocked("unavailable"),
+    );
+  });
+});
+
+it("gates Install admission on a readiness proof with the captured writer allowed", async () => {
+  await fixture(async (baseDir) => {
+    const observed: number[][] = [];
+    const adapter: QualifiedQuiescenceAdapter = {
+      scan: async () => [],
+      assertReadinessObservable: async (input) => {
+        observed.push([...input.allowedProcessIds]);
+        assert.deepEqual(
+          input.files.map((file) => NodePath.basename(file.path)),
+          ["statev2.sqlite", "settings.json"],
+        );
+        throw new QualifiedQuiescenceError("unavailable");
+      },
+    };
+    await NodeAssert.rejects(
+      assertQualifiedReadinessObservable({ baseDir, allowedProcessIds: [123], adapter }),
+      blocked("unavailable"),
+    );
+    assert.deepEqual(observed, [[123]]);
+    await assertQualifiedReadinessObservable({
+      baseDir: NodePath.join(baseDir, "absent"),
+      allowedProcessIds: [123],
+      adapter: { scan: async () => [] },
+    });
+    await NodeAssert.rejects(
+      assertQualifiedReadinessObservable({
+        baseDir,
+        allowedProcessIds: [123],
         adapter: nativeQualifiedQuiescenceAdapter("unsupported"),
       }),
       blocked("unavailable"),

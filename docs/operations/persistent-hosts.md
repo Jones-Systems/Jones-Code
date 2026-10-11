@@ -316,6 +316,46 @@ remote self-update refuse the default upstream origin. An explicitly configured
 Jones provenance; prefer local staging. Cached reuse without matching provenance
 is refused. A client update offer is not a verified Jones release.
 
+Before a trial, during restart recovery and before rollback, a qualified Linux
+launcher proves that nothing holds the selected state inodes open for writing.
+It takes kernel read leases on the exact inodes without privileges, so SSH
+sessions, the user manager and other processes whose descriptors the service
+user cannot read do not block the proof; any write-open holder does. The proof
+runs a fixed program under `/usr/bin/perl`, which is essential on Debian and
+Ubuntu. If perl or lease support is missing, the launcher reports `unavailable`
+and retains the previous binary/state pair.
+
+The readiness commit must allow exactly the captured trial writer, which a lease
+cannot express. Linux reads that evidence through the root-owned writer observer
+[`qualifiedWriterObserver.pl`](../../apps/server/src/jones/cloud/qualifiedWriterObserver.pl).
+It reports only the matching file index, PID, process birth and access kind for
+the eight fixed state files, and never excludes a process. The launcher excludes
+only its captured trial by PID and birth while that child remains unreaped. If
+the observer is not installed, or the service runs with `NoNewPrivileges=yes`
+where sudo cannot elevate, the launcher falls back to the same-user descriptor
+scan. That scan fails closed on non-dumpable processes, which always exist under
+the systemd user manager. Install admission runs the readiness observation with
+the requesting server as the allowed writer. It refuses with
+`writer-proof-<reason>` before accepting, taking a recovery generation or stopping
+the server.
+
+Installing the observer is a separate, per-host approved root operation. Use the
+helper bytes from the exact source commit of the adopted launcher. Install them
+as `/usr/local/libexec/jones-code/jones-qualified-writer-observer` in a root-owned
+directory, owned by root and not group- or other-writable. Grant the service user
+one exact command with `visudo -c` validation:
+
+```text
+SERVICE_USER ALL=(root) NOPASSWD: /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME
+```
+
+Read back the file hash, owner, mode and sudoers syntax. As the service user, a
+smoke run of `sudo -n` with that exact command prints the protocol header,
+`file` lines and `complete`. The launcher refuses a helper path another user
+could replace; with the file present, a sudo refusal blocks instead of falling
+back. Source changes reach a host only through an adopted qualified launcher
+artifact.
+
 Inspect first after an interrupted setup or pairing operation:
 
 ```sh
