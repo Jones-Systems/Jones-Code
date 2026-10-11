@@ -9,8 +9,17 @@ import packageJson from "../../../package.json" with { type: "json" };
 import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
 import { readQualifiedBackupReceipt, type QualifiedBackupAdapter } from "./qualifiedBackup.ts";
 import type { QualifiedQuiescenceAdapter } from "./qualifiedQuiescence.ts";
-import { QUALIFIED_STARTUP_STATE_FILES } from "./qualifiedQuiescence.ts";
-import { archiveUpdateOperation, reserveUpdateOperation } from "../updates/launcherOperation.ts";
+import {
+  linuxNativeQualifiedQuiescenceAdapter,
+  QUALIFIED_STARTUP_STATE_FILES,
+  QualifiedQuiescenceError,
+} from "./qualifiedQuiescence.ts";
+import {
+  archiveUpdateOperation,
+  readOperationReservation,
+  reconcileUpdateOperation,
+  reserveUpdateOperation,
+} from "../updates/launcherOperation.ts";
 import {
   currentQualifiedRuntimeBinding,
   qualifiedPayloadDigest,
@@ -45,9 +54,11 @@ async function runScenario(
     readonly productionMain?: boolean;
     readonly startupGateProtocol?: 1 | "missing";
     readonly operationFailure?: "archive" | "reserve";
+    readonly afterOperationReserve?: () => void;
     readonly retryWithDifferentOperation?: boolean;
     readonly delayedGracefulClose?: boolean;
     readonly retirementRace?: "accept-first" | "retire-first";
+    readonly now?: () => number;
   } = {},
 ) {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
@@ -161,7 +172,7 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
     });
   }});
   process.send({type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle,
-    ...(${JSON.stringify(options.operationFailure !== undefined)} ? {operationId:"12345678-1234-4234-8234-123456789abc"} : {})});
+    ...(${JSON.stringify(options.operationFailure !== undefined || options.afterOperationReserve !== undefined)} ? {operationId:"12345678-1234-4234-8234-123456789abc"} : {})});
   setInterval(() => {}, 1000);
 } else {
   writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "restart-context.json"))}, JSON.stringify(context));
@@ -224,7 +235,7 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
       quiescenceAdapter,
       ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
       ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
-      ...(options.operationFailure === undefined
+      ...(options.operationFailure === undefined && options.afterOperationReserve === undefined
         ? {}
         : {
             updateOperationIO: {
@@ -234,16 +245,17 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
                       throw Object.assign(new Error("fixture archive EIO"), { code: "EIO" });
                     }
                   : archiveUpdateOperation,
-              reserve:
-                options.operationFailure === "reserve"
-                  ? async (...args: Parameters<typeof reserveUpdateOperation>) => {
-                      // A receipt can exist even though its final durability step failed.
-                      await reserveUpdateOperation(...args);
-                      throw Object.assign(new Error("fixture reserve fsync EIO"), { code: "EIO" });
-                    }
-                  : reserveUpdateOperation,
+              reserve: async (...args: Parameters<typeof reserveUpdateOperation>) => {
+                await reserveUpdateOperation(...args);
+                options.afterOperationReserve?.();
+                if (options.operationFailure === "reserve") {
+                  // A receipt can exist even though its final durability step failed.
+                  throw Object.assign(new Error("fixture reserve fsync EIO"), { code: "EIO" });
+                }
+              },
             },
           }),
+      ...(options.now === undefined ? {} : { now: options.now }),
     });
     onLauncher?.(launcher);
     // Captured children exit or are reaped before the launcher settles; cleanup never polls by process name.
@@ -708,6 +720,208 @@ it("retains the active pointer and unchanged state when an unknown same-home wri
       assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
     },
     { scan: async ({ files }) => [{ pid: 999, path: files[0]!.path }] },
+  );
+});
+
+it("refuses Install admission when its readiness writer proof cannot complete", async () => {
+  const admissions: number[][] = [];
+  let scans = 0;
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update, undefined);
+      assert.equal(state.activeVersion, baseline);
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+      );
+      assert.match(rejected.reason, /^writer-proof-unavailable:/);
+      // The active child never saw acceptance, and no stop or trial proof ran.
+      await NodeAssert.rejects(
+        NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+      );
+      // Only the requesting active child was offered as the captured writer.
+      assert.equal(admissions.length, 1);
+      assert.equal(admissions[0]!.length, 1);
+      assert.equal(scans, 0);
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    },
+    {
+      scan: async () => {
+        scans++;
+        return [];
+      },
+      assertReadinessObservable: async ({ allowedProcessIds }) => {
+        admissions.push([...allowedProcessIds]);
+        throw new QualifiedQuiescenceError("unavailable");
+      },
+    },
+  );
+});
+
+it.each([
+  // The fixed lease program's EINVAL exit: leases unsupported or disabled.
+  ["unsupported", "#!/bin/sh\nexit 4\n", 0xef53n],
+  // A complete result with every selected file busy (EAGAIN). Linux returns
+  // that for a conflicting open before checking fs.leases-enable, and NFS
+  // returns it without a delegation, so it never demonstrates support.
+  [
+    "all-busy",
+    '#!/bin/sh\ni=0\nwhile [ "$i" -lt "$4" ]; do echo "busy $i"; i=$((i + 1)); done\necho complete\n',
+    0xef53n,
+  ],
+  // NFS: the program would report the database busy and a granted lease, but
+  // a delegation-backed grant is not a generic local proof.
+  ["nfs", "#!/bin/sh\nprintf 'busy 0\\ncomplete\\n'\n", 0x6969n],
+] as const)(
+  "refuses Install before acceptance or stop when %s leases show no granted proof",
+  async (_, program, filesystem) => {
+    const programs = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-lease-program-"));
+    try {
+      // Stands in for the fixed lease program while the readiness observer passes.
+      const leaseProgram = NodePath.join(programs, "lease-program");
+      await NodeFSP.writeFile(leaseProgram, program, { mode: 0o755 });
+      let readinessScans = 0;
+      await runScenario(
+        "commit",
+        async (base) => {
+          const state = await readServiceState(
+            NodePath.join(base, "runtime", "service-state.json"),
+          );
+          assert.equal(state.update, undefined);
+          assert.equal(state.activeVersion, baseline);
+          const rejected = JSON.parse(
+            await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+          );
+          assert.match(rejected.reason, /^writer-proof-unavailable:/);
+          await NodeAssert.rejects(
+            NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+          );
+          await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
+          assert.equal(readinessScans, 0);
+          assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+        },
+        linuxNativeQualifiedQuiescenceAdapter({
+          leases: { perl: leaseProgram },
+          filesystemType: async () => filesystem,
+          readiness: {
+            helperPath: NodePath.join(programs, "absent", "helper"),
+            fallback: {
+              scan: async () => {
+                readinessScans++;
+                return [];
+              },
+            },
+          },
+        }),
+      );
+    } finally {
+      await NodeFSP.rm(programs, { recursive: true, force: true });
+    }
+  },
+);
+
+it("does not accept an Install whose admission outlasted the server's exchange", async () => {
+  let clock = 0;
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update, undefined);
+      assert.equal(state.activeVersion, baseline);
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+      );
+      assert.match(rejected.reason, /^request-expired:/);
+      await NodeAssert.rejects(
+        NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+      );
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    },
+    {
+      scan: async () => [],
+      // A slow but successful observation, measured on the injected clock.
+      assertReadinessObservable: async () => {
+        clock += 60_000;
+      },
+    },
+    undefined,
+    { now: () => clock },
+  );
+});
+
+it("preserves the active child and reservation when receipt preparation expires the exchange", async () => {
+  let clock = 0;
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.activeVersion, baseline);
+      assert.equal(state.update, undefined);
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+      );
+      const operationId = "12345678-1234-4234-8234-123456789abc";
+      assert.match(rejected.reason, /^request-expired:/);
+      assert.equal(rejected.operationId, operationId);
+      const reservation = await readOperationReservation(base, operationId);
+      assert.equal(reservation?.binding.currentVersion, baseline);
+      assert.equal(reservation?.binding.targetVersion, target);
+      assert.equal(reservation?.binding.expectedInstalledSource, "c".repeat(40));
+      assert.equal(
+        (await reconcileUpdateOperation(base, operationId, state.update)).state,
+        "blocked",
+      );
+      const survived = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "old-child-survived.json"), "utf8"),
+      );
+      assert.equal(survived.context.childVersion, baseline);
+      await NodeAssert.rejects(
+        NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+      );
+      assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    },
+    { scan: async () => [] },
+    undefined,
+    {
+      now: () => clock,
+      afterOperationReserve: () => {
+        clock += 60_000;
+      },
+    },
+  );
+});
+
+it("rolls back instead of committing a pointer after the prepared exchange expired", async () => {
+  let clock = 0;
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.activeVersion, baseline);
+      assert.equal(state.update?.status, "rolled-back");
+      assert.equal(
+        state.update?.status === "pending" ? undefined : state.update?.reason,
+        "prepared-exchange-expired",
+      );
+      assert.equal(state.update?.startupReceipt, undefined);
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+      await NodeAssert.rejects(
+        NodeFSP.access(
+          NodePath.join(base, "runtime", "db-backup", state.update!.id, "resume-dispatched.json"),
+        ),
+      );
+    },
+    {
+      // The readiness proof with the trial allowed is slow but succeeds.
+      scan: async ({ allowedProcessIds }) => {
+        if (allowedProcessIds.length > 0) clock += 60_000;
+        return [];
+      },
+    },
+    undefined,
+    { now: () => clock },
   );
 });
 

@@ -92,9 +92,17 @@ export const layer = Layer.effect(
     const runtimeReceipt = isPreviewRuntime(version)
       ? yield* Effect.tryPromise(() =>
           readQualifiedRuntimeReceipt(config.baseDir, version, { platform, architecture }),
-        ).pipe(Effect.match({ onFailure: () => undefined, onSuccess: (receipt) => receipt }))
+        ).pipe(Effect.catch(() => Effect.succeed(undefined)))
       : undefined;
-    const nativeReceipt = runtimeReceipt !== undefined;
+    const nativeReceipt = runtimeReceipt?.version === version;
+    const installedSource =
+      !nativeReceipt || runtimeReceipt === undefined
+        ? undefined
+        : {
+            repository: runtimeReceipt.repository,
+            sha: runtimeReceipt.sourceSha,
+            tree: runtimeReceipt.sourceTree,
+          };
     const unsupportedOperations = {
       retireStagedOperation: () =>
         Effect.succeed({
@@ -432,7 +440,7 @@ export const layer = Layer.effect(
           : { phase: "blocked" as const, message: restoreFailure }),
         ...(environmentId === undefined ? {} : { environmentId }),
         currentVersion: version,
-        ...(runtimeReceipt === undefined ? {} : { installedSource: runtimeReceipt.sourceSha }),
+        ...(installedSource === undefined ? {} : { installedSource }),
         ...(launcher.qualifiedUpdateMigrationPlan === undefined
           ? {}
           : { migrationPlan: launcher.qualifiedUpdateMigrationPlan }),
