@@ -30,6 +30,9 @@ import {
   withOwnedScratch,
   fixtureProxy,
   scenarioSteps,
+  indexedDbBrowserProof,
+  waitInactive,
+  openRpc,
 } from "./install-preview-qualification.mjs";
 
 const source = NodePath.resolve(
@@ -72,6 +75,535 @@ NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
     /Missing visible text/,
   );
 });
+
+function shellSubscriptionFixture() {
+  let onItem;
+  let resolveExit, rejectExit;
+  let interrupts = 0;
+  let settled = false;
+  const result = new Promise((resolve, reject) => {
+    resolveExit = resolve;
+    rejectExit = reject;
+  });
+  return {
+    rpc: {
+      call(tag, payload, receive) {
+        NodeAssert.equal(tag, "orchestration.subscribeShell");
+        NodeAssert.deepEqual(payload, {});
+        NodeAssert.equal(onItem, undefined);
+        onItem = receive;
+        return {
+          result,
+          interrupt: () => {
+            if (!settled) interrupts += 1;
+          },
+        };
+      },
+    },
+    emit: (item) => onItem(item),
+    snapshot: (...threads) =>
+      onItem({ kind: "snapshot", snapshot: { threads, archivedThreads: [] } }),
+    update: (thread) => onItem({ kind: "thread.updated", thread }),
+    fail: (error) => {
+      settled = true;
+      rejectExit(error);
+    },
+    end: () => {
+      settled = true;
+      resolveExit();
+    },
+    acknowledgeInterrupt: () => {
+      NodeAssert.equal(interrupts, 1);
+      settled = true;
+      rejectExit(
+        Object.assign(new Error("Native RPC interrupted"), { nativeRpcInterrupted: true }),
+      );
+    },
+    get interrupts() {
+      return interrupts;
+    },
+  };
+}
+
+NodeTest.test(
+  "initial idle shell waits for native interrupt completion before release",
+  async () => {
+    const fixture = shellSubscriptionFixture();
+    let completed = false;
+    const waiting = waitInactive(fixture.rpc, "owned-thread").then((value) => {
+      completed = true;
+      return value;
+    });
+    fixture.snapshot({ id: "owned-thread", activeRunId: null });
+    await Promise.resolve();
+    NodeAssert.equal(fixture.interrupts, 1);
+    NodeAssert.equal(completed, false);
+    fixture.acknowledgeInterrupt();
+    NodeAssert.deepEqual(await waiting, { thread: { id: "owned-thread", activeRunId: null } });
+  },
+);
+
+NodeTest.test(
+  "shell inactivity ignores unrelated updates and observes the matching active-to-idle transition",
+  async () => {
+    const fixture = shellSubscriptionFixture();
+    const waiting = waitInactive(fixture.rpc, "owned-thread");
+    fixture.snapshot(
+      { id: "other", activeRunId: null },
+      { id: "owned-thread", activeRunId: "run:active" },
+    );
+    fixture.update({ id: "other", activeRunId: null });
+    fixture.emit({ kind: "synchronized" });
+    await Promise.resolve();
+    NodeAssert.equal(fixture.interrupts, 0);
+    fixture.update({ id: "owned-thread", activeRunId: null });
+    await Promise.resolve();
+    fixture.acknowledgeInterrupt();
+    NodeAssert.equal((await waiting).thread.activeRunId, null);
+  },
+);
+
+NodeTest.test(
+  "missing, inherited and invalid activeRunId never count as native inactivity",
+  async () => {
+    for (const thread of [
+      { id: "owned-thread" },
+      Object.assign(Object.create({ activeRunId: null }), { id: "owned-thread" }),
+      { id: "owned-thread", activeRunId: "" },
+      { id: "owned-thread", activeRunId: 0 },
+    ]) {
+      const fixture = shellSubscriptionFixture();
+      const rejected = NodeAssert.rejects(
+        waitInactive(fixture.rpc, "owned-thread"),
+        /missing a valid activeRunId/,
+      );
+      fixture.snapshot(thread);
+      await Promise.resolve();
+      fixture.acknowledgeInterrupt();
+      await rejected;
+    }
+  },
+);
+
+NodeTest.test(
+  "native shell failure, deadline and cancellation settle without another subscription",
+  async () => {
+    for (const reason of [
+      "Native RPC socket closed",
+      "Native RPC timed out: orchestration.subscribeShell",
+      "Owned qualification cancelled",
+    ]) {
+      const fixture = shellSubscriptionFixture();
+      const original = new Error(reason);
+      const rejected = NodeAssert.rejects(
+        waitInactive(fixture.rpc, "owned-thread"),
+        (error) => error === original,
+      );
+      fixture.snapshot({ id: "owned-thread", activeRunId: "run:active" });
+      fixture.fail(original);
+      await rejected;
+      NodeAssert.equal(fixture.interrupts, 0);
+    }
+    const fixture = shellSubscriptionFixture();
+    const rejected = NodeAssert.rejects(
+      waitInactive(fixture.rpc, "owned-thread"),
+      /ended before inactivity/,
+    );
+    fixture.end();
+    await rejected;
+    NodeAssert.equal(fixture.interrupts, 0);
+  },
+);
+
+NodeTest.test(
+  "native subscription cleanup failures cannot produce successful inactivity or replace a prior error",
+  async () => {
+    for (const malformed of [false, true]) {
+      const fixture = shellSubscriptionFixture();
+      const cleanup = new Error("Native finalizer failed");
+      const rejected = NodeAssert.rejects(waitInactive(fixture.rpc, "owned-thread"), (error) => {
+        if (malformed) {
+          NodeAssert.ok(error instanceof AggregateError);
+          NodeAssert.match(error.errors[0].message, /missing a valid activeRunId/);
+          NodeAssert.equal(error.errors[1], cleanup);
+        } else NodeAssert.equal(error, cleanup);
+        return true;
+      });
+      fixture.snapshot(
+        malformed ? { id: "owned-thread" } : { id: "owned-thread", activeRunId: null },
+      );
+      await Promise.resolve();
+      NodeAssert.equal(fixture.interrupts, 1);
+      fixture.fail(cleanup);
+      await rejected;
+    }
+  },
+);
+
+NodeTest.test(
+  "RPC interruption classification uses actual encoded Exit reasons and drains the request",
+  async (t) => {
+    for (const cause of [
+      [{ _tag: "Interrupt", fiberId: null }],
+      [
+        { _tag: "Interrupt", fiberId: 1 },
+        { _tag: "Die", defect: "failed cleanup" },
+      ],
+      [],
+    ]) {
+      const sent = [];
+      let socket;
+      const mock = t.mock.method(globalThis, "WebSocket", function () {
+        socket = new EventTarget();
+        socket.send = (value) => sent.push(JSON.parse(value));
+        socket.close = () => socket.dispatchEvent(new Event("close"));
+        queueMicrotask(() => socket.dispatchEvent(new Event("open")));
+        return socket;
+      });
+      let rpc;
+      try {
+        rpc = await openRpc("ws://owned-fixture.invalid", new AbortController().signal);
+        const subscription = rpc.call("orchestration.subscribeShell", {}, () => {});
+        const requestId = sent[0].id;
+        const rejected = NodeAssert.rejects(subscription.result, (error) => {
+          NodeAssert.equal(error.nativeRpcInterrupted, cause.length === 1);
+          return true;
+        });
+        subscription.interrupt();
+        NodeAssert.deepEqual(sent[1], { _tag: "Interrupt", requestId });
+        socket.dispatchEvent(
+          new MessageEvent("message", {
+            data: JSON.stringify({
+              _tag: "Exit",
+              requestId,
+              exit: { _tag: "Failure", cause },
+            }),
+          }),
+        );
+        await rejected;
+        subscription.interrupt();
+        NodeAssert.equal(sent.length, 2);
+      } finally {
+        await rpc?.close();
+        mock.mock.restore();
+      }
+    }
+  },
+);
+
+// A deterministic IDB event model checks the emitted expression's guards and cleanup;
+// only the hosted native Preview scenario establishes actual browser compatibility.
+function indexedDbExpressionFixture() {
+  const runtimeName = "t3code:connection-runtime";
+  const hintName = "t3code:connection-compatibility-hints";
+  const catalog = JSON.stringify({
+    disabledEnvironmentIds: ["synthetic-remote"],
+    credentials: ["DO-NOT-PUBLISH"],
+  });
+  const data = new Map([
+    [runtimeName, { version: 4, stores: new Map([["catalog", catalog]]) }],
+    [
+      hintName,
+      {
+        version: 1,
+        stores: new Map([
+          [
+            "compatibility-hints",
+            [
+              {
+                environmentId: "synthetic-remote",
+                routeBinding: "DO-NOT-PUBLISH",
+                kind: "outdated-update",
+              },
+            ],
+          ],
+        ]),
+      },
+    ],
+  ]);
+  const handles = new Set();
+  const events = [];
+  const window = new EventTarget();
+  let deferOpen = false;
+  let failUpgrade = false;
+  let failDelete = false;
+  const pending = [];
+  const database = (name, entry) => {
+    const handle = {
+      name,
+      version: entry.version,
+      closed: false,
+      objectStoreNames: { contains: (store) => entry.stores.has(store) },
+      createObjectStore: (store) => entry.stores.set(store, []),
+      close() {
+        handle.closed = true;
+      },
+      transaction(store) {
+        if (handle.closed) throw Object.assign(new Error("closed"), { name: "InvalidStateError" });
+        if (!entry.stores.has(store)) throw new Error("missing store");
+        const tx = {
+          objectStore: () => ({
+            get: () => request(),
+            getAll: () => request(),
+          }),
+        };
+        const request = () => {
+          const result = { result: entry.stores.get(store) };
+          queueMicrotask(() => tx.oncomplete?.());
+          return result;
+        };
+        return tx;
+      },
+    };
+    handles.add(handle);
+    return handle;
+  };
+  const indexedDB = {
+    databases: async () => [...data].map(([name, entry]) => ({ name, version: entry.version })),
+    open(name, version) {
+      events.push(["open", name, version]);
+      const request = {};
+      const complete = () => {
+        if (failUpgrade && version === 5) {
+          request.error = { name: "AbortError" };
+          request.onerror?.();
+          return;
+        }
+        const previous = data.get(name);
+        const oldVersion = previous?.version ?? 0;
+        if (oldVersion > version) {
+          request.error = { name: "VersionError" };
+          request.onerror?.();
+          return;
+        }
+        if (oldVersion < version) {
+          for (const handle of handles)
+            if (handle.name === name && !handle.closed) handle.onversionchange?.();
+          if ([...handles].some((handle) => handle.name === name && !handle.closed)) {
+            request.onblocked?.();
+            return;
+          }
+        }
+        const entry = previous ?? { version, stores: new Map() };
+        const result = database(name, entry);
+        request.result = result;
+        let aborted = false;
+        request.transaction = {
+          abort: () => {
+            aborted = true;
+          },
+        };
+        if (oldVersion < version) request.onupgradeneeded?.({ oldVersion });
+        if (aborted) {
+          result.close();
+          request.error = { name: "AbortError" };
+          request.onerror?.();
+          return;
+        }
+        entry.version = version;
+        result.version = version;
+        data.set(name, entry);
+        request.onsuccess?.();
+      };
+      if (deferOpen) pending.push(complete);
+      else queueMicrotask(complete);
+      return request;
+    },
+    deleteDatabase(name) {
+      events.push(["delete", name]);
+      const request = {};
+      queueMicrotask(() => {
+        if (failDelete) {
+          request.onerror?.();
+          return;
+        }
+        if ([...handles].some((handle) => handle.name === name && !handle.closed))
+          request.onblocked?.();
+        else {
+          data.delete(name);
+          request.onsuccess?.();
+        }
+      });
+      return request;
+    },
+  };
+  const run = new Function(
+    "window",
+    "indexedDB",
+    "crypto",
+    "phase",
+    `return (${indexedDbBrowserProof.toString()})(phase)`,
+  );
+  return {
+    run: (phase) => run(window, indexedDB, { randomUUID: () => "owned-negative" }, phase),
+    data,
+    handles,
+    events,
+    window,
+    runtimeName,
+    hintName,
+    failUpgrade: () => {
+      failUpgrade = true;
+    },
+    failDelete: () => {
+      failDelete = true;
+    },
+    delayOpen: () => {
+      deferOpen = true;
+    },
+    releaseOpen: () => {
+      deferOpen = false;
+      for (const complete of pending.splice(0)) complete();
+    },
+  };
+}
+
+NodeTest.test(
+  "native IDB scenario holds v4 across real pairing and check, then releases before hard reload",
+  () => {
+    const steps = scenarioSteps("http://fixture.invalid/pair#token=DO-NOT-PUBLISH");
+    const at = (label) => steps.findIndex((step) => step.label === label);
+    const hold = at("Hold the actual legacy version-4 catalog connection");
+    const checkpoint = at("Capture the saved Off catalog before the authenticated check");
+    const verify = at("New hint persistence preserves the held legacy catalog");
+    const close = at("Release the legacy catalog handle before hard reload");
+    NodeAssert.ok(at("Native IndexedDB detects the legacy upgrade hazard") < hold);
+    NodeAssert.ok(hold < steps.findIndex((step) => step.action === "type"));
+    NodeAssert.ok(checkpoint > steps.findIndex((step) => step.text === "Source matches this app."));
+    NodeAssert.ok(
+      checkpoint <
+        steps.findIndex((step) => step.locator === 'button:enabled:text-is("Check for builds")'),
+    );
+    NodeAssert.ok(
+      verify > steps.findIndex((step) => step.text === "Synthetic authenticated check completed."),
+    );
+    NodeAssert.ok(close > verify);
+    NodeAssert.deepEqual(steps[close + 1], { action: "navigate", path: "/settings/connections" });
+    NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 2);
+    NodeAssert.ok(steps.some((step) => step.name === "saved-connection-reload"));
+  },
+);
+
+NodeTest.test(
+  "IDB proof emits only booleans and detects a real-shaped version upgrade with exact cleanup",
+  async () => {
+    const fixture = indexedDbExpressionFixture();
+    NodeAssert.deepEqual(await fixture.run("upgrade-control"), {
+      versionChangeObserved: true,
+      legacyConnectionClosed: true,
+      oldVersionRejected: true,
+      temporaryDatabaseRemoved: true,
+    });
+    NodeAssert.deepEqual(
+      fixture.events.filter(([action]) => action === "delete"),
+      [["delete", "jones-install-preview-idb-owned-negative"]],
+    );
+    NodeAssert.deepEqual(await fixture.run("hold"), { legacyV4Held: true });
+    await fixture.run("checkpoint");
+    const result = await fixture.run("verify");
+    NodeAssert.ok(Object.values(result).every((value) => value === true));
+    NodeAssert.ok(!JSON.stringify(result).includes("DO-NOT-PUBLISH"));
+    NodeAssert.deepEqual(await fixture.run("close"), { legacyProofReleased: true });
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+    NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
+  },
+);
+
+NodeTest.test(
+  "IDB proof rejects closed or mutated catalogs and missing, wrong-version or empty hint stores",
+  async () => {
+    for (const fault of ["closed", "changed", "absent", "version", "empty", "wrong-environment"]) {
+      const fixture = indexedDbExpressionFixture();
+      await fixture.run("hold");
+      await fixture.run("checkpoint");
+      if (fault === "closed") fixture.window.__jonesLegacyIndexedDbProof.database.onversionchange();
+      if (fault === "changed")
+        fixture.data.get(fixture.runtimeName).stores.set("catalog", "changed");
+      if (fault === "absent") fixture.data.delete(fixture.hintName);
+      if (fault === "version") fixture.data.get(fixture.hintName).version = 2;
+      if (fault === "empty")
+        fixture.data.get(fixture.hintName).stores.set("compatibility-hints", []);
+      if (fault === "wrong-environment")
+        fixture.data
+          .get(fixture.hintName)
+          .stores.set("compatibility-hints", [
+            { environmentId: "other", kind: "outdated-update", routeBinding: "other" },
+          ]);
+      try {
+        if (fault === "closed") await NodeAssert.rejects(fixture.run("verify"));
+        else {
+          const result = await fixture.run("verify");
+          NodeAssert.ok(Object.values(result).includes(false), fault);
+          if (fault === "absent" || fault === "version") {
+            NodeAssert.ok(
+              !fixture.events.some(
+                ([action, name]) => action === "open" && name === fixture.hintName,
+              ),
+            );
+          }
+        }
+      } finally {
+        fixture.window.dispatchEvent(new Event("pagehide"));
+      }
+      NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+      NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
+    }
+  },
+);
+
+NodeTest.test(
+  "IDB pagehide closes late handles and a colliding control name is never deleted",
+  async () => {
+    const fixture = indexedDbExpressionFixture();
+    fixture.delayOpen();
+    const held = fixture.run("hold");
+    await Promise.resolve();
+    fixture.window.dispatchEvent(new Event("pagehide"));
+    fixture.releaseOpen();
+    await NodeAssert.rejects(held, /proof ended/);
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+    NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
+    const collision = indexedDbExpressionFixture();
+    collision.data.set("jones-install-preview-idb-owned-negative", {
+      version: 4,
+      stores: new Map(),
+    });
+    await NodeAssert.rejects(collision.run("upgrade-control"), /already exists/);
+    NodeAssert.ok(collision.data.has("jones-install-preview-idb-owned-negative"));
+    NodeAssert.ok(!collision.events.some(([action]) => action === "delete"));
+  },
+);
+
+NodeTest.test(
+  "IDB control failure closes handles, preserves its error, and reports deletion failure",
+  async () => {
+    for (const cleanupFails of [false, true]) {
+      const fixture = indexedDbExpressionFixture();
+      fixture.failUpgrade();
+      if (cleanupFails) fixture.failDelete();
+      await NodeAssert.rejects(fixture.run("upgrade-control"), (error) => {
+        if (cleanupFails) {
+          NodeAssert.ok(error instanceof AggregateError);
+          NodeAssert.equal(error.errors[0].name, "AbortError");
+          NodeAssert.match(error.errors[1].message, /cleanup failed/);
+        } else NodeAssert.equal(error.name, "AbortError");
+        return true;
+      });
+      NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+      NodeAssert.equal(fixture.data.has("jones-install-preview-idb-owned-negative"), cleanupFails);
+      NodeAssert.ok(fixture.data.has(fixture.runtimeName));
+      NodeAssert.ok(fixture.data.has(fixture.hintName));
+    }
+    for (const version of [null, 5]) {
+      const fixture = indexedDbExpressionFixture();
+      if (version === null) fixture.data.delete(fixture.runtimeName);
+      else fixture.data.get(fixture.runtimeName).version = version;
+      await NodeAssert.rejects(fixture.run("hold"), /must remain version 4/);
+      NodeAssert.equal(fixture.events.length, 0);
+      NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
+    }
+  },
+);
 
 NodeTest.test(
   "saved-host assertion requires the Base UI switch to be present, off and ARIA-disabled",
@@ -209,6 +741,31 @@ NodeTest.test(
       }),
       "transport authorization refused",
     );
+  },
+);
+
+NodeTest.test(
+  "inactive-provider qualification accepts only the exact native refusal text with isError",
+  async () => {
+    const text = "The calling provider no longer owns an active thread run.";
+    const native = { content: [{ type: "text", text }], isError: true };
+    NodeAssert.equal(
+      await assertInactiveDenied({ callTool: async () => native }),
+      "tool authorization refused",
+    );
+    for (const response of [
+      { ...native, isError: false },
+      { content: native.content },
+      { ...native, content: [{ type: "text", text: text + " Retry later." }] },
+      { ...native, content: [{ type: "text", text: "Reported: " + text }] },
+      { ...native, content: [{ type: "text", text: text.slice(0, -1) }] },
+      { ...native, content: [{ type: "text", text: text.toLowerCase() }] },
+      { ...native, content: [{ type: "text", text: "The browser no longer owns an active tab." }] },
+      { ...native, content: [{ type: "image", text }] },
+      { isError: true, message: text },
+    ]) {
+      await NodeAssert.rejects(assertInactiveDenied({ callTool: async () => response }));
+    }
   },
 );
 

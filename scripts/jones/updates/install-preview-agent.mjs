@@ -477,7 +477,16 @@ export async function assertInactiveDenied(client) {
     return "transport authorization refused";
   }
   NodeAssert.equal(stopped?.isError, true, "An inactive provider must not act as a live caller");
-  NodeAssert.match(JSON.stringify(stopped), /\bparent_not_active\b|invalid_mcp_credential/i);
+  // threadAccess.assertLiveCaller supplies this message for parent_not_active.
+  const nativeRefusalText =
+    Array.isArray(stopped.content) &&
+    stopped.content.some(
+      (part) =>
+        part?.type === "text" &&
+        part.text === "The calling provider no longer owns an active thread run.",
+    );
+  if (!nativeRefusalText)
+    NodeAssert.match(JSON.stringify(stopped), /\bparent_not_active\b|invalid_mcp_credential/i);
   return "tool authorization refused";
 }
 
