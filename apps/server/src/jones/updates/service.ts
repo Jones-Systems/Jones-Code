@@ -6,6 +6,7 @@ import {
   type JonesUpdateState,
   type JonesUpdateDownloadInput,
   type JonesUpdateInstallInput,
+  type JonesNativePrepareInput,
   ServerSelfUpdateError,
 } from "@t3tools/contracts";
 
@@ -52,7 +53,7 @@ export class JonesUpdates extends Context.Service<
     readonly fleetOperationsSupported: boolean;
     readonly state: (after?: number) => Effect.Effect<JonesUpdateState | null>;
     readonly check: Effect.Effect<JonesUpdateState>;
-    readonly prepareNative: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
+    readonly prepareNative: (input: JonesNativePrepareInput) => Effect.Effect<JonesUpdateState>;
     readonly download: (input: JonesUpdateDownloadInput) => Effect.Effect<JonesUpdateState>;
     readonly install: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
     readonly stageExact: (input: {
@@ -229,10 +230,11 @@ export const layer = Layer.effect(
             Effect.succeed(blocked("The desktop host could not accept this request.")),
           ),
         );
-      const prepareNative = (input: JonesUpdateInstallInput) =>
+      const prepareNative = (input: JonesNativePrepareInput) =>
         Effect.gen(function* () {
           if (
             !/^[a-f0-9]{64}$/.test(input.stagedHandle) ||
+            !/^[a-f0-9]{64}$/.test(input.transactionId) ||
             state.stagedHandle !== input.stagedHandle ||
             !state.capability.install ||
             state.environmentId !== input.environmentId ||
@@ -248,6 +250,7 @@ export const layer = Layer.effect(
                 environmentId: input.environmentId,
                 version: input.currentVersion,
                 handle: input.stagedHandle,
+                transactionId: input.transactionId,
                 prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
                 clear: (ids) =>
                   run(
