@@ -778,8 +778,52 @@ else:
                     if item is not None: assert restored[name]['content'] == item['content']
                 assert active.observe_members(advanced) == before_restore
             retained_journal = (tx.root / 'journal.json').read_bytes()
-            before_drift = active.observe_members()
-            retained_advanced = active.observe_members(advanced)
+            def owned_snapshot():
+                remaining = {'entries': 128, 'bytes': 1024 * 1024}
+                def identity(info):
+                    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+                            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                def visit(parent, name, depth):
+                    remaining['entries'] -= 1
+                    assert remaining['entries'] >= 0 and depth <= 8
+                    info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode):
+                        content = os.readlink(name, dir_fd=parent)
+                        assert len(content) <= 4096
+                        assert identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == identity(info)
+                        return (identity(info), content)
+                    assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+                    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                    if stat.S_ISDIR(info.st_mode): flags |= os.O_DIRECTORY
+                    fd = os.open(name, flags, dir_fd=parent)
+                    try:
+                        assert identity(os.fstat(fd)) == identity(info)
+                        if stat.S_ISDIR(info.st_mode):
+                            names = []
+                            with os.scandir(fd) as entries:
+                                for entry in entries:
+                                    names.append(entry.name)
+                                    assert len(names) <= remaining['entries']
+                            content = tuple((child, visit(fd, child, depth + 1)) for child in sorted(names))
+                        else:
+                            chunks = []
+                            while True:
+                                chunk = os.read(fd, min(65536, remaining['bytes'] + 1))
+                                if not chunk: break
+                                remaining['bytes'] -= len(chunk)
+                                assert remaining['bytes'] >= 0
+                                chunks.append(chunk)
+                            content = b''.join(chunks)
+                        assert identity(os.fstat(fd)) == identity(info)
+                        assert identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == identity(info)
+                        return (identity(info), content)
+                    finally: os.close(fd)
+                fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    assert (os.fstat(fd).st_dev, os.fstat(fd).st_ino) == root_proof
+                    return tuple((name, visit(fd, name, 0)) for name in ('state', 'profile', 'generation'))
+                finally: os.close(fd)
+            before_drift = owned_snapshot()
             original_active_identity = active.root_identity
             def changed_advanced(path):
                 result = original_active_identity(path)
@@ -790,8 +834,7 @@ else:
             active.root_identity = changed_advanced
             expect_refusal(active.reconcile_restore)
             expect_refusal(active.reconcile_restore)
-            assert active.observe_members() == before_drift
-            assert active.observe_members(advanced) == retained_advanced
+            assert owned_snapshot() == before_drift
             assert (tx.root / 'journal.json').read_bytes() == retained_journal
             assert all((tx.root / name).read_bytes() == raw for name, raw in retained.items())
             assert (owner.directory / 'journal.json').read_bytes() == retained_owner
