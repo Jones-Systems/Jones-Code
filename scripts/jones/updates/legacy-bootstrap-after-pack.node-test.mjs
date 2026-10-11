@@ -6,8 +6,14 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
-import legacyBootstrapAfterPack from "./legacy-bootstrap-after-pack.mjs";
-import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
+import legacyBootstrapAfterPack, {
+  copyJonesPreparationRuntime,
+  verifyJonesPreparationRuntime,
+} from "./legacy-bootstrap-after-pack.mjs";
+import {
+  createJonesLegacyBootstrapBundle,
+  JONES_PREPARATION_SOURCE_INPUTS,
+} from "./legacy-bootstrap-bundle.ts";
 import { FixtureOwnership } from "./native-startup-fixture.mjs";
 
 const posix = {
@@ -71,6 +77,61 @@ async function fixture(test, withNative = false) {
       maintenanceSource: jonesLegacyMaintenanceSource,
     });
   }
+  let runtime;
+  let runtimeBytes;
+  if (withNative === "preparation") {
+    // Inert bytes and synthetic proof data exercise packaging, never worker qualification.
+    runtimeBytes = Buffer.alloc(5 * 1024 * 1024 + 17, 0x5a);
+    const hash = (value) => NodeCrypto.createHash("sha256").update(value).digest("hex");
+    const config =
+      '{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n';
+    const preparation = {
+      schema: 1,
+      protocol: 1,
+      provenanceSha256: "1".repeat(64),
+      sourceInputHashes: Object.fromEntries(
+        JONES_PREPARATION_SOURCE_INPUTS.map((name) => [name, "2".repeat(64)]),
+      ),
+      entry: { sha256: "3".repeat(64), size: 4096 },
+      seaConfig: { sha256: hash(config), size: Buffer.byteLength(config) },
+      executable: {
+        name: "jones-offline-preparation",
+        sha256: hash(runtimeBytes),
+        size: runtimeBytes.length,
+      },
+      node: {
+        version: "26.8.2",
+        platform: "darwin",
+        architecture: "arm64",
+        archiveSha256: "4".repeat(64),
+        archiveBytes: 4096,
+        checksumsSha256: "5".repeat(64),
+        runtimeSha256: "6".repeat(64),
+        runtimeBytes: runtimeBytes.length,
+      },
+      sqlite: { version: "3.50.4", sourceId: "2025-07-30 19:33:53 " + "7".repeat(64) },
+    };
+    files = files.map((file) =>
+      file.relativePath.endsWith("BUNDLE.json")
+        ? {
+            ...file,
+            content: JSON.stringify({ ...JSON.parse(file.content), schema: 3, preparation }) + "\n",
+          }
+        : file,
+    );
+    runtime = {
+      kind: "streamed-file",
+      relativePath: "jones-bootstrap/jones-offline-preparation",
+      mode: 0o500,
+      sha256: hash(runtimeBytes),
+      size: runtimeBytes.length,
+      maxBytes: 256 * 1024 * 1024,
+    };
+    await NodeFSP.writeFile(NodePath.join(resources, runtime.relativePath), runtimeBytes, {
+      flag: "wx",
+      mode: 0o555,
+    });
+  }
   const nativeProof = withNative ? files[2].content : undefined;
   for (const file of files) {
     const filename = NodePath.join(resources, file.relativePath);
@@ -86,7 +147,7 @@ async function fixture(test, withNative = false) {
       appInfo: { version: metadata.version, productFilename: "Jones Code" },
     },
   };
-  return { root, resources, files, context, nativeProof };
+  return { root, resources, files, context, nativeProof, runtime, runtimeBytes };
 }
 
 async function modes(resources, files) {
@@ -97,6 +158,110 @@ async function modes(resources, files) {
     ),
   );
 }
+
+NodeTest.test(
+  "v3 validates all six resources before restoring modes and streams a runtime larger than the C limit",
+  posix,
+  async (test) => {
+    const { resources, files, context, nativeProof, runtime } = await fixture(test, "preparation");
+    const filename = NodePath.join(resources, runtime.relativePath);
+    const bad = JSON.parse(nativeProof);
+    bad.preparation.executable.sha256 = "0".repeat(64);
+    await NodeAssert.rejects(legacyBootstrapAfterPack(context, JSON.stringify(bad) + "\n"));
+    NodeAssert.deepEqual(await modes(resources, files), [0o555, 0o555, 0o444, 0o555, 0o555]);
+    NodeAssert.equal((await NodeFSP.stat(filename)).mode & 0o7777, 0o555);
+    await legacyBootstrapAfterPack(context, nativeProof);
+    NodeAssert.deepEqual(await modes(resources, files), [0o500, 0o500, 0o400, 0o500, 0o500]);
+    await verifyJonesPreparationRuntime(filename, runtime);
+    await legacyBootstrapAfterPack(context, nativeProof);
+    await NodeAssert.rejects(legacyBootstrapAfterPack(context, nativeProof.trimEnd()));
+  },
+);
+
+NodeTest.test(
+  "v3 refuses changed signed bytes, wrong size, invalid modes and unknown entries",
+  posix,
+  async (test) => {
+    const { resources, context, nativeProof, runtime } = await fixture(test, "preparation");
+    const filename = NodePath.join(resources, runtime.relativePath);
+    await legacyBootstrapAfterPack(context, nativeProof);
+    await NodeAssert.rejects(
+      verifyJonesPreparationRuntime(filename, { ...runtime, size: runtime.size - 1 }),
+    );
+    await NodeAssert.rejects(
+      verifyJonesPreparationRuntime(filename, { ...runtime, size: 256 * 1024 * 1024 + 1 }),
+    );
+    await NodeFSP.chmod(filename, 0o700);
+    await NodeAssert.rejects(legacyBootstrapAfterPack(context, nativeProof));
+    await NodeFSP.chmod(filename, 0o500);
+    await NodeFSP.writeFile(NodePath.join(resources, "jones-bootstrap/extra"), "retained", {
+      flag: "wx",
+    });
+    await NodeAssert.rejects(legacyBootstrapAfterPack(context, nativeProof));
+    await NodeFSP.unlink(NodePath.join(resources, "jones-bootstrap/extra"));
+    await NodeFSP.chmod(filename, 0o600);
+    const handle = await NodeFSP.open(filename, "r+");
+    try {
+      await handle.write(Buffer.from([0]), 0, 1, 0);
+    } finally {
+      await handle.close();
+    }
+    await NodeFSP.chmod(filename, 0o500);
+    await NodeAssert.rejects(legacyBootstrapAfterPack(context, nativeProof), /digest/);
+  },
+);
+
+NodeTest.test(
+  "runtime copy is exclusive, byte exact, and retains failed copies",
+  posix,
+  async (test) => {
+    const { root, resources, context, nativeProof, runtime, runtimeBytes } = await fixture(
+      test,
+      "preparation",
+    );
+    await legacyBootstrapAfterPack(context, nativeProof);
+    const source = NodePath.join(resources, runtime.relativePath);
+    const parent = NodePath.join(root, "copy/jones-bootstrap");
+    await NodeFSP.mkdir(parent, { recursive: true, mode: 0o700 });
+    const destination = NodePath.join(parent, "jones-offline-preparation");
+    await copyJonesPreparationRuntime(source, destination, runtime);
+    NodeAssert.deepEqual(await NodeFSP.readFile(destination), runtimeBytes);
+    NodeAssert.equal((await NodeFSP.stat(destination)).mode & 0o7777, 0o500);
+    await NodeAssert.rejects(copyJonesPreparationRuntime(source, destination, runtime), {
+      code: "EEXIST",
+    });
+    const failedParent = NodePath.join(root, "failed/jones-bootstrap");
+    await NodeFSP.mkdir(failedParent, { recursive: true, mode: 0o700 });
+    const failed = NodePath.join(failedParent, "jones-offline-preparation");
+    await NodeAssert.rejects(
+      copyJonesPreparationRuntime(source, failed, { ...runtime, sha256: "0".repeat(64) }),
+      /digest/,
+    );
+    NodeAssert.equal((await NodeFSP.stat(failed)).size, runtime.size);
+  },
+);
+
+NodeTest.test("runtime verification refuses links and aliased parents", posix, async (test) => {
+  const { root, resources, context, nativeProof, runtime } = await fixture(test, "preparation");
+  await legacyBootstrapAfterPack(context, nativeProof);
+  const source = NodePath.join(resources, runtime.relativePath);
+  const alias = NodePath.join(root, "runtime-link");
+  await NodeFSP.symlink(source, alias);
+  await NodeAssert.rejects(verifyJonesPreparationRuntime(alias, runtime));
+  await NodeFSP.unlink(alias);
+  await NodeFSP.link(source, alias);
+  await NodeAssert.rejects(verifyJonesPreparationRuntime(source, runtime));
+  await NodeFSP.unlink(alias);
+  const directoryAlias = NodePath.join(root, "directory-link");
+  await NodeFSP.symlink(NodePath.dirname(source), directoryAlias);
+  await NodeAssert.rejects(
+    verifyJonesPreparationRuntime(
+      NodePath.join(directoryAlias, NodePath.basename(source)),
+      runtime,
+    ),
+    /parent/,
+  );
+});
 
 NodeTest.test(
   "afterPack restores copied modes without changing source bytes and is repeatable",

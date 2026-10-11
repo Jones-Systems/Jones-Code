@@ -1,6 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
+import {
+  createJonesLegacyBootstrapPreparationBundle,
+  JONES_PREPARATION_SOURCE_INPUTS,
+  type JonesPreparationArtifactEvidence,
+} from "./jones/updates/legacy-bootstrap-bundle.ts";
 
 import { createPackageWithOptions, extractFile, statFile } from "@electron/asar";
 
@@ -81,6 +86,7 @@ import {
   stageBrowserSecret,
   validateWindowsPackagedPayload,
   verifyJonesPackagedMacResources,
+  requireJonesPreparationProducer,
   WindowsPrimaryNativeProbeError,
   WindowsDesktopBuildPrerequisitesMissingError,
   WindowsPackagedPayloadValidationError,
@@ -959,9 +965,106 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           bootstrapBundle: [{ ...nativeFile, content: changed }],
         }).pipe(Effect.flip);
         assert.include(architectureFailure.output, "native architecture");
+        // Synthetic runtime bytes prove final package binding, not worker execution.
+        const runtimeBytes = Buffer.from("inert preparation package fixture\n");
+        const digest = (value: string | Uint8Array) =>
+          NodeCrypto.createHash("sha256").update(value).digest("hex");
+        const seaConfig =
+          '{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n';
+        const identity = {
+          repository: source.repository,
+          sourceSha: source.sha,
+          sourceTree: source.tree,
+          version,
+        };
+        const evidence: JonesPreparationArtifactEvidence = {
+          schema: 1,
+          observation: "complete",
+          classification: "cold-preparation-worker",
+          source: identity,
+          preparation: {
+            schema: 1,
+            protocol: 1,
+            provenanceSha256: "1".repeat(64),
+            sourceInputHashes: Object.fromEntries(
+              JONES_PREPARATION_SOURCE_INPUTS.map((name) => [name, "2".repeat(64)]),
+            ) as JonesPreparationArtifactEvidence["preparation"]["sourceInputHashes"],
+            entry: { sha256: "3".repeat(64), size: 4096 },
+            seaConfig: { sha256: digest(seaConfig), size: Buffer.byteLength(seaConfig) },
+            executable: {
+              name: "jones-offline-preparation",
+              sha256: digest(runtimeBytes),
+              size: runtimeBytes.length,
+            },
+            node: {
+              version: "26.8.2",
+              platform: "darwin",
+              architecture: "arm64",
+              archiveSha256: "4".repeat(64),
+              archiveBytes: 4096,
+              checksumsSha256: "5".repeat(64),
+              runtimeSha256: "6".repeat(64),
+              runtimeBytes: 4096,
+            },
+            sqlite: { version: "3.50.4", sourceId: "2025-07-30 19:33:53 " + "7".repeat(64) },
+          },
+        };
+        const preparation = createJonesLegacyBootstrapPreparationBundle(
+          identity,
+          {
+            identityNative: native,
+            identityNativeSourceSha256: "8".repeat(64),
+            maintenanceSource: "# inert maintenance\n",
+          },
+          evidence,
+        );
+        for (const member of preparation.files) {
+          const filename = path.join(resources, member.relativePath);
+          if (yield* fs.exists(filename)) yield* fs.chmod(filename, 0o600);
+          yield* fs.writeFile(
+            filename,
+            typeof member.content === "string" ? Buffer.from(member.content) : member.content,
+          );
+          yield* fs.chmod(filename, member.mode);
+        }
+        const runtimePath = path.join(resources, preparation.runtime.relativePath);
+        yield* fs.writeFile(runtimePath, runtimeBytes);
+        yield* fs.chmod(runtimePath, 0o500);
+        const preparationInput = {
+          ...input,
+          bootstrapBundle: preparation.files,
+          bootstrapRuntime: preparation.runtime,
+        };
+        // The native resource verifier deliberately requires canonical parent paths.
+        const canonicalResources = yield* fs.realPath(resources);
+        const canonicalInput = {
+          ...preparationInput,
+          packagedAsar: path.join(canonicalResources, "app.asar"),
+        };
+        yield* verifyJonesPackagedMacResources(canonicalInput);
+        const missingDescriptor = yield* verifyJonesPackagedMacResources({
+          ...input,
+          bootstrapBundle: preparation.files,
+        }).pipe(Effect.flip);
+        assert.include(missingDescriptor.output, "Missing independent runtime descriptor");
+        yield* fs.chmod(runtimePath, 0o600);
+        yield* fs.writeFile(runtimePath, Buffer.alloc(runtimeBytes.length));
+        yield* fs.chmod(runtimePath, 0o500);
+        const alteredRuntime = yield* verifyJonesPackagedMacResources(canonicalInput).pipe(
+          Effect.flip,
+        );
+        assert.include(alteredRuntime.output, "Preparation runtime digest differs");
       }),
     ),
   );
+
+  it("refuses an explicit preparation bundle request while the producer remains held", () => {
+    assert.doesNotThrow(() => requireJonesPreparationProducer(false));
+    assert.throws(
+      () => requireJonesPreparationProducer(true),
+      /qualified complete preparation producer/,
+    );
+  });
 
   it("excludes foreign node-pty prebuilds from macOS and Linux packages", () => {
     assert.deepStrictEqual(MAC_FILE_EXCLUSIONS, [

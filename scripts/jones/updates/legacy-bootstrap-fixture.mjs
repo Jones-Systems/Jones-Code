@@ -3,10 +3,12 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
 import {
-  createJonesLegacyBootstrapBundle,
-  readJonesLegacyBootstrapNativeProof,
-} from "./legacy-bootstrap-bundle.ts";
+  readPackagedBootstrapProof,
+  reconstructBootstrapResources,
+  verifyJonesPreparationRuntime,
+} from "./legacy-bootstrap-after-pack.mjs";
 import { cleanLaunchEnvironment, runOwnedChild, snapshotTree } from "./native-startup-fixture.mjs";
 import { protectedMutations } from "./native-startup-observer.mjs";
 
@@ -49,10 +51,11 @@ export async function verifyPackagedBootstrap(
     version: metadata.version,
   };
   let files;
+  let runtime;
   if (nativeProofRaw === undefined) {
     files = createJonesLegacyBootstrapBundle(identity);
   } else {
-    const proof = readJonesLegacyBootstrapNativeProof(nativeProofRaw, identity);
+    const proof = readPackagedBootstrapProof(nativeProofRaw, identity);
     const nativeSource = await NodeFSP.readFile(
       new URL(
         "../../../apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
@@ -92,11 +95,17 @@ export async function verifyPackagedBootstrap(
     NodeAssert.equal(sha256(binary), proof.identityNativeSha256);
     const { jonesLegacyMaintenanceSource } =
       await import("../../../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts");
-    files = createJonesLegacyBootstrapBundle(identity, {
-      identityNative: binary,
-      identityNativeSourceSha256: sha256(nativeSource),
-      maintenanceSource: jonesLegacyMaintenanceSource,
-    });
+    const reconstructed = reconstructBootstrapResources(
+      identity,
+      {
+        identityNative: binary,
+        identityNativeSourceSha256: sha256(nativeSource),
+        maintenanceSource: jonesLegacyMaintenanceSource,
+      },
+      proof,
+    );
+    files = reconstructed.files;
+    runtime = reconstructed.runtime;
     NodeAssert.deepEqual(JSON.parse(files[2].content), proof);
   }
   const directory = NodePath.join(app, "Contents/Resources/jones-bootstrap");
@@ -109,9 +118,17 @@ export async function verifyPackagedBootstrap(
       NodeAssert.equal(await NodeFSP.readFile(filename, "utf8"), file.content);
     else NodeAssert.deepEqual(await NodeFSP.readFile(filename), Buffer.from(file.content));
   }
+  if (runtime)
+    await verifyJonesPreparationRuntime(
+      NodePath.join(app, "Contents/Resources", runtime.relativePath),
+      runtime,
+    );
   NodeAssert.deepEqual(
     (await NodeFSP.readdir(directory)).sort(),
-    files.map((file) => NodePath.basename(file.relativePath)).sort(),
+    [
+      ...files.map((file) => NodePath.basename(file.relativePath)),
+      ...(runtime ? [NodePath.basename(runtime.relativePath)] : []),
+    ].sort(),
   );
   return JSON.parse(files.find((file) => file.relativePath.endsWith("BUNDLE.json")).content);
 }

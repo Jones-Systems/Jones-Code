@@ -4,7 +4,10 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
-import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
+import {
+  createJonesLegacyBootstrapBundle,
+  JONES_PREPARATION_SOURCE_INPUTS,
+} from "./legacy-bootstrap-bundle.ts";
 import {
   assertBootstrapResponse,
   assertInventoryResponse,
@@ -24,7 +27,9 @@ const metadata = {
 
 async function withBundle(body, withNative = false) {
   const ownership = new FixtureOwnership();
-  const root = await ownership.temporary(NodePath.join(NodeOS.tmpdir(), "jones-bootstrap-bundle-"));
+  const root = await NodeFSP.realpath(
+    await ownership.temporary(NodePath.join(NodeOS.tmpdir(), "jones-bootstrap-bundle-")),
+  );
   try {
     const app = NodePath.join(root, "Candidate.app");
     const resources = NodePath.join(app, "Contents/Resources");
@@ -82,6 +87,72 @@ NodeTest.test("packaged bootstrap proves actual source bytes, provenance, and mo
     NodeAssert.match(bundle.executorSha256, /^[a-f0-9]{64}$/);
   });
 });
+
+NodeTest.test(
+  "v3 packaged qualification binds the sixth resource to independent canonical proof",
+  async () => {
+    await withBundle(async ({ app, resources, nativeProof }) => {
+      const hash = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+      // Synthetic packaging data are not a qualified preparation worker.
+      const bytes = Buffer.from("inert preparation resource; never execute\n");
+      const config =
+        '{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n';
+      const proof = {
+        ...JSON.parse(nativeProof),
+        schema: 3,
+        preparation: {
+          schema: 1,
+          protocol: 1,
+          provenanceSha256: "1".repeat(64),
+          sourceInputHashes: Object.fromEntries(
+            JONES_PREPARATION_SOURCE_INPUTS.map((name) => [name, "2".repeat(64)]),
+          ),
+          entry: { sha256: "3".repeat(64), size: 4096 },
+          seaConfig: { sha256: hash(config), size: Buffer.byteLength(config) },
+          executable: {
+            name: "jones-offline-preparation",
+            sha256: hash(bytes),
+            size: bytes.length,
+          },
+          node: {
+            version: "26.8.2",
+            platform: "darwin",
+            architecture: "arm64",
+            archiveSha256: "4".repeat(64),
+            archiveBytes: 4096,
+            checksumsSha256: "5".repeat(64),
+            runtimeSha256: "6".repeat(64),
+            runtimeBytes: 4096,
+          },
+          sqlite: { version: "3.50.4", sourceId: "2025-07-30 19:33:53 " + "7".repeat(64) },
+        },
+      };
+      const raw = JSON.stringify(proof) + "\n";
+      const manifest = NodePath.join(resources, "jones-bootstrap/BUNDLE.json");
+      await NodeFSP.chmod(manifest, 0o600);
+      await NodeFSP.writeFile(manifest, raw);
+      await NodeFSP.chmod(manifest, 0o400);
+      const filename = NodePath.join(resources, "jones-bootstrap/jones-offline-preparation");
+      await NodeFSP.writeFile(filename, bytes, { flag: "wx", mode: 0o500 });
+      NodeAssert.equal((await verifyPackagedBootstrap(app, metadata, raw)).schema, 3);
+      await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata));
+      await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata, raw.trimEnd()));
+      await NodeAssert.rejects(
+        verifyPackagedBootstrap(
+          app,
+          { ...metadata, jonesSource: { ...metadata.jonesSource, sha: "c".repeat(40) } },
+          raw,
+        ),
+      );
+      await NodeFSP.chmod(filename, 0o600);
+      await NodeFSP.writeFile(filename, Buffer.alloc(bytes.length, 0));
+      await NodeFSP.chmod(filename, 0o500);
+      await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata, raw), /digest/);
+      await NodeFSP.unlink(filename);
+      await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata, raw), { code: "ENOENT" });
+    }, true);
+  },
+);
 
 NodeTest.test("missing bundle and substituted executor cannot qualify", async () => {
   await withBundle(async ({ app, resources }) => {

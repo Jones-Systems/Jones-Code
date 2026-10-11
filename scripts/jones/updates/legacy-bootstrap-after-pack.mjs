@@ -7,6 +7,9 @@ import * as NodePath from "node:path";
 import {
   createJonesLegacyBootstrapBundle,
   readJonesLegacyBootstrapNativeProof,
+  readJonesLegacyBootstrapPreparationProof,
+  createJonesLegacyBootstrapPreparationBundle,
+  JONES_PREPARATION_BOUNDS,
 } from "./legacy-bootstrap-bundle.ts";
 
 const v1ResourceNames = [
@@ -39,6 +42,219 @@ async function verifyBytes(handle, content, name) {
     extra.bytesRead === 0 && actual.equals(expected),
     `Bootstrap source bytes changed: ${name}`,
   );
+}
+
+export function readPackagedBootstrapProof(raw, bundleIdentity) {
+  NodeAssert.ok(
+    typeof raw === "string" && Buffer.byteLength(raw) <= JONES_PREPARATION_BOUNDS.proofBytes,
+  );
+  return JSON.parse(raw).schema === 3
+    ? readJonesLegacyBootstrapPreparationProof(raw, bundleIdentity)
+    : readJonesLegacyBootstrapNativeProof(raw, bundleIdentity);
+}
+
+// Reconstruct expected resource bytes from the independently retained build proof.
+// Decoding or reconstruction does not qualify a preparation producer.
+export function reconstructBootstrapResources(bundleIdentity, native, proof) {
+  if (proof.schema !== 3)
+    return { files: createJonesLegacyBootstrapBundle(bundleIdentity, native), runtime: undefined };
+  return createJonesLegacyBootstrapPreparationBundle(bundleIdentity, native, {
+    schema: 1,
+    observation: "complete",
+    classification: "cold-preparation-worker",
+    source: bundleIdentity,
+    preparation: proof.preparation,
+  });
+}
+
+async function captureParents(filename) {
+  NodeAssert.ok(NodePath.isAbsolute(filename) && NodePath.normalize(filename) === filename);
+  const owner = BigInt(NodeOS.userInfo().uid);
+  const chain = [];
+  let directory = NodePath.parse(filename).root;
+  const parts = NodePath.dirname(filename)
+    .slice(directory.length)
+    .split(NodePath.sep)
+    .filter(Boolean);
+  for (const part of [undefined, ...parts]) {
+    if (part !== undefined) directory = NodePath.join(directory, part);
+    const info = await NodeFSP.lstat(directory, { bigint: true });
+    const systemSticky = info.uid === 0n && (info.mode & 0o1000n) !== 0n;
+    NodeAssert.ok(
+      info.isDirectory() &&
+        (info.uid === owner || info.uid === 0n) &&
+        ((info.mode & 0o022n) === 0n || systemSticky),
+      "Runtime parent is aliased or unowned.",
+    );
+    chain.push({ directory, info });
+  }
+  NodeAssert.equal(chain.at(-1).info.uid, owner);
+  return async () => {
+    for (const { directory, info } of chain) {
+      const current = await NodeFSP.lstat(directory, { bigint: true });
+      NodeAssert.deepEqual(
+        [current.dev, current.ino, current.uid, current.mode],
+        [info.dev, info.ino, info.uid, info.mode],
+        "Runtime parent identity changed.",
+      );
+    }
+  };
+}
+
+function validateRuntimeDescriptor(runtime) {
+  NodeAssert.equal(runtime.kind, "streamed-file");
+  NodeAssert.equal(runtime.relativePath, "jones-bootstrap/jones-offline-preparation");
+  NodeAssert.equal(runtime.mode, 0o500);
+  NodeAssert.equal(runtime.maxBytes, JONES_PREPARATION_BOUNDS.runtimeBytes);
+  NodeAssert.ok(
+    Number.isSafeInteger(runtime.size) && runtime.size > 0 && runtime.size <= runtime.maxBytes,
+  );
+  NodeAssert.ok(
+    typeof runtime.sha256 === "string" &&
+      runtime.sha256.length === 64 &&
+      /^[a-f0-9]{64}$/.test(runtime.sha256),
+  );
+}
+
+async function streamRuntime(handle, runtime, destination) {
+  const digest = NodeCrypto.createHash("sha256");
+  const buffer = Buffer.alloc(1024 * 1024);
+  let offset = 0;
+  while (offset < runtime.size) {
+    const { bytesRead } = await handle.read(
+      buffer,
+      0,
+      Math.min(buffer.length, runtime.size - offset),
+      offset,
+    );
+    NodeAssert.ok(bytesRead > 0, "Preparation runtime was truncated.");
+    digest.update(buffer.subarray(0, bytesRead));
+    if (destination) {
+      let written = 0;
+      while (written < bytesRead) {
+        const { bytesWritten } = await destination.write(
+          buffer,
+          written,
+          bytesRead - written,
+          offset + written,
+        );
+        NodeAssert.ok(bytesWritten > 0, "Preparation runtime copy stalled.");
+        written += bytesWritten;
+      }
+    }
+    offset += bytesRead;
+  }
+  NodeAssert.equal(
+    (await handle.read(buffer, 0, 1, offset)).bytesRead,
+    0,
+    "Preparation runtime grew.",
+  );
+  NodeAssert.equal(
+    digest.digest("hex"),
+    runtime.sha256,
+    "Preparation runtime digest differs from build proof.",
+  );
+}
+
+async function openRuntime(filename, runtime, copied = false) {
+  validateRuntimeDescriptor(runtime);
+  const verifyParents = await captureParents(filename);
+  const before = await NodeFSP.lstat(filename, { bigint: true });
+  NodeAssert.ok(
+    before.isFile() && before.uid === BigInt(NodeOS.userInfo().uid) && before.nlink === 1n,
+  );
+  NodeAssert.equal(before.size, BigInt(runtime.size));
+  NodeAssert.ok(
+    (before.mode & 0o7777n) === 0o500n || (copied && (before.mode & 0o7777n) === 0o555n),
+    "Preparation runtime mode differs.",
+  );
+  const handle = await NodeFSP.open(
+    filename,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
+  try {
+    unchanged(await handle.stat({ bigint: true }), before);
+    await verifyParents();
+  } catch (cause) {
+    try {
+      await handle.close();
+    } catch (close) {
+      throw new AggregateError([cause, close], "Runtime open and close failed.");
+    }
+    throw cause;
+  }
+  return { handle, before, verifyParents };
+}
+
+export async function verifyJonesPreparationRuntime(filename, runtime) {
+  const { handle, before, verifyParents } = await openRuntime(filename, runtime);
+  let failure;
+  try {
+    await streamRuntime(handle, runtime);
+    unchanged(await handle.stat({ bigint: true }), before);
+    unchanged(await NodeFSP.lstat(filename, { bigint: true }), before);
+    await verifyParents();
+  } catch (cause) {
+    failure = cause;
+  }
+  try {
+    await handle.close();
+  } catch (close) {
+    throw new AggregateError(
+      failure === undefined ? [close] : [failure, close],
+      "Runtime verification or close failed.",
+    );
+  }
+  if (failure !== undefined) throw failure;
+}
+
+// Partial or uncertain copies remain in the caller's owned stage for reconciliation.
+export async function copyJonesPreparationRuntime(source, destination, runtime) {
+  NodeAssert.equal(NodePath.basename(source), "jones-offline-preparation");
+  NodeAssert.equal(NodePath.basename(destination), "jones-offline-preparation");
+  NodeAssert.equal(NodePath.basename(NodePath.dirname(destination)), "jones-bootstrap");
+  const verifyDestinationParents = await captureParents(destination);
+  const { handle, before, verifyParents } = await openRuntime(source, runtime);
+  let output;
+  let failure;
+  try {
+    output = await NodeFSP.open(
+      destination,
+      NodeFS.constants.O_WRONLY |
+        NodeFS.constants.O_CREAT |
+        NodeFS.constants.O_EXCL |
+        NodeFS.constants.O_NOFOLLOW,
+      0o500,
+    );
+    const created = await output.stat({ bigint: true });
+    NodeAssert.ok(
+      created.isFile() && created.nlink === 1n && created.uid === BigInt(NodeOS.userInfo().uid),
+    );
+    await streamRuntime(handle, runtime, output);
+    unchanged(await handle.stat({ bigint: true }), before);
+    unchanged(await NodeFSP.lstat(source, { bigint: true }), before);
+    await verifyParents();
+    await verifyDestinationParents();
+    await output.chmod(0o500);
+    await output.sync();
+    const final = await output.stat({ bigint: true });
+    NodeAssert.deepEqual(
+      [final.dev, final.ino, final.uid, final.nlink],
+      [created.dev, created.ino, created.uid, created.nlink],
+    );
+    unchanged(await NodeFSP.lstat(destination, { bigint: true }), final);
+  } catch (cause) {
+    failure = cause;
+  }
+  const closed = await Promise.allSettled([handle.close(), ...(output ? [output.close()] : [])]);
+  const errors = closed.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (errors.length)
+    throw new AggregateError(
+      failure === undefined ? errors : [failure, ...errors],
+      "Runtime copy or close failed.",
+    );
+  if (failure !== undefined) throw failure;
+  await verifyJonesPreparationRuntime(destination, runtime);
 }
 
 // electron-builder 26.15.6 copies extraResources before afterPack and signs /
@@ -85,11 +301,16 @@ export default async function legacyBootstrapAfterPack(
   const nativeProof =
     nativeProofRaw === undefined
       ? undefined
-      : readJonesLegacyBootstrapNativeProof(nativeProofRaw, bundleIdentity);
+      : readPackagedBootstrapProof(nativeProofRaw, bundleIdentity);
   const resourceNames =
     nativeProof === undefined
       ? v1ResourceNames
-      : [...v1ResourceNames, "jones-bootstrap/maintenance.py", "jones-bootstrap/identity-native"];
+      : [
+          ...v1ResourceNames,
+          "jones-bootstrap/maintenance.py",
+          "jones-bootstrap/identity-native",
+          ...(nativeProof.schema === 3 ? ["jones-bootstrap/jones-offline-preparation"] : []),
+        ];
   const product = appInfo.productFilename;
   NodeAssert.equal(product, "Jones Code", "Bootstrap product filename is invalid.");
   const projectDir = context.packager.info.projectDir;
@@ -138,6 +359,7 @@ export default async function legacyBootstrapAfterPack(
   const resources = directories.at(-2);
   await verifyDirectories();
   let files;
+  let runtime;
   if (nativeProof === undefined) {
     files = createJonesLegacyBootstrapBundle(bundleIdentity);
   } else {
@@ -194,11 +416,17 @@ export default async function legacyBootstrapAfterPack(
     );
     const { jonesLegacyMaintenanceSource } =
       await import("../../../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts");
-    files = createJonesLegacyBootstrapBundle(bundleIdentity, {
-      identityNative: binary,
-      identityNativeSourceSha256: digest(nativeSource),
-      maintenanceSource: jonesLegacyMaintenanceSource,
-    });
+    const reconstructed = reconstructBootstrapResources(
+      bundleIdentity,
+      {
+        identityNative: binary,
+        identityNativeSourceSha256: digest(nativeSource),
+        maintenanceSource: jonesLegacyMaintenanceSource,
+      },
+      nativeProof,
+    );
+    files = reconstructed.files;
+    runtime = reconstructed.runtime;
     NodeAssert.deepEqual(
       JSON.parse(files[2].content),
       nativeProof,
@@ -206,12 +434,20 @@ export default async function legacyBootstrapAfterPack(
     );
   }
   NodeAssert.deepEqual(
-    files.map((file) => file.relativePath),
+    [...files.map((file) => file.relativePath), ...(runtime ? [runtime.relativePath] : [])],
     resourceNames,
   );
   const opened = [];
   let failure;
   try {
+    if (runtime) {
+      const filename = NodePath.join(resources, runtime.relativePath);
+      const record = await openRuntime(filename, runtime, true);
+      opened.push({ ...record, filename, file: runtime });
+      await streamRuntime(record.handle, runtime);
+      unchanged(await record.handle.stat({ bigint: true }), record.before);
+      await record.verifyParents();
+    }
     for (const file of files) {
       const filename = NodePath.join(resources, file.relativePath);
       const before = await NodeFSP.lstat(filename, { bigint: true });
@@ -259,7 +495,8 @@ export default async function legacyBootstrapAfterPack(
         "Bootstrap identity changed during chmod.",
       );
       NodeAssert.equal(Number(after.mode & 0o7777n), file.mode);
-      await verifyBytes(handle, file.content, file.relativePath);
+      if (file.kind === "streamed-file") await streamRuntime(handle, file);
+      else await verifyBytes(handle, file.content, file.relativePath);
       unchanged(await handle.stat({ bigint: true }), after);
       record.verified = after;
     }
@@ -268,6 +505,7 @@ export default async function legacyBootstrapAfterPack(
       unchanged(await handle.stat({ bigint: true }), verified);
       unchanged(await NodeFSP.lstat(filename, { bigint: true }), verified);
     }
+    for (const record of opened) if (record.verifyParents) await record.verifyParents();
   } catch (error) {
     failure = error;
   } finally {

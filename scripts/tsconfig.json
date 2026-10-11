@@ -12,6 +12,7 @@
     "../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
     "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
     "../apps/desktop/src/jones/updates/jonesColdPairSource.ts",
-    "../apps/desktop/src/jones/updates/jonesColdOwnerSource.ts"
+    "../apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
+    "jones/updates/legacy-bootstrap-after-pack.d.mts"
   ]
 }

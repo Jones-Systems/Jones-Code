@@ -52,7 +52,12 @@ import {
   readJonesLegacyBootstrapNativeProof,
   type JonesLegacyBootstrapNativeInput,
   type JonesLegacyBootstrapBundleFile,
+  type JonesLegacyBootstrapPreparationBundle,
 } from "./jones/updates/legacy-bootstrap-bundle.ts";
+import {
+  verifyJonesPreparationRuntime,
+  readPackagedBootstrapProof,
+} from "./jones/updates/legacy-bootstrap-after-pack.mjs";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
@@ -1120,6 +1125,7 @@ export const verifyJonesPackagedMacResources = Effect.fn("verifyJonesPackagedMac
     readonly version: string;
     readonly source: JonesBuildSource;
     readonly bootstrapBundle: ReadonlyArray<JonesLegacyBootstrapBundleFile<string | Uint8Array>>;
+    readonly bootstrapRuntime?: JonesLegacyBootstrapPreparationBundle["runtime"];
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1173,6 +1179,60 @@ export const verifyJonesPackagedMacResources = Effect.fn("verifyJonesPackagedMac
           try: () => verifyJonesLegacyIdentityMachO(content),
           catch: (cause) => failure("native architecture", file.relativePath, cause),
         });
+      }
+    }
+    if (input.bootstrapRuntime !== undefined) {
+      const runtime = input.bootstrapRuntime;
+      yield* Effect.tryPromise({
+        try: async () => {
+          const manifest = input.bootstrapBundle.find(
+            (file) => file.relativePath === "jones-bootstrap/BUNDLE.json",
+          );
+          if (manifest === undefined || typeof manifest.content !== "string")
+            throw new Error("Preparation resource requires the retained bundle proof.");
+          const proof = readPackagedBootstrapProof(manifest.content, {
+            repository: input.source.repository,
+            sourceSha: input.source.sha,
+            sourceTree: input.source.tree,
+            version: input.version,
+          });
+          if (
+            proof.schema !== 3 ||
+            proof.preparation.executable.sha256 !== runtime.sha256 ||
+            proof.preparation.executable.size !== runtime.size
+          )
+            throw new Error("Preparation runtime differs from the retained bundle proof.");
+          const resources = path.dirname(input.packagedAsar);
+          await verifyJonesPreparationRuntime(path.join(resources, runtime.relativePath), runtime);
+          const names = await NodeFSP.readdir(path.join(resources, "jones-bootstrap"));
+          const expected = [
+            ...input.bootstrapBundle.map((file) => path.basename(file.relativePath)),
+            path.basename(runtime.relativePath),
+          ];
+          names.sort();
+          expected.sort();
+          if (
+            names.length !== expected.length ||
+            names.some((name, index) => name !== expected[index])
+          )
+            throw new Error("Preparation resource inventory differs.");
+        },
+        catch: (cause) => failure("preparation runtime", runtime.relativePath, cause),
+      });
+    } else {
+      const manifest = input.bootstrapBundle.find(
+        (file) => file.relativePath === "jones-bootstrap/BUNDLE.json",
+      );
+      if (manifest && typeof manifest.content === "string") {
+        const value = yield* decodeJsonString(manifest.content).pipe(
+          Effect.mapError((cause) => failure("bundle JSON", manifest.relativePath, cause)),
+        );
+        if (typeof value === "object" && value !== null && "schema" in value && value.schema === 3)
+          return yield* failure(
+            "preparation runtime",
+            "jones-bootstrap/jones-offline-preparation",
+            "Missing independent runtime descriptor.",
+          );
       }
     }
   },
@@ -3577,9 +3637,25 @@ export const allocateDesktopStageRoot = Effect.fn("allocateDesktopStageRoot")(fu
   return yield* fs.realPath(allocatedRoot);
 });
 
+// No complete worker verifier exists yet. Neither a held artifact nor JSON evidence
+// supplied by a caller may substitute for that future in-memory producer capability.
+export function requireJonesPreparationProducer(requested: boolean): void {
+  if (requested)
+    throw new Error(
+      "BUNDLE3 requires a qualified complete preparation producer; the current producer is held.",
+    );
+}
+
 const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   options: ResolvedBuildOptions,
 ) {
+  const preparationRequested = yield* Config.Boolean("JONES_PACK_PREPARATION_BUNDLE").pipe(
+    Config.withDefault(false),
+  );
+  yield* Effect.try({
+    try: () => requireJonesPreparationProducer(preparationRequested),
+    catch: (cause) => new BundleNotSelfContainedError({ exitCode: -1, output: String(cause) }),
+  });
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;

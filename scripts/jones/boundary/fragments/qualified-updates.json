@@ -102,7 +102,8 @@
     "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts",
     "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
     "apps/server/src/jones/updates/offlinePreparationWorker.ts",
-    "apps/server/src/jones/updates/offlinePreparationWorker.test.ts"
+    "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+    "scripts/jones/updates/legacy-bootstrap-after-pack.d.mts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -356,6 +357,10 @@
     {
       "from": "apps/server/vite.config.ts",
       "to": "scripts/jones/updates/offline-preparation-build.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/updates/legacy-bootstrap-after-pack.mjs"
     }
   ]
 }
