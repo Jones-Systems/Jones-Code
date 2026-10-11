@@ -2,6 +2,7 @@ import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { RunId, ThreadId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import { threadShellFromProjection } from "../../orchestration-v2/ProjectionStore.ts";
 import { restartContinuationRun } from "../../orchestration-v2/RestartContinuation.ts";
 import { workModeCandidate, workModeCommand, workModeContext } from "../workMode/Policy.ts";
@@ -212,6 +213,8 @@ export function changesPlannedControl(
   continuationIds: ReadonlySet<string>,
 ): boolean {
   if (cosmeticCommands.has(receipt.command_type)) return false;
+  const acceptedAt =
+    receipt.accepted_at === undefined ? Option.none() : DateTime.make(receipt.accepted_at);
   // Only ProviderRuntimeRecoveryService emits this internal receipt. Its exact identity
   // binds the lifecycle trigger, captured thread, and committed acceptance timestamp.
   // The caller still checks every intervening user receipt and the current projection.
@@ -219,8 +222,8 @@ export function changesPlannedControl(
     receipt.command_type === "provider-runtime.reconcile" &&
     receipt.accepted_at !== undefined &&
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(receipt.accepted_at) &&
-    Number.isFinite(Date.parse(receipt.accepted_at)) &&
-    new Date(receipt.accepted_at).toISOString() === receipt.accepted_at &&
+    Option.isSome(acceptedAt) &&
+    DateTime.formatIso(acceptedAt.value) === receipt.accepted_at &&
     ["startup", "shutdown"].some(
       (trigger) =>
         receipt.command_id ===

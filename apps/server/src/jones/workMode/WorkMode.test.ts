@@ -217,9 +217,9 @@ const seed = Effect.gen(function* () {
   return value.thread.id;
 });
 
-function completeLatestRun(
+function completeLatestRun<E = never, R = never>(
   checkpoint = false,
-  beforeCheckpoint?: () => Effect.Effect<unknown, unknown>,
+  beforeCheckpoint?: () => Effect.Effect<unknown, E, R>,
 ) {
   return Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;

@@ -46,6 +46,18 @@ const decodeBinding = Schema.decodeUnknownSync(
   ),
 );
 const decodeSnapshot = Schema.decodeUnknownSync(Schema.fromJsonString(PlannedThreadSnapshot));
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+class PlannedContinuityBindingError extends Schema.TaggedError<PlannedContinuityBindingError>()(
+  "PlannedContinuityBindingError",
+  { reason: Schema.Literals(["operation-changed", "generation-mismatch"]) },
+) {
+  override get message(): string {
+    return this.reason === "operation-changed"
+      ? "Planned update operation binding changed."
+      : "Planned update outcome does not match the restored native generation.";
+  }
+}
 
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -208,19 +220,24 @@ export const make = Effect.gen(function* () {
           }
           yield* sql.withTransaction(
             Effect.gen(function* () {
+              const bindingJson = yield* encodeJson(input.binding);
               const prior = yield* sql<{
                 binding_json: string;
               }>`SELECT binding_json FROM jones_planned_update_continuity WHERE operation_id=${input.operationId}`;
               if (prior[0] !== undefined) {
-                if (prior[0].binding_json !== JSON.stringify(input.binding))
-                  return yield* Effect.fail(new Error("Planned update operation binding changed."));
+                if (prior[0].binding_json !== bindingJson)
+                  return yield* Effect.fail(
+                    new PlannedContinuityBindingError({ reason: "operation-changed" }),
+                  );
                 return;
               }
               yield* sql`INSERT INTO jones_planned_update_continuity(operation_id,binding_json)
-          VALUES(${input.operationId},${JSON.stringify(input.binding)})`;
-              for (const snapshot of snapshots)
+          VALUES(${input.operationId},${bindingJson})`;
+              for (const snapshot of snapshots) {
+                const snapshotJson = yield* encodeJson(snapshot);
                 yield* sql`INSERT INTO jones_planned_update_threads(operation_id,thread_id,snapshot_json)
-          VALUES(${input.operationId},${snapshot.threadId},${JSON.stringify(snapshot)})`;
+          VALUES(${input.operationId},${snapshot.threadId},${snapshotJson})`;
+              }
             }),
           );
         }),
@@ -248,7 +265,7 @@ export const make = Effect.gen(function* () {
             proof.current.activeSourceSha !== expectedSource
           )
             return yield* Effect.fail(
-              new Error("Planned update outcome does not match the restored native generation."),
+              new PlannedContinuityBindingError({ reason: "generation-mismatch" }),
             );
           const claimed = yield* sql`UPDATE jones_planned_update_continuity SET activated=1
         WHERE operation_id=${proof.operationId} AND activated=0 RETURNING operation_id`;

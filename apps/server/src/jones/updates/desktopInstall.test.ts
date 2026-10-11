@@ -94,7 +94,10 @@ it.effect("hands desktop installation to its controller before any continuation 
         update: () => Effect.die("Unexpected server update"),
         commitDesktopUpdate: () => Effect.die("Unexpected legacy desktop update"),
       }),
-      Layer.mock(Launcher.ServiceLauncherClient)({ managed: false }),
+      Layer.mock(Launcher.ServiceLauncherClient)({
+        managed: false,
+        requiresQualifiedTrialGate: false,
+      }),
       Layer.mock(Startup.ServerRuntimeStartup)({
         markRunningProviderSessionsForContinuation: Effect.die("Unexpected server preparation"),
         markOptedInProviderSessionsForContinuation: Effect.sync(() => {
