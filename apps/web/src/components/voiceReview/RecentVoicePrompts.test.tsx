@@ -7,6 +7,7 @@ import {
   threadRegistrySnapshotFixture,
   threadRegistryWorkstreamsFixture,
 } from "@t3tools/client-runtime/voice-review/fixtures";
+import type { VoiceReviewRecentEntry } from "@t3tools/contracts";
 import { RecentVoicePrompts, recentThread } from "./RecentVoicePrompts";
 
 describe("recent voice prompt interactions", () => {
@@ -23,7 +24,10 @@ describe("recent voice prompt interactions", () => {
     container.remove();
     vi.unstubAllGlobals();
   });
-  async function render(entries = voiceReviewRecentFixture.entries, correctAssociation = vi.fn()) {
+  async function render(
+    entries: readonly VoiceReviewRecentEntry[] = voiceReviewRecentFixture.entries,
+    correctAssociation = vi.fn(),
+  ) {
     await act(() =>
       root.render(
         <RecentVoicePrompts
@@ -43,6 +47,35 @@ describe("recent voice prompt interactions", () => {
     if (!found) throw new Error(`Missing button: ${text}`);
     return found;
   }
+  it("shows opaque remaining delivery identities without claiming native handoff", async () => {
+    await render([
+      {
+        ...voiceReviewRecentFixture.entries[0]!,
+        queue_delivery_links: {
+          status: "ready",
+          reason: null,
+          deliveries: [
+            {
+              delivery_id: "unconfirmed-sibling",
+              queue_request_id: "queue-request",
+              payload_sha256: "b".repeat(64),
+              destination: {
+                backend: "t3",
+                instance: "opaque-instance",
+                thread_id: "thread",
+                project_id: null,
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    const details = container.querySelector("article details")!;
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.textContent).toContain("unconfirmed-sibling");
+    expect(details.textContent).toContain("Instance: opaque-instance");
+    expect(details.textContent).toContain("do not prove native handoff");
+  });
   it("joins only the verified composite key and never a bare routing target", () => {
     const entry = voiceReviewRecentFixture.entries[0]!;
     const thread = threadRegistrySnapshotFixture.threads[0]!;
@@ -58,6 +91,27 @@ describe("recent voice prompt interactions", () => {
     ).toBeNull();
     expect(recentThread({ ...entry, thread_key: thread.thread_key }, [thread])).toBe(thread);
     expect(recentThread({ ...entry, thread_key: "unmapped" }, [thread])).toBeNull();
+  });
+  it("explains retained unlinked siblings even after all explicit links were matched", async () => {
+    await render([
+      {
+        ...voiceReviewRecentFixture.entries[0]!,
+        queue_delivery_links: {
+          status: "ready",
+          reason: null,
+          deliveries: [],
+          unlinked_delivery_count: 2,
+        },
+      },
+    ]);
+    const details = container.querySelector<HTMLDetailsElement>("article details")!;
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(details.textContent).toContain("Deliveries without queue links: 2.");
+    expect(details.textContent).toContain(
+      "Native handoff remains unconfirmed for these deliveries.",
+    );
+    expect(details.textContent).not.toContain("Queue request:");
   });
   it("shows literal prompt text immediately and discloses provenance without fabricating missing text", async () => {
     const retained = voiceReviewRecentFixture.entries[0]!;

@@ -145,6 +145,7 @@ export interface JonesDesktopUpdateOptions {
 export class JonesDesktopUpdateController {
   #state: DesktopUpdateState;
   #source: string | undefined;
+  #installedSource: JonesUpdateState["installedSource"];
   #candidate: JonesActionsCandidate | undefined;
   #staged: StagedMacApp | undefined;
   #busy: "check" | "download" | "install" | null = null;
@@ -310,6 +311,7 @@ export class JonesDesktopUpdateController {
       source: "jones-actions",
       channel: "jones-main",
       phase,
+      ...(this.#installedSource === undefined ? {} : { installedSource: this.#installedSource }),
       ...((phase === "preparing" || phase === "installing") && this.#staged !== undefined
         ? { updateId: this.#staged.handle }
         : journal === undefined
@@ -429,6 +431,7 @@ export class JonesDesktopUpdateController {
       ),
     );
     this.#source = metadata.jonesSource?.sha;
+    this.#installedSource = undefined;
     this.#terminalPhase = undefined;
     this.#activationMessage = undefined;
     this.#lastJournal = undefined;
@@ -470,6 +473,16 @@ export class JonesDesktopUpdateController {
         throw new Error("The native launcher does not bind the running app.");
       this.#bootstrap = active;
       this.#source = active.sourceSha;
+      if (
+        metadata.jonesSource !== undefined &&
+        /^[a-f0-9]{40}$/.test(active.sourceSha) &&
+        /^[a-f0-9]{40}$/.test(active.sourceTree)
+      )
+        this.#installedSource = {
+          repository: "Jones-Systems/Jones-Code",
+          sha: active.sourceSha,
+          tree: active.sourceTree,
+        };
       this.#activationBlocked = false;
       const transactions = NodePath.join(this.updaterRoot, "transactions");
       const entries = await NodeFSP.readdir(transactions).catch((cause: NodeJS.ErrnoException) => {

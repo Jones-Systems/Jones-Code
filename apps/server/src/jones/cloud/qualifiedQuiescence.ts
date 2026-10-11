@@ -1,10 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off
-// Native observation at the detached launcher boundary. This proves ordinary
-// same-user exact-file writers; privileged/system actors remain outside the
-// service model. Process names are not evidence that a state inode is idle.
+// Native observation at the detached launcher boundary. With no allowed writer,
+// Linux uses a kernel-wide lease proof. The readiness commit allows its
+// captured trial, so Linux uses the root-owned writer observer, or the
+// same-user descriptor scan where that helper cannot run; both fail closed on
+// processes they cannot read. Process names are not evidence that a state
+// inode is idle.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import { leaseGrantedOnEveryDevice, observeLinuxStateLeases } from "./qualifiedLinuxLease.ts";
+import { observeQualifiedWriters } from "./qualifiedWriterObserver.ts";
 
 export const QUALIFIED_STARTUP_STATE_FILES = [
   "settings.json",
@@ -32,10 +37,15 @@ export interface QualifiedWriterScan {
   readonly uid: number;
   readonly allowedProcessIds: readonly number[];
 }
+/** `pid` is absent when the kernel proves a write-open inode without naming its holder. */
+export interface QualifiedWriter {
+  readonly pid?: number;
+  readonly path: string;
+}
 export interface QualifiedQuiescenceAdapter {
-  scan(
-    input: QualifiedWriterScan,
-  ): Promise<readonly { readonly pid: number; readonly path: string }[]>;
+  scan(input: QualifiedWriterScan): Promise<readonly QualifiedWriter[]>;
+  /** Install admission: throws unless a readiness commit with these writers allowed can prove. */
+  assertReadinessObservable?(input: QualifiedWriterScan): Promise<void>;
 }
 const unavailable = () => new QualifiedQuiescenceError("unavailable");
 const isGone = (cause: unknown) => (cause as NodeJS.ErrnoException)?.code === "ENOENT";
@@ -294,14 +304,192 @@ function darwinQualifiedQuiescenceAdapter(): QualifiedQuiescenceAdapter {
   };
 }
 
+/** Kernel-wide proof that no process holds a selected inode open for writing. */
+export function linuxLeaseQualifiedQuiescenceAdapter(
+  options: Parameters<typeof observeLinuxStateLeases>[1] = {},
+): QualifiedQuiescenceAdapter {
+  return {
+    async scan(input) {
+      // A lease cannot tell an allowed writer from any other writer.
+      if (input.allowedProcessIds.length !== 0) throw unavailable();
+      const observed = await observeLinuxStateLeases(input.files, options);
+      switch (observed.status) {
+        case "complete":
+          return input.files
+            .filter((_, index) => observed.busy.includes(index))
+            .map((file) => ({ path: file.path }));
+        case "identity-changed":
+          throw new QualifiedQuiescenceError("state-identity-changed");
+        case "proof-limit":
+          throw new QualifiedQuiescenceError("proof-limit");
+        default:
+          throw unavailable();
+      }
+    },
+  };
+}
+
+/**
+ * Readiness observation that allows captured writers. A root-owned helper
+ * observes every process; without a usable helper the same-user descriptor
+ * scan answers and fails closed on processes it cannot read.
+ */
+export function linuxReadinessQualifiedQuiescenceAdapter(
+  options: Parameters<typeof observeQualifiedWriters>[1] & {
+    readonly fallback?: QualifiedQuiescenceAdapter;
+  } = {},
+): QualifiedQuiescenceAdapter {
+  const { fallback = linuxQualifiedQuiescenceAdapter(), ...observer } = options;
+  return {
+    async scan(input) {
+      const observed = await observeQualifiedWriters(input, observer);
+      switch (observed.status) {
+        case "complete":
+          return observed.writers;
+        case "unprivileged":
+          return fallback.scan(input);
+        case "identity-changed":
+          throw new QualifiedQuiescenceError("state-identity-changed");
+        default:
+          throw unavailable();
+      }
+    },
+  };
+}
+
+/**
+ * statfs f_type values (include/uapi/linux/magic.h) of local kernel
+ * filesystems that take leases through the generic VFS path
+ * (kernel_setlease → generic_setlease), where a grant means no write-open
+ * description exists. Network filesystems answer leases from per-file
+ * delegations or oplocks, and FUSE and overlay add another layer, so those
+ * and every type not listed here are refused.
+ */
+const LEASE_PROOF_FILESYSTEMS: ReadonlySet<bigint> = new Set([
+  0xef53n, // ext2, ext3, ext4
+  0x58465342n, // XFS
+  0x9123683en, // Btrfs
+  0x01021994n, // tmpfs
+]);
+
+/**
+ * Linux routing: proofs with no allowed writer use kernel leases, the readiness
+ * commit uses the readiness observer. Install admission exercises both before
+ * acceptance, because the post-stop, restart and rollback proofs all need
+ * leases on these exact files.
+ */
+export function linuxNativeQualifiedQuiescenceAdapter(
+  options: {
+    readonly leases?: Parameters<typeof observeLinuxStateLeases>[1];
+    readonly readiness?: Parameters<typeof linuxReadinessQualifiedQuiescenceAdapter>[0];
+    /** statfs f_type for one path; injectable for portable fixtures. */
+    readonly filesystemType?: (path: string) => Promise<bigint>;
+  } = {},
+): QualifiedQuiescenceAdapter {
+  const leases = linuxLeaseQualifiedQuiescenceAdapter(options.leases);
+  const readiness = linuxReadinessQualifiedQuiescenceAdapter(options.readiness);
+  const filesystemType =
+    options.filesystemType ??
+    (async (path: string) => (await NodeFSP.statfs(path, { bigint: true })).type);
+  return {
+    scan: (input) => (input.allowedProcessIds.length === 0 ? leases : readiness).scan(input),
+    async assertReadinessObservable(input) {
+      // Metadata only, on every selected file rather than its directory, so a
+      // network or FUSE bind mount over one state file is refused as well.
+      for (const file of input.files) {
+        const type = await filesystemType(file.path).catch(() => undefined);
+        if (type === undefined || !LEASE_PROOF_FILESYSTEMS.has(type)) throw unavailable();
+      }
+      // The requesting server holds the state open for writing, so busy files
+      // are expected here. Later lease proofs can answer only where a lease on
+      // this exact snapshot was actually granted: busy alone does not show
+      // support, so every selected device needs one non-busy grant. A server
+      // holding every selected file on a device open for writing is refused
+      // here and keeps running.
+      const support = await observeLinuxStateLeases(input.files, options.leases);
+      if (support.status === "identity-changed")
+        throw new QualifiedQuiescenceError("state-identity-changed");
+      if (support.status === "proof-limit") throw new QualifiedQuiescenceError("proof-limit");
+      if (support.status !== "complete" || !leaseGrantedOnEveryDevice(input.files, support.busy))
+        throw unavailable();
+      if ((await readiness.scan(input)).length !== 0)
+        throw new QualifiedQuiescenceError("writer-active");
+    },
+  };
+}
+
 export function nativeQualifiedQuiescenceAdapter(platform: string): QualifiedQuiescenceAdapter {
-  if (platform === "linux") return linuxQualifiedQuiescenceAdapter();
+  if (platform === "linux") return linuxNativeQualifiedQuiescenceAdapter();
   if (platform === "darwin") return darwinQualifiedQuiescenceAdapter();
   return {
     scan: async () => {
       throw unavailable();
     },
+    assertReadinessObservable: async () => {
+      throw unavailable();
+    },
   };
+}
+
+async function selectedQualifiedState(baseDirInput: string) {
+  const baseDir = await NodeFSP.realpath(baseDirInput);
+  const userdata = NodePath.join(baseDir, "userdata");
+  const uid = (await NodeFSP.lstat(userdata)).uid;
+  if (process.getuid?.() !== uid || (await NodeFSP.realpath(userdata)) !== userdata)
+    throw unavailable();
+  const paths = [
+    "statev2.sqlite",
+    "statev2.sqlite-wal",
+    "statev2.sqlite-shm",
+    ...QUALIFIED_STARTUP_STATE_FILES,
+  ].map((name) => NodePath.join(userdata, name));
+  const snapshot = async () =>
+    Promise.all(
+      paths.map(async (path) => {
+        try {
+          const stat = await NodeFSP.lstat(path, { bigint: true });
+          if (!stat.isFile() || stat.uid !== BigInt(uid)) throw unavailable();
+          return {
+            path,
+            device: stat.dev,
+            inode: stat.ino,
+            identity: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`,
+          };
+        } catch (cause) {
+          if (isGone(cause) && path !== paths[0]) return undefined;
+          throw cause;
+        }
+      }),
+    );
+  return { uid, snapshot };
+}
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Native adapter selection is confined to the detached launcher boundary and injectable in tests.
+const nativeAdapter = () => nativeQualifiedQuiescenceAdapter(process.platform);
+
+/**
+ * Install admission: refuses a transaction whose readiness commit cannot prove
+ * that the captured writers alone hold the selected state. Adapters without a
+ * readiness check (injected fixtures, Darwin) admit unchanged.
+ */
+export async function assertQualifiedReadinessObservable(input: {
+  readonly baseDir: string;
+  readonly allowedProcessIds: readonly number[];
+  readonly adapter?: QualifiedQuiescenceAdapter;
+}): Promise<void> {
+  try {
+    const adapter = input.adapter ?? nativeAdapter();
+    if (adapter.assertReadinessObservable === undefined) return;
+    const state = await selectedQualifiedState(input.baseDir);
+    await adapter.assertReadinessObservable({
+      files: (await state.snapshot()).filter((file) => file !== undefined),
+      uid: state.uid,
+      allowedProcessIds: input.allowedProcessIds,
+    });
+  } catch (cause) {
+    if (cause instanceof QualifiedQuiescenceError) throw cause;
+    throw unavailable();
+  }
 }
 
 export async function proveQualifiedStateQuiescence(input: {
@@ -310,38 +498,9 @@ export async function proveQualifiedStateQuiescence(input: {
   readonly adapter?: QualifiedQuiescenceAdapter;
 }): Promise<void> {
   try {
-    const baseDir = await NodeFSP.realpath(input.baseDir);
-    const userdata = NodePath.join(baseDir, "userdata");
-    const uid = (await NodeFSP.lstat(userdata)).uid;
-    if (process.getuid?.() !== uid || (await NodeFSP.realpath(userdata)) !== userdata)
-      throw unavailable();
-    const paths = [
-      "statev2.sqlite",
-      "statev2.sqlite-wal",
-      "statev2.sqlite-shm",
-      ...QUALIFIED_STARTUP_STATE_FILES,
-    ].map((name) => NodePath.join(userdata, name));
-    const snapshot = async () =>
-      Promise.all(
-        paths.map(async (path) => {
-          try {
-            const stat = await NodeFSP.lstat(path, { bigint: true });
-            if (!stat.isFile() || stat.uid !== BigInt(uid)) throw unavailable();
-            return {
-              path,
-              device: stat.dev,
-              inode: stat.ino,
-              identity: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`,
-            };
-          } catch (cause) {
-            if (isGone(cause) && path !== paths[0]) return undefined;
-            throw cause;
-          }
-        }),
-      );
+    const { uid, snapshot } = await selectedQualifiedState(input.baseDir);
     const before = await snapshot();
-    // oxlint-disable-next-line t3code/no-global-process-runtime -- Native adapter selection is confined to the detached launcher boundary and injectable in tests.
-    const adapter = input.adapter ?? nativeQualifiedQuiescenceAdapter(process.platform);
+    const adapter = input.adapter ?? nativeAdapter();
     const writers = await adapter.scan({
       files: before.filter((file) => file !== undefined),
       uid,
