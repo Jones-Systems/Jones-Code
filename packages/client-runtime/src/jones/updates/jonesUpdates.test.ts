@@ -112,12 +112,16 @@ it.effect(
       });
       const calls: Array<{ url: string; proofHtu: string; method: string }> = [];
       const polled = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
+      const observedRevision = yield* Deferred.make<void>();
+      let releaseFetch = () => {};
+      const released = new Promise<void>((resolve) => {
+        releaseFetch = () => resolve();
+      });
       const fetchFn: typeof fetch = async (request, init) => {
         const url = String(request);
         const proof = JSON.parse(new Headers(init?.headers).get("dpop")!);
         calls.push({ url, proofHtu: proof.htu, method: init?.method ?? "GET" });
-        if (calls.length === 3) Effect.runSync(Deferred.succeed(polled, undefined));
+        if (calls.length === 3) Deferred.doneUnsafe(polled, Effect.void);
         if (proof.htu !== normalizeDpopHtu(url) || proof.method !== (init?.method ?? "GET"))
           return Response.json(
             {
@@ -129,7 +133,7 @@ it.effect(
             { status: 401 },
           );
         if (calls.length === 3) {
-          await Effect.runPromise(Deferred.await(release));
+          await released;
           return Response.json(null);
         }
         return Response.json({ ...staged, revision: calls.length === 1 ? 0 : 7 });
@@ -149,18 +153,18 @@ it.effect(
       let unmount = () => {};
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          Effect.runSync(Deferred.succeed(release, undefined));
+          releaseFetch();
           unsubscribe();
           unmount();
           registry.dispose();
         }),
       );
       unsubscribe = registry.subscribe(value, (state) => {
-        if (state !== null) observed.push(state.revision);
+        if (typeof state?.revision === "number") observed.push(state.revision);
+        if (state?.revision === 7) Deferred.doneUnsafe(observedRevision, Effect.void);
       });
       unmount = registry.mount(value);
       yield* Deferred.await(polled);
-      yield* Effect.yieldNow;
       expect(calls.map((call) => new URL(call.url).searchParams.get("after"))).toEqual([
         null,
         "0",
@@ -178,6 +182,7 @@ it.effect(
         Array(3).fill(`${origin}/api/jones-updates`),
       );
       expect(authorizations).toEqual([undefined, undefined, undefined]);
+      yield* Deferred.await(observedRevision);
       expect(observed).toEqual([0, 7]);
       expect(registry.get(value)?.revision).toBe(7);
     }).pipe(Effect.scoped),
