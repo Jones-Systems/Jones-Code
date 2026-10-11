@@ -155,8 +155,37 @@ export const VoiceReviewErrors = [
 export const VoiceReviewError = Schema.Union(VoiceReviewErrors);
 export type VoiceReviewError = typeof VoiceReviewError.Type;
 
+const DeliveryId = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(512));
+export const VoiceReviewQueueDelivery = strictPayload({
+  delivery_id: DeliveryId,
+  queue_request_id: DeliveryId,
+  payload_sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  destination: strictPayload({
+    backend: DeliveryId,
+    instance: DeliveryId,
+    thread_id: Schema.NullOr(DeliveryId),
+    project_id: Schema.NullOr(DeliveryId),
+  }),
+});
+export type VoiceReviewQueueDelivery = typeof VoiceReviewQueueDelivery.Type;
+export const VoiceReviewQueueDeliveryLinks = strictPayload({
+  status: Schema.Literals(["ready", "unavailable"]),
+  reason: Schema.NullOr(
+    Schema.Literals(["forbidden", "source_unavailable", "invalid_receipt", "limit"]),
+  ),
+  deliveries: Schema.Array(VoiceReviewQueueDelivery).check(Schema.isMaxLength(200)),
+}).check(
+  Schema.makeFilter((value) =>
+    value.status === "ready"
+      ? value.reason === null
+      : value.reason !== null && value.deliveries.length === 0,
+  ),
+);
+export type VoiceReviewQueueDeliveryLinks = typeof VoiceReviewQueueDeliveryLinks.Type;
+
 export const VoiceReviewRecentEntry = Schema.Struct({
   draft: VoiceReviewDraft,
+  queue_delivery_links: Schema.optional(Schema.NullOr(VoiceReviewQueueDeliveryLinks)),
   thread_key: Schema.optional(Schema.NullOr(Schema.String)),
   text: Schema.NullOr(VoiceReviewText),
   text_state: Schema.Literals(["available", "deleted", "expired", "unavailable"]),

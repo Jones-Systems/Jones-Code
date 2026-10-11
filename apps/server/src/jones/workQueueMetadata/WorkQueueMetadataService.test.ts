@@ -124,6 +124,21 @@ describe("configured queue metadata service", () => {
         }),
       ),
   );
+  it.effect("reads v2 through the same descriptor, source and digest validation as v1", () =>
+    fixture((path, config) => Effect.gen(function* () {
+      const value = artifact({ schema: "codex.t3-work-queue-metadata/v2", items: [{
+        request_id: "request", workstream_id: "work", canonical_binding: null,
+        entry_kind: "ordinary", request_kind: "initial", lane: "normal", queue_state: "queued",
+        submitted_at_ms: null, target: null, dispatch_status: null, native_command_status: null,
+        finish_line: "not_tracked", payload_sha256: null, native_handoff: null,
+      }] });
+      yield* Effect.promise(() => NodeFSP.writeFile(path, JSON.stringify(value), { mode: 0o600 }));
+      expect(yield* read(config)).toMatchObject({ status: "ready", snapshot: value });
+      const corrupt = { ...value, snapshot_token: "0".repeat(64) };
+      yield* Effect.promise(() => NodeFSP.writeFile(path, JSON.stringify(corrupt), { mode: 0o600 }));
+      expect(yield* read(config)).toEqual({ status: "unavailable", reason: "invalid_artifact" });
+    })),
+  );
   it.effect("returns explicit unconfigured and invalid configuration outcomes", () =>
     Effect.gen(function* () {
       expect(yield* read(workQueueMetadataConfig({}))).toEqual({

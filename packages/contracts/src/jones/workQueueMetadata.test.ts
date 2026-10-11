@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import producerRaw from "./fixtures/work_queue_metadata_v1.json.fixture?raw";
-import { WorkQueueMetadata, WorkQueueMetadataResult } from "./workQueueMetadata.ts";
+import { WorkQueueMetadata, WorkQueueMetadataV1, WorkQueueMetadataV2, WorkQueueMetadataResult } from "./workQueueMetadata.ts";
 
 const item = {
   request_id: "request-1",
@@ -133,6 +133,58 @@ describe("work queue metadata contract", () => {
       expect(() =>
         decode({ ...fixture, items: [{ ...bound, canonical_binding: { ...binding, ...change } }] }),
       ).toThrow();
+    }
+  });
+});
+
+const handoff = {
+  command_id: "native-command",
+  message_id: "native-message",
+  command_status: "accepted",
+  correlation_status: "exact",
+  receipt_sequence: 0,
+  turn_id: "native-turn",
+  turn_state: "pending",
+  observed_at_ms: 1_000,
+};
+const v2Item = {
+  ...item,
+  target: { host_id: "host", environment_ref: "environment", thread_id: "thread" },
+  payload_sha256: "b".repeat(64),
+  native_handoff: handoff,
+};
+const v2 = { ...fixture, schema: "codex.t3-work-queue-metadata/v2", items: [v2Item] };
+
+describe("v2 native handoff metadata", () => {
+  it("round trips v1 unchanged and accepts nullable v2 evidence without manufacturing proof", () => {
+    expect(Schema.encodeSync(WorkQueueMetadata)(decode(fixture))).toEqual(fixture);
+    expect(Schema.decodeUnknownSync(WorkQueueMetadataV1)(fixture)).toEqual(fixture);
+    expect(Schema.decodeUnknownSync(WorkQueueMetadataV2)(v2)).toEqual(v2);
+    expect(decode(v2)).toEqual(v2);
+    const unconfirmed = { ...v2, items: [{ ...item, payload_sha256: null, native_handoff: null }] };
+    expect(decode(unconfirmed)).toEqual(unconfirmed);
+    expect(() => decode({ ...fixture, items: [v2Item] })).toThrow();
+  });
+  it("rejects absent, partial, unknown, unsafe, or unbound proof", () => {
+    const { turn_id: _turn, ...partial } = handoff;
+    for (const change of [
+      { native_handoff: partial },
+      { native_handoff: { ...handoff, receipt_sequence: Number.MAX_SAFE_INTEGER + 1 } },
+      { native_handoff: { ...handoff, receipt_sequence: -1 } },
+      { native_handoff: { ...handoff, observed_at_ms: 0.5 } },
+      { native_handoff: { ...handoff, command_status: "rejected" } },
+      { native_handoff: { ...handoff, correlation_status: "inferred" } },
+      { native_handoff: { ...handoff, turn_state: "success" } },
+      { native_handoff: { ...handoff, text: "private" } },
+      { native_handoff: { ...handoff, command_id: "x".repeat(513) } },
+      { payload_sha256: "A".repeat(64) },
+      { payload_sha256: null },
+      { target: null },
+    ]) expect(() => decode({ ...v2, items: [{ ...v2Item, ...change }] })).toThrow();
+    expect(() => decode({ ...v2, items: [item] })).toThrow();
+    for (const turn_state of ["pending", "running", "completed", "interrupted", "error"]) {
+      expect(decode({ ...v2, items: [{ ...v2Item, native_handoff: { ...handoff, turn_state } }] }))
+        .toMatchObject({ items: [{ native_handoff: { turn_state } }] });
     }
   });
 });

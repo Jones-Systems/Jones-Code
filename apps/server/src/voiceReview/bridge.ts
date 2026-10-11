@@ -1,5 +1,7 @@
 import {
   VoiceReviewRecentList,
+  VoiceReviewQueueDeliveryLinks,
+  type VoiceReviewRecentEntry,
   VoiceReviewDiagnostics,
   ThreadRegistrySnapshot,
   ThreadRegistryComposedSnapshot,
@@ -68,6 +70,29 @@ const decodeVoiceReviewEditCancelPayload = Schema.decodeUnknownSync(VoiceReviewE
 const decodeVoiceReviewRevisionPayload = Schema.decodeUnknownSync(VoiceReviewRevisionPayload);
 const isVoiceReviewNotFoundError = Schema.is(VoiceReviewNotFoundError);
 const isVoiceReviewConflictError = Schema.is(VoiceReviewConflictError);
+const isVoiceReviewForbiddenError = Schema.is(VoiceReviewForbiddenError);
+const decodeDeliveryLinks = Schema.decodeUnknownSync(VoiceReviewQueueDeliveryLinks);
+const CommandDelivery = Schema.Struct({
+  id: Schema.String,
+  queue_request_id: Schema.NullOr(Schema.String),
+  payload_hash: Schema.String,
+  destination: Schema.Struct({
+    backend: Schema.String,
+    instance: Schema.String,
+    thread_id: Schema.NullOr(Schema.String),
+    project_id: Schema.NullOr(Schema.String),
+  }),
+});
+const decodeCommand = Schema.decodeUnknownSync(
+  Schema.Struct({
+    id: Schema.String,
+    source_id: Schema.String,
+    deliveries: Schema.Array(CommandDelivery).check(Schema.isMaxLength(200)),
+  }),
+);
+const unavailableLinks = (
+  reason: Exclude<VoiceReviewQueueDeliveryLinks["reason"], null>,
+): VoiceReviewQueueDeliveryLinks => ({ status: "unavailable", reason, deliveries: [] });
 
 const readToken = async (path: string): Promise<string> => {
   const file = await NodeFSP.open(
@@ -144,12 +169,18 @@ export const makeVoiceReviewBridge = (
     }
     return config;
   };
-  const request = async (trusted: VoiceReviewConfig, path: string, payload?: unknown) => {
+  const request = async (
+    trusted: VoiceReviewConfig,
+    path: string,
+    payload?: unknown,
+    receiptSignal?: AbortSignal,
+  ) => {
     const controller = new AbortController();
     // @effect-diagnostics-next-line globalTimers:off - native fetch deadline; cleared on every completion.
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const token = await readToken(trusted.reviewer_token_file);
+      receiptSignal?.throwIfAborted();
       const body = payload === undefined ? undefined : JSON.stringify(payload);
       if (body !== undefined && Buffer.byteLength(body) > VOICE_REVIEW_MAX_REQUEST_BYTES) {
         throw new VoiceReviewConflictError({});
@@ -158,7 +189,10 @@ export const makeVoiceReviewBridge = (
         method: body === undefined ? "GET" : "POST",
         redirect: "error",
         cache: "no-store",
-        signal: controller.signal,
+        signal:
+          receiptSignal === undefined
+            ? controller.signal
+            : AbortSignal.any([controller.signal, receiptSignal]),
         headers: {
           authorization: `Bearer ${token}`,
           accept: "application/json",
@@ -168,6 +202,8 @@ export const makeVoiceReviewBridge = (
       });
       if (!response.ok) {
         await response.body?.cancel();
+        if (receiptSignal !== undefined && response.status === 403)
+          throw new VoiceReviewForbiddenError({});
         if (response.status === 404) throw new VoiceReviewNotFoundError({});
         if (response.status === 409 || response.status === 422 || response.status === 400) {
           throw new VoiceReviewConflictError({});
@@ -176,11 +212,119 @@ export const makeVoiceReviewBridge = (
       }
       return await boundedJson(response);
     } catch (error) {
-      if (isVoiceReviewNotFoundError(error) || isVoiceReviewConflictError(error)) throw error;
+      if (
+        isVoiceReviewNotFoundError(error) ||
+        isVoiceReviewConflictError(error) ||
+        (receiptSignal !== undefined &&
+          (isVoiceReviewForbiddenError(error) || error instanceof SyntaxError))
+      )
+        throw error;
       throw new VoiceReviewUnavailableError({});
     } finally {
       clearTimeout(timeout);
     }
+  };
+  const enrichRecent = async (
+    trusted: VoiceReviewConfig,
+    entries: readonly VoiceReviewRecentEntry[],
+    deadline: number,
+  ): Promise<readonly VoiceReviewRecentEntry[]> => {
+    const links = new Map<string, VoiceReviewQueueDeliveryLinks>();
+    const commands = Array.from(
+      new Set(entries.flatMap((entry) =>
+        entry.command_id !== null && entry.draft.state !== "deleted" && entry.draft.state !== "expired"
+          ? [entry.command_id]
+          : [],
+      )),
+    );
+    for (const id of commands) links.set(id, unavailableLinks("limit"));
+    const selected = commands.slice(0, 50);
+    const remaining = Math.max(0, deadline - now());
+    if (selected.length > 0 && remaining > 0) {
+      const controller = new AbortController();
+      let expire: () => void = () => undefined;
+      const expired = new Promise<void>((resolve) => {
+        expire = resolve;
+      });
+      // @effect-diagnostics-next-line globalTimers:off - one overall receipt-enrichment deadline, cleared after workers finish or abort.
+      const timeout = setTimeout(() => {
+        controller.abort();
+        expire();
+      }, remaining);
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < selected.length && !controller.signal.aborted && now() < deadline) {
+          const id = selected[cursor++];
+          if (id === undefined) return;
+          if (id.length === 0 || id.length > 512) {
+            links.set(id, unavailableLinks("invalid_receipt"));
+            continue;
+          }
+          let raw: unknown;
+          try {
+            raw = await request(
+              trusted,
+              `/v1/commands/${encodeURIComponent(id)}`,
+              undefined,
+              controller.signal,
+            );
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              links.set(id, unavailableLinks(
+                isVoiceReviewForbiddenError(error)
+                  ? "forbidden"
+                  : error instanceof SyntaxError ? "invalid_receipt" : "source_unavailable",
+              ));
+            }
+            continue;
+          }
+          if (controller.signal.aborted || now() >= deadline) continue;
+          try {
+            if (
+              raw !== null && typeof raw === "object" && "deliveries" in raw &&
+              Array.isArray(raw.deliveries) && raw.deliveries.length > 200
+            ) {
+              links.set(id, unavailableLinks("limit"));
+              continue;
+            }
+            const command = decodeCommand(raw);
+            if (command.id !== id || command.source_id !== trusted.source_id) {
+              links.set(id, unavailableLinks("invalid_receipt"));
+              continue;
+            }
+            // Only explicit queue relations participate; broker text and result details stay server-side.
+            const deliveries = command.deliveries.flatMap((delivery) =>
+              delivery.queue_request_id === null ? [] : [{
+                delivery_id: delivery.id,
+                queue_request_id: delivery.queue_request_id,
+                payload_sha256: delivery.payload_hash,
+                destination: delivery.destination,
+              }],
+            );
+            links.set(id, decodeDeliveryLinks({ status: "ready", reason: null, deliveries }));
+          } catch {
+            links.set(id, unavailableLinks("invalid_receipt"));
+          }
+        }
+      };
+      try {
+        await Promise.race([
+          Promise.all(Array.from({ length: Math.min(4, selected.length) }, () => worker())),
+          expired,
+        ]);
+      } finally {
+        controller.abort();
+        clearTimeout(timeout);
+      }
+    }
+    return entries.map((entry) => ({
+      ...entry,
+      queue_delivery_links: entry.command_id === null
+        ? null
+        : entry.draft.state === "deleted" || entry.draft.state === "expired"
+          ? unavailableLinks("source_unavailable")
+          : links.get(entry.command_id) ?? unavailableLinks("limit"),
+    }));
   };
   const get = async (principal: EnvironmentSessionPrincipalShape, id: string, mutation = false) => {
     const trusted = authorize(principal, mutation);
@@ -222,6 +366,7 @@ export const makeVoiceReviewBridge = (
   return {
     recent: async (principal: EnvironmentSessionPrincipalShape, limit = 50) => {
       const trusted = authorize(principal, false);
+      const deadline = now() + REQUEST_TIMEOUT_MS;
       const result = Schema.decodeUnknownSync(VoiceReviewRecentList)(
         await request(
           trusted,
@@ -230,7 +375,7 @@ export const makeVoiceReviewBridge = (
       );
       return {
         ...result,
-        entries: result.entries
+        entries: await enrichRecent(trusted, result.entries
           .filter((entry) => entry.draft.source_id === trusted.source_id)
           .map((entry) => {
             const terminal = entry.draft.state === "deleted" || entry.draft.state === "expired";
@@ -247,7 +392,7 @@ export const makeVoiceReviewBridge = (
                   draft: { ...entry.draft, text: null },
                 }
               : entry;
-          }),
+          }), deadline),
       };
     },
     registrySnapshot: async (
