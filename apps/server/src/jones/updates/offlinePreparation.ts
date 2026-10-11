@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- This standalone adapter owns only its internally allocated synthetic scratch.
 import * as NodeFSP from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous native file and projection digests preserve the exact persisted SHA-256 binding bytes.
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Paths are confined to the captured synthetic scratch root.
@@ -15,6 +16,7 @@ import {
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
+import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -301,6 +303,7 @@ const encodeRequest = Schema.encodeSync(
 const decodeRequest = Schema.decodeUnknownSync(
   Schema.fromJsonString(EffectOutbox.OrchestrationEffectRequestV2),
 );
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const readRows = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<OutboxRow>`SELECT effect_id, command_id, thread_id, effect_type,
@@ -322,7 +325,7 @@ const readSelection = (rawSettings: string | undefined) =>
         threadId,
         runId: run.id,
         existingId: existing[0]?.effect_id ?? null,
-        projectionSha256: digest(JSON.stringify(projection)),
+        projectionSha256: digest(yield* encodeJson(projection)),
       });
     }
     return selections;
@@ -348,7 +351,8 @@ const verifySchema = Effect.gen(function* () {
       name: string;
     }>`SELECT migration_id, name FROM ${sql(table)} ORDER BY migration_id`;
     if (
-      JSON.stringify(rows.map((row) => [row.migration_id, row.name])) !== JSON.stringify(expected)
+      (yield* encodeJson(rows.map((row) => [row.migration_id, row.name]))) !==
+      (yield* encodeJson(expected))
     )
       return yield* Effect.fail(new OfflinePreparationError({ reason: "unsupported-ledger" }));
   }
@@ -987,7 +991,7 @@ export async function withSyntheticPreparationFixture<A>(
               return { selections: yield* readSelection(raw), rows: yield* readRows };
             }),
           );
-          const timestamp = new Date().toISOString();
+          const timestamp = DateTime.formatIso(await Effect.runPromise(DateTime.now));
           const expectedRows = selections
             .filter((selection) => selection.existingId === null)
             .map((selection) =>
@@ -1048,7 +1052,7 @@ export async function withSyntheticPreparationFixture<A>(
                 Effect.gen(function* () {
                   yield* verifySchema;
                   const selected = yield* readSelection(raw);
-                  if (JSON.stringify(selected) !== JSON.stringify(plan.selections))
+                  if ((yield* encodeJson(selected)) !== (yield* encodeJson(plan.selections)))
                     return yield* Effect.fail(
                       new OfflinePreparationError({ reason: "selection-changed" }),
                     );
@@ -1310,4 +1314,4 @@ if (
     runtimeMain: import.meta.main,
   })
 )
-  console.log(JSON.stringify(offlinePreparationStatus()));
+  Effect.runSync(encodeJson(offlinePreparationStatus()).pipe(Effect.flatMap(Console.log)));
