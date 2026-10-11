@@ -74,6 +74,15 @@ async function tree(directory: string): Promise<string[]> {
   }
   return results;
 }
+async function expectOnlyRuntimeLockCreated(
+  f: { readonly root: string; readonly runtime: string },
+  before: ReadonlyArray<string>,
+) {
+  const lock = NodePath.join(f.runtime, "qualified-runtime-lock.sqlite");
+  expect((await NodeFSP.lstat(lock)).isFile()).toBe(true);
+  expect(await NodeFSP.readFile(lock)).toEqual(Buffer.alloc(0));
+  expect(await tree(f.root)).toEqual([...before, `${lock}:${sha(Buffer.alloc(0))}`].sort());
+}
 async function fixture(
   body: (f: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
   options: {
@@ -639,7 +648,7 @@ it.each(["missing-acceptance", "current-child-receipt", "stale-child-receipt"])(
             ? "explicit unattested-child acceptance"
             : "unexpected capability receipt",
         );
-        expect(await tree(f.root)).toEqual(before);
+        await expectOnlyRuntimeLockCreated(f, before);
         expect(f.commands.some((c) => c.args.includes("stop") || c.args.includes("restart"))).toBe(
           false,
         );
@@ -753,7 +762,7 @@ it("refuses ordinary unattested acceptance outside the exact authenticated priva
     await expect(
       adoptHost({ ...f.input, acceptUnattestedChildCapability: true }, f.host),
     ).rejects.toThrow("limited to the exact supported private setup artifact");
-    expect(await tree(f.root)).toEqual(before);
+    await expectOnlyRuntimeLockCreated(f, before);
     expect(f.commands.some((c) => c.args.includes("stop") || c.args.includes("restart"))).toBe(
       false,
     );
