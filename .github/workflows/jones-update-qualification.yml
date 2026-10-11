@@ -85,3 +85,101 @@ jobs:
 
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
+
+  preview:
+    name: Jones native Preview evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact public candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Verify isolated Preview provider and evidence controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs
+
+      - name: Build matching server and web source
+        env:
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          node scripts/stamp-jones-build.ts
+          vp run --filter t3 build
+
+      - name: Build explicit desktop renderer fixture
+        working-directory: apps/web
+        env:
+          JONES_INSTALL_RENDERER_FIXTURE: "1"
+          JONES_INSTALL_FIXTURE_OUT: ${{ runner.temp }}/install-preview-renderer
+          JONES_INSTALL_FIXTURE_SOURCE_SHA: ${{ env.JONES_SOURCE_SHA }}
+          JONES_INSTALL_FIXTURE_SOURCE_TREE: ${{ env.JONES_SOURCE_TREE }}
+        run: pnpm exec vp build --config vite.install-preview.config.ts --mode jones-install-fixture
+
+      - name: Install Chromium host libraries
+        run: node apps/server/node_modules/playwright-core/cli.js install-deps chromium
+
+      - name: Prepare native Preview sandbox on the ephemeral runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup_root=$(mktemp -d "$RUNNER_TEMP/jones-preview-browser-setup.XXXXXX")
+          trap 'rmdir -- "$setup_root"' EXIT
+          sudo -n "$(command -v node)" "$GITHUB_WORKSPACE/apps/server/dist/bin.mjs" browser setup --base-dir "$setup_root"
+
+      - name: Bind source and served build receipt
+        run: >-
+          node scripts/jones/updates/install-preview-qualification.mjs record-build
+          --source "$GITHUB_WORKSPACE"
+          --out "$RUNNER_TEMP/install-preview-build.json"
+          --fixture-build "$RUNNER_TEMP/install-preview-renderer"
+
+      - name: Exercise renderer through real injected T3 Preview tools
+        run: >-
+          node scripts/jones/updates/install-preview-qualification.mjs run
+          --source "$GITHUB_WORKSPACE"
+          --receipt "$RUNNER_TEMP/install-preview-build.json"
+          --out "$RUNNER_TEMP/install-preview-evidence"
+          --scratch-parent "$RUNNER_TEMP"
+          --fixture-build "$RUNNER_TEMP/install-preview-renderer"
+
+      - name: Preserve source-bound Preview reports and native screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: install-preview-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/install-preview-build.json
+            ${{ runner.temp }}/install-preview-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove only this job's renderer build scratch
+        if: always()
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import shutil
+          parent = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          target = parent / "install-preview-renderer"
+          if target.is_symlink():
+              raise RuntimeError("Renderer build scratch was replaced by a symlink")
+          if target.exists():
+              shutil.rmtree(target)

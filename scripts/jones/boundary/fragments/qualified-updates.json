@@ -70,7 +70,12 @@
     "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
     "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts",
     "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
-    "docs/operations/desktop-bootstrap.md"
+    "docs/operations/desktop-bootstrap.md",
+    "apps/web/jones-install-fixture.html",
+    "apps/web/vite.install-preview.config.ts",
+    "apps/web/src/jones/updates/fixtures/install-preview-entry.ts",
+    "apps/web/src/jones/updates/fixtures/install-preview-bridge.ts",
+    "apps/web/src/jones/updates/fixtures/InstallPreview.tsx"
   ],
   "hookPaths": [
     "apps/desktop/src/boot.ts",
