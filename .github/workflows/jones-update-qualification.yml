@@ -64,5 +64,11 @@ jobs:
           scripts/jones/updates/build-provenance.test.ts
           scripts/build-desktop-artifact.test.ts
 
+      - name: Install virtual display for Chromium startup qualification
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Qualify Chromium-mode native startup refusal
+        run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
+
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
