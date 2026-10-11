@@ -181,13 +181,28 @@ async function fixture(
     await body(f);
   } finally {
     await NodeFSP.rm(f.root, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(f.root)).rejects.toMatchObject({ code: "ENOENT" });
   }
 }
 
+/** Owns the allocated scratch from mkdtemp, so a failed setup removes it and rethrows. */
 async function createFixture(options: FixtureOptions) {
-  const root = await NodeFSP.realpath(
-    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-system-adoption-test-")),
+  const allocated = await NodeFSP.mkdtemp(
+    NodePath.join(NodeOS.tmpdir(), "jones-system-adoption-test-"),
   );
+  try {
+    return await populateFixture(await NodeFSP.realpath(allocated), options);
+  } catch (failure) {
+    try {
+      await NodeFSP.rm(allocated, { recursive: true, force: true });
+    } catch (cleanup) {
+      throw new AggregateError([failure, cleanup], "Fixture setup and cleanup failed.");
+    }
+    throw failure;
+  }
+}
+
+async function populateFixture(root: string, options: FixtureOptions) {
   const base = NodePath.join(root, "home", ".t3");
   const runtime = NodePath.join(base, "runtime");
   const userdata = NodePath.join(base, "userdata");

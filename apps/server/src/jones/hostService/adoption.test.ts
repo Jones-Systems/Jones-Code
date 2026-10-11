@@ -73,8 +73,8 @@ interface EnvelopeEncoding {
   readonly corruptCrc?: boolean;
 }
 interface EnvelopeOptions extends EnvelopeEncoding {
-  /** Embedded ARTIFACT.json document; null omits it. Defaults to the local metadata. */
-  readonly embedded?: Record<string, unknown> | null;
+  /** Embedded ARTIFACT.json document or exact bytes; null omits it; defaults to local metadata. */
+  readonly embedded?: Record<string, unknown> | Buffer | null;
 }
 /** Flat Actions ZIP with real CRC-32; its bytes alone determine the faked GitHub digest. */
 function zipEnvelope(
@@ -144,7 +144,13 @@ function artifactEnvelope(
   return zipEnvelope([
     ...(embedded === null
       ? []
-      : [{ name: "ARTIFACT.json", content: JSON.stringify(embedded ?? m), ...encoding }]),
+      : [
+          {
+            name: "ARTIFACT.json",
+            content: Buffer.isBuffer(embedded) ? embedded : JSON.stringify(embedded ?? m),
+            ...encoding,
+          },
+        ]),
     { name: "SOURCE_COMMIT", content: `${String(m.source)}\n` },
     { name: String(m.artifact), content: archive },
     { name: "SHA256SUMS", content: `${String(m.sha256)}  ${String(m.artifact)}\n` },
@@ -171,29 +177,36 @@ async function expectOnlyRuntimeLockCreated(
 }
 async function fixture(
   body: (f: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
-  options: {
-    readonly legacy?: boolean;
-    readonly migrationChanged?: boolean;
-    readonly privateSetup?: boolean;
-  } = {},
+  options: FixtureOptions = {},
 ) {
   const f = await createFixture(options);
   try {
     await body(f);
   } finally {
     await NodeFSP.rm(f.root, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(f.root)).rejects.toMatchObject({ code: "ENOENT" });
   }
 }
-async function createFixture(
-  options: {
-    readonly legacy?: boolean;
-    readonly migrationChanged?: boolean;
-    readonly privateSetup?: boolean;
-  } = {},
-) {
-  const root = await NodeFSP.realpath(
-    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-adoption-test-")),
-  );
+type FixtureOptions = {
+  readonly legacy?: boolean;
+  readonly migrationChanged?: boolean;
+  readonly privateSetup?: boolean;
+};
+/** Owns the allocated scratch from mkdtemp, so a failed setup removes it and rethrows. */
+async function createFixture(options: FixtureOptions = {}) {
+  const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-adoption-test-"));
+  try {
+    return await populateFixture(await NodeFSP.realpath(allocated), options);
+  } catch (failure) {
+    try {
+      await NodeFSP.rm(allocated, { recursive: true, force: true });
+    } catch (cleanup) {
+      throw new AggregateError([failure, cleanup], "Fixture setup and cleanup failed.");
+    }
+    throw failure;
+  }
+}
+async function populateFixture(root: string, options: FixtureOptions) {
   const base = NodePath.join(root, "base");
   const home = NodePath.join(root, "home");
   const runtime = NodePath.join(base, "runtime");
@@ -1121,6 +1134,18 @@ it.each<[string, (m: Record<string, unknown>) => EnvelopeOptions, string]>([
     (m) => ({ embedded: { ...m, source: "f".repeat(40) } }),
     "does not bind the exact source",
   ],
+  [
+    // Lossy decoding would yield a JSON object equal to the local metadata plus one key.
+    "invalid UTF-8 metadata",
+    (m) => ({
+      embedded: Buffer.concat([
+        Buffer.from(`${JSON.stringify(m).slice(0, -1)},"note":"`),
+        Buffer.from([0xff]),
+        Buffer.from('"}'),
+      ]),
+    }),
+    "lacks exact bounded ARTIFACT.json",
+  ],
 ])("refuses an authenticated envelope with %s", (_label, options, message) =>
   fixture(async (f) => {
     const dir = f.input.activeArtifactDir;
@@ -1166,6 +1191,35 @@ it("natively qualifies an authentic CLI mac workflow_dispatch envelope", () =>
     });
     expect(f.commands.every((c) => c.command === "gh")).toBe(true);
   }));
+it("removes owned fixture scratch and rethrows when setup fails after allocation", async () => {
+  const native = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  const archive = NodePath.join("artifact-0", `t3-${oldVersion}-linux-x64.tar.gz`);
+  const failure = new Error("Synthetic artifact envelope read failure");
+  let owned: string | undefined;
+  // Fails the first artifact read that builds its ZIP envelope, inside the owned root.
+  const readGuard = vi.mocked(NodeFSP.readFile).mockImplementation((...args) => {
+    if (owned === undefined && String(args[0]).endsWith(`${NodePath.sep}${archive}`)) {
+      owned = NodePath.dirname(NodePath.dirname(String(args[0])));
+      throw failure;
+    }
+    return native.readFile(...args);
+  });
+  let outcome: unknown;
+  try {
+    outcome = await createFixture().then(
+      async (f) => {
+        await NodeFSP.rm(f.root, { recursive: true, force: true });
+        return "created";
+      },
+      (error: unknown) => error,
+    );
+  } finally {
+    readGuard.mockImplementation(native.readFile);
+  }
+  expect(outcome).toBe(failure);
+  expect(NodePath.basename(owned!)).toMatch(/^jones-adoption-test-/);
+  await expect(NodeFSP.lstat(owned!)).rejects.toMatchObject({ code: "ENOENT" });
+});
 it("retains a pending receipt after uncertain activation and refuses a blind retry", () =>
   fixture(async (f) => {
     const host = {

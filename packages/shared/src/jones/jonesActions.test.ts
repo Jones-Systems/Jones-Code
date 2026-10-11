@@ -571,6 +571,10 @@ describe("Jones artifact metadata envelope", () => {
         { name: "ARTIFACT.json", content: metadata },
       ],
     ],
+    [
+      "directory-mode",
+      [{ name: "ARTIFACT.json", content: metadata, mode: 0o040755 }, ...companions],
+    ],
   ])("rejects %s metadata entries", async (_label, entries) => {
     await expectIntegrity(zip(entries));
   });
@@ -597,7 +601,7 @@ describe("Jones artifact metadata envelope", () => {
   ])("rejects metadata beyond its %s bound", async (_label, entry) => {
     await expectIntegrity(zip([entry, ...companions]));
   });
-  // Each mutation targets the first (metadata) local header or its central record.
+  // Each mutation targets the first (metadata) local header, its central record, or both.
   it.each<[string, (bytes: Buffer) => Buffer | undefined]>([
     ["non-ZIP bytes", () => Buffer.from("corrupt")],
     ["truncated end record", (bytes) => bytes.subarray(0, bytes.length - 1)],
@@ -608,8 +612,13 @@ describe("Jones artifact metadata envelope", () => {
     ["local size without data descriptor", (bytes) => void bytes.writeUInt32LE(0, 22)],
     ["local name", (bytes) => void bytes.write("a", 30)],
     [
-      "encrypted central entry",
-      (bytes) => void bytes.writeUInt16LE(1, bytes.readUInt32LE(bytes.length - 6) + 8),
+      // Bit 0 in both copies keeps local/central flags equal, isolating the encryption refusal.
+      "encrypted entry",
+      (bytes) => {
+        bytes.writeUInt16LE(1, 6);
+        bytes.writeUInt16LE(1, bytes.readUInt32LE(bytes.length - 6) + 8);
+        return undefined;
+      },
     ],
   ])("rejects a malformed %s header", async (_label, malform) => {
     const bytes = zip([{ name: "ARTIFACT.json", content: metadata }, ...companions]);
