@@ -255,28 +255,39 @@ export class JonesActionsClient {
 
   async check(input: {
     readonly installedSource: string;
+    readonly targetSource?: string;
     readonly platform: JonesActionsPlatform;
     readonly architecture: JonesActionsArchitecture;
   }): Promise<JonesActionsCheckResult> {
     try {
       source(input.installedSource);
+      const targetSource = input.targetSource === undefined ? undefined : source(input.targetSource);
       const approved = spec(input.platform, input.architecture);
       const main = record(await this.transport.api(`${API_ROOT}/commits/main`));
       const mainSource = source(main.sha);
-      if (mainSource === input.installedSource) return { state: "no-new" };
       // Installed source must itself be on canonical main, including after a force rewrite.
       if (!(await this.descends(input.installedSource, mainSource)))
         throw new JonesActionsError("unqualified");
+      if (
+        targetSource !== undefined &&
+        (!(await this.descends(input.installedSource, targetSource)) ||
+          !(await this.descends(targetSource, mainSource)))
+      )
+        throw new JonesActionsError("unqualified");
+      if ((targetSource ?? mainSource) === input.installedSource) return { state: "no-new" };
       let building = false;
       for (let page = 1; page <= 3; page++) {
         const runs = rows(
           await this.transport.api(
-            `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main&event=push&per_page=50&page=${page}`,
+            `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main&event=push${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${page}`,
           ),
           "workflow_runs",
         );
         for (const listed of runs) {
-          if (!canonicalRun(listed, approved.workflow)) continue;
+          if (
+            !canonicalRun(listed, approved.workflow) ||
+            (targetSource !== undefined && listed.head_sha !== targetSource)
+          ) continue;
           if (listed.status !== "completed") {
             building = true;
             continue;
@@ -293,6 +304,7 @@ export class JonesActionsClient {
             continue;
           const candidateSource = source(run.head_sha);
           if (
+            (targetSource !== undefined && candidateSource !== targetSource) ||
             candidateSource === input.installedSource ||
             !(await this.descends(input.installedSource, candidateSource)) ||
             !(await this.descends(candidateSource, mainSource))
