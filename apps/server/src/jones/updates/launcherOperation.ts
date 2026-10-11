@@ -259,3 +259,37 @@ export async function reconcileUpdateOperation(
     };
   }
 }
+
+/** Refuse a new operation while any retained receipt lacks a proven terminal outcome. */
+export async function assertNoUnreconciledUpdateOperations(
+  baseDir: string,
+  current: ServiceUpdateRecord | undefined,
+): Promise<void> {
+  baseDir = await Fs.realpath(baseDir);
+  let directory: Awaited<ReturnType<typeof Fs.opendir>>;
+  try {
+    const path = Path.join(baseDir, "runtime", "jones-update-operations");
+    if (!(await Fs.lstat(path)).isDirectory()) throw new Error("Invalid native receipt directory.");
+    directory = await Fs.opendir(path);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw cause;
+  }
+  const reservations = new Set<string>();
+  const outcomes = new Set<string>();
+  let count = 0;
+  for await (const entry of directory) {
+    if (++count > 4096) throw new Error("Native operation receipt inspection limit exceeded.");
+    const match = /^([a-f0-9-]+)(\.outcome)?\.json$/.exec(entry.name);
+    if (!entry.isFile() || match === null || !isUpdateOperationId(match[1]!))
+      throw new Error("Unexpected native operation receipt entry.");
+    (match[2] === undefined ? reservations : outcomes).add(match[1]!);
+  }
+  if ([...outcomes].some((id) => !reservations.has(id)))
+    throw new Error("Native operation outcome has no reservation.");
+  for (const id of reservations) {
+    const receipt = await reconcileUpdateOperation(baseDir, id, current);
+    if (receipt.state !== "committed" && receipt.state !== "rolled-back")
+      throw new Error("A retained native operation requires reconciliation before another update.");
+  }
+}

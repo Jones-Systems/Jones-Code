@@ -49,6 +49,7 @@ import {
 import type { MigrationPlan } from "./jones/updates/migrationPlan.ts";
 import {
   archiveUpdateOperation,
+  assertNoUnreconciledUpdateOperations,
   operationBinding,
   readOperationReservation,
   reconcileUpdateOperation,
@@ -1024,6 +1025,7 @@ export class Launcher {
     }
     try {
       await this.#updateOperationIO.archive(this.#baseDir, this.#state.update);
+      await assertNoUnreconciledUpdateOperations(this.#baseDir, this.#state.update);
       if (message.operationId !== undefined) {
         if (qualified === undefined) {
           await reject("An operation ID requires a qualified staged runtime.");

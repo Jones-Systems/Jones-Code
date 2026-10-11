@@ -8,6 +8,7 @@ import { decodeServiceLauncherChildMessage } from "../../cloud/serviceProtocol.t
 import type { StagedQualifiedRuntime } from "../cloud/qualifiedRuntime.ts";
 import {
   archiveUpdateOperation,
+  assertNoUnreconciledUpdateOperations,
   operationBinding,
   reconcileUpdateOperation,
   reserveUpdateOperation,
@@ -71,8 +72,10 @@ describe("native update operation receipts", () => {
   it("distinguishes no request from a crash between reservation and native acceptance", async () => {
     const { baseDir, qualified, pending } = await fixture();
     expect((await reconcileUpdateOperation(baseDir, operationId, undefined)).state).toBe("absent");
+    await assertNoUnreconciledUpdateOperations(baseDir, undefined);
     await reserveUpdateOperation(baseDir, operationId, operationBinding(qualified));
     expect((await reconcileUpdateOperation(baseDir, operationId, undefined)).state).toBe("blocked");
+    await expect(assertNoUnreconciledUpdateOperations(baseDir, undefined)).rejects.toThrow("requires reconciliation");
     await expect(
       reserveUpdateOperation(baseDir, operationId, operationBinding(qualified)),
     ).rejects.toMatchObject({ code: "EEXIST" });
@@ -93,6 +96,7 @@ describe("native update operation receipts", () => {
       await archiveUpdateOperation(baseDir, terminal);
       await archiveUpdateOperation(baseDir, terminal);
       expect((await reconcileUpdateOperation(baseDir, operationId, undefined)).state).toBe(status);
+      await assertNoUnreconciledUpdateOperations(baseDir, undefined);
       await expect(
         archiveUpdateOperation(baseDir, { ...terminal, status: "failed" }),
       ).rejects.toThrow("conflicts");
