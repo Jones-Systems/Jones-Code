@@ -47,7 +47,11 @@ const fixture = () =>
       capability: { check: true, download: true, install: true },
       currentVersion: "old-version",
       environmentId,
-      installedSource: input.expectedInstalledSource,
+      installedSource: {
+        repository: "Jones-Systems/Jones-Code",
+        sha: input.expectedInstalledSource,
+        tree: "e".repeat(40),
+      },
     };
     let native: Effect.Success<ReturnType<FleetHostUpdater["reconcileOperation"]>> = {
       state: "absent",
@@ -96,6 +100,10 @@ const fixture = () =>
       operations,
       updates,
       snapshot: () => update,
+      setInstalledSource: (installedSource: JonesUpdateState["installedSource"]) => {
+        const { installedSource: _previous, ...rest } = update;
+        update = installedSource === undefined ? rest : { ...rest, installedSource };
+      },
       setNative: (value: typeof native) => {
         native = value;
       },
@@ -103,6 +111,23 @@ const fixture = () =>
   });
 
 describe("fleet host coordination", () => {
+  it.effect("rejects staging when the installed source SHA changed or is unavailable", () =>
+    Effect.gen(function* () {
+      for (const sha of ["d".repeat(40), undefined]) {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        const stage = vi.spyOn(f.updates, "stageExact");
+        f.setInstalledSource(
+          sha === undefined ? undefined : { ...f.snapshot().installedSource!, sha },
+        );
+        expect((yield* f.service.stage(input).pipe(Effect.flip)).reason).toBe("binding");
+        expect(stage).not.toHaveBeenCalled();
+        expect(f.operations.has(input.operationId)).toBe(false);
+        expect(f.install).not.toHaveBeenCalled();
+      }
+    }),
+  );
+
   it.effect("requires explicit enrollment and rejects changed immutable operation bindings", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
@@ -172,6 +197,64 @@ describe("fleet host coordination", () => {
 });
 
 describe("fleet failure and retirement reconciliation", () => {
+  it.effect("recovers an unrecorded stage only while its installed source SHA still matches", () =>
+    Effect.gen(function* () {
+      for (const sha of [input.expectedInstalledSource, "d".repeat(40), undefined]) {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        yield* f.service.stage(input);
+        const { stagedHandle, ...unrecorded } = f.operations.get(input.operationId)!;
+        f.operations.set(input.operationId, { ...unrecorded, phase: "staging" });
+        f.setInstalledSource(
+          sha === undefined ? undefined : { ...f.snapshot().installedSource!, sha },
+        );
+        const retire = vi.spyOn(f.updates, "retireStagedOperation");
+        if (sha === input.expectedInstalledSource) {
+          expect((yield* f.service.retire(input)).operation?.phase).toBe("superseded");
+          expect(retire).toHaveBeenCalledTimes(1);
+          expect(retire).toHaveBeenCalledWith({
+            ...input,
+            currentVersion: unrecorded.currentVersion,
+            stagedHandle,
+          });
+        } else {
+          expect((yield* f.service.retire(input).pipe(Effect.flip)).reason).toBe("binding");
+          expect(retire).not.toHaveBeenCalled();
+          expect(f.operations.get(input.operationId)?.phase).toBe("staging");
+        }
+        expect(f.install).not.toHaveBeenCalled();
+      }
+    }),
+  );
+
+  it.effect("does not retry a refused install after installed source identity is lost", () =>
+    Effect.gen(function* () {
+      for (const sha of ["d".repeat(40), undefined]) {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        yield* f.service.stage(input);
+        f.install.mockImplementation(() =>
+          Effect.sync(() => {
+            f.setInstalledSource(
+              sha === undefined ? undefined : { ...f.snapshot().installedSource!, sha },
+            );
+            return {
+              ...f.snapshot(),
+              phase: "error",
+              message: "Installed source changed during preparation.",
+            };
+          }),
+        );
+        expect((yield* f.service.activate(input)).operation).toMatchObject({
+          phase: "blocked",
+          reason: "Installed source changed during preparation.",
+        });
+        expect((yield* f.service.activate(input)).operation?.phase).toBe("blocked");
+        expect(f.install).toHaveBeenCalledTimes(1);
+      }
+    }),
+  );
+
   it.effect(
     "observes a reservation gap through pending to committed without repeating installation",
     () =>
