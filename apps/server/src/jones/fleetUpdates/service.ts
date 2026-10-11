@@ -12,6 +12,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { ServerConfig } from "../../config.ts";
@@ -64,7 +65,7 @@ export class FleetUpdates extends Context.Service<
       input: FleetActivateInput,
     ) => Effect.Effect<FleetHostStatus, FleetHostError>;
   }
->()("t3/jones/fleetUpdates/FleetUpdates") {}
+>()("t3/jones/fleetUpdates/service/FleetUpdates") {}
 
 const fail = (reason: FleetHostError["reason"], message: string) =>
   new FleetHostError({ reason, message });
@@ -72,7 +73,7 @@ const storage = <T>(f: () => Promise<T>) =>
   Effect.tryPromise({
     try: f,
     catch: (cause) =>
-      cause instanceof FleetHostError
+      Schema.is(FleetHostError)(cause)
         ? cause
         : fail(
             "storage",
