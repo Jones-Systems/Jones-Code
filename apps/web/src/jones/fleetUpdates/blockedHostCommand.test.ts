@@ -22,11 +22,16 @@ describe("blocked-host update command", () => {
         state: null,
         descriptor: {
           environmentId: id,
+          label: "Synthetic host",
+          platform: { os: "linux", arch: "x64" },
+          serverVersion: "0.0.45-preview.20261010.1.1",
+          capabilities: { repositoryIdentity: true },
           orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
         },
       }) as ReturnType<typeof requestJonesUpdateWithDescriptor>,
     );
     const entries = await Effect.runPromise(SubscriptionRef.make(new Map([[id, entry]])));
+    // The bridge mock supplies a context-free effect; no transport services execute here.
     await Effect.runPromise(
       executeBlockedHostUpdate({ environmentId: id, request: { action: "state" } }).pipe(
         Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, {
@@ -34,7 +39,7 @@ describe("blocked-host update command", () => {
           setEnabled,
           setCompatibility,
         } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
-      ),
+      ) as Effect.Effect<unknown, unknown>,
     );
     expect(requestJonesUpdateWithDescriptor).toHaveBeenCalledWith(entry, { action: "state" });
     expect(setEnabled).not.toHaveBeenCalled();
