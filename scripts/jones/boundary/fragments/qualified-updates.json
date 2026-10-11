@@ -81,7 +81,6 @@
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
-    "apps/server/src/orchestration-v2/RestartContinuationPolicy.ts",
     "apps/desktop/src/boot.ts",
     "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
     "apps/server/src/persistence/Sqlite.ts",
