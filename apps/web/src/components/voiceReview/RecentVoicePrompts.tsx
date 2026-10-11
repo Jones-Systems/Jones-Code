@@ -323,10 +323,36 @@ function RecentPromptRow({
             Command: {entry.command_id ?? "not observed"} · status:{" "}
             {entry.draft.command_status ?? "not observed"}
           </p>
-          <p>
-            Release is a handoff for processing. Queue receipt and native execution evidence are
-            unavailable in this view.
-          </p>
+          <p>Release and queue intake do not prove native handoff or completed work.</p>
+          {entry.queue_delivery_links?.status === "ready" ? (
+            <div className="space-y-1" aria-label="Queue delivery links">
+              {entry.queue_delivery_links.unlinked_delivery_count === undefined ? (
+                <p>
+                  Additional delivery links may be unavailable; native handoff remains unconfirmed
+                  here.
+                </p>
+              ) : entry.queue_delivery_links.unlinked_delivery_count > 0 ? (
+                <p>
+                  Deliveries without queue links:{" "}
+                  {entry.queue_delivery_links.unlinked_delivery_count}. Native handoff remains
+                  unconfirmed for these deliveries.
+                </p>
+              ) : null}
+              {entry.queue_delivery_links.deliveries.map((delivery) => (
+                <p key={delivery.delivery_id} className="wrap-anywhere">
+                  Delivery: {delivery.delivery_id} · Queue request: {delivery.queue_request_id}
+                  {" · Backend: "}
+                  {delivery.destination.backend}
+                  {" · Instance: "}
+                  {delivery.destination.instance}
+                  {" · Thread: "}
+                  {delivery.destination.thread_id ?? "not observed"}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p>Queue delivery links unavailable; native handoff remains unconfirmed here.</p>
+          )}
         </div>
       </details>
     </article>

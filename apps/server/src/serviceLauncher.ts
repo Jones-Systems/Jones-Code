@@ -25,8 +25,10 @@ import {
 } from "./jones/cloud/qualifiedRuntime.ts";
 
 import {
+  assertQualifiedReadinessObservable,
   proveQualifiedStateQuiescence,
   QUALIFIED_STARTUP_STATE_FILES,
+  QualifiedQuiescenceError,
   type QualifiedQuiescenceAdapter,
 } from "./jones/cloud/qualifiedQuiescence.ts";
 import {
@@ -86,6 +88,11 @@ import {
 
 const HANDOFF_DELAY_MS = 2_000;
 const PREPARED_TIMEOUT_MS = 120_000;
+// The server abandons a launcher exchange after 30 seconds (serviceLauncherClient).
+// Past this fence, measured from message receipt, a qualified Install is not
+// accepted and a qualified pointer is not committed. The margin covers the
+// durable write and reply on a responsive host; it is not a guarantee.
+const QUALIFIED_EXCHANGE_FENCE_MS = 25_000;
 
 type TerminalStatus = "committed" | "rolled-back" | "failed";
 type ChildRole = "active" | "trial";
@@ -532,6 +539,7 @@ export class Launcher {
     readonly archive: typeof archiveUpdateOperation;
     readonly reserve: typeof reserveUpdateOperation;
   };
+  readonly #now: () => number;
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
@@ -553,6 +561,8 @@ export class Launcher {
         readonly archive: typeof archiveUpdateOperation;
         readonly reserve: typeof reserveUpdateOperation;
       };
+      /** Monotonic milliseconds for the qualified exchange fence; injectable in tests. */
+      readonly now?: () => number;
     } = {},
   ) {
     this.#baseDir = baseDir;
@@ -565,6 +575,11 @@ export class Launcher {
       archive: archiveUpdateOperation,
       reserve: reserveUpdateOperation,
     };
+    this.#now = options.now ?? (() => performance.now());
+  }
+
+  #exchangeExpired(receivedAt: number): boolean {
+    return this.#now() - receivedAt > QUALIFIED_EXCHANGE_FENCE_MS;
   }
 
   async run(): Promise<void> {
@@ -855,8 +870,12 @@ export class Launcher {
     };
     this.#child = managed;
     child.on("message", (value) => {
+      // Receipt time, before queueing, is the closest launcher-side bound on
+      // when the child's exchange timer started.
+      const receivedAt = this.#now();
       const message = decodeServiceLauncherChildMessage(value);
-      if (message !== undefined) this.#enqueue(() => this.#handleMessage(managed, message));
+      if (message !== undefined)
+        this.#enqueue(() => this.#handleMessage(managed, message, receivedAt));
       else if (
         update?.qualified !== undefined &&
         typeof value === "object" &&
@@ -898,7 +917,11 @@ export class Launcher {
     }
   }
 
-  async #handleMessage(child: ManagedChild, message: ServiceLauncherChildMessage): Promise<void> {
+  async #handleMessage(
+    child: ManagedChild,
+    message: ServiceLauncherChildMessage,
+    receivedAt: number,
+  ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
     if (message.type === "request-retire-update") {
       let retired = false;
@@ -926,15 +949,16 @@ export class Launcher {
       return;
     }
     if (message.type === "request-update") {
-      await this.#handleUpdateRequest(child, message);
+      await this.#handleUpdateRequest(child, message, receivedAt);
       return;
     }
-    await this.#handlePrepared(child, message);
+    await this.#handlePrepared(child, message, receivedAt);
   }
 
   async #handleUpdateRequest(
     child: ManagedChild,
     message: Extract<ServiceLauncherChildMessage, { readonly type: "request-update" }>,
+    receivedAt: number,
   ): Promise<void> {
     const reject = (reason: string) =>
       sendMessage(child.process, {
@@ -1043,19 +1067,38 @@ export class Launcher {
           qualified.binding.dbPath !== message.dbPath
         )
           throw new Error("Install target differs from its staged handle.");
+        if (child.process.pid === undefined)
+          throw new Error("The requesting child has no native process identity.");
+        // Refuse before acceptance when the readiness commit could never prove
+        // that its captured writer alone holds the state.
+        await assertQualifiedReadinessObservable({
+          baseDir: this.#baseDir,
+          allowedProcessIds: [child.process.pid],
+          ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
+        });
         migrationPlan = await preflightQualifiedCandidate(this.#baseDir, qualified);
         await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter);
         if (this.#child !== child || this.#stopRequested || this.#stopping)
           throw new Error("The requesting child stopped during candidate preflight.");
       } catch (cause) {
         await reject(
-          cause instanceof QualifiedCandidatePreflightError ||
-            (cause instanceof Error &&
-              (cause.message.startsWith("startup-gate-unavailable:") ||
-                cause.message.startsWith("recovery-capacity:")))
-            ? cause.message
-            : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
+          cause instanceof QualifiedQuiescenceError
+            ? `writer-proof-${cause.reason}: The readiness commit cannot prove exclusive state ownership on this host; Install was not admitted.`
+            : cause instanceof QualifiedCandidatePreflightError ||
+                (cause instanceof Error &&
+                  (cause.message.startsWith("startup-gate-unavailable:") ||
+                    cause.message.startsWith("recovery-capacity:")))
+              ? cause.message
+              : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
         );
+        return;
+      }
+      if (this.#exchangeExpired(receivedAt)) {
+        // The requester may already have reported a timeout; never accept,
+        // record or stop behind it. A disconnected requester needs no reply.
+        await reject(
+          "request-expired: Install preflight outlasted the server's launcher exchange; Install was not admitted.",
+        ).catch(() => undefined);
         return;
       }
     }
@@ -1081,6 +1124,14 @@ export class Launcher {
       await reject(
         "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
       );
+      return;
+    }
+    if (qualified !== undefined && this.#exchangeExpired(receivedAt)) {
+      // Receipt preparation can consume the exchange budget too. A reservation
+      // already written stays available for reconciliation; no Install was accepted.
+      await reject(
+        "request-expired: Native operation preparation outlasted the server's launcher exchange; Install was not admitted.",
+      ).catch(() => undefined);
       return;
     }
     const pending: PendingServiceUpdate = {
@@ -1119,6 +1170,7 @@ export class Launcher {
   async #handlePrepared(
     child: ManagedChild,
     message: Extract<ServiceLauncherChildMessage, { readonly type: "prepared" }>,
+    receivedAt: number,
   ): Promise<void> {
     const updateId = message.updateId;
     const pending = this.#state.update;
@@ -1178,6 +1230,14 @@ export class Launcher {
       // Only the captured trial may own writable state at the pointer commit.
       await this.#proveQuiescence([child.process.pid]);
       this.#assertQualifiedChildLive(child);
+      if (this.#exchangeExpired(receivedAt)) {
+        // The trial may have abandoned its prepared exchange and could never
+        // reserve resume. No pointer write was attempted, so the ordinary
+        // pre-commit rollback applies.
+        this.#clearTimer();
+        await this.#returnToPrevious(pending, "rolled-back", "prepared-exchange-expired", child);
+        return;
+      }
     }
     this.#clearTimer();
     const committed = {
