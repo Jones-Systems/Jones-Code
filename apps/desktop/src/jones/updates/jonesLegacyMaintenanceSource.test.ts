@@ -62,8 +62,9 @@ describe("standalone pre-state maintenance protocol", () => {
     expect(jonesLegacyMaintenanceSource).not.toContain("`");
   });
 
-  for (const scenario of ["anchor", "arguments", "cursor", "no-bytecode", "shim-bytes"]) {
-    it(`enforces ${scenario} before granting any maintenance effect`, () => {
+  it.each(["anchor", "arguments", "cursor", "no-bytecode", "shim-bytes"])(
+    "enforces %s before granting any maintenance effect",
+    (scenario) => {
       const result = NodeChildProcess.spawnSync("python3", ["-I", "-B", "-c", protocolFixture], {
         input: JSON.stringify({
           source: jonesLegacyMaintenanceSource,
@@ -91,6 +92,6 @@ describe("standalone pre-state maintenance protocol", () => {
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({ case: scenario, passed: true });
-    });
-  }
+    },
+  );
 });

@@ -134,8 +134,9 @@ describe("schema 2 maintenance resources", () => {
   );
 });
 
-for (const terminator of ["\n", "\r", "\u2028", "\u2029"]) {
-  it(`rejects trailing hash terminator ${JSON.stringify(terminator)} in bundle and proof identities`, () => {
+it.each(["\n", "\r", "\u2028", "\u2029"])(
+  "rejects trailing hash terminator %j in bundle and proof identities",
+  (terminator) => {
     const native = {
       identityNative: inertArm64Executable(),
       identityNativeSourceSha256: "c".repeat(64),
@@ -185,8 +186,8 @@ for (const terminator of ["\n", "\r", "\u2028", "\u2029"]) {
         invalidIdentity,
       ),
     ).toThrow();
-  });
-}
+  },
+);
 
 it("rejects proof extensions, architecture changes, and mismatched independent hashes", () => {
   const proof = JSON.parse(
