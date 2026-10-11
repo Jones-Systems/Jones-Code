@@ -7,6 +7,10 @@ import {
   StoredOrchestrationThreadSnapshot,
   decodeOrDiscardOrchestrationCache,
   putRemoteDpopTokenInCatalog,
+  listConnectionCompatibilityHints,
+  setConnectionCompatibilityHintInCatalog,
+  putConnectionProfileInCatalog,
+  removeConnectionProfileFromCatalog,
   registerConnectionInCatalog,
   removeCatalogValue,
   removeConnectionFromCatalog,
@@ -86,6 +90,8 @@ function persistenceError(
   operation:
     | "list-targets"
     | "list-disabled-targets"
+    | "list-compatibility-hints"
+    | "set-compatibility-hint"
     | "register-connection"
     | "set-connection-routes"
     | "remove-connection"
@@ -618,8 +624,18 @@ export const layer = Layer.effectContext(
         Effect.map((document) => document.disabledEnvironmentIds),
         Effect.mapError((cause) => persistenceError("list-disabled-targets", cause)),
       ),
+      listCompatibilityHints: catalog.read.pipe(
+        Effect.map(listConnectionCompatibilityHints),
+        Effect.mapError((cause) => persistenceError("list-compatibility-hints", cause)),
+      ),
     });
     const registrationStore = Persistence.ConnectionRegistrationStore.of({
+      setCompatibilityHint: (environmentId, routeBinding, kind) =>
+        catalog
+          .update((document) =>
+            setConnectionCompatibilityHintInCatalog(document, environmentId, routeBinding, kind),
+          )
+          .pipe(Effect.mapError((cause) => persistenceError("set-compatibility-hint", cause))),
       register: (registration, routes) =>
         catalog
           .update((document) => registerConnectionInCatalog(document, registration, routes))
@@ -647,19 +663,9 @@ export const layer = Layer.effectContext(
           ),
         ),
       put: (profile) =>
-        catalog.update((document) => ({
-          ...document,
-          profiles: replaceCatalogValue(document.profiles, (value) => value.connectionId, profile),
-        })),
+        catalog.update((document) => putConnectionProfileInCatalog(document, profile)),
       remove: (connectionId) =>
-        catalog.update((document) => ({
-          ...document,
-          profiles: removeCatalogValue(
-            document.profiles,
-            (value) => value.connectionId,
-            connectionId,
-          ),
-        })),
+        catalog.update((document) => removeConnectionProfileFromCatalog(document, connectionId)),
     });
     const credentialStore = CredentialStore.make({
       get: (connectionId) =>

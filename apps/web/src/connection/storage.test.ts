@@ -1,9 +1,18 @@
 import {
   ConnectionTransientError,
+  BearerConnectionTarget,
+  BearerConnectionProfile,
+  BearerConnectionCredential,
+  BearerConnectionRegistration,
+  ProfileStore,
   PrimaryConnectionTarget,
 } from "@t3tools/client-runtime/connection";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { ConnectionCatalogDocument, Persistence } from "@t3tools/client-runtime/platform";
+import {
+  ConnectionCatalogDocument,
+  Persistence,
+  connectionCompatibilityRouteBinding,
+} from "@t3tools/client-runtime/platform";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -21,6 +30,7 @@ const emptyCatalog = {
   credentials: [],
   remoteDpopTokens: [],
   disabledEnvironmentIds: [],
+  compatibilityHints: [],
 } as const;
 const decodeCatalog = Schema.decodeUnknownSync(Schema.fromJsonString(ConnectionCatalogDocument));
 const encodeCatalog = Schema.encodeSync(Schema.fromJsonString(ConnectionCatalogDocument));
@@ -388,5 +398,154 @@ describe("browser GitHub routing permissions", () => {
       );
       expect(yield* second.get(entry)).toBe("off");
     }).pipe(Effect.scoped),
+  );
+});
+
+describe("durable compatibility hints", () => {
+  const environmentId = EnvironmentId.make("saved-off-environment");
+  const target = new BearerConnectionTarget({
+    environmentId,
+    label: "Saved",
+    connectionId: "saved-route",
+  });
+  const profile = new BearerConnectionProfile({
+    environmentId,
+    label: "Saved",
+    connectionId: target.connectionId,
+    httpBaseUrl: "https://saved.example.test",
+    wsBaseUrl: "wss://saved.example.test",
+  });
+  const credential = new BearerConnectionCredential({ token: "saved-test-credential" });
+  const registration = new BearerConnectionRegistration({ target, profile, credential });
+  const routeBinding = connectionCompatibilityRouteBinding([
+    { target, profile: Option.some(profile) },
+  ])!;
+  const hint = { environmentId, routeBinding, kind: "outdated-update" } as const;
+
+  it.effect("does not quarantine a valid catalog when optional hints are malformed", () =>
+    Effect.gen(function* () {
+      const writes: string[] = [];
+      const quarantined: string[] = [];
+      const raw = JSON.stringify({
+        ...emptyCatalog,
+        targets: [target],
+        profiles: [profile],
+        credentials: [{ connectionId: target.connectionId, credential }],
+        disabledEnvironmentIds: [environmentId],
+        compatibilityHints: [{ ...hint, token: "unexpected" }],
+      });
+      const store = yield* ConnectionStorage.makeCatalogStore({
+        read: Effect.succeed(raw),
+        write: (value) => Effect.sync(() => writes.push(value)),
+        quarantine: (value) => Effect.sync(() => quarantined.push(value)),
+      });
+      const restored = yield* store.read;
+      expect(restored.targets).toEqual([target]);
+      expect(restored.credentials[0]?.credential).toEqual(credential);
+      expect(restored.disabledEnvironmentIds).toEqual([environmentId]);
+      expect(restored.compatibilityHints).toEqual([]);
+      expect(writes).toEqual([]);
+      expect(quarantined).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "uses real adapter methods across reload, profile edits and fresh clear while staying Off",
+    () =>
+      Effect.gen(function* () {
+        let raw: string | null = null;
+        const getConnectionCatalog = vi.fn(async () => raw);
+        const setConnectionCatalog = vi.fn(async (value: string) => {
+          raw = value;
+          return true;
+        });
+        vi.stubGlobal("window", { desktopBridge: { getConnectionCatalog, setConnectionCatalog } });
+        const open = vi.fn(() => {
+          throw new Error("Hint persistence must not open the cache database");
+        });
+        vi.stubGlobal("indexedDB", { open });
+        yield* Effect.gen(function* () {
+          const store = yield* Persistence.ConnectionRegistrationStore;
+          yield* store.register(registration, [target]);
+          yield* store.setEnabled(environmentId, false);
+          if (store.setCompatibilityHint === undefined)
+            throw new Error("Web adapter must persist hints");
+          yield* store.setCompatibilityHint(environmentId, routeBinding, "outdated-update");
+        }).pipe(Effect.provide(ConnectionStorage.layer));
+
+        yield* Effect.gen(function* () {
+          const targets = yield* Persistence.ConnectionTargetStore;
+          const store = yield* Persistence.ConnectionRegistrationStore;
+          const profiles = yield* ProfileStore.ConnectionProfileStore;
+          if (
+            targets.listCompatibilityHints === undefined ||
+            store.setCompatibilityHint === undefined
+          )
+            throw new Error("Web adapter must expose hint storage");
+          expect(yield* targets.listCompatibilityHints).toEqual([hint]);
+          expect(yield* targets.listDisabled).toEqual([environmentId]);
+          const changed = new BearerConnectionProfile({
+            ...profile,
+            httpBaseUrl: "https://changed.example.test",
+          });
+          yield* profiles.put(changed);
+          expect(yield* targets.listCompatibilityHints).toEqual([]);
+          yield* store.setCompatibilityHint(environmentId, routeBinding, "outdated-update");
+          expect(yield* targets.listCompatibilityHints).toEqual([]);
+          const currentBinding = connectionCompatibilityRouteBinding([
+            { target, profile: Option.some(changed) },
+          ])!;
+          yield* store.setCompatibilityHint(environmentId, currentBinding, "outdated-update");
+          yield* store.setCompatibilityHint(environmentId, routeBinding, null);
+          expect(yield* targets.listCompatibilityHints).toHaveLength(1);
+          yield* store.setCompatibilityHint(environmentId, currentBinding, null);
+          expect(yield* targets.listCompatibilityHints).toEqual([]);
+          expect(yield* targets.listDisabled).toEqual([environmentId]);
+        }).pipe(Effect.provide(ConnectionStorage.layer));
+
+        yield* Effect.gen(function* () {
+          const targets = yield* Persistence.ConnectionTargetStore;
+          if (targets.listCompatibilityHints === undefined)
+            throw new Error("Missing durable hint reader");
+          expect(yield* targets.listCompatibilityHints).toEqual([]);
+          expect(yield* targets.listDisabled).toEqual([environmentId]);
+        }).pipe(Effect.provide(ConnectionStorage.layer));
+        expect(getConnectionCatalog).toHaveBeenCalledTimes(3);
+        expect(open).not.toHaveBeenCalled();
+        expect(decodeCatalog(raw!).credentials[0]?.credential).toEqual(credential);
+      }),
+  );
+
+  it.effect("does not publish a hint in memory when its durable write fails", () =>
+    Effect.gen(function* () {
+      const raw = encodeCatalog({
+        ...emptyCatalog,
+        targets: [target],
+        profiles: [profile],
+        credentials: [{ connectionId: target.connectionId, credential }],
+        disabledEnvironmentIds: [environmentId],
+      });
+      vi.stubGlobal("window", {
+        desktopBridge: {
+          getConnectionCatalog: vi.fn(async () => raw),
+          setConnectionCatalog: vi.fn(async () => false),
+        },
+      });
+      yield* Effect.gen(function* () {
+        const targets = yield* Persistence.ConnectionTargetStore;
+        const store = yield* Persistence.ConnectionRegistrationStore;
+        if (
+          targets.listCompatibilityHints === undefined ||
+          store.setCompatibilityHint === undefined
+        )
+          throw new Error("Web adapter must expose hint storage");
+        const error = yield* store
+          .setCompatibilityHint(environmentId, routeBinding, "outdated-update")
+          .pipe(Effect.flip);
+        expect(error.operation).toBe("set-compatibility-hint");
+        expect(yield* targets.listCompatibilityHints).toEqual([]);
+        expect(yield* targets.listDisabled).toEqual([environmentId]);
+      }).pipe(Effect.provide(ConnectionStorage.layer));
+    }),
   );
 });

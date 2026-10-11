@@ -28,6 +28,12 @@ import {
   ConnectionCatalogDocument,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
   catalogRoutes,
+  connectionCompatibilityRouteBinding,
+  decodeConnectionCompatibilityHints,
+  listConnectionCompatibilityHints,
+  setConnectionCompatibilityHintInCatalog,
+  putConnectionProfileInCatalog,
+  removeConnectionProfileFromCatalog,
   setRoutesInCatalog,
   putRemoteDpopTokenInCatalog,
   registerConnectionInCatalog,
@@ -349,6 +355,7 @@ describe("ConnectionCatalogDocument", () => {
     });
 
     expect(decoded.disabledEnvironmentIds).toEqual([]);
+    expect(decoded.compatibilityHints).toEqual([]);
   });
 
   it("switches a saved environment off and back on without touching its records", () => {
@@ -458,5 +465,291 @@ describe("ConnectionCatalogDocument", () => {
     expect(
       setRoutesInCatalog(document, ENVIRONMENT_ID, [BEARER_TARGET, RELAY_TARGET]).targets,
     ).toEqual([BEARER_TARGET, RELAY_TARGET, other]);
+  });
+});
+
+describe("saved compatibility hints", () => {
+  const bearerRoute = { target: BEARER_TARGET, profile: Option.some(BEARER_PROFILE) };
+  const relayRoute = { target: RELAY_TARGET, profile: Option.none() };
+  const binding = connectionCompatibilityRouteBinding([bearerRoute])!;
+  const hint = {
+    environmentId: ENVIRONMENT_ID,
+    routeBinding: binding,
+    kind: "outdated-update",
+  } as const;
+  const registration = new BearerConnectionRegistration({
+    target: BEARER_TARGET,
+    profile: BEARER_PROFILE,
+    credential: BEARER_CREDENTIAL,
+  });
+  const savedOff = setConnectionEnabledInCatalog(
+    registerConnectionInCatalog(EMPTY_CONNECTION_CATALOG_DOCUMENT, registration),
+    ENVIRONMENT_ID,
+    false,
+  );
+
+  it("round-trips historical presentation without enabling an Off environment", () => {
+    const hinted = setConnectionCompatibilityHintInCatalog(
+      savedOff,
+      ENVIRONMENT_ID,
+      binding,
+      hint.kind,
+    );
+    const schema = Schema.fromJsonString(ConnectionCatalogDocument);
+    const restored = Schema.decodeSync(schema)(Schema.encodeSync(schema)(hinted));
+    expect(listConnectionCompatibilityHints(restored)).toEqual([hint]);
+    expect(restored.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
+    expect(Object.keys(restored.compatibilityHints[0]!).sort()).toEqual([
+      "environmentId",
+      "kind",
+      "routeBinding",
+    ]);
+    expect(JSON.stringify(restored.compatibilityHints)).not.toContain(BEARER_CREDENTIAL.token);
+    const cleared = setConnectionCompatibilityHintInCatalog(
+      restored,
+      ENVIRONMENT_ID,
+      binding,
+      null,
+    );
+    expect(cleared.compatibilityHints).toEqual([]);
+    expect(cleared.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
+    expect(cleared.credentials).toEqual(savedOff.credentials);
+  });
+
+  it("drops malformed optional hints without discarding valid hints or saved records", () => {
+    const restored = decodeCatalogDocument({
+      ...savedOff,
+      compatibilityHints: [
+        null,
+        { ...hint, kind: "connected" },
+        { ...hint, credential: { token: "must-not-be-hint-data" } },
+        { ...hint, routeBinding: "x".repeat(16_385) },
+        hint,
+        hint,
+      ],
+    });
+    expect(restored.compatibilityHints).toEqual([hint]);
+    expect(restored.targets).toEqual(savedOff.targets);
+    expect(restored.credentials).toEqual(savedOff.credentials);
+    expect(restored.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
+    for (const compatibilityHints of [null, {}, "bad", Array(129).fill(hint)]) {
+      const decoded = decodeCatalogDocument({ ...savedOff, compatibilityHints });
+      expect(decoded.compatibilityHints).toEqual([]);
+      expect(decoded.credentials).toEqual(savedOff.credentials);
+    }
+    expect(decodeConnectionCompatibilityHints(undefined)).toEqual([]);
+  });
+
+  it("does not expose hints for unknown environments or mismatched saved routes", () => {
+    const restored = decodeCatalogDocument({
+      ...savedOff,
+      compatibilityHints: [
+        { ...hint, routeBinding: "different-route" },
+        { ...hint, environmentId: EnvironmentId.make("unknown") },
+      ],
+    });
+    expect(listConnectionCompatibilityHints(restored)).toEqual([]);
+    expect(
+      setConnectionCompatibilityHintInCatalog(savedOff, ENVIRONMENT_ID, "stale", hint.kind),
+    ).toBe(savedOff);
+  });
+
+  it("invalidates reorder, replacement, removal and dropped routes", () => {
+    const routes = [BEARER_TARGET, RELAY_TARGET];
+    const pair = setRoutesInCatalog(savedOff, ENVIRONMENT_ID, routes);
+    const pairBinding = connectionCompatibilityRouteBinding([bearerRoute, relayRoute])!;
+    const hinted = setConnectionCompatibilityHintInCatalog(
+      pair,
+      ENVIRONMENT_ID,
+      pairBinding,
+      hint.kind,
+    );
+    expect(hinted.compatibilityHints).toHaveLength(1);
+    expect(setRoutesInCatalog(hinted, ENVIRONMENT_ID, routes).compatibilityHints).toHaveLength(1);
+    for (const next of [[RELAY_TARGET, BEARER_TARGET], [BEARER_TARGET], [RELAY_TARGET], []]) {
+      expect(setRoutesInCatalog(hinted, ENVIRONMENT_ID, next).compatibilityHints).toEqual([]);
+    }
+    expect(removeConnectionFromCatalog(hinted, ENVIRONMENT_ID).compatibilityHints).toEqual([]);
+    const replacement = new BearerConnectionRegistration({
+      ...registration,
+      target: new BearerConnectionTarget({ ...BEARER_TARGET, connectionId: "replacement" }),
+      profile: new BearerConnectionProfile({ ...BEARER_PROFILE, connectionId: "replacement" }),
+    });
+    expect(registerConnectionInCatalog(hinted, replacement).compatibilityHints).toEqual([]);
+  });
+
+  it("invalidates profile edits and refuses late writes and clears from the old route", () => {
+    const hinted = setConnectionCompatibilityHintInCatalog(
+      savedOff,
+      ENVIRONMENT_ID,
+      binding,
+      hint.kind,
+    );
+    const changedProfile = new BearerConnectionProfile({
+      ...BEARER_PROFILE,
+      httpBaseUrl: "https://replacement.example.test",
+    });
+    const edited = putConnectionProfileInCatalog(hinted, changedProfile);
+    expect(edited.compatibilityHints).toEqual([]);
+    expect(
+      registerConnectionInCatalog(
+        hinted,
+        new BearerConnectionRegistration({
+          ...registration,
+          profile: changedProfile,
+        }),
+      ).compatibilityHints,
+    ).toEqual([]);
+    expect(
+      removeConnectionProfileFromCatalog(hinted, BEARER_TARGET.connectionId).compatibilityHints,
+    ).toEqual([]);
+    expect(
+      setConnectionCompatibilityHintInCatalog(edited, ENVIRONMENT_ID, binding, hint.kind),
+    ).toBe(edited);
+    const freshBinding = connectionCompatibilityRouteBinding([
+      { target: BEARER_TARGET, profile: Option.some(changedProfile) },
+    ])!;
+    const fresh = setConnectionCompatibilityHintInCatalog(
+      edited,
+      ENVIRONMENT_ID,
+      freshBinding,
+      hint.kind,
+    );
+    expect(setConnectionCompatibilityHintInCatalog(fresh, ENVIRONMENT_ID, binding, null)).toBe(
+      fresh,
+    );
+    expect(fresh.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
+  });
+
+  it("normalizes URL identity while preserving label and credential independence", () => {
+    const renamed = new BearerConnectionProfile({
+      ...BEARER_PROFILE,
+      label: "Renamed",
+      httpBaseUrl: "https://REMOTE.example.test:443/",
+    });
+    expect(
+      connectionCompatibilityRouteBinding([
+        {
+          target: new BearerConnectionTarget({ ...BEARER_TARGET, label: "Renamed" }),
+          profile: Option.some(renamed),
+        },
+      ]),
+    ).toBe(binding);
+    const hinted = setConnectionCompatibilityHintInCatalog(
+      savedOff,
+      ENVIRONMENT_ID,
+      binding,
+      hint.kind,
+    );
+    const refreshed = registerConnectionInCatalog(
+      hinted,
+      new BearerConnectionRegistration({
+        ...registration,
+        profile: renamed,
+        credential: new BearerConnectionCredential({ token: "replacement-secret" }),
+      }),
+    );
+    expect(refreshed.compatibilityHints).toEqual([hint]);
+    expect(JSON.stringify(refreshed.compatibilityHints)).not.toContain("replacement-secret");
+    for (const fields of [
+      { wsBaseUrl: "wss://replacement.example.test" },
+      { learned: true as const },
+      { authorization: "t3-connect" as const },
+    ]) {
+      expect(
+        connectionCompatibilityRouteBinding([
+          {
+            target: BEARER_TARGET,
+            profile: Option.some(new BearerConnectionProfile({ ...BEARER_PROFILE, ...fields })),
+          },
+        ]),
+      ).not.toBe(binding);
+    }
+  });
+
+  it.each([
+    "https://user:secret@example.test",
+    "https://example.test?token=secret",
+    "https://example.test#secret",
+    "file:///tmp/not-an-endpoint",
+    "not-a-url",
+  ])("does not persist unsafe endpoint identity: %s", (httpBaseUrl) => {
+    expect(
+      connectionCompatibilityRouteBinding([
+        {
+          target: BEARER_TARGET,
+          profile: Option.some(new BearerConnectionProfile({ ...BEARER_PROFILE, httpBaseUrl })),
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("binds every saved SSH configuration field", () => {
+    const target = new SshConnectionTarget({
+      environmentId: ENVIRONMENT_ID,
+      label: "SSH",
+      connectionId: "ssh-1",
+    });
+    const profile = new SshConnectionProfile({
+      environmentId: ENVIRONMENT_ID,
+      connectionId: target.connectionId,
+      label: "SSH",
+      target: { alias: "mini", hostname: "mini.example.test", username: "user", port: 22 },
+    });
+    const original = connectionCompatibilityRouteBinding([
+      { target, profile: Option.some(profile) },
+    ]);
+    expect(original).not.toBeNull();
+    for (const fields of [
+      { alias: "other" },
+      { hostname: "other.example.test" },
+      { username: "other" },
+      { port: 2222 },
+    ]) {
+      expect(
+        connectionCompatibilityRouteBinding([
+          {
+            target,
+            profile: Option.some(
+              new SshConnectionProfile({ ...profile, target: { ...profile.target, ...fields } }),
+            ),
+          },
+        ]),
+      ).not.toBe(original);
+    }
+  });
+
+  it("refuses missing, duplicate, primary, cross-environment and oversized route bindings", () => {
+    expect(connectionCompatibilityRouteBinding([])).toBeNull();
+    expect(
+      connectionCompatibilityRouteBinding([{ target: BEARER_TARGET, profile: Option.none() }]),
+    ).toBeNull();
+    expect(connectionCompatibilityRouteBinding([bearerRoute, bearerRoute])).toBeNull();
+    expect(connectionCompatibilityRouteBinding(Array(17).fill(relayRoute))).toBeNull();
+    expect(
+      connectionCompatibilityRouteBinding([
+        bearerRoute,
+        {
+          target: new RelayConnectionTarget({
+            environmentId: EnvironmentId.make("other"),
+            label: "Other",
+          }),
+          profile: Option.none(),
+        },
+      ]),
+    ).toBeNull();
+    expect(
+      connectionCompatibilityRouteBinding([
+        {
+          target: new PrimaryConnectionTarget({
+            environmentId: ENVIRONMENT_ID,
+            label: "Primary",
+            httpBaseUrl: "http://localhost",
+            wsBaseUrl: "ws://localhost",
+          }),
+          profile: Option.none(),
+        },
+      ]),
+    ).toBeNull();
   });
 });
