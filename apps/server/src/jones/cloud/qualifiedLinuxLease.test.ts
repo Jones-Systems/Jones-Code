@@ -7,8 +7,19 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { observeLinuxStateLeases, parseLinuxLeaseResult } from "./qualifiedLinuxLease.ts";
-import { linuxQualifiedQuiescenceAdapter } from "./qualifiedQuiescence.ts";
+import {
+  observeLinuxStateLeases,
+  parseLinuxLeaseResult,
+  runCapturedProcess,
+} from "./qualifiedLinuxLease.ts";
+import {
+  assertQualifiedReadinessObservable,
+  linuxNativeQualifiedQuiescenceAdapter,
+  linuxQualifiedQuiescenceAdapter,
+  nativeQualifiedQuiescenceAdapter,
+  proveQualifiedStateQuiescence,
+  QualifiedQuiescenceError,
+} from "./qualifiedQuiescence.ts";
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Kernel lease evidence exists only on a native Linux host.
 const linux = NodeOS.platform() === "linux";
@@ -154,7 +165,79 @@ async function withWriter(
   }
 }
 
-it.skipIf(!linux)(
+it("stops only its captured child, escalating after grace, and settles once it is reaped", async () => {
+  const flood = await runCapturedProcess({
+    command: "/bin/sh",
+    args: ["-c", "while :; do echo flood; done"],
+    deadlineMs: 10_000,
+    outputLimit: 1024,
+  });
+  assert.equal(flood.outcome, "output-limit");
+  // A child that ignores SIGTERM is killed after the grace period and reaped.
+  const stubborn = await runCapturedProcess({
+    command: "/bin/sh",
+    args: ["-c", "trap '' TERM; while :; do :; done"],
+    deadlineMs: 100,
+    outputLimit: 1024,
+  });
+  assert.deepEqual([stubborn.outcome, stubborn.signal], ["deadline", "SIGKILL"]);
+  const missing = await runCapturedProcess({
+    command: "/nonexistent/jones-probe",
+    args: [],
+    deadlineMs: 1_000,
+    outputLimit: 1024,
+  });
+  assert.equal(missing.outcome, "spawn-failed");
+});
+
+// A non-root runner is required: root reads non-dumpable /proc descriptors.
+const hiddenWriterHost = linux && process.getuid?.() !== 0;
+
+it.skipIf(!hiddenWriterHost)(
+  "routes native Linux proofs to leases and readiness admission to fail-closed observation",
+  async () => {
+    const base = await NodeFSP.realpath(
+      await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-native-route-test-")),
+    );
+    const blocked = (reason: QualifiedQuiescenceError["reason"]) => (cause: unknown) =>
+      cause instanceof QualifiedQuiescenceError && cause.reason === reason;
+    try {
+      await NodeFSP.mkdir(NodePath.join(base, "userdata"));
+      const settings = NodePath.join(base, "userdata", "settings.json");
+      await NodeFSP.writeFile(NodePath.join(base, "userdata", "statev2.sqlite"), "synthetic");
+      await NodeFSP.writeFile(settings, "synthetic settings");
+      const untrustedHelper = NodePath.join(base, "helper");
+      await NodeFSP.writeFile(untrustedHelper, "");
+      // No helper is installed on the runner, so the native readiness observer
+      // falls back to the same-user scan; an untrusted helper blocks outright.
+      const native = nativeQualifiedQuiescenceAdapter("linux");
+      const unusableHelper = linuxNativeQualifiedQuiescenceAdapter({
+        readiness: { helperPath: untrustedHelper },
+      });
+      await withWriter(settings, "hidden", async () => {
+        await NodeAssert.rejects(
+          proveQualifiedStateQuiescence({ baseDir: base, adapter: native }),
+          blocked("writer-active"),
+        );
+        // Leases answer (busy is expected), but readiness cannot see the writer.
+        for (const adapter of [native, unusableHelper])
+          await NodeAssert.rejects(
+            assertQualifiedReadinessObservable({
+              baseDir: base,
+              allowedProcessIds: [process.pid],
+              adapter,
+            }),
+            blocked("unavailable"),
+          );
+      });
+      await proveQualifiedStateQuiescence({ baseDir: base, adapter: native });
+    } finally {
+      await NodeFSP.rm(base, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(!hiddenWriterHost)(
   "proves a non-dumpable writer that same-user descriptor observation cannot read",
   async () => {
     await fixture(async (files) => {

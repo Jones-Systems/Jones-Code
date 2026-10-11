@@ -357,18 +357,39 @@ export function linuxReadinessQualifiedQuiescenceAdapter(
   };
 }
 
+/**
+ * Linux routing: proofs with no allowed writer use kernel leases, the readiness
+ * commit uses the readiness observer. Install admission exercises both before
+ * acceptance, because the post-stop, restart and rollback proofs all need
+ * leases on these exact files.
+ */
+export function linuxNativeQualifiedQuiescenceAdapter(
+  options: {
+    readonly leases?: Parameters<typeof observeLinuxStateLeases>[1];
+    readonly readiness?: Parameters<typeof linuxReadinessQualifiedQuiescenceAdapter>[0];
+  } = {},
+): QualifiedQuiescenceAdapter {
+  const leases = linuxLeaseQualifiedQuiescenceAdapter(options.leases);
+  const readiness = linuxReadinessQualifiedQuiescenceAdapter(options.readiness);
+  return {
+    scan: (input) => (input.allowedProcessIds.length === 0 ? leases : readiness).scan(input),
+    async assertReadinessObservable(input) {
+      // The requesting server holds the state open for writing, so busy files
+      // are expected here; only a complete lease result on the exact snapshot
+      // shows that later lease proofs can answer.
+      const support = await observeLinuxStateLeases(input.files, options.leases);
+      if (support.status === "identity-changed")
+        throw new QualifiedQuiescenceError("state-identity-changed");
+      if (support.status === "proof-limit") throw new QualifiedQuiescenceError("proof-limit");
+      if (support.status !== "complete") throw unavailable();
+      if ((await readiness.scan(input)).length !== 0)
+        throw new QualifiedQuiescenceError("writer-active");
+    },
+  };
+}
+
 export function nativeQualifiedQuiescenceAdapter(platform: string): QualifiedQuiescenceAdapter {
-  if (platform === "linux") {
-    const leases = linuxLeaseQualifiedQuiescenceAdapter();
-    const readiness = linuxReadinessQualifiedQuiescenceAdapter();
-    return {
-      scan: (input) => (input.allowedProcessIds.length === 0 ? leases : readiness).scan(input),
-      async assertReadinessObservable(input) {
-        if ((await readiness.scan(input)).length !== 0)
-          throw new QualifiedQuiescenceError("writer-active");
-      },
-    };
-  }
+  if (platform === "linux") return linuxNativeQualifiedQuiescenceAdapter();
   if (platform === "darwin") return darwinQualifiedQuiescenceAdapter();
   return {
     scan: async () => {

@@ -9,7 +9,11 @@ import packageJson from "../../../package.json" with { type: "json" };
 import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
 import { readQualifiedBackupReceipt, type QualifiedBackupAdapter } from "./qualifiedBackup.ts";
 import type { QualifiedQuiescenceAdapter } from "./qualifiedQuiescence.ts";
-import { QUALIFIED_STARTUP_STATE_FILES, QualifiedQuiescenceError } from "./qualifiedQuiescence.ts";
+import {
+  linuxNativeQualifiedQuiescenceAdapter,
+  QUALIFIED_STARTUP_STATE_FILES,
+  QualifiedQuiescenceError,
+} from "./qualifiedQuiescence.ts";
 import {
   currentQualifiedRuntimeBinding,
   qualifiedPayloadDigest,
@@ -40,6 +44,7 @@ async function runScenario(
     readonly backupAdapter?: QualifiedBackupAdapter;
     readonly productionMain?: boolean;
     readonly startupGateProtocol?: 1 | "missing";
+    readonly now?: () => number;
   } = {},
 ) {
   const base = await NodeFSP.realpath(
@@ -177,6 +182,7 @@ if (context.update?.status === "pending") {
       quiescenceAdapter,
       ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
       ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
+      ...(options.now === undefined ? {} : { now: options.now }),
     });
     onLauncher?.(launcher);
     // Captured children exit or are reaped before the launcher settles; cleanup never polls by process name.
@@ -590,6 +596,110 @@ it("refuses Install admission when its readiness writer proof cannot complete", 
         throw new QualifiedQuiescenceError("unavailable");
       },
     },
+  );
+});
+
+it("refuses Install before acceptance or stop when the state files cannot hold kernel leases", async () => {
+  const programs = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-lease-program-"));
+  try {
+    // Stands in for the fixed lease program reporting leases unsupported or
+    // disabled (its EINVAL exit) while the readiness observer itself passes.
+    const unsupported = NodePath.join(programs, "unsupported-leases");
+    await NodeFSP.writeFile(unsupported, "#!/bin/sh\nexit 4\n", { mode: 0o755 });
+    let readinessScans = 0;
+    await runScenario(
+      "commit",
+      async (base) => {
+        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+        assert.equal(state.update, undefined);
+        assert.equal(state.activeVersion, baseline);
+        const rejected = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+        );
+        assert.match(rejected.reason, /^writer-proof-unavailable:/);
+        await NodeAssert.rejects(
+          NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+        );
+        await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
+        assert.equal(readinessScans, 0);
+        assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+      },
+      linuxNativeQualifiedQuiescenceAdapter({
+        leases: { perl: unsupported },
+        readiness: {
+          helperPath: NodePath.join(programs, "absent", "helper"),
+          fallback: {
+            scan: async () => {
+              readinessScans++;
+              return [];
+            },
+          },
+        },
+      }),
+    );
+  } finally {
+    await NodeFSP.rm(programs, { recursive: true, force: true });
+  }
+});
+
+it("does not accept an Install whose admission outlasted the server's exchange", async () => {
+  let clock = 0;
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update, undefined);
+      assert.equal(state.activeVersion, baseline);
+      const rejected = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+      );
+      assert.match(rejected.reason, /^request-expired:/);
+      await NodeAssert.rejects(
+        NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+      );
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    },
+    {
+      scan: async () => [],
+      // A slow but successful observation, measured on the injected clock.
+      assertReadinessObservable: async () => {
+        clock += 60_000;
+      },
+    },
+    undefined,
+    { now: () => clock },
+  );
+});
+
+it("rolls back instead of committing a pointer after the prepared exchange expired", async () => {
+  let clock = 0;
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.activeVersion, baseline);
+      assert.equal(state.update?.status, "rolled-back");
+      assert.equal(
+        state.update?.status === "pending" ? undefined : state.update?.reason,
+        "prepared-exchange-expired",
+      );
+      assert.equal(state.update?.startupReceipt, undefined);
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+      await NodeAssert.rejects(
+        NodeFSP.access(
+          NodePath.join(base, "runtime", "db-backup", state.update!.id, "resume-dispatched.json"),
+        ),
+      );
+    },
+    {
+      // The readiness proof with the trial allowed is slow but succeeds.
+      scan: async ({ allowedProcessIds }) => {
+        if (allowedProcessIds.length > 0) clock += 60_000;
+        return [];
+      },
+    },
+    undefined,
+    { now: () => clock },
   );
 });
 

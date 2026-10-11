@@ -310,6 +310,49 @@ it("ends the root helper's observation incomplete when present evidence is unrea
   });
 });
 
+it("trusts the helper only through a real root-owned ancestor chain", async () => {
+  await fixture(async ({ base, procRoot, files }) => {
+    // Path resolution follows the user-owned link to root-owned /usr/bin, so
+    // only the full-chain check sees an ancestor another user could replace.
+    const link = NodePath.join(base, "link");
+    await NodeFSP.symlink(NodePath.dirname(rootOwnedStandIn), link);
+    const viaLink = NodePath.join(link, NodePath.basename(rootOwnedStandIn));
+    const sudo = NodePath.join(base, "synthetic-sudo");
+    await NodeFSP.writeFile(sudo, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    for (const helperPath of [viaLink, "/usr/bin/../bin/env", "usr/bin/env"])
+      assert.deepEqual(
+        await observeQualifiedWriters(
+          { files, allowedProcessIds: [] },
+          { helperPath, sudoPath: sudo, procRoot },
+        ),
+        { status: "unavailable" },
+        helperPath,
+      );
+    // The privileged self-check applies the same chain rule to its own path.
+    const selfCheck = async (path: string) =>
+      (
+        await perl([
+          "-e",
+          "do $ARGV[0] or die($@ || $!); $0 = $ARGV[1]; print trusted_self() ? qq(trusted\\n) : qq(untrusted\\n);",
+          helper,
+          path,
+        ])
+      ).stdout;
+    assert.equal(await selfCheck(rootOwnedStandIn), "trusted\n");
+    assert.equal(await selfCheck(viaLink), "untrusted\n");
+    assert.equal(await selfCheck(files[1]!.path), "untrusted\n");
+  });
+});
+
+it("ends a helper run that outlasts its alarm with a typed incomplete result", async () => {
+  const result = await perl([
+    "-e",
+    'do $ARGV[0] or die($@ || $!); my ($code, $output) = bounded(1, sub { select(undef, undef, undef, 5); "late\\n" }); print "$code $output";',
+    helper,
+  ]);
+  assert.deepEqual(result, { code: 0, stdout: "3 incomplete deadline\n", stderr: "" });
+});
+
 it("refuses the privileged entry point without root before reading any state", async () => {
   if (process.getuid?.() === 0) return;
   const result = await perl(["-T", helper, "--base", "/synthetic/home"]);

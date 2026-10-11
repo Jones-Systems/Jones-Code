@@ -23,7 +23,86 @@ interface LeasedStateFile {
 
 const MAXIMUM_FILES = 8;
 const OUTPUT_LIMIT = 4 * 1024;
-const DEADLINE_MS = 10_000;
+// Admission runs this probe inside the server's 30 second launcher exchange.
+const DEADLINE_MS = 5_000;
+const TERMINATE_GRACE_MS = 2_000;
+const REAP_GRACE_MS = 2_000;
+
+export interface CapturedProcessResult {
+  /** "unreaped": the captured child outlived SIGKILL plus its reap grace. */
+  readonly outcome: "exited" | "deadline" | "output-limit" | "spawn-failed" | "unreaped";
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/**
+ * Runs one fixed command with an empty environment and bounded output. On its
+ * deadline or output limit only the captured child is signalled: SIGTERM, then
+ * SIGKILL after a grace period. The result settles once that child is reaped,
+ * or reports "unreaped" after a final bound; timers and output listeners end with it.
+ */
+export function runCapturedProcess(input: {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly descriptors?: readonly number[];
+  readonly deadlineMs: number;
+  readonly outputLimit: number;
+  /** sudo relays SIGTERM only from a sender outside the command's process group. */
+  readonly newProcessGroup?: boolean;
+}): Promise<CapturedProcessResult> {
+  return new Promise((resolve) => {
+    const output = { stdout: "", stderr: "" };
+    let stopped: "deadline" | "output-limit" | undefined;
+    let settled = false;
+    const timers: NodeJS.Timeout[] = [];
+    const child = NodeChildProcess.spawn(input.command, [...input.args], {
+      cwd: "/",
+      env: {},
+      detached: input.newProcessGroup === true,
+      stdio: ["ignore", "pipe", "pipe", ...(input.descriptors ?? [])],
+    });
+    const streams = [child.stdout, child.stderr];
+    const detachOutput = () => {
+      for (const stream of streams) {
+        stream?.removeAllListeners("data");
+        stream?.destroy();
+      }
+    };
+    const settle = (
+      outcome: CapturedProcessResult["outcome"],
+      code: number | null = null,
+      signal: NodeJS.Signals | null = null,
+    ) => {
+      if (settled) return;
+      settled = true;
+      for (const timer of timers) clearTimeout(timer);
+      detachOutput();
+      resolve({ outcome, code, signal, ...output });
+    };
+    const stop = (reason: "deadline" | "output-limit") => {
+      if (stopped !== undefined || settled) return;
+      stopped = reason;
+      detachOutput();
+      child.kill("SIGTERM");
+      timers.push(setTimeout(() => child.kill("SIGKILL"), TERMINATE_GRACE_MS));
+      timers.push(setTimeout(() => settle("unreaped"), TERMINATE_GRACE_MS + REAP_GRACE_MS));
+    };
+    timers.push(setTimeout(() => stop("deadline"), input.deadlineMs));
+    for (const [index, name] of (["stdout", "stderr"] as const).entries()) {
+      streams[index]?.on("data", (data: Buffer) => {
+        output[name] += data.toString("utf8");
+        if (Buffer.byteLength(output[name]) > input.outputLimit) stop("output-limit");
+      });
+    }
+    // A failed signal also reports here; only a failed spawn ends the run.
+    child.on("error", () => {
+      if (child.pid === undefined) settle("spawn-failed");
+    });
+    child.once("close", (code, signal) => settle(stopped ?? "exited", code, signal));
+  });
+}
 
 // F_SETLEASE/F_GETLEASE are F_LINUX_SPECIFIC_BASE + 0/1 on every architecture;
 // lock types come from Fcntl because their values are architecture-specific.
@@ -93,43 +172,25 @@ export function parseLinuxLeaseResult(
   return busy;
 }
 
-function runLeaseProbe(
+async function runLeaseProbe(
   perl: string,
   descriptors: readonly number[],
   deadlineMs: number,
 ): Promise<LinuxLeaseObservation> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const output = { stdout: "", stderr: "" };
-    const child = NodeChildProcess.spawn(
-      perl,
-      ["-e", LEASE_PROGRAM, "--", String(descriptors.length)],
-      { cwd: "/", env: {}, stdio: ["ignore", "pipe", "pipe", ...descriptors] },
-    );
-    // Killing the captured probe drops its references; the caller's close then
-    // releases any lease it still held.
-    const deadline = setTimeout(() => finish({ status: "unavailable" }), deadlineMs);
-    function finish(observation: LinuxLeaseObservation) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      resolve(observation);
-    }
-    for (const stream of ["stdout", "stderr"] as const) {
-      const source = child[stream];
-      if (source === null) return finish({ status: "unavailable" });
-      source.on("data", (data: Buffer) => {
-        output[stream] += data.toString("utf8");
-        if (Buffer.byteLength(output[stream]) > OUTPUT_LIMIT) finish({ status: "proof-limit" });
-      });
-    }
-    child.once("error", () => finish({ status: "unavailable" }));
-    child.once("close", (code, signal) => {
-      const busy = parseLinuxLeaseResult({ code, signal, ...output }, descriptors.length);
-      finish(busy === undefined ? { status: "unavailable" } : { status: "complete", busy });
-    });
+  // A stopped probe settles only after it is reaped, so the caller's close is
+  // the last reference and releases any lease it still held. An unreaped probe
+  // is never reported as a proof.
+  const result = await runCapturedProcess({
+    command: perl,
+    args: ["-e", LEASE_PROGRAM, "--", String(descriptors.length)],
+    descriptors,
+    deadlineMs,
+    outputLimit: OUTPUT_LIMIT,
   });
+  if (result.outcome === "output-limit") return { status: "proof-limit" };
+  if (result.outcome !== "exited") return { status: "unavailable" };
+  const busy = parseLinuxLeaseResult(result, descriptors.length);
+  return busy === undefined ? { status: "unavailable" } : { status: "complete", busy };
 }
 
 export async function observeLinuxStateLeases(

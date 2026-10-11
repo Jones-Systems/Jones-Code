@@ -5,11 +5,13 @@
 // lease cannot express, and same-user /proc descriptors are unreadable for
 // non-dumpable processes. The helper reads that metadata as root through one
 // exact NOPASSWD command. This client binds its answer to the launcher's own
-// state snapshot and excludes only allowed processes whose birth matches; the
-// launcher's liveness check after the proof keeps each allowed PID unreaped.
-import * as NodeChildProcess from "node:child_process";
+// state snapshot and excludes only an allowed PID whose process birth (start
+// time) matches, read before and after the helper; a reused PID has a different
+// birth. Node reaps children asynchronously, so the launcher separately checks
+// after the proof that its captured child is still live.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import { runCapturedProcess } from "./qualifiedLinuxLease.ts";
 
 export const QUALIFIED_WRITER_OBSERVER_PATH =
   "/usr/local/libexec/jones-code/jones-qualified-writer-observer";
@@ -26,8 +28,9 @@ export const QUALIFIED_WRITER_OBSERVER_FILES = [
 ] as const;
 const HEADER = "jones-qualified-writer-observer 1";
 const OUTPUT_LIMIT = 64 * 1024;
-// The helper stops itself at 30 seconds; this also bounds sudo.
-const DEADLINE_MS = 45_000;
+// The helper stops itself at 10 seconds; this also bounds sudo. Both sit inside
+// the server's 30 second launcher exchange, which the launcher fences separately.
+const DEADLINE_MS = 15_000;
 
 interface ObservedStateFile {
   readonly path: string;
@@ -128,19 +131,31 @@ export function evaluateWriterObservation(
   return { status: "complete", writers };
 }
 
+/**
+ * sudo runs this file as root, so it and every directory up to `/` must be real
+ * (no symlink), root-owned and not group- or other-writable: anyone able to
+ * rename an ancestor could substitute the helper. The fixed path runs through
+ * /usr, which is a real directory under the merged-/usr layout; only /bin,
+ * /sbin and /lib are symlinks there.
+ */
 async function helperInstallation(path: string): Promise<"installed" | "absent" | "untrusted"> {
-  for (const entry of [path, NodePath.dirname(path)]) {
-    const stat = await NodeFSP.lstat(entry).catch((cause: unknown) =>
-      (cause as NodeJS.ErrnoException)?.code === "ENOENT"
-        ? ("absent" as const)
-        : ("untrusted" as const),
+  if (!NodePath.isAbsolute(path) || NodePath.normalize(path) !== path) return "untrusted";
+  const lstat = (entry: string) =>
+    NodeFSP.lstat(entry).catch((cause: unknown) =>
+      (cause as NodeJS.ErrnoException)?.code === "ENOENT" ? ("absent" as const) : undefined,
     );
-    if (typeof stat === "string") return stat;
-    // sudo runs this file as root; anything another user could replace is refused.
-    if (stat.isSymbolicLink() || stat.uid !== 0 || (stat.mode & 0o022) !== 0) return "untrusted";
-    if (entry === path && !stat.isFile()) return "untrusted";
+  const trusted = (stat: Awaited<ReturnType<typeof lstat>>, kind: "file" | "directory") =>
+    typeof stat === "object" &&
+    (kind === "file" ? stat.isFile() : stat.isDirectory()) &&
+    stat.uid === 0 &&
+    (stat.mode & 0o022) === 0;
+  const helper = await lstat(path);
+  if (helper === "absent") return "absent";
+  if (!trusted(helper, "file")) return "untrusted";
+  for (let directory = NodePath.dirname(path); ; directory = NodePath.dirname(directory)) {
+    if (!trusted(await lstat(directory), "directory")) return "untrusted";
+    if (directory === NodePath.dirname(directory)) return "installed";
   }
-  return "installed";
 }
 
 async function processBirth(procRoot: string, pid: number): Promise<string | undefined> {
@@ -152,40 +167,23 @@ async function processBirth(procRoot: string, pid: number): Promise<string | und
   return value !== undefined && /^\d+$/.test(value) ? value : undefined;
 }
 
-function runHelper(
+async function runHelper(
   sudoPath: string,
   helperPath: string,
   base: string,
   deadlineMs: number,
 ): Promise<WriterObserverResult | undefined> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const output = { stdout: "", stderr: "" };
-    const child = NodeChildProcess.spawn(sudoPath, ["-n", "--", helperPath, "--base", base], {
-      cwd: "/",
-      env: {},
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const deadline = setTimeout(() => finish(undefined), deadlineMs);
-    function finish(result: WriterObserverResult | undefined) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      // The captured sudo child is the only process this client stops.
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      resolve(result);
-    }
-    for (const stream of ["stdout", "stderr"] as const) {
-      child[stream].on("data", (data: Buffer) => {
-        output[stream] += data.toString("utf8");
-        if (Buffer.byteLength(output[stream]) > OUTPUT_LIMIT) finish(undefined);
-      });
-    }
-    child.once("error", () => finish(undefined));
-    child.once("close", (code, signal) =>
-      finish(parseWriterObserverResult({ code, signal, ...output })),
-    );
+  // Only the captured sudo child is signalled. In its own process group sudo
+  // relays SIGTERM to the helper, which installs no handler, so the signal also
+  // ends killable filesystem waits; SIGKILL follows only after a grace period.
+  const result = await runCapturedProcess({
+    command: sudoPath,
+    args: ["-n", "--", helperPath, "--base", base],
+    deadlineMs,
+    outputLimit: OUTPUT_LIMIT,
+    newProcessGroup: true,
   });
+  return result.outcome === "exited" ? parseWriterObserverResult(result) : undefined;
 }
 
 export async function observeQualifiedWriters(

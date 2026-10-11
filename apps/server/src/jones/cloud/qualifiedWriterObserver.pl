@@ -2,18 +2,25 @@
 # Jones Code qualified writer observer, protocol 1.
 #
 # Root-owned, read-only process metadata for the qualified readiness commit.
-# Install it root:root, not group/other writable, in a root-owned directory and
-# grant the service user exactly one NOPASSWD command shape:
+# Install it root:root, not group/other writable, with every directory up to /
+# a real root-owned directory that is not group/other writable, and grant the
+# service user exactly one NOPASSWD command shape:
 #
 #   SERVICE_USER ALL=(root) NOPASSWD: /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME
 #
 # The only input is the canonical Jones home, owned by the sudo caller. The
 # eight state files are fixed. It reports which processes hold those inodes
 # open for writing or through a writable shared mapping: file index, PID,
-# process birth and access kind. It reads no file contents, names, command
-# lines or other paths, and never excludes a process; the launcher excludes
-# only its captured trial by PID and birth. Anything it cannot observe ends
-# the result as incomplete.
+# process birth and access kind. It reads process metadata, not application
+# file contents or command lines, and emits no process names or mapped paths.
+# It never excludes a process; the launcher excludes
+# only its captured trial by PID and birth. Unreadable process evidence ends
+# the result as incomplete. It sees descriptor tables and mappings in its own
+# PID namespace only; kernel-held references outside them (descriptors in
+# flight over a socket, io_uring registered files) are not visible here.
+#
+# The deadline alarm is armed before any filesystem or /proc access. SIGTERM
+# relayed by sudo is left fatal so it also ends killable filesystem waits.
 use strict;
 use warnings;
 use Errno qw(ENOENT ESRCH);
@@ -21,7 +28,8 @@ use Fcntl qw(O_RDONLY);
 
 my $HEADER = "jones-qualified-writer-observer 1";
 my @STATE_FILES = qw(statev2.sqlite statev2.sqlite-wal statev2.sqlite-shm settings.json keybindings.json server-runtime.json environment-id anonymous-id);
-my $DEADLINE_SECONDS = 30;
+# The launcher waits 15 seconds; both sit inside the server's 30 second exchange.
+my $DEADLINE_SECONDS = 10;
 my $MAXIMUM_WRITERS = 256;
 
 sub incomplete { die "incomplete $_[0]\n" }
@@ -181,18 +189,45 @@ sub reject {
   exit 2;
 }
 
+# Anyone able to rename an ancestor could substitute this file, so the helper
+# and every directory up to / must be real, root-owned and not group/other
+# writable.
 sub trusted_self {
-  my ($path) = $0 =~ m{\A(/[^\0]+)\z} or return 0;
-  my ($directory) = $path =~ m{\A(.*)/[^/]+\z} or return 0;
-  for my $entry ($path, $directory) {
-    my @stat = lstat($entry);
-    return 0 unless @stat && !-l _ && $stat[4] == 0 && !($stat[2] & 022);
+  my ($path) = $0 =~ m{\A((?:/[A-Za-z0-9._@+-]{1,255}){1,64})\z} or return 0;
+  return 0 if grep { $_ eq "." || $_ eq ".." } split m{/}, $path;
+  my @file = lstat($path);
+  return 0 unless @file && -f _ && $file[4] == 0 && !($file[2] & 022);
+  my $directory = $path;
+  while ($directory =~ s{/[^/]+\z}{}) {
+    my @stat = lstat(length $directory ? $directory : "/");
+    return 0 unless @stat && -d _ && !-l _ && $stat[4] == 0 && !($stat[2] & 022);
+    last unless length $directory;
   }
   return 1;
 }
 
+# Returns (exit code, output); any failure, including the alarm, is typed.
+sub bounded {
+  my ($seconds, $work) = @_;
+  local $SIG{ALRM} = sub { die "incomplete deadline\n" };
+  alarm($seconds);
+  my $output = eval { $work->() };
+  my $error = $@;
+  alarm(0);
+  return (0, $output) if defined $output;
+  return (3, $error =~ /\A(incomplete [a-z-]+\n)\z/ ? $1 : "incomplete internal\n");
+}
+
 sub run {
   print "$HEADER\n";
+  # The alarm covers request validation as well as the /proc observation.
+  my ($code, $output) = bounded($DEADLINE_SECONDS, \&observe_request);
+  print STDOUT $output;
+  exit $code;
+}
+
+# Rejections exit directly; observation failures die as "incomplete <reason>".
+sub observe_request {
   reject("not-root") unless $> == 0 && $< == 0;
   my ($uid) = (defined $ENV{SUDO_UID} ? $ENV{SUDO_UID} : "") =~ /\A([1-9][0-9]{0,9})\z/
     or reject("caller");
@@ -223,18 +258,7 @@ sub run {
     push @files, { index => $index, dev => $stat[0], ino => $stat[1] };
     print "file $index $stat[0] $stat[1]\n";
   }
-  local $SIG{ALRM} = sub { die "incomplete deadline\n" };
-  alarm($DEADLINE_SECONDS);
-  my $output = eval { emit_observation(observe("/proc", \@files)) };
-  my $error = $@;
-  alarm(0);
-  if (!defined $output) {
-    my $reason = $error =~ /\A(incomplete [a-z-]+\n)\z/ ? $1 : "incomplete internal\n";
-    print STDOUT $reason;
-    exit 3;
-  }
-  print $output;
-  exit 0;
+  return emit_observation(observe("/proc", \@files));
 }
 
 run() unless caller;

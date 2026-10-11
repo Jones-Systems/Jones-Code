@@ -330,31 +330,56 @@ cannot express. Linux reads that evidence through the root-owned writer observer
 [`qualifiedWriterObserver.pl`](../../apps/server/src/jones/cloud/qualifiedWriterObserver.pl).
 It reports only the matching file index, PID, process birth and access kind for
 the eight fixed state files, and never excludes a process. The launcher excludes
-only its captured trial by PID and birth while that child remains unreaped. If
-the observer is not installed, or the service runs with `NoNewPrivileges=yes`
-where sudo cannot elevate, the launcher falls back to the same-user descriptor
-scan. That scan fails closed on non-dumpable processes, which always exist under
-the systemd user manager. Install admission runs the readiness observation with
-the requesting server as the allowed writer. It refuses with
-`writer-proof-<reason>` before accepting, taking a recovery generation or stopping
-the server.
+only its captured trial, matched by PID and process birth read before and after
+the helper, and then checks that the captured child is still live. If the
+observer is not installed, or the service runs with `NoNewPrivileges=yes` where
+sudo cannot elevate, the launcher falls back to the same-user descriptor scan.
+That scan fails closed on non-dumpable processes such as the protected service
+manager and SSH sessions observed on the VPS.
+
+Install admission refuses with `writer-proof-<reason>` before accepting, taking a
+recovery generation or stopping the server. It requires a complete lease result
+on the exact state snapshot, where the requesting server's own write-open files
+are expected to be busy, and a readiness observation with that server allowed.
+The lease probe is bounded at 5 seconds, the helper at 10 and the launcher's wait
+for it at 15. The server abandons a launcher exchange after 30 seconds. The
+launcher therefore refuses an Install with `request-expired` once 25 seconds have
+passed since the request arrived. At readiness it rolls back with
+`prepared-exchange-expired` instead of writing the pointer. On timeout the
+launcher signals only its captured sudo or probe child: SIGTERM, which sudo
+relays to the helper, then SIGKILL after a grace period.
 
 Installing the observer is a separate, per-host approved root operation. Use the
 helper bytes from the exact source commit of the adopted launcher. Install them
-as `/usr/local/libexec/jones-code/jones-qualified-writer-observer` in a root-owned
-directory, owned by root and not group- or other-writable. Grant the service user
-one exact command with `visudo -c` validation:
+as `/usr/local/libexec/jones-code/jones-qualified-writer-observer`, owned by root
+and not group- or other-writable. Every directory from `/` to the helper must be
+a real directory (not a symlink), owned by root and not group- or other-writable.
+Anyone able to rename an ancestor could substitute the helper. Both the launcher
+and the helper itself refuse any other chain. Grant the service user one exact
+command with `visudo -c` validation:
 
 ```text
 SERVICE_USER ALL=(root) NOPASSWD: /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME
 ```
 
-Read back the file hash, owner, mode and sudoers syntax. As the service user, a
-smoke run of `sudo -n` with that exact command prints the protocol header,
-`file` lines and `complete`. The launcher refuses a helper path another user
-could replace; with the file present, a sudo refusal blocks instead of falling
-back. Source changes reach a host only through an adopted qualified launcher
-artifact.
+Read back the file hash, `namei -l` for the whole path, and the sudoers syntax.
+Then run the smoke test as the service user, the way the launcher calls it: an
+empty environment, no TTY on any standard stream, inside the user manager:
+
+```sh
+umask 077
+systemd-run --user --wait --pipe --quiet env -i /usr/bin/sudo -n -- \
+  /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME \
+  </dev/null >observer.out 2>observer.err
+```
+
+Require exit status 0, an empty `observer.err`, and LF-only lines in
+`observer.out` (no carriage returns): the protocol header, `file` lines and a
+final `complete` line. Remove both files afterwards. They contain process and
+inode metadata only. A `requiretty` refusal, a `use_pty` carriage return or any
+sudo warning makes the launcher report `unavailable`. With the helper file
+present, a sudo refusal blocks instead of falling back. Source changes reach a
+host only through an adopted qualified launcher artifact.
 
 Inspect first after an interrupted setup or pairing operation:
 

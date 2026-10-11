@@ -7,6 +7,7 @@ import * as NodePath from "node:path";
 import {
   assertQualifiedReadinessObservable,
   linuxLeaseQualifiedQuiescenceAdapter,
+  linuxNativeQualifiedQuiescenceAdapter,
   linuxQualifiedQuiescenceAdapter,
   linuxReadinessQualifiedQuiescenceAdapter,
   nativeQualifiedQuiescenceAdapter,
@@ -362,6 +363,50 @@ it("gates Install admission on a readiness proof with the captured writer allowe
         adapter: nativeQualifiedQuiescenceAdapter("unsupported"),
       }),
       blocked("unavailable"),
+    );
+  });
+});
+
+it("admits Install only when the exact snapshot supports later lease proofs", async () => {
+  await fixture(async (baseDir) => {
+    // Stand-ins for the fixed lease program: one reports leases unsupported
+    // (its EINVAL exit), the other a complete result with the requester busy.
+    const unsupported = NodePath.join(baseDir, "unsupported-leases");
+    const busy = NodePath.join(baseDir, "busy-leases");
+    await NodeFSP.writeFile(unsupported, "#!/bin/sh\nexit 4\n", { mode: 0o755 });
+    await NodeFSP.writeFile(busy, "#!/bin/sh\nprintf 'busy 0\\ncomplete\\n'\n", { mode: 0o755 });
+    let readinessScans = 0;
+    const adapter = (perl: string) =>
+      linuxNativeQualifiedQuiescenceAdapter({
+        leases: { perl },
+        readiness: {
+          helperPath: NodePath.join(baseDir, "absent", "helper"),
+          fallback: {
+            scan: async () => {
+              readinessScans++;
+              return [];
+            },
+          },
+        },
+      });
+    await NodeAssert.rejects(
+      assertQualifiedReadinessObservable({
+        baseDir,
+        allowedProcessIds: [123],
+        adapter: adapter(unsupported),
+      }),
+      blocked("unavailable"),
+    );
+    assert.equal(readinessScans, 0);
+    await assertQualifiedReadinessObservable({
+      baseDir,
+      allowedProcessIds: [123],
+      adapter: adapter(busy),
+    });
+    assert.equal(readinessScans, 1);
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(baseDir, "userdata", "statev2.sqlite"), "utf8"),
+      "synthetic database",
     );
   });
 });
