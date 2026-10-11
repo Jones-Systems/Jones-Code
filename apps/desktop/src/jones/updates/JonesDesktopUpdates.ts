@@ -182,6 +182,7 @@ export class JonesDesktopUpdateController {
   #source: string | undefined;
   #candidate: JonesActionsCandidate | undefined;
   #staged: StagedMacApp | undefined;
+  #selectedAttempt: { readonly stagedHandle: string; readonly transactionId: string } | undefined;
   #busy: "check" | "download" | "install" | "discard" | null = null;
   #bootstrap: ActiveInstall | undefined;
   #activationBlocked = false;
@@ -412,6 +413,16 @@ export class JonesDesktopUpdateController {
               ? "source-unqualified"
               : undefined;
     const journal = this.#lastJournal;
+    const currentAttempt =
+      this.#selectedAttempt?.stagedHandle === this.#staged?.handle
+        ? this.#selectedAttempt?.transactionId
+        : undefined;
+    const journalDescribesPhase =
+      phase === "committed" ||
+      phase === "rolled-back" ||
+      (phase === "blocked" && journal?.phase !== "resumed" && journal?.phase !== "rolled-back");
+    const updateId =
+      currentAttempt ?? (journalDescribesPhase ? journal?.intent.transactionId : undefined);
     const outcomeStatus =
       journal?.phase === "resumed"
         ? "committed"
@@ -425,11 +436,7 @@ export class JonesDesktopUpdateController {
       channel: "jones-main",
       ...(this.#source === undefined ? {} : { installedSource: this.#source }),
       phase,
-      ...((phase === "preparing" || phase === "installing") && this.#staged !== undefined
-        ? { updateId: this.#staged.handle }
-        : journal === undefined
-          ? {}
-          : { updateId: journal.intent.transactionId }),
+      ...(updateId === undefined ? {} : { updateId }),
       ...(journal === undefined || outcomeStatus === undefined
         ? {}
         : {
@@ -538,6 +545,7 @@ export class JonesDesktopUpdateController {
   }
 
   async configure(): Promise<void> {
+    this.#selectedAttempt = undefined;
     const metadata = decodeBuildMetadata(
       JSON.parse(
         await NodeFSP.readFile(NodePath.join(this.#options.appRoot, "package.json"), "utf8"),
@@ -796,6 +804,7 @@ export class JonesDesktopUpdateController {
     )
       return { accepted: false, completed: false };
     this.#busy = "download";
+    this.#selectedAttempt = undefined;
     try {
       await NodeFSP.mkdir(NodePath.join(this.updaterRoot, "apps"), {
         recursive: true,
@@ -913,6 +922,7 @@ export class JonesDesktopUpdateController {
       }
       this.#staged = undefined;
       this.#candidate = undefined;
+      this.#selectedAttempt = undefined;
       this.#candidateStartupGateUnavailable = false;
       await this.#publish(
         "no-new",
@@ -957,6 +967,7 @@ export class JonesDesktopUpdateController {
       return { accepted: false, completed: false, failed: false };
     }
     this.#busy = "install";
+    this.#selectedAttempt = undefined;
     try {
       // The helper checks the fixed candidate digest before stopping writers; preparation binds this active manifest.
       const current = decodeActiveInstall(
@@ -979,6 +990,7 @@ export class JonesDesktopUpdateController {
         selectionSha256,
         expected,
       );
+      this.#selectedAttempt = { stagedHandle: handle, transactionId };
       const tx = NodePath.dirname(jonesContinuationReceiptPath(this.#options.home, transactionId));
       await NodeFSP.mkdir(tx, { recursive: true, mode: 0o700 });
       const intentPath = NodePath.join(tx, "intent.json");
@@ -1014,8 +1026,10 @@ export class JonesDesktopUpdateController {
         preparation.transactionId !== transactionId
       )
         throw new Error("Native preparation claim identity changed.");
-      if (preparation.status === "refused" && preparation.reason === "selection-mismatch")
+      if (preparation.status === "refused" && preparation.reason === "selection-mismatch") {
         this.#activationBlocked = false;
+        this.#selectedAttempt = undefined;
+      }
       if (preparation.status !== "preparation-claimed")
         throw new Error("Native preparation claim was not confirmed.");
       await this.#options.prepareNative?.(handle, transactionId, expected);
