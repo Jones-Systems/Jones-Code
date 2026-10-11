@@ -1,4 +1,4 @@
-import { jonesUpdatePresentation } from "@t3tools/client-runtime/jones/updates";
+import { jonesUpdateActionError, jonesUpdatePresentation } from "@t3tools/client-runtime/jones/updates";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useState } from "react";
@@ -16,25 +16,31 @@ export function JonesUpdateControls({
   readonly environmentId: EnvironmentId;
   readonly allowed: boolean;
 }) {
-  const state = useAtomValue(jonesUpdates.value(environmentId));
+  const observation = useAtomValue(jonesUpdates.observation(environmentId));
+  const state = observation.state;
   const action = useAtomCommand(jonesUpdates.action);
   const [pending, setPending] = useState(false);
-  if (state === null) return null;
+  const [actionError, setActionError] = useState<string | null>(null);
+  if (state === null) return observation.freshness === "stale"
+    ? <Text className="p-4 text-sm text-foreground-muted">{observation.message}</Text> : null;
   const run = async (input: Parameters<typeof action>[0]["input"]) => {
     setPending(true);
+    setActionError(null);
     try {
-      await action({ environmentId, input });
+      setActionError(jonesUpdateActionError(await action({ environmentId, input })));
     } finally {
       setPending(false);
     }
   };
   const presentation = jonesUpdatePresentation(state);
-  const busy = pending || presentation.busy;
+  const busy = pending || presentation.busy || observation.freshness !== "fresh";
   const provenance = state.provenance;
   return (
     <SettingsSection title="Jones main builds">
       <View className="gap-2 p-4">
         <Text className="text-sm text-foreground-muted">{presentation.message}</Text>
+        {observation.freshness !== "fresh" ? <Text className="text-sm text-foreground-muted">{observation.message}</Text> : null}
+        {actionError ? <Text accessibilityRole="alert" className="text-sm text-foreground-muted">{actionError}</Text> : null}
         {state.updateId ? (
           <Text className="text-sm text-foreground-muted">Update {state.updateId}</Text>
         ) : null}
