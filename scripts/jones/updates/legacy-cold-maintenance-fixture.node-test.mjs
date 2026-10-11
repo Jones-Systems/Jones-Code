@@ -40,6 +40,10 @@ for (const scenario of coldMaintenanceCases) {
       const report = await runColdMaintenanceFixture(scenario, { signal: context.signal });
       NodeAssert.equal(report.qualification, "synthetic-pre-state-same-kernel");
       NodeAssert.equal(report.stateAdmissionAllowed, false);
+      if (!scenario.startsWith("fd-")) {
+        NodeAssert.equal(report.preparationResourceQualification, "synthetic-nonexecuted-resource");
+        NodeAssert.equal(report.preparationRuntimeExecuted, false);
+      }
     },
   );
 }

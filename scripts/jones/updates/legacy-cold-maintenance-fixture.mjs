@@ -49,6 +49,8 @@ export const coldMaintenanceCases = [
   "owner-native-gate",
   "owner-native-lock",
   "owner-cancel-entered",
+  "v2-new-arm-held",
+  "v2-retained-recovery",
 ];
 
 function literal(source) {
@@ -266,6 +268,16 @@ def write(path, raw, mode=0o600):
         path.chmod(stat.S_IMODE(info.st_mode) | 0o200)
     path.write_bytes(raw)
     path.chmod(mode)
+# This fixed Mach-O-shaped resource is never executed and is not a qualified SEA.
+synthetic_preparation = bytes.fromhex('cffaedfe0c0000010000000002000000') + bytes(16) + b'owned-nonexecuted-preparation-resource'
+preparation_config = b'{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n'
+preparation_inputs = {'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', 'apps/server/package.json',
+                     'apps/desktop/package.json', 'apps/web/package.json', 'packages/contracts/package.json',
+                     'apps/server/vite.config.ts', 'vite.config.ts', 'scripts/jones/updates/offline-preparation-build.ts',
+                     'apps/server/src/jones/updates/offlinePreparationEntry.ts', 'apps/server/src/jones/updates/offlinePreparation.ts',
+                     'apps/server/src/jones/updates/offlinePreparationCore.ts', 'apps/server/src/jones/updates/offlinePreparationPlan.ts',
+                     'apps/server/src/jones/updates/offlinePreparationWorker.ts'}
+assert len(preparation_inputs) == 15 and preparation_inputs == scope['_PREPARATION_SOURCE_INPUTS']
 def app(path, source, tree, version, tools=False):
     package = {'version': version, 'jonesSource': {'repository': 'Jones-Systems/Jones-Code', 'sha': source, 'tree': tree}}
     if tools: package['startupGateProtocol'] = 1
@@ -279,13 +291,26 @@ def app(path, source, tree, version, tools=False):
     if tools:
         resources = path / 'Contents/Resources/jones-bootstrap'
         native = pathlib.Path(payload['nativePath']).read_bytes()
-        manifest = {'schema': 2, 'repository': 'Jones-Systems/Jones-Code', 'sourceSha': source, 'sourceTree': tree, 'version': version,
+        manifest = {'schema': 3, 'repository': 'Jones-Systems/Jones-Code', 'sourceSha': source, 'sourceTree': tree, 'version': version,
                     'bootstrapSha256': sha(payload['bootstrap'].encode()), 'executorSha256': sha(payload['executor'].encode()),
                     'maintenanceSha256': sha(payload['maintenance'].encode()), 'identityNativeSha256': sha(native),
                     'identityNativeSourceSha256': payload['nativeSourceSha256'], 'nativeArchitecture': 'arm64'}
+        manifest['preparation'] = {'schema': 1, 'protocol': 1, 'provenanceSha256': '8' * 64,
+                                  'sourceInputHashes': {key: '9' * 64 for key in sorted(preparation_inputs)},
+                                  'entry': {'sha256': 'a' * 64, 'size': 1},
+                                  'seaConfig': {'sha256': sha(preparation_config), 'size': len(preparation_config)},
+                                  'executable': {'name': 'jones-offline-preparation', 'sha256': sha(synthetic_preparation), 'size': len(synthetic_preparation)},
+                                  'node': {'version': '26.8.2', 'platform': 'darwin', 'architecture': 'arm64',
+                                           'archiveSha256': 'b' * 64, 'archiveBytes': 1, 'checksumsSha256': 'c' * 64,
+                                           'runtimeSha256': 'd' * 64, 'runtimeBytes': 1},
+                                  'sqlite': {'version': '3.50.0', 'sourceId': '2026-10-11 00:00:00 ' + 'e' * 64}}
+        if case == 'v2-new-arm-held':
+            manifest.pop('preparation')
+            manifest['schema'] = 2
         for name in ('bootstrap', 'executor', 'maintenance'): write(resources / (name + '.py'), payload[name].encode(), 0o500)
         write(resources / 'identity-native', native, 0o500)
-        write(resources / 'BUNDLE.json', encode(manifest), 0o400)
+        if manifest['schema'] == 3: write(resources / 'jones-offline-preparation', synthetic_preparation, 0o500)
+        write(resources / 'BUNDLE.json', encode(manifest) + b'\n', 0o400)
 
 home, profile = root / 'home', root / 'profile'
 updater = home / 'runtime/jones-updates'
@@ -430,9 +455,10 @@ try:
         busy_lock = os.open(manifest.parent / 'jones-activation.lock', os.O_RDWR)
         fcntl.flock(busy_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     code, report = invoke('arm')
-    if case in ('unknown-helper', 'receiptless', 'lock-busy'):
+    if case in ('unknown-helper', 'receiptless', 'lock-busy', 'v2-new-arm-held'):
         assert code == 1 and json.loads(manifest.read_text()) == active
         assert stat.S_IMODE((old / 'Contents/MacOS/Jones').stat().st_mode) == 0o500
+        if case == 'v2-new-arm-held': assert not (home / 'runtime/jones-maintenance').exists()
     else:
         if case in ('before-owner', 'after-owner', 'after-gate', 'cancel-partial', 'persistent-sync'):
             assert code == 1 and fault['fired']
@@ -442,6 +468,33 @@ try:
             fault['enabled'] = False
             code, report = invoke('cancel' if case in ('cancel-partial', 'before-owner') else 'reconcile')
         assert code == 0, (report, failures[-1:])
+        pointer_path = home / 'runtime/jones-maintenance/current.json'
+        pointer = json.loads(pointer_path.read_bytes())
+        retained = pointer_path.parent / pointer['generation']
+        plan_path, journal_path = retained / 'plan.json', retained / 'journal.json'
+        retained_plan = json.loads(plan_path.read_bytes())
+        retained_runtime = retained / 'tools/jones-offline-preparation'
+        assert retained_plan['bundle']['schema'] == 3 and len(retained_plan['toolIdentities']) == 3
+        assert retained_runtime.read_bytes() == synthetic_preparation and stat.S_IMODE(retained_runtime.stat().st_mode) == 0o500
+        identities = scope['native_identity'](retained / 'tools/identity-native', retained_plan['bundle']['identityNativeSha256'], [('file', retained_runtime)])
+        assert retained_plan['toolIdentities'][2] == scope['stable_native'](identities['objects'][0])
+        if case == 'v2-retained-recovery':
+            # Seed the prior retained format; recovery must not acquire a new preparation runtime.
+            retained_plan['bundle'].pop('preparation')
+            retained_plan['bundle']['schema'] = 2
+            retained_plan['toolIdentities'] = retained_plan['toolIdentities'][:2]
+            retained_plan['candidateBinding']['bundleSha256'] = sha(encode(retained_plan['bundle']) + b'\n')
+            raw = encode(retained_plan) + b'\n'
+            retained_journal = json.loads(journal_path.read_bytes())
+            retained_journal['planSha256'] = sha(raw)
+            owner_manifest = json.loads(manifest.read_bytes())
+            owner_manifest['maintenance']['planSha256'] = sha(raw)
+            pointer['planSha256'] = sha(raw)
+            write(plan_path, raw, 0o400)
+            write(journal_path, encode(retained_journal) + b'\n')
+            write(pointer_path, encode(pointer) + b'\n', 0o400)
+            write(manifest, encode(owner_manifest) + b'\n')
+            retained_runtime.unlink()
         if case not in ('cancel-partial', 'before-owner'):
             assert report['status'] == 'armed-awaiting-cold-restart'
             code, repeat = invoke('reconcile')
@@ -540,8 +593,11 @@ try:
             assert stat.S_IMODE((retained_app / 'Contents/MacOS/Jones').stat().st_mode) == 0o400
             code, repeated = invoke('cancel')
             assert code == 0 and repeated == report
+            if case == 'v2-retained-recovery':
+                assert json.loads(plan_path.read_bytes()) == retained_plan and not retained_runtime.exists()
     assert not guard['violations']
-    print(json.dumps({'case': case, 'passed': True, 'qualification': 'synthetic-pre-state-same-kernel', 'stateAdmissionAllowed': False}))
+    print(json.dumps({'case': case, 'passed': True, 'qualification': 'synthetic-pre-state-same-kernel', 'stateAdmissionAllowed': False,
+                      'preparationResourceQualification': 'synthetic-nonexecuted-resource', 'preparationRuntimeExecuted': False}))
 finally:
     guard['enabled'] = False
     if busy_lock is not None: os.close(busy_lock)

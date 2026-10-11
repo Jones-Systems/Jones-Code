@@ -84,6 +84,37 @@ class MaintenanceObservation(BaseObservation):
 
 Observation = MaintenanceObservation
 
+_MAINTENANCE_RUNTIME_BYTES = 256 * 1024 * 1024
+
+def _maintenance_runtime_digest(observed, path, proof):
+    digest, count = hashlib.sha256(), 0
+    with observed.file(path, _MAINTENANCE_RUNTIME_BYTES) as stream:
+        info = os.fstat(stream.fileno())
+        require(info.st_size == proof['size'] and stat.S_IMODE(info.st_mode) == 0o500)
+        while True:
+            block = stream.read(1048576)
+            if not block: break
+            if count == 0: require(len(block) >= 32 and block[:16] == bytes.fromhex('cffaedfe0c0000010000000002000000'))
+            count += len(block)
+            require(count <= proof['size'] <= _MAINTENANCE_RUNTIME_BYTES)
+            digest.update(block)
+    require(count == proof['size'] and digest.hexdigest() == proof['sha256'])
+
+def _bootstrap_bundle(observed, tools, candidate):
+    # This override belongs only to the composed maintenance command. Retained
+    # v2 recovery does not inspect a candidate or acquire a new preparation tool.
+    bundle, bundle_digest = observed.metadata(tools / 'BUNDLE.json', 65536)
+    preparation = _preparation_bundle(bundle)
+    require(sha(encoded(bundle) + b'\n') == bundle_digest)
+    require(bundle['sourceSha'] == candidate['source'] and bundle['sourceTree'] == candidate['tree'] and bundle['version'] == candidate['version'])
+    require(sha(observed.raw(tools / 'maintenance.py', 1048576)) == bundle['maintenanceSha256'])
+    native = observed.raw(tools / 'identity-native', 4 * 1024 * 1024)
+    require(sha(native) == bundle['identityNativeSha256'])
+    require(len(native) >= 32 and native[:16] == bytes.fromhex('cffaedfe0c0000010000000002000000'))
+    require(observed.files[tools / 'maintenance.py'][3] & 0o777 == 0o500 and observed.files[tools / 'identity-native'][3] & 0o777 == 0o500)
+    _maintenance_runtime_digest(observed, tools / _PREPARATION_NAME, preparation['executable'])
+    return bundle, bundle_digest
+
 def maintenance_anchor(manifest, active):
     require(manifest.name == 'jones-active-install.json' and manifest.parent.name == 'runtime')
     home = manifest.parent.parent
@@ -721,6 +752,43 @@ class Maintenance:
         for path in (self.directory / 'tools', self.directory, self.root, self.manifest.parent):
             with Observation().directory(path) as fd: sync_fd(fd)
 
+    def retain_preparation_runtime(self, checked, tools, retained):
+        proof = _preparation_bundle(self.bundle)['executable']
+        source, target = tools / _PREPARATION_NAME, retained / _PREPARATION_NAME
+        require(source != target)
+        digest, count = hashlib.sha256(), 0
+        self.current_lock()
+        with checked.file(source, _MAINTENANCE_RUNTIME_BYTES) as stream, Observation().directory(retained) as parent:
+            info = os.fstat(stream.fileno())
+            require(info.st_size == proof['size'] and stat.S_IMODE(info.st_mode) == 0o500)
+            fd = os.open(target.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+            with os.fdopen(fd, 'wb') as destination:
+                os.fchmod(destination.fileno(), 0o600)
+                while True:
+                    block = stream.read(1048576)
+                    if not block: break
+                    if count == 0: require(len(block) >= 32 and block[:16] == bytes.fromhex('cffaedfe0c0000010000000002000000'))
+                    count += len(block)
+                    require(count <= proof['size'] <= _MAINTENANCE_RUNTIME_BYTES)
+                    self.current_lock()
+                    digest.update(block)
+                    require(destination.write(block) == len(block))
+                require(count == proof['size'] and digest.hexdigest() == proof['sha256'])
+                destination.flush()
+                os.fchmod(destination.fileno(), 0o500)
+                sync_fd(destination.fileno())
+                require(identity(os.stat(target.name, dir_fd=parent, follow_symlinks=False)) == identity(os.fstat(destination.fileno())))
+            sync_fd(parent)
+        # Unknown copy, close or sync effects retain their exact generation;
+        # no plan, pointer or permission repair makes a partial file executable.
+        checked.current()
+        copied = Observation()
+        _maintenance_runtime_digest(copied, target, proof)
+        with copied.file(target, _MAINTENANCE_RUNTIME_BYTES) as stream: sync_fd(stream.fileno())
+        copied.current()
+        self.current_lock()
+        return copied
+
     def arm(self, selection_path, selection_sha):
         require(self.manifest.name == 'jones-active-install.json' and self.manifest.parent.name == 'runtime')
         original_raw = read_owned(self.manifest, 131072)
@@ -734,10 +802,10 @@ class Maintenance:
         tools = absolute(selection['app']['appPath']) / 'Contents/Resources/jones-bootstrap'
         require(absolute(__file__) == tools / 'maintenance.py')
         checked, active, updater, names, output, executor, binding = inspect_inputs(self.manifest, selection_path, selection_sha, tools / 'bootstrap.py')
-        self.bundle, _ = checked.metadata(tools / 'BUNDLE.json', 8192)
-        require(set(self.bundle) == BUNDLE_V2_KEYS and self.bundle['schema'] == 2 and self.bundle['nativeArchitecture'] == 'arm64')
+        self.bundle, bundle_digest = _bootstrap_bundle(checked, tools, {'source': binding['sourceSha'], 'tree': binding['sourceTree'], 'version': selection['app']['version']})
+        require(bundle_digest == binding['bundleSha256'])
         maintenance = checked.raw(tools / 'maintenance.py', 1048576)
-        native = checked.raw(tools / 'identity-native', 16 * 1024 * 1024)
+        native = checked.raw(tools / 'identity-native', 4 * 1024 * 1024)
         require(sha(maintenance) == self.bundle['maintenanceSha256'] and sha(native) == self.bundle['identityNativeSha256'])
         inventory = StrictInventory(self.manifest, active, tools / 'identity-native', self.bundle['identityNativeSha256'], sha(executor))
         snapshot = inventory.run()
@@ -754,8 +822,11 @@ class Maintenance:
         retained = ensure_directory(Observation(), self.directory, 'tools')
         durable_file(retained / 'maintenance.py', maintenance, 0o500)
         durable_file(retained / 'identity-native', native, 0o500)
+        runtime_observation = self.retain_preparation_runtime(checked, tools, retained)
         identities = native_identity(retained / 'identity-native', self.bundle['identityNativeSha256'],
-                                     [('file', path) for path in (self.manifest.parent / 'jones-activation.lock', retained / 'maintenance.py', retained / 'identity-native')])
+                                     [('file', path) for path in (self.manifest.parent / 'jones-activation.lock', retained / 'maintenance.py', retained / 'identity-native', retained / _PREPARATION_NAME)])
+        runtime_observation.current()
+        self.current_lock()
         self.plan['lockIdentity'] = stable_native(identities['objects'][0])
         self.plan['toolIdentities'] = [stable_native(item) for item in identities['objects'][1:]]
         plan_raw = encoded(self.plan) + b'\n'
