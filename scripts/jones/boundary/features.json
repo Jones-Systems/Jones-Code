@@ -439,7 +439,7 @@
     {
       "id": "composer-thread-query",
       "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
-      "scope": "Web/desktop and shared mobile one-space @ query; preserves matcher identities and legacy file chip delimiters."
+      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; preserves matcher identities and legacy file chip delimiters."
     },
     {
       "id": "design-requests",
