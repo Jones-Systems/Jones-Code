@@ -5,7 +5,10 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
-import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
+import {
+  readJonesArtifactMetadata,
+  type JonesStagedArtifact,
+} from "@t3tools/shared/jones/jonesActions";
 import {
   bootServiceBaseDirOf,
   renderBootServicePlist,
@@ -329,8 +332,18 @@ export async function verifyAdoptionArtifact(
   const zipStat = await NodeFSP.lstat(zip);
   if (zipStat.size !== a.size_in_bytes || (await hashFile(zip)) !== digest)
     return refuse("Actions ZIP digest does not match this artifact generation.");
-  const embedded = await host.run({ command: "unzip", args: ["-p", zip, "ARTIFACT.json"] });
-  const original = decodeMetadata(JSON.parse(embedded) as unknown, host, expected);
+  // The digest check above authenticates the archive. This native read adds only envelope
+  // and corruption checks; reopening by pathname is not race protection.
+  let embedded: unknown;
+  try {
+    const bytes = await readJonesArtifactMetadata(zip);
+    const text = bytes.toString("utf8");
+    if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error("Inexact UTF-8 metadata.");
+    embedded = JSON.parse(text) as unknown;
+  } catch {
+    return refuse("Actions ZIP lacks exact bounded ARTIFACT.json metadata.");
+  }
+  const original = decodeMetadata(embedded, host, expected);
   for (const key of Object.keys(m) as Array<keyof ArtifactMetadata>)
     if (original[key] !== m[key])
       return refuse("Local metadata differs from the authenticated Actions ZIP.");

@@ -83,6 +83,46 @@ function tarPayload(version: string) {
   return NodeZlib.gzipSync(Buffer.concat(entries));
 }
 
+/** Flat stored Actions ZIP with real CRC-32; its bytes alone determine the faked GitHub digest. */
+function zipEnvelope(entries: ReadonlyArray<readonly [string, string | Buffer]>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [entryName, entryContent] of entries) {
+    const name = Buffer.from(entryName);
+    const content = Buffer.from(entryContent);
+    const crc = NodeZlib.crc32(content);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(content.length, 18);
+    local.writeUInt32LE(content.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50);
+    central.writeUInt16LE(0x0314, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(content.length, 20);
+    central.writeUInt32LE(content.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE((0o100644 << 16) >>> 0, 38);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, name, content);
+    centrals.push(central, name);
+    offset += local.length + name.length + content.length;
+  }
+  const central = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, central, end]);
+}
+
 async function tree(directory: string): Promise<string[]> {
   const results: string[] = [];
   for (const name of (await NodeFSP.readdir(directory)).sort()) {
@@ -141,13 +181,28 @@ async function fixture(
     await body(f);
   } finally {
     await NodeFSP.rm(f.root, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(f.root)).rejects.toMatchObject({ code: "ENOENT" });
   }
 }
 
+/** Owns the allocated scratch from mkdtemp, so a failed setup removes it and rethrows. */
 async function createFixture(options: FixtureOptions) {
-  const root = await NodeFSP.realpath(
-    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-system-adoption-test-")),
+  const allocated = await NodeFSP.mkdtemp(
+    NodePath.join(NodeOS.tmpdir(), "jones-system-adoption-test-"),
   );
+  try {
+    return await populateFixture(await NodeFSP.realpath(allocated), options);
+  } catch (failure) {
+    try {
+      await NodeFSP.rm(allocated, { recursive: true, force: true });
+    } catch (cleanup) {
+      throw new AggregateError([failure, cleanup], "Fixture setup and cleanup failed.");
+    }
+    throw failure;
+  }
+}
+
+async function populateFixture(root: string, options: FixtureOptions) {
   const base = NodePath.join(root, "home", ".t3");
   const runtime = NodePath.join(base, "runtime");
   const userdata = NodePath.join(base, "userdata");
@@ -184,7 +239,6 @@ async function createFixture(options: FixtureOptions) {
   const proc = NodePath.join(root, "proc");
   await processEntry(proc, 4242, retained, "777");
 
-  const metadata = new Map<string, Record<string, unknown>>();
   const artifacts = new Map<
     number,
     { name: string; id: number; digest: string; bytes: number; source: string }
@@ -195,7 +249,6 @@ async function createFixture(options: FixtureOptions) {
     await NodeFSP.mkdir(dir);
     directories.push(dir);
     const archive = tarPayload(version);
-    const zip = Buffer.from(`synthetic zip envelope ${index}`);
     const source = index === 0 ? privateSetupSource : "b".repeat(40);
     const m = {
       schema: 1,
@@ -213,10 +266,15 @@ async function createFixture(options: FixtureOptions) {
       artifact: `t3-${version}-linux-x64.tar.gz`,
       sha256: sha(archive),
     };
+    const zip = zipEnvelope([
+      ["ARTIFACT.json", JSON.stringify(m)],
+      ["SOURCE_COMMIT", `${source}\n`],
+      [m.artifact, archive],
+      ["SHA256SUMS", `${m.sha256}  ${m.artifact}\n`],
+    ]);
     await NodeFSP.writeFile(NodePath.join(dir, "ARTIFACT.json"), JSON.stringify(m));
     await NodeFSP.writeFile(NodePath.join(dir, m.artifact), archive);
     await NodeFSP.writeFile(NodePath.join(dir, "github-artifact.zip"), zip);
-    metadata.set(dir, m);
     artifacts.set(100 + index, {
       name: `jones-code-cli-linux-x64-${100 + index}-1--${version}`,
       id: 200 + index,
@@ -461,8 +519,8 @@ async function createFixture(options: FixtureOptions) {
           head_repository: { full_name: "Jones-Systems/Jones-Code" },
         });
       }
-      if (command.command === "unzip")
-        return JSON.stringify(metadata.get(NodePath.dirname(args[1]!)));
+      // Hosts may lack an external unzip; embedded metadata is read natively.
+      if (command.command === "unzip") throw new Error("External unzip must never be invoked.");
       const version = /^# version: (\S+)$/m.exec(
         await NodeFSP.readFile(command.command, "utf8"),
       )?.[1];
