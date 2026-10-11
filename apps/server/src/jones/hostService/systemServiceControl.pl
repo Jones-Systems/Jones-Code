@@ -23,7 +23,11 @@
 # owned file, recorded by owner, mode and SHA-256. Every mutation compares it
 # and the owned file first. Only the owned drop-in is ever written; it is
 # rendered here from the policy home, a strict version and the host, port and
-# mode of the retained serve command. Output carries metadata and digests,
+# mode of the retained serve command, staged in a root-only file beside it and
+# published by link or rename. An unpublished stage is removed on refusal,
+# error or interruption while it is still the same inode; one that cannot be
+# removed that way stays as evidence and the result is unknown. Output carries
+# metadata and digests,
 # never unit contents, Environment values or an unexpected command line.
 #
 # Results: `complete` or `no_change` (exit 0), `rejected REASON` before any
@@ -62,8 +66,30 @@ my @SHOW = qw(FragmentPath DropInPaths User Group NoNewPrivileges KillMode Slice
 # link or unlink; any later refusal is no longer proof of no effect.
 our $EFFECT_STARTED = 0;
 
+# Entries this invocation created before publishing anything: the owned
+# drop-in's staging file and, when absent, the drop-in directory. Each is
+# removed only while the same inode is still at the same path; anything else
+# stays as evidence and the result becomes unknown.
+our @CREATED;
+
+sub release_created {
+  my @kept;
+  for my $entry (reverse @CREATED) {
+    my @stat = lstat($entry->{path});
+    my $same = @stat && !-l _ && $stat[0] == $entry->{dev} && $stat[1] == $entry->{ino};
+    my $removed =
+        !$same ? 0
+      : $entry->{kind} eq "file" ? -f _ && unlink($entry->{path})
+      : -d _ && rmdir($entry->{path});
+    push @kept, $entry unless $removed;
+  }
+  @CREATED = reverse @kept;
+  return !@CREATED;
+}
+
 sub reject {
   die "unknown $_[0]\n" if $EFFECT_STARTED;
+  die "unknown created-cleanup\n" if @CREATED && !release_created();
   print "rejected $_[0]\n";
   exit 2;
 }
@@ -198,8 +224,7 @@ sub systemctl {
     open(STDIN, "<", "/dev/null") or POSIX::_exit(127);
     open(STDOUT, ">&", $write) or POSIX::_exit(127);
     open(STDERR, ">", "/dev/null") or POSIX::_exit(127);
-    exec { $SYSTEMCTL } $SYSTEMCTL, "--no-pager", @args;
-    POSIX::_exit(127);
+    exec { $SYSTEMCTL } $SYSTEMCTL, "--no-pager", @args or POSIX::_exit(127);
   }
   close($write);
   my $output = "";
@@ -233,8 +258,11 @@ sub show {
 }
 
 # Fragment and non-owned drop-ins in systemd order, with their digest records.
+# Only install-launcher's second scan passes `$staged`, the exact staging file
+# it created, matched by name and inode; every other entry, including a staging
+# file left by an interrupted run, is checked as usual.
 sub unit_preimage {
-  my ($policy) = @_;
+  my ($policy, $staged) = @_;
   my $fragment = "$SYSTEMD_DIRECTORY/$policy->{unit}";
   my $directory = "$fragment.d";
   reject("unit-trust") unless trusted_file($fragment);
@@ -261,6 +289,11 @@ sub unit_preimage {
   }
   my @dropins;
   for my $raw (@names) {
+    if (defined $staged && $raw eq $staged->{name}) {
+      my @stat = lstat("$directory/$raw");
+      next
+        if @stat && -f _ && !-l _ && $stat[0] == $staged->{dev} && $stat[1] == $staged->{ino};
+    }
     my ($name) = $raw =~ /\A([A-Za-z0-9][A-Za-z0-9_.@-]{0,200}\.conf)\z/ or reject("unit-dropin");
     reject("unit-trust") unless trusted_entry("$directory/$name", "file");
     if ($name eq $OWNED_NAME) {
@@ -416,7 +449,7 @@ sub process_bound {
 
 sub cgroup_empty {
   my ($show) = @_;
-  my ($group) = $show->{ControlGroup} =~ m{\A((?:/[A-Za-z0-9._@:\\-]+)+)\z} or return 0;
+  my ($group) = $show->{ControlGroup} =~ m{\A((?:/[A-Za-z0-9._\@:\\-]+)+)\z} or return 0;
   my $procs = read_small("$CGROUP_ROOT$group/cgroup.procs", 1048576);
   return !defined $procs || $procs eq "";
 }
@@ -451,7 +484,7 @@ sub report {
     my $birth = process_birth($show->{MainPID});
     emit("main-birth $birth") if defined $birth && process_bound($policy, $show, $show->{MainPID});
   }
-  my ($group) = $show->{ControlGroup} =~ m{\A((?:/[A-Za-z0-9._@:\\-]+)+)\z};
+  my ($group) = $show->{ControlGroup} =~ m{\A((?:/[A-Za-z0-9._\@:\\-]+)+)\z};
   emit("control-group $group") if defined $group;
   my ($kill) = $show->{KillMode} =~ /\A([a-z-]+)\z/;
   emit("kill-mode " . ($kill // "unknown"));
@@ -491,32 +524,44 @@ sub install_launcher {
     if (!lstat($preimage->{directory})) {
       reject("unit-trust") unless $! == ENOENT;
       mkdir($preimage->{directory}, 0755) or reject("unit-trust");
+      my @created = lstat($preimage->{directory});
+      unknown("unit-directory") unless @created;
+      push @CREATED,
+        { path => $preimage->{directory}, dev => $created[0], ino => $created[1], kind => "directory" };
     }
-    my $temporary = "$preimage->{directory}/.$OWNED_NAME.$$";
-    sysopen(my $handle, $temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644) or reject("owned-write");
+    # The staging file is root-only until it is published; its identity is
+    # taken from the descriptor that created it, so only that inode is ever
+    # skipped by the second scan or removed again.
+    my $name = ".$OWNED_NAME.$$";
+    my $temporary = "$preimage->{directory}/$name";
+    sysopen(my $handle, $temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600) or reject("owned-write");
+    my @stage = stat($handle);
+    if (!@stage) {
+      close($handle);
+      unknown("owned-write");
+    }
+    push @CREATED, { path => $temporary, dev => $stage[0], ino => $stage[1], kind => "file" };
     my $written = syswrite($handle, $text);
     my $synced = defined $written && $written == length($text) && $handle->sync;
     close($handle);
-    if (!$synced) {
-      unlink($temporary);
-      reject("owned-write");
-    }
-    my $current = unit_preimage($policy);
-    if ($current->{digest} ne $preimage->{digest} || $current->{owned} ne $values->{"expect-owned"}) {
-      unlink($temporary);
-      reject("unit-changed");
-    }
-    $EFFECT_STARTED = 1;
+    reject("owned-write") unless $synced;
+    my $current = unit_preimage($policy, { name => $name, dev => $stage[0], ino => $stage[1] });
+    reject("unit-changed")
+      if $current->{digest} ne $preimage->{digest} || $current->{owned} ne $values->{"expect-owned"};
     if ($values->{"expect-owned"} eq "absent") {
+      # A failed link publishes nothing, so the refusal removes only the stage.
       if (!link($temporary, $owned)) {
-        my $exists = $! == EEXIST;
-        unlink($temporary);
-        reject($exists ? "owned-changed" : "owned-write");
+        reject($! == EEXIST ? "owned-changed" : "owned-write");
       }
+      $EFFECT_STARTED = 1;
       unlink($temporary) or unknown("owned-write");
     } else {
+      $EFFECT_STARTED = 1;
       rename($temporary, $owned) or unknown("owned-write");
     }
+    # Published: the stage no longer exists and the directory now holds the
+    # owned drop-in, so nothing created here is removed afterwards.
+    @CREATED = ();
     sync_directory($preimage->{directory});
   }
   $EFFECT_STARTED = 1;
@@ -604,6 +649,11 @@ sub run {
   print "$HEADER\n";
   my $terminal = eval {
     local $SIG{ALRM} = sub { die "unknown deadline\n" };
+    # sudo relays these from the caller's deadline or cancellation; the
+    # unwinding below still removes this run's unpublished staging.
+    local $SIG{TERM} = sub { die "unknown interrupted\n" };
+    local $SIG{INT} = sub { die "unknown interrupted\n" };
+    local $SIG{HUP} = sub { die "unknown interrupted\n" };
     alarm($DEADLINE_SECONDS);
     my $result = request();
     alarm(0);
@@ -615,6 +665,9 @@ sub run {
     exit 0;
   }
   my $error = $@;
+  # The result stays unknown whether or not this removes anything; whatever
+  # cannot be removed by its exact identity is left as evidence.
+  release_created() if @CREATED;
   print $error =~ /\A(unknown [a-z-]+\n)\z/ ? $1 : "unknown internal\n";
   exit 3;
 }

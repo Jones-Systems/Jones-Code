@@ -77,8 +77,33 @@ $main::ROOT_UID = $<;
   rename("$state/after-$args[0]", "$state/show") if -e "$state/after-$args[0]";
   return (1, "");
 };
+# Only install-launcher's second scan names its stage. A scripted action then
+# lands between the two scans: a foreign entry, or another inode at the stage.
+my $preimage = \\&main::unit_preimage;
+*main::unit_preimage = sub {
+  my ($policy, $staged) = @_;
+  if (defined $staged && open(my $inject, "<", "$state/inject")) {
+    my $action = <$inject>;
+    close($inject);
+    unlink("$state/inject");
+    chomp $action;
+    my $directory = "$main::SYSTEMD_DIRECTORY/$policy->{unit}.d";
+    my $target = $action eq "replace-stage" ? "$directory/$staged->{name}" : "$directory/$action";
+    # Written aside and renamed in, so the replacement cannot reuse the stage's inode.
+    open(my $file, ">", "$target.next") or die;
+    print {$file} "[Service]\\n";
+    close($file);
+    chmod(0644, "$target.next");
+    rename("$target.next", $target) or die;
+  }
+  return $preimage->(@_);
+};
 @ARGV = @operation;
 run();`;
+
+/** Hidden drop-in entries; in these fixtures only worker staging files are named so. */
+const staged = async (directory: string) =>
+  (await NodeFSP.readdir(directory)).filter((name) => name.startsWith(".")).sort();
 
 interface ShowState {
   readonly dropins?: readonly string[];
@@ -455,8 +480,9 @@ it.skipIf(!runnable)("writes, reloads and archives only the owned launcher drop-
       code: 3,
       stdout: expect.stringMatching(/\nunknown daemon-reload\n$/),
     });
-    // The written evidence stays in place for reconciliation.
+    // The written evidence stays in place for reconciliation; no stage remains.
     expect(await NodeFSP.readFile(owned, "utf8")).toBe(expected);
+    expect(await staged(f.dropins)).toEqual([]);
     await NodeFSP.rm(NodePath.join(f.state, "fail-daemon-reload"));
     expect((await f.run(install())).stdout).toBe(`${header}\nrejected owned-changed\n`);
     await NodeFSP.rm(owned);
@@ -478,6 +504,7 @@ it.skipIf(!runnable)("writes, reloads and archives only the owned launcher drop-
       },
     });
     expect(await NodeFSP.readFile(owned, "utf8")).toBe(expected);
+    expect(await staged(f.dropins)).toEqual([]);
     expect([await NodeFSP.readFile(f.fragment), await NodeFSP.readFile(conf)]).toEqual(preserved);
     for (const line of expected.split("\n").filter((value) => value.includes("=")))
       expect(line).toMatch(/^(?:ExecStart=.*|Environment=T3CODE_(?:HOME|PORT|HOST|MODE)=.*)$/);
@@ -495,6 +522,91 @@ it.skipIf(!runnable)("writes, reloads and archives only the owned launcher drop-
     const kept = await NodeFSP.readdir(f.archive);
     expect(kept).toEqual([expect.stringMatching(new RegExp(`^${sha256(expected)}-\\d+\\.conf$`))]);
     expect(await NodeFSP.readFile(NodePath.join(f.archive, kept[0]!), "utf8")).toBe(expected);
+  }),
+);
+
+it.skipIf(!runnable)("removes only its own unpublished stage and keeps every foreign entry", () =>
+  fixture(async (f) => {
+    const digest = await f.digest();
+    const install = (owned = "absent") => [
+      "install-launcher",
+      "--expect-unit",
+      digest,
+      "--expect-owned",
+      owned,
+      "--launcher-version",
+      launcherVersion,
+    ];
+    const inject = (action: string) => f.file(NodePath.join(f.state, "inject"), `${action}\n`);
+    const owned = NodePath.join(f.dropins, OWNED_SYSTEM_DROPIN);
+    await f.setShow({ active: false });
+
+    // A foreign entry appearing between the scans is refused and kept; the
+    // stage this run created is removed, so the refusal is truthful.
+    await inject("notes.txt");
+    expect(await f.run(install())).toMatchObject({
+      code: 2,
+      stdout: `${header}\nrejected unit-dropin\n`,
+    });
+    expect(await NodeFSP.readFile(NodePath.join(f.dropins, "notes.txt"), "utf8")).toBe(
+      "[Service]\n",
+    );
+    expect(await staged(f.dropins)).toEqual([]);
+    await expect(NodeFSP.lstat(owned)).rejects.toMatchObject({ code: "ENOENT" });
+    await NodeFSP.rm(NodePath.join(f.dropins, "notes.txt"));
+
+    // A non-owned drop-in appearing between the scans fails the second compare.
+    await inject("zz-extra.conf");
+    expect(await f.run(install())).toMatchObject({
+      code: 2,
+      stdout: `${header}\nrejected unit-changed\n`,
+    });
+    expect(await NodeFSP.readFile(NodePath.join(f.dropins, "zz-extra.conf"), "utf8")).toBe(
+      "[Service]\n",
+    );
+    expect(await staged(f.dropins)).toEqual([]);
+    await NodeFSP.rm(NodePath.join(f.dropins, "zz-extra.conf"));
+
+    // Another inode at the stage path is neither skipped nor removed: the
+    // result is unknown and that file stays as evidence.
+    await inject("replace-stage");
+    expect(await f.run(install())).toMatchObject({
+      code: 3,
+      stdout: expect.stringMatching(/\nunknown created-cleanup\n$/),
+    });
+    const left = await staged(f.dropins);
+    expect(left).toEqual([expect.stringMatching(/^\.zzzz-jones-qualified-launcher\.conf\.\d+$/)]);
+    expect(await NodeFSP.readFile(NodePath.join(f.dropins, left[0]!), "utf8")).toBe("[Service]\n");
+    // A stage left behind is refused by every later scan and preserved.
+    expect((await f.run(["inspect"])).stdout).toBe(`${header}\nrejected unit-dropin\n`);
+    expect((await f.run(install())).stdout).toBe(`${header}\nrejected unit-dropin\n`);
+    expect(await staged(f.dropins)).toEqual(left);
+    await NodeFSP.rm(NodePath.join(f.dropins, left[0]!));
+
+    // Replacing an existing owned drop-in publishes by rename and leaves no stage.
+    const previous = "# previous owned drop-in\n";
+    await f.file(owned, previous);
+    const withOwned = ["jones-code.conf", OWNED_SYSTEM_DROPIN];
+    await f.setShow({ active: false, dropins: withOwned });
+    await f.setShow(
+      { active: false, dropins: withOwned, exec: `${f.launcherEntry} __service-launcher` },
+      "daemon-reload",
+    );
+    const replaced = await f.run(install(sha256(previous)));
+    expect(
+      parseSystemControlResult({ outcome: "exited", signal: null, ...replaced }),
+    ).toMatchObject({
+      status: "complete",
+      inspection: { unitDigest: digest, exec: `launcher ${launcherVersion}` },
+    });
+    expect(await NodeFSP.readFile(owned, "utf8")).toBe(
+      renderOwnedSystemDropin({
+        base: f.base,
+        launcherVersion,
+        serve: { port: 3773, host: "127.0.0.1" },
+      }),
+    );
+    expect(await staged(f.dropins)).toEqual([]);
   }),
 );
 
