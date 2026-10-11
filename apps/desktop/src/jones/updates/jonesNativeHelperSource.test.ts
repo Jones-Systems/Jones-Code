@@ -26,6 +26,8 @@ async function fixture() {
 
 const activationScenario = String.raw`
 root, fault = pathlib.Path(sys.argv[1]), sys.argv[2]
+# Exercise the real allocation/release protocol with small fixture-only capacity.
+RECOVERY_HEADROOM = 16384
 home, profile = root / 'userdata', root / 'profile'
 home.mkdir(); profile.mkdir()
 database = home / 'state.sqlite'
@@ -88,6 +90,10 @@ def synthetic_storage_preflight(active, candidate, transaction):
     try: return native_storage_preflight(active, candidate, transaction)
     finally: os.statvfs = native_space
 storage_preflight = synthetic_storage_preflight
+if fault == 'reserve-denied':
+    def reserve_recovery_capacity(*args): raise OSError('Synthetic ENOSPC before shutdown')
+if fault == 'reserve-release-failed':
+    def release_recovery_reserve(reserves): raise OSError('Synthetic uncertain reserve release')
 if fault in ('bundle-denied', 'bundle-second-rename-denied'):
     native_rename = os.rename
     def denied_rename(source, target):
@@ -99,6 +105,7 @@ if fault in ('bundle-denied', 'bundle-second-rename-denied'):
 native_stop = lambda proofs: events.append('stop:' + str(len(proofs)))
 def synthetic_stop(proofs):
     native_stop(proofs)
+    if fault == 'state-grew': (profile / 'growth').write_bytes(bytes(RECOVERY_HEADROOM))
     for proof in proofs:
         if proof.get('pid') == 654: alive(proof)
     if fault == 'candidate-stop' and proofs and proofs[0]['pid'] == 456:
@@ -138,7 +145,7 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'listener-mismatch': receipt['listener'] = 'http://127.0.0.1:4777'
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
     return {'pid': 456, 'identity': 'tracked-native-app'}
@@ -184,7 +191,7 @@ else:
     activate(tx / 'intent.json')
     journal = read(tx / 'journal.json')
     with sqlite3.connect(database) as db: state = db.execute('SELECT value FROM identity').fetchone()[0]
-    if fault == 'storage-refused':
+    if fault in ('storage-refused', 'reserve-denied'):
         assert events == ['storage-preflight']
         assert state == 'previous-state'
         assert read(manifest_path) == expected
@@ -203,6 +210,8 @@ else:
         assert read(manifest_path)['appPath'] == expected['appPath']
         assert pathlib.Path(read(manifest_path)['executablePath']).read_text() == 'candidate-executable'
         assert pathlib.Path(journal['previousBundle']).joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+        reserve = journal['recoveryReserves'][0]
+        assert pathlib.Path(reserve['path']).stat().st_blocks * 512 >= reserve['bytes']
     if fault.startswith('missing-') or fault in ('legacy-receipt', 'gate-mismatch', 'gate-boolean', 'protocol-mismatch', 'tree-mismatch', 'version-mismatch', 'listener-mismatch', 'invalid-backend', 'dead-backend', 'changed-backend'):
         assert read(manifest_path) == expected
         assert not (tx / 'commit-grant.json').exists()
@@ -219,7 +228,7 @@ else:
         assert (home / 'settings.json').read_text() == 'previous-settings'
         assert (profile / 'opaque').read_text() == 'same-host-profile'
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-        if fault != 'snapshot-failed':
+        if fault not in ('snapshot-failed', 'state-grew'):
             with sqlite3.connect(tx / 'advanced-state' / 'state.sqlite') as db:
                 assert db.execute('SELECT value FROM identity').fetchone()[0] == ('previous-state' if fault.startswith('bundle-') else 'advanced-state')
         else:
@@ -228,10 +237,56 @@ else:
         assert state == 'advanced-state'
         assert (tx / 'previous-pair' / 'state.sqlite').exists()
         assert 'restart-previous' not in events
+    if journal['phase'] == 'rolled-back': assert not (tx / 'recovery-reserve.bin').exists()
     print(json.dumps({'phase': journal['phase'], 'events': events, 'state': state}))
 `;
 
 describe("Jones native helper", () => {
+  it("physically reserves rollback capacity, preserves changed ownership, and removes only its failed allocation", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+path = root / 'reserve.bin'
+reserve = allocate_recovery_file(path, 16384)
+assert path.stat().st_size == 16384 and path.stat().st_blocks * 512 >= 16384
+assert reserve['inode'] == str(path.stat().st_ino)
+try: allocate_recovery_file(path, 16384)
+except FileExistsError: pass
+else: raise AssertionError('Occupied reserve overwritten')
+retained = root / 'retained.bin'; path.rename(retained); path.write_bytes(b'foreign')
+try: release_recovery_reserve([reserve])
+except RuntimeError as error: assert 'ownership changed' in str(error)
+else: raise AssertionError('Foreign reserve deleted')
+assert path.read_bytes() == b'foreign' and retained.stat().st_size == 16384
+path.unlink(); retained.rename(path)
+reserves = [reserve]; release_recovery_reserve(reserves)
+assert reserves == [] and not path.exists()
+original_fcntl = fcntl.fcntl
+original_platform = sys.platform
+sys.platform = 'darwin'
+def fail_allocation(descriptor, operation, argument):
+    os.write(descriptor, bytes(4096))
+    raise OSError(28, 'Synthetic exhausted fixture volume')
+fcntl.fcntl = fail_allocation
+sibling = root / 'unrelated'; sibling.write_text('keep')
+try:
+    try: allocate_recovery_file(path, 16384)
+    except OSError as error: assert error.errno == 28
+    else: raise AssertionError('Partial allocation accepted')
+finally:
+    fcntl.fcntl = original_fcntl
+    sys.platform = original_platform
+assert not path.exists() and sibling.read_text() == 'keep'
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
+        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
   it.each([
     "claim-first",
     "discard-first",
@@ -246,6 +301,7 @@ describe("Jones native helper", () => {
       )[0];
       const setup = activationScenario.split("\nevents = []")[0];
       const scenario = String.raw`
+
 request = tx / 'activation-request.json'; os.rename(tx / 'intent.json', request)
 for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
 def run(operation, selection_hash=selection_digest):
@@ -602,6 +658,9 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["snapshot-failed", "rolled-back"],
     ["old-quiescence", "blocked"],
     ["storage-refused", "blocked"],
+    ["reserve-denied", "blocked"],
+    ["reserve-release-failed", "blocked"],
+    ["state-grew", "rolled-back"],
     ["resume-grant", "blocked"],
     ["commit-uncertain", "blocked"],
     ["untracked-launch", "blocked"],
