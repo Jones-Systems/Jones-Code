@@ -402,7 +402,8 @@ it("requests child-side shutdown and requires close after exit before releasing 
     expect(disconnect).not.toHaveBeenCalled();
     child.emit("disconnect");
     child.emit("exit", 0, null);
-    await Promise.resolve();
+    // Drain the complete promise chain before testing that exit alone cannot settle stop.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(finished).toBe(false);
     child.emit("close", 0, null);
     expect(await stopping).toEqual({ status: "closed" });
