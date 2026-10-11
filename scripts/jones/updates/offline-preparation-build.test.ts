@@ -17,6 +17,7 @@ import {
   verifyPreparationHeldOutput,
   verifyPreparationSeaConfig,
   verifyPreparationSourceOverlay,
+  verifyPreparationSQLiteObservation,
 } from "./offline-preparation-build.ts";
 
 const sha = (bytes: string) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
@@ -65,6 +66,7 @@ function artifactManifest(bundle: string, config: string, binary: string) {
       sha: "a".repeat(40),
       tree: "b".repeat(40),
       version: "fixture",
+      buildOnlyOverlays: [] as string[],
       hashes: Object.fromEntries(
         [
           "pnpm-lock.yaml",
@@ -79,6 +81,8 @@ function artifactManifest(bundle: string, config: string, binary: string) {
           "scripts/jones/updates/offline-preparation-build.ts",
           "apps/server/src/jones/updates/offlinePreparationEntry.ts",
           "apps/server/src/jones/updates/offlinePreparation.ts",
+          "apps/server/src/jones/updates/offlinePreparationCore.ts",
+          "apps/server/src/jones/updates/offlinePreparationPlan.ts",
         ].map((file) => [file, sha(file)]),
       ),
     },
@@ -99,6 +103,7 @@ function artifactManifest(bundle: string, config: string, binary: string) {
         version: "26.8.2",
         platform: "darwin",
         arch: "arm64",
+        sqlite: sqliteObservation().sqlite,
       },
     },
     executable: {
@@ -111,7 +116,159 @@ function artifactManifest(bundle: string, config: string, binary: string) {
   };
 }
 
+function sqliteObservation() {
+  return {
+    nodeVersion: "26.8.2",
+    processVersion: "v26.8.2",
+    platform: "darwin",
+    arch: "arm64",
+    database: ":memory:",
+    databaseClosed: true,
+    runtimeSQLiteVersion: "3.50.4",
+    // Synthetic values verify shape/equality only; native producer execution supplies actual SQLite identity.
+    sqlite: {
+      version: "3.50.4",
+      sourceId: `2026-01-02 03:04:05 ${"a".repeat(64)}`,
+      observation: "in-memory-closed",
+    },
+  };
+}
+
 describe("closed preparation SEA build", () => {
+  it("verifies the closed in-memory observation without upgrading held capability", () => {
+    expect(verifyPreparationSQLiteObservation(JSON.stringify(sqliteObservation()))).toEqual(
+      sqliteObservation().sqlite,
+    );
+    withArtifact((root, manifest) => {
+      const proof = verifyPreparationArtifact(root);
+      expect(proof.classification).toBe("held-entry-only");
+      expect(proof.preparationCapable).toBe(false);
+      expect(proof.productionInvocation).toBe(false);
+      expect(proof.provenanceSha256).toBe(
+        sha(NodeFS.readFileSync(NodePath.join(root, "provenance.json"), "utf8")),
+      );
+      expect(proof.source.hashes).toEqual(manifest.source.hashes);
+      expect(Object.keys(proof.source.hashes)).toHaveLength(14);
+      expect(proof.sqlite).toEqual(sqliteObservation().sqlite);
+      expect(proof.node.runtime.sqlite).toEqual(proof.sqlite);
+      expect(Object.isFrozen(proof.source.hashes)).toBe(true);
+    });
+  });
+
+  it("accepts the exact observed release-stamp overlay subset", () =>
+    withArtifact((root, manifest) => {
+      manifest.source.buildOnlyOverlays = [
+        "apps/server/package.json",
+        "apps/desktop/package.json",
+        "apps/web/package.json",
+        "packages/contracts/package.json",
+      ];
+      NodeFS.writeFileSync(NodePath.join(root, "provenance.json"), JSON.stringify(manifest));
+      expect(verifyPreparationArtifact(root).source.buildOnlyOverlays).toEqual(
+        manifest.source.buildOnlyOverlays,
+      );
+    }));
+
+  it.each(
+    [
+      ["apps/server/package.json", "apps/server/package.json"],
+      ["pnpm-lock.yaml"],
+      ["apps/server/src/jones/updates/offlinePreparationCore.ts"],
+      Array.from({ length: 5 }, () => "apps/server/package.json"),
+      "apps/server/package.json",
+      undefined,
+    ].map((overlays) => [overlays] as const),
+  )("rejects invalid producer overlay evidence %j", (overlays) =>
+    withArtifact((root, manifest) => {
+      const source = { ...manifest.source, buildOnlyOverlays: overlays };
+      NodeFS.writeFileSync(
+        NodePath.join(root, "provenance.json"),
+        JSON.stringify({ ...manifest, source }),
+      );
+      expect(() => verifyPreparationArtifact(root)).toThrow();
+    }),
+  );
+
+  it.each([
+    { nodeVersion: "24.21.0" },
+    { processVersion: "26.8.2" },
+    { platform: "linux" },
+    { arch: "x64" },
+    { database: "/tmp/state.sqlite" },
+    { databaseClosed: false },
+    { runtimeSQLiteVersion: "3.50.5" },
+    { extra: true },
+    { sqlite: { ...sqliteObservation().sqlite, extra: true } },
+    {
+      sqlite: { ...sqliteObservation().sqlite, sourceId: `2026-02-30 03:04:05 ${"a".repeat(64)}` },
+    },
+    {
+      sqlite: {
+        ...sqliteObservation().sqlite,
+        sourceId: sqliteObservation().sqlite.sourceId + "\n",
+      },
+    },
+  ])("rejects mismatched or excess SQLite observation %j", (patch) => {
+    expect(() =>
+      verifyPreparationSQLiteObservation(JSON.stringify({ ...sqliteObservation(), ...patch })),
+    ).toThrow();
+  });
+
+  it.each([
+    "",
+    "source",
+    "source.hashes",
+    "bundle",
+    "seaConfig",
+    "seaConfig.value",
+    "upstream",
+    "upstream.archive",
+    "upstream.runtime",
+    "upstream.runtime.sqlite",
+    "executable",
+  ])("rejects excess nested artifact proof fields at %s", (path) =>
+    withArtifact((root, manifest) => {
+      const changed = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;
+      let object = changed;
+      for (const key of path === "" ? [] : path.split("."))
+        object = object[key] as Record<string, unknown>;
+      object.extra = true;
+      NodeFS.writeFileSync(NodePath.join(root, "provenance.json"), JSON.stringify(changed));
+      expect(() => verifyPreparationArtifact(root)).toThrow();
+    }),
+  );
+
+  it("hashes actual provenance bytes on every observation and rechecks executable bytes", () =>
+    withArtifact((root) => {
+      const before = verifyPreparationArtifact(root);
+      NodeFS.appendFileSync(NodePath.join(root, "provenance.json"), "\n");
+      const after = verifyPreparationArtifact(root);
+      expect(after.provenanceSha256).not.toBe(before.provenanceSha256);
+      expect(after.provenanceBytes).toBe(before.provenanceBytes + 1);
+      expect(after.source).toEqual(before.source);
+      NodeFS.appendFileSync(NodePath.join(root, "jones-offline-preparation"), "changed");
+      expect(() => verifyPreparationArtifact(root)).toThrow(/artifact changed/);
+    }));
+
+  it.each(["sqlite", "core-input", "plan-input", "held-classification"] as const)(
+    "preserves old or unqualified output: %s",
+    (fault) =>
+      withArtifact((root, manifest) => {
+        const changed = JSON.parse(JSON.stringify(manifest)) as ReturnType<typeof artifactManifest>;
+        if (fault === "sqlite") delete (changed.upstream.runtime as Record<string, unknown>).sqlite;
+        if (fault === "core-input")
+          delete changed.source.hashes["apps/server/src/jones/updates/offlinePreparationCore.ts"];
+        if (fault === "plan-input")
+          delete changed.source.hashes["apps/server/src/jones/updates/offlinePreparationPlan.ts"];
+        if (fault === "held-classification") changed.classification = "cold-preparation-worker";
+        const raw = JSON.stringify(changed);
+        NodeFS.writeFileSync(NodePath.join(root, "provenance.json"), raw);
+        expect(() => preparePreparationOutput(root)).toThrow();
+        expect(NodeFS.readFileSync(NodePath.join(root, "provenance.json"), "utf8")).toBe(raw);
+        expect(NodeFS.existsSync(NodePath.join(root, "jones-offline-preparation"))).toBe(true);
+      }),
+  );
+
   it("accepts only literal builtins in an otherwise closed module", () => {
     expect(
       verifyPreparationClosure(

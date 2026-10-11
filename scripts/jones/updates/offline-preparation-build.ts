@@ -44,6 +44,8 @@ const sourceFiles = [
   "scripts/jones/updates/offline-preparation-build.ts",
   `apps/server/${entry}`,
   "apps/server/src/jones/updates/offlinePreparation.ts",
+  "apps/server/src/jones/updates/offlinePreparationCore.ts",
+  "apps/server/src/jones/updates/offlinePreparationPlan.ts",
 ];
 const maxBundleBytes = 32 * 1024 * 1024;
 const maxRuntimeBytes = 256 * 1024 * 1024;
@@ -1039,7 +1041,7 @@ async function observeSource(root: string, command: PreparationBuildScope["comma
   }
   const sha = await git("rev-parse", "HEAD");
   const tree = await git("rev-parse", "HEAD^{tree}");
-  if (![sha, tree].every((value) => /^[a-f0-9]{40}$/.test(value)))
+  if (![sha, tree].every((value) => /^[a-f0-9]{40}$(?![\s\S])/.test(value)))
     throw new Error("Invalid source identity.");
   const changed = (await git("diff", "--name-only", "--no-renames", "HEAD", "--"))
     .split("\n")
@@ -1113,9 +1115,82 @@ async function verifyArgumentRefusal(
   throw new Error("Preparation executable accepted application arguments.");
 }
 
+const SQLiteMetadata = Schema.Struct({
+  version: Schema.String.check(
+    Schema.isPattern(
+      /^(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})$(?![\s\S])/,
+    ),
+  ),
+  sourceId: Schema.String.check(
+    Schema.isPattern(
+      /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [a-f0-9]{64}$(?![\s\S])/,
+    ),
+  ),
+  observation: Schema.Literal("in-memory-closed"),
+});
+const SQLiteProbeObservation = Schema.Struct({
+  nodeVersion: Schema.Literal(nodeVersion),
+  processVersion: Schema.Literal(`v${nodeVersion}`),
+  platform: Schema.Literal("darwin"),
+  arch: Schema.Literal("arm64"),
+  database: Schema.Literal(":memory:"),
+  databaseClosed: Schema.Literal(true),
+  runtimeSQLiteVersion: SQLiteMetadata.fields.version,
+  sqlite: SQLiteMetadata,
+});
+
+// Fixed native observation: no caller path, arguments, application state or migration can enter this script.
+const sqliteProbeScript = `import { DatabaseSync } from "node:sqlite";
+const database = new DatabaseSync(":memory:");
+let row;
+try {
+  row = database.prepare("SELECT sqlite_version() AS version, sqlite_source_id() AS sourceId").get();
+} finally {
+  database.close();
+}
+if (row?.version !== process.versions.sqlite || process.versions.node !== "26.8.2" ||
+    process.version !== "v26.8.2" || process.platform !== "darwin" || process.arch !== "arm64")
+  throw new Error("Pinned Node SQLite observation mismatch.");
+process.stdout.write(JSON.stringify({
+  nodeVersion: process.versions.node, processVersion: process.version,
+  platform: process.platform, arch: process.arch, database: ":memory:", databaseClosed: true,
+  runtimeSQLiteVersion: process.versions.sqlite,
+  sqlite: { version: row.version, sourceId: row.sourceId, observation: "in-memory-closed" }
+}) + "\\n");`;
+
+function validateSQLiteMetadata(value: typeof SQLiteMetadata.Type): void {
+  const [year, month, day, hour, minute, second] = value.sourceId
+    .slice(0, 19)
+    .split(/[- :]/)
+    .map(Number);
+  const leap = year! % 4 === 0 && (year! % 100 !== 0 || year! % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (
+    month! < 1 ||
+    month! > 12 ||
+    day! < 1 ||
+    day! > days[month! - 1]! ||
+    hour! > 23 ||
+    minute! > 59 ||
+    second! > 59
+  )
+    throw new Error("Invalid observed SQLite source timestamp.");
+}
+
+export function verifyPreparationSQLiteObservation(raw: string): typeof SQLiteMetadata.Type {
+  if (Buffer.byteLength(raw) > 4096) throw new Error("SQLite observation exceeds bound.");
+  const observation = Schema.decodeUnknownSync(SQLiteProbeObservation, {
+    onExcessProperty: "error",
+  })(decode(raw));
+  if (observation.runtimeSQLiteVersion !== observation.sqlite.version)
+    throw new Error("SQLite runtime and SQL versions differ.");
+  validateSQLiteMetadata(observation.sqlite);
+  return Object.freeze(observation.sqlite);
+}
+
 const HashRecord = Schema.Struct({
-  sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
-  size: Schema.Int.check(Schema.isGreaterThan(0)),
+  sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$(?![\s\S])/)),
+  size: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(maxRuntimeBytes)),
 });
 const ArtifactManifest = Schema.Struct({
   schemaVersion: Schema.Literal(1),
@@ -1125,28 +1200,46 @@ const ArtifactManifest = Schema.Struct({
   productionInvocation: Schema.Literal(false),
   source: Schema.Struct({
     repository: Schema.Literal("Jones-Systems/Jones-Code"),
-    sha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
-    tree: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
-    version: Schema.NonEmptyString,
-    hashes: Schema.Record(Schema.String, Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+    sha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$(?![\s\S])/)),
+    tree: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$(?![\s\S])/)),
+    version: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
+    hashes: Schema.Record(
+      Schema.String,
+      Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$(?![\s\S])/)),
+    ),
+    buildOnlyOverlays: Schema.Array(Schema.String).check(Schema.isMaxLength(4)),
   }),
   entry: Schema.Literal(entry),
   dependencyInventory: Schema.Array(Schema.String),
   builtins: Schema.Array(Schema.String),
   bundle: HashRecord,
-  seaConfig: Schema.Struct({ ...HashRecord.fields, value: Schema.Unknown }),
+  seaConfig: Schema.Struct({
+    ...HashRecord.fields,
+    value: Schema.Struct({
+      main: Schema.Literal(bundleName),
+      mainFormat: Schema.Literal("module"),
+      executable: Schema.Literal("node"),
+      output: Schema.Literal(executableName),
+      disableExperimentalSEAWarning: Schema.Literal(true),
+      useSnapshot: Schema.Literal(false),
+      useCodeCache: Schema.Literal(false),
+      execArgv: Schema.Array(Schema.String),
+      execArgvExtension: Schema.Literal("none"),
+    }),
+  }),
   upstream: Schema.Struct({
     archiveUrl: Schema.Literal(releaseOrigin + archiveName),
     checksumsUrl: Schema.Literal(releaseOrigin + "SHASUMS256.txt"),
     verification: Schema.Literal("official-https-checksum"),
     signedChecksumVerification: Schema.Literal(false),
     archive: HashRecord,
-    checksumsSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+    checksumsSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$(?![\s\S])/)),
     runtime: Schema.Struct({
       ...HashRecord.fields,
       version: Schema.Literal(nodeVersion),
       platform: Schema.Literal("darwin"),
       arch: Schema.Literal("arm64"),
+      sqlite: SQLiteMetadata,
     }),
   }),
   executable: Schema.Struct({
@@ -1158,18 +1251,46 @@ const ArtifactManifest = Schema.Struct({
   }),
 });
 
-/** Re-observe final files; a JSON receipt alone is not artifact or execution authority. */
-export function verifyPreparationArtifact(directory: string): void {
-  verifyPreparationArtifactAt(directory, "provenance.json");
+export interface VerifiedHeldPreparationArtifact {
+  readonly classification: "held-entry-only";
+  readonly preparationCapable: false;
+  readonly productionInvocation: false;
+  readonly provenanceSha256: string;
+  readonly provenanceBytes: number;
+  readonly source: (typeof ArtifactManifest.Type)["source"];
+  readonly entry: (typeof ArtifactManifest.Type)["bundle"];
+  readonly seaConfig: (typeof ArtifactManifest.Type)["seaConfig"];
+  readonly executable: (typeof ArtifactManifest.Type)["executable"];
+  readonly node: (typeof ArtifactManifest.Type)["upstream"];
+  readonly sqlite: typeof SQLiteMetadata.Type;
+}
+
+/** Re-observe final files; the returned held proof describes these bytes and grants no preparation or execution authority. */
+export function verifyPreparationArtifact(directory: string): VerifiedHeldPreparationArtifact {
+  return verifyPreparationArtifactAt(directory, "provenance.json");
 }
 
 function verifyPreparationArtifactAt(
   directory: string,
   provenanceName: "provenance.json" | "provenance.complete.json",
-): void {
-  const manifest = Schema.decodeUnknownSync(ArtifactManifest)(
-    decode(readFile(NodePath.join(directory, provenanceName), 4 * 1024 * 1024).toString("utf8")),
+): VerifiedHeldPreparationArtifact {
+  const provenancePath = NodePath.join(directory, provenanceName);
+  const provenanceBytes = readFile(provenancePath, 64 * 1024);
+  const manifest = Schema.decodeUnknownSync(ArtifactManifest, { onExcessProperty: "error" })(
+    decode(provenanceBytes.toString("utf8")),
   );
+  validateSQLiteMetadata(manifest.upstream.runtime.sqlite);
+  if (
+    new Set(manifest.source.buildOnlyOverlays).size !== manifest.source.buildOnlyOverlays.length ||
+    manifest.source.buildOnlyOverlays.some((file) => !releaseManifests.includes(file))
+  )
+    throw new Error("Preparation provenance has unadmitted or duplicate release overlays.");
+  if (
+    manifest.bundle.size > maxBundleBytes ||
+    manifest.seaConfig.size > 16 * 1024 ||
+    manifest.upstream.archive.size > 128 * 1024 * 1024
+  )
+    throw new Error("Preparation provenance member exceeds its fixed bound.");
   if (
     encode(Object.keys(manifest.source.hashes).sort()) !== encode([...sourceFiles].sort()) ||
     encode(manifest.dependencyInventory) !== encode([`apps/server/${entry}`]) ||
@@ -1194,11 +1315,35 @@ function verifyPreparationArtifactAt(
     )
       throw new Error("Recorded builtin inventory differs from the emitted bundle.");
     if (name === "sea-config.json") {
+      if (bytes.toString("utf8") !== `${encode(preparationSeaConfig())}\n`)
+        throw new Error("Preparation SEA config bytes differ from the fixed encoding.");
       verifyPreparationSeaConfig(decode(bytes.toString("utf8")));
       if (encode(decode(bytes.toString("utf8"))) !== encode(manifest.seaConfig.value))
         throw new Error("Recorded SEA config differs from bytes.");
     }
   }
+  if (!readFile(provenancePath, 64 * 1024).equals(provenanceBytes))
+    throw new Error("Preparation provenance changed during verification.");
+  const proof: VerifiedHeldPreparationArtifact = {
+    classification: "held-entry-only",
+    preparationCapable: false,
+    productionInvocation: false,
+    provenanceSha256: digest(provenanceBytes),
+    provenanceBytes: provenanceBytes.length,
+    source: manifest.source,
+    entry: manifest.bundle,
+    seaConfig: manifest.seaConfig,
+    executable: manifest.executable,
+    node: manifest.upstream,
+    sqlite: manifest.upstream.runtime.sqlite,
+  };
+  const freeze = (value: unknown): void => {
+    if (typeof value !== "object" || value === null || Object.isFrozen(value)) return;
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  };
+  freeze(proof);
+  return proof;
 }
 
 /** Rebuild only an empty output or a fully observed completed artifact; uncertainty is never a cleanup grant. */
@@ -1363,6 +1508,19 @@ export function offlinePreparationPack(
             throw new Error(
               "Observed Node runtime does not match the pinned version and architecture.",
             );
+          const sqlite = verifyPreparationSQLiteObservation(
+            (
+              await command(
+                runtimePath,
+                ["--input-type=module", "--eval", sqliteProbeScript],
+                scratch,
+                4096,
+              )
+            ).toString("utf8"),
+          );
+          // command resolves only after terminal close; retain the exact runtime bytes across the SQLite observation.
+          if (digest(readFile(runtimePath, maxRuntimeBytes)) !== runtimeHash)
+            throw new Error("Node runtime changed during SQLite observation.");
           NodeFS.writeFileSync(NodePath.join(scratch, bundleName), bundle, {
             flag: "wx",
             mode: 0o400,
@@ -1423,6 +1581,7 @@ export function offlinePreparationPack(
                 arch: "arm64",
                 sha256: runtimeHash,
                 size: runtime.length,
+                sqlite,
               },
             },
             executable: {
