@@ -13,6 +13,7 @@ import {
   offlinePreparationCandidatePack,
   inspectPreparationCandidateJavaScript,
   inspectPreparationCandidateCode,
+  inspectPreparationCandidateExternal,
   requireEmptyPreparationCandidateOutput,
   runPreparationLifecycleFixture,
   verifyNodeArchive,
@@ -607,6 +608,58 @@ describe("unqualified preparation candidate graph", () => {
       size: Buffer.byteLength("export const actual = 1;"),
       sha256: sha("export const actual = 1;"),
     });
+  });
+
+  it.each([
+    {
+      id: "node:sqlite",
+      rendered: [],
+      emitted: ["node:sqlite"],
+      external: true,
+      evidence: "emitted-import",
+    },
+    {
+      id: "external-package",
+      rendered: [],
+      emitted: ["external-package"],
+      external: true,
+      evidence: "emitted-import",
+    },
+    {
+      id: "/source/bundled.ts",
+      rendered: ["/source/bundled.ts"],
+      emitted: [],
+      external: false,
+      evidence: "rendered-module",
+    },
+    {
+      id: "node:sqlite",
+      rendered: [],
+      emitted: [],
+      external: null,
+      evidence: "unavailable-module-info-api",
+    },
+    {
+      id: "unresolved-or-tree-shaken",
+      rendered: [],
+      emitted: [],
+      external: null,
+      evidence: "unavailable-module-info-api",
+    },
+  ])("reports external status only from observed graph evidence: $id / $evidence", (input) => {
+    expect(
+      inspectPreparationCandidateExternal(
+        input.id,
+        new Set(input.rendered),
+        new Set(input.emitted),
+      ),
+    ).toEqual({ external: input.external, externalEvidence: input.evidence });
+  });
+
+  it("refuses conflicting rendered and external observations instead of choosing a classification", () => {
+    expect(() =>
+      inspectPreparationCandidateExternal("conflict", new Set(["conflict"]), new Set(["conflict"])),
+    ).toThrow(/observations conflict/);
   });
 
   it("does not confuse a candidate reflection observation with held-entry approval", () => {

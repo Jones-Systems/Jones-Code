@@ -1694,6 +1694,20 @@ export function inspectPreparationCandidateCode(code: unknown) {
   return { availability: "observed" as const, sha256: digest(code), size };
 }
 
+/** Rolldown ModuleInfo omits external status; use only its actual output graph evidence. */
+export function inspectPreparationCandidateExternal(
+  id: string,
+  renderedIds: ReadonlySet<string>,
+  emittedImportIds: ReadonlySet<string>,
+) {
+  const rendered = renderedIds.has(id),
+    emitted = emittedImportIds.has(id);
+  if (rendered && emitted) throw new Error("Candidate external observations conflict.");
+  if (emitted) return { external: true as const, externalEvidence: "emitted-import" as const };
+  if (rendered) return { external: false as const, externalEvidence: "rendered-module" as const };
+  return { external: null, externalEvidence: "unavailable-module-info-api" as const };
+}
+
 /** Capture every existing ancestor before allowing the builder to create an output child. */
 function candidateDirectoryChain(directory: string) {
   if (!NodePath.isAbsolute(directory) || NodePath.normalize(directory) !== directory)
@@ -1923,6 +1937,10 @@ export function offlinePreparationCandidatePack(
       const ids = [...this.getModuleIds()].sort();
       if (ids.length > candidateModuleLimit)
         throw new Error("Candidate graph exceeds module bound.");
+      const renderedIds = new Set(Object.keys(chunk.modules));
+      const emittedImportIds = new Set([...chunk.imports, ...chunk.dynamicImports]);
+      const externalObservation = (id: string) =>
+        inspectPreparationCandidateExternal(id, renderedIds, emittedImportIds);
       const packages = new Map<string, ReturnType<typeof candidatePackage>>();
       let observedCodeBytes = 0;
       const codeRecord = (code: unknown) => {
@@ -1945,13 +1963,13 @@ export function offlinePreparationCandidatePack(
         const edge = (target: string) => ({
           id: candidateId(root, target),
           builtin: NodeModule.isBuiltin(target),
-          external: this.getModuleInfo(target)?.isExternal ?? null,
+          ...externalObservation(target),
         });
         return {
           id: candidateId(root, id),
           virtualId: id.includes("\0"),
           builtin: NodeModule.isBuiltin(id),
-          external: info?.isExternal ?? null,
+          ...externalObservation(id),
           entry: info?.isEntry ?? null,
           informationAvailable: info !== null && info !== undefined,
           sourceContent: candidateFile(root, id),
