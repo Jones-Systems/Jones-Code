@@ -261,11 +261,11 @@ def release_writer_exclusion(connections):
         connections[-1].close()
         connections.pop()
 
-def acquire_writer_exclusion(expected):
+def acquire_writer_exclusion(expected, initialize=True):
     connections = []
     try:
         for path, scope in native_writer_lease_paths(expected):
-            initialize_native_lease(path, scope)
+            if initialize: initialize_native_lease(path, scope)
             identity = native_lease_identity(path, scope)
             connection = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=0, isolation_level=None)
             connections.append(connection)
@@ -580,7 +580,7 @@ def selection_binding(active, handle, selection_path, expected_digest):
         raise SelectionRefused('selection-mismatch')
     return path, selection, raw, info
 
-def inspect_selection_transactions(active, transaction_id=None, claiming=False, staged_handle=None):
+def inspect_selection_transactions(active, transaction_id=None, claiming=False, staged_handle=None, retiring=None):
     root = manifest_path.parent / 'jones-updates' / 'transactions'
     if not root.exists():
         if claiming: raise SelectionRefused('unknown-state')
@@ -591,6 +591,8 @@ def inspect_selection_transactions(active, transaction_id=None, claiming=False, 
         count += 1
         if count > 1000 or transaction.is_symlink() or not transaction.is_dir() or len(transaction.name) != 64 or any(char not in '0123456789abcdef' for char in transaction.name):
             raise SelectionRefused('unknown-state')
+        if transaction.name != retiring and (transaction / 'retirement-intent.json').exists() and not (transaction / 'retirement-receipt.json').exists():
+            raise SelectionRefused('activation-pending')
         intent, journal, preparation = [transaction / name for name in ('intent.json', 'journal.json', 'prepare-intent.json')]
         prepared = any((transaction / name).exists() for name in ('prepare-dispatched.json', 'continuation.json'))
         if transaction.name == transaction_id:
@@ -623,6 +625,203 @@ def attempt_selection_binding(active, staged_handle, transaction_id, selection_p
     expected = {'protocol': PROTOCOL, 'transactionId': transaction_id, 'stagedHandle': staged_handle,
                 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': active}
     if type(value.get('protocol')) is not int or value != expected: raise SelectionRefused('selection-mismatch')
+
+def retirement_inventory(path):
+    entries = []
+    device = path.lstat().st_dev
+    def visit(current, relative):
+        info = current.lstat()
+        if info.st_uid != os.getuid() or info.st_dev != device:
+            raise SelectionRefused('unknown-payload-owner')
+        kind = 'directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode) else 'link' if stat.S_ISLNK(info.st_mode) else None
+        if kind is None or (kind != 'directory' and info.st_nlink != 1) or (relative == '.' and kind == 'link'):
+            raise SelectionRefused('unknown-payload-type')
+        entries.append({'path': relative, 'kind': kind, 'device': str(info.st_dev), 'inode': str(info.st_ino),
+                        'bytes': 0 if kind == 'directory' else info.st_size, 'mode': stat.S_IMODE(info.st_mode)})
+        if len(entries) > 200000: raise SelectionRefused('payload-bound')
+        if kind == 'directory':
+            for child in sorted(current.iterdir(), key=lambda value: value.name):
+                visit(child, child.name if relative == '.' else relative + '/' + child.name)
+    visit(path, '.')
+    return entries
+
+def retirement_context(active, transaction_id):
+    if not isinstance(transaction_id, str) or len(transaction_id) != 64 or any(char not in '0123456789abcdef' for char in transaction_id):
+        raise SelectionRefused('unknown-transaction')
+    root = manifest_path.parent / 'jones-updates' / 'transactions'
+    tx = root / transaction_id
+    if tx.is_symlink() or not tx.is_dir() or tx.resolve(strict=True) != tx:
+        raise SelectionRefused('unknown-transaction')
+    inspect_selection_transactions(active, retiring=transaction_id)
+    journals = {}
+    for other in root.iterdir():
+        if not (other / 'journal.json').exists(): continue
+        journal, raw, _ = bounded_native_json(other / 'journal.json')
+        prior = journal['intent']['expected']
+        if any(prior.get(key) != active[key] for key in ('home', 'databasePath', 'profile', 'appPath', 'environmentId')):
+            raise SelectionRefused('unknown-state')
+        generation = prior.get('generation')
+        if not isinstance(generation, str) or not generation or any(not (char.isascii() and (char.isalnum() or char in '_-')) for char in generation):
+            raise SelectionRefused('unknown-state')
+        stable = pathlib.Path(prior['appPath'])
+        derived = {'pairedState': other / 'previous-pair', 'incomingBundle': stable.with_name(stable.name + '.jones-incoming-' + other.name),
+                   'previousBundle': stable.with_name(stable.name + '.jones-previous-' + generation)}
+        if any(key in journal and journal[key] != str(path) for key, path in derived.items()):
+            raise SelectionRefused('unknown-state')
+        journals[other.name] = (journal, hashlib.sha256(raw).hexdigest(), derived)
+    if transaction_id not in journals: raise SelectionRefused('unknown-transaction')
+    if transaction_id in (active.get('generation'), active.get('transactionId')):
+        raise SelectionRefused('protected-generation')
+    current = journals.get(active.get('transactionId'))
+    if current and transaction_id in (current[0]['intent']['expected'].get('generation'), current[0]['intent']['expected'].get('transactionId')):
+        raise SelectionRefused('protected-recovery-parent')
+    if len(str(active.get('transactionId', ''))) == 64 and current is None:
+        raise SelectionRefused('unknown-current-generation')
+    journal, journal_digest, derived = journals[transaction_id]
+    prior = journal['intent']['expected']
+    staging = root.parent / 'staging'
+    if staging.exists():
+        selections = list(staging.iterdir())
+        if staging.is_symlink() or len(selections) > 1000: raise SelectionRefused('unknown-selection')
+        for selection_path in selections:
+            selection, _, _ = bounded_native_json(selection_path, 131072)
+            if selection.get('schema') != 1 or selection.get('source') != 'jones-actions' or not isinstance(selection.get('app'), dict):
+                raise SelectionRefused('unknown-selection')
+            if selection.get('active') == active and selection['app'].get('handle') == journal['intent']['staged']['handle']:
+                raise SelectionRefused('protected-stage')
+    allowed = []
+    for directory, marker, database_name in ((tx / 'previous-pair', 'pair.json', 'state.sqlite'), (tx / 'advanced-state', 'retained.json', pathlib.Path(prior['databasePath']).name)):
+        if not directory.exists(): continue
+        if directory.is_symlink() or directory.resolve(strict=True) != directory: raise SelectionRefused('unknown-state')
+        evidence, _, _ = bounded_native_json(directory / marker)
+        if evidence.get('expected' if marker == 'pair.json' else 'previous') != prior:
+            raise SelectionRefused('unknown-state')
+        names = [database_name + suffix for suffix in ('', '-wal', '-shm')] + list(SETTINGS) + ['profile']
+        if any(child.name not in names + [marker] for child in directory.iterdir()): raise SelectionRefused('unknown-payload')
+        allowed.extend((directory / name, None) for name in names)
+    allowed.extend((derived[key], None) for key in ('incomingBundle', 'previousBundle') if key in journal)
+    for reserve in journal.get('recoveryReserves', []):
+        path = pathlib.Path(reserve['path'])
+        if path not in (tx / 'recovery-reserve.bin', tx / 'recovery-journal-reserve.bin', pathlib.Path(prior['appPath']).parent / ('.jones-recovery-reserve-' + transaction_id)):
+            raise SelectionRefused('unknown-reserve')
+        allowed.append((path, reserve))
+    references = [path for name, (other, _, paths) in journals.items() if name != transaction_id for key, path in paths.items() if key in other]
+    targets = []
+    for path, reserve in allowed:
+        if not path.exists() and not path.is_symlink(): continue
+        if any(path == reference or path.is_relative_to(reference) or reference.is_relative_to(path) for reference in references):
+            raise SelectionRefused('protected-reference')
+        if path.parent.resolve(strict=True) != path.parent: raise SelectionRefused('unknown-payload-parent')
+        entries = retirement_inventory(path)
+        first = entries[0]
+        if reserve is not None and any(first[key] != reserve[key] for key in ('device', 'inode', 'bytes')):
+            raise SelectionRefused('unknown-reserve-owner')
+        parent = path.parent.stat()
+        targets.append({'path': str(path), 'kind': first['kind'], 'device': first['device'], 'inode': first['inode'],
+                        'bytes': sum(entry['bytes'] for entry in entries), 'parentDevice': str(parent.st_dev), 'parentInode': str(parent.st_ino), 'entries': entries})
+    if sum(len(target['entries']) for target in targets) > 200000: raise SelectionRefused('payload-bound')
+    return tx, {'protocol': PROTOCOL, 'transactionId': transaction_id, 'activeBinding': active, 'journalSha256': journal_digest, 'targets': targets}
+
+def retirement_digest(plan):
+    return hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+def reconcile_retirement(original, current):
+    if any(original.get(key) != current[key] for key in ('protocol', 'transactionId', 'activeBinding', 'journalSha256')):
+        raise SelectionRefused('plan-changed')
+    approved = {target['path']: target for target in original['targets']}
+    if len(approved) != len(original['targets']): raise SelectionRefused('plan-changed')
+    for target in current['targets']:
+        before = approved.get(target['path'])
+        if before is None or any(target[key] != before[key] for key in ('kind', 'device', 'inode', 'parentDevice', 'parentInode')):
+            raise SelectionRefused('plan-changed')
+        entries = {entry['path']: entry for entry in before['entries']}
+        if any(entries.get(entry['path']) != entry for entry in target['entries']): raise SelectionRefused('plan-changed')
+
+def remove_retirement_payload(target):
+    path = pathlib.Path(target['path'])
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(parent)
+        if (str(info.st_dev), str(info.st_ino)) != (target['parentDevice'], target['parentInode']): raise SelectionRefused('plan-changed')
+        entries = {entry['path']: entry for entry in target['entries']}
+        children = {}
+        for relative in entries:
+            if relative == '.': continue
+            container, _, name = relative.rpartition('/')
+            children.setdefault(container or '.', []).append(name)
+        def remove(fd, name, relative):
+            expected = entries[relative]
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            kind = 'directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode) else 'link' if stat.S_ISLNK(info.st_mode) else None
+            if kind != expected['kind'] or str(info.st_dev) != expected['device'] or str(info.st_ino) != expected['inode'] or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != expected['mode'] or (kind != 'directory' and (info.st_size != expected['bytes'] or info.st_nlink != 1)):
+                raise SelectionRefused('plan-changed')
+            if kind == 'directory':
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    opened = os.fstat(child)
+                    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino): raise SelectionRefused('plan-changed')
+                    names = sorted(os.listdir(child))
+                    prefix = '' if relative == '.' else relative + '/'
+                    wanted = sorted(children.get(relative, []))
+                    if names != wanted: raise SelectionRefused('plan-changed')
+                    for child_name in names: remove(child, child_name, prefix + child_name)
+                    os.fsync(child)
+                finally: os.close(child)
+                os.rmdir(name, dir_fd=fd)
+            else: os.unlink(name, dir_fd=fd)
+            os.fsync(fd)
+        remove(parent, path.name, '.')
+    finally: os.close(parent)
+
+def retirement_command(operation, active, transaction_id, plan_sha=None):
+    result = {'protocol': PROTOCOL, 'operation': operation, 'transactionId': transaction_id}
+    connections, changed = [], False
+    try:
+        if isinstance(transaction_id, str) and len(transaction_id) == 64 and all(char in '0123456789abcdef' for char in transaction_id):
+            changed = (manifest_path.parent / 'jones-updates' / 'transactions' / transaction_id / 'retirement-intent.json').exists()
+        if operation == 'retire-transaction':
+            try: connections = acquire_writer_exclusion(active, initialize=False)
+            except sqlite3.OperationalError: raise SelectionRefused('writer-busy')
+            prove_quiescence(active)
+        if read(manifest_path) != active: raise SelectionRefused('active-changed')
+        tx, current = retirement_context(active, transaction_id)
+        intent_path, receipt_path = tx / 'retirement-intent.json', tx / 'retirement-receipt.json'
+        if intent_path.exists():
+            changed = True
+            intent, _, _ = bounded_native_json(intent_path, 32 * 1024 * 1024)
+            approved = intent['plan']
+            approved_sha = retirement_digest(approved)
+            if intent.get('protocol') != PROTOCOL or intent.get('planSha256') != approved_sha or approved.get('transactionId') != transaction_id:
+                raise SelectionRefused('unknown-retirement')
+            if receipt_path.exists():
+                receipt, _, _ = bounded_native_json(receipt_path)
+                if receipt != {'protocol': PROTOCOL, 'transactionId': transaction_id, 'planSha256': approved_sha, 'status': 'retired'}:
+                    raise SelectionRefused('unknown-retirement')
+                if operation == 'retire-transaction' and plan_sha != approved_sha: raise SelectionRefused('plan-changed')
+                return dict(result, status='retired', planSha256=approved_sha)
+            reconcile_retirement(approved, current)
+        else:
+            if receipt_path.exists(): raise SelectionRefused('unknown-retirement')
+            approved, approved_sha = current, retirement_digest(current)
+        if operation == 'inspect-retirement':
+            summary = [{key: value for key, value in target.items() if key != 'entries'} for target in current['targets']]
+            return dict(result, status='ready', activeBinding=active, journalSha256=approved['journalSha256'], targets=summary, planSha256=approved_sha, reconciliation=intent_path.exists())
+        if plan_sha != approved_sha: raise SelectionRefused('plan-changed')
+        if len(json.dumps(approved)) > 31 * 1024 * 1024: raise SelectionRefused('payload-bound')
+        changed = True
+        if not intent_path.exists(): durable(intent_path, {'protocol': PROTOCOL, 'planSha256': approved_sha, 'plan': approved}, True)
+        for target in current['targets']: remove_retirement_payload(target)
+        # A reconciled all-absent result still syncs every approved parent before
+        # recording completion, including an unlink whose prior fsync failed.
+        for parent in sorted({str(pathlib.Path(target['path']).parent) for target in approved['targets']}):
+            sync_parent(pathlib.Path(parent) / 'retirement-barrier')
+        durable(receipt_path, {'protocol': PROTOCOL, 'transactionId': transaction_id, 'planSha256': approved_sha, 'status': 'retired'}, True)
+        return dict(result, status='retired', planSha256=approved_sha)
+    except SelectionRefused as failure:
+        return dict(result, status='uncertain' if changed else 'refused', reason=failure.reason)
+    except Exception:
+        return dict(result, status='uncertain' if changed else 'refused', reason='reconciliation-required' if changed else 'unknown-state')
+    finally: release_writer_exclusion(connections)
 
 def selection_command(operation, active, handle, selection_path, expected_digest, request_path=None, transaction_id=None):
     result = {'protocol': PROTOCOL, 'operation': operation, 'handle': handle}
@@ -845,10 +1044,13 @@ action.add_argument('--cli', action='store_true')
 action.add_argument('--discard-staged')
 action.add_argument('--claim-activation')
 action.add_argument('--claim-preparation')
+action.add_argument('--inspect-retirement')
+action.add_argument('--retire-transaction')
 parser.add_argument('--transaction')
 parser.add_argument('--staged-handle')
 parser.add_argument('--selection')
 parser.add_argument('--selection-sha256')
+parser.add_argument('--plan-sha256')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
@@ -867,10 +1069,14 @@ except FileExistsError:
         raise SystemExit('An occupied native activation lock is unknown and was preserved.')
 with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else 'claim-preparation' if args.claim_preparation else None
+    retirement_operation = 'inspect-retirement' if args.inspect_retirement else 'retire-transaction' if args.retire_transaction else None
     handle = args.discard_staged or args.claim_preparation or args.staged_handle
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if retirement_operation:
+            print(json.dumps({'protocol': PROTOCOL, 'operation': retirement_operation, 'transactionId': args.inspect_retirement or args.retire_transaction, 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
         if operation:
             result = {'protocol': PROTOCOL, 'operation': operation, 'handle': handle, 'status': 'refused', 'reason': 'busy'}
             if transaction_id is not None: result['transactionId'] = transaction_id
@@ -881,7 +1087,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':
         raise SystemExit('Native launcher bootstrap is required.')
     bundle_identity(active)
-    if operation:
+    if retirement_operation:
+        print(json.dumps(retirement_command(retirement_operation, active, args.inspect_retirement or args.retire_transaction, args.plan_sha256)))
+    elif operation:
         print(json.dumps(selection_command(operation, active, handle, args.selection, args.selection_sha256, args.claim_activation, transaction_id)))
     elif args.activate: activate(args.activate)
     elif args.launch:
