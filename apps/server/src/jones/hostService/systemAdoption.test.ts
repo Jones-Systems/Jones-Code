@@ -170,6 +170,8 @@ interface FixtureOptions {
   readonly childReceiptAfterStart?: boolean;
   readonly writers?: boolean;
   readonly socket?: "installed" | "absent";
+  /** The unit runs the historical `start ... --no-browser HOME` form from WorkingDirectory HOME. */
+  readonly startForm?: boolean;
 }
 
 async function fixture(
@@ -203,7 +205,8 @@ async function createFixture(options: FixtureOptions) {
 }
 
 async function populateFixture(root: string, options: FixtureOptions) {
-  const base = NodePath.join(root, "home", ".t3");
+  const home = NodePath.join(root, "home");
+  const base = NodePath.join(home, ".t3");
   const runtime = NodePath.join(base, "runtime");
   const userdata = NodePath.join(base, "userdata");
   await NodeFSP.mkdir(NodePath.join(runtime, "versions"), { recursive: true });
@@ -230,11 +233,13 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const fragment = NodePath.join(systemd, unit);
   await NodeFSP.writeFile(
     fragment,
-    "[Service]\nUser=service\nNoNewPrivileges=yes\nKillMode=control-group\n",
+    `[Service]\nUser=service\nNoNewPrivileges=yes\nKillMode=control-group\n${options.startForm ? `WorkingDirectory=${home}\n` : ""}`,
   );
-  const serve = `${retained} serve --port 3773 --base-dir ${base}`;
+  const retainedCommand = options.startForm
+    ? `${retained} start --mode web --host 127.0.0.1 --port 3773 --base-dir ${base} --no-browser ${home}`
+    : `${retained} serve --port 3773 --base-dir ${base}`;
   const conf = NodePath.join(dropins, "jones-code.conf");
-  await NodeFSP.writeFile(conf, `[Service]\nExecStart=\nExecStart=${serve}\n`);
+  await NodeFSP.writeFile(conf, `[Service]\nExecStart=\nExecStart=${retainedCommand}\n`);
 
   const proc = NodePath.join(root, "proc");
   await processEntry(proc, 4242, retained, "777");
@@ -298,13 +303,14 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const ownedText = renderOwnedSystemDropin({
     base,
     launcherVersion: newVersion,
-    serve: { port: 3773 },
+    serve: options.startForm ? { port: 3773, host: "127.0.0.1", mode: "web" } : { port: 3773 },
   });
   const events: string[] = [];
   const unitState = { active: true, mainPid: 4242, owned: "absent", exec: "retained" };
-  let showExec = serve;
+  let showExec = retainedCommand;
   let showUser = account.username;
   let showNnp = "yes";
+  let showWorkingDirectory = home;
   const digest = async () => {
     const records = [
       systemUnitRecord("fragment", await NodeFSP.lstat(fragment), await NodeFSP.readFile(fragment)),
@@ -458,6 +464,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
           "ActiveState=active",
           "MainPID=4242",
           `ExecStart={ path=${retained} ; argv[]=${showExec} ; ignore_errors=no ; start_time=[n/a] }`,
+          `WorkingDirectory=${showWorkingDirectory}`,
           "",
         ].join("\n");
       if (command.command === "gh") {
@@ -550,6 +557,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
   };
   return {
     root,
+    home,
     base,
     runtime,
     userdata,
@@ -568,10 +576,17 @@ async function populateFixture(root: string, options: FixtureOptions) {
       JSON.parse(
         await NodeFSP.readFile(NodePath.join(runtime, SYSTEM_ADOPTION_RECEIPT), "utf8"),
       ) as Record<string, unknown>,
-    setShow: (change: { exec?: string; user?: string; nnp?: string }) => {
+    retainedCommand,
+    setShow: (change: {
+      exec?: string;
+      user?: string;
+      nnp?: string;
+      workingDirectory?: string;
+    }) => {
       showExec = change.exec ?? showExec;
       showUser = change.user ?? showUser;
       showNnp = change.nnp ?? showNnp;
+      showWorkingDirectory = change.workingDirectory ?? showWorkingDirectory;
     },
   };
 }
@@ -593,6 +608,7 @@ it("plans read-only: no lock, receipt, permission change, cache or root call", (
       ownedDropin: { path: NodePath.join(f.dropins, OWNED_SYSTEM_DROPIN), text: f.ownedText },
     });
     expect(planned.planSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(planned.plan.effects.some((effect) => effect.includes("--no-browser"))).toBe(false);
     expect((await planSystemAdoption(f.input, f.host)).planSha256).toBe(planned.planSha256);
     expect(planned.manifest.files.map((file) => file.path)).toContain(SYSTEM_SERVICE_POLICY_PATH);
   }));
@@ -648,6 +664,68 @@ it("adopts in order and records applied launcher-only evidence without touching 
     expect([await NodeFSP.readFile(f.fragment), await NodeFSP.readFile(f.conf)]).toEqual(unitFiles);
     expect(await NodeFSP.readFile(NodePath.join(f.userdata, "statev2.sqlite"))).toEqual(database);
   }));
+
+it("adopts the historical start form as headless serve from its unchanged WorkingDirectory", () =>
+  fixture(
+    async (f) => {
+      const planned = await planSystemAdoption(f.input, f.host);
+      expect(planned.plan.ownedDropin.text).toBe(f.ownedText);
+      expect(f.ownedText).toContain("Environment=T3CODE_MODE=web\n");
+      expect(f.ownedText).not.toMatch(/WorkingDirectory|no-browser/);
+      expect(planned.plan.effects.filter((effect) => effect.includes("--no-browser"))).toEqual([
+        expect.stringContaining(
+          `\`start --no-browser ${f.home}\` with the launcher, which runs the retained version as \`serve\` from the unchanged WorkingDirectory ${f.home}: headless, with no automatic project bootstrap`,
+        ),
+      ]);
+      const unitFiles = [await NodeFSP.readFile(f.fragment), await NodeFSP.readFile(f.conf)];
+      const databasePath = NodePath.join(f.userdata, "statev2.sqlite");
+      const database = await NodeFSP.readFile(databasePath);
+      const result = await adoptSystemHost(
+        { ...f.input, approvedPlanSha256: planned.planSha256 },
+        f.host,
+      );
+      expect(result).toMatchObject({
+        state: "adopted",
+        launcherProcessId: 5000,
+        childProcessId: 5001,
+      });
+      expect(await f.receipt()).toMatchObject({ status: "applied", phase: "applied" });
+      const unitFilesAfter = [await NodeFSP.readFile(f.fragment), await NodeFSP.readFile(f.conf)];
+      expect(unitFilesAfter).toEqual(unitFiles);
+      expect(await NodeFSP.readFile(databasePath)).toEqual(database);
+    },
+    { startForm: true },
+  ));
+
+it("refuses the start form unless it names the unit's exact WorkingDirectory with --no-browser", () =>
+  fixture(
+    async (f) => {
+      const before = await tree(f.root);
+      const flags = `--mode web --host 127.0.0.1 --port 3773 --base-dir ${f.base}`;
+      for (const change of [
+        { workingDirectory: "" },
+        { workingDirectory: f.base },
+        { workingDirectory: `!${f.home}` },
+        { exec: `${f.retained} start ${flags} ${f.home}` },
+        { exec: `${f.retained} start ${flags} --no-browser` },
+        { exec: `${f.retained} start ${flags} --no-browser ${f.home} ${f.base}` },
+        { exec: `${f.retained} start ${flags} --no-browser ${f.home}/.` },
+        { exec: `${f.retained} start ${flags} --no-browser true ${f.home}` },
+        { exec: `${f.retained} start ${flags} --no-browser --no-browser ${f.home}` },
+        { exec: `${f.retained} start ${flags} --token x --no-browser ${f.home}` },
+        { exec: `${f.retained} start --port 3773 --base-dir ${f.base} --no-browser ${f.home}` },
+      ]) {
+        f.setShow({ exec: f.retainedCommand, workingDirectory: f.home, ...change });
+        await expect(planSystemAdoption(f.input, f.host), JSON.stringify(change)).rejects.toThrow(
+          /closed serve or start grammar/,
+        );
+      }
+      f.setShow({ exec: f.retainedCommand, workingDirectory: f.home });
+      await expect(planSystemAdoption(f.input, f.host)).resolves.toBeDefined();
+      expect(await tree(f.root)).toEqual(before);
+    },
+    { startForm: true },
+  ));
 
 it("applies nothing without the exact reviewed plan or the installed root bootstrap", async () => {
   await fixture(async (f) => {

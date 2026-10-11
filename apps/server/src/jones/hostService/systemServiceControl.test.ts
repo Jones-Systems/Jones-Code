@@ -112,6 +112,7 @@ interface ShowState {
   readonly user?: string;
   readonly nnp?: string;
   readonly slice?: string;
+  readonly workingDirectory?: string;
 }
 
 async function fixture(body: (f: Awaited<ReturnType<typeof createFixture>>) => Promise<void>) {
@@ -135,7 +136,8 @@ async function createFixture() {
     await NodeFSP.writeFile(path, text);
     await NodeFSP.chmod(path, 0o644);
   };
-  const base = NodePath.join(root, "home", ".t3");
+  const home = NodePath.join(root, "home");
+  const base = NodePath.join(home, ".t3");
   const state = NodePath.join(root, "state");
   const systemd = NodePath.join(root, "systemd");
   const dropins = NodePath.join(systemd, `${unit}.d`);
@@ -199,6 +201,7 @@ async function createFixture() {
       `SubState=${input.active === false ? "dead" : "running"}`,
       `MainPID=${input.active === false ? 0 : 4242}`,
       `ExecStart={ path=${retained} ; argv[]=${input.exec ?? serveCommand} ; ignore_errors=no ; start_time=[n/a] }`,
+      `WorkingDirectory=${input.workingDirectory ?? home}`,
       "",
     ].join("\n");
   const setShow = (input?: ShowState, after?: string) =>
@@ -225,6 +228,7 @@ async function createFixture() {
     ]);
   return {
     root,
+    home,
     base,
     state,
     policy,
@@ -393,6 +397,142 @@ it.skipIf(!runnable)("binds only the retained serve command and the unit's own f
       expect((await f.run(["inspect"])).stdout).toBe(`${header}\nrejected ${reason}\n`);
     }
   }),
+);
+
+it.skipIf(!runnable)(
+  "binds the historical start form to the unit's WorkingDirectory in both parsers",
+  () =>
+    fixture(async (f) => {
+      const conf = NodePath.join(f.dropins, "jones-code.conf");
+      const parse = (result: Awaited<ReturnType<typeof f.run>>) =>
+        parseSystemControlResult({ outcome: "exited", signal: null, ...result });
+      const flags = `--mode web --host 127.0.0.1 --port 3773 --base-dir ${f.base}`;
+      const start = `${retained} start ${flags} --no-browser ${f.home}`;
+      const unitRunning = (command: string) =>
+        f.file(
+          conf,
+          `[Service]\nExecStart=\nExecStart=${command}\nEnvironment=PRIVATE_TOKEN=do-not-print\n`,
+        );
+      // The TypeScript plan and the root worker judge the same command and directory.
+      const judge = async (command: string, workingDirectory = f.home) => {
+        await unitRunning(command);
+        await f.setShow({ exec: command, workingDirectory });
+        const worker = await f.run(["inspect"]);
+        return {
+          parser: parseRetainedServeCommand(command, retained, f.base, workingDirectory),
+          worker: parse(worker),
+          stdout: worker.stdout,
+        };
+      };
+
+      const accepted = await judge(start);
+      expect(accepted.parser).toEqual({
+        port: 3773,
+        host: "127.0.0.1",
+        mode: "web",
+        workingDirectory: f.home,
+      });
+      expect(accepted.worker).toMatchObject({
+        status: "complete",
+        inspection: { exec: "retained", serve: { port: 3773, host: "127.0.0.1", mode: "web" } },
+      });
+      for (const secret of [f.home, "no-browser", "do-not-print"])
+        expect(accepted.stdout).not.toContain(secret);
+
+      for (const command of [
+        `${retained} start ${flags} --no-browser`,
+        `${retained} start ${flags} --no-browser ${f.home} ${f.home}`,
+        `${retained} start ${flags} ${f.home} --no-browser`,
+        `${retained} start ${flags} ${f.home}`,
+        `${retained} start ${flags} --no-browser ${f.home}/.`,
+        `${retained} start ${flags} --no-browser ${f.home}/../home`,
+        `${retained} start ${flags} --no-browser ${f.home}/`,
+        `${retained} start ${flags} --no-browser home`,
+        `${retained} start ${flags} --auth-token x --no-browser ${f.home}`,
+        `${retained} start ${flags} --port 3773 --no-browser ${f.home}`,
+        `${retained} start ${flags} --no-browser --no-browser ${f.home}`,
+        `${retained} start ${flags} --no-browser true ${f.home}`,
+        `${retained} start ${flags} --no-browser=true ${f.home}`,
+        `${retained} start ${flags.replace("--mode web", "--mode desktop")} --no-browser ${f.home}`,
+        `${retained} start ${flags.replace("--mode web ", "")} --no-browser ${f.home}`,
+        `${retained} start ${flags.replace(f.base, "/elsewhere")} --no-browser ${f.home}`,
+        `${retained} serve ${flags} --no-browser ${f.home}`,
+        `/other/t3 start ${flags} --no-browser ${f.home}`,
+      ]) {
+        const refused = await judge(command);
+        expect(refused.parser, command).toBeUndefined();
+        expect(refused.stdout, command).toBe(`${header}\nrejected unit-exec\n`);
+      }
+      for (const workingDirectory of ["", `!${f.home}`, f.base, NodePath.join(f.root, "other")]) {
+        const refused = await judge(start, workingDirectory);
+        expect(refused.parser, workingDirectory).toBeUndefined();
+        expect(refused.stdout, workingDirectory).toBe(
+          `${header}\nrejected unit-working-directory\n`,
+        );
+      }
+      // The serve grammar names no directory, so WorkingDirectory stays unbound for it.
+      const serve = await judge(f.serveCommand, "");
+      expect(serve.parser).toEqual({ port: 3773, host: "127.0.0.1" });
+      expect(serve.worker).toMatchObject({ status: "complete", inspection: { exec: "retained" } });
+
+      // Every later readback keeps the directory bound: the launcher inherits it.
+      await unitRunning(start);
+      const digest = await f.digest();
+      const owned = NodePath.join(f.dropins, OWNED_SYSTEM_DROPIN);
+      const expected = renderOwnedSystemDropin({
+        base: f.base,
+        launcherVersion,
+        serve: { port: 3773, host: "127.0.0.1", mode: "web" },
+      });
+      const launcherExec = `${f.launcherEntry} __service-launcher`;
+      const withOwned = ["jones-code.conf", OWNED_SYSTEM_DROPIN];
+      const install = (expectOwned: string) => [
+        "install-launcher",
+        "--expect-unit",
+        digest,
+        "--expect-owned",
+        expectOwned,
+        "--launcher-version",
+        launcherVersion,
+      ];
+      await f.setShow({ active: false, exec: start });
+      await f.setShow(
+        { active: false, dropins: withOwned, exec: launcherExec, workingDirectory: f.base },
+        "daemon-reload",
+      );
+      expect(await f.run(install("absent"))).toMatchObject({
+        code: 3,
+        stdout: expect.stringMatching(/\nunknown unit-working-directory\n$/),
+      });
+      expect(await NodeFSP.readFile(owned, "utf8")).toBe(expected);
+      await f.setShow({ active: false, dropins: withOwned, exec: launcherExec });
+      await f.setShow({ active: false, dropins: withOwned, exec: launcherExec }, "daemon-reload");
+      expect(parse(await f.run(install(sha256(expected))))).toMatchObject({
+        status: "complete",
+        inspection: {
+          owned: sha256(expected),
+          unitDigest: digest,
+          exec: `launcher ${launcherVersion}`,
+          serve: { port: 3773, host: "127.0.0.1", mode: "web" },
+        },
+      });
+      expect(expected).toContain("Environment=T3CODE_MODE=web\n");
+      expect(expected).not.toMatch(/WorkingDirectory|no-browser/);
+
+      await f.setShow({ active: false, exec: start }, "daemon-reload");
+      const archived = await f.run([
+        "archive-launcher",
+        "--expect-unit",
+        digest,
+        "--expect-owned",
+        sha256(expected),
+      ]);
+      expect(parse(archived)).toMatchObject({
+        status: "complete",
+        inspection: { owned: "absent", exec: "retained" },
+      });
+      expect(await NodeFSP.readFile(conf, "utf8")).toContain(`ExecStart=${start}\n`);
+    }),
 );
 
 it.skipIf(!runnable)(
@@ -817,6 +957,40 @@ it("renders closed policy, owned drop-in and bootstrap manifest text", () => {
   expect(manifest.files[0]?.sha256).toBe(QUALIFIED_WRITER_OBSERVER_SHA256);
   expect(manifest.files[1]?.sha256).toBe(SYSTEM_SERVICE_CONTROL_SHA256);
   expect(manifest.enable).toEqual(["jones-qualified-writer-observer.socket"]);
+});
+
+it("accepts the exact observed historical start command only at its WorkingDirectory", () => {
+  const entry =
+    "/home/malcolmjones/Jones-Code-Install-20261008-911f6f14/t3-0.0.45-preview.20261008.37762212730.1-linux-x64/t3";
+  const base = "/home/malcolmjones/.t3";
+  const observed = `${entry} start --mode web --host 127.0.0.1 --port 3773 --base-dir ${base} --no-browser /home/malcolmjones`;
+  const parsed = parseRetainedServeCommand(observed, entry, base, "/home/malcolmjones");
+  expect(parsed).toEqual({
+    port: 3773,
+    host: "127.0.0.1",
+    mode: "web",
+    workingDirectory: "/home/malcolmjones",
+  });
+  for (const workingDirectory of [
+    undefined,
+    "",
+    "/",
+    base,
+    "!/home/malcolmjones",
+    "/home/malcolmjones/",
+  ])
+    expect(
+      parseRetainedServeCommand(observed, entry, base, workingDirectory),
+      String(workingDirectory),
+    ).toBeUndefined();
+  // The launcher drop-in keeps the bound loopback flags and names no directory.
+  expect(renderOwnedSystemDropin({ base, launcherVersion, serve: parsed! })).toBe(
+    renderOwnedSystemDropin({
+      base,
+      launcherVersion,
+      serve: { port: 3773, host: "127.0.0.1", mode: "web" },
+    }),
+  );
 });
 
 it("keeps the installed worker bytes bound to this source", async () => {
