@@ -115,11 +115,12 @@ async function prepareLocalFleetCampaign(
   const fleet = await bridge.fleetUpdates({ action: "read" });
   const stagedHandle = state.jones?.stagedHandle;
   const targetSource = state.jones?.provenance?.sourceSha;
-  const selected = fleet.campaigns.find((campaign) =>
-    (campaign.phase === "prepared" || campaign.phase === "installing") &&
-    campaign.desktopStagedHandle === stagedHandle && campaign.targetSource === targetSource,
-  );
-  if (selected !== undefined) return selected.campaignId;
+  // Preparing another campaign retires prior members; reselecting that build needs fresh operation IDs.
+  const selected = fleet.campaigns.at(-1);
+  if (selected !== undefined &&
+    (selected.phase === "prepared" || selected.phase === "installing") &&
+    selected.desktopStagedHandle === stagedHandle && selected.targetSource === targetSource)
+    return selected.campaignId;
   if (!fleet.enrollments.some((entry) => entry.enabled)) return undefined;
   if (stagedHandle === undefined || targetSource === undefined)
     throw new Error("The staged desktop source is unavailable; enrolled updates cannot be prepared.");

@@ -126,6 +126,43 @@ describe("Jones local desktop update UI", () => {
     expect(order).toEqual(["read", "prepare", "install"]);
   });
 
+  it("creates fresh campaign IDs when reselecting a superseded build, then reuses the latest campaign", async () => {
+    const oldCampaignId = "11111111-1111-4111-8111-111111111111";
+    const otherCampaignId = "22222222-2222-4222-8222-222222222222";
+    let fleet = Schema.decodeUnknownSync(FleetDesktopState)({
+      schema: 1,
+      enrollments: [{ enrollmentId: oldCampaignId, environmentId: "remote-host", enabled: true, continueRunningThreads: false }],
+      campaigns: [
+        { campaignId: oldCampaignId, targetSource: "a".repeat(40), desktopStagedHandle: "downloaded-1.1.0", phase: "prepared", members: [] },
+        { campaignId: otherCampaignId, targetSource: "b".repeat(40), desktopStagedHandle: "downloaded-1.2.0", phase: "prepared", members: [] },
+      ],
+    });
+    const state: DesktopUpdateState = { ...downloaded, jones: { ...downloaded.jones!, provenance: {
+      repository: "Jones-Systems/Jones-Code", sourceSha: "a".repeat(40), sourceTree: "b".repeat(40),
+      workflow: "artifact-desktop-mac.yml", runId: 123, runAttempt: 1, artifactId: 456,
+      artifactDigest: "c".repeat(64), platform: "darwin", architecture: "arm64",
+    } } };
+    const bridge = {
+      fleetUpdates: vi.fn(async (request: Parameters<NonNullable<import("@t3tools/contracts").DesktopBridge["fleetUpdates"]>>[0]) => {
+        if (request.action === "prepare") fleet = {
+          ...fleet, campaigns: [...fleet.campaigns, { ...request.input, phase: "prepared", members: [] }],
+        };
+        return fleet;
+      }),
+      installUpdate: vi.fn().mockResolvedValue(result(state)),
+    };
+    await installLocalDesktopUpdate(bridge, state);
+    const prepared = bridge.fleetUpdates.mock.calls[1]![0];
+    if (prepared.action !== "prepare") throw new Error("Expected a fresh campaign.");
+    expect(prepared.input.campaignId).not.toBe(oldCampaignId);
+    expect(prepared.input.campaignId).not.toBe(otherCampaignId);
+    expect(bridge.installUpdate).toHaveBeenLastCalledWith("downloaded-1.1.0", prepared.input.campaignId);
+    await installLocalDesktopUpdate(bridge, state);
+    expect(bridge.fleetUpdates.mock.calls.map(([request]) => request.action)).toEqual(["read", "prepare", "read"]);
+    expect(bridge.installUpdate).toHaveBeenLastCalledWith("downloaded-1.1.0", prepared.input.campaignId);
+    expect(fleet.campaigns.slice(0, 2).map((campaign) => campaign.campaignId)).toEqual([oldCampaignId, otherCampaignId]);
+  });
+
   it("blocks installation when durable fleet state cannot be read", async () => {
     const bridge = { fleetUpdates: vi.fn().mockRejectedValue(new Error("journal unavailable")), installUpdate: vi.fn() };
     await expect(installLocalDesktopUpdate(bridge, downloaded)).rejects.toThrow("journal unavailable");
