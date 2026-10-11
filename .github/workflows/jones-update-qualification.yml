@@ -7,6 +7,14 @@ on:
       - .github/workflows/artifact-desktop-mac.yml
       - .github/workflows/artifact-cli-linux.yml
       - apps/desktop/src/jones/updates/**
+      - apps/desktop/src/boot.ts
+      - apps/desktop/vite.config.ts
+      - apps/desktop/scripts/main-process-bundle.test.mjs
+      - apps/desktop/package.json
+      - packages/shared/src/jones/nativeWriterFence*
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - apps/web/src/jones/updates/**

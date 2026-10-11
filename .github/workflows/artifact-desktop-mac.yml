@@ -13,6 +13,8 @@ on:
       - scripts/update-release-package-versions.ts
       - scripts/stamp-jones-build.ts
       - scripts/jones/updates/build-provenance.ts
+      - scripts/jones/updates/native-startup-*
+      - packages/shared/src/jones/nativeWriterFence*
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - scripts/lib/**
@@ -109,6 +111,7 @@ jobs:
           --output-dir artifacts/desktop-mac
 
       - name: Qualify packaged native startup refusal
+        id: native_qualification
         env:
           BUILD_VERSION: ${{ steps.version.outputs.value }}
         run: >-
@@ -176,5 +179,11 @@ jobs:
           compression-level: 0
 
       - name: Clean job scratch
-        if: always()
+        # A failed or cancelled qualifier may retain a mounted image or owned
+        # process group. Never override its uncertainty hold by deleting a parent.
+        if: always() && (steps.native_qualification.outcome == 'success' || steps.native_qualification.outcome == 'skipped')
         run: rm -rf -- "$GITHUB_WORKSPACE/.artifact-desktop-scratch"
+
+      - name: Report retained qualification scratch
+        if: always() && steps.native_qualification.outcome != 'success' && steps.native_qualification.outcome != 'skipped'
+        run: echo 'Native qualification did not prove cleanup; job scratch is retained for runner disposal.' >> "$GITHUB_STEP_SUMMARY"
