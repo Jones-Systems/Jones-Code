@@ -207,6 +207,10 @@ it.effect("selects unfinished recovery work without reading settled thread histo
     `;
     assert.deepEqual(yield* projections.getRecoveryThreadIds("queued-runs"), [queued]);
     assert.deepEqual(
+      new Set(yield* projections.getRecoveryThreadIds("planned-update-queued-runs")),
+      new Set([queued, blocked]),
+    );
+    assert.deepEqual(
       new Set(yield* projections.getRecoveryThreadIds("runtime")),
       new Set([queued, archived, blocked, background, outboxOnly, requestOnly]),
     );
