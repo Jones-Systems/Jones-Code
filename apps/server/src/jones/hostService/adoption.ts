@@ -23,9 +23,11 @@ import {
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
   type QualifiedRuntimeArtifact,
+  type QualifiedRuntimeReceipt,
 } from "../cloud/qualifiedRuntime.ts";
 import { JONES_BOOT_SERVICE_IDENTITY as identity } from "./identity.ts";
 import * as LegacyBootstrap from "./legacyBootstrap.ts";
+import * as PrivateSetup from "./privateSetupCompatibility.ts";
 import {
   assertLauncherCapabilityDirectory,
   readLauncherCapabilityReceipt,
@@ -110,6 +112,10 @@ export interface AdoptionPlan {
   readonly serviceUnit?: "jones-code.service" | "t3code.service";
   readonly attestation?: "child" | "launcher-only";
   readonly archiveDirectory?: string;
+  readonly privateSetupProvenance?: {
+    readonly archiveDirectory: string;
+    readonly preimage: PrivateSetup.PrivateSetupPreimage;
+  };
   readonly recovery?: ReadonlyArray<string>;
 }
 export class HostAdoptionError extends Error {
@@ -442,6 +448,46 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     launcher.metadata.source !== active.metadata.source
   )
     return refuse("Different artifacts claim the same version.");
+  const unattestedPrivateSetup =
+    !legacy && !continuation && PrivateSetup.isUnattestedPrivateSetupArtifact(active.metadata);
+  if (
+    !legacy &&
+    !continuation &&
+    input.acceptUnattestedChildCapability === true &&
+    !unattestedPrivateSetup
+  )
+    return refuse(
+      "Unattested ordinary adoption is limited to the exact supported private setup artifact.",
+    );
+  let privateSetupProvenance: AdoptionPlan["privateSetupProvenance"];
+  if (unattestedPrivateSetup) {
+    if (input.acceptUnattestedChildCapability !== true)
+      return refuse("Private setup adoption requires explicit unattested-child acceptance.");
+    if (
+      (await optionalText(NodePath.join(baseDir, "runtime", UPDATE_CAPABILITY_RECEIPT))) !==
+      undefined
+    )
+      return refuse("The pre-publisher child has an unexpected capability receipt.");
+    const preimage = await PrivateSetup.inspectPrivateSetupRuntime({
+      directory: NodePath.join(baseDir, "runtime/versions", state.activeVersion),
+      uid: host.uid,
+      artifact: active.metadata,
+      entrySha256: await LegacyBootstrap.archiveExecutableSha256(active.archive),
+    });
+    privateSetupProvenance = {
+      archiveDirectory: NodePath.join(
+        baseDir,
+        "runtime/jones-adoption",
+        `private-${NodeCrypto.randomUUID()}`,
+      ),
+      preimage,
+    };
+    await PrivateSetup.assertPrivateSetupArchiveDestination(
+      preimage,
+      privateSetupProvenance.archiveDirectory,
+      host.uid,
+    );
+  }
   const oldRuntime = NodePath.join(baseDir, "runtime", "versions", state.activeVersion, "t3");
   const launcherPath = NodePath.join(
     baseDir,
@@ -710,7 +756,8 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     serviceContents,
     commands,
     serviceUnit,
-    attestation: legacy || continuation ? "launcher-only" : "child",
+    attestation: legacy || continuation || unattestedPrivateSetup ? "launcher-only" : "child",
+    ...(privateSetupProvenance === undefined ? {} : { privateSetupProvenance }),
     ...(archiveDirectory === undefined
       ? {}
       : {
@@ -732,6 +779,11 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
           ]
         : []),
       `Write ${NodePath.join(baseDir, "runtime", ADOPTION_RECEIPT)} before enrollment or stopping; an incomplete result prevents retry.`,
+      ...(privateSetupProvenance === undefined
+        ? []
+        : [
+            `Preserve exact private setup provenance by same-filesystem rename under ${privateSetupProvenance.archiveDirectory} before qualification and stop; retained child Install remains unattested.`,
+          ]),
       ...[active, launcher].map(
         (a) =>
           `Enroll ${NodePath.join(baseDir, "runtime/versions", a.metadata.version)} from Actions ${a.metadata.runId}/${a.metadata.runAttempt}, source ${a.metadata.source}, archive SHA-256 ${a.metadata.sha256}; preserve occupied payloads and append a qualified receipt only after exact comparison.`,
@@ -744,9 +796,11 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
         : []),
       `Write ${servicePath}:\n${serviceContents}`,
       ...commands.slice(1).map((c) => `Run ${c.command} ${c.args.join(" ")}.`),
-      legacy || continuation
-        ? "Read back launcher protocols, new child PID, retained version/home/port/environment and launcher-only attestation; Install remains unattested unless the child receipt exists."
-        : "Read back the new launcher service, unchanged native identity/version, and owner-only capability.install receipt; no deletion or sudo.",
+      unattestedPrivateSetup
+        ? "Read back the live qualified launcher, retained version/home/environment and absent child capability receipt; child Install remains unattested."
+        : legacy || continuation
+          ? "Read back launcher protocols, new child PID, retained version/home/port/environment and launcher-only attestation; Install remains unattested unless the child receipt exists."
+          : "Read back the new launcher service, unchanged native identity/version, and owner-only capability.install receipt; no deletion or sudo.",
     ],
   };
   return {
@@ -765,6 +819,8 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     legacy,
     continuation,
     archiveDirectory,
+    unattestedPrivateSetup,
+    privateSetupProvenance,
   };
 }
 export async function planHostAdoption(
@@ -843,7 +899,48 @@ export async function adoptHost(
     const { plan } = inspected;
     const serviceUnit = plan.serviceUnit ?? "jones-code.service";
     const receiptPath = NodePath.join(plan.baseDir, "runtime", ADOPTION_RECEIPT);
-    const assertUnchanged = async () => {
+    let privateSetupArchived = false;
+    let privateSetupEnrolled = false;
+    let privateSetupReceipt: QualifiedRuntimeReceipt | undefined;
+    const assertUnchanged = async (afterStop = false) => {
+      if (inspected.privateSetupProvenance !== undefined) {
+        await PrivateSetup.assertPrivateSetupRuntime(
+          inspected.privateSetupProvenance.preimage,
+          host.uid,
+          privateSetupArchived ? inspected.privateSetupProvenance.archiveDirectory : undefined,
+          privateSetupEnrolled,
+        );
+        if (!privateSetupArchived)
+          await PrivateSetup.assertPrivateSetupArchiveDestination(
+            inspected.privateSetupProvenance.preimage,
+            inspected.privateSetupProvenance.archiveDirectory,
+            host.uid,
+          );
+        if (privateSetupEnrolled) {
+          const receipt = await readQualifiedRuntimeReceipt(plan.baseDir, plan.activeVersion, {
+            platform: host.platform,
+            architecture: host.architecture,
+          });
+          if (JSON.stringify(receipt) !== JSON.stringify(privateSetupReceipt))
+            return refuse("Private setup qualified receipt changed before adoption stop.");
+        }
+        if (!afterStop) {
+          const running = await host.readback(plan);
+          if (
+            running.processId !== inspected.previousProcessId ||
+            !running.serviceManaged ||
+            running.serverVersion !== plan.activeVersion ||
+            running.environmentId !== plan.environmentId
+          )
+            return refuse("Private setup child identity changed before adoption stop.");
+        }
+        if (
+          (await optionalText(
+            NodePath.join(plan.baseDir, "runtime", UPDATE_CAPABILITY_RECEIPT),
+          )) !== undefined
+        )
+          return refuse("The pre-publisher child has an unexpected capability receipt.");
+      }
       if (
         (await readText(NodePath.join(plan.baseDir, "runtime", SERVICE_STATE_FILE))) !==
           inspected.stateText ||
@@ -917,10 +1014,27 @@ export async function adoptHost(
           });
         } else await extractQualifiedLinuxArchive(artifact.archive, payload);
         await verifyAdoptionArtifact(artifact.directory, artifact.metadata.source, host);
-        await enrollQualifiedRuntime({
+        const enrolled = await enrollQualifiedRuntime({
           baseDir: plan.baseDir,
           artifact: { ...artifact.artifact, payloadDirectory: payload },
           host: { platform: host.platform, architecture: host.architecture },
+          ...(artifact !== inspected.active || inspected.privateSetupProvenance === undefined
+            ? {}
+            : {
+                prepareExistingRuntime: async (directory: string) => {
+                  if (directory !== inspected.privateSetupProvenance!.preimage.directory)
+                    return refuse(
+                      "Private setup archive target differs from the selected runtime.",
+                    );
+                  await assertUnchanged();
+                  await PrivateSetup.archivePrivateSetupProvenance(
+                    inspected.privateSetupProvenance!.preimage,
+                    inspected.privateSetupProvenance!.archiveDirectory,
+                    host.uid,
+                  );
+                  privateSetupArchived = true;
+                },
+              }),
           validate: async (entry) => {
             const output = await host.run({ command: entry, args: ["--version"] });
             if (/\bv(\S+)\s*$/.exec(output)?.[1] !== artifact.metadata.version)
@@ -948,6 +1062,10 @@ export async function adoptHost(
               return refuse("The runtime cannot provide the qualified launcher/startup protocol.");
           },
         });
+        if (artifact === inspected.active && inspected.privateSetupProvenance !== undefined) {
+          privateSetupEnrolled = true;
+          privateSetupReceipt = enrolled;
+        }
       }
       const migrationPreflight = async () =>
         LegacyBootstrap.readPreflightMigrationPlan(
@@ -966,7 +1084,7 @@ export async function adoptHost(
       const pendingMigrationPlan = inspected.legacy ? await migrationPreflight() : undefined;
       await assertUnchanged();
       await host.run(plan.commands[0]!);
-      await assertUnchanged();
+      await assertUnchanged(true);
       if (inspected.legacy) {
         await archiveBootstrapPreimages(inspected.archiveDirectory!, [
           { name: "service-state.task-handoff.json", text: inspected.stateText },
@@ -1015,6 +1133,8 @@ export async function adoptHost(
             host.uid,
           );
           if (capabilityText !== undefined) {
+            if (inspected.unattestedPrivateSetup)
+              throw new Error("The pre-publisher child has an unexpected capability receipt.");
             const capability = object(JSON.parse(capabilityText) as unknown);
             if (
               capability.schema !== 1 ||
@@ -1029,7 +1149,7 @@ export async function adoptHost(
             attestation = "child";
           } else {
             if (
-              (!inspected.legacy && !inspected.continuation) ||
+              (!inspected.legacy && !inspected.continuation && !inspected.unattestedPrivateSetup) ||
               input.acceptUnattestedChildCapability !== true
             )
               throw new Error("Child capability receipt is unavailable.");
@@ -1064,7 +1184,7 @@ export async function adoptHost(
       }
       if (observed === undefined)
         return refuse(
-          inspected.legacy || inspected.continuation
+          inspected.legacy || inspected.continuation || inspected.unattestedPrivateSetup
             ? "New runtime or required child/launcher capability readback is unavailable or stale; effect requires reconciliation."
             : "New runtime or observed capability.install readback is unavailable or stale; effect requires reconciliation.",
         );
@@ -1115,6 +1235,13 @@ export async function adoptHost(
         )
           return refuse("Effective launcher readback differs.");
       }
+      if (inspected.privateSetupProvenance !== undefined)
+        await PrivateSetup.assertPrivateSetupRuntime(
+          inspected.privateSetupProvenance.preimage,
+          host.uid,
+          inspected.privateSetupProvenance.archiveDirectory,
+          true,
+        );
       await durableReplace(
         receiptPath,
         `${JSON.stringify({
@@ -1126,6 +1253,12 @@ export async function adoptHost(
             ? { capability: { install: true } }
             : { childCapability: "unattested" }),
           processId: observed.processId,
+          ...(inspected.privateSetupProvenance === undefined
+            ? {}
+            : {
+                privateSetupProvenance: { ...inspected.privateSetupProvenance, state: "archived" },
+                attestationBasis: "pre-publisher-child",
+              }),
           ...(inspected.legacy
             ? {
                 archiveDigests: {

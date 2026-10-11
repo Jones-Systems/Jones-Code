@@ -81,6 +81,9 @@ const adopt = Command.make("adopt", {
   legacyDirectServe: Flag.Boolean("legacy-direct-serve").pipe(Flag.withDefault(false)),
   acceptUnattestedChildCapability: Flag.Boolean("accept-unattested-child-capability").pipe(
     Flag.withDefault(false),
+    Flag.withDescription(
+      "Accept launcher-only evidence for bound legacy bootstrap or the exact supported pre-publisher private setup artifact; never claim child Install.",
+    ),
   ),
   serviceUnit: Flag.Literals("service-unit", ["jones-code.service", "t3code.service"]).pipe(
     Flag.optional,
