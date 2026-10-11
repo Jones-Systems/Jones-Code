@@ -120,6 +120,7 @@ jobs:
           apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
           apps/desktop/src/jones/updates/jonesColdPairSource.test.ts
           apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts
+          apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts
           apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts
           apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts
           packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts
