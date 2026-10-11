@@ -20,7 +20,7 @@ const snapshot = (): WorkQueueMetadata => ({
 });
 const voice = (): VoiceReviewRecentEntry => ({
   ...voiceReviewRecentFixture.entries[0]!, text: "Authorized retained prompt",
-  queue_delivery_links: { status: "ready", reason: null, deliveries: [{
+  queue_delivery_links: { status: "ready", reason: null, unlinked_delivery_count: 0, deliveries: [{
     delivery_id: "delivery", queue_request_id: "request", payload_sha256: "b".repeat(64),
     destination: { backend: "t3", instance: "an-instance-not-the-environment", thread_id: "thread", project_id: null },
   }] },
@@ -82,5 +82,26 @@ describe("native handoff classification", () => {
     const result = classifySentPrompts(snapshot(), [{ ...entry, queue_delivery_links: { ...links, deliveries: [...links.deliveries, sibling] } }], "native-env");
     expect(result.sent).toHaveLength(1);
     expect(result.remainingVoice[0]!.queue_delivery_links?.deliveries).toEqual([sibling]);
+  });
+  it("retains unlinked prepared or failed siblings after the explicit delivery is confirmed", () => {
+    const entry = voice();
+    const links = entry.queue_delivery_links!;
+    const candidate = { ...entry, queue_delivery_links: { ...links, unlinked_delivery_count: 2 } };
+    const result = classifySentPrompts(snapshot(), [candidate], "native-env");
+    expect(result.sent).toHaveLength(1);
+    expect(result.sent[0]!.text).toBe("Authorized retained prompt");
+    expect(result.remainingVoice).toHaveLength(1);
+    expect(result.remainingVoice[0]!.queue_delivery_links).toEqual({
+      ...links, deliveries: [], unlinked_delivery_count: 2,
+    });
+    expect(candidate.queue_delivery_links.deliveries).toHaveLength(1);
+  });
+  it("retains an older server entry when completeness of its links is unknown", () => {
+    const entry = voice();
+    const { unlinked_delivery_count: _count, ...links } = entry.queue_delivery_links!;
+    const result = classifySentPrompts(snapshot(), [{ ...entry, queue_delivery_links: links }], "native-env");
+    expect(result.sent[0]!.text).toBe("Authorized retained prompt");
+    expect(result.remainingVoice).toHaveLength(1);
+    expect(result.remainingVoice[0]!.queue_delivery_links?.deliveries).toEqual([]);
   });
 });

@@ -279,7 +279,7 @@ describe("Prompts environment composition", () => {
     } as typeof fixture.environments[number]];
     fixture.recent = { ...voiceReviewRecentFixture, entries: [{
       ...voiceReviewRecentFixture.entries[0]!, text: "Linked prompt text",
-      queue_delivery_links: { status: "ready", reason: null, deliveries: [{
+      queue_delivery_links: { status: "ready", reason: null, unlinked_delivery_count: 0, deliveries: [{
         delivery_id: "delivery", queue_request_id: "request", payload_sha256: "b".repeat(64),
         destination: { backend: "t3", instance: "opaque-instance", thread_id: "thread", project_id: null },
       }] },

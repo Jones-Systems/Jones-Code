@@ -174,11 +174,13 @@ export const VoiceReviewQueueDeliveryLinks = strictPayload({
     Schema.Literals(["forbidden", "source_unavailable", "invalid_receipt", "limit"]),
   ),
   deliveries: Schema.Array(VoiceReviewQueueDelivery).check(Schema.isMaxLength(200)),
+  unlinked_delivery_count: Schema.optional(NonNegativeInt.check(Schema.isLessThanOrEqualTo(200))),
 }).check(
   Schema.makeFilter((value) =>
     value.status === "ready"
-      ? value.reason === null
-      : value.reason !== null && value.deliveries.length === 0,
+      ? value.reason === null && value.deliveries.length + (value.unlinked_delivery_count ?? 0) <= 200
+      : value.reason !== null && value.deliveries.length === 0 &&
+        (value.unlinked_delivery_count === undefined || value.unlinked_delivery_count === 0),
   ),
 );
 export type VoiceReviewQueueDeliveryLinks = typeof VoiceReviewQueueDeliveryLinks.Type;

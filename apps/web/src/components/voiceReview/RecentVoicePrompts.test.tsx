@@ -74,6 +74,17 @@ describe("recent voice prompt interactions", () => {
     expect(recentThread({ ...entry, thread_key: thread.thread_key }, [thread])).toBe(thread);
     expect(recentThread({ ...entry, thread_key: "unmapped" }, [thread])).toBeNull();
   });
+  it("explains retained unlinked siblings even after all explicit links were matched", async () => {
+    await render([{ ...voiceReviewRecentFixture.entries[0]!, queue_delivery_links: {
+      status: "ready", reason: null, deliveries: [], unlinked_delivery_count: 2,
+    } }]);
+    const details = container.querySelector("article details")!;
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(details.textContent).toContain("Deliveries without queue links: 2.");
+    expect(details.textContent).toContain("Native handoff remains unconfirmed for these deliveries.");
+    expect(details.textContent).not.toContain("Queue request:");
+  });
   it("shows literal prompt text immediately and discloses provenance without fabricating missing text", async () => {
     const retained = voiceReviewRecentFixture.entries[0]!;
     const deleted = voiceReviewRecentFixture.entries[2]!;

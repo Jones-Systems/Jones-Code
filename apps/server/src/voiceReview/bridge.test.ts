@@ -502,7 +502,7 @@ describe("voice command queue receipt enrichment", () => {
       expect(fetcher).toHaveBeenCalledTimes(2);
       expect(fetcher.mock.calls[1]?.[0]).toBe("http://127.0.0.1:7000/v1/commands/command");
       expect(result.entries[0]?.queue_delivery_links).toEqual({
-        status: "ready", reason: null, deliveries: [{
+        status: "ready", reason: null, unlinked_delivery_count: 1, deliveries: [{
           delivery_id: "delivery", queue_request_id: "queue-request", payload_sha256: "a".repeat(64),
           destination: delivery.destination,
         }],
@@ -512,6 +512,28 @@ describe("voice command queue receipt enrichment", () => {
       expect(result.entries[3]?.text).toBeNull();
       expect(result.entries[4]?.text).toBeNull();
       expect(JSON.stringify(result)).not.toContain("private");
+    }));
+  it("counts prepared and failed siblings without queue IDs while preserving explicit links", async () =>
+    withFixture(async (tokenFile) => {
+      const fetcher = vi.fn<typeof fetch>(async (url) => Response.json(
+        String(url).includes("/recent?") ? recent([recentEntry("command")]) : {
+          ...command(), deliveries: [
+            { ...delivery, status: "accepted" },
+            { ...delivery, id: "prepared", queue_request_id: null, status: "PREPARED" },
+            { ...delivery, id: "failed", queue_request_id: null, status: "FAILED" },
+          ],
+        },
+      ));
+      const result = await makeVoiceReviewBridge(config(tokenFile), fetcher).recent(principal);
+      expect(result.entries[0]?.queue_delivery_links).toEqual({
+        status: "ready", reason: null, unlinked_delivery_count: 2, deliveries: [{
+          delivery_id: "delivery", queue_request_id: "queue-request", payload_sha256: "a".repeat(64),
+          destination: delivery.destination,
+        }],
+      });
+      expect(result.entries[0]?.text).toBe("retained transcript");
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(result)).not.toMatch(/private|PREPARED|FAILED/);
     }));
   it("preserves recent text and exposes source denial, invalid identity and malformed receipts", async () =>
     withFixture(async (tokenFile) => {

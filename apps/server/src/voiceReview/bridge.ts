@@ -292,7 +292,7 @@ export const makeVoiceReviewBridge = (
               links.set(id, unavailableLinks("invalid_receipt"));
               continue;
             }
-            // Only explicit queue relations participate; broker text and result details stay server-side.
+            // Only explicit queue relations can match; count unlinked siblings without exposing broker text or results.
             const deliveries = command.deliveries.flatMap((delivery) =>
               delivery.queue_request_id === null ? [] : [{
                 delivery_id: delivery.id,
@@ -301,7 +301,10 @@ export const makeVoiceReviewBridge = (
                 destination: delivery.destination,
               }],
             );
-            links.set(id, decodeDeliveryLinks({ status: "ready", reason: null, deliveries }));
+            links.set(id, decodeDeliveryLinks({
+              status: "ready", reason: null, deliveries,
+              unlinked_delivery_count: command.deliveries.length - deliveries.length,
+            }));
           } catch {
             links.set(id, unavailableLinks("invalid_receipt"));
           }

@@ -67,7 +67,8 @@ export function classifySentPrompts(
     }
     const deliveries = links.deliveries.filter((delivery) =>
       !matchedDeliveries.has(`${entry.draft.id}\0${delivery.delivery_id}`));
-    if (deliveries.length > 0) remainingVoice.push({
+    // Older servers cannot prove the linked deliveries cover every sibling.
+    if (deliveries.length > 0 || links.unlinked_delivery_count !== 0) remainingVoice.push({
       ...entry, queue_delivery_links: { ...links, deliveries },
     });
   }
