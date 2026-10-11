@@ -344,29 +344,44 @@ def allocate_recovery_file(path, size):
             sync_parent(path)
         raise
 
-def release_recovery_reserve(reserves):
-    while reserves:
-        reserve = reserves[-1]
+def release_recovery_reserve(reserves, purpose=None):
+    for index in reversed(range(len(reserves))):
+        reserve = reserves[index]
+        if purpose is not None and reserve.get('purpose') != purpose: continue
         path = pathlib.Path(reserve['path'])
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or str(info.st_dev) != reserve['device'] or str(info.st_ino) != reserve['inode'] or info.st_size != reserve['bytes']:
             raise RuntimeError('Native reserve ownership changed; capacity release held.')
         path.unlink()
         sync_parent(path)
-        reserves.pop()
+        reserves.pop(index)
 
 def reserve_recovery_capacity(expected, transaction, storage):
     transaction = pathlib.Path(transaction)
     app_parent = pathlib.Path(expected['appPath']).parent
     reserves = []
     try:
-        reserves.append(allocate_recovery_file(transaction / 'recovery-reserve.bin', storage['stateBytes'] + RECOVERY_HEADROOM))
+        journal_bytes = min(4 * 1024 * 1024, RECOVERY_HEADROOM // 4)
+        reserves.append(dict(allocate_recovery_file(transaction / 'recovery-journal-reserve.bin', journal_bytes), purpose='journal'))
+        reserves.append(dict(allocate_recovery_file(transaction / 'recovery-reserve.bin', storage['stateBytes'] + RECOVERY_HEADROOM - journal_bytes), purpose='recovery'))
         if transaction.stat().st_dev != app_parent.stat().st_dev:
-            reserves.append(allocate_recovery_file(app_parent / ('.jones-recovery-reserve-' + transaction.name), RECOVERY_HEADROOM))
+            reserves.append(dict(allocate_recovery_file(app_parent / ('.jones-recovery-reserve-' + transaction.name), RECOVERY_HEADROOM), purpose='recovery'))
         return reserves
     except Exception:
         release_recovery_reserve(reserves)
         raise
+
+def recovery_capacity_before_restore(expected, pair):
+    state = pathlib.Path(expected['databasePath']).parent
+    app_parent = pathlib.Path(expected['appPath']).parent
+    requirements = [(state, tree_storage_size(pair) + RECOVERY_HEADROOM // 2)]
+    if state.stat().st_dev != app_parent.stat().st_dev:
+        requirements.append((app_parent, RECOVERY_HEADROOM // 2))
+    for path, required in requirements:
+        space = os.statvfs(path)
+        available = space.f_bavail * space.f_frsize
+        if available < required:
+            raise RuntimeError('Insufficient free space after recovery reserve release: needed ' + str(required) + ' bytes, available ' + str(available) + ' bytes; recovery held before state mutation.')
 
 def pair_state(expected, directory):
     directory.mkdir(mode=0o700)
@@ -775,9 +790,9 @@ def activate(intent_file):
         record('resumed')
     except Exception as failure:
         try:
-            # Free reserved blocks before even the first recovery journal write.
-            # Successful generations retain the reserve for explicit retirement.
-            release_recovery_reserve(recovery_reserves)
+            # Error evidence has its own small reserve. Candidate writers cannot
+            # consume the bulk rollback capacity while shutdown is unresolved.
+            release_recovery_reserve(recovery_reserves, 'journal')
         except Exception:
             record('blocked', message='Recovery reserve ownership or release is uncertain; state retained.')
             return
@@ -791,6 +806,7 @@ def activate(intent_file):
                 # its unchanged prior app/state pair remains compatible.
                 try:
                     prove_quiescence(expected)
+                    release_recovery_reserve(recovery_reserves)
                     record('rolled-back', message='Snapshot preparation failed before any candidate launch; prior state was unchanged.')
                     release_writer_exclusion(exclusive_writers)
                     launch(expected)
@@ -808,13 +824,15 @@ def activate(intent_file):
             stop_exact(proofs)
             prove_quiescence(expected)
             if not exclusive_writers: exclusive_writers = acquire_writer_exclusion(expected)
+            release_recovery_reserve(recovery_reserves)
+            recovery_capacity_before_restore(expected, tx / 'previous-pair')
             restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state')
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
             record('rolled-back', message='Update rolled back: ' + str(failure))
             release_writer_exclusion(exclusive_writers)
             launch(expected)
-        except Exception:
-            record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation.')
+        except Exception as recovery_failure:
+            record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation: ' + str(recovery_failure))
     finally:
         release_writer_exclusion(exclusive_writers)
 

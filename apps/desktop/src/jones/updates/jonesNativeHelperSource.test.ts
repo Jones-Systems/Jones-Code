@@ -97,7 +97,23 @@ storage_preflight = synthetic_storage_preflight
 if fault == 'reserve-denied':
     def reserve_recovery_capacity(*args): raise OSError('Synthetic ENOSPC before shutdown')
 if fault == 'reserve-release-failed':
-    def release_recovery_reserve(reserves): raise OSError('Synthetic uncertain reserve release')
+    def release_recovery_reserve(*args): raise OSError('Synthetic uncertain reserve release')
+native_exclusion = acquire_writer_exclusion
+def synthetic_exclusion(active):
+    if fault == 'recovery-lease-busy' and 'candidate-launch' in events: raise RuntimeError('Synthetic competing writer')
+    connections = native_exclusion(active)
+    events.append('exclusive-writers')
+    return connections
+acquire_writer_exclusion = synthetic_exclusion
+native_capacity = recovery_capacity_before_restore
+def synthetic_capacity(active, pair):
+    events.append('recovery-capacity')
+    if fault != 'recovery-space-missing': return native_capacity(active, pair)
+    native_space = os.statvfs
+    os.statvfs = lambda path: type('Space', (), {'f_bavail': 0, 'f_frsize': 1})()
+    try: return native_capacity(active, pair)
+    finally: os.statvfs = native_space
+recovery_capacity_before_restore = synthetic_capacity
 if fault in ('bundle-denied', 'bundle-second-rename-denied'):
     native_rename = os.rename
     def denied_rename(source, target):
@@ -109,6 +125,8 @@ if fault in ('bundle-denied', 'bundle-second-rename-denied'):
 native_stop = lambda proofs: events.append('stop:' + str(len(proofs)))
 def synthetic_stop(proofs):
     native_stop(proofs)
+    if 'candidate-launch' in events:
+        assert (tx / 'recovery-reserve.bin').exists(), 'Bulk reserve released before candidate shutdown'
     if fault == 'state-grew': (profile / 'growth').write_bytes(bytes(RECOVERY_HEADROOM))
     for proof in proofs:
         if proof.get('pid') == 654: alive(proof)
@@ -149,7 +167,7 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'listener-mismatch': receipt['listener'] = 'http://127.0.0.1:4777'
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
     return {'pid': 456, 'identity': 'tracked-native-app'}
@@ -241,11 +259,66 @@ else:
         assert state == 'advanced-state'
         assert (tx / 'previous-pair' / 'state.sqlite').exists()
         assert 'restart-previous' not in events
+        if fault != 'recovery-space-missing': assert (tx / 'recovery-reserve.bin').exists()
+    if fault == 'recovery-space-missing':
+        assert not (tx / 'advanced-state').exists()
+        assert 'available 0 bytes' in journal['message'] and 'needed ' in journal['message']
+        assert events[-1] == 'recovery-capacity'
+        assert events.index('stop:1', events.index('candidate-launch') + 1) > events.index('candidate-launch')
+        assert events[-2] == 'exclusive-writers'
     if journal['phase'] == 'rolled-back': assert not (tx / 'recovery-reserve.bin').exists()
     print(json.dumps({'phase': journal['phase'], 'events': events, 'state': state}))
 `;
 
 describe("Jones native helper", () => {
+  it("takes a fresh SQLite and profile snapshot on a second attempt while preserving the rolled-back attempt", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+      const scenario = String.raw`
+activate(tx / 'intent.json')
+assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+first = tx
+retained = {str(path): digest(path) for path in first.rglob('*') if path.is_file()}
+with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='intervening-state'")
+(home / 'settings.json').write_text('intervening-settings')
+(profile / 'opaque').write_text('intervening-profile')
+transaction_id = 'c' * 64
+tx = first.parent / transaction_id
+selection_path = selection_path.with_name(expected['sourceSha'] + '-' + transaction_id + '.json')
+durable(selection_path, selection, True)
+selection_digest = digest(selection_path)
+attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
+durable(attempt_path.parent / (attempt_key + '.json'), {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
+result = selection_command('claim-preparation', expected, staged['handle'], str(selection_path), selection_digest, transaction_id=transaction_id)
+assert result['status'] == 'preparation-claimed', result
+claim = read(tx / 'prepare-intent.json')
+durable(tx / 'prepare-dispatched.json', claim, True)
+durable(tx / 'continuation.json', dict(claim, prepared=True), True)
+intent = dict(intent, transactionId=transaction_id, continuationReceipt=str(tx / 'continuation.json'))
+durable(tx / 'activation-request.json', intent, True)
+result = selection_command('claim-activation', expected, staged['handle'], str(selection_path), selection_digest, str(tx / 'activation-request.json'), transaction_id)
+assert result['status'] == 'claimed', result
+events.clear()
+fault = 'success'
+activate(tx / 'intent.json')
+assert read(tx / 'journal.json')['phase'] == 'resumed'
+with sqlite3.connect(tx / 'previous-pair' / 'state.sqlite') as db:
+    assert db.execute('SELECT value FROM identity').fetchone()[0] == 'intervening-state'
+assert (tx / 'previous-pair' / 'settings.json').read_text() == 'intervening-settings'
+assert (tx / 'previous-pair' / 'profile' / 'opaque').read_text() == 'intervening-profile'
+assert {str(path): digest(path) for path in first.rglob('*') if path.is_file()} == retained
+assert read(staged['receiptPath'])['app'] == staged
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch"], {
+        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it.each(["rolled-back", "resumed", "blocked", "wrong-active", "occupied-attempt", "lost-reply"])(
     "binds a fresh transaction to the immutable stage after %s",
     async (fault) => {
@@ -671,6 +744,8 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
     ["storage-refused", "blocked"],
     ["reserve-denied", "blocked"],
     ["reserve-release-failed", "blocked"],
+    ["recovery-space-missing", "blocked"],
+    ["recovery-lease-busy", "blocked"],
     ["state-grew", "rolled-back"],
     ["resume-grant", "blocked"],
     ["commit-uncertain", "blocked"],
