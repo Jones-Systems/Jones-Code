@@ -29,6 +29,8 @@
     "apps/server/src/jones/cloud/qualifiedWriterObserver.pl",
     "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
     "apps/server/src/jones/cloud/qualifiedWriterObserver.ts",
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts",
     "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
     "apps/server/src/jones/cloud/qualifiedQuiescence.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
