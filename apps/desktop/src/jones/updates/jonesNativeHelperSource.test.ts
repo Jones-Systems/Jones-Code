@@ -223,6 +223,56 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it("holds exclusive state/profile leases and refuses readers, changed inodes, or WAL mode", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+profile = root / 'profile'; profile.mkdir()
+expected = {'home': str(root), 'profile': str(profile)}
+connections = acquire_writer_exclusion(expected)
+paths = native_writer_lease_paths(expected)
+try:
+    for path, scope in paths:
+        outsider = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            try: outsider.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+            except sqlite3.OperationalError as error: assert 'locked' in str(error)
+            else: raise AssertionError('An exclusive native copy admitted a reader')
+        finally: outsider.close()
+finally: release_writer_exclusion(connections)
+path, scope = paths[0]
+reader = sqlite3.connect(path, isolation_level=None)
+reader.execute('BEGIN'); reader.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+try:
+    try: acquire_writer_exclusion(expected)
+    except sqlite3.OperationalError as error: assert 'locked' in str(error)
+    else: raise AssertionError('A participating writer was ignored')
+finally: reader.close()
+connections = acquire_writer_exclusion(expected); release_writer_exclusion(connections)
+connection = sqlite3.connect(path, isolation_level=None)
+connection.execute('PRAGMA journal_mode=WAL'); connection.close()
+try: acquire_writer_exclusion(expected)
+except RuntimeError as error: assert 'rollback journal mode' in str(error)
+else: raise AssertionError('WAL lease was accepted')
+connection = sqlite3.connect(path, isolation_level=None)
+connection.execute('PRAGMA journal_mode=DELETE'); connection.close()
+old = path.with_name(path.name + '.retained')
+path.rename(old); shutil.copy2(old, path)
+try: acquire_writer_exclusion(expected)
+except RuntimeError as error: assert 'inode changed' in str(error)
+else: raise AssertionError('Replaced lease inode was accepted')
+assert old.exists()
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
+        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it.each([
     "discard",
     "claim",
@@ -758,7 +808,7 @@ for birth in ('Sa 10 Okt 08:20:14 2026', '2026年10月10日 08:20:14'):
     });
   });
 
-  it("checks exact native files, ignores readers, and refuses writers or incomplete access", () => {
+  it("checks native files and the whole profile tree, refusing writers or incomplete access", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
       "\nparser = argparse.ArgumentParser()",
     )[0];
@@ -773,7 +823,7 @@ def inspect(output, code=0, error=''):
     subprocess.run = run
     prove_quiescence(expected)
 inspect('p12\nf3\nar\n')
-assert '+D' not in calls[0]
+assert calls[0][calls[0].index('+D') + 1] == '/synthetic/profile'
 assert '/synthetic/state.sqlite' in calls[0]
 assert '/synthetic/state.sqlite-wal' in calls[0]
 assert '/synthetic/state.sqlite-shm' in calls[0]
@@ -782,6 +832,9 @@ for output in ('p12\nf3\naw\n', 'p12\nf3\nau\n', 'p12\nf3\n', 'unparsed'):
     except RuntimeError: pass
     else: raise AssertionError('A writer or unknown access was accepted')
 inspect('', 1)
+try: inspect('', 1, "lsof: WARNING: can't stat() /synthetic/profile/Local Storage/leveldb\nOutput information may be incomplete.")
+except RuntimeError: pass
+else: raise AssertionError('An incomplete profile inspection was accepted')
 `;
     NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
       encoding: "utf8",

@@ -122,14 +122,13 @@ def prove_quiescence(expected):
     profile = pathlib.Path(expected['profile'])
     files = [database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm')]
     files += [database.parent / name for name in SETTINGS]
-    profile_databases = [profile / name for name in ('History', 'Cookies', 'Login Data', 'Web Data', 'Default/History', 'Default/Cookies', 'Default/Network/Cookies', 'Default/Login Data', 'Default/Web Data')]
-    for path in profile_databases: files += [path, pathlib.Path(str(path) + '-wal'), pathlib.Path(str(path) + '-shm')]
-    files += [profile / name for name in ('Local State', 'Preferences', 'LOCK', 'Default/Preferences', 'Default/Local Storage/leveldb/LOCK', 'Default/Session Storage/LOCK')]
     existing = [str(path) for path in files if path.exists()]
     if not existing: raise RuntimeError('Native database files are missing; writer inspection held.')
-    result = subprocess.run(['/usr/sbin/lsof', '-F', 'pfa', '--'] + existing, capture_output=True, text=True)
+    # Chromium stores are not a fixed filename list. Inspect the copied profile
+    # tree as well as SQLite/settings; this observes outsiders without excluding them.
+    result = subprocess.run(['/usr/sbin/lsof', '-F', 'pfa', '+D', str(profile), '--'] + existing, capture_output=True, text=True, timeout=30)
     if result.returncode not in (0, 1): raise RuntimeError('Native file-writer inspection failed.')
-    if result.stderr.strip() and (any(path in result.stderr for path in existing) or not all(line.startswith("lsof: WARNING: can't stat()") or line.strip() == 'Output information may be incomplete.' for line in result.stderr.splitlines() if line.strip())):
+    if result.stderr.strip() and (any(path in result.stderr for path in existing + [str(profile)]) or not all(line.startswith("lsof: WARNING: can't stat()") or line.strip() == 'Output information may be incomplete.' for line in result.stderr.splitlines() if line.strip())):
         raise RuntimeError('Native file-writer inspection was incomplete.')
     access = None
     descriptor_open = False
@@ -215,6 +214,70 @@ def recovery_topology(expected, transaction):
     if len({path.stat().st_dev for path in roots}) != 1:
         raise RuntimeError('Native state and profile require same-volume recovery; installation held.')
     return roots
+
+def native_writer_lease_paths(expected):
+    home = pathlib.Path(expected['home']).resolve(strict=True)
+    profile = pathlib.Path(expected['profile']).resolve(strict=True)
+    profile_hash = hashlib.sha256(str(profile).encode()).hexdigest()
+    return sorted(((home / 'runtime' / 'jones-native-writer.sqlite', 'home:' + str(home)),
+                   (profile.parent / ('.jones-profile-writer-' + profile_hash + '.sqlite'), 'profile:' + str(profile))))
+
+def native_lease_identity(path, scope):
+    info = path.lstat()
+    witness = read(str(path) + '.identity.json')
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_mode & 0o077 or witness != {'protocol': 1, 'scope': scope, 'device': str(info.st_dev), 'inode': str(info.st_ino)}:
+        raise RuntimeError('Native lease inode changed; reconciliation required.')
+    return info.st_dev, info.st_ino
+
+def initialize_native_lease(path, scope):
+    if path.exists() or path.is_symlink(): return
+    if pathlib.Path(str(path) + '.identity.json').exists(): raise RuntimeError('Native lease disappeared; reconciliation required.')
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    scratch = path.with_name(path.name + '.' + uuid.uuid4().hex + '.pending')
+    descriptor = os.open(scratch, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    os.close(descriptor)
+    try:
+        connection = sqlite3.connect(scratch, isolation_level=None)
+        try:
+            connection.execute('PRAGMA journal_mode = DELETE')
+            connection.execute('PRAGMA synchronous = FULL')
+            connection.execute('CREATE TABLE jones_native_writer_lease (protocol INTEGER, scope TEXT)')
+            connection.execute('INSERT INTO jones_native_writer_lease VALUES (1, ?)', (scope,))
+        finally: connection.close()
+        descriptor = os.open(scratch, os.O_RDONLY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+        try: os.link(scratch, path)
+        except FileExistsError: return
+        scratch.unlink()
+        sync_parent(path)
+        info = path.lstat()
+        durable(str(path) + '.identity.json', {'protocol': 1, 'scope': scope, 'device': str(info.st_dev), 'inode': str(info.st_ino)}, True)
+    finally:
+        if scratch.exists(): scratch.unlink()
+
+def release_writer_exclusion(connections):
+    while connections:
+        connections[-1].close()
+        connections.pop()
+
+def acquire_writer_exclusion(expected):
+    connections = []
+    try:
+        for path, scope in native_writer_lease_paths(expected):
+            initialize_native_lease(path, scope)
+            identity = native_lease_identity(path, scope)
+            connection = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=0, isolation_level=None)
+            connections.append(connection)
+            if connection.execute('PRAGMA journal_mode').fetchone() != ('delete',):
+                raise RuntimeError('Native leases require rollback journal mode.')
+            connection.execute('BEGIN EXCLUSIVE')
+            if connection.execute('SELECT protocol, scope FROM jones_native_writer_lease').fetchall() != [(1, scope)] or native_lease_identity(path, scope) != identity:
+                raise RuntimeError('Native writer lease identity changed.')
+        return connections
+    except Exception:
+        release_writer_exclusion(connections)
+        raise
 
 def storage_preflight(expected, staged, transaction):
     state, profile, transaction = recovery_topology(expected, transaction)
@@ -539,6 +602,7 @@ def activate(intent_file):
     backend_process = None
     incoming = previous = None
     startup_unknown = False
+    exclusive_writers = []
     try:
         storage = storage_preflight(expected, staged, tx)
         record('preparing', storage=storage)
@@ -547,6 +611,7 @@ def activate(intent_file):
         preserve_restart_tunnel(expected, intent['transactionId'])
         stop_exact(intent['processes'])
         prove_quiescence(expected)
+        exclusive_writers = acquire_writer_exclusion(expected)
         record('quiescent')
         pair_state(expected, tx / 'previous-pair')
         record('paired', pairedState=str(tx / 'previous-pair'), recovery=read(tx / 'previous-pair' / 'pair.json')['recovery'])
@@ -564,6 +629,7 @@ def activate(intent_file):
                            **{key: staged[key] for key in ('version', 'sourceSha', 'sourceTree', 'appDigest')},
                            executablePath=str(pathlib.Path(expected['appPath']) / pathlib.Path(staged['executablePath']).relative_to(staged['appPath'])))
         record('trial')
+        release_writer_exclusion(exclusive_writers)
         candidate = launch(next_active, tx / 'trial-descriptor.json')
         record('trial', candidateWriter=candidate)
         deadline = time.monotonic() + 90
@@ -606,8 +672,9 @@ def activate(intent_file):
                 # its unchanged prior app/state pair remains compatible.
                 try:
                     prove_quiescence(expected)
-                    launch(expected)
                     record('rolled-back', message='Snapshot preparation failed before any candidate launch; prior state was unchanged.')
+                    release_writer_exclusion(exclusive_writers)
+                    launch(expected)
                     return
                 except Exception:
                     pass
@@ -621,12 +688,16 @@ def activate(intent_file):
             preserve_restart_tunnel(expected, intent['transactionId'])
             stop_exact(proofs)
             prove_quiescence(expected)
+            if not exclusive_writers: exclusive_writers = acquire_writer_exclusion(expected)
             restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state')
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
-            launch(expected)
             record('rolled-back', message='Update rolled back: ' + str(failure))
+            release_writer_exclusion(exclusive_writers)
+            launch(expected)
         except Exception:
             record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation.')
+    finally:
+        release_writer_exclusion(exclusive_writers)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--manifest', required=True)

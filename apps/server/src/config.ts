@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 import { sweepStalePendingAttachments } from "./attachmentStore.ts";
 import { DEFAULT_SIGNAL_EXPORT, type SignalExport } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
+import { holdJonesServerNativeWriterFence } from "./jones/updates/nativeWriterStartup.ts";
 
 export const DEFAULT_PORT = 3773;
 
@@ -244,6 +245,7 @@ const validateAuthorityStateDir = Effect.fn("ServerConfig.validateAuthorityState
 });
 
 export const ensureServerDirectories = Effect.fn(function* (derivedPaths: ServerDerivedPaths) {
+  yield* Effect.sync(() => holdJonesServerNativeWriterFence(derivedPaths.dbPath));
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
