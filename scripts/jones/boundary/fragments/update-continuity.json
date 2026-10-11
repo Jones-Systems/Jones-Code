@@ -16,7 +16,8 @@
     "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
     "apps/server/src/jones/updates/plannedContinuityStartup.ts",
     "apps/server/src/jones/cloud/shutdownBudget.ts",
-    "apps/server/src/jones/cloud/shutdownBudget.test.ts"
+    "apps/server/src/jones/cloud/shutdownBudget.test.ts",
+    "apps/server/src/jones/updates/stageRevocation.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -68,6 +69,10 @@
     {
       "from": "apps/server/src/cloud/bootService.ts",
       "to": "apps/server/src/jones/cloud/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/updates/stageRevocation.ts"
     }
   ]
 }
