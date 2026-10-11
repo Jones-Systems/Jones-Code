@@ -494,6 +494,7 @@ const adoptionFixture = () => {
   });
   const parent = { incarnation, isCurrent: Effect.sync(() => current) };
   const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+    admit: () => Effect.void,
     reserve: () =>
       Effect.sync(() => {
         trace.push("reserve-adoption");
