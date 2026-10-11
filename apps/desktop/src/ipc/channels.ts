@@ -124,3 +124,9 @@ export const RECEIVE_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:receive-provider-
 export const CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:cancel-provider-auth-callback";
 export const TAKE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:take-legacy-local-storage";
 export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-local-storage";
+
+export const GET_CONNECTION_CATALOG_SNAPSHOT_CHANNEL = "desktop:get-connection-catalog-snapshot";
+export const LIST_CONNECTION_COMPATIBILITY_HINTS_CHANNEL =
+  "desktop:list-connection-compatibility-hints";
+export const SET_CONNECTION_COMPATIBILITY_HINT_CHANNEL =
+  "desktop:set-connection-compatibility-hint";

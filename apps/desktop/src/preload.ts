@@ -170,6 +170,12 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   dismissSnapShotAnimation: (id) =>
     ipcRenderer.invoke(IpcChannels.DISMISS_SNAP_SHOT_ANIMATION_CHANNEL, id),
   acknowledgeSnapShot: (id) => ipcRenderer.invoke(IpcChannels.ACKNOWLEDGE_SNAP_SHOT_CHANNEL, id),
+  getConnectionCatalogSnapshot: () =>
+    ipcRenderer.invoke(IpcChannels.GET_CONNECTION_CATALOG_SNAPSHOT_CHANNEL),
+  listConnectionCompatibilityHints: () =>
+    ipcRenderer.invoke(IpcChannels.LIST_CONNECTION_COMPATIBILITY_HINTS_CHANNEL),
+  setConnectionCompatibilityHint: (input) =>
+    ipcRenderer.invoke(IpcChannels.SET_CONNECTION_COMPATIBILITY_HINT_CHANNEL, input),
   getConnectionCatalog: () => ipcRenderer.invoke(IpcChannels.GET_CONNECTION_CATALOG_CHANNEL),
   setConnectionCatalog: (catalog) =>
     ipcRenderer.invoke(IpcChannels.SET_CONNECTION_CATALOG_CHANNEL, catalog),

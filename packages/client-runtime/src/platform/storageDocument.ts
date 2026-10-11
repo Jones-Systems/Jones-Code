@@ -1,7 +1,6 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as SchemaGetter from "effect/SchemaGetter";
 import * as Option from "effect/Option";
 
 import {
@@ -20,7 +19,7 @@ export const StoredConnectionCredential = Schema.Struct({
 });
 export type StoredConnectionCredential = typeof StoredConnectionCredential.Type;
 
-const MAX_COMPATIBILITY_HINTS = 128;
+export const MAX_CONNECTION_COMPATIBILITY_HINTS = 128;
 const MAX_COMPATIBILITY_ROUTES = 16;
 const MAX_ROUTE_BINDING_LENGTH = 16_384;
 const MAX_ROUTE_IDENTITY_LENGTH = 256;
@@ -40,34 +39,23 @@ const decodeCompatibilityHint = Schema.decodeUnknownOption(StoredConnectionCompa
   onExcessProperty: "error",
 });
 
-/** A bad optional hint must never quarantine an otherwise valid connection catalog. */
+/** Invalid independent records are ignored without involving catalog recovery. */
 export function decodeConnectionCompatibilityHints(
   value: unknown,
 ): ReadonlyArray<StoredConnectionCompatibilityHint> {
-  if (!Array.isArray(value) || value.length > MAX_COMPATIBILITY_HINTS) return [];
+  if (!Array.isArray(value) || value.length > MAX_CONNECTION_COMPATIBILITY_HINTS) return [];
   const result: StoredConnectionCompatibilityHint[] = [];
-  const seen = new Set<EnvironmentId>();
+  const seen = new Set<string>();
   for (const candidate of value) {
     const hint = Option.getOrNull(decodeCompatibilityHint(candidate));
-    if (hint === null || seen.has(hint.environmentId)) continue;
-    seen.add(hint.environmentId);
+    if (hint === null) continue;
+    const key = JSON.stringify([hint.environmentId, hint.routeBinding]);
+    if (seen.has(key)) continue;
+    seen.add(key);
     result.push(hint);
   }
   return result;
 }
-
-const CompatibilityHints = Schema.Unknown.pipe(
-  Schema.decodeTo(
-    Schema.Array(StoredConnectionCompatibilityHint).check(
-      Schema.isMaxLength(MAX_COMPATIBILITY_HINTS),
-    ),
-    {
-      decode: SchemaGetter.transform(decodeConnectionCompatibilityHints),
-      encode: SchemaGetter.passthrough(),
-    },
-  ),
-  Schema.withDecodingDefaultKey(Effect.succeed([])),
-);
 
 function boundedRouteIdentity(value: string): boolean {
   return value.length > 0 && value.length <= MAX_ROUTE_IDENTITY_LENGTH;
@@ -152,7 +140,6 @@ export const ConnectionCatalogDocument = Schema.Struct({
   credentials: Schema.Array(StoredConnectionCredential),
   remoteDpopTokens: Schema.Array(TokenStore.RemoteDpopAccessToken),
   githubRoutingPermissions: Schema.optionalKey(Schema.Array(StoredGitHubRoutingPermission)),
-  compatibilityHints: CompatibilityHints,
   // Saved environments the user switched off. They stay registered with their
   // credentials and cache but never connect until switched back on. Older
   // documents predate the key, so decoding defaults it to none.
@@ -169,10 +156,9 @@ export const EMPTY_CONNECTION_CATALOG_DOCUMENT: ConnectionCatalogDocument = Obje
   credentials: [],
   remoteDpopTokens: [],
   disabledEnvironmentIds: [],
-  compatibilityHints: [],
 });
 
-function catalogCompatibilityRouteBinding(
+export function catalogCompatibilityRouteBinding(
   document: ConnectionCatalogDocument,
   environmentId: EnvironmentId,
 ): string | null {
@@ -189,55 +175,57 @@ function catalogCompatibilityRouteBinding(
   );
 }
 
+/** Joins independent historical records to the current saved route configuration. */
 export function listConnectionCompatibilityHints(
   document: ConnectionCatalogDocument,
+  hints: unknown,
 ): ReadonlyArray<StoredConnectionCompatibilityHint> {
-  return decodeConnectionCompatibilityHints(document.compatibilityHints).filter(
+  return decodeConnectionCompatibilityHints(hints).filter(
     (hint) => catalogCompatibilityRouteBinding(document, hint.environmentId) === hint.routeBinding,
   );
 }
 
-function pruneCompatibilityHints(document: ConnectionCatalogDocument): ConnectionCatalogDocument {
-  return { ...document, compatibilityHints: listConnectionCompatibilityHints(document) };
-}
-
-/** The adapter runs this comparison and write together under its catalog lock. */
-export function setConnectionCompatibilityHintInCatalog(
-  document: ConnectionCatalogDocument,
+/** Only the dedicated hint store is replaced; callers serialize its read and write. */
+export function setConnectionCompatibilityHintInRecords(
+  records: unknown,
   environmentId: EnvironmentId,
   routeBinding: string,
   kind: StoredConnectionCompatibilityHint["kind"] | null,
-): ConnectionCatalogDocument {
-  if (catalogCompatibilityRouteBinding(document, environmentId) !== routeBinding) return document;
-  const hints = listConnectionCompatibilityHints(document).filter(
-    (hint) => hint.environmentId !== environmentId,
+): ReadonlyArray<StoredConnectionCompatibilityHint> {
+  const hint = Option.getOrNull(
+    decodeCompatibilityHint({
+      environmentId,
+      routeBinding,
+      kind: kind ?? "outdated-update",
+    }),
   );
-  if (kind === null) return { ...document, compatibilityHints: hints };
-  if (kind !== "outdated-update" || hints.length >= MAX_COMPATIBILITY_HINTS) return document;
-  return {
-    ...document,
-    compatibilityHints: [...hints, { environmentId, routeBinding, kind }],
-  };
+  if (hint === null) return decodeConnectionCompatibilityHints(records);
+  const remaining = decodeConnectionCompatibilityHints(records).filter(
+    (value) => value.environmentId !== environmentId || value.routeBinding !== routeBinding,
+  );
+  if (kind === null) return remaining;
+  if (remaining.length >= MAX_CONNECTION_COMPATIBILITY_HINTS) return remaining;
+  return [...remaining, hint];
 }
 
 export function putConnectionProfileInCatalog(
   document: ConnectionCatalogDocument,
   profile: ConnectionProfile,
 ): ConnectionCatalogDocument {
-  return pruneCompatibilityHints({
+  return {
     ...document,
     profiles: replaceCatalogValue(document.profiles, (value) => value.connectionId, profile),
-  });
+  };
 }
 
 export function removeConnectionProfileFromCatalog(
   document: ConnectionCatalogDocument,
   connectionId: string,
 ): ConnectionCatalogDocument {
-  return pruneCompatibilityHints({
+  return {
     ...document,
     profiles: removeCatalogValue(document.profiles, (value) => value.connectionId, connectionId),
-  });
+  };
 }
 
 export function replaceCatalogValue<A>(
@@ -324,10 +312,10 @@ export function setRoutesInCatalog(
       ? others.length
       : document.targets.slice(0, firstIndex).filter((t) => t.environmentId !== environmentId)
           .length;
-  return pruneCompatibilityHints({
+  return {
     ...removeRouteMetadata(document, dropped),
     targets: [...others.slice(0, insertAt), ...routes, ...others.slice(insertAt)],
-  });
+  };
 }
 
 /** Saves one route of an environment, keeping its other routes. */

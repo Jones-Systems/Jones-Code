@@ -1193,6 +1193,19 @@ export interface DesktopBridge {
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
   getConnectionCatalog?: () => Promise<string | null>;
+  getConnectionCatalogSnapshot?: () => Promise<string | null>;
+  listConnectionCompatibilityHints?: () => Promise<
+    ReadonlyArray<{
+      readonly environmentId: EnvironmentId;
+      readonly routeBinding: string;
+      readonly kind: "outdated-update";
+    }>
+  >;
+  setConnectionCompatibilityHint?: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly routeBinding: string;
+    readonly kind: "outdated-update" | null;
+  }) => Promise<boolean>;
   setConnectionCatalog?: (catalog: string) => Promise<boolean>;
   clearConnectionCatalog?: () => Promise<void>;
   discoverSshHosts: () => Promise<readonly DesktopDiscoveredSshHost[]>;

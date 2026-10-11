@@ -31,7 +31,7 @@ import {
   connectionCompatibilityRouteBinding,
   decodeConnectionCompatibilityHints,
   listConnectionCompatibilityHints,
-  setConnectionCompatibilityHintInCatalog,
+  setConnectionCompatibilityHintInRecords,
   putConnectionProfileInCatalog,
   removeConnectionProfileFromCatalog,
   setRoutesInCatalog,
@@ -355,7 +355,6 @@ describe("ConnectionCatalogDocument", () => {
     });
 
     expect(decoded.disabledEnvironmentIds).toEqual([]);
-    expect(decoded.compatibilityHints).toEqual([]);
   });
 
   it("switches a saved environment off and back on without touching its records", () => {
@@ -488,140 +487,105 @@ describe("saved compatibility hints", () => {
     false,
   );
 
-  it("round-trips historical presentation without enabling an Off environment", () => {
-    const hinted = setConnectionCompatibilityHintInCatalog(
-      savedOff,
-      ENVIRONMENT_ID,
-      binding,
-      hint.kind,
-    );
-    const schema = Schema.fromJsonString(ConnectionCatalogDocument);
-    const restored = Schema.decodeSync(schema)(Schema.encodeSync(schema)(hinted));
-    expect(listConnectionCompatibilityHints(restored)).toEqual([hint]);
-    expect(restored.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
-    expect(Object.keys(restored.compatibilityHints[0]!).sort()).toEqual([
-      "environmentId",
-      "kind",
-      "routeBinding",
-    ]);
-    expect(JSON.stringify(restored.compatibilityHints)).not.toContain(BEARER_CREDENTIAL.token);
-    const cleared = setConnectionCompatibilityHintInCatalog(
-      restored,
-      ENVIRONMENT_ID,
-      binding,
+  it("round-trips independent presentation without changing an Off catalog", () => {
+    const records = setConnectionCompatibilityHintInRecords([], ENVIRONMENT_ID, binding, hint.kind);
+    const restored = decodeConnectionCompatibilityHints(JSON.parse(JSON.stringify(records)));
+    expect(listConnectionCompatibilityHints(savedOff, restored)).toEqual([hint]);
+    expect(savedOff.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
+    expect(Object.keys(restored[0]!).sort()).toEqual(["environmentId", "kind", "routeBinding"]);
+    expect(JSON.stringify(restored)).not.toContain(BEARER_CREDENTIAL.token);
+    expect(
+      setConnectionCompatibilityHintInRecords(restored, ENVIRONMENT_ID, binding, null),
+    ).toEqual([]);
+    expect("compatibilityHints" in savedOff).toBe(false);
+  });
+
+  it("drops malformed hint records without changing a valid catalog", () => {
+    const records = decodeConnectionCompatibilityHints([
       null,
-    );
-    expect(cleared.compatibilityHints).toEqual([]);
-    expect(cleared.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
-    expect(cleared.credentials).toEqual(savedOff.credentials);
-  });
-
-  it("drops malformed optional hints without discarding valid hints or saved records", () => {
-    const restored = decodeCatalogDocument({
-      ...savedOff,
-      compatibilityHints: [
-        null,
-        { ...hint, kind: "connected" },
-        { ...hint, credential: { token: "must-not-be-hint-data" } },
-        { ...hint, routeBinding: "x".repeat(16_385) },
-        hint,
-        hint,
-      ],
-    });
-    expect(restored.compatibilityHints).toEqual([hint]);
-    expect(restored.targets).toEqual(savedOff.targets);
-    expect(restored.credentials).toEqual(savedOff.credentials);
-    expect(restored.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
-    for (const compatibilityHints of [null, {}, "bad", Array(129).fill(hint)]) {
-      const decoded = decodeCatalogDocument({ ...savedOff, compatibilityHints });
-      expect(decoded.compatibilityHints).toEqual([]);
-      expect(decoded.credentials).toEqual(savedOff.credentials);
+      { ...hint, kind: "connected" },
+      { ...hint, credential: { token: "secret" } },
+      { ...hint, routeBinding: "x".repeat(16_385) },
+      hint,
+      hint,
+    ]);
+    expect(records).toEqual([hint]);
+    for (const invalid of [null, {}, "bad", Array(129).fill(hint), undefined]) {
+      expect(decodeConnectionCompatibilityHints(invalid)).toEqual([]);
+      expect(decodeCatalogDocument({ ...savedOff, compatibilityHints: invalid })).toEqual(savedOff);
     }
-    expect(decodeConnectionCompatibilityHints(undefined)).toEqual([]);
   });
 
-  it("does not expose hints for unknown environments or mismatched saved routes", () => {
-    const restored = decodeCatalogDocument({
-      ...savedOff,
-      compatibilityHints: [
+  it("joins only exact current routes and never reads an embedded hint fallback", () => {
+    expect(
+      listConnectionCompatibilityHints(savedOff, [
         { ...hint, routeBinding: "different-route" },
         { ...hint, environmentId: EnvironmentId.make("unknown") },
-      ],
-    });
-    expect(listConnectionCompatibilityHints(restored)).toEqual([]);
-    expect(
-      setConnectionCompatibilityHintInCatalog(savedOff, ENVIRONMENT_ID, "stale", hint.kind),
-    ).toBe(savedOff);
+      ]),
+    ).toEqual([]);
+    const old = decodeCatalogDocument({ ...savedOff, compatibilityHints: [hint] });
+    expect(listConnectionCompatibilityHints(old, [])).toEqual([]);
   });
 
-  it("invalidates reorder, replacement, removal and dropped routes", () => {
-    const routes = [BEARER_TARGET, RELAY_TARGET];
-    const pair = setRoutesInCatalog(savedOff, ENVIRONMENT_ID, routes);
-    const pairBinding = connectionCompatibilityRouteBinding([bearerRoute, relayRoute])!;
-    const hinted = setConnectionCompatibilityHintInCatalog(
-      pair,
-      ENVIRONMENT_ID,
-      pairBinding,
-      hint.kind,
-    );
-    expect(hinted.compatibilityHints).toHaveLength(1);
-    expect(setRoutesInCatalog(hinted, ENVIRONMENT_ID, routes).compatibilityHints).toHaveLength(1);
-    for (const next of [[RELAY_TARGET, BEARER_TARGET], [BEARER_TARGET], [RELAY_TARGET], []]) {
-      expect(setRoutesInCatalog(hinted, ENVIRONMENT_ID, next).compatibilityHints).toEqual([]);
+  it("invalidates reorder, replacement, removal and dropped routes in the fresh join", () => {
+    const pair = setRoutesInCatalog(savedOff, ENVIRONMENT_ID, [BEARER_TARGET, RELAY_TARGET]);
+    const pairHint = {
+      ...hint,
+      routeBinding: connectionCompatibilityRouteBinding([bearerRoute, relayRoute])!,
+    };
+    expect(listConnectionCompatibilityHints(pair, [pairHint])).toEqual([pairHint]);
+    for (const routes of [[RELAY_TARGET, BEARER_TARGET], [BEARER_TARGET], [RELAY_TARGET], []]) {
+      expect(
+        listConnectionCompatibilityHints(setRoutesInCatalog(pair, ENVIRONMENT_ID, routes), [
+          pairHint,
+        ]),
+      ).toEqual([]);
     }
-    expect(removeConnectionFromCatalog(hinted, ENVIRONMENT_ID).compatibilityHints).toEqual([]);
+    expect(
+      listConnectionCompatibilityHints(removeConnectionFromCatalog(savedOff, ENVIRONMENT_ID), [
+        hint,
+      ]),
+    ).toEqual([]);
     const replacement = new BearerConnectionRegistration({
       ...registration,
       target: new BearerConnectionTarget({ ...BEARER_TARGET, connectionId: "replacement" }),
       profile: new BearerConnectionProfile({ ...BEARER_PROFILE, connectionId: "replacement" }),
     });
-    expect(registerConnectionInCatalog(hinted, replacement).compatibilityHints).toEqual([]);
+    expect(
+      listConnectionCompatibilityHints(registerConnectionInCatalog(savedOff, replacement), [hint]),
+    ).toEqual([]);
   });
 
-  it("invalidates profile edits and refuses late writes and clears from the old route", () => {
-    const hinted = setConnectionCompatibilityHintInCatalog(
-      savedOff,
-      ENVIRONMENT_ID,
-      binding,
-      hint.kind,
-    );
-    const changedProfile = new BearerConnectionProfile({
+  it("retains a new binding when an old binding is cleared", () => {
+    const changed = new BearerConnectionProfile({
       ...BEARER_PROFILE,
       httpBaseUrl: "https://replacement.example.test",
     });
-    const edited = putConnectionProfileInCatalog(hinted, changedProfile);
-    expect(edited.compatibilityHints).toEqual([]);
+    const edited = putConnectionProfileInCatalog(savedOff, changed);
+    expect(listConnectionCompatibilityHints(edited, [hint])).toEqual([]);
     expect(
-      registerConnectionInCatalog(
-        hinted,
-        new BearerConnectionRegistration({
-          ...registration,
-          profile: changedProfile,
-        }),
-      ).compatibilityHints,
+      listConnectionCompatibilityHints(
+        removeConnectionProfileFromCatalog(savedOff, BEARER_TARGET.connectionId),
+        [hint],
+      ),
     ).toEqual([]);
-    expect(
-      removeConnectionProfileFromCatalog(hinted, BEARER_TARGET.connectionId).compatibilityHints,
-    ).toEqual([]);
-    expect(
-      setConnectionCompatibilityHintInCatalog(edited, ENVIRONMENT_ID, binding, hint.kind),
-    ).toBe(edited);
     const freshBinding = connectionCompatibilityRouteBinding([
-      { target: BEARER_TARGET, profile: Option.some(changedProfile) },
+      { target: BEARER_TARGET, profile: Option.some(changed) },
     ])!;
-    const fresh = setConnectionCompatibilityHintInCatalog(
-      edited,
+    const records = setConnectionCompatibilityHintInRecords(
+      [hint],
       ENVIRONMENT_ID,
       freshBinding,
       hint.kind,
     );
-    expect(setConnectionCompatibilityHintInCatalog(fresh, ENVIRONMENT_ID, binding, null)).toBe(
-      fresh,
-    );
-    expect(fresh.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
+    const cleared = setConnectionCompatibilityHintInRecords(records, ENVIRONMENT_ID, binding, null);
+    expect(listConnectionCompatibilityHints(edited, cleared)).toEqual([
+      { ...hint, routeBinding: freshBinding },
+    ]);
+    expect(edited.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
   });
 
-  it("normalizes URL identity while preserving label and credential independence", () => {
+  it("normalizes URL identity while excluding labels and credentials", () => {
     const renamed = new BearerConnectionProfile({
       ...BEARER_PROFILE,
       label: "Renamed",
@@ -635,22 +599,16 @@ describe("saved compatibility hints", () => {
         },
       ]),
     ).toBe(binding);
-    const hinted = setConnectionCompatibilityHintInCatalog(
-      savedOff,
-      ENVIRONMENT_ID,
-      binding,
-      hint.kind,
-    );
     const refreshed = registerConnectionInCatalog(
-      hinted,
+      savedOff,
       new BearerConnectionRegistration({
         ...registration,
         profile: renamed,
         credential: new BearerConnectionCredential({ token: "replacement-secret" }),
       }),
     );
-    expect(refreshed.compatibilityHints).toEqual([hint]);
-    expect(JSON.stringify(refreshed.compatibilityHints)).not.toContain("replacement-secret");
+    expect(listConnectionCompatibilityHints(refreshed, [hint])).toEqual([hint]);
+    expect(JSON.stringify(hint)).not.toContain("replacement-secret");
     for (const fields of [
       { wsBaseUrl: "wss://replacement.example.test" },
       { learned: true as const },

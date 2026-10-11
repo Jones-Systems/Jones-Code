@@ -12,6 +12,10 @@ import {
   ConnectionCatalogDocument,
   Persistence,
   connectionCompatibilityRouteBinding,
+  setConnectionCompatibilityHintInRecords,
+  type StoredConnectionCompatibilityHint,
+  setConnectionEnabledInCatalog,
+  removeConnectionFromCatalog,
 } from "@t3tools/client-runtime/platform";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -30,7 +34,6 @@ const emptyCatalog = {
   credentials: [],
   remoteDpopTokens: [],
   disabledEnvironmentIds: [],
-  compatibilityHints: [],
 } as const;
 const decodeCatalog = Schema.decodeUnknownSync(Schema.fromJsonString(ConnectionCatalogDocument));
 const encodeCatalog = Schema.encodeSync(Schema.fromJsonString(ConnectionCatalogDocument));
@@ -443,7 +446,7 @@ describe("durable compatibility hints", () => {
       expect(restored.targets).toEqual([target]);
       expect(restored.credentials[0]?.credential).toEqual(credential);
       expect(restored.disabledEnvironmentIds).toEqual([environmentId]);
-      expect(restored.compatibilityHints).toEqual([]);
+      expect("compatibilityHints" in restored).toBe(false);
       expect(writes).toEqual([]);
       expect(quarantined).toEqual([]);
     }),
@@ -459,7 +462,28 @@ describe("durable compatibility hints", () => {
           raw = value;
           return true;
         });
-        vi.stubGlobal("window", { desktopBridge: { getConnectionCatalog, setConnectionCatalog } });
+        let hints: ReadonlyArray<StoredConnectionCompatibilityHint> = [];
+        vi.stubGlobal("window", {
+          desktopBridge: {
+            getConnectionCatalog,
+            setConnectionCatalog,
+            getConnectionCatalogSnapshot: async () => raw,
+            listConnectionCompatibilityHints: async () => hints,
+            setConnectionCompatibilityHint: async (
+              input:
+                | StoredConnectionCompatibilityHint
+                | { environmentId: EnvironmentId; routeBinding: string; kind: null },
+            ) => {
+              hints = setConnectionCompatibilityHintInRecords(
+                hints,
+                input.environmentId,
+                input.routeBinding,
+                input.kind,
+              );
+              return true;
+            },
+          },
+        });
         const open = vi.fn(() => {
           throw new Error("Hint persistence must not open the cache database");
         });
@@ -516,6 +540,94 @@ describe("durable compatibility hints", () => {
       }),
   );
 
+  it.effect(
+    "preserves another instance's Off, removal and route edits during late hint writes",
+    () =>
+      Effect.gen(function* () {
+        let raw = encodeCatalog({ ...emptyCatalog, targets: [target], profiles: [profile] });
+        let writes = 0;
+        let records: ReadonlyArray<StoredConnectionCompatibilityHint> = [];
+        const backend = {
+          read: Effect.sync(() => raw),
+          write: (next: string) =>
+            Effect.sync(() => {
+              writes++;
+              raw = next;
+            }),
+        };
+        const hints = ConnectionStorage.makeCompatibilityHintStore(
+          {
+            supported: true,
+            read: Effect.sync(() => records),
+            set: (environment, binding, kind) =>
+              Effect.sync(() => {
+                records = setConnectionCompatibilityHintInRecords(
+                  records,
+                  environment,
+                  binding,
+                  kind,
+                );
+              }),
+          },
+          backend.read,
+        );
+        const stale = yield* ConnectionStorage.makeCatalogStore(backend);
+        const current = yield* ConnectionStorage.makeCatalogStore(backend, hints.invalidate);
+        yield* stale.read;
+        yield* current.update((document) =>
+          setConnectionEnabledInCatalog(document, environmentId, false),
+        );
+        const off = raw;
+        yield* hints.set(environmentId, routeBinding, "outdated-update");
+        yield* hints.set(environmentId, routeBinding, null);
+        expect(raw).toBe(off);
+        expect(writes).toBe(1);
+        expect(decodeCatalog(raw).disabledEnvironmentIds).toEqual([environmentId]);
+        yield* hints.set(environmentId, routeBinding, "outdated-update");
+        yield* current.update((document) => ({
+          ...document,
+          profiles: [
+            new BearerConnectionProfile({
+              ...profile,
+              httpBaseUrl: "https://changed.example.test",
+            }),
+          ],
+        }));
+        const edited = raw;
+        yield* hints.set(environmentId, routeBinding, "outdated-update");
+        expect(raw).toBe(edited);
+        expect(yield* hints.read).toEqual([]);
+        yield* current.update((document) => removeConnectionFromCatalog(document, environmentId));
+        const removed = raw;
+        yield* hints.set(environmentId, routeBinding, "outdated-update");
+        yield* hints.set(environmentId, routeBinding, null);
+        expect(raw).toBe(removed);
+        expect(decodeCatalog(raw).targets).toEqual([]);
+        expect(yield* hints.read).toEqual([]);
+      }),
+  );
+
+  it.effect("never falls back to a legacy desktop catalog writer", () =>
+    Effect.gen(function* () {
+      const write = vi.fn(async () => true);
+      vi.stubGlobal("window", {
+        desktopBridge: {
+          getConnectionCatalog: async () => encodeCatalog(emptyCatalog),
+          setConnectionCatalog: write,
+        },
+      });
+      const backend = ConnectionStorage.makeCompatibilityHintBackend(
+        fixedHandle({} as IDBDatabase),
+      );
+      const store = ConnectionStorage.makeCompatibilityHintStore(backend, Effect.succeed(null));
+      expect(yield* store.read).toEqual([]);
+      expect(
+        yield* store.set(environmentId, routeBinding, "outdated-update").pipe(Effect.flip),
+      ).toBeInstanceOf(ConnectionTransientError);
+      expect(write).not.toHaveBeenCalled();
+    }),
+  );
+
   it.effect("does not publish a hint in memory when its durable write fails", () =>
     Effect.gen(function* () {
       const raw = encodeCatalog({
@@ -529,6 +641,9 @@ describe("durable compatibility hints", () => {
         desktopBridge: {
           getConnectionCatalog: vi.fn(async () => raw),
           setConnectionCatalog: vi.fn(async () => false),
+          getConnectionCatalogSnapshot: vi.fn(async () => raw),
+          listConnectionCompatibilityHints: vi.fn(async () => []),
+          setConnectionCompatibilityHint: vi.fn(async () => false),
         },
       });
       yield* Effect.gen(function* () {
@@ -546,6 +661,90 @@ describe("durable compatibility hints", () => {
         expect(yield* targets.listCompatibilityHints).toEqual([]);
         expect(yield* targets.listDisabled).toEqual([environmentId]);
       }).pipe(Effect.provide(ConnectionStorage.layer));
+    }),
+  );
+});
+
+describe("IndexedDB compatibility hint transactions", () => {
+  it.effect("keeps read/count/put inside active callbacks and resolves only after commit", () =>
+    Effect.gen(function* () {
+      vi.stubGlobal("window", {});
+      const events: string[] = [];
+      const rows = new Map<string, unknown>();
+      let failCommit = false;
+      const database = {
+        transaction: (name: string) => {
+          expect(name).toBe("compatibility-hints");
+          let pending = 0;
+          let active = true;
+          let aborted = false;
+          const draft = new Map(rows);
+          const transaction = Object.assign(new EventTarget(), {
+            error: null as DOMException | null,
+            abort: () => {
+              aborted = true;
+              queueMicrotask(() => transaction.dispatchEvent(new Event("abort")));
+            },
+            objectStore: () => ({
+              count: () => request(draft.size),
+              get: (key: IDBValidKey) => request(draft.get(JSON.stringify(key))),
+              getAll: (_query: unknown, count: number) =>
+                request([...draft.values()].slice(0, count)),
+              put: (value: unknown, key: IDBValidKey) => {
+                expect(active).toBe(true);
+                events.push("put");
+                draft.set(JSON.stringify(key), value);
+                return request(undefined);
+              },
+              delete: (key: IDBValidKey) => {
+                expect(active).toBe(true);
+                draft.delete(JSON.stringify(key));
+                return request(undefined);
+              },
+            }),
+          });
+          function request(result: unknown) {
+            pending++;
+            const request = Object.assign(new EventTarget(), { result });
+            queueMicrotask(() => {
+              if (aborted) return;
+              active = true;
+              request.dispatchEvent(new Event("success"));
+              active = false;
+              if (--pending === 0)
+                queueMicrotask(() => {
+                  if (aborted) return;
+                  if (failCommit) {
+                    transaction.error = new DOMException("Commit failed", "AbortError");
+                    transaction.abort();
+                    return;
+                  }
+                  rows.clear();
+                  for (const [key, value] of draft) rows.set(key, value);
+                  events.push("commit");
+                  transaction.dispatchEvent(new Event("complete"));
+                });
+            });
+            return request;
+          }
+          return transaction;
+        },
+      } as unknown as IDBDatabase;
+      const backend = ConnectionStorage.makeCompatibilityHintBackend(fixedHandle(database));
+      const environmentId = EnvironmentId.make("indexed-environment");
+      yield* backend.set(environmentId, "binding", "outdated-update");
+      expect(events).toEqual(["put", "commit"]);
+      expect(yield* backend.read).toEqual([
+        { environmentId, routeBinding: "binding", kind: "outdated-update" },
+      ]);
+      failCommit = true;
+      expect(yield* backend.set(environmentId, "binding", null).pipe(Effect.flip)).toBeInstanceOf(
+        ConnectionTransientError,
+      );
+      failCommit = false;
+      expect(yield* backend.read).toHaveLength(1);
+      yield* backend.set(environmentId, "binding", null);
+      expect(yield* backend.read).toEqual([]);
     }),
   );
 });

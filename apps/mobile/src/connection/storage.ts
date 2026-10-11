@@ -1,7 +1,5 @@
 import {
   putRemoteDpopTokenInCatalog,
-  listConnectionCompatibilityHints,
-  setConnectionCompatibilityHintInCatalog,
   putConnectionProfileInCatalog,
   removeConnectionProfileFromCatalog,
   registerConnectionInCatalog,
@@ -63,17 +61,12 @@ export const layer = Layer.effectContext(
         Effect.map((document) => document.disabledEnvironmentIds),
         Effect.mapError((error) => targetPersistenceError("list-disabled-targets", error)),
       ),
-      listCompatibilityHints: catalog.read.pipe(
-        Effect.map(listConnectionCompatibilityHints),
-        Effect.mapError((error) => targetPersistenceError("list-compatibility-hints", error)),
-      ),
+      listCompatibilityHints: catalog.compatibilityHints.read,
     });
     const registrationStore = Persistence.ConnectionRegistrationStore.of({
       setCompatibilityHint: (environmentId, routeBinding, kind) =>
-        catalog
-          .update((document) =>
-            setConnectionCompatibilityHintInCatalog(document, environmentId, routeBinding, kind),
-          )
+        catalog.compatibilityHints
+          .set(environmentId, routeBinding, kind)
           .pipe(
             Effect.mapError((error) => targetPersistenceError("set-compatibility-hint", error)),
           ),
