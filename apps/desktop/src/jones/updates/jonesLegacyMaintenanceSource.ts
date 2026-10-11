@@ -1,3 +1,4 @@
+import { jonesColdPairSource } from "./jonesColdPairSource.ts";
 import { jonesLegacyBootstrapSource } from "./jonesLegacyBootstrapSource.ts";
 
 const bootstrapEntry = "if __name__ == '__main__':\n    sys.exit(main())\n";
@@ -5,9 +6,10 @@ if (!jonesLegacyBootstrapSource.endsWith(bootstrapEntry)) {
   throw new Error("Legacy bootstrap entry changed; maintenance composition needs review.");
 }
 
-/** External pre-state maintenance. This source has no state admission or application launch operation. */
+/** External maintenance with private recovery definitions; no state admission or launch operation. */
 export const jonesLegacyMaintenanceSource =
   jonesLegacyBootstrapSource.slice(0, -bootstrapEntry.length) +
+  jonesColdPairSource +
   String.raw`
 import fcntl, subprocess
 
@@ -500,7 +502,8 @@ class Maintenance:
         require(self.original['owner'] == 'desktop' and self.original['sourceSha'] == LEGACY_SOURCE)
         self.journal_raw = read_owned(self.directory / 'journal.json')
         self.journal = decode(self.journal_raw)
-        require(set(self.journal) == {'schema', 'maintenanceGeneration', 'planSha256', 'phase', 'done', 'intent', 'armedBootSessionUuid', 'cancel'})
+        journal_keys = {'schema', 'maintenanceGeneration', 'planSha256', 'phase', 'done', 'intent', 'armedBootSessionUuid', 'cancel'}
+        require(set(self.journal) in (journal_keys, journal_keys | {'stateTransaction'}))
         require(self.journal['schema'] == 1 and self.journal['maintenanceGeneration'] == pointer['generation'] and self.journal['planSha256'] == pointer['planSha256'] and self.journal['phase'] in PHASES)
         self.native = self.directory / 'tools/identity-native'
         self.bundle = self.plan['bundle']
@@ -524,6 +527,10 @@ class Maintenance:
 
     def validate_cursor(self):
         phase = self.journal['phase']
+        if 'stateTransaction' in self.journal:
+            fence = self.journal['stateTransaction']
+            require(phase == 'armed' and isinstance(fence, dict) and set(fence) == {'schema', 'transactionId', 'intentSha256'})
+            require(type(fence['schema']) is int and fence['schema'] == 1 and hex_value(fence['transactionId'], 64) and hex_value(fence['intentSha256'], 64))
         paths = [item['path'] for item in self.gates]
         if phase in ('cancel-owner-published', 'cancel-restoring', 'cancelled'):
             paths = sorted((item['path'] for item in self.gates if item['app'] == self.original['appPath']),
@@ -646,6 +653,8 @@ class Maintenance:
         return maintenance_report(status, maintenanceGeneration=self.plan['maintenanceGeneration'], recoveryEntry=str(self.directory / 'tools/maintenance.py'))
 
     def cancel(self):
+        # Missing child evidence cannot turn a possible state effect into PRE-STATE cancellation.
+        require('stateTransaction' not in self.journal)
         self.verify()
         if not self.journal['phase'].startswith('cancel'):
             recovered = uuid.uuid4().hex + uuid.uuid4().hex

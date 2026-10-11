@@ -30,6 +30,9 @@ export const coldMaintenanceCases = [
   "late-copy",
   "unknown-helper",
   "receiptless",
+  "state-fence",
+  "state-fence-missing",
+  "state-fence-corrupt",
 ];
 
 function literal(source) {
@@ -39,20 +42,13 @@ function literal(source) {
   return source.slice(start + marker.length, source.lastIndexOf("`;"));
 }
 
-export function materializePairedExecutor(executorSource, pairedSource) {
+function pairedFragments(pairedSource) {
   const declaration = "export const jonesPairedStateSource = Object.freeze({";
   NodeAssert.equal(pairedSource.split(declaration).length, 2);
-  NodeAssert.ok(
-    executorSource.includes(
-      'import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";',
-    ),
-  );
   let remaining = pairedSource
     .slice(pairedSource.indexOf(declaration) + declaration.length)
     .trimStart();
-  let executor = literal(executorSource);
-  // Read only the four declared literals; never evaluate TypeScript or expand
-  // arbitrary substitutions in a source-qualified native fixture.
+  const fragments = {};
   for (const name of ["syncTree", "copyAndTopology", "recoveryAndPair", "syncParent"]) {
     const prefix = name + ": String.raw`";
     NodeAssert.ok(remaining.startsWith(prefix), "Unexpected paired source fragment.");
@@ -63,15 +59,24 @@ export function materializePairedExecutor(executorSource, pairedSource) {
     remaining = remaining.slice(end + 1).trimStart();
     NodeAssert.ok(remaining.startsWith(","), "Unexpected paired source expression.");
     remaining = remaining.slice(1).trimStart();
-    const reference = "${jonesPairedStateSource." + name + "}";
-    NodeAssert.equal(
-      executor.split(reference).length,
-      2,
-      "Each paired source fragment must occur exactly once.",
-    );
-    executor = executor.replace(reference, () => fragment);
+    fragments[name] = fragment;
   }
   NodeAssert.equal(remaining.trimEnd(), "} as const);");
+  return fragments;
+}
+
+export function materializePairedExecutor(executorSource, pairedSource) {
+  NodeAssert.ok(
+    executorSource.includes(
+      'import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";',
+    ),
+  );
+  let executor = literal(executorSource);
+  for (const [name, fragment] of Object.entries(pairedFragments(pairedSource))) {
+    const reference = "${jonesPairedStateSource." + name + "}";
+    NodeAssert.equal(executor.split(reference).length, 2);
+    executor = executor.replace(reference, () => fragment);
+  }
   NodeAssert.ok(
     !executor.includes("${") && !executor.includes("`"),
     "Unresolved executor substitution.",
@@ -79,13 +84,45 @@ export function materializePairedExecutor(executorSource, pairedSource) {
   return executor;
 }
 
+export function materializeColdMaintenance(bootstrapText, maintenanceText, coldText, pairedText) {
+  NodeAssert.ok(
+    maintenanceText.includes('import { jonesColdPairSource } from "./jonesColdPairSource.ts";'),
+  );
+  NodeAssert.equal(maintenanceText.split("  jonesColdPairSource +").length, 2);
+  NodeAssert.ok(
+    coldText.includes('import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";'),
+  );
+  let cold = literal(coldText);
+  // Only these four literals and their fixed four-space indentation are supported.
+  for (const [name, fragment] of Object.entries(pairedFragments(pairedText))) {
+    const reference = "${indentColdStorage(jonesPairedStateSource." + name + ")}";
+    NodeAssert.equal(cold.split(reference).length, 2);
+    cold = cold.replace(reference, () =>
+      fragment
+        .split("\n")
+        .map((line) => "    " + line)
+        .join("\n"),
+    );
+  }
+  const bootstrap = literal(bootstrapText);
+  const suffix = "if __name__ == '__main__':\n    sys.exit(main())\n";
+  NodeAssert.ok(bootstrap.endsWith(suffix));
+  const result = bootstrap.slice(0, -suffix.length) + cold + literal(maintenanceText);
+  NodeAssert.ok(
+    !result.includes("${") && !result.includes("`"),
+    "Unresolved maintenance substitution.",
+  );
+  return result;
+}
+
 export async function readColdMaintenanceSources() {
-  const [bootstrapText, maintenanceText, executorText, pairedText, nativeSource] =
+  const [bootstrapText, maintenanceText, executorText, pairedText, coldText, nativeSource] =
     await Promise.all([
       NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyBootstrapSource.ts"), "utf8"),
       NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyMaintenanceSource.ts"), "utf8"),
       NodeFSP.readFile(NodePath.join(updateSources, "jonesNativeHelperSource.ts"), "utf8"),
       NodeFSP.readFile(NodePath.join(updateSources, "jonesPairedStateSource.ts"), "utf8"),
+      NodeFSP.readFile(NodePath.join(updateSources, "jonesColdPairSource.ts"), "utf8"),
       NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyIdentityNative.c")),
     ]);
   const bootstrap = literal(bootstrapText);
@@ -93,7 +130,7 @@ export async function readColdMaintenanceSources() {
   NodeAssert.ok(bootstrap.endsWith(suffix));
   return {
     bootstrap,
-    maintenance: bootstrap.slice(0, -suffix.length) + literal(maintenanceText),
+    maintenance: materializeColdMaintenance(bootstrapText, maintenanceText, coldText, pairedText),
     executor: materializePairedExecutor(executorText, pairedText),
     nativeSourceSha256: digest(nativeSource),
   };
@@ -326,7 +363,22 @@ try:
             assert report['status'] == 'armed-awaiting-cold-restart'
             code, repeat = invoke('reconcile')
             assert code == 0 and repeat['status'] == 'armed-awaiting-cold-restart'
-        if case in ('mode-drift', 'identity-drift', 'gate-reopened', 'lock-replaced', 'late-copy'):
+        if case.startswith('state-fence'):
+            pointer = json.loads((home / 'runtime/jones-maintenance/current.json').read_text())
+            directory = home / 'runtime/jones-maintenance' / pointer['generation']
+            journal_path = directory / 'journal.json'
+            journal = json.loads(journal_path.read_text())
+            journal['stateTransaction'] = {'schema': 1, 'transactionId': '7' * 64, 'intentSha256': '8' * 64}
+            journal_path.write_bytes(encode(journal) + b'\n')
+            if case != 'state-fence-missing':
+                (directory / 'state').mkdir(mode=0o700)
+                write(directory / 'state/intent.json', b'not-json' if case == 'state-fence-corrupt' else b'{}')
+            before = manifest.read_bytes()
+            code, report = invoke('cancel')
+            assert code == 1 and report['status'] == 'held' and manifest.read_bytes() == before
+            assert stat.S_IMODE((old / 'Contents/MacOS/Jones').stat().st_mode) == 0o400
+            assert json.loads(journal_path.read_text()) == journal
+        elif case in ('mode-drift', 'identity-drift', 'gate-reopened', 'lock-replaced', 'late-copy'):
             main = old / 'Contents/MacOS/Jones'
             if case == 'mode-drift': main.chmod(0)
             if case == 'gate-reopened': main.chmod(0o500)
@@ -432,5 +484,250 @@ export async function runColdMaintenanceFixture(scenario, { signal } = {}) {
       if (closure?.nativeChildrenClosed !== true) cause.preserveScratch = true;
       throw cause;
     }
+  });
+}
+
+// Portable storage tests replace the resolver only in this owned namespace.
+// They exercise real files and the shared copy fallback, not native cold custody.
+const pairDriver = String.raw`
+import sys
+sys.dont_write_bytecode = True
+import json, os, pathlib, stat, subprocess, types
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+root = pathlib.Path(sys.argv[2]).resolve(strict=True)
+scope = {'__name__': 'owned_cold_pair_fixture'}
+exec(compile(payload['maintenance'], 'maintenance.py', 'exec'), scope)
+scenario = payload['case']
+class Interrupted(BaseException): pass
+def expect_refusal(operation):
+    try: operation()
+    except (scope['Refused'], OSError, ValueError, KeyError, TypeError): return
+    raise AssertionError('Expected retained refusal')
+if scenario == 'held':
+    class NoAccess:
+        def __getattribute__(self, name): raise AssertionError('Production resolver accessed state')
+    expect_refusal(lambda: scope['_ColdPairTransaction'](NoAccess()))
+else:
+    for name in ('runtime', 'state', 'profile', 'generation'):
+        (root / name).mkdir(mode=0o700)
+    def write(path, content, mode=0o600):
+        path.write_bytes(content)
+        path.chmod(mode)
+    database = root / 'state/state.sqlite'
+    write(database, b'original-db', 0o640)
+    write(root / 'state/settings.json', b'{"keep":true}')
+    write(root / 'profile/Preferences', b'profile-before')
+    (root / 'profile/nested').mkdir(mode=0o700)
+    write(root / 'profile/nested/value', b'nested-before')
+    (root / 'profile/link').symlink_to('nested/value')
+    (root / 'profile/SingletonLock').symlink_to('unused-lock')
+    (root / 'profile/nested/SingletonSocket').symlink_to('unused-socket')
+    if scenario == 'sidecars':
+        write(pathlib.Path(str(database) + '-wal'), b'original-wal')
+        write(pathlib.Path(str(database) + '-shm'), b'original-shm')
+    owner = types.SimpleNamespace(
+        directory=root / 'generation',
+        original={'databasePath': str(database), 'profile': str(root / 'profile'), 'generation': '1' * 64, 'sourceSha': '2' * 40},
+        plan={'maintenanceGeneration': '3' * 64, 'originalManifestSha256': '4' * 64, 'candidateBinding': {'sourceSha': '5' * 40, 'executorSha256': '6' * 64}},
+        journal={'phase': 'armed', 'planSha256': '7' * 64})
+    owner.journal_raw = scope['encoded'](owner.journal) + b'\n'
+    scope['durable_file'](owner.directory / 'journal.json', owner.journal_raw, 0o600)
+    owner.save = lambda **updates: scope['Maintenance'].save(owner, **updates)
+    live = {'current': True}
+    root_proof = (root.stat().st_dev, root.stat().st_ino)
+    class OwnedRuntime:
+        def check(self, actual):
+            assert actual is owner and live['current']
+            assert (root.stat().st_dev, root.stat().st_ino) == root_proof
+    runtime = OwnedRuntime()
+    scope['_cold_pair_runtime'] = lambda: runtime
+    # Portable inode evidence is deliberately labelled mechanical, not native APFS proof.
+    def portable_identity(actual, path, kind):
+        assert actual is owner and path.is_relative_to(root)
+        info = path.lstat()
+        proof = [str(info.st_dev), str(info.st_ino), info.st_uid, stat.S_IMODE(info.st_mode)]
+        if kind == 'file': proof += [info.st_size, info.st_mtime_ns]
+        return proof
+    scope['_cold_pair_identity'] = portable_identity
+    scope['_COLD_PAIR_HEADROOM'] = 16384
+    # No grandchildren: force the real shared clone routines through their copy fallback.
+    def unavailable_clone(args, **kwargs):
+        assert args[0] == '/bin/cp' and all(pathlib.Path(arg).is_relative_to(root) for arg in args[-2:])
+        return subprocess.CompletedProcess(args, 1, '', '')
+    subprocess.run = unavailable_clone
+    transaction_type = scope['_ColdPairTransaction']
+    with scope['fixed_lock'](root / 'runtime/jones-active-install.json') as current_lock:
+        owner.current_lock = current_lock
+        tx = transaction_type(owner)
+        initial = tx.observe_members()
+        if scenario in ('partial-copy', 'source-changed'):
+            original_copy = tx.copy
+            def interrupted_copy(source, target, profile):
+                result = original_copy(source, target, profile)
+                if scenario == 'source-changed': write(database, b'changed-after-copy')
+                else: raise Interrupted()
+                return result
+            tx.copy = interrupted_copy
+            try: tx.snapshot()
+            except Interrupted: assert scenario == 'partial-copy'
+            except scope['Refused']: assert scenario == 'source-changed'
+            else: raise AssertionError('Incomplete snapshot accepted')
+            assert owner.journal['stateTransaction'] and not (tx.root / 'pair-descriptor.json').exists()
+            expect_refusal(lambda: transaction_type(owner).snapshot())
+        elif scenario == 'descriptor-published':
+            original_write = tx.write
+            def stop_descriptor(name, value, previous=None):
+                result = original_write(name, value, previous)
+                if name == 'pair-descriptor.json': raise Interrupted()
+                return result
+            tx.write = stop_descriptor
+            try: tx.snapshot()
+            except Interrupted: pass
+            else: raise AssertionError('Missing descriptor interruption')
+            assert (tx.root / 'pair-descriptor.json').exists()
+            expect_refusal(lambda: transaction_type(owner).snapshot())
+        else:
+            pair = tx.snapshot()
+            assert owner.journal['stateTransaction']['intentSha256'] == tx.journal['intentSha256']
+            assert all((pair['copied'][name] is None) == (item is None) for name, item in initial.items())
+            if scenario in ('reserve-replaced', 'descriptor-corrupt', 'descriptor-missing'):
+                path = tx.root / ('reserve.bin' if scenario == 'reserve-replaced' else 'pair-descriptor.json')
+                if scenario == 'reserve-replaced':
+                    retained = path.with_name('foreign-reserve-retained')
+                    path.rename(retained)
+                    write(path, b'foreign')
+                elif scenario == 'descriptor-corrupt': write(path, b'{}')
+                else: path.unlink()
+                expect_refusal(lambda: transaction_type(owner).begin_restore())
+                assert database.read_bytes() == b'original-db'
+            else:
+                tx.preparation_intent('a' * 64)
+                if scenario != 'preparation-unknown': tx.preparation_observed('b' * 64)
+                write(database, b'advanced-db')
+                write(root / 'state/desktop-settings.json', b'advanced-setting')
+                write(root / 'profile/Preferences', b'advanced-profile')
+                if scenario != 'sidecars': write(pathlib.Path(str(database) + '-wal'), b'advanced-wal')
+                if scenario == 'restore-intent-published':
+                    original_write = tx.write
+                    def stop_restore_intent(name, value, previous=None):
+                        result = original_write(name, value, previous)
+                        if name == 'restore-intent.json': raise Interrupted()
+                        return result
+                    tx.write = stop_restore_intent
+                    try: tx.begin_restore()
+                    except Interrupted: pass
+                    else: raise AssertionError('Missing restore-intent interruption')
+                    tx = transaction_type(owner)
+                tx.begin_restore()
+                advanced = tx.observe_members()
+                if scenario in ('foreign-destination', 'foreign-source', 'stage-missing', 'owner-lost'):
+                    if scenario == 'foreign-destination': write(tx.root / 'advanced-state/database', b'foreign')
+                    elif scenario == 'foreign-source':
+                        database.rename(database.with_name('foreign-original-retained'))
+                        write(database, b'advanced-db')
+                    elif scenario == 'stage-missing': (tx.root / 'restore-staging/database').unlink()
+                    else: live['current'] = False
+                    try: tx.reconcile_restore()
+                    except (scope['Refused'], AssertionError): pass
+                    else: raise AssertionError('Foreign state accepted')
+                    assert database.read_bytes() == b'advanced-db'
+                    live['current'] = True
+                else:
+                    original_rename, original_sync, original_save = os.rename, scope['sync_fd'], tx.save
+                    fired = {'value': False}
+                    def fail():
+                        fired['value'] = True
+                        if scenario == 'sticky-sync': raise OSError('owned sync failure')
+                        raise Interrupted()
+                    def rename(source, target, **kwargs):
+                        if not fired['value'] and scenario == 'before-rename': fail()
+                        result = original_rename(source, target, **kwargs)
+                        if not fired['value']:
+                            installed = pathlib.Path(target).name == database.name
+                            if scenario == ('after-install' if installed else 'after-retain'): fail()
+                        return result
+                    def sync(fd):
+                        result = original_sync(fd)
+                        if not fired['value'] and scenario in ('after-sync', 'sticky-sync') and (tx.root / 'advanced-state/database').exists(): fail()
+                        return result
+                    def save(**updates):
+                        result = original_save(**updates)
+                        if not fired['value'] and scenario == 'after-cursor' and updates.get('done'): fail()
+                        return result
+                    os.rename, scope['sync_fd'], tx.save = rename, sync, save
+                    try:
+                        result = tx.reconcile_restore()
+                    except Interrupted:
+                        assert fired['value']
+                    except OSError as failure:
+                        assert scenario == 'sticky-sync' and str(failure) == 'owned sync failure'
+                        expect_refusal(tx.reconcile_restore)
+                    finally:
+                        os.rename, scope['sync_fd'] = original_rename, original_sync
+                    if scenario == 'sticky-sync':
+                        assert tx.failure is not None and owner.journal['stateTransaction']
+                    else:
+                        if scenario in ('before-rename', 'after-retain', 'after-install', 'after-sync', 'after-cursor'): assert fired['value']
+                        recovered = transaction_type(owner)
+                        result = recovered.reconcile_restore()
+                        assert result['status'] == 'pair-restored-gates-retained'
+                        actual = recovered.observe_members()
+                        for name in initial:
+                            assert (actual[name] is None) == (initial[name] is None)
+                            if actual[name] is not None: assert actual[name]['content'] == initial[name]['content']
+                        assert recovered.observe_members(recovered.root / 'advanced-state') == advanced
+                        assert not (root / 'profile/SingletonLock').exists() and not (root / 'profile/SingletonLock').is_symlink()
+                        assert owner.journal['stateTransaction']
+                        assert recovered.reconcile_restore() == result
+print(json.dumps({'case': scenario, 'passed': True, 'qualification': 'owned-mechanical-storage', 'stateAdmissionAllowed': False}))
+`;
+
+export const coldPairCases = [
+  "held",
+  "roundtrip",
+  "sidecars",
+  "partial-copy",
+  "source-changed",
+  "descriptor-published",
+  "reserve-replaced",
+  "descriptor-corrupt",
+  "descriptor-missing",
+  "preparation-unknown",
+  "restore-intent-published",
+  "foreign-destination",
+  "foreign-source",
+  "stage-missing",
+  "owner-lost",
+  "before-rename",
+  "after-retain",
+  "after-install",
+  "after-sync",
+  "after-cursor",
+  "sticky-sync",
+];
+
+export async function runColdPairFixture(scenario, { signal } = {}) {
+  NodeAssert.ok(coldPairCases.includes(scenario));
+  const sources = await readColdMaintenanceSources();
+  return withLegacyIdentityScratch(async (root) => {
+    const payload = NodePath.join(root, "pair.json");
+    const entry = NodePath.join(root, "pair.py");
+    await NodeFSP.writeFile(
+      payload,
+      JSON.stringify({ maintenance: sources.maintenance, case: scenario }),
+    );
+    await NodeFSP.writeFile(entry, pairDriver);
+    const result = await runLegacyIdentityFixtureCommand(
+      "/usr/bin/python3",
+      ["-I", "-B", entry, payload, root],
+      root,
+      { signal },
+    );
+    NodeAssert.equal(result.code, 0, result.stderr);
+    NodeAssert.equal(result.stderr, "");
+    const report = JSON.parse(result.stdout.trim());
+    NodeAssert.equal(report.case, scenario);
+    NodeAssert.equal(report.passed, true);
+    return report;
   });
 }

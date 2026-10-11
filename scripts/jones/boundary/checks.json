@@ -370,7 +370,8 @@
         "scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs",
         "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
         "apps/server/src/jones/updates/offlinePreparation.test.ts",
-        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts"
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/ServerSettingsPersistence.test.ts apps/server/src/serverSettings.test.ts",
@@ -387,7 +388,8 @@
         "vp test run apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
         "vp test run apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts apps/server/src/jones/updates/offlinePreparation.test.ts",
         "node --test --test-concurrency=1 scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs",
-        "vp test run apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts"
+        "vp test run apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "vp test run apps/desktop/src/jones/updates/jonesColdPairSource.test.ts"
       ]
     },
     {

@@ -115,6 +115,7 @@ jobs:
           apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
           apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
           apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
+          apps/desktop/src/jones/updates/jonesColdPairSource.test.ts
           apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts
           apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts
           packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts
