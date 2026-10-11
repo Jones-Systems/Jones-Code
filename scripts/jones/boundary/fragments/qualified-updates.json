@@ -66,9 +66,7 @@
   ],
   "hookPaths": [
     "apps/desktop/src/boot.ts",
-    "apps/desktop/src/app/DesktopPreReadyPlatform.ts",
     "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
-    "apps/server/src/config.ts",
     "apps/server/src/persistence/Sqlite.ts",
     "apps/web/src/versionSkew.ts",
     "apps/desktop/src/ipc/methods/updates.ts",
