@@ -23,7 +23,7 @@
 # owned file, recorded by owner, mode and SHA-256. Every mutation compares it
 # and the owned file first. Only the owned drop-in is ever written; it is
 # rendered here from the policy home, a strict version and the host, port and
-# mode of the retained serve command, staged in a root-only file beside it and
+# mode of the retained command, staged in a root-only file beside it and
 # published by link or rename. An unpublished stage is removed on refusal,
 # error or interruption while it is still the same inode; one that cannot be
 # removed that way stays as evidence and the result is unknown. Output carries
@@ -60,7 +60,7 @@ our $OUTPUT_LIMIT = 65536;
 my $PATH = qr{\A((?:/[A-Za-z0-9._@+-]{1,255}){1,64})\z};
 my $SHA = qr{\A([a-f0-9]{64})\z};
 my $VERSION = qr{\A([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}-preview\.[0-9]{8}\.[0-9]{1,20}(?:\.[0-9]{1,20})?)\z};
-my @SHOW = qw(FragmentPath DropInPaths User Group NoNewPrivileges KillMode Slice ControlGroup ActiveState SubState MainPID ExecStart);
+my @SHOW = qw(FragmentPath DropInPaths User Group NoNewPrivileges KillMode Slice ControlGroup ActiveState SubState MainPID ExecStart WorkingDirectory);
 
 # Set immediately before the first systemctl mutation or owned-file rename,
 # link or unlink; any later refusal is no longer proof of no effect.
@@ -316,7 +316,10 @@ sub unit_preimage {
 }
 
 # The single effective ExecStart of the non-owned files must be the policy's
-# retained executable running `serve` with only known loopback flags.
+# retained executable running `serve` with only known flags, or the
+# historical `start` form: the same flags with `--mode web`, then exactly
+# `--no-browser DIR` last. DIR is kept only to compare with the unit's
+# effective WorkingDirectory and is never emitted.
 sub retained_serve {
   my ($policy, $preimage) = @_;
   my @commands;
@@ -346,7 +349,16 @@ sub retained_serve {
   my $command = join(" ", @argv);
   my $executable = shift @argv;
   reject("unit-exec") unless $executable eq $policy->{"retained-entry"};
-  reject("unit-exec") unless @argv && shift(@argv) eq "serve" && @argv % 2 == 0;
+  my $verb = shift(@argv) // "";
+  my $directory;
+  if ($verb eq "start") {
+    reject("unit-exec") unless @argv >= 2 && $argv[-2] eq "--no-browser";
+    $directory = canonical(pop @argv) // reject("unit-exec");
+    pop @argv;
+  } else {
+    reject("unit-exec") unless $verb eq "serve";
+  }
+  reject("unit-exec") unless @argv % 2 == 0;
   my %flags;
   while (@argv) {
     my ($flag, $value) = splice(@argv, 0, 2);
@@ -367,6 +379,10 @@ sub retained_serve {
   }
   if (exists $flags{mode}) {
     ($clean{mode}) = $flags{mode} =~ /\A(web|desktop)\z/ or reject("unit-exec");
+  }
+  if (defined $directory) {
+    reject("unit-exec") unless ($clean{mode} // "") eq "web";
+    $clean{cwd} = $directory;
   }
   # Compared with systemd's effective argv only to classify it, never emitted.
   ($clean{command}) = $command =~ /\A(.*)\z/;
@@ -408,9 +424,10 @@ sub exec_kind {
 
 # The service identity this worker preserves: run as the policy user, never
 # root, with NoNewPrivileges, in the policy slice, only from this unit's own
-# fragment and drop-in directory.
+# fragment and drop-in directory, and for the retained `start` form from the
+# directory it names.
 sub verified_show {
-  my ($policy, $preimage) = @_;
+  my ($policy, $preimage, $serve) = @_;
   my $show = show($policy);
   reject("unit-fragment") unless $show->{FragmentPath} eq $preimage->{fragment};
   my %present = map { ("$preimage->{directory}/$_" => 1) } @{ $preimage->{dropins} };
@@ -422,6 +439,8 @@ sub verified_show {
   reject("unit-user") unless $show->{Group} eq "" || $show->{Group} eq $policy->{group};
   reject("unit-hardening") unless $show->{NoNewPrivileges} eq "yes";
   reject("unit-slice") unless $show->{Slice} eq $policy->{slice};
+  reject("unit-working-directory")
+    if exists $serve->{cwd} && $show->{WorkingDirectory} ne $serve->{cwd};
   reject("unit-state") unless $show->{MainPID} =~ /\A([0-9]{1,10})\z/;
   return $show;
 }
@@ -460,7 +479,7 @@ sub compare_and_hold {
   reject("unit-changed") unless $preimage->{digest} eq $values->{"expect-unit"};
   reject("owned-changed") unless $preimage->{owned} eq $values->{"expect-owned"};
   my $serve = retained_serve($policy, $preimage);
-  my $show = verified_show($policy, $preimage);
+  my $show = verified_show($policy, $preimage, $serve);
   return ($preimage, $serve, $show);
 }
 
@@ -569,7 +588,7 @@ sub install_launcher {
   unknown("daemon-reload") unless $reloaded;
   my $after = unit_preimage($policy);
   unknown("owned-readback") unless $after->{digest} eq $preimage->{digest} && $after->{owned} eq sha256_hex($text);
-  my $readback = verified_show($policy, $after);
+  my $readback = verified_show($policy, $after, $serve);
   unknown("launcher-readback") unless exec_kind($policy, $serve, $readback) eq "launcher $version";
   unknown("hardening-readback")
     unless $readback->{KillMode} eq $show->{KillMode} && $readback->{ControlGroup} eq $show->{ControlGroup};
@@ -583,7 +602,7 @@ sub start {
   $EFFECT_STARTED = 1;
   my ($ok) = systemctl("start", $policy->{unit});
   unknown("start") unless $ok;
-  my $after = verified_show($policy, unit_preimage($policy));
+  my $after = verified_show($policy, unit_preimage($policy), $serve);
   unknown("start-readback") unless $after->{ActiveState} eq "active" && $after->{MainPID} ne "0";
   report($policy, unit_preimage($policy), $serve, $after);
 }
@@ -615,7 +634,7 @@ sub archive_launcher {
   unknown("daemon-reload") unless $reloaded;
   my $after = unit_preimage($policy);
   unknown("archive-readback") unless $after->{digest} eq $preimage->{digest} && $after->{owned} eq "absent";
-  my $readback = verified_show($policy, $after);
+  my $readback = verified_show($policy, $after, $serve);
   unknown("archive-readback") unless exec_kind($policy, $serve, $readback) eq "retained";
   report($policy, $after, $serve, $readback);
 }
@@ -631,7 +650,7 @@ sub request {
   if ($operation eq "inspect") {
     my $preimage = unit_preimage($policy);
     my $serve = retained_serve($policy, $preimage);
-    report($policy, $preimage, $serve, verified_show($policy, $preimage));
+    report($policy, $preimage, $serve, verified_show($policy, $preimage, $serve));
   } elsif ($operation eq "stop") {
     stop($policy, $values);
   } elsif ($operation eq "install-launcher") {
