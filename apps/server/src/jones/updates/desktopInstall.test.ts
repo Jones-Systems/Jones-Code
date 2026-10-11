@@ -26,7 +26,9 @@ vi.mock("./qualification.ts", () => ({
   isPreviewRuntime: () => false,
 }));
 vi.mock("./nativePreparation.ts", () => ({
-  prepareNativeContinuationReceipt: vi.fn(async (input: { prepare: () => Promise<unknown> }) => { await input.prepare(); }),
+  prepareNativeContinuationReceipt: vi.fn(async (input: { prepare: () => Promise<unknown> }) => {
+    await input.prepare();
+  }),
 }));
 
 it.effect("hands desktop installation to its controller before any continuation preparation", () =>
@@ -138,16 +140,24 @@ it.effect("hands desktop installation to its controller before any continuation 
       expect(preparations).toBe(0);
       expect(prepareNativeContinuationReceipt).not.toHaveBeenCalled();
       const preparation = {
-        environmentId: state.environmentId!, currentVersion: state.currentVersion!,
-        stagedHandle: state.stagedHandle!, transactionId: "e".repeat(64),
+        environmentId: state.environmentId!,
+        currentVersion: state.currentVersion!,
+        stagedHandle: state.stagedHandle!,
+        transactionId: "e".repeat(64),
       };
-      expect((yield* updates.prepareNative({ ...preparation, transactionId: "invalid" })).phase).toBe("blocked");
+      expect(
+        (yield* updates.prepareNative({ ...preparation, transactionId: "invalid" })).phase,
+      ).toBe("blocked");
       expect(prepareNativeContinuationReceipt).not.toHaveBeenCalled();
       yield* updates.prepareNative(preparation);
-      expect(prepareNativeContinuationReceipt).toHaveBeenCalledWith(expect.objectContaining({
-        handle: state.stagedHandle, transactionId: preparation.transactionId,
-        environmentId: state.environmentId, version: state.currentVersion,
-      }));
+      expect(prepareNativeContinuationReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          handle: state.stagedHandle,
+          transactionId: preparation.transactionId,
+          environmentId: state.environmentId,
+          version: state.currentVersion,
+        }),
+      );
       expect(preparations).toBe(1);
     }).pipe(Effect.provide(JonesUpdates.layer.pipe(Layer.provide(dependencies))));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

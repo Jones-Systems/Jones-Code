@@ -189,8 +189,10 @@ describe("qualified update HTTP authority and decoding", () => {
         continueRunningThreads: true,
       };
       const preparation = {
-        stagedHandle: "b".repeat(64), transactionId: "c".repeat(64),
-        environmentId: app.state.environmentId, currentVersion: app.state.currentVersion,
+        stagedHandle: "b".repeat(64),
+        transactionId: "c".repeat(64),
+        environmentId: app.state.environmentId,
+        currentVersion: app.state.currentVersion,
       };
       for (const [action, input] of [
         ["download", download],
@@ -229,10 +231,17 @@ describe("qualified update HTTP authority and decoding", () => {
         }),
       );
       expect(response.status).toBe(400);
-      const preparation = await app.handler(new Request("http://fixture/api/jones-updates/prepare-native", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ stagedHandle: "b".repeat(64), environmentId: app.state.environmentId, currentVersion: app.state.currentVersion }),
-      }));
+      const preparation = await app.handler(
+        new Request("http://fixture/api/jones-updates/prepare-native", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            stagedHandle: "b".repeat(64),
+            environmentId: app.state.environmentId,
+            currentVersion: app.state.currentVersion,
+          }),
+        }),
+      );
       expect(preparation.status).toBe(400);
       expect(app.calls).toEqual([]);
     } finally {
@@ -254,8 +263,10 @@ describe("qualified update HTTP authority and decoding", () => {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(
-              action === "download" ? { artifactId: 101, sourceSha: "a".repeat(40) }
-                : action === "prepare-native" ? { ...input, stagedHandle: "b".repeat(64), transactionId: "c".repeat(64) }
+              action === "download"
+                ? { artifactId: 101, sourceSha: "a".repeat(40) }
+                : action === "prepare-native"
+                  ? { ...input, stagedHandle: "b".repeat(64), transactionId: "c".repeat(64) }
                   : input,
             ),
           }),

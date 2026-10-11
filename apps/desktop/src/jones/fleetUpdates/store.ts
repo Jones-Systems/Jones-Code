@@ -308,11 +308,16 @@ export function createDesktopFleetStore(options: {
           (campaign.phase !== "prepared" && campaign.phase !== "installing")
         )
           throw new Error("The selected desktop update does not match its fleet campaign.");
-        if (state.campaigns.some((entry) =>
-          entry.campaignId !== binding.campaignId &&
-          entry.installation?.transactionId === binding.transactionId
-        ))
-          throw new Error("The native installation attempt already belongs to another fleet campaign.");
+        if (
+          state.campaigns.some(
+            (entry) =>
+              entry.campaignId !== binding.campaignId &&
+              entry.installation?.transactionId === binding.transactionId,
+          )
+        )
+          throw new Error(
+            "The native installation attempt already belongs to another fleet campaign.",
+          );
         if (
           campaign.installation !== undefined &&
           (campaign.installation.transactionId !== binding.transactionId ||

@@ -180,7 +180,10 @@ function profileWriterLease(profile: string) {
 export function nativeWriterLeasePaths(home: string, profile: string) {
   const canonicalHome = NodeFS.realpathSync(home);
   return [
-    { path: NodePath.join(canonicalHome, "runtime", "jones-native-writer.sqlite"), scope: `home:${canonicalHome}` },
+    {
+      path: NodePath.join(canonicalHome, "runtime", "jones-native-writer.sqlite"),
+      scope: `home:${canonicalHome}`,
+    },
     profileWriterLease(NodeFS.realpathSync(profile)),
   ].sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 }
@@ -220,8 +223,10 @@ function refuseForeignNativeState(home: string, databasePath: string, profile?: 
     const lease = NodePath.join(runtime, "jones-native-writer.sqlite");
     if (
       exists(NodePath.join(runtime, "jones-active-install.json")) ||
-      exists(lease) || exists(`${lease}.identity.json`)
-    ) throw new Error("Native database ownership requires its bound home; startup held.");
+      exists(lease) ||
+      exists(`${lease}.identity.json`)
+    )
+      throw new Error("Native database ownership requires its bound home; startup held.");
   }
   if (profile !== undefined) {
     // The profile lease is outside the renamed tree. Resolve a temporarily
@@ -284,17 +289,21 @@ export function holdJonesNativeWriterFence(input: {
       if (journal.phase === "resumed" || journal.phase === "rolled-back") continue;
       if (
         input.descriptorPath === undefined ||
-        NodeFS.realpathSync(input.descriptorPath) !== NodePath.join(directory, "trial-descriptor.json") ||
+        NodeFS.realpathSync(input.descriptorPath) !==
+          NodePath.join(directory, "trial-descriptor.json") ||
         !["trial", "validated", "committed", "resume-intent"].includes(String(journal.phase))
       )
         throw new Error("Native activation requires reconciliation before startup.");
       const descriptor = readJson(input.descriptorPath);
       const staged = record(intent.staged);
       if (
-        descriptor.protocol !== 1 || descriptor.startupGateProtocol !== 1 ||
-        descriptor.transactionId !== entry.name || descriptor.home !== home ||
+        descriptor.protocol !== 1 ||
+        descriptor.startupGateProtocol !== 1 ||
+        descriptor.transactionId !== entry.name ||
+        descriptor.home !== home ||
         descriptor.stagedHandle !== staged.handle ||
-        descriptor.databasePath !== databasePath || descriptor.profile !== profile ||
+        descriptor.databasePath !== databasePath ||
+        descriptor.profile !== profile ||
         descriptor.environmentId !== active.environmentId ||
         ["version", "sourceSha", "sourceTree"].some((key) => descriptor[key] !== staged[key])
       )
@@ -304,8 +313,10 @@ export function holdJonesNativeWriterFence(input: {
   }
   const source = record(record(input.buildMetadata).jonesSource);
   if (
-    source.repository !== "Jones-Systems/Jones-Code" || source.sha !== authorized.sourceSha ||
-    source.tree !== authorized.sourceTree || input.version !== authorized.version
+    source.repository !== "Jones-Systems/Jones-Code" ||
+    source.sha !== authorized.sourceSha ||
+    source.tree !== authorized.sourceTree ||
+    input.version !== authorized.version
   )
     throw new Error("The native writer does not match the admitted source generation.");
 }

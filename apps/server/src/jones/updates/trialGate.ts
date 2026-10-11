@@ -54,7 +54,8 @@ const TrialReceipt = Schema.Struct({
 const ResumedJournal = Schema.Struct({
   phase: Schema.Literal("resumed"),
   intent: Schema.Struct({
-    protocol: Schema.Literal(1), transactionId: Schema.NonEmptyString,
+    protocol: Schema.Literal(1),
+    transactionId: Schema.NonEmptyString,
     staged: Schema.Struct({ handle: Schema.NonEmptyString }),
   }),
 });
@@ -232,17 +233,27 @@ function withLegacyStagedHandle(raw: string, handle?: string): string {
     : raw;
 }
 
-async function legacyCommittedHandle(raw: string, descriptorPath: string): Promise<string | undefined> {
+async function legacyCommittedHandle(
+  raw: string,
+  descriptorPath: string,
+): Promise<string | undefined> {
   const value = JSON.parse(raw) as Record<string, unknown>;
   if (value.stagedHandle !== undefined) return undefined;
   const directory = NodePath.dirname(descriptorPath);
-  const journal = decodeResumedJournal(await NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8"));
+  const journal = decodeResumedJournal(
+    await NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8"),
+  );
   if (
     value.transactionId !== journal.intent.transactionId ||
     journal.intent.staged.handle !== journal.intent.transactionId
-  ) throw new Error("Legacy trial evidence does not prove equal artifact and transaction identities.");
+  )
+    throw new Error(
+      "Legacy trial evidence does not prove equal artifact and transaction identities.",
+    );
   try {
-    const claim = JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "prepare-intent.json"), "utf8")) as Record<string, unknown>;
+    const claim = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(directory, "prepare-intent.json"), "utf8"),
+    ) as Record<string, unknown>;
     if (claim.preparationClaimProtocol !== undefined && claim.preparationClaimProtocol !== 1)
       throw new Error("A new native attempt requires its explicit staged handle.");
   } catch (cause) {
@@ -286,10 +297,16 @@ async function isCommittedRestart(
   )
     throw new Error("Committed native generation differs from the inherited descriptor.");
   const [grant, journal, receipt, reservation] = await Promise.all([
-    NodeFSP.readFile(descriptor.commitGrantPath, "utf8").then((raw) => decodeGrant(withLegacyStagedHandle(raw, legacyStagedHandle))),
+    NodeFSP.readFile(descriptor.commitGrantPath, "utf8").then((raw) =>
+      decodeGrant(withLegacyStagedHandle(raw, legacyStagedHandle)),
+    ),
     NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8").then(decodeResumedJournal),
-    NodeFSP.readFile(descriptor.trialReceiptPath, "utf8").then((raw) => decodeReceipt(withLegacyStagedHandle(raw, legacyStagedHandle))),
-    NodeFSP.readFile(NodePath.join(directory, "resume-dispatched.json"), "utf8").then((raw) => decodeReceipt(withLegacyStagedHandle(raw, legacyStagedHandle))),
+    NodeFSP.readFile(descriptor.trialReceiptPath, "utf8").then((raw) =>
+      decodeReceipt(withLegacyStagedHandle(raw, legacyStagedHandle)),
+    ),
+    NodeFSP.readFile(NodePath.join(directory, "resume-dispatched.json"), "utf8").then((raw) =>
+      decodeReceipt(withLegacyStagedHandle(raw, legacyStagedHandle)),
+    ),
   ]);
   cancelled(signal);
   if (

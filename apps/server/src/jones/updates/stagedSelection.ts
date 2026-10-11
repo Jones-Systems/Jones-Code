@@ -96,7 +96,11 @@ async function syncSelectionDirectory(directory: string): Promise<void> {
     // existing ancestor so absence is durable as well as observable.
     return syncSelectionDirectory(ancestor);
   }
-  try { await parent.sync(); } finally { await parent.close(); }
+  try {
+    await parent.sync();
+  } finally {
+    await parent.close();
+  }
 }
 
 /** Retires only an exact unaccepted selection pointer; staged receipts and payload stay intact. */

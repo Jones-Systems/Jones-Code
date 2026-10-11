@@ -561,7 +561,10 @@ function needsRecovery(
         )
       );
     case "planned-update-queued-runs":
-      return projection.thread.archivedAt === null && projection.runs.some((run) => run.status === "queued");
+      return (
+        projection.thread.archivedAt === null &&
+        projection.runs.some((run) => run.status === "queued")
+      );
     case "delegated-completions":
       return projection.runs.some((run) => run.delegatedCompletion?.delivery != null);
     case "subagent-results": {

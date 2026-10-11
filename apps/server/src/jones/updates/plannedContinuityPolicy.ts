@@ -203,7 +203,11 @@ const cosmeticCommands = new Set([
 ]);
 
 export function changesPlannedControl(
-  receipt: { readonly command_id: string; readonly command_type: string; readonly accepted_at?: string | undefined },
+  receipt: {
+    readonly command_id: string;
+    readonly command_type: string;
+    readonly accepted_at?: string | undefined;
+  },
   snapshot: PlannedThreadSnapshot,
   continuationIds: ReadonlySet<string>,
 ): boolean {
@@ -217,14 +221,20 @@ export function changesPlannedControl(
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(receipt.accepted_at) &&
     Number.isFinite(Date.parse(receipt.accepted_at)) &&
     new Date(receipt.accepted_at).toISOString() === receipt.accepted_at &&
-    ["startup", "shutdown"].some((trigger) =>
-      receipt.command_id === `command:runtime-reconcile:${trigger}:${snapshot.threadId}:${receipt.accepted_at}`,
+    ["startup", "shutdown"].some(
+      (trigger) =>
+        receipt.command_id ===
+        `command:runtime-reconcile:${trigger}:${snapshot.threadId}:${receipt.accepted_at}`,
     )
-  ) return false;
+  )
+    return false;
   if (
     receipt.command_type === "checkpoint.capture" &&
-    [...continuationIds].some((id) => receipt.command_id === `command:effect:checkpoint.capture:${id}`)
-  ) return false;
+    [...continuationIds].some(
+      (id) => receipt.command_id === `command:effect:checkpoint.capture:${id}`,
+    )
+  )
+    return false;
   if (
     receipt.command_type === "message.dispatch" &&
     snapshot.workGeneration !== null &&

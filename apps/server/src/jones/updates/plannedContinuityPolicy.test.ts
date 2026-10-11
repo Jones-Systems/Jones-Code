@@ -183,7 +183,8 @@ it("recognizes only the exact internal recovery receipt for the captured thread 
       { accepted_at: "2026-10-10T10:00:01.000Z" },
       { accepted_at: "invalid" },
       { accepted_at: undefined },
-    ]) expect(changesPlannedControl({ ...receipt, ...patch }, snapshot, ids)).toBe(true);
+    ])
+      expect(changesPlannedControl({ ...receipt, ...patch }, snapshot, ids)).toBe(true);
   }
 });
 
@@ -191,21 +192,38 @@ it("allows successful checkpoint receipts only for the captured continuation cha
   const projection = queuedFixture();
   const snapshot = capture(projection)!;
   const ids = continuationRunIds(snapshot, projection);
-  const receipt = { command_type: "checkpoint.capture", command_id: `command:effect:checkpoint.capture:${snapshot.sourceRunId}` };
+  const receipt = {
+    command_type: "checkpoint.capture",
+    command_id: `command:effect:checkpoint.capture:${snapshot.sourceRunId}`,
+  };
   expect(changesPlannedControl(receipt, snapshot, ids)).toBe(false);
-  expect(changesPlannedControl({ ...receipt, command_id: `${receipt.command_id}:other` }, snapshot, ids)).toBe(true);
-  expect(changesPlannedControl({ ...receipt, command_type: "thread.stop" }, snapshot, ids)).toBe(true);
+  expect(
+    changesPlannedControl({ ...receipt, command_id: `${receipt.command_id}:other` }, snapshot, ids),
+  ).toBe(true);
+  expect(changesPlannedControl({ ...receipt, command_type: "thread.stop" }, snapshot, ids)).toBe(
+    true,
+  );
 });
 
 it("does not mistake a Stop reusing the planned Work command ID for a Work dispatch", () => {
   const projection = workModeFixture();
   const snapshot = captureThreadContinuity({
-    projection, explicitContinuation: true, workModeEnabled: true, liveWorkOwner: true,
-    nowMs: 0, receiptRowId: 0, receiptCommandId: "",
+    projection,
+    explicitContinuation: true,
+    workModeEnabled: true,
+    liveWorkOwner: true,
+    nowMs: 0,
+    receiptRowId: 0,
+    receiptCommandId: "",
   })!;
-  const command = workModeCommand({ threadId: snapshot.threadId, generation: snapshot.workGeneration! });
+  const command = workModeCommand({
+    threadId: snapshot.threadId,
+    generation: snapshot.workGeneration!,
+  });
   const receipt = { command_id: command.commandId, command_type: command.type };
   const ids = continuationRunIds(snapshot, projection);
   expect(changesPlannedControl(receipt, snapshot, ids)).toBe(false);
-  expect(changesPlannedControl({ ...receipt, command_type: "thread.stop" }, snapshot, ids)).toBe(true);
+  expect(changesPlannedControl({ ...receipt, command_type: "thread.stop" }, snapshot, ids)).toBe(
+    true,
+  );
 });

@@ -137,7 +137,17 @@ async function committedTrial(root: string, legacy = false) {
     [input.descriptorPath, input],
     [manifestPath, { ...input, owner: "desktop", generation: input.transactionId }],
     [input.commitGrantPath, { ...input, generation: input.transactionId }],
-    [journalPath, { phase: "resumed", intent: { protocol: 1, transactionId: input.transactionId, staged: { handle: input.stagedHandle } } }],
+    [
+      journalPath,
+      {
+        phase: "resumed",
+        intent: {
+          protocol: 1,
+          transactionId: input.transactionId,
+          staged: { handle: input.stagedHandle },
+        },
+      },
+    ],
     [input.trialReceiptPath, receipt],
     [reservationPath, receipt],
   ]);
@@ -165,7 +175,8 @@ it("admits repeated committed child restarts without replaying or replacing tria
 it("reads legacy equal-ID committed evidence without rewriting it on repeated restarts", async () =>
   fixture(async (root) => {
     const { input, files } = await committedTrial(root, true);
-    const readArtifacts = () => Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
+    const readArtifacts = () =>
+      Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
     const before = await readArtifacts();
     await awaitJonesTrialCommit(input);
     await awaitJonesTrialCommit(input);
@@ -174,14 +185,27 @@ it("reads legacy equal-ID committed evidence without rewriting it on repeated re
     expect(NodeFS.watch).not.toHaveBeenCalled();
   }));
 
-it.each(["new-claim", "different-artifact", "incomplete", "different-generation", "explicit-mismatch"])(
-  "does not normalize missing staged handles for %s evidence",
-  async (fault) => fixture(async (root) => {
+it.each([
+  "new-claim",
+  "different-artifact",
+  "incomplete",
+  "different-generation",
+  "explicit-mismatch",
+])("does not normalize missing staged handles for %s evidence", async (fault) =>
+  fixture(async (root) => {
     const { input, files, journalPath, manifestPath } = await committedTrial(root, true);
     if (fault === "new-claim") {
-      await NodeFSP.writeFile(NodePath.join(NodePath.dirname(journalPath), "prepare-intent.json"), JSON.stringify({ preparationClaimProtocol: 2 }));
+      await NodeFSP.writeFile(
+        NodePath.join(NodePath.dirname(journalPath), "prepare-intent.json"),
+        JSON.stringify({ preparationClaimProtocol: 2 }),
+      );
     } else {
-      const path = fault === "different-generation" ? manifestPath : fault === "explicit-mismatch" ? input.commitGrantPath : journalPath;
+      const path =
+        fault === "different-generation"
+          ? manifestPath
+          : fault === "explicit-mismatch"
+            ? input.commitGrantPath
+            : journalPath;
       const value = JSON.parse(await NodeFSP.readFile(path, "utf8"));
       if (fault === "different-artifact") value.intent.staged.handle = "e".repeat(64);
       if (fault === "incomplete") value.phase = "resume-intent";
@@ -189,7 +213,8 @@ it.each(["new-claim", "different-artifact", "incomplete", "different-generation"
       if (fault === "explicit-mismatch") value.stagedHandle = "e".repeat(64);
       await NodeFSP.writeFile(path, JSON.stringify(value));
     }
-    const readArtifacts = () => Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
+    const readArtifacts = () =>
+      Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
     const before = await readArtifacts();
     await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "identity" });
     expect(await readArtifacts()).toEqual(before);
@@ -214,7 +239,11 @@ it.each([
   ["grant", "stagedHandle", "c".repeat(64)],
   ["journal", "phase", "resume-intent"],
   ["journal", "phase", "blocked"],
-  ["journal", "intent", { protocol: 1, transactionId: "synthetic-transaction", staged: { handle: "c".repeat(64) } }],
+  [
+    "journal",
+    "intent",
+    { protocol: 1, transactionId: "synthetic-transaction", staged: { handle: "c".repeat(64) } },
+  ],
   ["receipt", "resumeHeld", false],
   ["receipt", "stagedHandle", "c".repeat(64)],
   ["reservation", "transactionId", "another-transaction"],

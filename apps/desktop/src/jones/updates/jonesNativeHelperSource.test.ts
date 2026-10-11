@@ -251,7 +251,9 @@ describe("Jones native helper", () => {
     async (fault) => {
       const f = await fixture();
       try {
-        const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+        const nativeFunctions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
         const setup = activationScenario.split("\nevents = []")[0];
         const scenario = String.raw`
 prior_intent = intent if fault != 'wrong-active' else dict(intent, expected=dict(expected, sourceSha='0' * 40))
@@ -282,9 +284,15 @@ assert read(tx / 'journal.json') == prior_journal
 assert (tx / 'retained-evidence').read_text() == 'previous attempt retained'
 assert read(staged['receiptPath'])['app']['handle'] == staged['handle']
 `;
-        NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault], {
-          encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
-        });
+        NodeChildProcess.execFileSync(
+          "python3",
+          ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
+          {
+            encoding: "utf8",
+            timeout: 10000,
+            maxBuffer: 1024 * 1024,
+          },
+        );
       } finally {
         await f.cleanup();
       }
@@ -294,7 +302,9 @@ assert read(staged['receiptPath'])['app']['handle'] == staged['handle']
   it("physically reserves rollback capacity, preserves changed ownership, and removes only its failed allocation", async () => {
     const f = await fixture();
     try {
-      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
       const scenario = String.raw`
 root = pathlib.Path(sys.argv[1])
 path = root / 'reserve.bin'
@@ -329,9 +339,15 @@ finally:
     sys.platform = original_platform
 assert not path.exists() and sibling.read_text() == 'keep'
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
-        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
     } finally {
       await f.cleanup();
     }
