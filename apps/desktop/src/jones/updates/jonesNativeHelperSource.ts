@@ -401,6 +401,114 @@ def launch(active, descriptor=None):
     if identity is None: raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.')
     return {'pid': child.pid, 'identity': identity}
 
+class SelectionRefused(Exception):
+    def __init__(self, reason): self.reason = reason
+
+def bounded_native_json(path, limit=1024 * 1024):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > limit:
+            raise SelectionRefused('unknown-state')
+        raw = stream.read(limit + 1)
+        if len(raw) > limit: raise SelectionRefused('unknown-state')
+    value = json.loads(raw)
+    if not isinstance(value, dict): raise SelectionRefused('unknown-state')
+    return value, raw, info
+
+def selection_binding(active, handle, selection_path, expected_digest):
+    if len(handle) != 64 or any(char not in '0123456789abcdef' for char in handle):
+        raise SelectionRefused('selection-mismatch')
+    path = pathlib.Path(selection_path)
+    staging = manifest_path.parent / 'jones-updates' / 'staging'
+    if path.parent != staging or path.is_symlink() or path.resolve(strict=True).parent != staging.resolve(strict=True):
+        raise SelectionRefused('selection-mismatch')
+    if not path.name.startswith(active['sourceSha'] + '-') or not path.name.endswith('.json'):
+        raise SelectionRefused('selection-mismatch')
+    selection, raw, info = bounded_native_json(path, 131072)
+    if hashlib.sha256(raw).hexdigest() != expected_digest:
+        raise SelectionRefused('selection-mismatch')
+    wanted = {'schema': 1, 'source': 'jones-actions', 'home': active['home'], 'profile': active['profile'],
+              'currentVersion': active['version'], 'installedSource': active['sourceSha'], 'active': active}
+    if type(selection.get('schema')) is not int or any(selection.get(key) != value for key, value in wanted.items()):
+        raise SelectionRefused('selection-mismatch')
+    if not isinstance(selection.get('app'), dict) or selection['app'].get('handle') != handle:
+        raise SelectionRefused('selection-mismatch')
+    return path, selection, raw, info
+
+def inspect_selection_transactions(active, handle, claiming=False):
+    root = manifest_path.parent / 'jones-updates' / 'transactions'
+    if not root.exists():
+        if claiming: raise SelectionRefused('unknown-state')
+        return
+    if root.is_symlink() or not root.is_dir(): raise SelectionRefused('unknown-state')
+    count = 0
+    for transaction in root.iterdir():
+        count += 1
+        if count > 1000 or transaction.is_symlink() or not transaction.is_dir() or len(transaction.name) != 64 or any(char not in '0123456789abcdef' for char in transaction.name):
+            raise SelectionRefused('unknown-state')
+        intent, journal, preparation = [transaction / name for name in ('intent.json', 'journal.json', 'prepare-intent.json')]
+        if transaction.name == handle:
+            if intent.exists() or journal.exists() or (preparation.exists() and not claiming):
+                raise SelectionRefused('activation-pending')
+            if claiming and not preparation.is_file(): raise SelectionRefused('unknown-state')
+            continue
+        if journal.exists():
+            value, _, _ = bounded_native_json(journal)
+            prior, _, _ = bounded_native_json(intent)
+            if value.get('intent') != prior or prior.get('transactionId') != transaction.name or prior.get('protocol') != PROTOCOL or prior.get('expected', {}).get('home') != active['home']:
+                raise SelectionRefused('unknown-state')
+            if value.get('phase') not in ('resumed', 'rolled-back'):
+                raise SelectionRefused('activation-pending')
+        elif intent.exists() or preparation.exists():
+            raise SelectionRefused('activation-pending')
+
+def selection_command(operation, active, handle, selection_path, expected_digest, request_path=None):
+    result = {'protocol': PROTOCOL, 'operation': operation, 'handle': handle}
+    try:
+        path, selection, raw, info = selection_binding(active, handle, selection_path, expected_digest)
+        inspect_selection_transactions(active, handle, operation == 'claim-activation')
+        if read(manifest_path) != active: raise SelectionRefused('selection-mismatch')
+        if operation == 'claim-activation':
+            transaction = manifest_path.parent / 'jones-updates' / 'transactions' / handle
+            request = pathlib.Path(request_path)
+            if request != transaction / 'activation-request.json' or request.resolve(strict=True) != request:
+                raise SelectionRefused('selection-mismatch')
+            intent, _, _ = bounded_native_json(request)
+            if type(intent.get('protocol')) is not int or intent['protocol'] != PROTOCOL or intent.get('transactionId') != handle or intent.get('expected') != active or intent.get('staged') != selection['app'] or intent.get('continuationReceipt') != str(transaction / 'continuation.json'):
+                raise SelectionRefused('selection-mismatch')
+            verify_app(intent['staged'], active)
+            continuation, _, _ = bounded_native_json(transaction / 'continuation.json')
+            preparation, _, _ = bounded_native_json(transaction / 'prepare-intent.json')
+            wanted = dict(protocol=PROTOCOL, transactionId=handle, prepared=True,
+                          **{key: active[key] for key in ('home', 'databasePath', 'profile', 'environmentId')})
+            if continuation != wanted or preparation != wanted:
+                raise SelectionRefused('unknown-state')
+            proofs = intent.get('processes')
+            if not isinstance(proofs, list) or not proofs or len(proofs) > 256 or any(not isinstance(proof, dict) or type(proof.get('pid')) is not int or proof['pid'] <= 0 or not isinstance(proof.get('identity'), str) or not proof['identity'].strip() for proof in proofs):
+                raise SelectionRefused('unknown-state')
+            if not isinstance(intent.get('listener'), str) or not intent['listener'].strip():
+                raise SelectionRefused('unknown-state')
+        elif operation != 'discard-staged': raise SelectionRefused('unknown-state')
+        _, current_raw, current = bounded_native_json(path, 131072)
+        if current_raw != raw or (current.st_dev, current.st_ino, current.st_size) != (info.st_dev, info.st_ino, len(raw)):
+            raise SelectionRefused('selection-mismatch')
+    except SelectionRefused as refused:
+        return dict(result, status='refused', reason=refused.reason)
+    except Exception:
+        return dict(result, status='refused', reason='unknown-state')
+    try:
+        if operation == 'discard-staged':
+            path.unlink()
+            sync_parent(path)
+            return dict(result, status='discarded')
+        intent_path = transaction / 'intent.json'
+        durable(intent_path, intent, True)
+        return dict(result, status='claimed', intentPath=str(intent_path))
+    except Exception:
+        # A failed final fsync may follow unlink/link. Preserve the caller's hold.
+        return dict(result, status='uncertain')
+
 def activate(intent_file):
     intent = read(intent_file)
     expected, staged = intent['expected'], intent['staged']
@@ -522,9 +630,14 @@ def activate(intent_file):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--manifest', required=True)
-parser.add_argument('--activate')
-parser.add_argument('--launch', action='store_true')
-parser.add_argument('--cli', action='store_true')
+action = parser.add_mutually_exclusive_group(required=True)
+action.add_argument('--activate')
+action.add_argument('--launch', action='store_true')
+action.add_argument('--cli', action='store_true')
+action.add_argument('--discard-staged')
+action.add_argument('--claim-activation')
+parser.add_argument('--selection')
+parser.add_argument('--selection-sha256')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
@@ -542,12 +655,21 @@ except FileExistsError:
         os.close(descriptor)
         raise SystemExit('An occupied native activation lock is unknown and was preserved.')
 with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else None
+    handle = args.discard_staged if args.discard_staged else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
+    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if operation:
+            print(json.dumps({'protocol': PROTOCOL, 'operation': operation, 'handle': handle, 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
+        raise
     active = read(manifest_path)
     if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':
         raise SystemExit('Native launcher bootstrap is required.')
     bundle_identity(active)
-    if args.activate: activate(args.activate)
+    if operation:
+        print(json.dumps(selection_command(operation, active, handle, args.selection, args.selection_sha256, args.claim_activation)))
+    elif args.activate: activate(args.activate)
     elif args.launch:
         transactions = manifest_path.parent / 'jones-updates' / 'transactions'
         if transactions.exists():
