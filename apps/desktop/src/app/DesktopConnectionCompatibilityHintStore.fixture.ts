@@ -5,7 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Store from "./DesktopConnectionCompatibilityHintStore.ts";
 
 const directory = process.argv[2];
-if (!directory || !process.send)
+const disconnect = process.disconnect?.bind(process);
+if (!directory || !process.send || !disconnect)
   throw new Error("Requires an owned fixture directory and IPC parent.");
 const store = await Effect.runPromise(
   Store.make({
@@ -33,13 +34,24 @@ function send(message: object) {
 }
 process.on(
   "message",
-  (message: {
-    id: number;
-    operation: "read" | "set";
-    environmentId?: string;
-    routeBinding?: string;
-    kind?: "outdated-update" | null;
-  }) => {
+  (
+    message:
+      | { operation: "shutdown" }
+      | {
+          id: number;
+          operation: "read" | "set";
+          environmentId?: string;
+          routeBinding?: string;
+          kind?: "outdated-update" | null;
+        },
+  ) => {
+    if (message.operation === "shutdown") {
+      // The parent observes IPC EOF only after all admitted database operations settle.
+      pending = pending.then(() => {
+        if (process.connected) disconnect();
+      });
+      return;
+    }
     pending = pending.then(async () => {
       try {
         const result =
