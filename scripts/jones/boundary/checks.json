@@ -771,13 +771,14 @@
         "scripts/dev-runner.test.ts",
         "packages/ssh/src/tunnel.test.ts",
         "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
-        "apps/server/src/jones/hostService/adoption.test.ts"
+        "apps/server/src/jones/hostService/adoption.test.ts",
+        "apps/server/src/jones/hostService/privateSetupCompatibility.test.ts"
       ],
       "commands": [
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/tailscale typecheck",
         "vp run --filter @t3tools/scripts typecheck",
-        "vp test run apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts apps/server/src/cli/pair.test.ts apps/server/src/jones/hostService/artifactVerification.test.ts apps/server/src/jones/hostService/releasePolicy.test.ts apps/server/src/jones/hostService/HostServiceConfig.test.ts apps/server/src/jones/hostService/HostService.test.ts apps/server/src/jones/hostService/cli.test.ts packages/tailscale/src/tailscale.test.ts packages/tailscale/src/jones/serveOwnership.test.ts scripts/lib/dev-share.test.ts scripts/dev-runner.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts apps/server/src/jones/hostService/adoption.test.ts"
+        "vp test run apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts apps/server/src/cli/pair.test.ts apps/server/src/jones/hostService/artifactVerification.test.ts apps/server/src/jones/hostService/releasePolicy.test.ts apps/server/src/jones/hostService/HostServiceConfig.test.ts apps/server/src/jones/hostService/HostService.test.ts apps/server/src/jones/hostService/cli.test.ts packages/tailscale/src/tailscale.test.ts packages/tailscale/src/jones/serveOwnership.test.ts scripts/lib/dev-share.test.ts scripts/dev-runner.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts apps/server/src/jones/hostService/adoption.test.ts apps/server/src/jones/hostService/privateSetupCompatibility.test.ts"
       ]
     },
     {

@@ -552,6 +552,7 @@ export async function enrollQualifiedRuntime(input: {
   readonly baseDir: string;
   readonly host: { readonly platform: string; readonly architecture: string };
   readonly validate: (entryPath: string) => Promise<void>;
+  readonly prepareExistingRuntime?: (directory: string) => Promise<void>;
 }): Promise<QualifiedRuntimeReceipt> {
   const { payloadDirectory, ...artifact } = input.artifact;
   const digest = await qualifiedPayloadDigest(
@@ -606,6 +607,16 @@ export async function enrollQualifiedRuntime(input: {
     const marker = await NodeFSP.readFile(NodePath.join(destination, ".install-complete"), "utf8");
     if (marker.trim() !== receipt.version)
       return blocked("occupied-cache", "Existing runtime is incomplete; it was preserved.");
+    if (input.prepareExistingRuntime !== undefined) {
+      await input.prepareExistingRuntime(destination);
+      if (
+        (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow)) !== digest
+      )
+        return blocked(
+          "integrity-mismatch",
+          "Existing runtime changed during bootstrap preparation.",
+        );
+    }
     await input.validate(NodePath.join(destination, "t3"));
     await durableCreate(NodePath.join(destination, QUALIFIED_RUNTIME_RECEIPT), receipt);
     return receipt;
