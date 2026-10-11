@@ -1,8 +1,10 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeEvents from "node:events";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
+import * as NodeStream from "node:stream";
 import {
   legacyIdentityFailureReport,
   legacyIdentityWorkerCases,
@@ -15,6 +17,119 @@ import {
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone native ABI tests require the actual host, without an application runtime dependency.
 const nativePlatform = process.platform;
+
+for (const scenario of [
+  { name: "closed timeout", phase: "observer-compile", expected: "observer-compile", close: true },
+  { name: "unknown close", phase: "observer-driver", expected: "observer-driver", close: false },
+  { name: "unknown phase", phase: "synthetic-private-phase", expected: "fixture", close: true },
+]) {
+  NodeTest.test(
+    `command diagnostics preserve phase without payloads: ${scenario.name}`,
+    async (context) => {
+      const secret = "synthetic-private-payload-not-for-diagnostics";
+      const child = new NodeEvents.EventEmitter();
+      child.stdout = new NodeStream.PassThrough();
+      child.stderr = new NodeStream.PassThrough();
+      child.exitCode = null;
+      child.signalCode = null;
+      const signals = [];
+      let released = false;
+      child.kill = (signal) => {
+        signals.push(signal);
+        child.signalCode = signal;
+        child.emit("exit", null, signal);
+        if (scenario.close) child.emit("close", null, signal);
+        return true;
+      };
+      child.unref = () => {
+        released = true;
+      };
+      let allocated;
+      let captured;
+      context.mock.timers.enable({ apis: ["setTimeout"] });
+      try {
+        await NodeAssert.rejects(
+          withLegacyIdentityScratch(async (root) => {
+            allocated = root;
+            let settled = false;
+            const observed = runLegacyIdentityFixtureCommand(
+              `/not-executed/${secret}`,
+              ["--synthetic-input", secret],
+              root,
+              { phase: scenario.phase, spawn: () => child },
+            ).then(
+              () => {
+                throw new Error("Timed-out synthetic command unexpectedly succeeded.");
+              },
+              (cause) => {
+                settled = true;
+                return cause;
+              },
+            );
+            child.emit("spawn");
+            child.stdout.write(secret);
+            child.stderr.write(secret);
+            context.mock.timers.tick(29999);
+            NodeAssert.deepEqual(signals, []);
+            context.mock.timers.tick(1);
+            NodeAssert.deepEqual(signals, ["SIGTERM"]);
+            if (!scenario.close) {
+              context.mock.timers.tick(5999);
+              await Promise.resolve();
+              NodeAssert.equal(settled, false);
+              context.mock.timers.tick(1);
+            }
+            captured = await observed;
+            throw captured;
+          }),
+          (cause) => cause === captured,
+        );
+        const primary = scenario.close ? captured : captured.cause;
+        NodeAssert.equal(
+          primary.message,
+          `Native identity command (${scenario.expected}) exceeded 30 seconds.`,
+        );
+        const report = legacyIdentityFailureReport(captured);
+        NodeAssert.deepEqual(report.commandPhases, [scenario.expected]);
+        NodeAssert.equal(JSON.stringify(report).includes(secret), false);
+        NodeAssert.equal(JSON.stringify(report).includes("synthetic-private-phase"), false);
+        NodeAssert.deepEqual(signals, ["SIGTERM"]);
+        if (scenario.close) {
+          NodeAssert.equal(released, false);
+          NodeAssert.deepEqual(report.commandCustody, []);
+          await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
+        } else {
+          NodeAssert.ok(captured instanceof AggregateError);
+          NodeAssert.equal(captured.errors[0], primary);
+          NodeAssert.equal(captured.preserveScratch, true);
+          NodeAssert.equal(released, true);
+          NodeAssert.equal(report.retainedScratch, allocated);
+          NodeAssert.equal(report.commandCustody.length, 1);
+          const custody = report.commandCustody[0];
+          const receipt = JSON.parse(await NodeFSP.readFile(custody.evidencePath, "utf8"));
+          NodeAssert.equal(custody.persisted, true);
+          NodeAssert.equal(receipt.phase, scenario.expected);
+          NodeAssert.equal(receipt.spawnObserved, true);
+          NodeAssert.equal(receipt.exitObserved, true);
+          NodeAssert.equal(receipt.closeObserved, false);
+          NodeAssert.equal(receipt.signalCode, "SIGTERM");
+          NodeAssert.equal(receipt.permitsPidSignalling, false);
+          NodeAssert.equal(receipt.permitsProcessAdoption, false);
+          NodeAssert.equal(JSON.stringify(receipt).includes(secret), false);
+          NodeAssert.equal((await NodeFSP.lstat(allocated)).isDirectory(), true);
+        }
+      } finally {
+        context.mock.timers.reset();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        // The captured EventEmitter is entirely synthetic: no OS child or image
+        // was launched. This test owns only its new root and diagnostic receipt.
+        child.emit("close", child.exitCode, child.signalCode);
+        if (allocated) await NodeFSP.rm(allocated, { recursive: true, force: true });
+      }
+    },
+  );
+}
 
 NodeTest.test(
   "native discovery binds captured workers, distinguishes access and exposes excluded witnesses",

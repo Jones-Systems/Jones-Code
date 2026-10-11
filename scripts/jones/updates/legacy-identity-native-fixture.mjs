@@ -16,31 +16,57 @@ const source = NodeURL.fileURLToPath(
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256 = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+const commandPhaseNames = new Set([
+  "fixture",
+  "identity-compile",
+  "identity-boot",
+  "identity-boot-reference",
+  "identity-inspect",
+  "image-create",
+  "image-attach",
+  "image-detach",
+  "observer-compile",
+  "observer-wrapper-compile",
+  "observer-driver",
+]);
+// Keep the original error identity, including frozen cancellation reasons.
+// Diagnostics retain only these closed phase names, never argv, env or streams.
+const commandFailurePhases = new WeakMap();
+function phaseFailure(cause, phase) {
+  if (cause !== null && (typeof cause === "object" || typeof cause === "function"))
+    commandFailurePhases.set(cause, phase);
+  return cause;
+}
 
 function custodyEvidence(cause) {
   const pending = [cause];
   const seen = new Set();
   const receipts = new Map();
+  const phases = new Set();
   let preserveScratch = false;
   while (pending.length && seen.size < 64) {
     const current = pending.pop();
     if (!current || typeof current !== "object" || seen.has(current)) continue;
     seen.add(current);
+    const phase = commandFailurePhases.get(current);
+    if (phase) phases.add(phase);
     preserveScratch ||= current.preserveScratch === true;
     if (current.commandCustody)
       receipts.set(current.commandCustody.commandId, current.commandCustody);
     pending.push(current.cause);
     if (current instanceof AggregateError) pending.push(...current.errors.slice(0, 32));
   }
-  return { preserveScratch, receipts: [...receipts.values()] };
+  return { preserveScratch, receipts: [...receipts.values()], phases: [...phases] };
 }
 
 export function legacyIdentityFailureReport(cause) {
+  const evidence = custodyEvidence(cause);
   return {
     status: "failed",
     message: String(cause.message).slice(0, 512),
     retainedScratch: cause.scratchRoot,
-    commandCustody: custodyEvidence(cause).receipts,
+    commandCustody: evidence.receipts,
+    commandPhases: evidence.phases,
     activationAllowed: false,
   };
 }
@@ -86,21 +112,27 @@ export async function runLegacyIdentityFixtureCommand(
   executable,
   args,
   root,
-  { signal, fds = [], spawn = NodeChildProcess.spawn } = {},
+  { signal, fds = [], spawn = NodeChildProcess.spawn, phase: requestedPhase = "fixture" } = {},
 ) {
   signal?.throwIfAborted();
+  const phase = commandPhaseNames.has(requestedPhase) ? requestedPhase : "fixture";
   const commandId = NodeCrypto.randomUUID();
   const createdAt = new Date().toISOString();
-  const child = spawn(executable, args, {
-    cwd: root,
-    env: {
-      PATH: "/usr/bin:/bin",
-      HOME: root,
-      TMPDIR: root,
-      CLANG_MODULE_CACHE_PATH: NodePath.join(root, "clang-cache"),
-    },
-    stdio: ["ignore", "pipe", "pipe", ...fds],
-  });
+  let child;
+  try {
+    child = spawn(executable, args, {
+      cwd: root,
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: root,
+        TMPDIR: root,
+        CLANG_MODULE_CACHE_PATH: NodePath.join(root, "clang-cache"),
+      },
+      stdio: ["ignore", "pipe", "pipe", ...fds],
+    });
+  } catch (cause) {
+    throw phaseFailure(cause, phase);
+  }
   let stdout = "";
   let stderr = "";
   let failure;
@@ -151,7 +183,7 @@ export async function runLegacyIdentityFixtureCommand(
   const abort = () => stop(signal.reason ?? new Error("Native identity fixture cancelled."));
   signal?.addEventListener("abort", abort, { once: true });
   const timeout = setTimeout(
-    () => stop(new Error("Native identity command exceeded 30 seconds.")),
+    () => stop(new Error(`Native identity command (${phase}) exceeded 30 seconds.`)),
     30000,
   );
   child.stdout.on("data", (bytes) => {
@@ -188,6 +220,7 @@ export async function runLegacyIdentityFixtureCommand(
       const receipt = {
         schema: 1,
         commandId,
+        phase,
         createdAt,
         observedAt: new Date().toISOString(),
         driverPid: process.pid,
@@ -255,15 +288,18 @@ export async function runLegacyIdentityFixtureCommand(
         child.stderr.destroy();
         child.unref();
       }
-      throw custody;
+      throw phaseFailure(custody, phase);
     }
     if (failure) {
       const errors = commandErrors.filter((item) => item !== failure);
       if (errors.length)
-        throw new AggregateError([failure, ...errors], failure.message, { cause: failure });
-      throw failure;
+        throw phaseFailure(
+          new AggregateError([failure, ...errors], failure.message, { cause: failure }),
+          phase,
+        );
+      throw phaseFailure(failure, phase);
     }
-    return { ...result, stdout, stderr };
+    return { ...result, stdout, stderr, phase };
   } finally {
     clearTimeout(timeout);
     clearTimeout(escalation);
@@ -333,12 +369,16 @@ export async function runLegacyIdentityNativeFixture({ signal, temporaryDirector
       let failure;
       let result;
       const successful = (value) => {
-        NodeAssert.equal(value.stoppedBy, null);
-        NodeAssert.equal(
-          value.code,
-          0,
-          `${value.stderr.slice(0, 2000)} ${value.stdout.slice(0, 2000)}`,
-        );
+        try {
+          NodeAssert.equal(value.stoppedBy, null);
+          NodeAssert.equal(
+            value.code,
+            0,
+            `${value.phase}: ${value.stderr.slice(0, 2000)} ${value.stdout.slice(0, 2000)}`,
+          );
+        } catch (cause) {
+          throw phaseFailure(cause, value.phase);
+        }
         return value;
       };
       const invoke = async (entries, { refusal = false, overrideArgs } = {}) => {
@@ -363,6 +403,7 @@ export async function runLegacyIdentityNativeFixture({ signal, temporaryDirector
           const outcome = await command(binary, args, root, {
             signal,
             fds: handles.map((handle) => handle.fd),
+            phase: "identity-inspect",
           });
           NodeAssert.equal(outcome.stoppedBy, null);
           const value = JSON.parse(outcome.stdout);
@@ -401,6 +442,7 @@ export async function runLegacyIdentityNativeFixture({ signal, temporaryDirector
             "/usr/bin/hdiutil",
             ["attach", image, "-nobrowse", "-owners", "on", "-mountpoint", mount],
             root,
+            { phase: "image-attach" },
           ),
         );
         mounted = true;
@@ -408,7 +450,9 @@ export async function runLegacyIdentityNativeFixture({ signal, temporaryDirector
         signal?.throwIfAborted();
       };
       const detach = async () => {
-        successful(await command("/usr/bin/hdiutil", ["detach", mount], root));
+        successful(
+          await command("/usr/bin/hdiutil", ["detach", mount], root, { phase: "image-detach" }),
+        );
         mounted = false;
       };
       try {
@@ -417,14 +461,20 @@ export async function runLegacyIdentityNativeFixture({ signal, temporaryDirector
             "/usr/bin/clang",
             ["-std=c11", "-Wall", "-Wextra", "-Werror", source, "-o", binary],
             root,
-            { signal },
+            { signal, phase: "identity-compile" },
           ),
         );
         const boot = validateLegacyIdentityObservation(
-          JSON.parse(successful(await command(binary, ["boot"], root, { signal })).stdout),
+          JSON.parse(
+            successful(await command(binary, ["boot"], root, { signal, phase: "identity-boot" }))
+              .stdout,
+          ),
         );
         const independentBoot = successful(
-          await command("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], root, { signal }),
+          await command("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], root, {
+            signal,
+            phase: "identity-boot-reference",
+          }),
         ).stdout.trim();
         NodeAssert.equal(boot.bootSessionUuid, independentBoot);
         signal?.throwIfAborted();
@@ -447,6 +497,7 @@ export async function runLegacyIdentityNativeFixture({ signal, temporaryDirector
               image,
             ],
             root,
+            { phase: "image-create" },
           ),
         );
         creationUncertain = false;
@@ -870,9 +921,13 @@ int main(int argc, char **argv) {
         "/usr/bin/clang",
         ["-std=c11", "-Wall", "-Wextra", "-Werror", input, "-o", output],
         root,
-        { signal },
+        { signal, phase: input === source ? "observer-compile" : "observer-wrapper-compile" },
       );
-      NodeAssert.equal(result.code, 0, result.stderr);
+      try {
+        NodeAssert.equal(result.code, 0, `${result.phase}: ${result.stderr}`);
+      } catch (cause) {
+        throw phaseFailure(cause, result.phase);
+      }
     }
     await NodeFSP.writeFile(driver, workerObserverDriver, { flag: "wx", mode: 0o600 });
     await NodeFSP.writeFile(
@@ -884,13 +939,14 @@ int main(int argc, char **argv) {
     try {
       const result = await command("/usr/bin/python3", ["-I", "-B", driver, root], root, {
         signal,
+        phase: "observer-driver",
       });
       NodeAssert.equal(result.code, 0, result.stderr);
       NodeAssert.equal(result.stoppedBy, null);
       return JSON.parse(result.stdout);
     } catch (cause) {
       originalFailure = cause;
-      throw cause;
+      throw phaseFailure(cause, "observer-driver");
     } finally {
       const closure = await NodeFSP.readFile(
         NodePath.join(root, "observer-children-closed.json"),
