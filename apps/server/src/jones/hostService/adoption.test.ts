@@ -667,7 +667,7 @@ it.each(["digest", "extra-key", "native-keys", "native-preimage", "purpose", "mi
 it.each([
   "runtime/.restart-pending",
   "runtime/.service-stopping",
-  "native-store-authority",
+  "runtime/native-store-authority",
   "runtime/jones-updates/selections/staged.json",
   "runtime/db-backup/retained/.restore-pending",
 ])("refuses bootstrap hazard %s", (marker) =>
@@ -675,7 +675,7 @@ it.each([
     async (f) => {
       const file = NodePath.join(f.base, marker);
       await NodeFSP.mkdir(NodePath.dirname(file), { recursive: true });
-      if (marker === "native-store-authority") await NodeFSP.mkdir(file);
+      if (marker === "runtime/native-store-authority") await NodeFSP.mkdir(file);
       else await NodeFSP.writeFile(file, "held");
       const before = await tree(f.root);
       await expect(adoptHost({ ...f.input, dryRun: true }, f.host)).rejects.toThrow();
@@ -684,6 +684,120 @@ it.each([
     { legacy: true },
   ),
 );
+it("preserves an empty owned private authority directory through legacy dry-run and adoption", () =>
+  fixture(
+    async (f) => {
+      const authority = NodePath.join(f.base, "native-store-authority");
+      await NodeFSP.mkdir(authority, { mode: 0o700 });
+      const before = await NodeFSP.lstat(authority);
+      const treeBefore = await tree(f.root);
+      expect((await adoptHost({ ...f.input, dryRun: true }, f.host)).state).toBe("dry-run");
+      expect(await tree(f.root)).toEqual(treeBefore);
+      const afterDryRun = await NodeFSP.lstat(authority);
+      expect([afterDryRun.dev, afterDryRun.ino]).toEqual([before.dev, before.ino]);
+      expect(await NodeFSP.readdir(authority)).toEqual([]);
+      expect((await adoptHost(f.input, f.host)).state).toBe("adopted");
+      const after = await NodeFSP.lstat(authority);
+      expect([after.dev, after.ino, after.uid, after.mode & 0o777]).toEqual([
+        before.dev,
+        before.ino,
+        f.host.uid,
+        0o700,
+      ]);
+      expect(await NodeFSP.readdir(authority)).toEqual([]);
+    },
+    { legacy: true },
+  ));
+it.each(["state.json", "lock", "lock.sqlite", ".state.json.tmp"])(
+  "refuses and preserves authority entry %s",
+  (entry) =>
+    fixture(
+      async (f) => {
+        const authority = NodePath.join(f.base, "native-store-authority");
+        await NodeFSP.mkdir(authority, { mode: 0o700 });
+        await NodeFSP.writeFile(NodePath.join(authority, entry), "held native authority");
+        const before = await tree(f.root);
+        await expect(adoptHost({ ...f.input, dryRun: true }, f.host)).rejects.toThrow();
+        expect(await tree(f.root)).toEqual(before);
+        expect(f.commands.some((command) => command.args.includes("stop"))).toBe(false);
+      },
+      { legacy: true },
+    ),
+);
+it.each(["symlink", "file", "public-mode", "wrong-owner"] as const)(
+  "refuses an unsafe empty authority placeholder: %s",
+  (kind) =>
+    fixture(
+      async (f) => {
+        const authority = NodePath.join(f.base, "native-store-authority");
+        if (kind === "symlink") {
+          const target = NodePath.join(f.root, "empty-authority-target");
+          await NodeFSP.mkdir(target, { mode: 0o700 });
+          await NodeFSP.symlink(target, authority);
+        } else if (kind === "file") {
+          await NodeFSP.writeFile(authority, "", { mode: 0o700 });
+        } else {
+          await NodeFSP.mkdir(authority, { mode: 0o700 });
+          if (kind === "public-mode") await NodeFSP.chmod(authority, 0o755);
+        }
+        const before = await NodeFSP.lstat(authority);
+        await expect(
+          LegacyBootstrap.assertNoBootstrapHazards(
+            f.base,
+            kind === "wrong-owner" ? f.host.uid + 1 : f.host.uid,
+          ),
+        ).rejects.toThrow();
+        const after = await NodeFSP.lstat(authority);
+        expect([after.dev, after.ino, after.mode, after.uid]).toEqual([
+          before.dev,
+          before.ino,
+          before.mode,
+          before.uid,
+        ]);
+        if (kind === "symlink")
+          expect(await NodeFSP.readlink(authority)).toBe(
+            NodePath.join(f.root, "empty-authority-target"),
+          );
+        else if (kind === "file") expect(await NodeFSP.readFile(authority, "utf8")).toBe("");
+        else expect(await NodeFSP.readdir(authority)).toEqual([]);
+      },
+      { legacy: true },
+    ),
+);
+it("refuses authority state appearing during migration preflight before stopping the service", () =>
+  fixture(
+    async (f) => {
+      const authority = NodePath.join(f.base, "native-store-authority");
+      await NodeFSP.mkdir(authority, { mode: 0o700 });
+      const stateBefore = await NodeFSP.readFile(
+        NodePath.join(f.runtime, "service-state.json"),
+        "utf8",
+      );
+      const unitBefore = await NodeFSP.readFile(f.unit, "utf8");
+      let preflights = 0;
+      const host: AdoptionHost = {
+        ...f.host,
+        run: async (command) => {
+          const result = await f.host.run(command);
+          if (command.args.includes("__service-preflight") && ++preflights === 3)
+            await NodeFSP.writeFile(NodePath.join(authority, "state.json"), "late authority state");
+          return result;
+        },
+      };
+      await expect(adoptHost(f.input, host)).rejects.toThrow();
+      expect(preflights).toBe(3);
+      expect(f.commands.some((command) => command.args.includes("stop"))).toBe(false);
+      expect(f.commands.some((command) => command.args.includes("restart"))).toBe(false);
+      expect(await NodeFSP.readFile(NodePath.join(authority, "state.json"), "utf8")).toBe(
+        "late authority state",
+      );
+      expect(await NodeFSP.readFile(NodePath.join(f.runtime, "service-state.json"), "utf8")).toBe(
+        stateBefore,
+      );
+      expect(await NodeFSP.readFile(f.unit, "utf8")).toBe(unitBefore);
+    },
+    { legacy: true },
+  ));
 it.each([
   "ExecStartPre=/unexpected",
   "Environment=PRIVATE_TOKEN=unsupported",
