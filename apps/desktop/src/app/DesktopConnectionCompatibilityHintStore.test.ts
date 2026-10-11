@@ -203,11 +203,13 @@ type FixtureCustody = {
 };
 
 class FixtureCustodyError extends Error {
-  constructor(
-    readonly custody: FixtureCustody,
-    readonly evidencePath: string,
-  ) {
+  readonly custody: FixtureCustody;
+  readonly evidencePath: string;
+
+  constructor(custody: FixtureCustody, evidencePath: string) {
     super(`Could not close owned child; custody retained at ${evidencePath}`);
+    this.custody = custody;
+    this.evidencePath = evidencePath;
   }
 }
 
@@ -217,6 +219,7 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
     pid: child.pid ?? null,
     executable: child.spawnfile,
     arguments: [...child.spawnargs],
+    // @effect-diagnostics-next-line globalDate:off -- Capture native child custody wall time outside an Effect runtime; the controlled fixture uses the same fake clock.
     capturedAt: new Date().toISOString(),
   };
   const errors: string[] = [];
@@ -238,6 +241,7 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
     readyResolve = resolve;
     readyReject = reject;
   });
+  // @effect-diagnostics-next-line globalTimers:off -- This native IPC readiness deadline shares the fixture's fake timers and is cleared on readiness, failure or exit.
   const readyTimer = setTimeout(() => readyReject(new Error("Fixture readiness timed out")), 8_000);
   let closeObserved = false;
   const closed = new Promise<void>((resolve) =>
@@ -289,6 +293,7 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
     } catch (error) {
       remember(error);
     }
+    // @effect-diagnostics-next-line globalTimers:off -- Escalation belongs to the captured native child; controlled custody tests advance this same timer.
     const timer = setTimeout(() => {
       if (closeObserved || child.exitCode !== null || child.signalCode !== null) return;
       try {
@@ -302,6 +307,7 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
       const outcome = await Promise.race([
         closed.then(() => "closed" as const),
         new Promise<"deadline">((resolve) => {
+          // @effect-diagnostics-next-line globalTimers:off -- Bound native close observation without treating deadline expiry as reaping or granting scratch cleanup.
           deadline = setTimeout(() => resolve("deadline"), 5_000);
         }),
       ]);
@@ -354,6 +360,7 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
     call: (command: object) =>
       new Promise<unknown>((resolve, reject) => {
         const current = ++id;
+        // @effect-diagnostics-next-line globalTimers:off -- Native IPC calls use the fixture's controllable timer queue and clear each deadline on settlement.
         const timer = setTimeout(() => {
           pending.delete(current);
           reject(new Error("Fixture operation timed out"));
