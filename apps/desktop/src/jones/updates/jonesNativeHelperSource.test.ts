@@ -232,14 +232,20 @@ else:
 `;
 
 describe("Jones native helper", () => {
-  it.each(["claim-first", "discard-first", "existing-claim-mismatch", "legacy-backend", "claim-sync-failed"])(
-    "serializes preparation admission for %s",
-    async (fault) => {
-      const f = await fixture();
-      try {
-        const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
-        const setup = activationScenario.split("\nevents = []")[0];
-        const scenario = String.raw`
+  it.each([
+    "claim-first",
+    "discard-first",
+    "existing-claim-mismatch",
+    "legacy-backend",
+    "claim-sync-failed",
+  ])("serializes preparation admission for %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
 request = tx / 'activation-request.json'; os.rename(tx / 'intent.json', request)
 for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
 def run(operation, selection_hash=selection_digest):
@@ -272,19 +278,26 @@ else:
         assert not (tx / 'journal.json').exists()
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
-        NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault], {
-          encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
-        });
-      } finally {
-        await f.cleanup();
-      }
-    },
-  );
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
 
   it("holds the actual activation flock across the preparation scan and durable claim", async () => {
     const f = await fixture();
     try {
-      const [nativeFunctions, parser] = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()");
+      const [nativeFunctions, parser] = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      );
       const pause = String.raw`
 sys.platform = 'darwin'
 bundle_identity = lambda active: None
@@ -299,7 +312,10 @@ def durable(path, value, exclusive=False):
             time.sleep(0.01)
     return original_durable(path, value, exclusive)
 `;
-      await NodeFSP.writeFile(NodePath.join(f.directory, "interleaved-helper.py"), `${nativeFunctions}\n${pause}\nparser = argparse.ArgumentParser()${parser}`);
+      await NodeFSP.writeFile(
+        NodePath.join(f.directory, "interleaved-helper.py"),
+        `${nativeFunctions}\n${pause}\nparser = argparse.ArgumentParser()${parser}`,
+      );
       const setup = activationScenario.split("\nevents = []")[0];
       const scenario = String.raw`
 for name in ('intent.json', 'prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
@@ -327,9 +343,15 @@ finally:
     if child.poll() is None: child.kill()
     child.wait(timeout=5)
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, "interleaved"], {
-        encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, "interleaved"],
+        {
+          encoding: "utf8",
+          timeout: 15000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
     } finally {
       await f.cleanup();
     }
@@ -338,7 +360,9 @@ finally:
   it("holds exclusive state/profile leases and refuses readers, changed inodes, or WAL mode", async () => {
     const f = await fixture();
     try {
-      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
       const scenario = String.raw`
 root = pathlib.Path(sys.argv[1])
 profile = root / 'profile'; profile.mkdir()
@@ -377,9 +401,15 @@ except RuntimeError as error: assert 'inode changed' in str(error)
 else: raise AssertionError('Replaced lease inode was accepted')
 assert old.exists()
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
-        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
     } finally {
       await f.cleanup();
     }
@@ -402,7 +432,9 @@ assert old.exists()
   ])("serializes the %s selection outcome without deleting retained artifacts", async (fault) => {
     const f = await fixture();
     try {
-      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
       const setup = activationScenario.split("\nevents = []")[0];
       const scenario = String.raw`
 request = tx / 'activation-request.json'
@@ -471,7 +503,9 @@ with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM ident
   it("refuses a selection command while the actual activation lock is owned", async () => {
     const f = await fixture();
     try {
-      const [nativeFunctions, parser] = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()");
+      const [nativeFunctions, parser] = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      );
       const helper = NodePath.join(f.directory, "synthetic-helper.py");
       await NodeFSP.writeFile(
         helper,
@@ -490,11 +524,15 @@ with open(lock_path, 'r+') as lock:
     assert json.loads(result.stdout) == {'protocol': 1, 'operation': 'discard-staged', 'handle': 'f' * 64, 'status': 'refused', 'reason': 'busy'}
 assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock', 'manifest.json', 'synthetic-helper.py']
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        },
+      );
     } finally {
       await f.cleanup();
     }

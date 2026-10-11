@@ -9,7 +9,10 @@ import * as Layer from "effect/Layer";
 import * as Electron from "electron";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
-import { companionLinuxIdentity, readDesktopProductMetadata } from "../jones/previewCompanion/CompanionProduct.ts";
+import {
+  companionLinuxIdentity,
+  readDesktopProductMetadata,
+} from "../jones/previewCompanion/CompanionProduct.ts";
 import { holdJonesDesktopNativeWriterFence } from "../jones/updates/jonesNativeStartup.ts";
 import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
 import { resolveDesktopAppBranding } from "./DesktopEnvironment.ts";
@@ -63,7 +66,8 @@ export const make = Effect.gen(function* () {
         version: Electron.app.getVersion(),
         metadata: readDesktopProductMetadata({
           isPackaged: Electron.app.isPackaged,
-          readPackage: () => NodeFS.readFileSync(NodePath.join(Electron.app.getAppPath(), "package.json"), "utf8"),
+          readPackage: () =>
+            NodeFS.readFileSync(NodePath.join(Electron.app.getAppPath(), "package.json"), "utf8"),
         }),
       });
     }

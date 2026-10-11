@@ -255,7 +255,9 @@ async function isCommittedRestart(
     NodeFSP.readFile(descriptor.commitGrantPath, "utf8").then(decodeGrant),
     NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8").then(decodeResumedJournal),
     NodeFSP.readFile(descriptor.trialReceiptPath, "utf8").then(decodeReceipt),
-    NodeFSP.readFile(NodePath.join(directory, "resume-dispatched.json"), "utf8").then(decodeReceipt),
+    NodeFSP.readFile(NodePath.join(directory, "resume-dispatched.json"), "utf8").then(
+      decodeReceipt,
+    ),
   ]);
   cancelled(signal);
   if (

@@ -25,7 +25,11 @@ export function holdJonesDesktopNativeWriterFence(input: {
       : NodePath.join(input.appDataDirectory, development ? "t3code-dev" : "t3code-v2"));
   holdJonesNativeWriterFence({
     home,
-    databasePath: NodePath.join(home, development && !explicitHome ? "dev" : "userdata", "statev2.sqlite"),
+    databasePath: NodePath.join(
+      home,
+      development && !explicitHome ? "dev" : "userdata",
+      "statev2.sqlite",
+    ),
     profile,
     descriptorPath: input.env.T3CODE_JONES_TRIAL_DESCRIPTOR,
     version: input.version,

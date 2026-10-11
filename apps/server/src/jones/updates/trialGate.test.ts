@@ -136,7 +136,10 @@ async function committedTrial(root: string) {
     [input.descriptorPath, input],
     [manifestPath, { ...input, owner: "desktop", generation: input.transactionId }],
     [input.commitGrantPath, { ...input, generation: input.transactionId }],
-    [journalPath, { phase: "resumed", intent: { protocol: 1, transactionId: input.transactionId } }],
+    [
+      journalPath,
+      { phase: "resumed", intent: { protocol: 1, transactionId: input.transactionId } },
+    ],
     [input.trialReceiptPath, receipt],
     [reservationPath, receipt],
   ]);

@@ -33,9 +33,17 @@ async function fixture(body: (root: string, input: Record<string, unknown>) => P
     await NodeFSP.mkdir(NodePath.join(root, "runtime"));
     await NodeFSP.writeFile(databasePath, "opaque application state");
     const active = {
-      protocol: 1, owner: "desktop", generation: "previous", transactionId: "bootstrap",
-      home: root, databasePath, profile, environmentId: "fixture", version: "fixture-version",
-      sourceSha: "a".repeat(40), sourceTree: "b".repeat(40),
+      protocol: 1,
+      owner: "desktop",
+      generation: "previous",
+      transactionId: "bootstrap",
+      home: root,
+      databasePath,
+      profile,
+      environmentId: "fixture",
+      version: "fixture-version",
+      sourceSha: "a".repeat(40),
+      sourceTree: "b".repeat(40),
     };
     await NodeFSP.writeFile(
       NodePath.join(root, "runtime", "jones-active-install.json"),
@@ -44,7 +52,13 @@ async function fixture(body: (root: string, input: Record<string, unknown>) => P
     );
     await body(root, {
       ...active,
-      buildMetadata: { jonesSource: { repository: "Jones-Systems/Jones-Code", sha: active.sourceSha, tree: active.sourceTree } },
+      buildMetadata: {
+        jonesSource: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: active.sourceSha,
+          tree: active.sourceTree,
+        },
+      },
     });
   } finally {
     await NodeFSP.rm(temporary, { recursive: true, force: true });
@@ -53,14 +67,19 @@ async function fixture(body: (root: string, input: Record<string, unknown>) => P
 }
 
 function run(input: Record<string, unknown>, after = "", before = "") {
-  return NodeChildProcess.spawnSync(process.execPath, [
-    "--input-type=module", "-e",
-    `const module = await import(${JSON.stringify(moduleUrl)});
+  return NodeChildProcess.spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `const module = await import(${JSON.stringify(moduleUrl)});
      ${before}
      const input = ${JSON.stringify(input)};
      module.holdJonesNativeWriterFence(input);
      ${after}`,
-  ], { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 });
+    ],
+    { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
+  );
 }
 
 it("holds real Python writers until process exit and shares one connection across duplicate imports", async () =>
@@ -75,7 +94,9 @@ it("holds real Python writers until process exit and shares one connection acros
     const result = run(input, probe);
     expect(result.status, result.stderr).toBe(0);
     for (const lease of nativeWriterLeasePaths(root, String(input.profile))) {
-      NodeChildProcess.execFileSync("python3", ["-c", inspectLock, lease.path, "free"], { timeout: 5000 });
+      NodeChildProcess.execFileSync("python3", ["-c", inspectLock, lease.path, "free"], {
+        timeout: 5000,
+      });
     }
   }));
 
@@ -84,14 +105,19 @@ it("publishes one stable lease identity when two first starts race", async () =>
     const children: NodeChildProcess.ChildProcess[] = [];
     try {
       const starts = [0, 1].map(() => {
-        const child = NodeChildProcess.spawn(process.execPath, [
-          "--input-type=module", "-e",
-          `const module = await import(${JSON.stringify(moduleUrl)});
+        const child = NodeChildProcess.spawn(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            `const module = await import(${JSON.stringify(moduleUrl)});
            process.stdout.write('ready');
            await new Promise(resolve => process.stdin.once('data', resolve));
            process.stdin.destroy();
            module.holdJonesNativeWriterFence(${JSON.stringify(input)});`,
-        ], { stdio: ["pipe", "pipe", "pipe"], timeout: 10000 });
+          ],
+          { stdio: ["pipe", "pipe", "pipe"], timeout: 10000 },
+        );
         children.push(child);
         const ready = new Promise<void>((resolve, reject) => {
           child.stdout.once("data", () => resolve());
@@ -115,21 +141,33 @@ it("publishes one stable lease identity when two first starts race", async () =>
         const witness = JSON.parse(await NodeFSP.readFile(`${lease.path}.identity.json`, "utf8"));
         expect(witness.inode).toBe(String(info.ino));
         expect(info.nlink).toBe(1n);
-        expect((await NodeFSP.readdir(NodePath.dirname(lease.path))).filter((name) => name.endsWith(".pending"))).toEqual([]);
+        expect(
+          (await NodeFSP.readdir(NodePath.dirname(lease.path))).filter((name) =>
+            name.endsWith(".pending"),
+          ),
+        ).toEqual([]);
       }
     } finally {
-      await Promise.all(children.map(async (child) => {
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
-        child.kill("SIGKILL");
-        await closed;
-      }));
+      await Promise.all(
+        children.map(async (child) => {
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+          child.kill("SIGKILL");
+          await closed;
+        }),
+      );
     }
   }));
 
 it.each([
-  "shared-profile", "aliased-profile", "missing-profile", "dangling-profile-alias",
-  "aliased-userdata", "missing-database-alias", "database-symlink", "missing-owner-manifest",
+  "shared-profile",
+  "aliased-profile",
+  "missing-profile",
+  "dangling-profile-alias",
+  "aliased-userdata",
+  "missing-database-alias",
+  "database-symlink",
+  "missing-owner-manifest",
 ])("refuses %s from another home while Python owns native exclusive leases", async (fault) =>
   fixture(async (root, input) => {
     expect(run(input).status).toBe(0);
@@ -146,7 +184,11 @@ it.each([
       await NodeFSP.rename(String(input.profile), `${input.profile}.retained`);
     if (fault === "aliased-userdata" || fault === "missing-database-alias") {
       profile = undefined;
-      await NodeFSP.symlink(NodePath.dirname(String(input.databasePath)), NodePath.dirname(databasePath), "dir");
+      await NodeFSP.symlink(
+        NodePath.dirname(String(input.databasePath)),
+        NodePath.dirname(databasePath),
+        "dir",
+      );
       if (fault === "missing-database-alias")
         await NodeFSP.rename(String(input.databasePath), `${input.databasePath}.retained`);
     }
@@ -181,27 +223,42 @@ try:
 finally:
     for connection in connections: connection.close()
 `;
-    NodeChildProcess.execFileSync("python3", [
-      "-c", exclusiveProbe, JSON.stringify(leases.map((lease) => lease.path)),
-      JSON.stringify([process.execPath, "--input-type=module", "-e", script]),
-    ], { timeout: 15000 });
+    NodeChildProcess.execFileSync(
+      "python3",
+      [
+        "-c",
+        exclusiveProbe,
+        JSON.stringify(leases.map((lease) => lease.path)),
+        JSON.stringify([process.execPath, "--input-type=module", "-e", script]),
+      ],
+      { timeout: 15000 },
+    );
     expect(NodeFS.existsSync(marker)).toBe(false);
-  }));
+  }),
+);
 
 it.each(["intent", "quiescent", "swapped", "rollback-intent", "blocked"])(
   "denies ordinary startup before any caller write during %s",
-  async (phase) => fixture(async (root, input) => {
-    const handle = "f".repeat(64);
-    const directory = NodePath.join(root, "runtime", "jones-updates", "transactions", handle);
-    await NodeFSP.mkdir(directory, { recursive: true });
-    await NodeFSP.writeFile(NodePath.join(directory, "journal.json"), JSON.stringify({
-      phase, intent: { protocol: 1, transactionId: handle },
-    }));
-    const marker = NodePath.join(root, "profile", "caller-write");
-    const result = run(input, `const fs = await import('node:fs'); fs.writeFileSync(${JSON.stringify(marker)}, 'unsafe');`);
-    expect(result.status).not.toBe(0);
-    expect(NodeFS.existsSync(marker)).toBe(false);
-  }),
+  async (phase) =>
+    fixture(async (root, input) => {
+      const handle = "f".repeat(64);
+      const directory = NodePath.join(root, "runtime", "jones-updates", "transactions", handle);
+      await NodeFSP.mkdir(directory, { recursive: true });
+      await NodeFSP.writeFile(
+        NodePath.join(directory, "journal.json"),
+        JSON.stringify({
+          phase,
+          intent: { protocol: 1, transactionId: handle },
+        }),
+      );
+      const marker = NodePath.join(root, "profile", "caller-write");
+      const result = run(
+        input,
+        `const fs = await import('node:fs'); fs.writeFileSync(${JSON.stringify(marker)}, 'unsafe');`,
+      );
+      expect(result.status).not.toBe(0);
+      expect(NodeFS.existsSync(marker)).toBe(false);
+    }),
 );
 
 it("admits only the exact source-bound trial permit before application state opens", async () =>
@@ -211,44 +268,77 @@ it("admits only the exact source-bound trial permit before application state ope
     await NodeFSP.mkdir(directory, { recursive: true });
     const descriptorPath = NodePath.join(directory, "trial-descriptor.json");
     const staged = { version: "candidate", sourceSha: "c".repeat(40), sourceTree: "d".repeat(40) };
-    await NodeFSP.writeFile(descriptorPath, JSON.stringify({
-      ...input, ...staged, protocol: 1, startupGateProtocol: 1, transactionId: handle,
-    }));
-    await NodeFSP.writeFile(NodePath.join(directory, "journal.json"), JSON.stringify({
-      phase: "trial", intent: { protocol: 1, transactionId: handle, staged },
-    }));
+    await NodeFSP.writeFile(
+      descriptorPath,
+      JSON.stringify({
+        ...input,
+        ...staged,
+        protocol: 1,
+        startupGateProtocol: 1,
+        transactionId: handle,
+      }),
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(directory, "journal.json"),
+      JSON.stringify({
+        phase: "trial",
+        intent: { protocol: 1, transactionId: handle, staged },
+      }),
+    );
     const candidate = {
-      ...input, descriptorPath, version: staged.version,
-      buildMetadata: { jonesSource: { repository: "Jones-Systems/Jones-Code", sha: staged.sourceSha, tree: staged.sourceTree } },
+      ...input,
+      descriptorPath,
+      version: staged.version,
+      buildMetadata: {
+        jonesSource: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: staged.sourceSha,
+          tree: staged.sourceTree,
+        },
+      },
     };
     const allowed = run(candidate);
     expect(allowed.status, allowed.stderr).toBe(0);
     expect(run({ ...candidate, descriptorPath: undefined }).status).not.toBe(0);
     expect(run({ ...candidate, buildMetadata: input.buildMetadata }).status).not.toBe(0);
   }));
-it.each(["wal", "replaced", "missing-witness"])("refuses a %s lease without repairing its inode", async (fault) =>
-  fixture(async (root, input) => {
-    expect(run(input).status).toBe(0);
-    const lease = nativeWriterLeasePaths(root, String(input.profile))[0]!;
-    if (fault === "wal") {
-      NodeChildProcess.execFileSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL'); c.close()", lease.path], { timeout: 5000 });
-    } else if (fault === "replaced") {
-      await NodeFSP.rename(lease.path, `${lease.path}.retained`);
-      await NodeFSP.copyFile(`${lease.path}.retained`, lease.path);
-    } else {
-      await NodeFSP.unlink(`${lease.path}.identity.json`);
-    }
-    const inode = (await NodeFSP.lstat(lease.path)).ino;
-    expect(run(input).status).not.toBe(0);
-    expect((await NodeFSP.lstat(lease.path)).ino).toBe(inode);
-  }));
+it.each(["wal", "replaced", "missing-witness"])(
+  "refuses a %s lease without repairing its inode",
+  async (fault) =>
+    fixture(async (root, input) => {
+      expect(run(input).status).toBe(0);
+      const lease = nativeWriterLeasePaths(root, String(input.profile))[0]!;
+      if (fault === "wal") {
+        NodeChildProcess.execFileSync(
+          "python3",
+          [
+            "-c",
+            "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL'); c.close()",
+            lease.path,
+          ],
+          { timeout: 5000 },
+        );
+      } else if (fault === "replaced") {
+        await NodeFSP.rename(lease.path, `${lease.path}.retained`);
+        await NodeFSP.copyFile(`${lease.path}.retained`, lease.path);
+      } else {
+        await NodeFSP.unlink(`${lease.path}.identity.json`);
+      }
+      const inode = (await NodeFSP.lstat(lease.path)).ino;
+      expect(run(input).status).not.toBe(0);
+      expect((await NodeFSP.lstat(lease.path)).ino).toBe(inode);
+    }),
+);
 
 it("loads SQLite only for native ownership and denies a qualified runtime without it", async () =>
   fixture(async (root, input) => {
     expect(run(input, "", "process.getBuiltinModule = undefined;").status).not.toBe(0);
     await NodeFSP.unlink(NodePath.join(root, "runtime", "jones-active-install.json"));
-    const ordinary = run({ ...input, buildMetadata: {} }, "", "process.getBuiltinModule = undefined;");
+    const ordinary = run(
+      { ...input, buildMetadata: {} },
+      "",
+      "process.getBuiltinModule = undefined;",
+    );
     expect(ordinary.status, ordinary.stderr).toBe(0);
     expect(run({ ...input, descriptorPath: "missing" }).status).not.toBe(0);
   }));
-

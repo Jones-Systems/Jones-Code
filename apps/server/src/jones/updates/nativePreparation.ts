@@ -69,7 +69,7 @@ export async function prepareNativeContinuationReceipt(input: {
     throw new Error("The active native manifest changed before preparation.");
   }
   const directory = NodePath.join(home, "runtime", "jones-updates", "transactions", input.handle);
-  if (await NodeFSP.realpath(directory) !== directory)
+  if ((await NodeFSP.realpath(directory)) !== directory)
     throw new Error("Native preparation transaction path is not canonical.");
   const claimPath = NodePath.join(directory, "prepare-intent.json");
   const claim = (await boundedJson(claimPath)).value;
@@ -77,10 +77,13 @@ export async function prepareNativeContinuationReceipt(input: {
   const selectionSha256 = claim.selectionSha256;
   if (
     typeof selectionPath !== "string" ||
-    NodePath.dirname(selectionPath) !== NodePath.join(home, "runtime", "jones-updates", "staging") ||
-    await NodeFSP.realpath(selectionPath) !== selectionPath ||
-    typeof selectionSha256 !== "string" || !/^[a-f0-9]{64}$/.test(selectionSha256)
-  ) throw new Error("Native preparation requires an exact selection claim.");
+    NodePath.dirname(selectionPath) !==
+      NodePath.join(home, "runtime", "jones-updates", "staging") ||
+    (await NodeFSP.realpath(selectionPath)) !== selectionPath ||
+    typeof selectionSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(selectionSha256)
+  )
+    throw new Error("Native preparation requires an exact selection claim.");
   const expectedClaim = {
     protocol: 1,
     preparationClaimProtocol: 1,
@@ -98,35 +101,43 @@ export async function prepareNativeContinuationReceipt(input: {
   const selectedApp = selection.value.app;
   if (
     NodeCrypto.createHash("sha256").update(selection.raw).digest("hex") !== selectionSha256 ||
-    selection.value.schema !== 1 || selection.value.source !== "jones-actions" ||
-    selection.value.home !== home || selection.value.profile !== manifest.profile ||
+    selection.value.schema !== 1 ||
+    selection.value.source !== "jones-actions" ||
+    selection.value.home !== home ||
+    selection.value.profile !== manifest.profile ||
     selection.value.currentVersion !== input.version ||
     !isDeepStrictEqual(selection.value.active, active.value) ||
-    selectedApp === null || typeof selectedApp !== "object" || Array.isArray(selectedApp) ||
+    selectedApp === null ||
+    typeof selectedApp !== "object" ||
+    Array.isArray(selectedApp) ||
     (selectedApp as Record<string, unknown>).handle !== input.handle
-  ) throw new Error("The claimed native selection changed before preparation.");
+  )
+    throw new Error("The claimed native selection changed before preparation.");
   const receiptPath = NodePath.join(directory, "continuation.json");
   const receipt = {
     ...expectedClaim,
     prepared: true,
   };
-  const prior = await boundedJson(receiptPath).catch(
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    },
-  );
+  const prior = await boundedJson(receiptPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
   if (prior !== undefined) {
-    if (!isDeepStrictEqual(prior.value, receipt) || !isDeepStrictEqual(
-      (await boundedJson(NodePath.join(directory, "prepare-dispatched.json"))).value,
-      expectedClaim,
-    ))
+    if (
+      !isDeepStrictEqual(prior.value, receipt) ||
+      !isDeepStrictEqual(
+        (await boundedJson(NodePath.join(directory, "prepare-dispatched.json"))).value,
+        expectedClaim,
+      )
+    )
       throw new Error("An occupied continuation receipt belongs to a different installation.");
     return;
   }
-  if ((await boundedJson(manifestPath)).raw !== active.raw || !isDeepStrictEqual(
-    (await boundedJson(claimPath)).value, expectedClaim,
-  )) throw new Error("The native preparation claim changed before dispatch.");
+  if (
+    (await boundedJson(manifestPath)).raw !== active.raw ||
+    !isDeepStrictEqual((await boundedJson(claimPath)).value, expectedClaim)
+  )
+    throw new Error("The native preparation claim changed before dispatch.");
   // The helper's claim prevents discard. A separate durable dispatch record
   // makes a lost backend response an unknown effect, never a repeatable call.
   await publish(NodePath.join(directory, "prepare-dispatched.json"), expectedClaim);
