@@ -43,6 +43,7 @@ import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiv
 export class JonesUpdates extends Context.Service<
   JonesUpdates,
   {
+    readonly fleetOperationsSupported: boolean;
     readonly state: (after?: number) => Effect.Effect<JonesUpdateState | null>;
     readonly check: Effect.Effect<JonesUpdateState>;
     readonly prepareNative: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
@@ -90,6 +91,7 @@ export const layer = Layer.effect(
       : undefined;
     const nativeReceipt = runtimeReceipt !== undefined;
     const unsupportedOperations = {
+      fleetOperationsSupported: false,
       stageExact: () =>
         Effect.succeed(blocked("Caller-bound native updates are unavailable on this host.")),
       installForOperation: () =>
@@ -118,9 +120,34 @@ export const layer = Layer.effect(
         install: () => unavailable,
       });
     }
+    const reconcileOperation = (operationId: string) =>
+      Effect.promise(async (): Promise<OperationReconciliation> => {
+        try {
+          if (!launcher.managed || !isUpdateOperationId(operationId))
+            return {
+              state: "blocked",
+              operationId,
+              reason: "A managed launcher and UUID v4 operation ID are required.",
+            };
+          const baseDir = await NodeFSP.realpath(config.baseDir);
+          const state = parseServiceState(
+            await NodeFSP.readFile(NodePath.join(baseDir, "runtime", "service-state.json"), "utf8"),
+          );
+          if (state === undefined)
+            return { state: "blocked", operationId, reason: "Native update state is invalid." };
+          return await reconcileUpdateOperation(baseDir, operationId, state.update);
+        } catch {
+          return {
+            state: "blocked",
+            operationId,
+            reason: "Native update state is unavailable for reconciliation.",
+          };
+        }
+      });
     const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
       mode: config.mode,
       selfUpdate,
+      reconcileQualifiedOperation: reconcileOperation,
       prepare: startup.markRunningProviderSessionsForContinuation.pipe(
         Effect.mapError(
           (cause) =>
@@ -465,30 +492,6 @@ export const layer = Layer.effect(
       Effect.forever,
       Effect.forkScoped,
     );
-    const reconcileOperation = (operationId: string) =>
-      Effect.promise(async (): Promise<OperationReconciliation> => {
-        try {
-          if (!launcher.managed || !isUpdateOperationId(operationId))
-            return {
-              state: "blocked",
-              operationId,
-              reason: "A managed launcher and UUID v4 operation ID are required.",
-            };
-          const baseDir = await NodeFSP.realpath(config.baseDir);
-          const state = parseServiceState(
-            await NodeFSP.readFile(NodePath.join(baseDir, "runtime", "service-state.json"), "utf8"),
-          );
-          if (state === undefined)
-            return { state: "blocked", operationId, reason: "Native update state is invalid." };
-          return await reconcileUpdateOperation(baseDir, operationId, state.update);
-        } catch {
-          return {
-            state: "blocked",
-            operationId,
-            reason: "Native update state is unavailable for reconciliation.",
-          };
-        }
-      });
     const installForOperation: JonesUpdates["Service"]["installForOperation"] = (input) =>
       Effect.gen(function* () {
         const prior = yield* reconcileOperation(input.operationId);
@@ -525,6 +528,8 @@ export const layer = Layer.effect(
         return yield* Effect.promise(() => updater.install(input));
       });
     return JonesUpdates.of({
+      fleetOperationsSupported:
+        launcher.managed && launcher.qualifiedOperations === true && supported && nativeReceipt,
       stageExact: (input) =>
         isUpdateOperationId(input.operationId) && launcher.qualifiedOperations === true
           ? Effect.promise(() => updater.stageExact(input.targetSource))

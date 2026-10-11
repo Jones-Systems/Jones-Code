@@ -1,4 +1,5 @@
 import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
+import type { OperationReconciliation } from "../jones/updates/launcherOperation.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // Qualified staging delegates to the Node-only launcher boundary and owns its scratch lifetime.
 import {
@@ -109,9 +110,18 @@ export const withRunningThreadContinuation = Effect.fn(
   readonly clear: (
     threadIds: ReadonlyArray<ThreadId>,
   ) => Effect.Effect<void, ServerSelfUpdateError>;
+  readonly reconcileQualifiedOperation?: (
+    operationId: string,
+  ) => Effect.Effect<OperationReconciliation>;
 }) {
   const desktopContinuationTokens = yield* Ref.make(HashSet.empty<string>());
-  const qualifiedInstallInFlight = yield* Ref.make(false);
+  const qualifiedInstallInFlight = yield* Ref.make<
+    | {
+        readonly operationId: string | undefined;
+        readonly uncertain: boolean;
+      }
+    | undefined
+  >(undefined);
   const uncertainQualifiedHandoff = (cause: Cause.Cause<ServerSelfUpdateError>) => {
     const error = Cause.findErrorOption(cause);
     return (
@@ -194,13 +204,34 @@ export const withRunningThreadContinuation = Effect.fn(
       ? {}
       : {
           installQualified: (
-            request: { readonly stagedHandle: string; readonly continueRunningThreads?: boolean },
+            request: {
+              readonly stagedHandle: string;
+              readonly continueRunningThreads?: boolean;
+              readonly operationId?: string;
+            },
             onAccepted?: () => Effect.Effect<void>,
           ) => {
             let handoffAccepted = false;
             let continuationThreadIds: ReadonlyArray<ThreadId> = [];
             return Effect.gen(function* () {
-              if (yield* Ref.getAndSet(qualifiedInstallInFlight, true))
+              const inFlight = yield* Ref.get(qualifiedInstallInFlight);
+              if (
+                request.operationId !== undefined &&
+                inFlight?.operationId === request.operationId &&
+                inFlight.uncertain &&
+                input.reconcileQualifiedOperation !== undefined
+              ) {
+                const receipt = yield* input.reconcileQualifiedOperation(request.operationId);
+                if (receipt.operationId === request.operationId && receipt.state === "absent")
+                  yield* Ref.update(qualifiedInstallInFlight, (current) =>
+                    current === inFlight ? undefined : current,
+                  );
+              }
+              const attempt = { operationId: request.operationId, uncertain: false };
+              const claimed = yield* Ref.modify(qualifiedInstallInFlight, (current) =>
+                current === undefined ? ([true, attempt] as const) : ([false, current] as const),
+              );
+              if (!claimed)
                 return yield* new ServerSelfUpdateError({
                   reason: "A qualified Install has already started or needs reconciliation.",
                 });
@@ -219,9 +250,12 @@ export const withRunningThreadContinuation = Effect.fn(
                 true,
               ).pipe(
                 Effect.catchCause((cause) =>
-                  (handoffAccepted || uncertainQualifiedHandoff(cause)
-                    ? Effect.void
-                    : Ref.set(qualifiedInstallInFlight, false)
+                  Ref.update(qualifiedInstallInFlight, (current) =>
+                    current !== attempt
+                      ? current
+                      : handoffAccepted || uncertainQualifiedHandoff(cause)
+                        ? { ...attempt, uncertain: !handoffAccepted }
+                        : undefined,
                   ).pipe(Effect.andThen(Effect.failCause(cause))),
                 ),
               );

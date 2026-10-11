@@ -126,4 +126,18 @@ describe("native update operation receipts", () => {
       decodeServiceLauncherChildMessage({ ...message, stagedHandle: undefined }),
     ).toBeUndefined();
   });
+
+  it("uses the same canonical operation root through trailing separators, dot paths, and symlinks", async () => {
+    const { baseDir, qualified, pending } = await fixture();
+    const alias = Path.join(baseDir, "alias");
+    await Fs.symlink(baseDir, alias, "dir");
+    await reserveUpdateOperation(`${baseDir}/`, operationId, operationBinding(qualified));
+    for (const root of [`${baseDir}/.`, alias]) {
+      expect((await reconcileUpdateOperation(root, operationId, pending)).state).toBe("pending");
+      await archiveUpdateOperation(root, { ...pending, status: "committed" });
+      expect((await reconcileUpdateOperation(root, operationId, undefined)).state).toBe(
+        "committed",
+      );
+    }
+  });
 });

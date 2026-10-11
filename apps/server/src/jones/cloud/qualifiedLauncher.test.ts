@@ -10,6 +10,7 @@ import { Launcher, main, readServiceState, writeServiceState } from "../../servi
 import { readQualifiedBackupReceipt, type QualifiedBackupAdapter } from "./qualifiedBackup.ts";
 import type { QualifiedQuiescenceAdapter } from "./qualifiedQuiescence.ts";
 import { QUALIFIED_STARTUP_STATE_FILES } from "./qualifiedQuiescence.ts";
+import { archiveUpdateOperation, reserveUpdateOperation } from "../updates/launcherOperation.ts";
 import {
   currentQualifiedRuntimeBinding,
   qualifiedPayloadDigest,
@@ -40,12 +41,12 @@ async function runScenario(
     readonly backupAdapter?: QualifiedBackupAdapter;
     readonly productionMain?: boolean;
     readonly startupGateProtocol?: 1 | "missing";
+    readonly operationFailure?: "archive" | "reserve";
   } = {},
 ) {
-  const base = await NodeFSP.realpath(
-    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-")),
-  );
+  const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
   try {
+    const base = await NodeFSP.realpath(allocated);
     const userdata = NodePath.join(base, "userdata");
     await NodeFSP.mkdir(userdata, { mode: 0o700 });
     const dbPath = NodePath.join(userdata, "statev2.sqlite");
@@ -113,9 +114,13 @@ if (context.update?.status === "pending") {
     }));
   } else if (m.type === "update-rejected") {
     writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "rejected.json"))}, JSON.stringify(m));
-    process.exit(0);
+    setImmediate(() => {
+      writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "old-child-survived.json"))}, JSON.stringify({pid:process.pid, context}));
+      process.exit(0);
+    });
   }});
-  process.send({type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle});
+  process.send({type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle,
+    ...(${JSON.stringify(options.operationFailure !== undefined)} ? {operationId:"12345678-1234-4234-8234-123456789abc"} : {})});
   setInterval(() => {}, 1000);
 } else {
   writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "restart-context.json"))}, JSON.stringify(context));
@@ -177,6 +182,26 @@ if (context.update?.status === "pending") {
       quiescenceAdapter,
       ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
       ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
+      ...(options.operationFailure === undefined
+        ? {}
+        : {
+            updateOperationIO: {
+              archive:
+                options.operationFailure === "archive"
+                  ? async () => {
+                      throw Object.assign(new Error("fixture archive EIO"), { code: "EIO" });
+                    }
+                  : archiveUpdateOperation,
+              reserve:
+                options.operationFailure === "reserve"
+                  ? async (...args: Parameters<typeof reserveUpdateOperation>) => {
+                      // A receipt can exist even though its final durability step failed.
+                      await reserveUpdateOperation(...args);
+                      throw Object.assign(new Error("fixture reserve fsync EIO"), { code: "EIO" });
+                    }
+                  : reserveUpdateOperation,
+            },
+          }),
     });
     onLauncher?.(launcher);
     // Captured children exit or are reaped before the launcher settles; cleanup never polls by process name.
@@ -200,9 +225,53 @@ if (context.update?.status === "pending") {
     }
     await body(base, launcherFailure);
   } finally {
-    await NodeFSP.rm(base, { recursive: true, force: true });
+    await NodeFSP.rm(allocated, { recursive: true, force: true });
+    await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
   }
 }
+
+it.each(["archive", "reserve"] as const)(
+  "keeps the active child and pointer unchanged when operation %s fails before acceptance",
+  async (operationFailure) => {
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        const rejected = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+        );
+        assert.match(rejected.reason, /^operation-reconciliation-required:/);
+        assert.equal(rejected.operationId, "12345678-1234-4234-8234-123456789abc");
+        const survived = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(base, "runtime", "old-child-survived.json"), "utf8"),
+        );
+        assert.equal(survived.context.childVersion, baseline);
+        assert.isAbove(survived.pid, 0);
+        assert.match(String(failure), /exited unexpectedly/);
+        assert.deepEqual(
+          await readServiceState(NodePath.join(base, "runtime", "service-state.json")),
+          { protocol: 4, activeVersion: baseline },
+        );
+        assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+        await NodeAssert.rejects(
+          NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+          { code: "ENOENT" },
+        );
+        assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
+        const reserved = NodePath.join(
+          base,
+          "runtime",
+          "jones-update-operations",
+          `${rejected.operationId}.json`,
+        );
+        if (operationFailure === "reserve") await NodeFSP.access(reserved);
+        else await NodeAssert.rejects(NodeFSP.access(reserved), { code: "ENOENT" });
+      },
+      undefined,
+      undefined,
+      { operationFailure },
+    );
+  },
+);
 
 it("commits a qualified trial after readiness and retains its previous binary/state pair", async () => {
   await runScenario("commit", async (base) => {

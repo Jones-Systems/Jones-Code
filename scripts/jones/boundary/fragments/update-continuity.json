@@ -7,7 +7,8 @@
     "apps/server/src/jones/updates/serverCapability.ts",
     "apps/server/src/jones/updates/serverCapability.test.ts",
     "apps/server/src/jones/updates/launcherOperation.ts",
-    "apps/server/src/jones/updates/launcherOperation.test.ts"
+    "apps/server/src/jones/updates/launcherOperation.test.ts",
+    "apps/server/src/jones/updates/operationHandoff.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -19,6 +20,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
       "to": "apps/server/src/jones/updates/continuationPrompt.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/updates/launcherOperation.ts"
     }
   ]
 }

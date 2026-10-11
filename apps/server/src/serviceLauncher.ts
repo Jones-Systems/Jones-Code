@@ -525,6 +525,10 @@ export class Launcher {
   readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
   readonly #startupGateProtocol: 1 | undefined;
   readonly #backupAdapter: QualifiedBackupAdapter | undefined;
+  readonly #updateOperationIO: {
+    readonly archive: typeof archiveUpdateOperation;
+    readonly reserve: typeof reserveUpdateOperation;
+  };
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
@@ -542,6 +546,10 @@ export class Launcher {
       readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
       readonly startupGateProtocol?: 1;
       readonly backupAdapter?: QualifiedBackupAdapter;
+      readonly updateOperationIO?: {
+        readonly archive: typeof archiveUpdateOperation;
+        readonly reserve: typeof reserveUpdateOperation;
+      };
     } = {},
   ) {
     this.#baseDir = baseDir;
@@ -550,6 +558,10 @@ export class Launcher {
     this.#quiescenceAdapter = options.quiescenceAdapter;
     this.#startupGateProtocol = options.startupGateProtocol;
     this.#backupAdapter = options.backupAdapter;
+    this.#updateOperationIO = options.updateOperationIO ?? {
+      archive: archiveUpdateOperation,
+      reserve: reserveUpdateOperation,
+    };
   }
 
   async run(): Promise<void> {
@@ -920,7 +932,9 @@ export class Launcher {
           await reject("The update operation is ambiguous and requires reconciliation.");
           return;
         }
-        const reserved = await readOperationReservation(this.#baseDir, message.operationId);
+        const reserved = await readOperationReservation(this.#baseDir, message.operationId).catch(
+          () => undefined,
+        );
         if (
           reserved === undefined ||
           reserved.binding.stagedHandle !== message.stagedHandle ||
@@ -1008,13 +1022,26 @@ export class Launcher {
         return;
       }
     }
-    await archiveUpdateOperation(this.#baseDir, this.#state.update);
-    if (message.operationId !== undefined) {
-      if (qualified === undefined) {
-        await reject("An operation ID requires a qualified staged runtime.");
-        return;
+    try {
+      await this.#updateOperationIO.archive(this.#baseDir, this.#state.update);
+      if (message.operationId !== undefined) {
+        if (qualified === undefined) {
+          await reject("An operation ID requires a qualified staged runtime.");
+          return;
+        }
+        await this.#updateOperationIO.reserve(
+          this.#baseDir,
+          message.operationId,
+          operationBinding(qualified),
+        );
       }
-      await reserveUpdateOperation(this.#baseDir, message.operationId, operationBinding(qualified));
+    } catch {
+      // A failed fsync may leave a reservation. Preserve it for reconciliation
+      // while the unchanged active child continues serving.
+      await reject(
+        "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
+      );
+      return;
     }
     const pending: PendingServiceUpdate = {
       id: message.operationId ?? NodeCrypto.randomUUID(),

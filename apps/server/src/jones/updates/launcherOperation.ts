@@ -119,6 +119,7 @@ export async function readOperationReservation(
   baseDir: string,
   operationId: string,
 ): Promise<OperationReservation | undefined> {
+  baseDir = await Fs.realpath(baseDir);
   const value = await readJson(receiptPath(baseDir, operationId));
   if (value === undefined) return undefined;
   const row = value as Partial<OperationReservation>;
@@ -150,6 +151,9 @@ export async function reserveUpdateOperation(
   operationId: string,
   binding: NativeOperationBinding,
 ): Promise<void> {
+  baseDir = await Fs.realpath(baseDir);
+  if (binding.baseDir !== baseDir)
+    throw new Error("Update operation binding must use the canonical runtime root.");
   await writeExclusive(receiptPath(baseDir, operationId), { schema: 1, operationId, binding });
 }
 
@@ -159,6 +163,7 @@ export async function archiveUpdateOperation(
 ): Promise<void> {
   if (update === undefined || update.status === "pending" || !isUpdateOperationId(update.id))
     return;
+  baseDir = await Fs.realpath(baseDir);
   const reserved = await readOperationReservation(baseDir, update.id);
   if (reserved === undefined) return;
   if (
@@ -188,6 +193,7 @@ export async function reconcileUpdateOperation(
   current: ServiceUpdateRecord | undefined,
 ): Promise<OperationReconciliation> {
   try {
+    baseDir = await Fs.realpath(baseDir);
     const reserved = await readOperationReservation(baseDir, operationId);
     if (reserved === undefined) {
       return current?.id === operationId

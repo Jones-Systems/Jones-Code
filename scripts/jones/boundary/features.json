@@ -6,6 +6,8 @@
     {
       "id": "update-continuity",
       "tests": [
+        "apps/server/src/jones/updates/launcherOperation.test.ts",
+        "apps/server/src/jones/updates/operationHandoff.test.ts",
         "apps/server/src/jones/updates/continuationPrompt.test.ts",
         "apps/server/src/jones/updates/serverCapability.test.ts"
       ]

@@ -148,6 +148,7 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
       return state;
     });
   const service = Layer.succeed(JonesUpdates.JonesUpdates, {
+    fleetOperationsSupported: false,
     state: (after) => record("state", after),
     check: record("check"),
     download: (input) => record("download", input),
