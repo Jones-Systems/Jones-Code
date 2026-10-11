@@ -9,6 +9,8 @@
     "apps/server/src/jones/workQueueMetadata/http.ts",
     "apps/web/src/jones/workQueue/PromptsSettings.test.tsx",
     "apps/web/src/jones/workQueue/PromptsSettings.tsx",
+    "apps/web/src/jones/workQueue/SentPrompts.test.tsx",
+    "apps/web/src/jones/workQueue/SentPrompts.tsx",
     "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
     "apps/web/src/jones/workQueue/UnifiedQueuePage.tsx",
     "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx",

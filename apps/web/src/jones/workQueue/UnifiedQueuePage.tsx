@@ -24,6 +24,7 @@ import {
 import { Toggle, ToggleGroup } from "../../components/ui/toggle-group";
 import { EnvironmentVoiceReview } from "../../components/voiceReview/VoiceReviewPage";
 import { WorkQueueMetadataPanel } from "./WorkQueueMetadataPanel";
+import { SentPrompts } from "./SentPrompts";
 import { useWorkQueueMetadata } from "./useWorkQueueMetadata";
 
 export type PromptQueueView = "pending" | "queued" | "sent";
@@ -273,12 +274,7 @@ function EnvironmentPrompts({
           <EnvironmentWorkQueue environmentId={environmentId} />
         )}
       </div>
-      {pane === "sent" ? (
-        <p className="text-sm text-muted-foreground">
-          Sent history is unavailable from this connection. Unconfirmed handoffs remain under
-          Queued.
-        </p>
-      ) : null}
+      {pane === "sent" ? <SentPrompts state={{ status: "unavailable" }} /> : null}
     </section>
   );
 }

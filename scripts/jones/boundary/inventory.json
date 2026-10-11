@@ -644,6 +644,8 @@
     "apps/web/src/versionSkew.ts": "hook",
     "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/jones/workMode/SidebarWorkModePill.tsx": "jones-owned",
+    "apps/web/src/jones/workQueue/SentPrompts.test.tsx": "jones-owned",
+    "apps/web/src/jones/workQueue/SentPrompts.tsx": "jones-owned",
     "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx": "jones-owned",
     "apps/web/src/jones/workQueue/UnifiedQueuePage.tsx": "jones-owned",
     "apps/web/src/jones/workQueue/PromptsSettings.test.tsx": "jones-owned",
