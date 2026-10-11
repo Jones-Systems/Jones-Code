@@ -929,7 +929,9 @@
     "packages/client-runtime/src/connection/registry.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/state/threads-atoms.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/platform/persistence.ts": "accepted-shared",
-    "scripts/jones/updates/legacy-bootstrap-after-pack.d.mts": "jones-owned"
+    "scripts/jones/updates/legacy-bootstrap-after-pack.d.mts": "jones-owned",
+    "scripts/jones/updates/legacy-preparation-native-fixture.mjs": "jones-owned",
+    "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -155,6 +155,9 @@ jobs:
           scripts/jones/updates/legacy-bootstrap-bundle.test.ts
           apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts
 
+      - name: Validate preparation fixture binding and cleanup contracts
+        run: node --test --test-concurrency=1 scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs
+
       - name: Install virtual display for Chromium startup qualification
         run: sudo apt-get update && sudo apt-get install -y xvfb
 

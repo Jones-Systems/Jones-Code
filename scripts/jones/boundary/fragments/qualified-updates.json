@@ -103,7 +103,9 @@
     "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
     "apps/server/src/jones/updates/offlinePreparationWorker.ts",
     "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
-    "scripts/jones/updates/legacy-bootstrap-after-pack.d.mts"
+    "scripts/jones/updates/legacy-bootstrap-after-pack.d.mts",
+    "scripts/jones/updates/legacy-preparation-native-fixture.mjs",
+    "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

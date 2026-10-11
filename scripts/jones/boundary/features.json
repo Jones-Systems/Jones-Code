@@ -575,7 +575,8 @@
         "apps/server/src/jones/updates/offlinePreparationPlan.test.ts",
         "apps/server/src/jones/updates/offlinePreparationCore.test.ts",
         "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationWorker.test.ts"
+        "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+        "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs"
       ],
       "scope": "Qualified update writer-observer sudo and socket transports retain one shared protocol parser, exact endpoint trust, bounded response lifecycle, and fail-closed incomplete observations."
     }
