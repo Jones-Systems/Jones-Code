@@ -24,6 +24,8 @@
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
+        // Xvfb invokes this native Chromium qualifier through a wrapper command.
+        "jones/updates/native-startup-chromium.mjs",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
         "jones/performance/prepare-sources.mjs",

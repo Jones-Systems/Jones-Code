@@ -79,6 +79,43 @@ const makeClient = (host: FakeLauncherProcess, currentVersion: string) =>
     Effect.provideService(HostProcessEnvironment, host.env),
   );
 
+it.effect(
+  "requires explicit caller-operation support and correlates acceptance to the exact ID",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        qualifiedUpdatesProtocol: 1,
+        startupGateProtocol: 1,
+      };
+      const input = {
+        targetVersion: "1.1.0",
+        dbPath: "/synthetic/statev2.sqlite",
+        stagedHandle: "22345678-1234-4234-8234-123456789abc",
+        operationId: "12345678-1234-4234-8234-123456789abc",
+      };
+      const oldHost = new FakeLauncherProcess(context);
+      const oldClient = yield* makeClient(oldHost, "1.0.0");
+      expect((yield* oldClient.requestUpdate(input).pipe(Effect.flip))._tag).toBe(
+        "ServiceLauncherRejectedError",
+      );
+      expect(oldHost.sent).toEqual([]);
+      const host = new FakeLauncherProcess({ ...context, updateOperationsProtocol: 1 });
+      const client = yield* makeClient(host, "1.0.0");
+      const request = yield* Effect.forkChild(client.requestUpdate(input), {
+        startImmediately: true,
+      });
+      yield* Effect.promise(() => host.sentSignal.promise);
+      host.emit({ type: "update-accepted", updateId: "other-operation" });
+      expect(host.listenerCount()).toBe(2);
+      host.emit({ type: "update-accepted", updateId: input.operationId });
+      expect(yield* Fiber.join(request)).toBe(input.operationId);
+      expect(host.sent).toEqual([{ type: "request-update", ...input }]);
+      expect(host.listenerCount()).toBe(0);
+    }),
+);
+
 it.effect("waits for the launcher to durably commit the trial update ID", () =>
   Effect.gen(function* () {
     const pending = {
@@ -681,3 +718,73 @@ it("rejects malformed supplied IPC proofs without converting them into ID-only m
     }),
   ).toBeUndefined();
 });
+
+it.effect(
+  "requires retirement capability and correlates a retirement after the install caller times out",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        qualifiedUpdatesProtocol: 1,
+        startupGateProtocol: 1,
+        updateOperationsProtocol: 1,
+      };
+      const input = {
+        operationId: "12345678-1234-4234-8234-123456789abc",
+        stagedHandle: "22345678-1234-4234-8234-123456789abc",
+        environmentId: "synthetic",
+        currentVersion: "1.0.0",
+        expectedInstalledSource: "a".repeat(40),
+        targetSource: "b".repeat(40),
+      };
+      const oldHost = new FakeLauncherProcess(context);
+      const old = yield* makeClient(oldHost, "1.0.0");
+      expect(old.qualifiedRetirement).toBe(false);
+      expect((yield* old.retireUpdate!(input)).retired).toBe(false);
+      expect(oldHost.sent).toEqual([]);
+      const host = new FakeLauncherProcess({ ...context, updateRetirementProtocol: 1 });
+      const client = yield* makeClient(host, "1.0.0");
+      const install = yield* Effect.forkChild(
+        client
+          .requestUpdate({
+            operationId: input.operationId,
+            stagedHandle: input.stagedHandle,
+            targetVersion: "1.1.0",
+            dbPath: "/synthetic/statev2.sqlite",
+          })
+          .pipe(Effect.result),
+        { startImmediately: true },
+      );
+      yield* Effect.promise(() => host.sentSignal.promise);
+      yield* TestClock.adjust(Duration.seconds(30));
+      expect((yield* Fiber.join(install))._tag).toBe("Failure");
+      const retire = yield* Effect.forkChild(client.retireUpdate!(input), {
+        startImmediately: true,
+      });
+      yield* Effect.yieldNow;
+      host.emit({ type: "update-accepted", updateId: input.operationId });
+      host.emit({
+        type: "update-retired",
+        operationId: input.operationId,
+        stagedHandle: "different",
+        retired: true,
+      });
+      expect(host.listenerCount()).toBe(2);
+      host.emit({
+        type: "update-retired",
+        operationId: input.operationId,
+        stagedHandle: input.stagedHandle,
+        retired: false,
+        reason: "The operation was accepted before retirement.",
+      });
+      expect(yield* Fiber.join(retire)).toEqual({
+        retired: false,
+        reason: "The operation was accepted before retirement.",
+      });
+      expect(host.listenerCount()).toBe(0);
+      expect(
+        decodeServiceLauncherChildMessage({ type: "request-retire-update", ...input }),
+      ).toEqual({ type: "request-retire-update", ...input });
+    }),
+);

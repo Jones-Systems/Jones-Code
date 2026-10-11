@@ -7,7 +7,6 @@ import * as NodeEvents from "node:events";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import * as NetAddress from "effect/net/NetAddress";
 import { awaitJonesTrialCommit } from "./trialGate.ts";
-import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof NodeFSP>();
@@ -77,11 +76,12 @@ async function watchFile(file: string, signal: AbortSignal) {
   }
 }
 
-async function trial(root: string) {
+async function trial(root: string, transactionId = "synthetic-transaction") {
   const descriptor = {
     protocol: 1,
     startupGateProtocol: 1,
-    transactionId: "synthetic-transaction",
+    transactionId,
+    stagedHandle: "f".repeat(64),
     home: root,
     databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
     profile: NodePath.join(root, "profile"),
@@ -108,6 +108,185 @@ async function trial(root: string) {
     },
   };
 }
+
+async function committedTrial(root: string, legacy = false) {
+  const initial = await trial(root, legacy ? "f".repeat(64) : undefined);
+  const directory = NodePath.join(
+    root,
+    "runtime",
+    "jones-updates",
+    "transactions",
+    initial.transactionId,
+  );
+  await NodeFSP.mkdir(directory, { recursive: true });
+  const input = {
+    ...initial,
+    descriptorPath: NodePath.join(directory, "trial-descriptor.json"),
+    trialReceiptPath: NodePath.join(directory, "trial-receipt.json"),
+    commitGrantPath: NodePath.join(directory, "commit-grant.json"),
+  };
+  const manifestPath = NodePath.join(root, "runtime", "jones-active-install.json");
+  const reservationPath = NodePath.join(directory, "resume-dispatched.json");
+  const journalPath = NodePath.join(directory, "journal.json");
+  const receipt = {
+    ...input,
+    resumeHeld: true,
+    backendProcess: { pid: 123, identity: "original trial backend" },
+  };
+  const files = new Map<string, unknown>([
+    [input.descriptorPath, input],
+    [manifestPath, { ...input, owner: "desktop", generation: input.transactionId }],
+    [input.commitGrantPath, { ...input, generation: input.transactionId }],
+    [
+      journalPath,
+      {
+        phase: "resumed",
+        intent: {
+          protocol: 1,
+          transactionId: input.transactionId,
+          staged: { handle: input.stagedHandle },
+        },
+      },
+    ],
+    [input.trialReceiptPath, receipt],
+    [reservationPath, receipt],
+  ]);
+  for (const [path, value] of files) {
+    const stored = { ...(value as Record<string, unknown>) };
+    if (legacy) delete stored.stagedHandle;
+    await NodeFSP.writeFile(path, JSON.stringify(stored));
+  }
+  return { input, files, manifestPath, journalPath, reservationPath };
+}
+
+it("admits repeated committed child restarts without replaying or replacing trial artifacts", async () =>
+  fixture(async (root) => {
+    const { input, files } = await committedTrial(root);
+    const readArtifacts = () =>
+      Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
+    const before = await readArtifacts();
+    await awaitJonesTrialCommit(input);
+    await awaitJonesTrialCommit(input);
+    expect(await readArtifacts()).toEqual(before);
+    expect(NodeFSP.link).not.toHaveBeenCalled();
+    expect(NodeFS.watch).not.toHaveBeenCalled();
+  }));
+
+it("reads legacy equal-ID committed evidence without rewriting it on repeated restarts", async () =>
+  fixture(async (root) => {
+    const { input, files } = await committedTrial(root, true);
+    const readArtifacts = () =>
+      Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
+    const before = await readArtifacts();
+    await awaitJonesTrialCommit(input);
+    await awaitJonesTrialCommit(input);
+    expect(await readArtifacts()).toEqual(before);
+    expect(NodeFSP.link).not.toHaveBeenCalled();
+    expect(NodeFS.watch).not.toHaveBeenCalled();
+  }));
+
+it.each([
+  "new-claim",
+  "different-artifact",
+  "incomplete",
+  "different-generation",
+  "explicit-mismatch",
+])("does not normalize missing staged handles for %s evidence", async (fault) =>
+  fixture(async (root) => {
+    const { input, files, journalPath, manifestPath } = await committedTrial(root, true);
+    if (fault === "new-claim") {
+      await NodeFSP.writeFile(
+        NodePath.join(NodePath.dirname(journalPath), "prepare-intent.json"),
+        JSON.stringify({ preparationClaimProtocol: 2 }),
+      );
+    } else {
+      const path =
+        fault === "different-generation"
+          ? manifestPath
+          : fault === "explicit-mismatch"
+            ? input.commitGrantPath
+            : journalPath;
+      const value = JSON.parse(await NodeFSP.readFile(path, "utf8"));
+      if (fault === "different-artifact") value.intent.staged.handle = "e".repeat(64);
+      if (fault === "incomplete") value.phase = "resume-intent";
+      if (fault === "different-generation") value.generation = "previous";
+      if (fault === "explicit-mismatch") value.stagedHandle = "e".repeat(64);
+      await NodeFSP.writeFile(path, JSON.stringify(value));
+    }
+    const readArtifacts = () =>
+      Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
+    const before = await readArtifacts();
+    await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "identity" });
+    expect(await readArtifacts()).toEqual(before);
+    expect(NodeFSP.link).not.toHaveBeenCalled();
+    expect(NodeFS.watch).not.toHaveBeenCalled();
+  }),
+);
+
+it.each([
+  ["manifest", "owner", "other"],
+  ["manifest", "generation", "another-generation"],
+  ["manifest", "transactionId", "another-transaction"],
+  ["manifest", "home", "another-home"],
+  ["manifest", "databasePath", "another-database"],
+  ["manifest", "profile", "another-profile"],
+  ["manifest", "environmentId", "another-environment"],
+  ["manifest", "sourceSha", "c".repeat(40)],
+  ["manifest", "sourceTree", "d".repeat(40)],
+  ["manifest", "version", "another-version"],
+  ["grant", "generation", "another-generation"],
+  ["grant", "sourceSha", "c".repeat(40)],
+  ["grant", "stagedHandle", "c".repeat(64)],
+  ["journal", "phase", "resume-intent"],
+  ["journal", "phase", "blocked"],
+  [
+    "journal",
+    "intent",
+    { protocol: 1, transactionId: "synthetic-transaction", staged: { handle: "c".repeat(64) } },
+  ],
+  ["receipt", "resumeHeld", false],
+  ["receipt", "stagedHandle", "c".repeat(64)],
+  ["reservation", "transactionId", "another-transaction"],
+  ["reservation", "backendProcess", { pid: 124, identity: "different backend" }],
+])("holds committed restart when %s.%s differs", async (artifact, key, value) =>
+  fixture(async (root) => {
+    const { input, files, manifestPath, journalPath, reservationPath } = await committedTrial(root);
+    const paths: Record<string, string> = {
+      manifest: manifestPath,
+      grant: input.commitGrantPath,
+      journal: journalPath,
+      receipt: input.trialReceiptPath,
+      reservation: reservationPath,
+    };
+    const path = paths[artifact as string]!;
+    const changed = JSON.parse(await NodeFSP.readFile(path, "utf8"));
+    changed[key as string] = value;
+    await NodeFSP.writeFile(path, JSON.stringify(changed));
+    const readArtifacts = () =>
+      Promise.all([...files.keys()].map((file) => NodeFSP.readFile(file, "utf8")));
+    const before = await readArtifacts();
+    await expect(awaitJonesTrialCommit(input)).rejects.toThrow();
+    expect(await readArtifacts()).toEqual(before);
+    expect(NodeFSP.link).not.toHaveBeenCalled();
+  }),
+);
+
+it("holds a committed restart with missing completion evidence or a noncanonical descriptor", async () =>
+  fixture(async (root) => {
+    const { input, journalPath } = await committedTrial(root);
+    const canonical = await NodeFSP.readFile(input.descriptorPath, "utf8");
+    const anotherPath = NodePath.join(
+      NodePath.dirname(input.descriptorPath),
+      "other-descriptor.json",
+    );
+    await NodeFSP.writeFile(anotherPath, canonical);
+    await expect(
+      awaitJonesTrialCommit({ ...input, descriptorPath: anotherPath }),
+    ).rejects.toMatchObject({ step: "identity" });
+    await NodeFSP.unlink(journalPath);
+    await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "identity" });
+    expect(NodeFSP.link).not.toHaveBeenCalled();
+  }));
 
 it("removes only captured synthetic roots after success and callback failure", async () => {
   const completed = await fixture(async (root) => root);
@@ -187,6 +366,7 @@ it("holds helper completion until the matching commit grant and reserves resume 
       protocol: 1,
       startupGateProtocol: 1,
       transactionId: "transaction",
+      stagedHandle: "f".repeat(64),
       home: root,
       databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
       profile: NodePath.join(root, "profile"),
@@ -246,6 +426,7 @@ it("rejects wrong source before receipt publication", async () =>
       protocol: 1,
       startupGateProtocol: 1,
       transactionId: "tx",
+      stagedHandle: "f".repeat(64),
       home: root,
       databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
       profile: NodePath.join(root, "profile"),
@@ -271,76 +452,6 @@ it("rejects wrong source before receipt publication", async () =>
     await expect(NodeFSP.stat(descriptor.trialReceiptPath)).rejects.toMatchObject({
       code: "ENOENT",
     });
-  }));
-
-it("prepares only once for one fixed native transaction", async () =>
-  fixture(async (root) => {
-    await NodeFSP.mkdir(NodePath.join(root, "runtime"));
-    await NodeFSP.writeFile(
-      NodePath.join(root, "runtime/jones-active-install.json"),
-      JSON.stringify({
-        protocol: 1,
-        owner: "desktop",
-        home: root,
-        databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
-        profile: NodePath.join(root, "profile"),
-        environmentId: "fixture",
-        version: "v",
-      }),
-    );
-    let prepares = 0;
-    const input = {
-      home: root,
-      databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
-      environmentId: "fixture",
-      version: "v",
-      handle: "c".repeat(64),
-      prepare: async () => {
-        prepares++;
-        return [];
-      },
-      clear: async () => {},
-    };
-    await prepareNativeContinuationReceipt(input);
-    await prepareNativeContinuationReceipt(input);
-    expect(prepares).toBe(1);
-    await expect(
-      prepareNativeContinuationReceipt({ ...input, environmentId: "wrong" }),
-    ).rejects.toThrow("manifest");
-    expect(prepares).toBe(1);
-  }));
-
-it("retains an uncertain preparation reservation and refuses replay", async () =>
-  fixture(async (root) => {
-    await NodeFSP.mkdir(NodePath.join(root, "runtime"));
-    await NodeFSP.writeFile(
-      NodePath.join(root, "runtime/jones-active-install.json"),
-      JSON.stringify({
-        protocol: 1,
-        owner: "desktop",
-        home: root,
-        databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
-        profile: NodePath.join(root, "profile"),
-        environmentId: "fixture",
-        version: "v",
-      }),
-    );
-    let prepares = 0;
-    const input = {
-      home: root,
-      databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
-      environmentId: "fixture",
-      version: "v",
-      handle: "d".repeat(64),
-      prepare: async () => {
-        prepares++;
-        throw new Error("Unknown effect");
-      },
-      clear: async () => {},
-    };
-    await expect(prepareNativeContinuationReceipt(input)).rejects.toThrow("Unknown effect");
-    await expect(prepareNativeContinuationReceipt(input)).rejects.toMatchObject({ code: "EEXIST" });
-    expect(prepares).toBe(1);
   }));
 
 function latch() {
@@ -459,6 +570,8 @@ it.each([
   ["unsupported startup gate", { startupGateProtocol: 2 }],
   ["outer protocol", { protocol: 2 }],
   ["transaction", { transactionId: "another" }],
+  ["staged handle", { stagedHandle: "c".repeat(64) }],
+  ["missing staged handle", { stagedHandle: undefined }],
   ["home", { home: "/different" }],
   ["database", { databasePath: "/different" }],
   ["profile", { profile: "/different" }],

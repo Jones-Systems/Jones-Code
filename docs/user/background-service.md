@@ -70,6 +70,33 @@ path checks checksums only and does not establish Jones provenance. Prefer local
 staging; an existing cache without matching Jones provenance is refused and
 preserved. An update prompt in a client does not prove a Jones artifact is available.
 
+## Follow laptop updates automatically
+
+In the Jones desktop app, open **Settings → Connections** and choose **Enroll
+this host** for each server you want to follow laptop updates. Enrollment is
+separate from connecting to a server. A host must first have a verified Jones
+installation and the supported background launcher; **Setup required** means
+that initial host setup is still needed. Enrollment does not replace an existing
+system service or take over an upstream T3 Code installation.
+
+Download the offered laptop update, then choose Install. Enrolled hosts follow
+that exact source only after the laptop successfully switches to it. Servers
+may download ahead of time, but a laptop rollback does not authorize their
+installation. Offline hosts wait until they can be reached; another unavailable
+host does not stop the rest of the rollout. Keep the desktop app running to
+coordinate remaining hosts.
+
+The connection row shows each host's progress and any action needed. If the
+connection drops during installation, Jones checks what the host accepted before
+sending another installation request. An uncertain outcome stays on hold;
+repeatedly clicking Install does not resolve missing evidence.
+
+Choose **Continue eligible active threads after this host updates** when enrolling
+if you want that behavior. Explicit user stops and queue holds remain in force;
+provider approval or unavailable native session state can still require attention.
+Disabling automatic updates stops new dispatch from the laptop; an installation
+already accepted by a host must still finish or reconcile.
+
 ## Platform support
 
 Linux uses the systemd user unit `jones-code.service`. Lingering is needed to

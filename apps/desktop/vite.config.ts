@@ -95,7 +95,9 @@ export default defineConfig({
       entry: ["src/boot.ts", "src/compileCache.ts"],
       clean: false,
       deps: {
-        alwaysBundle: (id) => id === "@t3tools/shared/jones/previewCompanionProduct",
+        alwaysBundle: (id) =>
+          id === "@t3tools/shared/jones/previewCompanionProduct" ||
+          id === "@t3tools/shared/jones/nativeWriterFence",
         neverBundle: (id) => id === "./main.cjs" || id === "./compileCache.cjs",
       },
     },

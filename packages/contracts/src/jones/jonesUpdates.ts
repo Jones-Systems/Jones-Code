@@ -62,6 +62,7 @@ export const JonesUpdateState = Schema.Struct({
   checkedAt: Schema.optionalKey(Schema.String),
   environmentId: Schema.optionalKey(EnvironmentId),
   currentVersion: Schema.optionalKey(Schema.String),
+  installedSource: Schema.optionalKey(TrimmedNonEmptyString),
   updateId: Schema.optionalKey(TrimmedNonEmptyString),
   outcome: Schema.optionalKey(
     Schema.Struct({
@@ -101,3 +102,12 @@ export const JonesUpdateInstallInput = Schema.Struct({
   continueRunningThreads: Schema.optionalKey(Schema.Boolean),
 });
 export type JonesUpdateInstallInput = typeof JonesUpdateInstallInput.Type;
+
+/** Native preparation binds one durable attempt independently of its reusable staged artifact. */
+export const JonesNativePrepareInput = Schema.Struct({
+  stagedHandle: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  transactionId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  environmentId: EnvironmentId,
+  currentVersion: TrimmedNonEmptyString,
+});
+export type JonesNativePrepareInput = typeof JonesNativePrepareInput.Type;

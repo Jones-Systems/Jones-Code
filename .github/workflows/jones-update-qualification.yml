@@ -7,6 +7,14 @@ on:
       - .github/workflows/artifact-desktop-mac.yml
       - .github/workflows/artifact-cli-linux.yml
       - apps/desktop/src/jones/updates/**
+      - apps/desktop/src/boot.ts
+      - apps/desktop/vite.config.ts
+      - apps/desktop/scripts/main-process-bundle.test.mjs
+      - apps/desktop/package.json
+      - packages/shared/src/jones/nativeWriterFence*
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - apps/web/src/jones/updates/**
@@ -63,6 +71,15 @@ jobs:
           scripts/stamp-jones-build.test.ts
           scripts/jones/updates/build-provenance.test.ts
           scripts/build-desktop-artifact.test.ts
+
+      - name: Install virtual display for Chromium startup qualification
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Check startup qualification fixtures
+        run: node --test scripts/jones/updates/native-startup-fixture.node-test.mjs
+
+      - name: Qualify Chromium-mode native startup refusal
+        run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
 
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json

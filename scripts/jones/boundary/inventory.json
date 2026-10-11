@@ -7,11 +7,7 @@
   },
   "baseline": "d720210996a514368ba99f4860063110033d93fa",
   "paths": {
-    "scripts/jones/boundary/fragments/fleet-update-access.json": "jones-owned",
-    "apps/web/src/branding.ts": "accepted-shared",
-    "apps/web/src/versionSkew.test.ts": "accepted-shared",
-    "apps/web/src/vite-env.d.ts": "accepted-shared",
-    "packages/client-runtime/src/connection/resolver.ts": "accepted-shared",
+    "scripts/jones/boundary/fragments/desktop-stage-attempts.json": "jones-owned",
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
     ".agents/skills/test-t3-app/SKILL.md": "policy",
@@ -862,7 +858,15 @@
     "scripts/notify-discord-release.test.ts": "accepted-shared",
     "scripts/release-smoke.ts": "accepted-shared",
     "scripts/stamp-jones-build.test.ts": "jones-owned",
-    "scripts/stamp-jones-build.ts": "jones-owned"
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/fleet-update-access.json": "jones-owned",
+    "apps/web/src/branding.ts": "accepted-shared",
+    "apps/web/src/versionSkew.test.ts": "accepted-shared",
+    "apps/web/src/vite-env.d.ts": "accepted-shared",
+    "packages/client-runtime/src/connection/resolver.ts": "accepted-shared",
+    "docs/internals/server-updates.md": "accepted-shared",
+    "scripts/jones/boundary/fragments/update-continuity.json": "jones-owned",
+    "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

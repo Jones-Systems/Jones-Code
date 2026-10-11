@@ -19,7 +19,10 @@ import {
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
-import { installLocalDesktopUpdate } from "../../jones/updates/localDesktopUpdate";
+import {
+  downloadLocalDesktopUpdate,
+  installLocalDesktopUpdate,
+} from "../../jones/updates/localDesktopUpdate";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -182,8 +185,7 @@ function SidebarUpdateControl() {
     setIsActionPending(true);
 
     if (action === "download") {
-      void bridge
-        .downloadUpdate()
+      void downloadLocalDesktopUpdate(bridge, state)
         .then((result) => {
           if (result.completed) {
             showDesktopUpdateDownloadedToast(bridge, result.state);

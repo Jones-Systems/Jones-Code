@@ -1,49 +1,71 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { EnvironmentId, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
-import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
-import { requestJonesUpdateWithDescriptor } from "@t3tools/client-runtime/jones/fleet-updates";
-import { executeBlockedHostUpdate } from "./blockedHostCommand";
+import {
+  EnvironmentRegistry,
+  PrimaryConnectionTarget,
+  type ConnectionCatalogEntry,
+  type NetworkStatus,
+} from "@t3tools/client-runtime/connection";
+import { makeBlockedHostUpdate } from "./blockedHostCommand";
 
 vi.mock("../../branding", () => ({ APP_SOURCE_SHA: undefined }));
-vi.mock("@t3tools/client-runtime/jones/fleet-updates", () => ({
-  requestJonesUpdateWithDescriptor: vi.fn(),
-}));
 
 describe("blocked-host update command", () => {
-  it("keeps an owner-disabled connection disabled when a status read finds a compatible host", async () => {
-    const id = EnvironmentId.make("fleet-disabled-host");
-    const entry = { target: { environmentId: id }, enabled: false, serverUpdateRequired: true };
-    const setEnabled = vi.fn();
-    const setCompatibility = vi.fn();
-    vi.mocked(requestJonesUpdateWithDescriptor).mockReturnValue(
-      Effect.succeed({
-        state: null,
-        descriptor: {
-          environmentId: id,
-          label: "Synthetic host",
-          platform: { os: "linux", arch: "x64" },
-          serverVersion: "0.0.45-preview.20261010.1.1",
-          capabilities: { repositoryIdentity: true },
-          orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
-        },
-      }) as ReturnType<typeof requestJonesUpdateWithDescriptor>,
-    );
-    const entries = await Effect.runPromise(SubscriptionRef.make(new Map([[id, entry]])));
-    // The bridge mock supplies a context-free effect; no transport services execute here.
-    await Effect.runPromise(
-      executeBlockedHostUpdate({ environmentId: id, request: { action: "state" } }).pipe(
-        Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, {
-          entries,
-          setEnabled,
-          setCompatibility,
-        } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
-      ) as Effect.Effect<unknown, unknown>,
-    );
-    expect(requestJonesUpdateWithDescriptor).toHaveBeenCalledWith(entry, { action: "state" });
-    expect(setEnabled).not.toHaveBeenCalled();
-    expect(setCompatibility).not.toHaveBeenCalled();
-    expect((await Effect.runPromise(SubscriptionRef.get(entries))).get(id)?.enabled).toBe(false);
-  });
+  it.effect(
+    "keeps an owner-disabled connection disabled when a status read finds a compatible host",
+    () =>
+      Effect.gen(function* () {
+        const id = EnvironmentId.make("fleet-disabled-host");
+        const entry: ConnectionCatalogEntry = {
+          target: new PrimaryConnectionTarget({
+            environmentId: id,
+            label: "Synthetic host",
+            httpBaseUrl: "https://synthetic.example.test",
+            wsBaseUrl: "wss://synthetic.example.test/ws",
+          }),
+          profile: Option.none(),
+          enabled: false,
+          serverUpdateRequired: true,
+        };
+        const setEnabled = vi.fn(() => Effect.void);
+        const setCompatibility = vi.fn(() => Effect.void);
+        const request = vi.fn(() =>
+          Effect.succeed({
+            state: null,
+            descriptor: {
+              environmentId: id,
+              label: "Synthetic host",
+              platform: { os: "linux" as const, arch: "x64" as const },
+              serverVersion: "0.0.45-preview.20261010.1.1",
+              capabilities: { repositoryIdentity: true },
+              orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+            },
+          }),
+        );
+        const entries = yield* SubscriptionRef.make<
+          ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+        >(new Map([[id, entry]]));
+        const networkStatus = yield* SubscriptionRef.make<NetworkStatus>("online");
+        const execute = makeBlockedHostUpdate(request);
+        yield* execute({ environmentId: id, request: { action: "state" } }).pipe(
+          Effect.provide(
+            Layer.mock(EnvironmentRegistry.EnvironmentRegistry)({
+              entries,
+              networkStatus,
+              setEnabled,
+              setCompatibility,
+            }),
+          ),
+        );
+        expect(request).toHaveBeenCalledWith(entry, { action: "state" });
+        expect(setEnabled).not.toHaveBeenCalled();
+        expect(setCompatibility).not.toHaveBeenCalled();
+        expect((yield* SubscriptionRef.get(entries)).get(id)?.enabled).toBe(false);
+      }),
+  );
 });

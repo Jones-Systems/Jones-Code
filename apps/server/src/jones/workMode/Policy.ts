@@ -33,6 +33,7 @@ function activityMillis(thread: OrchestrationV2ThreadShell): number | null {
 export function workModeCandidate(
   thread: OrchestrationV2ThreadShell,
   nowMs: number,
+  options?: { readonly ignoreInterval?: boolean },
 ): WorkModeCandidate | null {
   if (
     thread.lineage.parentThreadId !== null ||
@@ -56,12 +57,20 @@ export function workModeCandidate(
   )
     return null;
   const anchor = activityMillis(thread);
-  if (anchor === null || !Number.isFinite(nowMs) || nowMs - anchor < WORK_MODE_INTERVAL_MS)
+  if (
+    anchor === null ||
+    !Number.isFinite(nowMs) ||
+    (options?.ignoreInterval !== true && nowMs - anchor < WORK_MODE_INTERVAL_MS)
+  )
     return null;
   return { threadId: thread.id, generation: `${thread.latestRunId}:${anchor}` };
 }
 
-export function workModeContext(projection: OrchestrationV2ThreadProjection, nowMs: number) {
+export function workModeContext(
+  projection: OrchestrationV2ThreadProjection,
+  nowMs: number,
+  options?: { readonly ignoreInterval?: boolean; readonly allowStoppedSession?: boolean },
+) {
   if (
     projection.thread.selfSettlement != null ||
     projection.runs.some((run) =>
@@ -96,7 +105,13 @@ export function workModeContext(projection: OrchestrationV2ThreadProjection, now
   )
     return null;
   const session = projection.providerSessions.find((row) => row.id === owner.providerSessionId);
-  if (session?.status !== "ready" || session.lastError !== null) return null;
+  if (
+    session === undefined ||
+    session.lastError !== null ||
+    (session.status !== "ready" &&
+      !(options?.allowStoppedSession === true && session.status === "stopped"))
+  )
+    return null;
   const lastMessageAt = projection.messages
     .filter((message) => message.role !== "system")
     .reduce(
@@ -120,7 +135,11 @@ export function workModeContext(projection: OrchestrationV2ThreadProjection, now
       ),
     Number.NEGATIVE_INFINITY,
   );
-  if (nowMs - Math.max(lastMessageAt, lastRunAt) < WORK_MODE_INTERVAL_MS) return null;
+  if (
+    options?.ignoreInterval !== true &&
+    nowMs - Math.max(lastMessageAt, lastRunAt) < WORK_MODE_INTERVAL_MS
+  )
+    return null;
   return owner;
 }
 

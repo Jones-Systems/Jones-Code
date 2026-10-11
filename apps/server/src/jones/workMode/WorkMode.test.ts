@@ -1,6 +1,9 @@
+import * as PlannedUpdateContinuity from "../updates/PlannedUpdateContinuity.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  CheckpointId,
+  CheckpointRef,
   CheckpointScopeId,
   CommandId,
   EventId,
@@ -22,6 +25,7 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as CheckpointService from "../../orchestration-v2/CheckpointService.ts";
+import * as CheckpointCapture from "../../orchestration-v2/CheckpointCaptureService.ts";
 import * as CommandPolicy from "../../orchestration-v2/CommandPolicy.ts";
 import * as CommandReceipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as ContextHandoff from "../../orchestration-v2/ContextHandoffService.ts";
@@ -35,9 +39,11 @@ import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import type { ProviderAdapterV2SessionRuntime } from "../../orchestration-v2/ProviderAdapter.ts";
 import * as ProviderAdapters from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as ProviderRuntimeRecovery from "../../orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSwitch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as RuntimePolicy from "../../orchestration-v2/RuntimePolicy.ts";
 import * as ThreadFork from "../../orchestration-v2/ThreadForkService.ts";
+import * as ThreadCommands from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as TurnItemPositions from "../../orchestration-v2/TurnItemPositionStore.ts";
 import { workModeFixture } from "./Fixtures.testkit.ts";
 import { workModeCandidate, workModeCommand } from "./Policy.ts";
@@ -118,6 +124,41 @@ const dependencies = Layer.mergeAll(
 const orchestratorLayer = Orchestrator.layer.pipe(Layer.provideMerge(dependencies));
 const testLayer = WorkMode.layer.pipe(Layer.provideMerge(orchestratorLayer));
 
+const plannedBinding = {
+  baseDir: "/synthetic",
+  dbPath: "/synthetic/userdata/statev2.sqlite",
+  environmentId: "synthetic-environment",
+  currentVersion: "0.0.0-preview.20261010.1.1",
+  targetVersion: "0.0.0-preview.20261010.2.1",
+  expectedInstalledSource: "a".repeat(40),
+  targetSource: "b".repeat(40),
+  stagedHandle: "synthetic-staged-handle",
+};
+const plannedOperationId = "12345678-1234-4234-8234-123456789abc";
+const plannedProof: PlannedUpdateContinuity.PlannedUpdateProof = {
+  operationId: plannedOperationId,
+  binding: plannedBinding,
+  outcome: "committed",
+  current: {
+    baseDir: plannedBinding.baseDir,
+    dbPath: plannedBinding.dbPath,
+    environmentId: plannedBinding.environmentId,
+    activeVersion: plannedBinding.targetVersion,
+    activeSourceSha: plannedBinding.targetSource,
+  },
+};
+const capturePlannedUpdate = Effect.gen(function* () {
+  const settings = yield* ServerSettings.ServerSettingsService;
+  yield* settings.updateSettings({ continueThreadsAfterServerUpdate: true });
+  const continuity = yield* PlannedUpdateContinuity.make.pipe(Effect.provide(ThreadCommands.layer));
+  yield* continuity.capture({
+    operationId: plannedOperationId,
+    binding: plannedBinding,
+    continueRunningThreads: false,
+  });
+  return continuity;
+});
+
 const seed = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const now = yield* DateTime.now;
@@ -176,7 +217,10 @@ const seed = Effect.gen(function* () {
   return value.thread.id;
 });
 
-function completeLatestRun() {
+function completeLatestRun<E = never, R = never>(
+  checkpoint = false,
+  beforeCheckpoint?: () => Effect.Effect<unknown, E, R>,
+) {
   return Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const projection = yield* projections.getThreadProjection(fixture.thread.id);
@@ -188,7 +232,12 @@ function completeLatestRun() {
       type: "run.updated",
       threadId: fixture.thread.id,
       occurredAt: now,
-      payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+      payload: {
+        ...run,
+        status: checkpoint ? "waiting" : "completed",
+        startedAt: now,
+        completedAt: checkpoint ? null : now,
+      },
     });
     yield* projections.apply({
       id: EventId.make(`turn:${run.id}`),
@@ -214,6 +263,43 @@ function completeLatestRun() {
       occurredAt: now,
       payload: { ...owner, status: "idle", updatedAt: now },
     });
+    if (checkpoint) {
+      if (beforeCheckpoint !== undefined) yield* beforeCheckpoint();
+      const scope = projection.checkpointScopes.find((row) => row.runId === run.id)!;
+      const materialize = (
+        input: Parameters<CheckpointService.CheckpointServiceV2["Service"]["capture"]>[0],
+      ) => ({
+        id: CheckpointId.make(`checkpoint:${input.scope.id}:${input.ordinalWithinScope}`),
+        threadId: fixture.thread.id,
+        scopeId: input.scope.id,
+        runId: input.runId,
+        nodeId: input.nodeId,
+        parentCheckpointId: null,
+        ordinalWithinScope: input.ordinalWithinScope,
+        appRunOrdinal: input.appRunOrdinal,
+        ref: CheckpointRef.make(`refs/synthetic/${input.scope.id}/${input.ordinalWithinScope}`),
+        status: "ready" as const,
+        files: [],
+        capturedAt: input.capturedAt,
+      });
+      const nativeCheckpoint = Layer.mock(CheckpointService.CheckpointServiceV2)({
+        capture: (input) => Effect.succeed(materialize(input)),
+        materializeBaselineCheckpoint: (input) =>
+          Effect.succeed(
+            materialize({
+              ...input,
+              runId: null,
+              nodeId: input.scope.nodeId,
+              appRunOrdinal: null,
+              capturedAt: now,
+            }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const capture = yield* CheckpointCapture.CheckpointCaptureServiceV2;
+        yield* capture.execute({ threadId: fixture.thread.id, runId: run.id, scopeId: scope.id });
+      }).pipe(Effect.provide(CheckpointCapture.layer.pipe(Layer.provide(nativeCheckpoint))));
+    }
   });
 }
 
@@ -443,4 +529,211 @@ it.effect("a completed persisted context without a live session never starts a r
       Option.isNone(yield* receipts.getByCommandId(workModeCommand(candidate).commandId)),
     );
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  { trigger: "shutdown", stop: false },
+  { trigger: "startup", stop: false },
+  { trigger: "shutdown", stop: true },
+] as const)(
+  "planned queue survives real $trigger recovery and respects later Stop=$stop",
+  ({ trigger, stop }) =>
+    Effect.gen(function* () {
+      const threadId = yield* seed;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const current = yield* Orchestrator.OrchestratorV2;
+      const initial = yield* projections.getThreadProjection(threadId);
+      const source = initial.runs[0]!;
+      const now = yield* DateTime.now;
+      yield* projections.apply({
+        id: EventId.make("planned:running"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...source, status: "running", completedAt: null },
+      });
+      yield* projections.apply({
+        id: EventId.make("planned:active"),
+        type: "provider-thread.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...initial.providerThreads[0]!, status: "active" },
+      });
+      yield* projections.apply({
+        id: EventId.make("planned:turn"),
+        type: "provider-turn.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...initial.providerTurns[0]!, status: "running", completedAt: null },
+      });
+      yield* current.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("planned-queued"),
+        messageId: MessageId.make("planned-queued-message"),
+        threadId,
+        text: "Queued work",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const queued = (yield* projections.getThreadProjection(threadId)).runs.find(
+        (run) => run.status === "queued",
+      )!;
+      assert.deepEqual(yield* projections.getRecoveryThreadIds("queued-runs"), []);
+      assert.deepEqual(yield* projections.getRecoveryThreadIds("planned-update-queued-runs"), [
+        threadId,
+      ]);
+      const continuity = yield* capturePlannedUpdate;
+      const recovery = yield* ProviderRuntimeRecovery.make;
+      if (trigger === "shutdown") yield* recovery.prepareForShutdown;
+      yield* recovery.reconcile(trigger);
+      const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+      const recoveryReceipt = yield* receipts.getByCommandId(
+        CommandId.make(
+          `command:runtime-reconcile:${trigger}:${threadId}:${DateTime.formatIso(now)}`,
+        ),
+      );
+      assert.isTrue(Option.isSome(recoveryReceipt));
+      if (Option.isSome(recoveryReceipt))
+        assert.equal(recoveryReceipt.value.commandType, "provider-runtime.reconcile");
+      const reconciled = yield* projections.getThreadProjection(threadId);
+      assert.equal(reconciled.runs.find((run) => run.id === source.id)?.status, "cancelled");
+      assert.isTrue(reconciled.runs.find((run) => run.id === queued.id)?.queueHeld);
+      yield* continuity.activate(plannedProof);
+      assert.deepEqual(yield* continuity.queueThreadIds, [threadId]);
+      assert.isUndefined(yield* continuity.queueCommand(reconciled));
+      const planned = Layer.succeed(PlannedUpdateContinuity.PlannedUpdateContinuity, continuity);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`command:restart-continuation:${source.id}`),
+          messageId: MessageId.make(`message:restart-continuation:${source.id}`),
+          threadId,
+          text: "Continue where you left off.",
+          attachments: [],
+          createdBy: "agent",
+          creationSource: "server",
+          modelSelection: source.modelSelection,
+          dispatchMode: { type: "start_immediately" },
+          restartContinuationOfRunId: source.id,
+        });
+        // Checkpoint completion can release the queue synchronously. The negative
+        // case records Stop before that release becomes eligible.
+        yield* completeLatestRun(
+          true,
+          stop
+            ? () =>
+                orchestrator.dispatch({
+                  type: "thread.stop",
+                  commandId: CommandId.make("planned:later-stop"),
+                  threadId,
+                })
+            : undefined,
+        );
+        const continued = (yield* projections.getThreadProjection(threadId)).runs.find(
+          (run) => run.restartContinuationOfRunId === source.id,
+        )!;
+        assert.equal(continued.status, "completed");
+        assert.isTrue(
+          Option.isSome(
+            yield* receipts.getByCommandId(
+              CommandId.make(`command:effect:checkpoint.capture:${continued.id}`),
+            ),
+          ),
+        );
+        yield* orchestrator.recoverPlannedUpdateQueues!;
+        yield* orchestrator.recoverPlannedUpdateQueues!;
+      }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(planned))));
+      const after = yield* projections.getThreadProjection(threadId);
+      assert.equal(
+        after.runs.find((run) => run.id === queued.id)?.status,
+        stop ? "queued" : "starting",
+      );
+      assert.lengthOf(after.runs, 3);
+      const releaseReceipt = yield* receipts.getByCommandId(
+        CommandId.make(`command:planned-update-queue:${plannedOperationId}:${threadId}`),
+      );
+      assert.equal(Option.isSome(releaseReceipt), !stop);
+      if (stop) assert.isTrue(after.runs.find((run) => run.id === queued.id)?.queueHeld);
+      else assert.deepEqual(yield* continuity.queueThreadIds, []);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  { trigger: "shutdown", stop: false },
+  { trigger: "startup", stop: false },
+  { trigger: "startup", stop: true },
+] as const)(
+  "cold planned Work keeps its original due time through real $trigger recovery and Stop=$stop",
+  ({ trigger, stop }) =>
+    Effect.gen(function* () {
+      const threadId = yield* seed;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const elapsed = 20 * 60 * 1000;
+      yield* TestClock.adjust(elapsed);
+      const continuity = yield* capturePlannedUpdate;
+      const now = yield* DateTime.now;
+      const recovery = yield* ProviderRuntimeRecovery.make;
+      yield* recovery.reconcile(trigger);
+      const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+      assert.isTrue(
+        Option.isSome(
+          yield* receipts.getByCommandId(
+            CommandId.make(
+              `command:runtime-reconcile:${trigger}:${threadId}:${DateTime.formatIso(now)}`,
+            ),
+          ),
+        ),
+      );
+      assert.equal(
+        (yield* projections.getThreadProjection(threadId)).providerSessions[0]?.status,
+        "stopped",
+      );
+      yield* continuity.activate(plannedProof);
+      const candidate = workModeCandidate(
+        (yield* projections.getThreadShell(threadId))!,
+        DateTime.toEpochMillis(now),
+        { ignoreInterval: true },
+      )!;
+      const cold = Layer.mergeAll(
+        Layer.succeed(PlannedUpdateContinuity.PlannedUpdateContinuity, continuity),
+        Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
+          get: () => Effect.succeed(Option.none()),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - elapsed - 1);
+        assert.equal(yield* orchestrator.requestWorkMode(candidate), "skipped");
+        if (stop)
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("planned:cold-stop"),
+            threadId,
+          });
+        yield* TestClock.adjust(1);
+        assert.equal(
+          yield* orchestrator.requestWorkMode(candidate),
+          stop ? "skipped" : "dispatched",
+        );
+        assert.equal(
+          Option.isSome(yield* receipts.getByCommandId(workModeCommand(candidate).commandId)),
+          !stop,
+        );
+        assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, stop ? 1 : 2);
+        if (!stop) {
+          assert.equal(yield* orchestrator.requestWorkMode(candidate), "acknowledged");
+          yield* completeLatestRun();
+          yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+          const next = workModeCandidate(
+            (yield* projections.getThreadShell(threadId))!,
+            DateTime.toEpochMillis(yield* DateTime.now),
+          )!;
+          assert.equal(yield* orchestrator.requestWorkMode(next), "skipped");
+          assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+        }
+      }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(cold))));
+    }).pipe(Effect.provide(testLayer)),
 );

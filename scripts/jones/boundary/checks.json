@@ -2,15 +2,13 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
-      "id": "jones-fleet-update-access",
+      "id": "jones-desktop-stage-attempts",
       "tests": [
-        "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
-        "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
-        "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
-        "packages/contracts/src/jones/fleetUpdates/source.test.ts"
+        "packages/shared/src/jones/jonesActionsStage.test.ts",
+        "apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts"
+        "vp test run packages/shared/src/jones/jonesActions.test.ts packages/shared/src/jones/jonesActionsStage.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts"
       ]
     },
     {
@@ -340,10 +338,16 @@
         "apps/server/src/jones/cloud/qualifiedBackup.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/server/src/jones/updates/capabilityReceipt.test.ts",
-        "apps/server/src/jones/cloud/launcherCapability.test.ts"
+        "apps/server/src/jones/cloud/launcherCapability.test.ts",
+        "packages/shared/src/jones/nativeWriterFence.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/server/src/jones/updates/nativePreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "scripts/jones/updates/native-startup-fixture.node-test.mjs"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/updates/capabilityReceipt.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts"
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/updates/capabilityReceipt.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/server/src/jones/updates/nativePreparation.test.ts apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "node --test scripts/jones/updates/native-startup-fixture.node-test.mjs"
       ]
     },
     {
@@ -951,6 +955,42 @@
         "vp test run apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts -t \"refreshes ACP prompt instructions\"",
         "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts",
         "vp test run apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts"
+      ]
+    },
+    {
+      "id": "jones-fleet-update-access",
+      "tests": [
+        "apps/desktop/src/jones/fleetUpdates/store.test.ts",
+        "apps/server/src/jones/fleetUpdates/service.test.ts",
+        "apps/server/src/jones/fleetUpdates/store.test.ts",
+        "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx",
+        "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
+        "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/desktop/src/jones/fleetUpdates/store.test.ts apps/server/src/jones/fleetUpdates/service.test.ts apps/server/src/jones/fleetUpdates/store.test.ts apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts"
+      ]
+    },
+    {
+      "id": "jones-update-continuity",
+      "tests": [
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/launcherOperation.test.ts",
+        "apps/server/src/jones/updates/operationHandoff.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/jones/updates/desktopInstall.test.ts",
+        "apps/server/src/jones/cloud/shutdownBudget.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts apps/server/src/jones/updates/continuationPrompt.test.ts apps/server/src/jones/updates/launcherOperation.test.ts apps/server/src/jones/updates/operationHandoff.test.ts apps/server/src/jones/updates/plannedContinuityPolicy.test.ts apps/server/src/jones/updates/serverCapability.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/jones/updates/desktopInstall.test.ts apps/server/src/jones/cloud/shutdownBudget.test.ts apps/server/src/orchestration-v2/ProjectionRecovery.test.ts"
       ]
     }
   ]

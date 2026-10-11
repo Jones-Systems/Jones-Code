@@ -1,4 +1,5 @@
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -118,6 +119,7 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       ...entries,
       "src/app/DesktopUserDataOverride.ts",
       "src/jones/previewCompanion/CompanionProduct.ts",
+      "src/jones/updates/jonesNativeStartup.ts",
     ];
     const sharedPackageDirectory = NodePath.join(directory, "node_modules/@t3tools/shared");
     const electronPackageDirectory = NodePath.join(directory, "node_modules/electron");
@@ -133,12 +135,19 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
         new URL("../../../packages/shared/src/jones/previewCompanionProduct.ts", import.meta.url),
         NodePath.join(sharedPackageDirectory, "previewCompanionProduct.ts"),
       ),
+      NodeFSP.copyFile(
+        new URL("../../../packages/shared/src/jones/nativeWriterFence.ts", import.meta.url),
+        NodePath.join(sharedPackageDirectory, "nativeWriterFence.ts"),
+      ),
       NodeFSP.writeFile(
         NodePath.join(sharedPackageDirectory, "package.json"),
         JSON.stringify({
           name: "@t3tools/shared",
           type: "module",
-          exports: { "./jones/previewCompanionProduct": "./previewCompanionProduct.ts" },
+          exports: {
+            "./jones/previewCompanionProduct": "./previewCompanionProduct.ts",
+            "./jones/nativeWriterFence": "./nativeWriterFence.ts",
+          },
         }),
       ),
       NodeFSP.writeFile(
@@ -160,8 +169,10 @@ const appRoot = path.resolve(__dirname, "../..");
 module.exports = { app: {
   isPackaged: true,
   getAppPath: () => appRoot,
+  getVersion: () => "fixture",
   getPath: (role) => path.join(appRoot, "electron-" + role),
   setPath: () => {},
+  exit: (code) => process.exit(code),
 } };`,
       ),
     ]);
@@ -207,7 +218,7 @@ module.exports = { app: {
       /\brequire\s*\(\s*["']electron["']\s*\)/,
       "boot.cjs must retain Electron as a runtime dependency",
     );
-    const runBoot = (override, metadata = { name: "t3code" }) => {
+    const runBoot = (override, metadata = { name: "t3code" }, admissionFailure) => {
       const operations = [];
       const env = { T3CODE_DESKTOP_USER_DATA_DIR: override, T3CODE_HOME: "/ordinary/state" };
       const modules = new Map();
@@ -220,11 +231,19 @@ module.exports = { app: {
         NodeVM.runInNewContext(source, {
           module,
           exports: module.exports,
-          process: { env },
+          process: { env, platform: admissionFailure ? "darwin" : "linux" },
           require: (specifier) => {
             if (specifier === "node:path") return NodePath.posix;
+            if (specifier === "node:crypto") return NodeCrypto;
             if (specifier === "node:fs")
               return {
+                lstatSync: () => {
+                  throw new Error(admissionFailure);
+                },
+                writeSync: (fd, value) => {
+                  assert.equal(fd, 2);
+                  operations.push(`stderr:${value}`);
+                },
                 readFileSync: (path, encoding) => {
                   assert.equal(path, "/fixture/app/package.json");
                   assert.equal(encoding, "utf8");
@@ -240,6 +259,8 @@ module.exports = { app: {
                 app: {
                   isPackaged: true,
                   getAppPath: () => "/fixture/app",
+                  getVersion: () => "fixture",
+                  exit: (code) => operations.push(`exit:${code}`),
                   getPath: (role) => {
                     assert.ok(role === "appData" || role === "home");
                     return role === "appData" ? "/fixture/appData" : "/fixture/home";
@@ -274,6 +295,13 @@ module.exports = { app: {
     const defaults = runBoot(undefined);
     defaults.load();
     assert.deepEqual(defaults.operations, ["cache", "startup"]);
+    const refused = runBoot(undefined, undefined, "native failure\n" + "x".repeat(2000));
+    refused.load();
+    assert.equal(refused.operations.length, 2);
+    assert.match(refused.operations[0], /^stderr:Jones Code refused native startup: /);
+    assert.ok(refused.operations[0].length < 600);
+    assert.equal(refused.operations[0].split("\n").length, 2);
+    assert.equal(refused.operations[1], "exit:1");
     const invalid = runBoot("relative/profile");
     assert.throws(invalid.load, /must be an absolute path/);
     assert.deepEqual(invalid.operations, []);
@@ -319,7 +347,9 @@ module.exports = { app: {
           encoding: "utf8",
           env: {
             ...process.env,
+            T3CODE_HOME: NodePath.join(directory, "synthetic-state"),
             T3CODE_DESKTOP_USER_DATA_DIR: undefined,
+            T3CODE_JONES_TRIAL_DESCRIPTOR: undefined,
             APPIMAGE: "",
             NODE_COMPILE_CACHE: undefined,
             NODE_DISABLE_COMPILE_CACHE: disabled ? "1" : undefined,

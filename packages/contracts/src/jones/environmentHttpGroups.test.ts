@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environmentHttp.ts";
+import { JonesNativePrepareInput, JonesUpdateInstallInput } from "./jonesUpdates.ts";
 
 // The public API metadata is also consumed by independently upgraded clients.
 // Keep the Jones routes and authentication identity stable through relocation.
@@ -24,6 +25,7 @@ describe("Jones environment HTTP registration", () => {
       "connect",
       "conversationLibrary",
       "jonesUpdates",
+      "jonesFleetUpdates",
       "jonesImportedHistory",
       "previewCompanion",
       "webhooks",
@@ -94,4 +96,16 @@ describe("Jones environment HTTP registration", () => {
       expect(endpoint.headers?.ast).toEqual(bearerHeaders.ast);
     }
   });
+});
+
+it("requires an explicit native attempt without changing ordinary install requests", () => {
+  const base = { stagedHandle: "a".repeat(64), environmentId: "fixture", currentVersion: "1.0.0" };
+  const decode = Schema.decodeUnknownSync(JonesNativePrepareInput);
+  expect(() => decode(base)).toThrow();
+  expect(() => decode({ ...base, transactionId: "invalid" })).toThrow();
+  expect(decode({ ...base, transactionId: "b".repeat(64) })).toEqual({
+    ...base,
+    transactionId: "b".repeat(64),
+  });
+  expect(Schema.decodeUnknownSync(JonesUpdateInstallInput)(base)).toEqual(base);
 });

@@ -1,3 +1,4 @@
+import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import {
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
@@ -173,6 +174,7 @@ function makeLocalCommandHarness(input: {
   readonly text: string;
   readonly keepWarm?: boolean;
   readonly liveKeepWarmSession?: boolean;
+  readonly plannedResume?: "same" | "changed";
   readonly effortProof?: {
     readonly getSettings: Effect.Effect<ServerSettingsValue>;
     readonly selection?: ModelSelection;
@@ -236,7 +238,14 @@ function makeLocalCommandHarness(input: {
     providerSessionId,
     appThreadId: threadId,
     ownerNodeId: null,
-    nativeThreadRef: null,
+    nativeThreadRef:
+      input.plannedResume === undefined
+        ? null
+        : {
+            driver: ProviderDriverKind.make("codex"),
+            nativeId: "planned-native-thread",
+            strength: "strong",
+          },
     nativeConversationHeadRef: null,
     status: "not_loaded",
     firstRunOrdinal: 2,
@@ -476,7 +485,9 @@ function makeLocalCommandHarness(input: {
                     ),
                   ),
                 )
-              : input.failReadsAfterRunning === true || input.effortProof !== undefined
+              : input.failReadsAfterRunning === true ||
+                  input.effortProof !== undefined ||
+                  input.plannedResume !== undefined
                 ? Effect.succeed({
                     driver: providerThread.driver,
                     providerSession: {
@@ -492,6 +503,18 @@ function makeLocalCommandHarness(input: {
                       lastError: null,
                     },
                     ensureThread: () => Effect.succeed(providerThread),
+                    resumeThread: () =>
+                      Effect.succeed({
+                        ...providerThread,
+                        nativeThreadRef: {
+                          driver: providerThread.driver,
+                          nativeId:
+                            input.plannedResume === "changed"
+                              ? "different-native-thread"
+                              : "planned-native-thread",
+                          strength: "strong" as const,
+                        },
+                      }),
                     startTurn: (value: ProviderAdapterV2TurnInput) =>
                       Effect.sync(() => {
                         dispatched.push(value);
@@ -521,7 +544,7 @@ function makeLocalCommandHarness(input: {
             })
             .pipe(Effect.orDie);
         })
-      : input.failReadsAfterRunning === true
+      : input.failReadsAfterRunning === true || input.plannedResume !== undefined
         ? Effect.void
         : Effect.die("A local command must not start a native turn."),
   );
@@ -571,6 +594,9 @@ function makeLocalCommandHarness(input: {
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(PlannedUpdateContinuity.PlannedUpdateContinuity)({
+          allowWorkStart: () => Effect.succeed(input.plannedResume !== undefined),
+        }),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
@@ -977,6 +1003,39 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+effectIt.effect("planned update Work Mode reopens its captured native conversation", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "@@@@@",
+      keepWarm: true,
+      plannedResume: "same",
+    });
+    yield* harness.start;
+    expect(harness.open).toHaveBeenCalledOnce();
+    expect(harness.open).toHaveBeenCalledWith(
+      expect.objectContaining({ initialNativeThreadId: "planned-native-thread" }),
+    );
+    expect(harness.startRootRun).toHaveBeenCalledOnce();
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+  }),
+);
+
+effectIt.effect(
+  "planned update Work Mode refuses a changed native identity before sending its prompt",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "@@@@@",
+        keepWarm: true,
+        plannedResume: "changed",
+      });
+      yield* harness.start;
+      expect(harness.open).toHaveBeenCalledOnce();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    }),
+);
 
 effectIt.effect("keep-warm does not reopen an expired provider session", () =>
   Effect.gen(function* () {

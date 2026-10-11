@@ -1,3 +1,4 @@
+import type { ServiceUpdateRetirement } from "./serviceProtocol.ts";
 import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
@@ -128,6 +129,14 @@ export class ServiceLauncherClient extends Context.Service<
     ) => Effect.Effect<ServerSelfUpdateOutcome, ServiceLauncherClientError>;
     readonly qualifiedUpdates?: boolean;
     readonly qualifiedStaging?: boolean;
+    readonly qualifiedOperations?: boolean;
+    readonly qualifiedRetirement?: boolean;
+    readonly retireUpdate?: (
+      input: ServiceUpdateRetirement,
+    ) => Effect.Effect<
+      { readonly retired: boolean; readonly reason?: string },
+      ServiceLauncherClientError
+    >;
     readonly currentVersion?: string;
     /** Last durable terminal result; reading it never sends a prepared IPC message. */
     readonly qualifiedStartupOutcome?: ServerSelfUpdateOutcome | undefined;
@@ -136,6 +145,7 @@ export class ServiceLauncherClient extends Context.Service<
       readonly targetVersion: string;
       readonly dbPath: string;
       readonly stagedHandle?: string;
+      readonly operationId?: string;
     }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
     readonly prepareTrial: Effect.Effect<
       ServerSelfUpdateOutcome | undefined,
@@ -293,44 +303,57 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     readonly targetVersion: string;
     readonly dbPath: string;
     readonly stagedHandle?: string;
+    readonly operationId?: string;
   }) =>
-    input.stagedHandle !== undefined &&
-    (context?.qualifiedUpdatesProtocol !== 1 || context.startupGateProtocol !== 1)
+    input.operationId !== undefined && context?.updateOperationsProtocol !== 1
       ? Effect.fail(
           new ServiceLauncherRejectedError({
             targetVersion: input.targetVersion,
             reason:
-              "bootstrap-required: The installed launcher cannot activate qualified Jones artifacts. Upgrade it on this host first.",
+              "bootstrap-required: The launcher cannot retain caller-bound update operations.",
           }),
         )
-      : context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+      : input.stagedHandle !== undefined &&
+          (context?.qualifiedUpdatesProtocol !== 1 || context.startupGateProtocol !== 1)
         ? Effect.fail(
             new ServiceLauncherRejectedError({
               targetVersion: input.targetVersion,
               reason:
-                "The installed service launcher must be upgraded before another remote update.",
+                "bootstrap-required: The installed launcher cannot activate qualified Jones artifacts. Upgrade it on this host first.",
             }),
           )
-        : exchange(
-            { type: "request-update", ...input },
-            (reply) => reply.type === "update-accepted" || reply.type === "update-rejected",
-          ).pipe(
-            Effect.flatMap((reply) =>
-              reply.type === "update-accepted"
-                ? Effect.sync(() => {
-                    acceptedMigrationPlan = reply.migrationPlan;
-                    return reply.updateId;
-                  })
-                : reply.type === "update-rejected"
-                  ? Effect.fail(
-                      new ServiceLauncherRejectedError({
-                        targetVersion: input.targetVersion,
-                        reason: reply.reason,
-                      }),
-                    )
-                  : Effect.die("service launcher returned an impossible update response"),
-            ),
-          );
+        : context !== undefined && context.protocol !== SERVICE_LAUNCHER_PROTOCOL
+          ? Effect.fail(
+              new ServiceLauncherRejectedError({
+                targetVersion: input.targetVersion,
+                reason:
+                  "The installed service launcher must be upgraded before another remote update.",
+              }),
+            )
+          : exchange(
+              { type: "request-update", ...input },
+              (reply) =>
+                (reply.type === "update-accepted" &&
+                  (input.operationId === undefined || reply.updateId === input.operationId)) ||
+                (reply.type === "update-rejected" &&
+                  (input.operationId === undefined || reply.operationId === input.operationId)),
+            ).pipe(
+              Effect.flatMap((reply) =>
+                reply.type === "update-accepted"
+                  ? Effect.sync(() => {
+                      acceptedMigrationPlan = reply.migrationPlan;
+                      return reply.updateId;
+                    })
+                  : reply.type === "update-rejected"
+                    ? Effect.fail(
+                        new ServiceLauncherRejectedError({
+                          targetVersion: input.targetVersion,
+                          reason: reply.reason,
+                        }),
+                      )
+                    : Effect.die("service launcher returned an impossible update response"),
+              ),
+            );
 
   const pending = context?.update?.status === "pending" ? context.update : undefined;
   let outcome: ServerSelfUpdateOutcome | undefined =
@@ -426,6 +449,30 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     prepareQualifiedTrial,
     qualifiedUpdates: context?.qualifiedUpdatesProtocol === 1 && context.startupGateProtocol === 1,
     qualifiedStaging: context?.qualifiedUpdatesProtocol === 1,
+    qualifiedOperations: context?.updateOperationsProtocol === 1,
+    qualifiedRetirement: context?.updateRetirementProtocol === 1,
+    retireUpdate: (input) =>
+      context?.updateRetirementProtocol !== 1
+        ? Effect.succeed({
+            retired: false,
+            reason: "bootstrap-required: The launcher cannot revoke retired staged updates.",
+          })
+        : exchange(
+            { type: "request-retire-update", ...input },
+            (reply) =>
+              reply.type === "update-retired" &&
+              reply.operationId === input.operationId &&
+              reply.stagedHandle === input.stagedHandle,
+          ).pipe(
+            Effect.map((reply) => {
+              if (reply.type !== "update-retired")
+                throw new Error("Unexpected retirement response.");
+              return {
+                retired: reply.retired,
+                ...(reply.reason === undefined ? {} : { reason: reply.reason }),
+              };
+            }),
+          ),
     ...(context === undefined ? {} : { currentVersion: context.childVersion }),
     requestUpdate,
     get qualifiedUpdateMigrationPlan() {

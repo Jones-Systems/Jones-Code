@@ -4,12 +4,10 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
-      "id": "fleet-update-access",
+      "id": "desktop-stage-attempts",
       "tests": [
-        "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
-        "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
-        "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
-        "packages/contracts/src/jones/fleetUpdates/source.test.ts"
+        "packages/shared/src/jones/jonesActionsStage.test.ts",
+        "apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts"
       ]
     },
     {
@@ -470,7 +468,12 @@
         "scripts/jones/updates/build-provenance.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
         "apps/desktop/src/jones/updates/preloadInstall.test.ts",
-        "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
+        "packages/shared/src/jones/nativeWriterFence.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/server/src/jones/updates/nativePreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "scripts/jones/updates/native-startup-fixture.node-test.mjs"
       ]
     },
     {
@@ -494,6 +497,36 @@
         "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
+      ]
+    },
+    {
+      "id": "fleet-update-access",
+      "tests": [
+        "apps/desktop/src/jones/fleetUpdates/store.test.ts",
+        "apps/server/src/jones/fleetUpdates/service.test.ts",
+        "apps/server/src/jones/fleetUpdates/store.test.ts",
+        "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx",
+        "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
+        "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts"
+      ]
+    },
+    {
+      "id": "update-continuity",
+      "tests": [
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/launcherOperation.test.ts",
+        "apps/server/src/jones/updates/operationHandoff.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/jones/updates/desktopInstall.test.ts",
+        "apps/server/src/jones/cloud/shutdownBudget.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts"
       ]
     }
   ]

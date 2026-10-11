@@ -10,9 +10,20 @@
     "packages/client-runtime/src/jones/fleetUpdates/index.ts",
     "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
     "packages/client-runtime/src/jones/fleetUpdates/updateBridge.ts",
-    "packages/contracts/src/jones/fleetUpdates/index.ts",
-    "packages/contracts/src/jones/fleetUpdates/source.test.ts",
-    "packages/contracts/src/jones/fleetUpdates/source.ts"
+    "apps/desktop/src/jones/fleetUpdates/store.test.ts",
+    "apps/desktop/src/jones/fleetUpdates/store.ts",
+    "apps/server/src/jones/fleetUpdates/http.ts",
+    "apps/server/src/jones/fleetUpdates/service.test.ts",
+    "apps/server/src/jones/fleetUpdates/service.ts",
+    "apps/server/src/jones/fleetUpdates/store.test.ts",
+    "apps/server/src/jones/fleetUpdates/store.ts",
+    "apps/web/src/jones/fleetUpdates/FleetController.tsx",
+    "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx",
+    "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.tsx",
+    "apps/web/src/jones/fleetUpdates/runtime.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/campaignController.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/hostBridge.ts"
   ],
   "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],
@@ -36,6 +47,42 @@
     {
       "from": "apps/web/src/components/ServerUpdateAction.tsx",
       "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
+    },
+    {
+      "from": "apps/desktop/src/ipc/methods/updates.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/index.ts"
+    },
+    {
+      "from": "apps/desktop/src/ipc/methods/updates.ts",
+      "to": "packages/contracts/src/jones/jonesUpdates.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/index.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/fleetUpdates/store.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/fleetUpdates/service.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/fleetUpdates/http.ts"
+    },
+    {
+      "from": "apps/web/src/AppRoot.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/FleetController.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.tsx"
+    },
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/campaign.ts"
     }
   ]
 }

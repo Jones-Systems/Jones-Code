@@ -11,6 +11,15 @@ import {
   type JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
 
+export interface JonesStagedRetirementInput {
+  readonly operationId: string;
+  readonly environmentId: string;
+  readonly currentVersion: string;
+  readonly expectedInstalledSource: string;
+  readonly targetSource: string;
+  readonly stagedHandle: string;
+}
+
 export interface JonesUpdaterHost {
   readonly initialState: JonesUpdateState;
   readonly installedSource: () => Promise<string>;
@@ -22,10 +31,11 @@ export interface JonesUpdaterHost {
     version: string;
     migrationPlan?: JonesUpdateState["migrationPlan"];
   }>;
-  readonly install: (request: JonesUpdateInstallInput) => Promise<void | {
+  readonly install: (request: JonesUpdaterInstallInput) => Promise<void | {
     readonly updateId?: string;
     readonly migrationPlan?: JonesUpdateState["migrationPlan"];
   }>;
+  readonly retireStaged?: (input: JonesStagedRetirementInput) => Promise<void>;
   readonly stateChanged?: (state: JonesUpdateState) => void;
   readonly startupOutcome?: () =>
     | {
@@ -37,6 +47,8 @@ export interface JonesUpdaterHost {
       }
     | undefined;
 }
+
+export type JonesUpdaterInstallInput = JonesUpdateInstallInput & { readonly operationId?: string };
 
 /** One checker belongs to the host. Connected clients observe the same fixed staging handle. */
 export class JonesUpdater {
@@ -145,7 +157,7 @@ export class JonesUpdater {
     });
   }
 
-  async check(): Promise<JonesUpdateState> {
+  async check(targetSource?: string): Promise<JonesUpdateState> {
     if (
       this.busy ||
       this.state.phase === "installing" ||
@@ -161,6 +173,7 @@ export class JonesUpdater {
         installedSource: await this.host.installedSource(),
         platform: this.host.platform,
         architecture: this.host.architecture,
+        ...(targetSource === undefined ? {} : { targetSource }),
       });
       const checkedAt = new Date().toISOString();
       if (result.state === "available") {
@@ -203,6 +216,19 @@ export class JonesUpdater {
     }
   }
 
+  async stageExact(targetSource: string): Promise<JonesUpdateState> {
+    if (this.state.stagedHandle !== undefined) {
+      return this.state.provenance?.sourceSha === targetSource
+        ? this.snapshot()
+        : { ...this.snapshot(), phase: "blocked", message: "Another source is already staged." };
+    }
+    await this.check(targetSource);
+    const candidate = this.candidate;
+    if (this.state.phase !== "available" || candidate?.source !== targetSource)
+      return this.snapshot();
+    return this.download({ artifactId: candidate.artifactId, sourceSha: targetSource });
+  }
+
   async download(input: JonesUpdateDownloadInput): Promise<JonesUpdateState> {
     if (this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
       return this.snapshot();
@@ -242,7 +268,55 @@ export class JonesUpdater {
     }
   }
 
-  async install(input: JonesUpdateInstallInput): Promise<JonesUpdateState> {
+  async retireStagedOperation(
+    input: JonesStagedRetirementInput,
+  ): Promise<{ retired: boolean; reason?: string }> {
+    if (this.busy || ["preparing", "installing"].includes(this.state.phase))
+      return { retired: false, reason: "An update operation is still active." };
+    if (this.host.retireStaged === undefined)
+      return { retired: false, reason: "Exact staged retirement is unavailable on this host." };
+    if (
+      input.environmentId !== this.state.environmentId ||
+      input.currentVersion !== this.state.currentVersion ||
+      (this.state.stagedHandle !== undefined &&
+        (input.stagedHandle !== this.state.stagedHandle ||
+          input.targetSource !== this.state.provenance?.sourceSha))
+    )
+      return { retired: false, reason: "The retained stage belongs to another immutable binding." };
+    this.busy = true;
+    try {
+      if ((await this.host.installedSource()) !== input.expectedInstalledSource)
+        return { retired: false, reason: "The installed source changed before staged retirement." };
+      // The host rechecks authoritative native absence before removing only the pointer.
+      // Payload and operation evidence remain available for reconciliation.
+      await this.host.retireStaged(input);
+      const {
+        stagedHandle: _handle,
+        provenance: _provenance,
+        migrationPlan: _plan,
+        ...rest
+      } = this.state;
+      this.state = rest;
+      this.candidate = undefined;
+      this.publish({
+        phase: "no-new",
+        message: "The unaccepted staged selection was retired; its payload was retained.",
+      });
+      return { retired: true };
+    } catch (cause) {
+      return {
+        retired: false,
+        reason:
+          cause instanceof Error
+            ? cause.message
+            : "The retained stage could not be retired safely.",
+      };
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  async install(input: JonesUpdaterInstallInput): Promise<JonesUpdateState> {
     if (this.busy || this.state.phase === "installing") return this.snapshot();
     if (!this.state.capability.install)
       return this.publish({
