@@ -455,9 +455,12 @@ export async function fixtureProxy(upstream, sourceIdentity) {
         descriptor.label = "Synthetic incompatible Jones host";
         descriptor.serverVersion = "0.0.45-preview.20261011.1.1";
         descriptor.orchestrationProtocolVersion = 0;
+        // Model an older supervised host; the update response still requires qualified bootstrap.
+        descriptor.capabilities = { ...descriptor.capabilities, serverSelfUpdate: "boot-service" };
         descriptor.jonesSource = { ...sourceIdentity, ...(checks ? { sha: "0".repeat(40) } : {}) };
         bytes = Buffer.from(JSON.stringify(descriptor));
       }
+      requests.push({ method: request.method, path: url.pathname, status: result.status });
       const forwarded = Object.fromEntries(result.headers);
       delete forwarded["content-length"];
       delete forwarded["content-encoding"];
@@ -483,7 +486,7 @@ export async function fixtureProxy(upstream, sourceIdentity) {
       websocketAttempts,
       checks,
       fixtureBoundary:
-        "Real T3 pairing/auth; synthetic descriptor and update responses; no installation",
+        "Real T3 pairing/auth; synthetic older boot-service descriptor and bootstrap-blocked update responses; no installation",
     }),
     close: () =>
       new Promise((resolve, reject) => {

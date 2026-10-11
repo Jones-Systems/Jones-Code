@@ -316,13 +316,18 @@ async function connectInjectedMcp(descriptor, source, onTransportCreated) {
 
 export async function runScenario(client, scenario, report) {
   const call = async (name, args = {}) => {
-    const result = await client.callTool({ name, arguments: args }, undefined, {
-      timeout: 180_000,
-    });
-    const value = toolValue(result);
-    // Keep only results, never the pairing URL carried by a navigation input.
-    report.calls.push({ name, ok: true });
-    return value;
+    try {
+      const result = await client.callTool({ name, arguments: args }, undefined, {
+        timeout: 180_000,
+      });
+      const value = toolValue(result);
+      // Keep only results, never the pairing URL carried by a navigation input.
+      report.calls.push({ name, ok: true });
+      return value;
+    } catch (error) {
+      report.calls.push({ name, ok: false, error: String(error.message) });
+      throw error;
+    }
   };
   report.initialStatus = await call("preview_status");
   const opened = await call("preview_open", { open: false, reuseExistingTab: false });
@@ -341,7 +346,14 @@ export async function runScenario(client, scenario, report) {
       text: scenario.initialText,
       timeoutMs: 30_000,
     });
-    for (const step of scenario.steps) {
+    for (const [index, step] of scenario.steps.entries()) {
+      report.currentAction = {
+        index,
+        action: step.action,
+        ...(step.action === "wait" ? { text: step.text } : {}),
+        ...(step.locator ? { locator: step.locator } : {}),
+        ...(step.name ? { name: step.name } : {}),
+      };
       if (step.action === "navigate")
         await call("preview_navigate", { tabId, url: new URL(step.path, scenario.origin).href });
       else if (step.action === "click")
@@ -369,6 +381,15 @@ export async function runScenario(client, scenario, report) {
     report.viewport = await call("preview_status", { tabId });
   } catch (error) {
     scenarioError = error;
+    report.failedAction = report.currentAction ?? { action: "initial-navigation" };
+    try {
+      const snapshot = await call("preview_snapshot", { tabId, save: true, includeImage: true });
+      report.captures.push({ name: "failure-reconciliation", snapshot });
+      report.controlledPageReconciled = true;
+    } catch (snapshotError) {
+      report.controlledPageReconciled = false;
+      report.reconciliationError = String(snapshotError.message);
+    }
     throw error;
   } finally {
     try {

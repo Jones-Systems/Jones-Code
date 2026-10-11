@@ -18,6 +18,7 @@ import {
   publishMilestone,
   awaitMilestoneRelease,
   readAcknowledgedMilestone,
+  runScenario,
 } from "./install-preview-agent.mjs";
 import {
   hashTree,
@@ -26,6 +27,7 @@ import {
   serveRendererFixture,
   stopChild,
   withOwnedScratch,
+  fixtureProxy,
 } from "./install-preview-qualification.mjs";
 
 const source = NodePath.resolve(
@@ -68,6 +70,61 @@ NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
     /Missing visible text/,
   );
 });
+
+NodeTest.test(
+  "a failed controlled page action is captured before native tab closure without retry",
+  async () => {
+    const failure = new Error(
+      "Preview automation waitFor timed out; reconcile via preview_snapshot before repeating",
+    );
+    const calls = [];
+    const snapshot = { visibleText: "Could not add backend", screenshotPath: "/owned/failure.png" };
+    let waits = 0;
+    const client = {
+      callTool: async ({ name }) => {
+        calls.push(name);
+        if (name === "preview_wait_for" && ++waits === 2) throw failure;
+        return {
+          structuredContent:
+            name === "preview_open"
+              ? { tabId: "owned-tab" }
+              : name === "preview_snapshot"
+                ? snapshot
+                : {},
+        };
+      },
+    };
+    const report = { calls: [], captures: [], negativeControls: {} };
+    await NodeAssert.rejects(
+      runScenario(
+        client,
+        {
+          origin: "http://127.0.0.1",
+          pairingUrl: "http://127.0.0.1/pair",
+          initialText: "Project",
+          steps: [{ action: "wait", text: "Source matches this app." }],
+        },
+        report,
+      ),
+      (error) => error === failure,
+    );
+    NodeAssert.deepEqual(calls.slice(-3), [
+      "preview_wait_for",
+      "preview_snapshot",
+      "t3_preview_close",
+    ]);
+    NodeAssert.equal(waits, 2);
+    NodeAssert.deepEqual(report.failedAction, {
+      index: 0,
+      action: "wait",
+      text: "Source matches this app.",
+    });
+    NodeAssert.equal(report.calls.filter((call) => call.ok === false).length, 1);
+    NodeAssert.deepEqual(report.captures, [{ name: "failure-reconciliation", snapshot }]);
+    NodeAssert.equal(report.controlledPageReconciled, true);
+    NodeAssert.equal(report.nativeTabClosed, true);
+  },
+);
 
 NodeTest.test(
   "inactive-provider qualification rejects unrelated failures and successful calls",
@@ -241,6 +298,49 @@ async function assertChannelClosed(channel) {
     (error) => ["ECONNREFUSED", "UND_ERR_SOCKET"].includes(error.cause?.code),
   );
 }
+
+NodeTest.test(
+  "the synthetic older host explicitly advertises its supervised update route",
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      await withFixtureCleanup(async (defer) => {
+        const descriptorPath = NodePath.join(root, ".well-known/t3/environment");
+        await NodeFSP.mkdir(NodePath.dirname(descriptorPath), { recursive: true });
+        await atomicJson(descriptorPath, {
+          label: "Unmanaged fixture origin",
+          capabilities: { serverBrowser: true },
+          orchestrationProtocolVersion: 42,
+        });
+        const upstream = await serveRendererFixture(root);
+        defer(() => upstream.close());
+        const sourceIdentity = {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "a".repeat(40),
+          tree: "b".repeat(40),
+        };
+        const proxy = await fixtureProxy(upstream, sourceIdentity);
+        defer(() => proxy.close());
+        const response = await fetch(`${proxy.origin}/.well-known/t3/environment`);
+        NodeAssert.equal(response.status, 200);
+        const descriptor = await response.json();
+        NodeAssert.deepEqual(descriptor.capabilities, {
+          serverBrowser: true,
+          serverSelfUpdate: "boot-service",
+        });
+        NodeAssert.equal(descriptor.orchestrationProtocolVersion, 0);
+        NodeAssert.deepEqual(descriptor.jonesSource, sourceIdentity);
+        NodeAssert.deepEqual(proxy.evidence().requests, [
+          { method: "GET", path: "/.well-known/t3/environment", status: 200 },
+        ]);
+        NodeAssert.match(
+          proxy.evidence().fixtureBoundary,
+          /synthetic older boot-service descriptor/,
+        );
+        NodeAssert.equal(proxy.evidence().checks, 0);
+      });
+    });
+  },
+);
 
 NodeTest.test(
   "a failed second channel acquisition closes the first owned listener",
