@@ -2,7 +2,9 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { QUALIFIED_STARTUP_STATE_FILES } from "./qualifiedQuiescence.ts";
@@ -11,7 +13,14 @@ import {
   observeQualifiedWriters,
   parseWriterObserverResult,
   QUALIFIED_WRITER_OBSERVER_FILES,
+  QUALIFIED_WRITER_OBSERVER_PATH,
+  QUALIFIED_WRITER_OBSERVER_SHA256,
+  renderWriterObserverSocketUnits,
 } from "./qualifiedWriterObserver.ts";
+import {
+  QUALIFIED_WRITER_OBSERVER_SOCKET,
+  type SocketPathMetadata,
+} from "./qualifiedWriterObserverSocket.ts";
 
 const helper = NodePath.join(import.meta.dirname, "qualifiedWriterObserver.pl");
 const header = "jones-qualified-writer-observer 1";
@@ -91,14 +100,18 @@ my @files = map { my ($index, $dev, $ino) = split /:/; +{ index => $index, dev =
 my $output = eval { emit_observation(observe($proc, \\@files)) };
 print defined $output ? $output : $@;`;
 
-function perl(args: readonly string[]) {
+function perl(args: readonly string[], env?: Record<string, string>) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-    NodeChildProcess.execFile("/usr/bin/perl", args, { timeout: 30_000 }, (error, stdout, stderr) =>
-      resolve({
-        code: error === null ? 0 : typeof error.code === "number" ? error.code : null,
-        stdout,
-        stderr,
-      }),
+    NodeChildProcess.execFile(
+      "/usr/bin/perl",
+      args,
+      { timeout: 30_000, ...(env === undefined ? {} : { env }) },
+      (error, stdout, stderr) =>
+        resolve({
+          code: error === null ? 0 : typeof error.code === "number" ? error.code : null,
+          stdout,
+          stderr,
+        }),
     );
   });
 }
@@ -229,10 +242,17 @@ it("runs only an installed root-owned helper and falls back only where it cannot
           mode: 0o755,
         },
       );
+    // No observer socket exists here, so NoNewPrivs:1 keeps its unprivileged answer.
     const observe = (options: { helperPath?: string } = {}) =>
       observeQualifiedWriters(
         { files, allowedProcessIds: [123] },
-        { helperPath: rootOwnedStandIn, sudoPath: sudo, procRoot, ...options },
+        {
+          helperPath: rootOwnedStandIn,
+          sudoPath: sudo,
+          procRoot,
+          socketPath: NodePath.join(base, "absent.sock"),
+          ...options,
+        },
       );
     await respond(
       [
@@ -259,6 +279,10 @@ it("runs only an installed root-owned helper and falls back only where it cannot
     assert.deepEqual(await observe({ helperPath: sudo }), { status: "unavailable" });
     await NodeFSP.writeFile(NodePath.join(procRoot, "self", "status"), "NoNewPrivs:\t1\n");
     assert.deepEqual(await observe(), { status: "unprivileged", reason: "no-new-privileges" });
+    assert.deepEqual(await observe({ helperPath: NodePath.join(base, "absent", "helper") }), {
+      status: "unprivileged",
+      reason: "not-installed",
+    });
     await NodeFSP.writeFile(NodePath.join(procRoot, "self", "status"), "NoNewPrivs:\t0\n");
     // An allowed process must be live and observable before the helper runs.
     await NodeFSP.rm(NodePath.join(procRoot, "123"), { recursive: true });
@@ -381,4 +405,367 @@ it("refuses the privileged entry point without root before reading any state", a
   if (process.getuid?.() === 0) return;
   const result = await perl(["-T", helper, "--base", "/synthetic/home"]);
   assert.deepEqual(result, { code: 2, stdout: `${header}\nrejected not-root\n`, stderr: "" });
+  const socketMode = await perl(["-T", helper, "--socket", "--base", "/synthetic/home"], {});
+  assert.deepEqual(socketMode, { code: 2, stdout: `${header}\nrejected not-root\n`, stderr: "" });
+});
+
+it("keeps the installed helper bytes bound to this source", async () => {
+  const digest = NodeCrypto.createHash("sha256")
+    .update(await NodeFSP.readFile(helper))
+    .digest("hex");
+  assert.equal(digest, QUALIFIED_WRITER_OBSERVER_SHA256);
+});
+
+// Runs the helper's request check after its root check, as the entry point
+// would, with stdin and stdout set up the way the socket unit or sudo leaves
+// them. Rejections are reported instead of exiting.
+const callerHarness = `use Socket;
+my ($helper, $stdin, @arguments) = @ARGV;
+do $helper or die($@ || $!);
+{ no warnings "redefine"; *main::reject = sub { die "rejected $_[0]\\n" }; }
+open(my $report, ">&", \\*STDOUT) or die;
+my ($here, $there);
+if ($stdin eq "file") {
+  open(STDIN, "<", $helper) or die;
+} elsif ($stdin ne "inherited") {
+  socketpair($here, $there, AF_UNIX, $stdin eq "datagram" ? SOCK_DGRAM : SOCK_STREAM, PF_UNSPEC) or die;
+  open(STDIN, "<&", $here) or die;
+  if ($stdin ne "split") { open(STDOUT, ">&", $here) or die; }
+}
+@ARGV = @arguments;
+my @caller = eval { request_caller() };
+print {$report} (@caller ? "caller @caller\\n" : $@);`;
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- SO_PEERCRED exists only on a Linux host.
+const linux = NodeOS.platform() === "linux";
+
+it("takes the socket caller only from kernel peer credentials on the accepted stream", async () => {
+  const request = async (
+    stdin: "stream" | "datagram" | "split" | "file" | "inherited",
+    args: readonly string[],
+    env: Record<string, string>,
+  ) => {
+    const result = await perl(["-e", callerHarness, helper, stdin, ...args], env);
+    assert.equal(result.stderr, "");
+    return result.stdout;
+  };
+  const home = ["--base", "/synthetic/home"];
+  // A socketpair's peer is this process, so the kernel reports the test's UID.
+  // Without SO_PEERCRED, or for UID 0, the peer itself is refused.
+  const uid = process.getuid?.();
+  const peerReadable = linux && uid !== undefined && uid !== 0;
+  const afterPeer = (expected: string) => (peerReadable ? expected : "rejected peer\n");
+  assert.equal(
+    await request("stream", ["--socket", ...home], {}),
+    afterPeer(`caller ${uid} /synthetic/home\n`),
+  );
+  for (const env of [{ SUDO_UID: "1000" }, { SUDO_UID: "" }])
+    assert.equal(await request("stream", ["--socket", ...home], env), "rejected caller\n");
+  for (const args of [
+    ["--socket", "--base"],
+    ["--socket", "--base", "/synthetic/home", "/other"],
+    ["--socket", "--home", "/synthetic/home"],
+    ["--socket", "--socket", ...home],
+  ])
+    assert.equal(await request("stream", args, {}), "rejected arguments\n", args.join(" "));
+  // Output must reach the same connected stream whose peer was identified.
+  for (const stdin of ["file", "split", "datagram", "inherited"] as const)
+    assert.equal(await request(stdin, ["--socket", ...home], {}), "rejected peer\n", stdin);
+  for (const base of ["relative", "/synthetic/../home", "/synthetic/home/"])
+    assert.equal(
+      await request("stream", ["--socket", "--base", base], {}),
+      afterPeer("rejected base\n"),
+      base,
+    );
+  // The sudo request shape is unchanged.
+  assert.equal(
+    await request("inherited", home, { SUDO_UID: "1000" }),
+    "caller 1000 /synthetic/home\n",
+  );
+  for (const env of [{}, { SUDO_UID: "0" }, { SUDO_UID: "01000" }, { SUDO_UID: "1000 " }])
+    assert.equal(await request("inherited", home, env), "rejected caller\n", JSON.stringify(env));
+  assert.equal(
+    await request("inherited", [...home, "--socket"], { SUDO_UID: "1000" }),
+    "rejected arguments\n",
+  );
+  assert.equal(
+    await request("inherited", ["--base", "/synthetic/./home"], { SUDO_UID: "1000" }),
+    "rejected base\n",
+  );
+});
+
+const rootDirectory: SocketPathMetadata = {
+  isDirectory: () => true,
+  isSocket: () => false,
+  isSymbolicLink: () => false,
+  uid: 0,
+  mode: 0o040755,
+  dev: 1,
+  ino: 1,
+};
+
+/** The socket fields of a real lstat result, without its prototype methods. */
+const pick = (stat: SocketPathMetadata) => ({
+  isSocket: () => true,
+  isDirectory: () => false,
+  uid: stat.uid,
+  mode: stat.mode,
+  dev: stat.dev,
+  ino: stat.ino,
+});
+
+it("reads the observer socket only under NoNewPrivileges and never falls back from it", async () => {
+  await fixture(async ({ base, procRoot, files }) => {
+    await syntheticProcess(procRoot, 123);
+    const status = NodePath.join(procRoot, "self", "status");
+    await NodeFSP.writeFile(status, "NoNewPrivs:\t1\n");
+    const socketPath = NodePath.join(base, "o.sock");
+    let respond: (connection: NodeNet.Socket) => void = () => undefined;
+    const requests: number[] = [];
+    const accepted = new Set<NodeNet.Socket>();
+    const closed: Promise<void>[] = [];
+    const server = NodeNet.createServer({ allowHalfOpen: true }, (connection) => {
+      accepted.add(connection);
+      closed.push(new Promise<void>((resolve) => connection.once("close", () => resolve())));
+      let received = 0;
+      connection.on("error", () => undefined);
+      connection.on("data", (bytes: Buffer) => {
+        received += bytes.length;
+      });
+      connection.once("end", () => {
+        requests.push(received);
+        respond(connection);
+      });
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, () => resolve());
+      });
+      await NodeFSP.chmod(socketPath, 0o600);
+      // Real metadata, with each real ancestor directory presented as root-owned.
+      const trusted = async (path: string): Promise<SocketPathMetadata> => {
+        const stat = await NodeFSP.lstat(path);
+        return stat.isDirectory() ? rootDirectory : stat;
+      };
+      const observe = (
+        options: Parameters<typeof observeQualifiedWriters>[1] = {},
+        socketMetadata = trusted,
+      ) =>
+        observeQualifiedWriters(
+          { files, allowedProcessIds: [123] },
+          {
+            helperPath: rootOwnedStandIn,
+            // Never runs: a sudo attempt would fail to spawn and report unavailable.
+            sudoPath: NodePath.join(base, "absent-sudo"),
+            procRoot,
+            socketPath,
+            socketMetadata,
+            deadlineMs: 5_000,
+            ...options,
+          },
+        );
+      const reply = (...lines: string[]) => {
+        respond = (connection) => connection.end(`${lines.join("\n")}\n`);
+      };
+      const fileLines = [
+        `file 0 ${files[0]!.device} ${files[0]!.inode}`,
+        `file 3 ${files[1]!.device} ${files[1]!.inode}`,
+      ];
+      const complete = [
+        header,
+        ...fileLines,
+        "writer 0 123 777 read-write",
+        "writer 3 456 1 write",
+        "complete 2",
+      ];
+
+      reply(...complete);
+      assert.deepEqual(await observe(), {
+        status: "complete",
+        writers: [{ pid: 456, path: files[1]!.path }],
+      });
+      assert.deepEqual(requests, [0]);
+
+      // The helper's own answer still binds every inode to this snapshot.
+      reply(
+        header,
+        fileLines[0]!,
+        `file 3 ${files[1]!.device} ${files[1]!.inode + 1n}`,
+        "complete 2",
+      );
+      assert.deepEqual(await observe(), { status: "identity-changed" });
+
+      for (const lines of [
+        [header, "rejected base-owner"],
+        [header, ...fileLines, "incomplete deadline"],
+        [header, ...fileLines],
+        [header, ...fileLines, "writer 3 456 1 write", "writer 3 456 1 write", "complete 2"],
+        [...complete, "complete 2"],
+      ]) {
+        reply(...lines);
+        assert.deepEqual(await observe(), { status: "unavailable" }, lines.join("|"));
+      }
+      respond = (connection) => connection.end("x".repeat(64 * 1024 + 1));
+      assert.deepEqual(await observe(), { status: "unavailable" });
+      respond = () => undefined;
+      assert.deepEqual(await observe({ deadlineMs: 200 }), { status: "unavailable" });
+
+      // The allowed trial's birth is still read before and after the answer.
+      const setBirth = (birth: string) =>
+        NodeFSP.writeFile(
+          NodePath.join(procRoot, "123", "stat"),
+          `123 (synthetic (worker)) S ${Array(18).fill("0").join(" ")} ${birth} 0`,
+        );
+      respond = (connection) =>
+        void setBirth("778").then(() => connection.end(`${complete.join("\n")}\n`));
+      assert.deepEqual(await observe(), { status: "unavailable" });
+      await setBirth("777");
+
+      // A socket replaced during the exchange voids its answer.
+      reply(...complete);
+      let reads = 0;
+      const drifting = async (path: string): Promise<SocketPathMetadata> => {
+        if (path !== socketPath) return trusted(path);
+        const stat = await NodeFSP.lstat(path);
+        return reads++ === 0 ? stat : { ...rootDirectory, ...pick(stat), ino: stat.ino + 1 };
+      };
+      assert.deepEqual(await observe({}, drifting), { status: "unavailable" });
+
+      // A present socket that is untrusted, unreachable or whose helper is
+      // missing reports unavailable rather than the unprivileged fallback.
+      assert.deepEqual(await observe({}, (path) => NodeFSP.lstat(path)), {
+        status: "unavailable",
+      });
+      assert.deepEqual(await observe({ helperPath: NodePath.join(base, "absent", "helper") }), {
+        status: "unavailable",
+      });
+      const stale = NodePath.join(base, "stale.sock");
+      const staleSocket = { ...pick(await NodeFSP.lstat(socketPath)), ino: 99 };
+      assert.deepEqual(
+        await observe({ socketPath: stale }, async (path) =>
+          path === stale ? { ...rootDirectory, ...staleSocket } : rootDirectory,
+        ),
+        { status: "unavailable" },
+      );
+
+      // Only a missing socket keeps the unprivileged answer.
+      const missing = NodePath.join(base, "missing.sock");
+      assert.deepEqual(await observe({ socketPath: missing }), {
+        status: "unprivileged",
+        reason: "no-new-privileges",
+      });
+      assert.deepEqual(
+        await observe({ socketPath: missing, helperPath: NodePath.join(base, "absent", "helper") }),
+        { status: "unprivileged", reason: "not-installed" },
+      );
+
+      // Without NoNewPrivileges, or without evidence of it, the socket is not chosen.
+      const before = requests.length;
+      await NodeFSP.writeFile(status, "NoNewPrivs:\t0\n");
+      assert.deepEqual(await observe(), { status: "unavailable" });
+      await NodeFSP.rm(status);
+      assert.deepEqual(await observe(), { status: "unavailable" });
+      assert.equal(requests.length, before);
+    } finally {
+      // Client EOF does not close a deliberately half-open silent peer.
+      for (const connection of accepted) connection.destroy();
+      await Promise.all(closed);
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+it("renders closed root socket units for one approved user and home", () => {
+  const units = renderWriterObserverSocketUnits({
+    user: "malcolmjones",
+    base: "/home/malcolmjones/.t3",
+  });
+  assert.equal(units.socket.name, "jones-qualified-writer-observer.socket");
+  assert.equal(units.service.name, "jones-qualified-writer-observer@.service");
+  const directives = (text: string) => text.split("\n").filter((line) => line.includes("="));
+  const socket = directives(units.socket.text);
+  const service = directives(units.service.text);
+  for (const line of [
+    `ListenStream=${QUALIFIED_WRITER_OBSERVER_SOCKET}`,
+    "SocketUser=malcolmjones",
+    "SocketMode=0600",
+    "DirectoryMode=0755",
+    "Accept=yes",
+    "MaxConnections=4",
+    "MaxConnectionsPerSource=4",
+  ])
+    assert.include(socket, line);
+  assert.deepEqual(
+    service.filter((line) => line.startsWith("ExecStart")),
+    [`ExecStart=${QUALIFIED_WRITER_OBSERVER_PATH} --socket --base /home/malcolmjones/.t3`],
+  );
+  for (const line of [
+    "StandardInput=socket",
+    "StandardOutput=socket",
+    "StandardError=journal",
+    "Slice=system.slice",
+    "RuntimeMaxSec=12",
+    "TimeoutStopSec=3",
+    "NoNewPrivileges=yes",
+    "PrivateNetwork=yes",
+  ])
+    assert.include(service, line);
+  for (const key of ["CPUQuota", "MemoryMax", "TasksMax"])
+    assert.isTrue(
+      service.some((line) => line.startsWith(`${key}=`)),
+      key,
+    );
+  // Root with host PID visibility; no caller-selected identity or environment.
+  for (const line of [...socket, ...service])
+    assert.notMatch(
+      line,
+      /^(?:User|Group|DynamicUser|PrivatePIDs|ProtectProc|ProcSubset|PrivateUsers|CapabilityBoundingSet|AmbientCapabilities|Environment|EnvironmentFile|PassEnvironment)=|hostdev|SUDO_UID/,
+      line,
+    );
+  for (const text of [units.socket.text, units.service.text])
+    for (const character of text) {
+      const code = character.charCodeAt(0);
+      assert.isFalse((code < 0x20 && code !== 0x0a) || code === 0x7f, `control ${code}`);
+    }
+
+  for (const user of [
+    "",
+    "root",
+    "Malcolm",
+    "malcolm jones",
+    "malcolm\nExecStartPre=/bin/sh",
+    "m%h",
+    "$USER",
+    "-m",
+    "m\tj",
+    "a".repeat(33),
+  ])
+    NodeAssert.throws(
+      () => renderWriterObserverSocketUnits({ user, base: "/home/m/.t3" }),
+      /observer socket user/,
+      JSON.stringify(user),
+    );
+  for (const base of [
+    "",
+    "/",
+    "relative/.t3",
+    "/home/m/",
+    "/home//m",
+    "/home/./m",
+    "/home/../m",
+    "/home/m j",
+    "/home/m\nExecStartPre=/bin/sh",
+    "/home/%h",
+    "/home/$HOME",
+    '/home/"m"',
+    "/home/m\\x",
+    "/home/m;x",
+    `/${"a".repeat(256)}`,
+  ])
+    NodeAssert.throws(
+      () => renderWriterObserverSocketUnits({ user: "m", base }),
+      /observer home/,
+      JSON.stringify(base),
+    );
 });
