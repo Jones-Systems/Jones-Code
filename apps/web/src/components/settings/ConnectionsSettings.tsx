@@ -1758,7 +1758,7 @@ function SavedBackendListRow({
       }
       below={
         <>
-          {enabled ? <JonesUpdateControls environmentId={environmentId} /> : null}
+          {enabled ? <JonesUpdateControls environmentId={environmentId} compareWithLaptop /> : null}
           {serverUpdateState.status !== "idle" ? (
             <div className="mt-1 max-w-md">
               <ServerUpdateProgress state={serverUpdateState} />
@@ -3715,7 +3715,7 @@ export function ConnectionsSettings() {
           >
             <LocalEnvironmentSetting />
             {primaryEnvironmentId !== null ? (
-              <JonesUpdateControls environmentId={primaryEnvironmentId} />
+              <JonesUpdateControls environmentId={primaryEnvironmentId} layout="row" />
             ) : null}
             {canManageLocalBackend ? (
               <SettingsRow
