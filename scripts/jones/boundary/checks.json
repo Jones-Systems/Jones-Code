@@ -2,6 +2,16 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-update-continuity",
+      "tests": [
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/updates/continuationPrompt.test.ts apps/server/src/jones/updates/serverCapability.test.ts"
+      ]
+    },
+    {
       "id": "jones-desktop-stage-attempts",
       "tests": [
         "packages/shared/src/jones/jonesActionsStage.test.ts",

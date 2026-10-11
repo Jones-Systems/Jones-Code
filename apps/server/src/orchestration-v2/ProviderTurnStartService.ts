@@ -1,6 +1,7 @@
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { isWorkModeKeepWarm, workModeProviderPrompt } from "../jones/provider/workModePrompt.ts";
+import { continuationPrompt } from "../jones/updates/continuationPrompt.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -1408,16 +1409,13 @@ export const layer: Layer.Layer<
           const context = [delivery.context, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
-          // A note continuation has no turn to resume; its text is the prompt.
-          const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
           yield* startWithConfiguredEffort(
-            {
-              ...(noteContinuation ? promptedInput : turnInput),
-              message: {
-                ...turnInput.message,
-                text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
-              },
-            },
+            continuationPrompt(turnInput, {
+              sameNativeThread,
+              noteContinuation,
+              context,
+              userText,
+            }),
             compact,
           ).pipe(
             // A pending marker would make the next turn abandon this native

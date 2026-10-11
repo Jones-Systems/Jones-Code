@@ -4,6 +4,13 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "update-continuity",
+      "tests": [
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts"
+      ]
+    },
+    {
       "id": "desktop-stage-attempts",
       "tests": [
         "packages/shared/src/jones/jonesActionsStage.test.ts",
