@@ -9,7 +9,11 @@ import * as Layer from "effect/Layer";
 import * as Electron from "electron";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
-import { companionLinuxIdentity } from "../jones/previewCompanion/CompanionProduct.ts";
+import {
+  companionLinuxIdentity,
+  readDesktopProductMetadata,
+} from "../jones/previewCompanion/CompanionProduct.ts";
+import { holdJonesDesktopNativeWriterFence } from "../jones/updates/jonesNativeStartup.ts";
 import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
 import { resolveDesktopAppBranding } from "./DesktopEnvironment.ts";
 import { renderUrlHandlerDesktopEntry } from "./DesktopLinuxUrlHandler.ts";
@@ -53,6 +57,20 @@ export class DesktopPreReadyElectronOptions extends Context.Service<
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcessPlatform;
   return yield* Effect.sync((): DesktopPreReadyElectronOptions["Service"] => {
+    if (platform === "darwin") {
+      holdJonesDesktopNativeWriterFence({
+        platform,
+        env: process.env,
+        homeDirectory: NodeOS.homedir(),
+        appDataDirectory: NodePath.join(NodeOS.homedir(), "Library", "Application Support"),
+        version: Electron.app.getVersion(),
+        metadata: readDesktopProductMetadata({
+          isPackaged: Electron.app.isPackaged,
+          readPackage: () =>
+            NodeFS.readFileSync(NodePath.join(Electron.app.getAppPath(), "package.json"), "utf8"),
+        }),
+      });
+    }
     const linuxPasswordStoreCommandLine =
       platform === "linux"
         ? readCommandLineSwitchValue(Electron.app.commandLine, "password-store")

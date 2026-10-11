@@ -8,6 +8,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
+import { holdJonesServerNativeWriterFence } from "../jones/updates/nativeWriterStartup.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
 export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -27,6 +28,7 @@ const layerSetup = Layer.effectDiscard(
 );
 
 export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string) {
+  yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
@@ -51,6 +53,7 @@ export const layerMemory = Layer.provideMerge(
 export const layerConfig = Layer.unwrap(
   Effect.gen(function* () {
     const { dbPath } = yield* ServerConfig.ServerConfig;
+    yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
     yield* initializeV2Database(dbPath);
     return layerFromPath(dbPath);
   }),

@@ -9,6 +9,8 @@
     "apps/desktop/src/jones/updates/jonesMacStaging.ts",
     "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
     "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
+    "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+    "apps/desktop/src/jones/updates/jonesNativeStartup.ts",
     "apps/desktop/src/jones/updates/jonesNativePreparation.ts",
     "apps/desktop/src/jones/updates/preloadInstall.test.ts",
     "apps/mobile/src/jones/updates/JonesUpdateControls.tsx",
@@ -37,6 +39,8 @@
     "apps/server/src/jones/updates/migrationPlan.test.ts",
     "apps/server/src/jones/updates/migrationPlan.ts",
     "apps/server/src/jones/updates/nativePreparation.ts",
+    "apps/server/src/jones/updates/nativePreparation.test.ts",
+    "apps/server/src/jones/updates/nativeWriterStartup.ts",
     "apps/server/src/jones/updates/qualification.test.ts",
     "apps/server/src/jones/updates/qualification.ts",
     "apps/server/src/jones/updates/service.ts",
@@ -55,9 +59,17 @@
     "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
     "packages/client-runtime/src/jones/updates/jonesUpdates.ts",
     "packages/shared/src/jones/jonesActions.test.ts",
-    "packages/shared/src/jones/jonesActions.ts"
+    "packages/shared/src/jones/jonesActions.ts",
+    "packages/shared/src/jones/nativeWriterFence.test.ts",
+    "packages/shared/src/jones/nativeWriterFence.ts",
+    "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts"
   ],
   "hookPaths": [
+    "apps/desktop/src/boot.ts",
+    "apps/desktop/src/app/DesktopPreReadyPlatform.ts",
+    "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
+    "apps/server/src/config.ts",
+    "apps/server/src/persistence/Sqlite.ts",
     "apps/web/src/versionSkew.ts",
     "apps/desktop/src/ipc/methods/updates.ts",
     "apps/desktop/src/preload.ts",
@@ -100,6 +112,26 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/desktop/src/boot.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
+    },
+    {
+      "from": "apps/desktop/src/app/DesktopPreReadyPlatform.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
+    },
+    {
+      "from": "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
+      "to": "packages/shared/src/jones/nativeWriterFence.ts"
+    },
+    {
+      "from": "apps/server/src/config.ts",
+      "to": "apps/server/src/jones/updates/nativeWriterStartup.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "apps/server/src/jones/updates/nativeWriterStartup.ts"
+    },
     {
       "from": "apps/web/src/versionSkew.ts",
       "to": "apps/web/src/jones/updates/versionSkew.ts"

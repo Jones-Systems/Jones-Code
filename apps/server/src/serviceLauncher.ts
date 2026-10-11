@@ -57,6 +57,8 @@ import {
   reserveUpdateOperation,
 } from "./jones/updates/launcherOperation.ts";
 
+import { assertStageNotRevoked, retireNativeStage } from "./jones/updates/stageRevocation.ts";
+
 import type {
   PendingServiceUpdate,
   ServiceLauncherChildMessage,
@@ -817,6 +819,7 @@ export class Launcher {
       childVersion: version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
       updateOperationsProtocol: 1,
+      updateRetirementProtocol: 1,
       ...(this.#startupGateProtocol === undefined
         ? {}
         : { startupGateProtocol: this.#startupGateProtocol }),
@@ -897,6 +900,31 @@ export class Launcher {
 
   async #handleMessage(child: ManagedChild, message: ServiceLauncherChildMessage): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
+    if (message.type === "request-retire-update") {
+      let retired = false;
+      let reason: string | undefined;
+      try {
+        if (
+          child.role !== "active" ||
+          child.version !== this.#state.activeVersion ||
+          this.#startupGateProtocol !== 1 ||
+          this.#stopRequested
+        )
+          throw new Error("Only the selected active qualified server can retire a stage.");
+        await retireNativeStage(this.#baseDir, child.version, this.#state.update, message);
+        retired = true;
+      } catch (cause) {
+        reason = cause instanceof Error ? cause.message : "Native stage retirement is uncertain.";
+      }
+      await sendMessage(child.process, {
+        type: "update-retired",
+        operationId: message.operationId,
+        stagedHandle: message.stagedHandle,
+        retired,
+        ...(reason === undefined ? {} : { reason }),
+      });
+      return;
+    }
     if (message.type === "request-update") {
       await this.#handleUpdateRequest(child, message);
       return;
@@ -921,6 +949,14 @@ export class Launcher {
     if (child.version !== this.#state.activeVersion) {
       await reject("The requesting server is not the selected active version.");
       return;
+    }
+    if (message.stagedHandle !== undefined) {
+      try {
+        await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
+      } catch (cause) {
+        await reject(cause instanceof Error ? cause.message : "Stage revocation is uncertain.");
+        return;
+      }
     }
     if (message.operationId !== undefined) {
       const existing = await reconcileUpdateOperation(
@@ -1024,6 +1060,8 @@ export class Launcher {
       }
     }
     try {
+      if (message.stagedHandle !== undefined)
+        await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
       await this.#updateOperationIO.archive(this.#baseDir, this.#state.update);
       await assertNoUnreconciledUpdateOperations(this.#baseDir, this.#state.update);
       if (message.operationId !== undefined) {

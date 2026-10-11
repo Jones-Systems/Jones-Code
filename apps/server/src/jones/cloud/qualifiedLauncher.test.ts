@@ -19,6 +19,9 @@ import {
   type QualifiedRuntimeReceipt,
 } from "./qualifiedRuntime.ts";
 
+import { retainStagedSelection } from "../updates/stagedSelection.ts";
+import { assertStageNotRevoked } from "../updates/stageRevocation.ts";
+
 const baseline = "0.0.0-preview.20261002.100";
 const target = "0.0.0-preview.20261002.101.1";
 // oxlint-disable-next-line t3code/no-global-process-runtime -- These controlled launcher executables must bind the actual native fixture host.
@@ -44,6 +47,7 @@ async function runScenario(
     readonly operationFailure?: "archive" | "reserve";
     readonly retryWithDifferentOperation?: boolean;
     readonly delayedGracefulClose?: boolean;
+    readonly retirementRace?: "accept-first" | "retire-first";
   } = {},
 ) {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
@@ -75,7 +79,28 @@ if (process.argv.includes("__service-preflight")) {
   process.exit(0);
 }
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
-if (context.update?.status === "pending") {
+if (${JSON.stringify(options.retirementRace !== undefined)} && context.update === undefined) {
+  const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
+  const install = {type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle, operationId:"12345678-1234-4234-8234-123456789abc"};
+  const retire = {type:"request-retire-update", operationId:install.operationId, stagedHandle:handle, currentVersion:${JSON.stringify(baseline)}, environmentId:"synthetic-jones-environment", expectedInstalledSource:${JSON.stringify("c".repeat(40))}, targetSource:${JSON.stringify("a".repeat(40))}};
+  let rejected = 0;
+  process.on("message", m => {
+    if (m.type === "update-retired") {
+      writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "retirement-result.json"))}, JSON.stringify(m));
+      if (${JSON.stringify(options.retirementRace)} === "retire-first") process.send(install);
+    }
+    if (m.type === "update-rejected") {
+      writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "late-rejection-"))} + (++rejected) + ".json", JSON.stringify(m));
+      if (rejected === 1) {const {operationId, ...manual} = install; process.send(manual);}
+      else process.exit(0);
+    }
+  });
+  // The second IPC message reaches the launcher while the first request is
+  // still in its asynchronous candidate preflight. It must wait for acceptance.
+  if (${JSON.stringify(options.retirementRace)} === "accept-first") process.send(install);
+  process.send(retire);
+  setInterval(() => {}, 1000);
+} else if (context.update?.status === "pending") {
   const db = new NodeSqlite.DatabaseSync(${JSON.stringify(dbPath)});
   db.exec("UPDATE marker SET value='after'"); db.close();
   writeFileSync(${JSON.stringify(NodePath.join(userdata, "settings.json"))}, "after-settings");
@@ -189,6 +214,7 @@ if (context.update?.status === "pending") {
       binding: await currentQualifiedRuntimeBinding(base, baseline),
       validate: async () => {},
     });
+    await retainStagedSelection(staged);
     await NodeFSP.writeFile(NodePath.join(base, "runtime", "test-handle"), staged.stagedHandle);
     const statePath = NodePath.join(base, "runtime", "service-state.json");
     await writeServiceState(statePath, { protocol: 4, activeVersion: baseline });
@@ -700,5 +726,53 @@ it.each(["missing-gate", "wrong-gate"] as const)(
       await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, "runtime", "db-backup")));
       await NodeFSP.access(NodePath.join(base, "runtime", "test-handle"));
     });
+  },
+);
+
+it.each(["accept-first", "retire-first"] as const)(
+  "serializes actual IPC retirement against %s delivery",
+  async (retirementRace) => {
+    await runScenario(
+      "commit",
+      async (base) => {
+        const result = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(base, "runtime", "retirement-result.json"), "utf8"),
+        );
+        assert.equal(result.retired, retirementRace === "retire-first");
+        const handle = await NodeFSP.readFile(
+          NodePath.join(base, "runtime", "test-handle"),
+          "utf8",
+        );
+        if (retirementRace === "accept-first") {
+          assert.match(result.reason, /may have been accepted/);
+          await assertStageNotRevoked(base, handle);
+        } else {
+          for (const index of [1, 2]) {
+            const rejected = JSON.parse(
+              await NodeFSP.readFile(
+                NodePath.join(base, "runtime", `late-rejection-${index}.json`),
+                "utf8",
+              ),
+            );
+            assert.match(rejected.reason, /durably retired/);
+          }
+          assert.equal(
+            (await readServiceState(NodePath.join(base, "runtime", "service-state.json"))).update,
+            undefined,
+          );
+          await NodeAssert.rejects(assertStageNotRevoked(base, handle), /durably retired/);
+        }
+        assert.equal(
+          typeof (await NodeFSP.readFile(
+            NodePath.join(base, "runtime", "versions", target, "t3"),
+            "utf8",
+          )),
+          "string",
+        );
+      },
+      undefined,
+      undefined,
+      { retirementRace },
+    );
   },
 );

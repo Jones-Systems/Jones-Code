@@ -25,3 +25,6 @@ export const APP_DISPLAY_NAME =
   injectedDesktopAppBranding?.displayName ??
   formatAppDisplayName({ baseName: APP_BASE_NAME, stageLabel: APP_STAGE_LABEL });
 export const APP_VERSION = import.meta.env.APP_VERSION || "0.0.0";
+export const APP_SOURCE_SHA = /^[a-f0-9]{40}$/.test(import.meta.env.APP_SOURCE_SHA ?? "")
+  ? import.meta.env.APP_SOURCE_SHA
+  : undefined;

@@ -83,3 +83,57 @@ export async function restoreStagedSelection(
     throw new Error("The retained staged selection changed; native installation is held.");
   return verified;
 }
+
+async function syncSelectionDirectory(directory: string): Promise<void> {
+  const parent = await NodeFSP.open(directory, "r").catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return undefined;
+    throw cause;
+  });
+  if (parent === undefined) {
+    const ancestor = NodePath.dirname(directory);
+    if (ancestor === directory) throw new Error("Selection directory ancestry is unavailable.");
+    // A never-created selection directory has no pointer. Sync the nearest
+    // existing ancestor so absence is durable as well as observable.
+    return syncSelectionDirectory(ancestor);
+  }
+  try { await parent.sync(); } finally { await parent.close(); }
+}
+
+/** Retires only an exact unaccepted selection pointer; staged receipts and payload stay intact. */
+export async function retireStagedSelection(
+  baseDir: string,
+  activeVersion: string,
+  expected: {
+    readonly environmentId: string;
+    readonly expectedInstalledSource: string;
+    readonly targetSource: string;
+    readonly stagedHandle: string;
+  },
+  syncDirectory: (directory: string) => Promise<void> = syncSelectionDirectory,
+): Promise<void> {
+  const binding = await currentQualifiedRuntimeBinding(baseDir, activeVersion);
+  if (
+    binding.environmentId !== expected.environmentId ||
+    binding.activeSourceSha !== expected.expectedInstalledSource
+  )
+    throw new Error("The running environment changed; the staged selection was preserved.");
+  const path = selectionPath(binding);
+  const stored = await readSelection(path);
+  if (stored === undefined) {
+    // A prior unlink can succeed while its directory fsync fails. Replay must
+    // establish durability before reporting that retirement completed.
+    await syncDirectory(NodePath.dirname(path));
+    return;
+  }
+  if (
+    JSON.stringify(stored.binding) !== JSON.stringify(binding) ||
+    stored.stagedHandle !== expected.stagedHandle ||
+    stored.receipt.sourceSha !== expected.targetSource
+  )
+    throw new Error("Another staged selection occupies this binding; it was preserved.");
+  const verified = await verifyStagedQualifiedRuntime(baseDir, activeVersion, stored.stagedHandle);
+  if (JSON.stringify(verified) !== JSON.stringify(stored))
+    throw new Error("The retained stage changed; its pointer was preserved.");
+  await NodeFSP.unlink(path);
+  await syncDirectory(NodePath.dirname(path));
+}

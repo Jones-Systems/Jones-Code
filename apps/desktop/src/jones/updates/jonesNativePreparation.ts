@@ -55,6 +55,7 @@ export async function prepareJonesNativeInstall(input: {
   listener: string;
   bootstrapToken: string;
   stagedHandle: string;
+  transactionId: string;
   active: JonesActiveInstall;
 }): Promise<void> {
   const form = new URLSearchParams({
@@ -76,6 +77,7 @@ export async function prepareJonesNativeInstall(input: {
     "application/json",
     JSON.stringify({
       stagedHandle: input.stagedHandle,
+      transactionId: input.transactionId,
       environmentId: input.active.environmentId,
       currentVersion: input.active.version,
     }),

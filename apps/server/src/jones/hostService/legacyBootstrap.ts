@@ -219,7 +219,10 @@ export async function fileMetadata(file: string) {
     uid: String(stat.uid),
   });
 }
-export async function assertNoBootstrapHazards(base: string): Promise<readonly string[]> {
+export async function assertNoBootstrapHazards(
+  base: string,
+  uid: number,
+): Promise<readonly string[]> {
   const exists = async (file: string) =>
     NodeFSP.lstat(file).then(
       () => true,
@@ -231,13 +234,38 @@ export async function assertNoBootstrapHazards(base: string): Promise<readonly s
   for (const relative of [
     "runtime/.restart-pending",
     "runtime/.service-stopping",
-    "native-store-authority",
     "runtime/native-store-authority",
   ])
     if (await exists(NodePath.join(base, relative)))
       throw new Error(
         "Pending or native-store authority state requires reconciliation before bootstrap.",
       );
+  const authorityDirectory = NodePath.join(base, "native-store-authority");
+  const authority = await NodeFSP.lstat(authorityDirectory).catch((e: NodeJS.ErrnoException) => {
+    if (e.code !== "ENOENT") throw e;
+    return undefined;
+  });
+  if (authority !== undefined) {
+    // Server startup creates this private directory even before authority state exists.
+    if (
+      !authority.isDirectory() ||
+      authority.isSymbolicLink() ||
+      authority.uid !== uid ||
+      (authority.mode & 0o777) !== 0o700 ||
+      (await NodeFSP.readdir(authorityDirectory)).length !== 0
+    )
+      throw new Error(
+        "Pending or native-store authority state requires reconciliation before bootstrap.",
+      );
+    const observed = await NodeFSP.lstat(authorityDirectory);
+    if (
+      observed.dev !== authority.dev ||
+      observed.ino !== authority.ino ||
+      observed.uid !== authority.uid ||
+      observed.mode !== authority.mode
+    )
+      throw new Error("Native-store authority directory changed during bootstrap inspection.");
+  }
   for (const relative of ["runtime/jones-updates/selections", "runtime/staged-updates"])
     if (
       (await exists(NodePath.join(base, relative))) &&

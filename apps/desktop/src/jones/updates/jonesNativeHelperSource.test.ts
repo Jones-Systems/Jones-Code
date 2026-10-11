@@ -26,6 +26,8 @@ async function fixture() {
 
 const activationScenario = String.raw`
 root, fault = pathlib.Path(sys.argv[1]), sys.argv[2]
+# Exercise the real allocation/release protocol with small fixture-only capacity.
+RECOVERY_HEADROOM = 16384
 home, profile = root / 'userdata', root / 'profile'
 home.mkdir(); profile.mkdir()
 database = home / 'state.sqlite'
@@ -62,14 +64,36 @@ if fault == 'candidate-gate-wrong': staged['startupGateProtocol'] = 2
 if fault == 'candidate-gate-boolean': staged['startupGateProtocol'] = True
 durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
     'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}}, True)
-continuation = dict(protocol=1, transactionId=staged['handle'], prepared=True,
-    **{key: expected[key] for key in ('home', 'databasePath', 'profile', 'environmentId')})
+staging = manifest_path.parent / 'jones-updates' / 'staging'; staging.mkdir()
+selection_path = staging / (expected['sourceSha'] + '-' + 'e' * 64 + '.json')
+selection = {'schema': 1, 'source': 'jones-actions', 'home': expected['home'], 'profile': expected['profile'],
+             'currentVersion': expected['version'], 'installedSource': expected['sourceSha'], 'active': expected,
+             'artifactDirectory': str(root / 'artifact'), 'app': staged}
+durable(selection_path, selection, True)
+selection_digest = digest(selection_path)
+claim = preparation_claim(expected, staged['handle'], selection_path, selection_digest)
+durable(tx / 'prepare-intent.json', claim, True)
+durable(tx / 'prepare-dispatched.json', claim, True)
+continuation = dict(claim, prepared=True)
 durable(tx / 'continuation.json', continuation, True)
 intent = {'protocol': 1, 'transactionId': staged['handle'], 'expected': expected, 'staged': staged,
     'continuationReceipt': str(tx / 'continuation.json'), 'processes': [{'pid': 123, 'identity': 'owned-native-process'}],
     'listener': 'http://127.0.0.1:3777'}
 durable(tx / 'intent.json', intent, True)
 events = []
+native_storage_preflight = storage_preflight
+def synthetic_storage_preflight(active, candidate, transaction):
+    events.append('storage-preflight')
+    if fault == 'storage-refused': raise RuntimeError('Insufficient recovery capacity.')
+    native_space = os.statvfs
+    os.statvfs = lambda path: type('Space', (), {'f_bavail': 1 << 50, 'f_frsize': 1})()
+    try: return native_storage_preflight(active, candidate, transaction)
+    finally: os.statvfs = native_space
+storage_preflight = synthetic_storage_preflight
+if fault == 'reserve-denied':
+    def reserve_recovery_capacity(*args): raise OSError('Synthetic ENOSPC before shutdown')
+if fault == 'reserve-release-failed':
+    def release_recovery_reserve(reserves): raise OSError('Synthetic uncertain reserve release')
 if fault in ('bundle-denied', 'bundle-second-rename-denied'):
     native_rename = os.rename
     def denied_rename(source, target):
@@ -81,6 +105,7 @@ if fault in ('bundle-denied', 'bundle-second-rename-denied'):
 native_stop = lambda proofs: events.append('stop:' + str(len(proofs)))
 def synthetic_stop(proofs):
     native_stop(proofs)
+    if fault == 'state-grew': (profile / 'growth').write_bytes(bytes(RECOVERY_HEADROOM))
     for proof in proofs:
         if proof.get('pid') == 654: alive(proof)
     if fault == 'candidate-stop' and proofs and proofs[0]['pid'] == 456:
@@ -120,7 +145,7 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'listener-mismatch': receipt['listener'] = 'http://127.0.0.1:4777'
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
-    if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched'): receipt['sourceSha'] = 'wrong-source'
+    if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
     return {'pid': 456, 'identity': 'tracked-native-app'}
@@ -134,6 +159,7 @@ def synthetic_identity(pid):
     if pid == 456: return 'tracked-native-app'
     return None
 process_identity = synthetic_identity
+process_start = lambda pid: ('S', '')
 native_durable = durable
 def synthetic_durable(destination, value, exclusive=False):
     destination = pathlib.Path(destination)
@@ -165,6 +191,13 @@ else:
     activate(tx / 'intent.json')
     journal = read(tx / 'journal.json')
     with sqlite3.connect(database) as db: state = db.execute('SELECT value FROM identity').fetchone()[0]
+    if fault in ('storage-refused', 'reserve-denied'):
+        assert events == ['storage-preflight']
+        assert state == 'previous-state'
+        assert read(manifest_path) == expected
+        assert not (tx / 'previous-pair').exists()
+        assert not (tx / 'trial-descriptor.json').exists()
+        assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
     if fault == 'success':
         activate(tx / 'intent.json')
         assert events.count('candidate-launch') == 1
@@ -177,6 +210,8 @@ else:
         assert read(manifest_path)['appPath'] == expected['appPath']
         assert pathlib.Path(read(manifest_path)['executablePath']).read_text() == 'candidate-executable'
         assert pathlib.Path(journal['previousBundle']).joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+        reserve = journal['recoveryReserves'][0]
+        assert pathlib.Path(reserve['path']).stat().st_blocks * 512 >= reserve['bytes']
     if fault.startswith('missing-') or fault in ('legacy-receipt', 'gate-mismatch', 'gate-boolean', 'protocol-mismatch', 'tree-mismatch', 'version-mismatch', 'listener-mismatch', 'invalid-backend', 'dead-backend', 'changed-backend'):
         assert read(manifest_path) == expected
         assert not (tx / 'commit-grant.json').exists()
@@ -193,7 +228,7 @@ else:
         assert (home / 'settings.json').read_text() == 'previous-settings'
         assert (profile / 'opaque').read_text() == 'same-host-profile'
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-        if fault != 'snapshot-failed':
+        if fault not in ('snapshot-failed', 'state-grew'):
             with sqlite3.connect(tx / 'advanced-state' / 'state.sqlite') as db:
                 assert db.execute('SELECT value FROM identity').fetchone()[0] == ('previous-state' if fault.startswith('bundle-') else 'advanced-state')
         else:
@@ -202,10 +237,363 @@ else:
         assert state == 'advanced-state'
         assert (tx / 'previous-pair' / 'state.sqlite').exists()
         assert 'restart-previous' not in events
+    if journal['phase'] == 'rolled-back': assert not (tx / 'recovery-reserve.bin').exists()
     print(json.dumps({'phase': journal['phase'], 'events': events, 'state': state}))
 `;
 
 describe("Jones native helper", () => {
+  it("physically reserves rollback capacity, preserves changed ownership, and removes only its failed allocation", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+path = root / 'reserve.bin'
+reserve = allocate_recovery_file(path, 16384)
+assert path.stat().st_size == 16384 and path.stat().st_blocks * 512 >= 16384
+assert reserve['inode'] == str(path.stat().st_ino)
+try: allocate_recovery_file(path, 16384)
+except FileExistsError: pass
+else: raise AssertionError('Occupied reserve overwritten')
+retained = root / 'retained.bin'; path.rename(retained); path.write_bytes(b'foreign')
+try: release_recovery_reserve([reserve])
+except RuntimeError as error: assert 'ownership changed' in str(error)
+else: raise AssertionError('Foreign reserve deleted')
+assert path.read_bytes() == b'foreign' and retained.stat().st_size == 16384
+path.unlink(); retained.rename(path)
+reserves = [reserve]; release_recovery_reserve(reserves)
+assert reserves == [] and not path.exists()
+original_fcntl = fcntl.fcntl
+original_platform = sys.platform
+sys.platform = 'darwin'
+def fail_allocation(descriptor, operation, argument):
+    os.write(descriptor, bytes(4096))
+    raise OSError(28, 'Synthetic exhausted fixture volume')
+fcntl.fcntl = fail_allocation
+sibling = root / 'unrelated'; sibling.write_text('keep')
+try:
+    try: allocate_recovery_file(path, 16384)
+    except OSError as error: assert error.errno == 28
+    else: raise AssertionError('Partial allocation accepted')
+finally:
+    fcntl.fcntl = original_fcntl
+    sys.platform = original_platform
+assert not path.exists() and sibling.read_text() == 'keep'
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
+        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+  it.each([
+    "claim-first",
+    "discard-first",
+    "existing-claim-mismatch",
+    "legacy-backend",
+    "claim-sync-failed",
+  ])("serializes preparation admission for %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+
+request = tx / 'activation-request.json'; os.rename(tx / 'intent.json', request)
+for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
+def run(operation, selection_hash=selection_digest):
+    return selection_command(operation, expected, staged['handle'], str(selection_path), selection_hash, str(request))
+if fault == 'discard-first':
+    assert run('discard-staged')['status'] == 'discarded'
+    assert run('claim-preparation') == {'protocol': 1, 'operation': 'claim-preparation', 'handle': staged['handle'], 'status': 'refused', 'reason': 'selection-mismatch'}
+    assert not (tx / 'prepare-intent.json').exists()
+else:
+    if fault == 'claim-sync-failed':
+        original_durable = durable
+        def durable(path, value, exclusive=False):
+            original_durable(path, value, exclusive)
+            if pathlib.Path(path).name == 'prepare-intent.json': raise OSError('Claim publication sync outcome unknown')
+    result = run('claim-preparation')
+    assert result['status'] == ('uncertain' if fault == 'claim-sync-failed' else 'preparation-claimed'), result
+    assert read(tx / 'prepare-intent.json') == claim
+    assert run('discard-staged')['reason'] == 'activation-pending'
+    assert run('claim-preparation')['reason'] == 'activation-pending'
+    if fault == 'existing-claim-mismatch':
+        assert run('claim-preparation', '0' * 64)['reason'] == 'activation-pending'
+    if fault == 'legacy-backend':
+        legacy = {key: continuation[key] for key in ('protocol', 'transactionId', 'home', 'databasePath', 'profile', 'environmentId', 'prepared')}
+        durable(tx / 'continuation.json', legacy, True)
+        assert run('claim-activation')['status'] == 'refused'
+        durable(tx / 'intent.json', intent, True)
+        try: activate(tx / 'intent.json')
+        except RuntimeError as error: assert 'not prepared' in str(error)
+        else: raise AssertionError('Legacy backend preparation qualified')
+        assert not (tx / 'journal.json').exists()
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("holds the actual activation flock across the preparation scan and durable claim", async () => {
+    const f = await fixture();
+    try {
+      const [nativeFunctions, parser] = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      );
+      const pause = String.raw`
+sys.platform = 'darwin'
+bundle_identity = lambda active: None
+original_durable = durable
+def durable(path, value, exclusive=False):
+    if pathlib.Path(path).name == 'prepare-intent.json':
+        root = pathlib.Path(__file__).parent
+        (root / 'claim-entered').write_text('entered')
+        deadline = time.monotonic() + 5
+        while not (root / 'claim-release').exists():
+            if time.monotonic() >= deadline: raise RuntimeError('Fixture release timeout')
+            time.sleep(0.01)
+    return original_durable(path, value, exclusive)
+`;
+      await NodeFSP.writeFile(
+        NodePath.join(f.directory, "interleaved-helper.py"),
+        `${nativeFunctions}\n${pause}\nparser = argparse.ArgumentParser()${parser}`,
+      );
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+for name in ('intent.json', 'prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
+command = ['python3', str(root / 'interleaved-helper.py'), '--manifest', str(manifest_path),
+           '--selection', str(selection_path), '--selection-sha256', selection_digest]
+child = subprocess.Popen(command + ['--claim-preparation', staged['handle']], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+try:
+    deadline = time.monotonic() + 5
+    while not (root / 'claim-entered').exists():
+        if child.poll() is not None: raise AssertionError(child.communicate())
+        if time.monotonic() >= deadline: raise AssertionError('Claim did not enter fixture barrier')
+        time.sleep(0.01)
+    competing = subprocess.run(command + ['--discard-staged', staged['handle']], capture_output=True, text=True, timeout=5)
+    assert competing.returncode == 0, competing.stderr
+    assert json.loads(competing.stdout)['reason'] == 'busy'
+    assert selection_path.exists() and not (tx / 'prepare-intent.json').exists()
+    (root / 'claim-release').write_text('released')
+    output, error = child.communicate(timeout=5)
+    assert child.returncode == 0, error
+    assert json.loads(output)['status'] == 'preparation-claimed'
+    after = subprocess.run(command + ['--discard-staged', staged['handle']], capture_output=True, text=True, timeout=5)
+    assert json.loads(after.stdout)['reason'] == 'activation-pending'
+    assert read(tx / 'prepare-intent.json') == claim and selection_path.exists()
+finally:
+    if child.poll() is None: child.kill()
+    child.wait(timeout=5)
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, "interleaved"],
+        {
+          encoding: "utf8",
+          timeout: 15000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("holds exclusive state/profile leases and refuses readers, changed inodes, or WAL mode", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+profile = root / 'profile'; profile.mkdir()
+expected = {'home': str(root), 'profile': str(profile)}
+connections = acquire_writer_exclusion(expected)
+paths = native_writer_lease_paths(expected)
+try:
+    for path, scope in paths:
+        outsider = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            try: outsider.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+            except sqlite3.OperationalError as error: assert 'locked' in str(error)
+            else: raise AssertionError('An exclusive native copy admitted a reader')
+        finally: outsider.close()
+finally: release_writer_exclusion(connections)
+path, scope = paths[0]
+reader = sqlite3.connect(path, isolation_level=None)
+reader.execute('BEGIN'); reader.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+try:
+    try: acquire_writer_exclusion(expected)
+    except sqlite3.OperationalError as error: assert 'locked' in str(error)
+    else: raise AssertionError('A participating writer was ignored')
+finally: reader.close()
+connections = acquire_writer_exclusion(expected); release_writer_exclusion(connections)
+connection = sqlite3.connect(path, isolation_level=None)
+connection.execute('PRAGMA journal_mode=WAL'); connection.close()
+try: acquire_writer_exclusion(expected)
+except RuntimeError as error: assert 'rollback journal mode' in str(error)
+else: raise AssertionError('WAL lease was accepted')
+connection = sqlite3.connect(path, isolation_level=None)
+connection.execute('PRAGMA journal_mode=DELETE'); connection.close()
+old = path.with_name(path.name + '.retained')
+path.rename(old); shutil.copy2(old, path)
+try: acquire_writer_exclusion(expected)
+except RuntimeError as error: assert 'inode changed' in str(error)
+else: raise AssertionError('Replaced lease inode was accepted')
+assert old.exists()
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "discard",
+    "claim",
+    "discard-before-claim",
+    "wrong-selection",
+    "wrong-request",
+    "wrong-candidate",
+    "wrong-continuation",
+    "associated-preparation",
+    "other-pending",
+    "other-terminal",
+    "unknown-journal",
+    "discard-sync-failed",
+    "claim-sync-failed",
+  ])("serializes the %s selection outcome without deleting retained artifacts", async (fault) => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+request = tx / 'activation-request.json'
+os.rename(tx / 'intent.json', request)
+def run(operation):
+    return selection_command(operation, expected, staged['handle'], str(selection_path), selection_digest, str(request))
+claiming = fault in ('claim', 'discard-before-claim', 'wrong-request', 'wrong-candidate', 'wrong-continuation', 'claim-sync-failed')
+if not claiming or fault == 'discard-before-claim':
+    for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
+if fault == 'wrong-selection': selection_digest = '0' * 64
+if fault == 'wrong-request':
+    request = tx / 'other-request.json'; durable(request, intent, True)
+if fault == 'wrong-candidate': durable(request, dict(intent, staged=dict(staged, sourceSha='0' * 40)))
+if fault == 'wrong-continuation': durable(tx / 'continuation.json', dict(continuation, environmentId='wrong'))
+if fault == 'associated-preparation': durable(tx / 'prepare-intent.json', claim, True)
+if fault in ('other-pending', 'other-terminal', 'unknown-journal'):
+    other = tx.parent / ('e' * 64); other.mkdir()
+    prior = dict(intent, transactionId=other.name)
+    durable(other / 'intent.json', prior, True)
+    if fault == 'other-terminal': durable(other / 'journal.json', {'intent': prior, 'phase': 'rolled-back'}, True)
+    if fault == 'unknown-journal': durable(other / 'journal.json', {'intent': prior, 'phase': 'unknown'}, True)
+if fault == 'discard-before-claim':
+    assert run('discard-staged')['status'] == 'discarded'
+    durable(tx / 'prepare-intent.json', claim, True)
+if fault == 'discard-sync-failed':
+    def sync_parent(path): raise OSError('Synthetic parent sync failure after unlink')
+if fault == 'claim-sync-failed':
+    original_durable = durable
+    def durable(path, value, exclusive=False):
+        original_durable(path, value, exclusive)
+        if pathlib.Path(path).name == 'intent.json': raise OSError('Synthetic claim sync failure after link')
+outcome = run('claim-activation' if claiming else 'discard-staged')
+if fault in ('discard', 'other-terminal'):
+    assert outcome['status'] == 'discarded', outcome
+    assert not selection_path.exists()
+elif fault == 'claim':
+    assert outcome == {'protocol': 1, 'operation': 'claim-activation', 'handle': staged['handle'], 'status': 'claimed', 'intentPath': str(tx / 'intent.json')}
+    assert read(tx / 'intent.json') == intent
+    assert run('claim-activation')['reason'] == 'activation-pending'
+    assert run('discard-staged')['reason'] == 'activation-pending'
+    assert selection_path.exists()
+elif fault in ('discard-sync-failed', 'claim-sync-failed'):
+    assert outcome['status'] == 'uncertain', outcome
+    assert (tx / 'intent.json').exists() == (fault == 'claim-sync-failed')
+    assert selection_path.exists() == (fault == 'claim-sync-failed')
+else:
+    assert outcome['status'] == 'refused', outcome
+    assert not (tx / 'intent.json').exists()
+    assert selection_path.exists() == (fault != 'discard-before-claim')
+assert (candidate_app / 'Contents/MacOS/Jones').read_text() == 'candidate-executable'
+assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert payload.read_text() == 'synthetic-qualified-dmg'
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
+        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("refuses a selection command while the actual activation lock is owned", async () => {
+    const f = await fixture();
+    try {
+      const [nativeFunctions, parser] = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      );
+      const helper = NodePath.join(f.directory, "synthetic-helper.py");
+      await NodeFSP.writeFile(
+        helper,
+        `${nativeFunctions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nparser = argparse.ArgumentParser()${parser}`,
+      );
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+manifest = root / 'manifest.json'; manifest.write_text(json.dumps({'protocol': 1, 'owner': 'desktop'}))
+lock_path = root / 'jones-activation.lock'
+lock_path.write_text('jones-activation-lock-v1\n')
+with open(lock_path, 'r+') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    result = subprocess.run(['python3', str(root / 'synthetic-helper.py'), '--manifest', str(manifest), '--discard-staged', 'f' * 64,
+                             '--selection', str(root / 'selection.json'), '--selection-sha256', 'e' * 64], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {'protocol': 1, 'operation': 'discard-staged', 'handle': 'f' * 64, 'status': 'refused', 'reason': 'busy'}
+assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock', 'manifest.json', 'synthetic-helper.py']
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it.each(["success", "failure", "cancel"])(
     "removes only its captured synthetic fixture after %s",
     async (outcome) => {
@@ -269,6 +657,10 @@ describe("Jones native helper", () => {
     ["candidate-stop", "blocked"],
     ["snapshot-failed", "rolled-back"],
     ["old-quiescence", "blocked"],
+    ["storage-refused", "blocked"],
+    ["reserve-denied", "blocked"],
+    ["reserve-release-failed", "blocked"],
+    ["state-grew", "rolled-back"],
     ["resume-grant", "blocked"],
     ["commit-uncertain", "blocked"],
     ["untracked-launch", "blocked"],
@@ -337,6 +729,125 @@ with sqlite3.connect(database) as db:
     }
   });
 
+  it("budgets full-copy recovery and refuses cross-volume or recursive roots before shutdown", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+state, profile, tx, candidate, app = [root / name for name in ('state', 'profile', 'tx', 'candidate', 'installed.app')]
+for path in (state, profile, tx, candidate, app): path.mkdir()
+database = state / 'state.sqlite'
+database.write_bytes(b'database')
+pathlib.Path(str(database) + '-wal').write_bytes(b'wal')
+pathlib.Path(str(database) + '-shm').write_bytes(b'shm')
+(state / 'settings.json').write_bytes(b'settings')
+(profile / 'opaque').write_bytes(b'profile')
+(candidate / 'binary').write_bytes(b'candidate')
+expected = {'databasePath': str(database), 'profile': str(profile), 'appPath': str(app)}
+staged = {'appPath': str(candidate)}
+space = type('Space', (), {'f_bavail': 1 << 50, 'f_frsize': 1})()
+os.statvfs = lambda path: space
+plan = storage_preflight(expected, staged, tx)
+assert plan['stateBytes'] == 29
+assert plan['candidateBytes'] == 9
+assert plan['requiredBytes'] == 2 * 29 + 9 + RECOVERY_HEADROOM
+space.f_bavail = plan['requiredBytes'] - 1
+try: storage_preflight(expected, staged, tx)
+except RuntimeError as error: assert 'Insufficient free space' in str(error)
+else: raise AssertionError('Low space was accepted because cloning might work')
+space.f_bavail += 1
+storage_preflight(expected, staged, tx)
+original_stat = pathlib.Path.stat
+def other_volume(path, *args, **kwargs):
+    info = original_stat(path, *args, **kwargs)
+    if path == profile:
+        values = list(info); values[2] += 1
+        return os.stat_result(values)
+    return info
+pathlib.Path.stat = other_volume
+try:
+    try: storage_preflight(expected, staged, tx)
+    except RuntimeError as error: assert 'same-volume recovery' in str(error)
+    else: raise AssertionError('Cross-volume rollback was accepted')
+finally: pathlib.Path.stat = original_stat
+for unsafe in (dict(expected, profile=str(state)), dict(expected, profile=str(root))):
+    try: storage_preflight(unsafe, staged, tx)
+    except RuntimeError as error: assert 'overlap' in str(error)
+    else: raise AssertionError('Overlapping recovery roots were accepted')
+recursive = profile / 'transaction'; recursive.mkdir()
+try: storage_preflight(expected, staged, recursive)
+except RuntimeError as error: assert 'own destination' in str(error)
+else: raise AssertionError('Recursive profile snapshot was accepted')
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("syncs restored sidecars and both rename parents before declaring the advanced pair retained", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+state, profile, tx = [root / name for name in ('state', 'profile', 'tx')]
+for path in (state, profile, tx): path.mkdir()
+database = state / 'state.sqlite'
+for suffix in ('', '-wal', '-shm'): pathlib.Path(str(database) + suffix).write_bytes(('old' + suffix).encode())
+(profile / 'opaque').write_text('old profile')
+expected = {'databasePath': str(database), 'profile': str(profile)}
+pair_state(expected, tx / 'pair')
+for suffix in ('', '-wal', '-shm'): pathlib.Path(str(database) + suffix).write_bytes(('advanced' + suffix).encode())
+events, descriptors = [], {}
+native_open, native_sync, native_durable = os.open, os.fsync, durable
+def opened(path, flags, *args, **kwargs):
+    fd = native_open(path, flags, *args, **kwargs)
+    descriptors[fd] = str(path)
+    return fd
+def synced(fd):
+    events.append(('sync', descriptors.get(fd)))
+    return native_sync(fd)
+def recorded(path, value, exclusive=False):
+    if pathlib.Path(path).name == 'retained.json': events.append(('retained', str(path)))
+    return native_durable(path, value, exclusive)
+os.open, os.fsync, durable = opened, synced, recorded
+prove_quiescence = lambda active: None
+restore_pair(expected, tx / 'pair', tx / 'advanced')
+retained = events.index(('retained', str(tx / 'advanced' / 'retained.json')))
+for path in (database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm'), state, profile.parent, tx, tx / 'advanced'):
+    assert ('sync', str(path)) in events[:retained], (str(path), events)
+for suffix in ('', '-wal', '-shm'):
+    assert pathlib.Path(str(database) + suffix).read_bytes() == ('old' + suffix).encode()
+    assert (tx / 'advanced' / (database.name + suffix)).read_bytes() == ('advanced' + suffix).encode()
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("copies the stopped DB and sidecars after a partial clone without opening SQLite", async () => {
     const f = await fixture();
     try {
@@ -382,7 +893,132 @@ for suffix, content in contents.items():
     }
   });
 
-  it("checks exact native files, ignores readers, and refuses writers or incomplete access", () => {
+  it("stops its owned child through the unreaped zombie window and refuses a live mismatch", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+def cancel(signum, frame): raise SystemExit(128 + signum)
+signal.signal(signal.SIGTERM, cancel)
+signal.signal(signal.SIGINT, cancel)
+child = subprocess.Popen(['/bin/sleep', '30'])
+native_kill = os.kill
+signals = []
+def captured_kill(pid, sig):
+    assert pid == child.pid
+    signals.append((pid, sig))
+    native_kill(pid, sig)
+os.kill = captured_kill
+try:
+    proof = {'pid': child.pid, 'identity': process_identity(child.pid)}
+    assert proof['identity'] is not None
+    try: stop_exact([dict(proof, identity=proof['identity'] + ' altered')])
+    except RuntimeError as error: assert str(error) == 'Process identity changed; signal withheld.'
+    else: raise AssertionError('A live mismatch was accepted')
+    assert signals == []
+    assert process_identity(child.pid) == proof['identity']
+    stop_exact([proof])
+    assert signals == [(child.pid, signal.SIGTERM)]
+    assert process_identity(child.pid) != proof['identity']
+    assert process_start(child.pid)[0].startswith('Z')
+    assert alive(proof) is False
+    assert child.wait(timeout=2) == -signal.SIGTERM
+    assert alive(proof) is False
+finally:
+    os.kill = native_kill
+    if child.returncode is None: child.kill()
+    child.wait(timeout=2)
+`;
+    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it("withholds signals on reused identities and failed observations, and retains the stop deadline", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+birth = 'Sat Oct 10 08:20:14 2026'
+proof = {'pid': 123, 'identity': birth + ' /owned/process'}
+signals = []
+calls = []
+os.kill = lambda pid, sig: signals.append((pid, sig))
+def result(output='', code=0, error=''):
+    return type('Result', (), {'returncode': code, 'stdout': output, 'stderr': error})()
+def observe(results):
+    pending = iter(results)
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[:4] == ['/bin/ps', '-p', '123', '-o']
+        return next(pending)
+    subprocess.run = run
+    signals.clear()
+def blocked(results, message='Process inspection failed; signal withheld.'):
+    observe(results)
+    try: stop_exact([proof])
+    except RuntimeError as error: assert str(error) == message
+    else: raise AssertionError('Unsafe process observation was accepted')
+    assert signals == []
+for observation in (result(code=2), result(),
+                    result(proof['identity'] + '\n' + proof['identity']),
+                    result(proof['identity'], error='inspection warning'), result(code=1, error='inspection failed')):
+    blocked([observation])
+mismatch = result(birth + ' <defunct>')
+for status in (result(code=2), result(), result('Z'), result(birth + ' Z\n' + birth + ' Z'),
+               result(birth + ' Z', error='inspection warning'), result(birth + ' Zgarbage')):
+    blocked([mismatch, status])
+blocked([mismatch, result('malformed Z')], 'Process identity changed; signal withheld.')
+blocked([mismatch, result('Sat Oct 10 08:20:15 2026 Z')], 'Process identity changed; signal withheld.')
+blocked([mismatch, result(birth + ' S')], 'Process identity changed; signal withheld.')
+blocked([result('malformed command'), result(birth + ' Z')], 'Process identity changed; signal withheld.')
+observe([result(code=1), result(code=1)])
+stop_exact([proof]); assert signals == []
+observe([mismatch, result(code=1), result(code=1)])
+stop_exact([proof]); assert signals == []
+observe([mismatch, result(birth + ' Z'), mismatch, result(birth + ' Z')])
+stop_exact([proof]); assert signals == []
+observe([result(proof['identity']), mismatch, result(birth + ' Z')])
+stop_exact([proof]); assert signals == [(123, signal.SIGTERM)]
+assert calls[0] == ['/bin/ps', '-p', '123', '-o', 'lstart=', '-o', 'command=']
+observe([result(proof['identity']), result(proof['identity'])])
+clock = iter((0, 91))
+time.monotonic = lambda: next(clock)
+time.sleep = lambda delay: (_ for _ in ()).throw(AssertionError('Unexpected wait'))
+try: stop_exact([proof])
+except RuntimeError as error: assert str(error) == 'Owned native writers did not stop; recovery held.'
+else: raise AssertionError('Live process bypassed deadline')
+assert signals == [(123, signal.SIGTERM)]
+observe([result(proof['identity']), result(proof['identity']), result(proof['identity']), result(code=1)])
+clock = iter((0, 31, 76))
+time.monotonic = lambda: next(clock)
+waits = []
+time.sleep = waits.append
+stop_exact([proof])
+assert signals == [(123, signal.SIGTERM)] and waits == [0.1, 0.1]
+time.monotonic = lambda: 0
+for birth in ('Sa 10 Okt 08:20:14 2026', '2026年10月10日 08:20:14'):
+    proof = {'pid': 123, 'identity': birth + ' /owned/process'}
+    observe([result(proof['identity']), result(code=1)])
+    stop_exact([proof]); assert signals == [(123, signal.SIGTERM)]
+    zombie = result(birth + ' <defunct>')
+    observe([result(proof['identity']), zombie, result(birth + ' Z')])
+    stop_exact([proof]); assert signals == [(123, signal.SIGTERM)]
+    observe([zombie, result(birth + ' Z'), zombie, result(birth + ' Z')])
+    stop_exact([proof]); assert signals == []
+    blocked([result(birth + ' /different/process'), result(birth + ' S')], 'Process identity changed; signal withheld.')
+    blocked([zombie, result(birth.replace('08:20:14', '08:20:15') + ' Z')], 'Process identity changed; signal withheld.')
+`;
+    NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it("checks native files and the whole profile tree, refusing writers or incomplete access", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
       "\nparser = argparse.ArgumentParser()",
     )[0];
@@ -397,7 +1033,7 @@ def inspect(output, code=0, error=''):
     subprocess.run = run
     prove_quiescence(expected)
 inspect('p12\nf3\nar\n')
-assert '+D' not in calls[0]
+assert calls[0][calls[0].index('+D') + 1] == '/synthetic/profile'
 assert '/synthetic/state.sqlite' in calls[0]
 assert '/synthetic/state.sqlite-wal' in calls[0]
 assert '/synthetic/state.sqlite-shm' in calls[0]
@@ -406,6 +1042,9 @@ for output in ('p12\nf3\naw\n', 'p12\nf3\nau\n', 'p12\nf3\n', 'unparsed'):
     except RuntimeError: pass
     else: raise AssertionError('A writer or unknown access was accepted')
 inspect('', 1)
+try: inspect('', 1, "lsof: WARNING: can't stat() /synthetic/profile/Local Storage/leveldb\nOutput information may be incomplete.")
+except RuntimeError: pass
+else: raise AssertionError('An incomplete profile inspection was accepted')
 `;
     NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
       encoding: "utf8",

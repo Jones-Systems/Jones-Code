@@ -8,8 +8,12 @@ import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 
-import { APP_VERSION } from "./branding";
+import { APP_SOURCE_SHA, APP_VERSION } from "./branding";
 import { isJonesPreviewBuildPair } from "./jones/updates/versionSkew";
+import {
+  resolveJonesSourceCurrency,
+  type JonesSourceCurrency,
+} from "./jones/fleetUpdates/sourceCurrency";
 import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
 
 export interface VersionMismatch {
@@ -52,7 +56,8 @@ function versionCore(version: string): string {
  * The skew a user can act on: the connected server runs an older build than
  * this client, so the server is the side that needs updating.
  *
- * Two nightly builds or two Jones previews compare their full versions, including the date and run.
+ * Nightly builds compare their full versions. Jones previews require source
+ * ancestry: independent platform workflows assign unrelated run numbers.
  * Other combinations compare their core `major.minor.patch` only, so a stable
  * build and a nightly build with the same core do not cause an update warning.
  * A server ahead of the client does not need an update. Versions that do not
@@ -60,6 +65,7 @@ function versionCore(version: string): string {
  */
 export function resolveVersionMismatch(
   serverVersion: string | null | undefined,
+  jonesCurrency: JonesSourceCurrency = "unknown",
 ): VersionMismatch | null {
   const normalizedClientVersion = normalizeVersion(APP_VERSION);
   const normalizedServerVersion = normalizeVersion(serverVersion);
@@ -67,12 +73,21 @@ export function resolveVersionMismatch(
     return null;
   }
 
+  if (isJonesPreviewBuildPair(normalizedClientVersion, normalizedServerVersion)) {
+    return jonesCurrency === "behind"
+      ? {
+          clientVersion: normalizedClientVersion,
+          serverVersion: normalizedServerVersion,
+          hint: "A newer Jones source is available. Use the qualified update controls for this host.",
+        }
+      : null;
+  }
+
   const clientCore = versionCore(normalizedClientVersion);
   const serverCore = versionCore(normalizedServerVersion);
   const compareBuildVersions =
-    (parseSemver(normalizedClientVersion)?.prerelease[0] === "nightly" &&
-      parseSemver(normalizedServerVersion)?.prerelease[0] === "nightly") ||
-    isJonesPreviewBuildPair(normalizedClientVersion, normalizedServerVersion);
+    parseSemver(normalizedClientVersion)?.prerelease[0] === "nightly" &&
+    parseSemver(normalizedServerVersion)?.prerelease[0] === "nightly";
   const serverIsBehind =
     parseSemver(clientCore) && parseSemver(serverCore)
       ? compareSemverVersions(
@@ -94,7 +109,13 @@ export function resolveVersionMismatch(
 export function resolveServerConfigVersionMismatch(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
 ): VersionMismatch | null {
-  return resolveVersionMismatch(serverConfig?.environment.serverVersion);
+  return resolveVersionMismatch(
+    serverConfig?.environment.serverVersion,
+    resolveJonesSourceCurrency({
+      installedSource: serverConfig?.environment.jonesSource?.sha,
+      targetSource: APP_SOURCE_SHA,
+    }),
+  );
 }
 
 /** The update path the connected server offers, or null when it only

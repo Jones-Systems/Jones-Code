@@ -1,3 +1,8 @@
+import type {
+  FleetDesktopRequest,
+  FleetDesktopState,
+} from "@t3tools/contracts/jones/fleet-updates";
+import { createDesktopFleetStore } from "../jones/fleetUpdates/store.ts";
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
   DesktopUpdateChannelSchema,
@@ -197,7 +202,12 @@ export class DesktopUpdates extends Context.Service<
       selection: JonesDesktopDownloadSelection,
     ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
-    readonly installStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
+    readonly discardStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
+    readonly installStaged?: (
+      handle: string,
+      campaignId?: string,
+    ) => Effect.Effect<DesktopUpdateActionResult>;
+    readonly fleetUpdates?: (request: FleetDesktopRequest) => Effect.Effect<FleetDesktopState>;
     readonly installPrepared: (
       expectedVersion: string,
       stagedHandle?: string,
@@ -358,12 +368,15 @@ export const make = Effect.gen(function* () {
     const context = yield* Effect.context<never>();
     const processEnv = yield* HostProcessEnvironment;
     const executablePath = yield* HostProcessExecutablePath;
+    const profile = yield* DesktopUserData.resolveUserDataPath(environment);
+    const fleet = createDesktopFleetStore({ home: environment.baseDir, profile });
     const controller = new JonesDesktopUpdateController({
       home: environment.baseDir,
       appRoot: environment.appRoot,
       appPath: environment.path.resolve(environment.resourcesPath, "../.."),
       executablePath,
-      profile: yield* DesktopUserData.resolveUserDataPath(environment),
+      profile,
+      fleet,
       activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
       architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
       platform: environment.platform,
@@ -371,7 +384,7 @@ export const make = Effect.gen(function* () {
       disabledByEnv: config.disableAutoUpdate,
       onState: (state) => Effect.runPromiseWith(context)(setState(state)),
       timestamp: () => Effect.runPromiseWith(context)(currentIsoTimestamp),
-      prepareNative: async (handle, active) => {
+      prepareNative: async (handle, transactionId, active) => {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
         const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
         if (Option.isNone(backend)) throw new Error("Native backend preparation is unavailable.");
@@ -382,6 +395,7 @@ export const make = Effect.gen(function* () {
           listener: backend.value.httpBaseUrl.toString(),
           bootstrapToken: token,
           stagedHandle: handle,
+          transactionId,
           active,
         });
       },
@@ -416,8 +430,8 @@ export const make = Effect.gen(function* () {
       },
     });
     const check = Effect.promise(() => controller.check());
-    const install = (handle?: string) =>
-      Effect.promise(() => controller.install(handle)).pipe(
+    const install = (handle?: string, campaignId?: string) =>
+      Effect.promise(() => controller.install(handle, campaignId)).pipe(
         Effect.map((result) => ({ ...result, state: controller.state })),
       );
     return DesktopUpdates.of({
@@ -467,8 +481,13 @@ export const make = Effect.gen(function* () {
       install: install().pipe(
         Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
       ),
-      installStaged: (handle) =>
-        install(handle).pipe(
+      discardStaged: (handle) =>
+        Effect.promise(() => controller.discard(handle)).pipe(
+          Effect.map((result) => ({ ...result, state: controller.state })),
+        ),
+      fleetUpdates: (request) => Effect.promise(() => fleet.request(request)),
+      installStaged: (handle, campaignId) =>
+        install(handle, campaignId).pipe(
           Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
         ),
       installPrepared: (version, handle) =>

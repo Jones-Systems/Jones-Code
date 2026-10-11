@@ -10,7 +10,6 @@
     "apps/server/src/jones/updates/launcherOperation.test.ts",
     "apps/server/src/jones/updates/operationHandoff.test.ts",
     "apps/server/src/jones/updates/desktopInstall.test.ts",
-    "apps/server/src/jones/persistence/Migrations/106_JonesPlannedUpdateContinuity.ts",
     "apps/server/src/jones/updates/PlannedUpdateContinuity.ts",
     "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts",
     "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
@@ -18,7 +17,8 @@
     "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
     "apps/server/src/jones/updates/plannedContinuityStartup.ts",
     "apps/server/src/jones/cloud/shutdownBudget.ts",
-    "apps/server/src/jones/cloud/shutdownBudget.test.ts"
+    "apps/server/src/jones/cloud/shutdownBudget.test.ts",
+    "apps/server/src/jones/updates/stageRevocation.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -70,6 +70,10 @@
     {
       "from": "apps/server/src/cloud/bootService.ts",
       "to": "apps/server/src/jones/cloud/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/updates/stageRevocation.ts"
     }
   ]
 }

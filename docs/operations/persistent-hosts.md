@@ -174,7 +174,10 @@ operation IDs, and task `update.status:"pending"`. That marker is distinct from 
 native pending update. Bind its exact SHA-256 and operation ID, the original unit
 SHA-256, and the task-owned drop-in 50 SHA-256. Genuine native pending updates,
 unknown fields, staged selections, interrupted restores and native authority
-folders block bootstrap.
+state block bootstrap. The empty, owner-owned 0700 authority directory created by
+ordinary server startup is preserved; other contents, permissions or ownership
+require reconciliation. The separate `runtime/native-store-authority` path
+remains a bootstrap blocker whenever it exists.
 
 ```sh
 "$JONES_CLI" jones host adopt --base-dir "$JONES_BASE" \

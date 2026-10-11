@@ -178,3 +178,51 @@ it("keeps the accepted native update ID while refusing a second install", async 
   expect(f.updater.snapshot().phase).toBe("installing");
   expect(effects).toEqual(["install"]);
 });
+
+describe("exact unaccepted stage retirement", () => {
+  it("clears only the matching slot and permits a different frozen source afterwards", async () => {
+    const retired: string[] = [];
+    const f = fixture({
+      retireStaged: async (input) => {
+        retired.push(input.stagedHandle);
+      },
+    });
+    await f.updater.stageExact(candidate.source);
+    const input = {
+      operationId: "11111111-1111-4111-8111-111111111111",
+      environmentId: "fixture",
+      currentVersion: "0.0.0-preview.20261002.1",
+      expectedInstalledSource: "a".repeat(40),
+      targetSource: candidate.source,
+      stagedHandle: "fixed-handle",
+    };
+    expect(
+      (await f.updater.retireStagedOperation({ ...input, targetSource: "f".repeat(40) })).retired,
+    ).toBe(false);
+    expect(retired).toEqual([]);
+    expect((await f.updater.retireStagedOperation(input)).retired).toBe(true);
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    f.newer();
+    expect((await f.updater.stageExact("f".repeat(40))).provenance?.sourceSha).toBe("f".repeat(40));
+    expect(retired).toEqual(["fixed-handle"]);
+    expect(f.effects).toEqual(["stage", "stage"]);
+  });
+  it("preserves the selection when native absence cannot be proved", async () => {
+    const f = fixture({
+      retireStaged: async () => {
+        throw new Error("Native acceptance is unknown.");
+      },
+    });
+    await f.updater.stageExact(candidate.source);
+    const result = await f.updater.retireStagedOperation({
+      operationId: "11111111-1111-4111-8111-111111111111",
+      environmentId: "fixture",
+      currentVersion: "0.0.0-preview.20261002.1",
+      expectedInstalledSource: "a".repeat(40),
+      targetSource: candidate.source,
+      stagedHandle: "fixed-handle",
+    });
+    expect(result).toEqual({ retired: false, reason: "Native acceptance is unknown." });
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+  });
+});

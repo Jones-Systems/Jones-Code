@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { QueueDispatchCapability } from "./queueProtocol.ts";
 import { ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
+import { JonesSourceIdentity } from "./jones/fleetUpdates/source.ts";
 
 import {
   EnvironmentId,
@@ -260,6 +261,7 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   label: TrimmedNonEmptyString,
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
+  jonesSource: Schema.optionalKey(JonesSourceIdentity),
   /** Absent on hosts from before explicit orchestration protocol negotiation. */
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   capabilities: ExecutionEnvironmentCapabilities,
