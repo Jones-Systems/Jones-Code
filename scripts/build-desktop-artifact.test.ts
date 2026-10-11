@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { createPackageWithOptions, extractFile, statFile } from "@electron/asar";
@@ -777,7 +778,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
-  it.effect.skipIf(!symlinksSupported)(
+  it.effect.skipIf(!["linux", "darwin"].includes(NodeOS.platform()))(
     "identifies Mac startup metadata, bootstrap modes, bytes, and missing files separately",
     () =>
       Effect.scoped(
