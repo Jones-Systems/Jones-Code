@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/nativeWriterFence": {
+      "types": "./src/jones/nativeWriterFence.ts",
+      "import": "./src/jones/nativeWriterFence.ts"
+    },
     "./jones/composerThreadQuery": {
       "types": "./src/jones/composerThreadQuery.ts",
       "import": "./src/jones/composerThreadQuery.ts"

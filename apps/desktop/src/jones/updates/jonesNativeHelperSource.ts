@@ -122,14 +122,13 @@ def prove_quiescence(expected):
     profile = pathlib.Path(expected['profile'])
     files = [database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm')]
     files += [database.parent / name for name in SETTINGS]
-    profile_databases = [profile / name for name in ('History', 'Cookies', 'Login Data', 'Web Data', 'Default/History', 'Default/Cookies', 'Default/Network/Cookies', 'Default/Login Data', 'Default/Web Data')]
-    for path in profile_databases: files += [path, pathlib.Path(str(path) + '-wal'), pathlib.Path(str(path) + '-shm')]
-    files += [profile / name for name in ('Local State', 'Preferences', 'LOCK', 'Default/Preferences', 'Default/Local Storage/leveldb/LOCK', 'Default/Session Storage/LOCK')]
     existing = [str(path) for path in files if path.exists()]
     if not existing: raise RuntimeError('Native database files are missing; writer inspection held.')
-    result = subprocess.run(['/usr/sbin/lsof', '-F', 'pfa', '--'] + existing, capture_output=True, text=True)
+    # Chromium stores are not a fixed filename list. Inspect the copied profile
+    # tree as well as SQLite/settings; this observes outsiders without excluding them.
+    result = subprocess.run(['/usr/sbin/lsof', '-F', 'pfa', '+D', str(profile), '--'] + existing, capture_output=True, text=True, timeout=30)
     if result.returncode not in (0, 1): raise RuntimeError('Native file-writer inspection failed.')
-    if result.stderr.strip() and (any(path in result.stderr for path in existing) or not all(line.startswith("lsof: WARNING: can't stat()") or line.strip() == 'Output information may be incomplete.' for line in result.stderr.splitlines() if line.strip())):
+    if result.stderr.strip() and (any(path in result.stderr for path in existing + [str(profile)]) or not all(line.startswith("lsof: WARNING: can't stat()") or line.strip() == 'Output information may be incomplete.' for line in result.stderr.splitlines() if line.strip())):
         raise RuntimeError('Native file-writer inspection was incomplete.')
     access = None
     descriptor_open = False
@@ -215,6 +214,70 @@ def recovery_topology(expected, transaction):
     if len({path.stat().st_dev for path in roots}) != 1:
         raise RuntimeError('Native state and profile require same-volume recovery; installation held.')
     return roots
+
+def native_writer_lease_paths(expected):
+    home = pathlib.Path(expected['home']).resolve(strict=True)
+    profile = pathlib.Path(expected['profile']).resolve(strict=True)
+    profile_hash = hashlib.sha256(str(profile).encode()).hexdigest()
+    return sorted(((home / 'runtime' / 'jones-native-writer.sqlite', 'home:' + str(home)),
+                   (profile.parent / ('.jones-profile-writer-' + profile_hash + '.sqlite'), 'profile:' + str(profile))))
+
+def native_lease_identity(path, scope):
+    info = path.lstat()
+    witness = read(str(path) + '.identity.json')
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_mode & 0o077 or witness != {'protocol': 1, 'scope': scope, 'device': str(info.st_dev), 'inode': str(info.st_ino)}:
+        raise RuntimeError('Native lease inode changed; reconciliation required.')
+    return info.st_dev, info.st_ino
+
+def initialize_native_lease(path, scope):
+    if path.exists() or path.is_symlink(): return
+    if pathlib.Path(str(path) + '.identity.json').exists(): raise RuntimeError('Native lease disappeared; reconciliation required.')
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    scratch = path.with_name(path.name + '.' + uuid.uuid4().hex + '.pending')
+    descriptor = os.open(scratch, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    os.close(descriptor)
+    try:
+        connection = sqlite3.connect(scratch, isolation_level=None)
+        try:
+            connection.execute('PRAGMA journal_mode = DELETE')
+            connection.execute('PRAGMA synchronous = FULL')
+            connection.execute('CREATE TABLE jones_native_writer_lease (protocol INTEGER, scope TEXT)')
+            connection.execute('INSERT INTO jones_native_writer_lease VALUES (1, ?)', (scope,))
+        finally: connection.close()
+        descriptor = os.open(scratch, os.O_RDONLY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+        try: os.link(scratch, path)
+        except FileExistsError: return
+        scratch.unlink()
+        sync_parent(path)
+        info = path.lstat()
+        durable(str(path) + '.identity.json', {'protocol': 1, 'scope': scope, 'device': str(info.st_dev), 'inode': str(info.st_ino)}, True)
+    finally:
+        if scratch.exists(): scratch.unlink()
+
+def release_writer_exclusion(connections):
+    while connections:
+        connections[-1].close()
+        connections.pop()
+
+def acquire_writer_exclusion(expected):
+    connections = []
+    try:
+        for path, scope in native_writer_lease_paths(expected):
+            initialize_native_lease(path, scope)
+            identity = native_lease_identity(path, scope)
+            connection = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=0, isolation_level=None)
+            connections.append(connection)
+            if connection.execute('PRAGMA journal_mode').fetchone() != ('delete',):
+                raise RuntimeError('Native leases require rollback journal mode.')
+            connection.execute('BEGIN EXCLUSIVE')
+            if connection.execute('SELECT protocol, scope FROM jones_native_writer_lease').fetchall() != [(1, scope)] or native_lease_identity(path, scope) != identity:
+                raise RuntimeError('Native writer lease identity changed.')
+        return connections
+    except Exception:
+        release_writer_exclusion(connections)
+        raise
 
 def storage_preflight(expected, staged, transaction):
     state, profile, transaction = recovery_topology(expected, transaction)
@@ -401,6 +464,114 @@ def launch(active, descriptor=None):
     if identity is None: raise RuntimeError('Native app exited before its identity was captured; OS consent may be required.')
     return {'pid': child.pid, 'identity': identity}
 
+class SelectionRefused(Exception):
+    def __init__(self, reason): self.reason = reason
+
+def bounded_native_json(path, limit=1024 * 1024):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > limit:
+            raise SelectionRefused('unknown-state')
+        raw = stream.read(limit + 1)
+        if len(raw) > limit: raise SelectionRefused('unknown-state')
+    value = json.loads(raw)
+    if not isinstance(value, dict): raise SelectionRefused('unknown-state')
+    return value, raw, info
+
+def selection_binding(active, handle, selection_path, expected_digest):
+    if len(handle) != 64 or any(char not in '0123456789abcdef' for char in handle):
+        raise SelectionRefused('selection-mismatch')
+    path = pathlib.Path(selection_path)
+    staging = manifest_path.parent / 'jones-updates' / 'staging'
+    if path.parent != staging or path.is_symlink() or path.resolve(strict=True).parent != staging.resolve(strict=True):
+        raise SelectionRefused('selection-mismatch')
+    if not path.name.startswith(active['sourceSha'] + '-') or not path.name.endswith('.json'):
+        raise SelectionRefused('selection-mismatch')
+    selection, raw, info = bounded_native_json(path, 131072)
+    if hashlib.sha256(raw).hexdigest() != expected_digest:
+        raise SelectionRefused('selection-mismatch')
+    wanted = {'schema': 1, 'source': 'jones-actions', 'home': active['home'], 'profile': active['profile'],
+              'currentVersion': active['version'], 'installedSource': active['sourceSha'], 'active': active}
+    if type(selection.get('schema')) is not int or any(selection.get(key) != value for key, value in wanted.items()):
+        raise SelectionRefused('selection-mismatch')
+    if not isinstance(selection.get('app'), dict) or selection['app'].get('handle') != handle:
+        raise SelectionRefused('selection-mismatch')
+    return path, selection, raw, info
+
+def inspect_selection_transactions(active, handle, claiming=False):
+    root = manifest_path.parent / 'jones-updates' / 'transactions'
+    if not root.exists():
+        if claiming: raise SelectionRefused('unknown-state')
+        return
+    if root.is_symlink() or not root.is_dir(): raise SelectionRefused('unknown-state')
+    count = 0
+    for transaction in root.iterdir():
+        count += 1
+        if count > 1000 or transaction.is_symlink() or not transaction.is_dir() or len(transaction.name) != 64 or any(char not in '0123456789abcdef' for char in transaction.name):
+            raise SelectionRefused('unknown-state')
+        intent, journal, preparation = [transaction / name for name in ('intent.json', 'journal.json', 'prepare-intent.json')]
+        if transaction.name == handle:
+            if intent.exists() or journal.exists() or (preparation.exists() and not claiming):
+                raise SelectionRefused('activation-pending')
+            if claiming and not preparation.is_file(): raise SelectionRefused('unknown-state')
+            continue
+        if journal.exists():
+            value, _, _ = bounded_native_json(journal)
+            prior, _, _ = bounded_native_json(intent)
+            if value.get('intent') != prior or prior.get('transactionId') != transaction.name or prior.get('protocol') != PROTOCOL or prior.get('expected', {}).get('home') != active['home']:
+                raise SelectionRefused('unknown-state')
+            if value.get('phase') not in ('resumed', 'rolled-back'):
+                raise SelectionRefused('activation-pending')
+        elif intent.exists() or preparation.exists():
+            raise SelectionRefused('activation-pending')
+
+def selection_command(operation, active, handle, selection_path, expected_digest, request_path=None):
+    result = {'protocol': PROTOCOL, 'operation': operation, 'handle': handle}
+    try:
+        path, selection, raw, info = selection_binding(active, handle, selection_path, expected_digest)
+        inspect_selection_transactions(active, handle, operation == 'claim-activation')
+        if read(manifest_path) != active: raise SelectionRefused('selection-mismatch')
+        if operation == 'claim-activation':
+            transaction = manifest_path.parent / 'jones-updates' / 'transactions' / handle
+            request = pathlib.Path(request_path)
+            if request != transaction / 'activation-request.json' or request.resolve(strict=True) != request:
+                raise SelectionRefused('selection-mismatch')
+            intent, _, _ = bounded_native_json(request)
+            if type(intent.get('protocol')) is not int or intent['protocol'] != PROTOCOL or intent.get('transactionId') != handle or intent.get('expected') != active or intent.get('staged') != selection['app'] or intent.get('continuationReceipt') != str(transaction / 'continuation.json'):
+                raise SelectionRefused('selection-mismatch')
+            verify_app(intent['staged'], active)
+            continuation, _, _ = bounded_native_json(transaction / 'continuation.json')
+            preparation, _, _ = bounded_native_json(transaction / 'prepare-intent.json')
+            wanted = dict(protocol=PROTOCOL, transactionId=handle, prepared=True,
+                          **{key: active[key] for key in ('home', 'databasePath', 'profile', 'environmentId')})
+            if continuation != wanted or preparation != wanted:
+                raise SelectionRefused('unknown-state')
+            proofs = intent.get('processes')
+            if not isinstance(proofs, list) or not proofs or len(proofs) > 256 or any(not isinstance(proof, dict) or type(proof.get('pid')) is not int or proof['pid'] <= 0 or not isinstance(proof.get('identity'), str) or not proof['identity'].strip() for proof in proofs):
+                raise SelectionRefused('unknown-state')
+            if not isinstance(intent.get('listener'), str) or not intent['listener'].strip():
+                raise SelectionRefused('unknown-state')
+        elif operation != 'discard-staged': raise SelectionRefused('unknown-state')
+        _, current_raw, current = bounded_native_json(path, 131072)
+        if current_raw != raw or (current.st_dev, current.st_ino, current.st_size) != (info.st_dev, info.st_ino, len(raw)):
+            raise SelectionRefused('selection-mismatch')
+    except SelectionRefused as refused:
+        return dict(result, status='refused', reason=refused.reason)
+    except Exception:
+        return dict(result, status='refused', reason='unknown-state')
+    try:
+        if operation == 'discard-staged':
+            path.unlink()
+            sync_parent(path)
+            return dict(result, status='discarded')
+        intent_path = transaction / 'intent.json'
+        durable(intent_path, intent, True)
+        return dict(result, status='claimed', intentPath=str(intent_path))
+    except Exception:
+        # A failed final fsync may follow unlink/link. Preserve the caller's hold.
+        return dict(result, status='uncertain')
+
 def activate(intent_file):
     intent = read(intent_file)
     expected, staged = intent['expected'], intent['staged']
@@ -431,6 +602,7 @@ def activate(intent_file):
     backend_process = None
     incoming = previous = None
     startup_unknown = False
+    exclusive_writers = []
     try:
         storage = storage_preflight(expected, staged, tx)
         record('preparing', storage=storage)
@@ -439,6 +611,7 @@ def activate(intent_file):
         preserve_restart_tunnel(expected, intent['transactionId'])
         stop_exact(intent['processes'])
         prove_quiescence(expected)
+        exclusive_writers = acquire_writer_exclusion(expected)
         record('quiescent')
         pair_state(expected, tx / 'previous-pair')
         record('paired', pairedState=str(tx / 'previous-pair'), recovery=read(tx / 'previous-pair' / 'pair.json')['recovery'])
@@ -456,6 +629,7 @@ def activate(intent_file):
                            **{key: staged[key] for key in ('version', 'sourceSha', 'sourceTree', 'appDigest')},
                            executablePath=str(pathlib.Path(expected['appPath']) / pathlib.Path(staged['executablePath']).relative_to(staged['appPath'])))
         record('trial')
+        release_writer_exclusion(exclusive_writers)
         candidate = launch(next_active, tx / 'trial-descriptor.json')
         record('trial', candidateWriter=candidate)
         deadline = time.monotonic() + 90
@@ -498,8 +672,9 @@ def activate(intent_file):
                 # its unchanged prior app/state pair remains compatible.
                 try:
                     prove_quiescence(expected)
-                    launch(expected)
                     record('rolled-back', message='Snapshot preparation failed before any candidate launch; prior state was unchanged.')
+                    release_writer_exclusion(exclusive_writers)
+                    launch(expected)
                     return
                 except Exception:
                     pass
@@ -513,18 +688,27 @@ def activate(intent_file):
             preserve_restart_tunnel(expected, intent['transactionId'])
             stop_exact(proofs)
             prove_quiescence(expected)
+            if not exclusive_writers: exclusive_writers = acquire_writer_exclusion(expected)
             restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state')
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
-            launch(expected)
             record('rolled-back', message='Update rolled back: ' + str(failure))
+            release_writer_exclusion(exclusive_writers)
+            launch(expected)
         except Exception:
             record('blocked', message='Paired recovery could not be proved; retained state requires reconciliation.')
+    finally:
+        release_writer_exclusion(exclusive_writers)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--manifest', required=True)
-parser.add_argument('--activate')
-parser.add_argument('--launch', action='store_true')
-parser.add_argument('--cli', action='store_true')
+action = parser.add_mutually_exclusive_group(required=True)
+action.add_argument('--activate')
+action.add_argument('--launch', action='store_true')
+action.add_argument('--cli', action='store_true')
+action.add_argument('--discard-staged')
+action.add_argument('--claim-activation')
+parser.add_argument('--selection')
+parser.add_argument('--selection-sha256')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
@@ -542,12 +726,21 @@ except FileExistsError:
         os.close(descriptor)
         raise SystemExit('An occupied native activation lock is unknown and was preserved.')
 with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else None
+    handle = args.discard_staged if args.discard_staged else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
+    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if operation:
+            print(json.dumps({'protocol': PROTOCOL, 'operation': operation, 'handle': handle, 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
+        raise
     active = read(manifest_path)
     if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':
         raise SystemExit('Native launcher bootstrap is required.')
     bundle_identity(active)
-    if args.activate: activate(args.activate)
+    if operation:
+        print(json.dumps(selection_command(operation, active, handle, args.selection, args.selection_sha256, args.claim_activation)))
+    elif args.activate: activate(args.activate)
     elif args.launch:
         transactions = manifest_path.parent / 'jones-updates' / 'transactions'
         if transactions.exists():

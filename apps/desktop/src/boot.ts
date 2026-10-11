@@ -6,14 +6,24 @@ import {
   readDesktopProductMetadata,
 } from "./jones/previewCompanion/CompanionProduct.ts";
 import { configureDesktopUserDataOverride } from "./app/DesktopUserDataOverride.ts";
+import { holdJonesDesktopNativeWriterFence } from "./jones/updates/jonesNativeStartup.ts";
 
 const electron = require("electron") as typeof import("electron");
+const metadata = readDesktopProductMetadata({
+  isPackaged: electron.app.isPackaged,
+  readPackage: () =>
+    NodeFS.readFileSync(NodePath.join(electron.app.getAppPath(), "package.json"), "utf8"),
+});
+holdJonesDesktopNativeWriterFence({
+  platform: process.platform,
+  env: process.env,
+  homeDirectory: electron.app.getPath("home"),
+  appDataDirectory: electron.app.getPath("appData"),
+  version: electron.app.getVersion(),
+  metadata,
+});
 configureCompanionProduct({
-  metadata: readDesktopProductMetadata({
-    isPackaged: electron.app.isPackaged,
-    readPackage: () =>
-      NodeFS.readFileSync(NodePath.join(electron.app.getAppPath(), "package.json"), "utf8"),
-  }),
+  metadata,
   appDataDirectory: electron.app.getPath("appData"),
   homeDirectory: electron.app.getPath("home"),
   join: NodePath.join,

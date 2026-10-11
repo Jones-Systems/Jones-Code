@@ -14,6 +14,7 @@ const {
   mkdirSyncMock,
   writeFileSyncMock,
   copyFileSyncMock,
+  holdNativeFenceMock,
 } = vi.hoisted(() => ({
   appendSwitchMock: vi.fn(),
   getSwitchValueMock: vi.fn(),
@@ -23,6 +24,11 @@ const {
   mkdirSyncMock: vi.fn(),
   writeFileSyncMock: vi.fn(),
   copyFileSyncMock: vi.fn(),
+  holdNativeFenceMock: vi.fn(),
+}));
+
+vi.mock("@t3tools/shared/jones/nativeWriterFence", () => ({
+  holdJonesNativeWriterFence: holdNativeFenceMock,
 }));
 
 vi.mock("electron", () => ({
@@ -61,6 +67,7 @@ describe("DesktopPreReadyPlatform", () => {
     mkdirSyncMock.mockReset();
     writeFileSyncMock.mockReset();
     copyFileSyncMock.mockReset();
+    holdNativeFenceMock.mockReset();
   });
 
   it.effect("preserves an explicit Linux password-store switch", () => {
@@ -175,6 +182,7 @@ describe("DesktopPreReadyPlatform", () => {
           ClerkShaped,
           Effect.promise(() => Promise.resolve()).pipe(
             Effect.map(() => {
+              assert.equal(holdNativeFenceMock.mock.calls.length, 1);
               events.push("clerk");
               return { ready: true as const };
             }),

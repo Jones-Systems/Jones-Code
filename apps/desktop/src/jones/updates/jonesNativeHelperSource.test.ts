@@ -223,6 +223,177 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it("holds exclusive state/profile leases and refuses readers, changed inodes, or WAL mode", async () => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+profile = root / 'profile'; profile.mkdir()
+expected = {'home': str(root), 'profile': str(profile)}
+connections = acquire_writer_exclusion(expected)
+paths = native_writer_lease_paths(expected)
+try:
+    for path, scope in paths:
+        outsider = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            try: outsider.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+            except sqlite3.OperationalError as error: assert 'locked' in str(error)
+            else: raise AssertionError('An exclusive native copy admitted a reader')
+        finally: outsider.close()
+finally: release_writer_exclusion(connections)
+path, scope = paths[0]
+reader = sqlite3.connect(path, isolation_level=None)
+reader.execute('BEGIN'); reader.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+try:
+    try: acquire_writer_exclusion(expected)
+    except sqlite3.OperationalError as error: assert 'locked' in str(error)
+    else: raise AssertionError('A participating writer was ignored')
+finally: reader.close()
+connections = acquire_writer_exclusion(expected); release_writer_exclusion(connections)
+connection = sqlite3.connect(path, isolation_level=None)
+connection.execute('PRAGMA journal_mode=WAL'); connection.close()
+try: acquire_writer_exclusion(expected)
+except RuntimeError as error: assert 'rollback journal mode' in str(error)
+else: raise AssertionError('WAL lease was accepted')
+connection = sqlite3.connect(path, isolation_level=None)
+connection.execute('PRAGMA journal_mode=DELETE'); connection.close()
+old = path.with_name(path.name + '.retained')
+path.rename(old); shutil.copy2(old, path)
+try: acquire_writer_exclusion(expected)
+except RuntimeError as error: assert 'inode changed' in str(error)
+else: raise AssertionError('Replaced lease inode was accepted')
+assert old.exists()
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
+        encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "discard",
+    "claim",
+    "discard-before-claim",
+    "wrong-selection",
+    "wrong-request",
+    "wrong-candidate",
+    "wrong-continuation",
+    "associated-preparation",
+    "other-pending",
+    "other-terminal",
+    "unknown-journal",
+    "discard-sync-failed",
+    "claim-sync-failed",
+  ])("serializes the %s selection outcome without deleting retained artifacts", async (fault) => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+request = tx / 'activation-request.json'
+os.rename(tx / 'intent.json', request)
+staging = manifest_path.parent / 'jones-updates' / 'staging'; staging.mkdir()
+selection_path = staging / (expected['sourceSha'] + '-' + 'e' * 64 + '.json')
+selection = {'schema': 1, 'source': 'jones-actions', 'home': expected['home'], 'profile': expected['profile'],
+             'currentVersion': expected['version'], 'installedSource': expected['sourceSha'], 'active': expected,
+             'artifactDirectory': str(root / 'artifact'), 'app': staged}
+durable(selection_path, selection, True)
+selection_digest = digest(selection_path)
+def run(operation):
+    return selection_command(operation, expected, staged['handle'], str(selection_path), selection_digest, str(request))
+claiming = fault in ('claim', 'discard-before-claim', 'wrong-request', 'wrong-candidate', 'wrong-continuation', 'claim-sync-failed')
+if claiming and fault != 'discard-before-claim': durable(tx / 'prepare-intent.json', continuation, True)
+if fault == 'wrong-selection': selection_digest = '0' * 64
+if fault == 'wrong-request':
+    request = tx / 'other-request.json'; durable(request, intent, True)
+if fault == 'wrong-candidate': durable(request, dict(intent, staged=dict(staged, sourceSha='0' * 40)))
+if fault == 'wrong-continuation': durable(tx / 'continuation.json', dict(continuation, environmentId='wrong'))
+if fault == 'associated-preparation': durable(tx / 'prepare-intent.json', continuation, True)
+if fault in ('other-pending', 'other-terminal', 'unknown-journal'):
+    other = tx.parent / ('e' * 64); other.mkdir()
+    prior = dict(intent, transactionId=other.name)
+    durable(other / 'intent.json', prior, True)
+    if fault == 'other-terminal': durable(other / 'journal.json', {'intent': prior, 'phase': 'rolled-back'}, True)
+    if fault == 'unknown-journal': durable(other / 'journal.json', {'intent': prior, 'phase': 'unknown'}, True)
+if fault == 'discard-before-claim':
+    assert run('discard-staged')['status'] == 'discarded'
+    durable(tx / 'prepare-intent.json', continuation, True)
+if fault == 'discard-sync-failed':
+    def sync_parent(path): raise OSError('Synthetic parent sync failure after unlink')
+if fault == 'claim-sync-failed':
+    original_durable = durable
+    def durable(path, value, exclusive=False):
+        original_durable(path, value, exclusive)
+        if pathlib.Path(path).name == 'intent.json': raise OSError('Synthetic claim sync failure after link')
+outcome = run('claim-activation' if claiming else 'discard-staged')
+if fault in ('discard', 'other-terminal'):
+    assert outcome['status'] == 'discarded', outcome
+    assert not selection_path.exists()
+elif fault == 'claim':
+    assert outcome == {'protocol': 1, 'operation': 'claim-activation', 'handle': staged['handle'], 'status': 'claimed', 'intentPath': str(tx / 'intent.json')}
+    assert read(tx / 'intent.json') == intent
+    assert run('claim-activation')['reason'] == 'activation-pending'
+    assert run('discard-staged')['reason'] == 'activation-pending'
+    assert selection_path.exists()
+elif fault in ('discard-sync-failed', 'claim-sync-failed'):
+    assert outcome['status'] == 'uncertain', outcome
+    assert (tx / 'intent.json').exists() == (fault == 'claim-sync-failed')
+    assert selection_path.exists() == (fault == 'claim-sync-failed')
+else:
+    assert outcome['status'] == 'refused', outcome
+    assert not (tx / 'intent.json').exists()
+    assert selection_path.exists() == (fault != 'discard-before-claim')
+assert (candidate_app / 'Contents/MacOS/Jones').read_text() == 'candidate-executable'
+assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
+assert payload.read_text() == 'synthetic-qualified-dmg'
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${setup}\n${scenario}`, f.directory, fault],
+        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("refuses a selection command while the actual activation lock is owned", async () => {
+    const f = await fixture();
+    try {
+      const [nativeFunctions, parser] = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()");
+      const helper = NodePath.join(f.directory, "synthetic-helper.py");
+      await NodeFSP.writeFile(
+        helper,
+        `${nativeFunctions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nparser = argparse.ArgumentParser()${parser}`,
+      );
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+manifest = root / 'manifest.json'; manifest.write_text(json.dumps({'protocol': 1, 'owner': 'desktop'}))
+lock_path = root / 'jones-activation.lock'
+lock_path.write_text('jones-activation-lock-v1\n')
+with open(lock_path, 'r+') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    result = subprocess.run(['python3', str(root / 'synthetic-helper.py'), '--manifest', str(manifest), '--discard-staged', 'f' * 64,
+                             '--selection', str(root / 'selection.json'), '--selection-sha256', 'e' * 64], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {'protocol': 1, 'operation': 'discard-staged', 'handle': 'f' * 64, 'status': 'refused', 'reason': 'busy'}
+assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock', 'manifest.json', 'synthetic-helper.py']
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it.each(["success", "failure", "cancel"])(
     "removes only its captured synthetic fixture after %s",
     async (outcome) => {
@@ -637,7 +808,7 @@ for birth in ('Sa 10 Okt 08:20:14 2026', '2026年10月10日 08:20:14'):
     });
   });
 
-  it("checks exact native files, ignores readers, and refuses writers or incomplete access", () => {
+  it("checks native files and the whole profile tree, refusing writers or incomplete access", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
       "\nparser = argparse.ArgumentParser()",
     )[0];
@@ -652,7 +823,7 @@ def inspect(output, code=0, error=''):
     subprocess.run = run
     prove_quiescence(expected)
 inspect('p12\nf3\nar\n')
-assert '+D' not in calls[0]
+assert calls[0][calls[0].index('+D') + 1] == '/synthetic/profile'
 assert '/synthetic/state.sqlite' in calls[0]
 assert '/synthetic/state.sqlite-wal' in calls[0]
 assert '/synthetic/state.sqlite-shm' in calls[0]
@@ -661,6 +832,9 @@ for output in ('p12\nf3\naw\n', 'p12\nf3\nau\n', 'p12\nf3\n', 'unparsed'):
     except RuntimeError: pass
     else: raise AssertionError('A writer or unknown access was accepted')
 inspect('', 1)
+try: inspect('', 1, "lsof: WARNING: can't stat() /synthetic/profile/Local Storage/leveldb\nOutput information may be incomplete.")
+except RuntimeError: pass
+else: raise AssertionError('An incomplete profile inspection was accepted')
 `;
     NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`], {
       encoding: "utf8",
