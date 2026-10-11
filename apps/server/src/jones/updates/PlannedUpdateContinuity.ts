@@ -141,8 +141,8 @@ export const make = Effect.gen(function* () {
         // A missing anchor cannot distinguish pruning/rowid reuse from a quiet thread.
         if (anchor[0]?.command_id !== snapshot.receiptCommandId) return false;
       }
-      const receipts = yield* sql<{ command_id: string; command_type: string }>`
-      SELECT command_id,command_type FROM orchestration_command_receipts
+      const receipts = yield* sql<{ command_id: string; command_type: string; accepted_at: string }>`
+      SELECT command_id,command_type,accepted_at FROM orchestration_command_receipts
       WHERE aggregate_kind='thread' AND aggregate_id=${snapshot.threadId}
         AND rowid>${snapshot.receiptRowId} AND status='accepted'`;
       const ids = continuationRunIds(snapshot, projection);
@@ -180,7 +180,7 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const preferences = yield* settings.getSettings;
           const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-          const queued = new Set(yield* projections.getRecoveryThreadIds("queued-runs"));
+          const queued = new Set(yield* projections.getRecoveryThreadIds("planned-update-queued-runs"));
           const shells = yield* projections.getShellSnapshot({
             location: "active",
             unsettledOnly: true,

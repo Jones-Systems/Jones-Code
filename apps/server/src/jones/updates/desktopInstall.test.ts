@@ -18,15 +18,20 @@ import * as Launcher from "../../cloud/serviceLauncherClient.ts";
 import * as Startup from "../../serverRuntimeStartup.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as JonesUpdates from "./service.ts";
+import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 
 // Qualification has its own contract tests; this fixture exercises the qualified desktop branch.
 vi.mock("./qualification.ts", () => ({
   isJonesRuntime: () => true,
   isPreviewRuntime: () => false,
 }));
+vi.mock("./nativePreparation.ts", () => ({
+  prepareNativeContinuationReceipt: vi.fn(async (input: { prepare: () => Promise<unknown> }) => { await input.prepare(); }),
+}));
 
 it.effect("hands desktop installation to its controller before any continuation preparation", () =>
   Effect.gen(function* () {
+    vi.mocked(prepareNativeContinuationReceipt).mockClear();
     const fs = yield* FileSystem.FileSystem;
     const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-desktop-install-" });
     const config = yield* ServerConfig.ServerConfig.pipe(
@@ -120,17 +125,30 @@ it.effect("hands desktop installation to its controller before any continuation 
         cancelDesktopUpdate: () => Effect.void,
       }),
     );
-    const result = yield* Effect.gen(function* () {
+    yield* Effect.gen(function* () {
       const updates = yield* JonesUpdates.JonesUpdates;
-      return yield* updates.install({
+      const result = yield* updates.install({
         environmentId: state.environmentId!,
         currentVersion: state.currentVersion!,
         stagedHandle: state.stagedHandle!,
         continueRunningThreads: true,
       });
+      expect(result.phase).toBe("installing");
+      expect(committed).toEqual([requestId]);
+      expect(preparations).toBe(0);
+      expect(prepareNativeContinuationReceipt).not.toHaveBeenCalled();
+      const preparation = {
+        environmentId: state.environmentId!, currentVersion: state.currentVersion!,
+        stagedHandle: state.stagedHandle!, transactionId: "e".repeat(64),
+      };
+      expect((yield* updates.prepareNative({ ...preparation, transactionId: "invalid" })).phase).toBe("blocked");
+      expect(prepareNativeContinuationReceipt).not.toHaveBeenCalled();
+      yield* updates.prepareNative(preparation);
+      expect(prepareNativeContinuationReceipt).toHaveBeenCalledWith(expect.objectContaining({
+        handle: state.stagedHandle, transactionId: preparation.transactionId,
+        environmentId: state.environmentId, version: state.currentVersion,
+      }));
+      expect(preparations).toBe(1);
     }).pipe(Effect.provide(JonesUpdates.layer.pipe(Layer.provide(dependencies))));
-    expect(result.phase).toBe("installing");
-    expect(committed).toEqual([requestId]);
-    expect(preparations).toBe(0);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -129,12 +129,19 @@ the actual selected source, environment, home, and database before consuming a
 one-shot activation claim. Rollback must prove the restored previous source as well.
 A later ordinary restart cannot grant the same captured eligibility again.
 
+A dedicated indexed selector captures queues behind active roots as well as idle
+roots; ordinary recovery's idle-only queue selector keeps its existing behavior.
 A captured queue is released through the existing deterministic `queue.resume`
 command only after its root or exact restart-continuation chain completes
 successfully. Its messages, ordering, provider selection, and control receipts must
 remain unchanged. Preexisting holds, later Stop or hold commands (including no-op
 commands), edits, new user work, approvals, failures, and identity variance keep it
-held. Existing continuation and queue outbox identities provide retry idempotence.
+held. Recovery's own accepted `provider-runtime.reconcile` receipt is allowed only
+when its internal command identity matches the captured thread, startup or shutdown
+trigger, and canonical acceptance timestamp. Every intervening user control receipt
+is still checked. The exact checkpoint-completion receipt for a captured root or
+its continuation is also allowed; a successful current run is still required.
+Existing continuation and queue outbox identities provide retry idempotence.
 
 Work Mode captures only eligible completed roots whose provider conversation was
 still live before this update. One cold admission may reopen that same native

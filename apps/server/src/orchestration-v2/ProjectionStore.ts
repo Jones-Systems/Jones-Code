@@ -152,6 +152,7 @@ export type ProjectionStoreV2Error = typeof ProjectionStoreV2Error.Type;
 export type ProjectionRecoveryKind =
   | "self-settlement"
   | "queued-runs"
+  | "planned-update-queued-runs"
   | "runtime"
   | "subagent-results"
   | "delegated-completions";
@@ -559,6 +560,8 @@ function needsRecovery(
           ["preparing", "starting", "running", "waiting"].includes(run.status),
         )
       );
+    case "planned-update-queued-runs":
+      return projection.thread.archivedAt === null && projection.runs.some((run) => run.status === "queued");
     case "delegated-completions":
       return projection.runs.some((run) => run.delegatedCompletion?.delivery != null);
     case "subagent-results": {
@@ -3978,6 +3981,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       AND active.status IN ('preparing', 'starting', 'running', 'waiting')
                   )
               `;
+            case "planned-update-queued-runs":
+              return sql`SELECT thread_id FROM orchestration_v2_projection_runs WHERE status = 'queued'`;
             case "delegated-completions":
               return sql`
                 SELECT thread_id FROM orchestration_v2_projection_runs
@@ -4072,7 +4077,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           SELECT thread_id FROM orchestration_v2_projection_threads
           WHERE deleted_at IS NULL
             AND thread_id IN (${candidates})
-            ${kind === "queued-runs" ? sql`AND archived_at IS NULL` : sql``}
+            ${kind === "queued-runs" || kind === "planned-update-queued-runs" ? sql`AND archived_at IS NULL` : sql``}
           ORDER BY updated_at ASC, thread_id ASC
         `;
         return rows.map((row) => ThreadId.make(row.thread_id));
