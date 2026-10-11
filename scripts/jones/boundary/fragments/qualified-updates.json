@@ -39,6 +39,7 @@
     "apps/server/src/jones/updates/migrationPlan.test.ts",
     "apps/server/src/jones/updates/migrationPlan.ts",
     "apps/server/src/jones/updates/nativePreparation.ts",
+    "apps/server/src/jones/updates/nativePreparation.test.ts",
     "apps/server/src/jones/updates/nativeWriterStartup.ts",
     "apps/server/src/jones/updates/qualification.test.ts",
     "apps/server/src/jones/updates/qualification.ts",

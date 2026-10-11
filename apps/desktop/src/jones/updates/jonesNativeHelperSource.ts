@@ -484,6 +484,7 @@ def selection_binding(active, handle, selection_path, expected_digest):
         raise SelectionRefused('selection-mismatch')
     path = pathlib.Path(selection_path)
     staging = manifest_path.parent / 'jones-updates' / 'staging'
+    if not path.exists(): raise SelectionRefused('selection-mismatch')
     if path.parent != staging or path.is_symlink() or path.resolve(strict=True).parent != staging.resolve(strict=True):
         raise SelectionRefused('selection-mismatch')
     if not path.name.startswith(active['sourceSha'] + '-') or not path.name.endswith('.json'):
@@ -511,8 +512,9 @@ def inspect_selection_transactions(active, handle, claiming=False):
         if count > 1000 or transaction.is_symlink() or not transaction.is_dir() or len(transaction.name) != 64 or any(char not in '0123456789abcdef' for char in transaction.name):
             raise SelectionRefused('unknown-state')
         intent, journal, preparation = [transaction / name for name in ('intent.json', 'journal.json', 'prepare-intent.json')]
+        prepared = any((transaction / name).exists() for name in ('prepare-dispatched.json', 'continuation.json'))
         if transaction.name == handle:
-            if intent.exists() or journal.exists() or (preparation.exists() and not claiming):
+            if intent.exists() or journal.exists() or ((preparation.exists() or prepared) and not claiming):
                 raise SelectionRefused('activation-pending')
             if claiming and not preparation.is_file(): raise SelectionRefused('unknown-state')
             continue
@@ -523,17 +525,25 @@ def inspect_selection_transactions(active, handle, claiming=False):
                 raise SelectionRefused('unknown-state')
             if value.get('phase') not in ('resumed', 'rolled-back'):
                 raise SelectionRefused('activation-pending')
-        elif intent.exists() or preparation.exists():
+        elif intent.exists() or preparation.exists() or prepared:
             raise SelectionRefused('activation-pending')
+
+def preparation_claim(active, handle, selection_path, selection_digest):
+    return dict(protocol=PROTOCOL, preparationClaimProtocol=1, transactionId=handle,
+                selectionPath=str(selection_path), selectionSha256=selection_digest,
+                **{key: active[key] for key in ('home', 'databasePath', 'profile', 'environmentId')})
 
 def selection_command(operation, active, handle, selection_path, expected_digest, request_path=None):
     result = {'protocol': PROTOCOL, 'operation': operation, 'handle': handle}
     try:
-        path, selection, raw, info = selection_binding(active, handle, selection_path, expected_digest)
+        # A mismatch may clear the caller's provisional hold only when there is
+        # no durable preparation/activation already owned by this transaction.
         inspect_selection_transactions(active, handle, operation == 'claim-activation')
+        path, selection, raw, info = selection_binding(active, handle, selection_path, expected_digest)
         if read(manifest_path) != active: raise SelectionRefused('selection-mismatch')
+        transaction = manifest_path.parent / 'jones-updates' / 'transactions' / handle
+        claim = preparation_claim(active, handle, path, expected_digest)
         if operation == 'claim-activation':
-            transaction = manifest_path.parent / 'jones-updates' / 'transactions' / handle
             request = pathlib.Path(request_path)
             if request != transaction / 'activation-request.json' or request.resolve(strict=True) != request:
                 raise SelectionRefused('selection-mismatch')
@@ -543,15 +553,15 @@ def selection_command(operation, active, handle, selection_path, expected_digest
             verify_app(intent['staged'], active)
             continuation, _, _ = bounded_native_json(transaction / 'continuation.json')
             preparation, _, _ = bounded_native_json(transaction / 'prepare-intent.json')
-            wanted = dict(protocol=PROTOCOL, transactionId=handle, prepared=True,
-                          **{key: active[key] for key in ('home', 'databasePath', 'profile', 'environmentId')})
-            if continuation != wanted or preparation != wanted:
+            dispatched, _, _ = bounded_native_json(transaction / 'prepare-dispatched.json')
+            if any(type(value.get('protocol')) is not int or type(value.get('preparationClaimProtocol')) is not int for value in (continuation, preparation, dispatched)) or continuation != dict(claim, prepared=True) or preparation != claim or dispatched != claim:
                 raise SelectionRefused('unknown-state')
             proofs = intent.get('processes')
             if not isinstance(proofs, list) or not proofs or len(proofs) > 256 or any(not isinstance(proof, dict) or type(proof.get('pid')) is not int or proof['pid'] <= 0 or not isinstance(proof.get('identity'), str) or not proof['identity'].strip() for proof in proofs):
                 raise SelectionRefused('unknown-state')
             if not isinstance(intent.get('listener'), str) or not intent['listener'].strip():
                 raise SelectionRefused('unknown-state')
+        elif operation == 'claim-preparation': verify_app(selection['app'], active)
         elif operation != 'discard-staged': raise SelectionRefused('unknown-state')
         _, current_raw, current = bounded_native_json(path, 131072)
         if current_raw != raw or (current.st_dev, current.st_ino, current.st_size) != (info.st_dev, info.st_ino, len(raw)):
@@ -565,6 +575,13 @@ def selection_command(operation, active, handle, selection_path, expected_digest
             path.unlink()
             sync_parent(path)
             return dict(result, status='discarded')
+        if operation == 'claim-preparation':
+            transaction.parent.mkdir(exist_ok=True, mode=0o700)
+            sync_parent(transaction.parent)
+            transaction.mkdir(exist_ok=True, mode=0o700)
+            sync_parent(transaction)
+            durable(transaction / 'prepare-intent.json', claim, True)
+            return dict(result, status='preparation-claimed')
         intent_path = transaction / 'intent.json'
         durable(intent_path, intent, True)
         return dict(result, status='claimed', intentPath=str(intent_path))
@@ -591,8 +608,13 @@ def activate(intent_file):
     for field in ('transactionId', 'home', 'databasePath', 'profile', 'environmentId'):
         wanted = intent['transactionId'] if field == 'transactionId' else expected[field]
         if continuation.get(field) != wanted: raise RuntimeError('Continuation receipt has a stale native binding.')
-    if continuation.get('protocol') != PROTOCOL or continuation.get('prepared') is not True:
+    if type(continuation.get('protocol')) is not int or continuation['protocol'] != PROTOCOL or type(continuation.get('preparationClaimProtocol')) is not int or continuation['preparationClaimProtocol'] != 1 or continuation.get('prepared') is not True:
         raise RuntimeError('Native continuations were not prepared.')
+    claim = preparation_claim(expected, intent['transactionId'], continuation['selectionPath'], continuation['selectionSha256'])
+    if continuation != dict(claim, prepared=True) or read(tx / 'prepare-intent.json') != claim or read(tx / 'prepare-dispatched.json') != claim:
+        raise RuntimeError('Native preparation dispatch did not prove its selection claim.')
+    _, selection, _, _ = selection_binding(expected, intent['transactionId'], claim['selectionPath'], claim['selectionSha256'])
+    if selection['app'] != staged: raise RuntimeError('Native preparation selection changed.')
     journal = {'intent': intent, 'phase': 'intent'}
     def record(phase, **fields):
         journal.update(fields, phase=phase)
@@ -707,6 +729,7 @@ action.add_argument('--launch', action='store_true')
 action.add_argument('--cli', action='store_true')
 action.add_argument('--discard-staged')
 action.add_argument('--claim-activation')
+action.add_argument('--claim-preparation')
 parser.add_argument('--selection')
 parser.add_argument('--selection-sha256')
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
@@ -726,8 +749,8 @@ except FileExistsError:
         os.close(descriptor)
         raise SystemExit('An occupied native activation lock is unknown and was preserved.')
 with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
-    operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else None
-    handle = args.discard_staged if args.discard_staged else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
+    operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else 'claim-preparation' if args.claim_preparation else None
+    handle = args.discard_staged or args.claim_preparation or (pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None)
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         if operation:
