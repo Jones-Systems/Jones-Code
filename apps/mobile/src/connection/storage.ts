@@ -65,11 +65,15 @@ export const layer = Layer.effectContext(
     });
     const registrationStore = Persistence.ConnectionRegistrationStore.of({
       setCompatibilityHint: (environmentId, routeBinding, kind) =>
-        catalog.compatibilityHints
-          .set(environmentId, routeBinding, kind)
-          .pipe(
-            Effect.mapError((error) => targetPersistenceError("set-compatibility-hint", error)),
+        catalog.compatibilityHints.set(environmentId, routeBinding, kind).pipe(
+          Effect.mapError(
+            () =>
+              new Persistence.ConnectionPersistenceError({
+                operation: "set-compatibility-hint",
+                message: "Could not save historical connection compatibility hints.",
+              }),
           ),
+        ),
       register: (registration, routes) =>
         catalog
           .update((document) => registerConnectionInCatalog(document, registration, routes))

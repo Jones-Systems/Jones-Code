@@ -12,6 +12,7 @@ import {
   ConnectionCatalogDocument,
   Persistence,
   connectionCompatibilityRouteBinding,
+  catalogCompatibilityRouteBinding,
   setConnectionCompatibilityHintInRecords,
   type StoredConnectionCompatibilityHint,
   setConnectionEnabledInCatalog,
@@ -190,6 +191,69 @@ describe("environment cache removal", () => {
       expect(refsError.message).toContain("Commit aborted");
       expect(database.close).toHaveBeenCalledOnce();
     }),
+  );
+});
+
+describe("independent compatibility hint database", () => {
+  it.effect(
+    "keeps runtime opens at version 4 and opens a separate hint database across reloads",
+    () =>
+      Effect.gen(function* () {
+        vi.stubGlobal("window", {});
+        const opened: Array<{
+          name: string;
+          database: IDBDatabase;
+          close: ReturnType<typeof vi.fn>;
+        }> = [];
+        const open = vi.fn((name: string, version: number) => {
+          const isHints = name === "t3code:connection-compatibility-hints";
+          expect(version).toBe(isHints ? 1 : 4);
+          if (!isHints) expect(name).toBe("t3code:connection-runtime");
+          const close = vi.fn();
+          const database = Object.assign(new EventTarget(), {
+            close,
+            transaction: (storeName: string) => {
+              expect(storeName).toBe(isHints ? "compatibility-hints" : "catalog");
+              const transaction = Object.assign(new EventTarget(), {
+                objectStore: () => ({
+                  get: () => request(encodeCatalog(emptyCatalog)),
+                  getAll: () => request([]),
+                }),
+              });
+              function request(result: unknown) {
+                const value = Object.assign(new EventTarget(), { result });
+                queueMicrotask(() => {
+                  value.dispatchEvent(new Event("success"));
+                  transaction.dispatchEvent(new Event("complete"));
+                });
+                return value;
+              }
+              return transaction;
+            },
+          }) as unknown as IDBDatabase;
+          opened.push({ name, database, close });
+          const request = Object.assign(new EventTarget(), { result: database });
+          queueMicrotask(() => request.dispatchEvent(new Event("success")));
+          return request;
+        });
+        vi.stubGlobal("indexedDB", { open });
+        for (let reload = 0; reload < 2; reload++) {
+          yield* Effect.gen(function* () {
+            const targets = yield* Persistence.ConnectionTargetStore;
+            expect(yield* targets.list).toEqual([]);
+            const runtime = opened.at(-1)!;
+            expect(yield* targets.listCompatibilityHints!).toEqual([]);
+            expect(runtime.close).not.toHaveBeenCalled();
+          }).pipe(Effect.provide(ConnectionStorage.layer));
+        }
+        expect(open.mock.calls).toEqual([
+          ["t3code:connection-runtime", 4],
+          ["t3code:connection-compatibility-hints", 1],
+          ["t3code:connection-runtime", 4],
+          ["t3code:connection-compatibility-hints", 1],
+        ]);
+        for (const connection of opened) expect(connection.close).toHaveBeenCalledOnce();
+      }),
   );
 });
 
@@ -607,25 +671,118 @@ describe("durable compatibility hints", () => {
       }),
   );
 
-  it.effect("never falls back to a legacy desktop catalog writer", () =>
+  for (const failure of ["read", "clear"] as const) {
+    it.effect(`hint ${failure} failure does not prevent register, edit, Off or remove`, () =>
+      Effect.gen(function* () {
+        let raw = encodeCatalog({ ...emptyCatalog, targets: [target], profiles: [profile] });
+        let cleanups = 0;
+        vi.stubGlobal("window", {
+          desktopBridge: {
+            getConnectionCatalog: async () => raw,
+            getConnectionCatalogSnapshot: async () => raw,
+            setConnectionCatalog: async (next: string) => {
+              raw = next;
+              return true;
+            },
+            listConnectionCompatibilityHints: async () => {
+              if (failure === "read") throw new Error("Synthetic private backend detail");
+              const binding = catalogCompatibilityRouteBinding(decodeCatalog(raw), environmentId);
+              return binding === null ? [] : [{ ...hint, routeBinding: binding }];
+            },
+            setConnectionCompatibilityHint: async () => {
+              cleanups++;
+              throw new Error("Synthetic private cleanup detail");
+            },
+          },
+        });
+        yield* Effect.gen(function* () {
+          const store = yield* Persistence.ConnectionRegistrationStore;
+          const targets = yield* Persistence.ConnectionTargetStore;
+          expect(yield* targets.list).toEqual([target]);
+          if (failure === "read") expect(yield* targets.listCompatibilityHints!).toEqual([]);
+          const edited = new BearerConnectionProfile({
+            ...profile,
+            httpBaseUrl: "https://edited.example.test",
+            wsBaseUrl: "wss://edited.example.test",
+          });
+          yield* store.register(
+            new BearerConnectionRegistration({ target, profile: edited, credential }),
+            [target],
+          );
+          expect(decodeCatalog(raw).profiles).toEqual([edited]);
+          yield* store.setEnabled(environmentId, false);
+          expect(decodeCatalog(raw).disabledEnvironmentIds).toEqual([environmentId]);
+          yield* store.remove(environmentId);
+          expect(decodeCatalog(raw).targets).toEqual([]);
+          yield* store.register(registration, [target]);
+          expect(decodeCatalog(raw).targets).toEqual([target]);
+          if (failure === "clear") expect(cleanups).toBe(2);
+        }).pipe(Effect.provide(ConnectionStorage.layer));
+      }),
+    );
+  }
+
+  it.effect("hint cleanup failure does not hide an authoritative catalog write failure", () =>
     Effect.gen(function* () {
-      const write = vi.fn(async () => true);
-      vi.stubGlobal("window", {
-        desktopBridge: {
-          getConnectionCatalog: async () => encodeCatalog(emptyCatalog),
-          setConnectionCatalog: write,
-        },
+      const failure = new ConnectionTransientError({
+        reason: "remote-unavailable",
+        detail: "Synthetic catalog failure",
       });
-      const backend = ConnectionStorage.makeCompatibilityHintBackend(
-        fixedHandle({} as IDBDatabase),
+      const backend = {
+        read: Effect.succeed(
+          encodeCatalog({ ...emptyCatalog, targets: [target], profiles: [profile] }),
+        ),
+        write: () => Effect.fail(failure),
+      };
+      const hints = ConnectionStorage.makeCompatibilityHintStore(
+        { supported: true, read: Effect.succeed([hint]), set: () => Effect.fail(failure) },
+        backend.read,
       );
-      const store = ConnectionStorage.makeCompatibilityHintStore(backend, Effect.succeed(null));
-      expect(yield* store.read).toEqual([]);
+      const store = yield* ConnectionStorage.makeCatalogStore(backend, hints.invalidate);
       expect(
-        yield* store.set(environmentId, routeBinding, "outdated-update").pipe(Effect.flip),
-      ).toBeInstanceOf(ConnectionTransientError);
-      expect(write).not.toHaveBeenCalled();
+        yield* store
+          .update((catalog) => removeConnectionFromCatalog(catalog, environmentId))
+          .pipe(Effect.flip),
+      ).toBe(failure);
+      expect((yield* store.read).targets).toEqual([target]);
     }),
+  );
+
+  it.effect(
+    "never falls back to a legacy desktop catalog writer or blocks its ordinary operations",
+    () =>
+      Effect.gen(function* () {
+        let raw = encodeCatalog(emptyCatalog);
+        const write = vi.fn(async (next: string) => {
+          raw = next;
+          return true;
+        });
+        vi.stubGlobal("window", {
+          desktopBridge: {
+            getConnectionCatalog: async () => raw,
+            setConnectionCatalog: write,
+          },
+        });
+        const backend = ConnectionStorage.makeCompatibilityHintBackend(
+          fixedHandle({} as IDBDatabase),
+        );
+        const store = ConnectionStorage.makeCompatibilityHintStore(backend, Effect.succeed(null));
+        expect(yield* store.read).toEqual([]);
+        expect(
+          yield* store.set(environmentId, routeBinding, "outdated-update").pipe(Effect.flip),
+        ).toBeInstanceOf(ConnectionTransientError);
+        expect(write).not.toHaveBeenCalled();
+        yield* Effect.gen(function* () {
+          const registrations = yield* Persistence.ConnectionRegistrationStore;
+          yield* registrations.register(registration, [target]);
+          expect(decodeCatalog(raw).targets).toEqual([target]);
+          yield* registrations.setEnabled(environmentId, false);
+          expect(decodeCatalog(raw).disabledEnvironmentIds).toEqual([environmentId]);
+          yield* registrations.remove(environmentId);
+          expect(decodeCatalog(raw).targets).toEqual([]);
+        }).pipe(Effect.provide(ConnectionStorage.layer));
+        expect(write).toHaveBeenCalledTimes(3);
+      }),
   );
 
   it.effect("does not publish a hint in memory when its durable write fails", () =>
@@ -658,6 +815,7 @@ describe("durable compatibility hints", () => {
           .setCompatibilityHint(environmentId, routeBinding, "outdated-update")
           .pipe(Effect.flip);
         expect(error.operation).toBe("set-compatibility-hint");
+        expect(error.message).toBe("Could not save historical connection compatibility hints.");
         expect(yield* targets.listCompatibilityHints).toEqual([]);
         expect(yield* targets.listDisabled).toEqual([environmentId]);
       }).pipe(Effect.provide(ConnectionStorage.layer));
@@ -745,6 +903,19 @@ describe("IndexedDB compatibility hint transactions", () => {
       expect(yield* backend.read).toHaveLength(1);
       yield* backend.set(environmentId, "binding", null);
       expect(yield* backend.read).toEqual([]);
+      for (let index = 0; index < 128; index++) {
+        rows.set(JSON.stringify([environmentId, `binding-${index}`]), {
+          environmentId,
+          routeBinding: `binding-${index}`,
+          kind: "outdated-update",
+        });
+      }
+      expect(
+        yield* backend.set(environmentId, "overflow", "outdated-update").pipe(Effect.flip),
+      ).toBeInstanceOf(ConnectionTransientError);
+      expect(rows.size).toBe(128);
+      yield* backend.set(environmentId, "binding-0", "outdated-update");
+      expect(rows.size).toBe(128);
     }),
   );
 });

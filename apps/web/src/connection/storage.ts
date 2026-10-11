@@ -46,7 +46,8 @@ import * as Stream from "effect/Stream";
 import { projectFaviconCache } from "../assets/projectFaviconCache";
 
 const DATABASE_NAME = "t3code:connection-runtime";
-const DATABASE_VERSION = 5;
+const DATABASE_VERSION = 4;
+const COMPATIBILITY_HINT_DATABASE_NAME = "t3code:connection-compatibility-hints";
 const COMPATIBILITY_HINT_STORE_NAME = "compatibility-hints";
 const CATALOG_STORE_NAME = "catalog";
 const SHELL_STORE_NAME = "shell";
@@ -131,9 +132,6 @@ const openDatabase = Effect.fn("web.connectionStorage.openDatabase")(function* (
     try {
       const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
       request.addEventListener("upgradeneeded", () => {
-        if (!request.result.objectStoreNames.contains(COMPATIBILITY_HINT_STORE_NAME)) {
-          request.result.createObjectStore(COMPATIBILITY_HINT_STORE_NAME);
-        }
         if (!request.result.objectStoreNames.contains(CATALOG_STORE_NAME)) {
           request.result.createObjectStore(CATALOG_STORE_NAME);
         }
@@ -162,6 +160,56 @@ const openDatabase = Effect.fn("web.connectionStorage.openDatabase")(function* (
   });
 });
 
+// An older renderer can keep its version-4 runtime connection while hints open independently.
+const openCompatibilityHintDatabase = Effect.fn(
+  "web.connectionStorage.openCompatibilityHintDatabase",
+)(function* () {
+  return yield* Effect.callback<IDBDatabase, ConnectionTransientError>((resume) => {
+    let settled = false;
+    let request: IDBOpenDBRequest | undefined;
+    try {
+      request = indexedDB.open(COMPATIBILITY_HINT_DATABASE_NAME, 1);
+      const owned = request;
+      owned.addEventListener("upgradeneeded", () => {
+        if (settled) {
+          owned.transaction?.abort();
+          return;
+        }
+        owned.result.createObjectStore(COMPATIBILITY_HINT_STORE_NAME);
+      });
+      owned.addEventListener("error", () => {
+        if (settled) return;
+        settled = true;
+        resume(Effect.fail(catalogError("open compatibility hints", owned.error)));
+      });
+      owned.addEventListener("blocked", () => {
+        if (settled) return;
+        settled = true;
+        resume(
+          Effect.fail(catalogError("open compatibility hints", "Hint database upgrade blocked.")),
+        );
+      });
+      owned.addEventListener("success", () => {
+        if (settled) {
+          owned.result.close();
+          return;
+        }
+        settled = true;
+        resume(Effect.succeed(owned.result));
+      });
+    } catch (cause) {
+      settled = true;
+      resume(Effect.fail(catalogError("open compatibility hints", cause)));
+    }
+    return Effect.sync(() => {
+      if (!settled) {
+        settled = true;
+        request?.transaction?.abort();
+      }
+    });
+  });
+});
+
 interface DatabaseHandle {
   readonly get: Effect.Effect<IDBDatabase, ConnectionTransientError>;
   /** Forget `database` if it is still the shared connection, so the next access reopens. */
@@ -169,7 +217,9 @@ interface DatabaseHandle {
 }
 
 /** Share a connection until the browser closes it; the next access reopens it. */
-const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")(function* () {
+const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")(function* (
+  open: () => Effect.Effect<IDBDatabase, ConnectionTransientError> = openDatabase,
+) {
   const lock = yield* Semaphore.make(1);
   let current: IDBDatabase | null = null;
   const forget = (database: IDBDatabase) => {
@@ -181,7 +231,7 @@ const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")
       : lock.withPermits(1)(
           Effect.gen(function* () {
             if (current !== null) return current;
-            const opened = yield* openDatabase();
+            const opened = yield* open();
             current = opened;
             opened.addEventListener("close", () => forget(opened));
             // Another tab upgrading the schema waits on this connection.
@@ -615,10 +665,10 @@ export function makeCompatibilityHintStore(
     const records = yield* backend.read;
     return listConnectionCompatibilityHints(yield* fresh, records);
   }).pipe(
-    Effect.catch((error) =>
-      Effect.logWarning("Could not load historical connection compatibility hints.", {
-        error,
-      }).pipe(Effect.as([])),
+    Effect.catch(() =>
+      Effect.logWarning("Could not load historical connection compatibility hints.").pipe(
+        Effect.as([]),
+      ),
     ),
   );
   const set = Effect.fn("web.connectionStorage.setCompatibilityHint")(function* (
@@ -656,7 +706,11 @@ export function makeCompatibilityHintStore(
             )
               yield* backend.set(record.environmentId, record.routeBinding, null);
           }
-        });
+        }).pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Could not clear historical connection compatibility hints."),
+          ),
+        );
   return { read, set, invalidate };
 }
 
@@ -842,9 +896,13 @@ export const layer = Layer.effectContext(
       makeDatabaseHandle(),
       (owned) => owned.close,
     );
+    const { handle: hintDatabase } = yield* Effect.acquireRelease(
+      makeDatabaseHandle(openCompatibilityHintDatabase),
+      (owned) => owned.close,
+    );
     const backend = makeCatalogBackend(database);
     const hints = makeCompatibilityHintStore(
-      makeCompatibilityHintBackend(database),
+      makeCompatibilityHintBackend(hintDatabase),
       backend.snapshot ?? backend.read,
     );
     const catalog = yield* makeCatalogStore(backend, hints.invalidate);
@@ -863,9 +921,15 @@ export const layer = Layer.effectContext(
     });
     const registrationStore = Persistence.ConnectionRegistrationStore.of({
       setCompatibilityHint: (environmentId, routeBinding, kind) =>
-        hints
-          .set(environmentId, routeBinding, kind)
-          .pipe(Effect.mapError((cause) => persistenceError("set-compatibility-hint", cause))),
+        hints.set(environmentId, routeBinding, kind).pipe(
+          Effect.mapError(
+            () =>
+              new Persistence.ConnectionPersistenceError({
+                operation: "set-compatibility-hint",
+                message: "Could not save historical connection compatibility hints.",
+              }),
+          ),
+        ),
       register: (registration, routes) =>
         catalog
           .update((document) => registerConnectionInCatalog(document, registration, routes))

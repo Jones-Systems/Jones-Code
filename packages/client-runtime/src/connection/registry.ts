@@ -36,7 +36,10 @@ import type {
 } from "./model.ts";
 import { ConnectionBlockedError } from "./model.ts";
 import * as Persistence from "../platform/persistence.ts";
-import { connectionCompatibilityRouteBinding } from "../platform/storageDocument.ts";
+import {
+  connectionCompatibilityRouteBinding,
+  decodeConnectionCompatibilityHints,
+} from "../platform/storageDocument.ts";
 import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionDriver from "./driver.ts";
@@ -226,7 +229,14 @@ export const make = Effect.gen(function* () {
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
   const persistedTargets = yield* storage.list;
   const disabledEnvironmentIds = new Set(yield* storage.listDisabled);
-  const compatibilityHints = yield* storage.listCompatibilityHints ?? Effect.succeed([]);
+  const compatibilityHints = yield* (storage.listCompatibilityHints ?? Effect.succeed([])).pipe(
+    Effect.map(decodeConnectionCompatibilityHints),
+    Effect.catch(() =>
+      Effect.logWarning("Could not load historical connection compatibility hints.").pipe(
+        Effect.as([]),
+      ),
+    ),
+  );
   const loadRoute = Effect.fn("EnvironmentRegistry.loadRoute")(function* (
     target: ConnectionTarget,
   ) {
@@ -1134,7 +1144,7 @@ export const make = Effect.gen(function* () {
       environmentId,
       Effect.gen(function* () {
         const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
-        // Hold the same lease lock through the catalog write. Route CAS alone cannot
+        // Hold the same lease lock through optional hint write settlement. Route CAS alone cannot
         // distinguish removal followed by re-registration of identical addresses.
         if (entry === undefined || (capturedEntry !== undefined && entry !== capturedEntry))
           return false;
@@ -1150,13 +1160,6 @@ export const make = Effect.gen(function* () {
           entry.compatibilityHint?.routeBinding === hint?.routeBinding
         )
           return true;
-        if (
-          persisted &&
-          routeBinding !== null &&
-          registrations.setCompatibilityHint !== undefined
-        ) {
-          yield* registrations.setCompatibilityHint(environmentId, routeBinding, kind);
-        }
         const {
           unsupportedReason: _previousReason,
           serverUpdateRequired: _previousUpdateRequired,
@@ -1186,6 +1189,20 @@ export const make = Effect.gen(function* () {
         yield* SubscriptionRef.update(entries, (current) =>
           new Map(current).set(environmentId, next),
         );
+        // Fresh compatibility and disconnection do not depend on historical persistence.
+        if (
+          persisted &&
+          routeBinding !== null &&
+          registrations.setCompatibilityHint !== undefined
+        ) {
+          yield* registrations
+            .setCompatibilityHint(environmentId, routeBinding, kind)
+            .pipe(
+              Effect.catch(() =>
+                Effect.logWarning("Could not persist historical connection compatibility hints."),
+              ),
+            );
+        }
         return true;
       }).pipe(Effect.uninterruptible),
     );

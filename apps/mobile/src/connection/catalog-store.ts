@@ -142,10 +142,10 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
       const records = yield* hints.read;
       return listConnectionCompatibilityHints(yield* snapshot, records);
     }).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Could not load historical mobile connection compatibility hints.", {
-          error,
-        }).pipe(Effect.as([])),
+      Effect.catch(() =>
+        Effect.logWarning("Could not load historical mobile connection compatibility hints.").pipe(
+          Effect.as([]),
+        ),
       ),
     ),
     set: (environmentId, routeBinding, kind) =>
@@ -213,14 +213,23 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
           const previous = yield* loadUnlocked();
           const next = transform(previous);
           if (previous.targets !== next.targets || previous.profiles !== next.profiles) {
-            for (const record of yield* hints.read) {
-              if (
-                catalogCompatibilityRouteBinding(previous, record.environmentId) ===
-                  record.routeBinding &&
-                catalogCompatibilityRouteBinding(next, record.environmentId) !== record.routeBinding
-              )
-                yield* hints.set(record.environmentId, record.routeBinding, null);
-            }
+            yield* Effect.gen(function* () {
+              for (const record of yield* hints.read) {
+                if (
+                  catalogCompatibilityRouteBinding(previous, record.environmentId) ===
+                    record.routeBinding &&
+                  catalogCompatibilityRouteBinding(next, record.environmentId) !==
+                    record.routeBinding
+                )
+                  yield* hints.set(record.environmentId, record.routeBinding, null);
+              }
+            }).pipe(
+              Effect.catch(() =>
+                Effect.logWarning(
+                  "Could not clear historical mobile connection compatibility hints.",
+                ),
+              ),
+            );
           }
           const encoded = yield* encodeCatalog(next);
           yield* setItem(CONNECTION_CATALOG_KEY, encoded);

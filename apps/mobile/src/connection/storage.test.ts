@@ -7,13 +7,17 @@ import { EnvironmentId } from "@t3tools/contracts";
 import {
   BearerConnectionTarget,
   BearerConnectionProfile,
+  BearerConnectionCredential,
+  BearerConnectionRegistration,
 } from "@t3tools/client-runtime/connection";
 import {
   ConnectionCatalogDocument,
+  Persistence,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
   catalogCompatibilityRouteBinding,
   setConnectionEnabledInCatalog,
   removeConnectionFromCatalog,
+  registerConnectionInCatalog,
 } from "@t3tools/client-runtime/platform";
 import { vi } from "vite-plus/test";
 
@@ -35,6 +39,7 @@ import {
   makeCompatibilityHintStore,
 } from "./catalog-store";
 import * as MobileSecureStorage from "../persistence/mobile-secure-storage";
+import * as MobileConnectionStorage from "./storage";
 
 function makeStorage(initial: Readonly<Record<string, string>>) {
   const values = new Map(Object.entries(initial));
@@ -221,6 +226,173 @@ describe("isolated mobile compatibility hints", () => {
       ).toBe("Failure");
       expect(memory.values.get(CONNECTION_CATALOG_KEY)).toBe(raw);
       expect(yield* store.compatibilityHints.read).toEqual([]);
+    }),
+  );
+
+  for (const failure of ["read", "clear"] as const) {
+    it.effect(`hint ${failure} failure leaves catalog edits, Off and removal available`, () =>
+      Effect.gen(function* () {
+        const memory = makeStorage({ [CONNECTION_CATALOG_KEY]: encode(document) });
+        let cleanups = 0;
+        const store = yield* make().pipe(
+          Effect.provideService(MobileSecureStorage.MobileSecureStorage, {
+            ...memory.storage,
+            getItem: (key) => {
+              if (key !== COMPATIBILITY_HINTS_KEY) return memory.storage.getItem(key);
+              if (failure === "read")
+                return Effect.fail(
+                  new MobileSecureStorage.MobileSecureStorageError({
+                    operation: "read",
+                    key,
+                    cause: "Synthetic private failure",
+                  }),
+                );
+              return Effect.sync(() => {
+                const current = decode(memory.values.get(CONNECTION_CATALOG_KEY)!);
+                const currentBinding = catalogCompatibilityRouteBinding(current, environmentId);
+                return JSON.stringify(
+                  currentBinding === null ? [] : [{ ...hint, routeBinding: currentBinding }],
+                );
+              });
+            },
+            setItem: (key, value) =>
+              key !== COMPATIBILITY_HINTS_KEY
+                ? memory.storage.setItem(key, value)
+                : Effect.sync(() => {
+                    cleanups++;
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new MobileSecureStorage.MobileSecureStorageError({
+                          operation: "write",
+                          key,
+                          cause: "Synthetic private failure",
+                        }),
+                      ),
+                    ),
+                  ),
+          }),
+        );
+        expect((yield* store.read).targets).toEqual([target]);
+        if (failure === "read") expect(yield* store.compatibilityHints.read).toEqual([]);
+        const edited = new BearerConnectionProfile({
+          ...profile,
+          httpBaseUrl: "https://edited.example.test",
+          wsBaseUrl: "wss://edited.example.test",
+        });
+        const registration = new BearerConnectionRegistration({
+          target,
+          profile: edited,
+          credential: new BearerConnectionCredential({ token: "synthetic" }),
+        });
+        yield* store.update((current) => registerConnectionInCatalog(current, registration));
+        expect(decode(memory.values.get(CONNECTION_CATALOG_KEY)!).profiles).toEqual([edited]);
+        yield* store.update((current) =>
+          setConnectionEnabledInCatalog(current, environmentId, false),
+        );
+        expect(decode(memory.values.get(CONNECTION_CATALOG_KEY)!).disabledEnvironmentIds).toEqual([
+          environmentId,
+        ]);
+        yield* store.update((current) => removeConnectionFromCatalog(current, environmentId));
+        expect(decode(memory.values.get(CONNECTION_CATALOG_KEY)!).targets).toEqual([]);
+        yield* store.update((current) => registerConnectionInCatalog(current, registration));
+        expect(decode(memory.values.get(CONNECTION_CATALOG_KEY)!).targets).toEqual([target]);
+        if (failure === "clear") expect(cleanups).toBe(2);
+      }),
+    );
+  }
+
+  it.effect("the mobile persistence service reports hint failure without backend details", () =>
+    Effect.gen(function* () {
+      const memory = makeStorage({ [CONNECTION_CATALOG_KEY]: encode(document) });
+      const storage = MobileSecureStorage.MobileSecureStorage.of({
+        ...memory.storage,
+        setItem: (key, value) =>
+          key === COMPATIBILITY_HINTS_KEY
+            ? Effect.fail(
+                new MobileSecureStorage.MobileSecureStorageError({
+                  operation: "write",
+                  key,
+                  cause: "Synthetic private backend detail",
+                }),
+              )
+            : memory.storage.setItem(key, value),
+      });
+      yield* Effect.gen(function* () {
+        const registrations = yield* Persistence.ConnectionRegistrationStore;
+        const error = yield* registrations.setCompatibilityHint!(
+          environmentId,
+          binding,
+          "outdated-update",
+        ).pipe(Effect.flip);
+        expect(error.operation).toBe("set-compatibility-hint");
+        expect(error.message).toBe("Could not save historical connection compatibility hints.");
+        yield* registrations.remove(environmentId);
+        expect(decode(memory.values.get(CONNECTION_CATALOG_KEY)!).targets).toEqual([]);
+      }).pipe(
+        Effect.provide(MobileConnectionStorage.layer),
+        Effect.provideService(MobileSecureStorage.MobileSecureStorage, storage),
+      );
+    }),
+  );
+
+  it.effect("hint capacity failure does not prevent authoritative removal", () =>
+    Effect.gen(function* () {
+      const records = Array.from({ length: 128 }, (_, index) => ({
+        ...hint,
+        routeBinding: `old-binding-${index}`,
+      }));
+      const memory = makeStorage({
+        [CONNECTION_CATALOG_KEY]: encode(document),
+        [COMPATIBILITY_HINTS_KEY]: JSON.stringify(records),
+      });
+      const store = yield* make().pipe(
+        Effect.provideService(MobileSecureStorage.MobileSecureStorage, memory.storage),
+      );
+      expect(
+        (yield* Effect.result(
+          store.compatibilityHints.set(environmentId, binding, "outdated-update"),
+        ))._tag,
+      ).toBe("Failure");
+      yield* store.update((current) => removeConnectionFromCatalog(current, environmentId));
+      expect(decode(memory.values.get(CONNECTION_CATALOG_KEY)!).targets).toEqual([]);
+      expect(memory.values.get(COMPATIBILITY_HINTS_KEY)).toBe(JSON.stringify(records));
+    }),
+  );
+
+  it.effect("continues to fail an authoritative catalog write when hints also fail", () =>
+    Effect.gen(function* () {
+      const raw = encode(document);
+      const memory = makeStorage({ [CONNECTION_CATALOG_KEY]: raw });
+      const store = yield* make().pipe(
+        Effect.provideService(MobileSecureStorage.MobileSecureStorage, {
+          ...memory.storage,
+          getItem: (key) =>
+            key === COMPATIBILITY_HINTS_KEY
+              ? Effect.fail(
+                  new MobileSecureStorage.MobileSecureStorageError({
+                    operation: "read",
+                    key,
+                    cause: "Synthetic hint failure",
+                  }),
+                )
+              : memory.storage.getItem(key),
+          setItem: (key) =>
+            Effect.fail(
+              new MobileSecureStorage.MobileSecureStorageError({
+                operation: "write",
+                key,
+                cause: "Synthetic catalog failure",
+              }),
+            ),
+        }),
+      );
+      const result = yield* Effect.result(
+        store.update((current) => removeConnectionFromCatalog(current, environmentId)),
+      );
+      expect(result._tag).toBe("Failure");
+      expect(memory.values.get(CONNECTION_CATALOG_KEY)).toBe(raw);
+      expect((yield* store.read).targets).toEqual([target]);
     }),
   );
 
