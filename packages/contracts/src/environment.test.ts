@@ -14,6 +14,18 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("accepts older descriptors without claiming a Jones source", () => {
+    expect(decodeDescriptor(descriptor).jonesSource).toBeUndefined();
+    const jonesSource = {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    };
+    expect(decodeDescriptor({ ...descriptor, jonesSource }).jonesSource).toEqual(jonesSource);
+    expect(() =>
+      decodeDescriptor({ ...descriptor, jonesSource: { ...jonesSource, sha: "unknown" } }),
+    ).toThrow();
+  });
   it("keeps queued tool delivery unsupported unless explicitly advertised", () => {
     expect(decodeDescriptor(descriptor).capabilities.queuedToolBoundaryDelivery).toBeUndefined();
     for (const enabled of [true, false])

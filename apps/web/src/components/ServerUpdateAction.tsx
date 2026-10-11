@@ -20,6 +20,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Atom } from "effect/reactivity";
 import { jonesUpdates } from "~/jones/updates/jonesUpdates";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
+import { JonesBlockedHostUpdates } from "~/jones/fleetUpdates/JonesBlockedHostUpdates";
 import { CircleArrowUpIcon } from "lucide-react";
 import { type ComponentProps, useMemo, useRef, useState } from "react";
 
@@ -393,6 +394,9 @@ export function OutdatedServerUpdateAction({
   readonly label?: string;
 }) {
   const update = useAtomCommand(updateOutdatedServer, { reportFailure: false });
+  if (targetVersion.includes("-preview.") || fromVersion?.includes("-preview.")) {
+    return <JonesBlockedHostUpdates environmentId={environmentId} />;
+  }
   const handleUpdate = async () => {
     if (pendingUpdateEnvironmentIds.has(environmentId)) return;
     pendingUpdateEnvironmentIds.add(environmentId);

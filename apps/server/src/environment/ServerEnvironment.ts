@@ -6,6 +6,7 @@ import {
   type ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { readJonesBuildSource } from "@t3tools/contracts/jones/fleet-updates";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -206,6 +207,7 @@ export const make = Effect.gen(function* () {
   const desktopAppUpdate =
     serverSelfUpdate === "desktop-managed" && serverConfig.desktopTelemetryControlFd !== undefined;
 
+  const jonesSource = readJonesBuildSource(packageJson);
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
     label,
@@ -215,6 +217,7 @@ export const make = Effect.gen(function* () {
       ...(machine === null ? {} : { machine }),
     },
     serverVersion: packageJson.version,
+    ...(jonesSource === undefined ? {} : { jonesSource }),
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
       queueDispatch: QUEUE_DISPATCH_CAPABILITY,
