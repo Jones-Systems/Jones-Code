@@ -163,15 +163,23 @@ async function controlFixture(fault, run) {
       assert.equal(directories.length, 1);
       const directory = path.join(root, directories[0]);
       const leaves = await fs.readdir(directory);
+      assert.ok(
+        !leaves.includes("burst") && !leaves.includes("burst.renamed"),
+        "The rapid burst must disappear without an intermediate observer flush.",
+      );
       const phase = leaves.includes("sentinel")
         ? "created"
         : leaves.includes("sentinel.renamed")
           ? "renamed"
-          : "removed";
+          : phases.includes("removed")
+            ? "rapid-burst"
+            : "removed";
       if (phase !== prior) {
         assert.equal(
           phases.at(-1),
-          { created: undefined, renamed: "created", removed: "renamed" }[phase],
+          { created: undefined, renamed: "created", removed: "renamed", "rapid-burst": "removed" }[
+            phase
+          ],
         );
         prior = phase;
       }
@@ -179,12 +187,20 @@ async function controlFixture(fault, run) {
       attempts.set(phase, count);
       // A flush may acknowledge before the kernel delivers the next leaf event.
       if (count !== 2) return events.length;
-      const leaf = phase === "created" ? "sentinel" : "sentinel.renamed";
+      if (fault === "present-only" && phase === "rapid-burst") return events.length;
+      const leaf =
+        phase === "rapid-burst"
+          ? "burst.renamed"
+          : phase === "created"
+            ? "sentinel"
+            : "sentinel.renamed";
       events.push({
         path: fault === phase ? directory : path.join(directory, leaf),
         flags:
           (fault === "history" ? 0x02 : 0) |
-          { created: 0x100, renamed: 0x800, removed: 0x200 }[phase],
+          { created: 0x100, renamed: 0x800, removed: 0x200, "rapid-burst": 0x100 | 0x800 | 0x200 }[
+            phase
+          ],
       });
       if (fault !== phase) phases.push(phase);
       return events.length;
@@ -198,19 +214,31 @@ async function controlFixture(fault, run) {
   }
 }
 
-test("observer control awaits distinct leaf phases and proves the transient files are absent", () =>
+test("observer control awaits paced phases and detects a rapid burst after every leaf disappears", () =>
   controlFixture(undefined, async ({ root, observer, phases }) => {
     await observerControl(observer, [root]);
-    assert.deepEqual(phases, ["created", "renamed", "removed"]);
+    assert.deepEqual(phases, ["created", "renamed", "removed", "rapid-burst"]);
     assert.deepEqual(
       observer.events.map((event) => event.flags),
-      [0x100, 0x800, 0x200],
+      [0x100, 0x800, 0x200, 0x100 | 0x800 | 0x200],
     );
     for (const event of observer.events)
       await assert.rejects(fs.lstat(event.path), { code: "ENOENT" });
   }));
 
-for (const missing of ["created", "renamed", "removed"])
+test("paced detection cannot qualify an observer that misses leaves disappearing between flushes", () =>
+  controlFixture("present-only", async ({ root, observer, phases }) => {
+    await assert.rejects(observerControl(observer, [root], { timeoutMs: 100 }), (error) => {
+      assert.ok(error instanceof ObserverControlError);
+      assert.equal(error.control.phase, "rapid-burst");
+      assert.deepEqual(phases, ["created", "renamed", "removed"]);
+      assert.equal(error.control.observedCount, 0);
+      assert.match(error.message, /required leaf mutation/);
+      return true;
+    });
+  }));
+
+for (const missing of ["created", "renamed", "removed", "rapid-burst"])
   test(`observer control rejects missing ${missing} leaf evidence and retains bounded phase details`, () =>
     controlFixture(missing, async ({ root, observer }) => {
       await assert.rejects(observerControl(observer, [root], { timeoutMs: 100 }), (error) => {
@@ -220,7 +248,9 @@ for (const missing of ["created", "renamed", "removed"])
         assert.equal(error.control.events.length, 1);
         assert.equal(
           error.control.events[0].flags,
-          { created: 0x100, renamed: 0x800, removed: 0x200 }[missing],
+          { created: 0x100, renamed: 0x800, removed: 0x200, "rapid-burst": 0x100 | 0x800 | 0x200 }[
+            missing
+          ],
         );
         assert.match(error.message, /required leaf mutation/);
         return true;
