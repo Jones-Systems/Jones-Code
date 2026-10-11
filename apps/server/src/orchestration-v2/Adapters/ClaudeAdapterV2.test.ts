@@ -9584,6 +9584,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         OrchestrationV2ProviderThread
       >();
       const makeLifecycle = (owner: string): ProviderRuntimeLifecycle => ({
+        admit: () => Effect.void,
         reserve: () =>
           Effect.sync(() => {
             const generation = `retirement-generation-${++nextGeneration}`;
@@ -10603,6 +10604,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         let generations = 0;
         let nativeIds = 0;
         const lifecycle: ProviderRuntimeLifecycle = {
+          admit: () => Effect.void,
           reserve: () =>
             Effect.sync(() => {
               const generation = `query-generation-${++generations}`;

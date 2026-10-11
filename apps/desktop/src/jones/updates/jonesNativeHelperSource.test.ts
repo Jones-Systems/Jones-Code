@@ -479,7 +479,9 @@ with sqlite3.connect(database) as db:
   it("budgets full-copy recovery and refuses cross-volume or recursive roots before shutdown", async () => {
     const f = await fixture();
     try {
-      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
       const scenario = String.raw`
 root = pathlib.Path(sys.argv[1])
 state, profile, tx, candidate, app = [root / name for name in ('state', 'profile', 'tx', 'candidate', 'installed.app')]
@@ -527,11 +529,15 @@ try: storage_preflight(expected, staged, recursive)
 except RuntimeError as error: assert 'own destination' in str(error)
 else: raise AssertionError('Recursive profile snapshot was accepted')
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        },
+      );
     } finally {
       await f.cleanup();
     }
@@ -540,7 +546,9 @@ else: raise AssertionError('Recursive profile snapshot was accepted')
   it("syncs restored sidecars and both rename parents before declaring the advanced pair retained", async () => {
     const f = await fixture();
     try {
-      const nativeFunctions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
       const scenario = String.raw`
 root = pathlib.Path(sys.argv[1])
 state, profile, tx = [root / name for name in ('state', 'profile', 'tx')]
@@ -573,11 +581,15 @@ for suffix in ('', '-wal', '-shm'):
     assert pathlib.Path(str(database) + suffix).read_bytes() == ('old' + suffix).encode()
     assert (tx / 'advanced' / (database.name + suffix)).read_bytes() == ('advanced' + suffix).encode()
 `;
-      NodeChildProcess.execFileSync("python3", ["-c", `${nativeFunctions}\n${scenario}`, f.directory], {
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10000,
-      });
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
+        {
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+          timeout: 10000,
+        },
+      );
     } finally {
       await f.cleanup();
     }
