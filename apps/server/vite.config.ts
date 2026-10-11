@@ -79,9 +79,8 @@ const packExecutableTargets = packExecutableTarget
     ]
   : undefined;
 
-export default mergeConfig(
-  baseConfig,
-  defineConfig({
+export default defineConfig(async (env) =>
+  mergeConfig(typeof baseConfig === "function" ? await baseConfig(env) : await baseConfig, {
     run: {
       tasks: {
         build: {

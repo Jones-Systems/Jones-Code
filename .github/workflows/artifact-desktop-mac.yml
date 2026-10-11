@@ -53,7 +53,6 @@ jobs:
     timeout-minutes: 45
     env:
       T3CODE_DESKTOP_UPDATE_REPOSITORY: Jones-Systems/Jones-Code
-      TMPDIR: ${{ runner.temp }}/jones-desktop-mac-${{ github.run_id }}-${{ github.run_attempt }}
       T3CODE_DESKTOP_SIGNED: "false"
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
@@ -89,7 +88,15 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = bd20d2d2fc0ba89797698192b877a7f1312f8fe3
 
       - name: Prepare job scratch
-        run: mkdir -p "$TMPDIR"
+        id: job_scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_TEMP" = /* && "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          job_scratch="$RUNNER_TEMP/jones-desktop-mac-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          [[ "$job_scratch" != *$'\n'* && "$job_scratch" != *$'\r'* ]]
+          mkdir -m 700 -- "$job_scratch"
+          printf 'TMPDIR=%s\n' "$job_scratch" >> "$GITHUB_ENV"
 
       - name: Verify Apple Silicon runner
         run: test "$(uname -m)" = arm64
@@ -269,7 +276,7 @@ jobs:
         # process group. Preparation can retain captured build resources as well.
         # Never override either uncertainty hold by deleting a parent.
         if: >-
-          always() &&
+          always() && steps.job_scratch.outcome == 'success' &&
           (steps.native_qualification.outcome == 'success' || steps.native_qualification.outcome == 'skipped') &&
           (steps.legacy_primitives.outcome == 'success' || steps.legacy_primitives.outcome == 'skipped') &&
           (steps.legacy_primitive_reports.outcome == 'success' || steps.legacy_primitive_reports.outcome == 'skipped') &&
@@ -278,7 +285,7 @@ jobs:
 
       - name: Report retained qualification scratch
         if: >-
-          always() && (
+          always() && (steps.job_scratch.outcome != 'success' ||
           (steps.native_qualification.outcome != 'success' && steps.native_qualification.outcome != 'skipped') ||
           (steps.legacy_primitives.outcome != 'success' && steps.legacy_primitives.outcome != 'skipped') ||
           (steps.legacy_primitive_reports.outcome != 'success' && steps.legacy_primitive_reports.outcome != 'skipped') ||
