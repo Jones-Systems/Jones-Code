@@ -30,6 +30,7 @@ import {
   withOwnedScratch,
   fixtureProxy,
   scenarioSteps,
+  indexedDbBrowserProof,
 } from "./install-preview-qualification.mjs";
 
 const source = NodePath.resolve(
@@ -72,6 +73,320 @@ NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
     /Missing visible text/,
   );
 });
+
+// A deterministic IDB event model checks the emitted expression's guards and cleanup;
+// only the hosted native Preview scenario establishes actual browser compatibility.
+function indexedDbExpressionFixture() {
+  const runtimeName = "t3code:connection-runtime";
+  const hintName = "t3code:connection-compatibility-hints";
+  const catalog = JSON.stringify({
+    disabledEnvironmentIds: ["synthetic-remote"],
+    credentials: ["DO-NOT-PUBLISH"],
+  });
+  const data = new Map([
+    [runtimeName, { version: 4, stores: new Map([["catalog", catalog]]) }],
+    [
+      hintName,
+      {
+        version: 1,
+        stores: new Map([
+          [
+            "compatibility-hints",
+            [
+              {
+                environmentId: "synthetic-remote",
+                routeBinding: "DO-NOT-PUBLISH",
+                kind: "outdated-update",
+              },
+            ],
+          ],
+        ]),
+      },
+    ],
+  ]);
+  const handles = new Set();
+  const events = [];
+  const window = new EventTarget();
+  let deferOpen = false;
+  let failUpgrade = false;
+  let failDelete = false;
+  const pending = [];
+  const database = (name, entry) => {
+    const handle = {
+      name,
+      version: entry.version,
+      closed: false,
+      objectStoreNames: { contains: (store) => entry.stores.has(store) },
+      createObjectStore: (store) => entry.stores.set(store, []),
+      close() {
+        handle.closed = true;
+      },
+      transaction(store) {
+        if (handle.closed) throw Object.assign(new Error("closed"), { name: "InvalidStateError" });
+        if (!entry.stores.has(store)) throw new Error("missing store");
+        const tx = {
+          objectStore: () => ({
+            get: () => request(),
+            getAll: () => request(),
+          }),
+        };
+        const request = () => {
+          const result = { result: entry.stores.get(store) };
+          queueMicrotask(() => tx.oncomplete?.());
+          return result;
+        };
+        return tx;
+      },
+    };
+    handles.add(handle);
+    return handle;
+  };
+  const indexedDB = {
+    databases: async () => [...data].map(([name, entry]) => ({ name, version: entry.version })),
+    open(name, version) {
+      events.push(["open", name, version]);
+      const request = {};
+      const complete = () => {
+        if (failUpgrade && version === 5) {
+          request.error = { name: "AbortError" };
+          request.onerror?.();
+          return;
+        }
+        const previous = data.get(name);
+        const oldVersion = previous?.version ?? 0;
+        if (oldVersion > version) {
+          request.error = { name: "VersionError" };
+          request.onerror?.();
+          return;
+        }
+        if (oldVersion < version) {
+          for (const handle of handles)
+            if (handle.name === name && !handle.closed) handle.onversionchange?.();
+          if ([...handles].some((handle) => handle.name === name && !handle.closed)) {
+            request.onblocked?.();
+            return;
+          }
+        }
+        const entry = previous ?? { version, stores: new Map() };
+        const result = database(name, entry);
+        request.result = result;
+        let aborted = false;
+        request.transaction = {
+          abort: () => {
+            aborted = true;
+          },
+        };
+        if (oldVersion < version) request.onupgradeneeded?.({ oldVersion });
+        if (aborted) {
+          result.close();
+          request.error = { name: "AbortError" };
+          request.onerror?.();
+          return;
+        }
+        entry.version = version;
+        result.version = version;
+        data.set(name, entry);
+        request.onsuccess?.();
+      };
+      if (deferOpen) pending.push(complete);
+      else queueMicrotask(complete);
+      return request;
+    },
+    deleteDatabase(name) {
+      events.push(["delete", name]);
+      const request = {};
+      queueMicrotask(() => {
+        if (failDelete) {
+          request.onerror?.();
+          return;
+        }
+        if ([...handles].some((handle) => handle.name === name && !handle.closed))
+          request.onblocked?.();
+        else {
+          data.delete(name);
+          request.onsuccess?.();
+        }
+      });
+      return request;
+    },
+  };
+  const run = new Function(
+    "window",
+    "indexedDB",
+    "crypto",
+    "phase",
+    `return (${indexedDbBrowserProof.toString()})(phase)`,
+  );
+  return {
+    run: (phase) => run(window, indexedDB, { randomUUID: () => "owned-negative" }, phase),
+    data,
+    handles,
+    events,
+    window,
+    runtimeName,
+    hintName,
+    failUpgrade: () => {
+      failUpgrade = true;
+    },
+    failDelete: () => {
+      failDelete = true;
+    },
+    delayOpen: () => {
+      deferOpen = true;
+    },
+    releaseOpen: () => {
+      deferOpen = false;
+      for (const complete of pending.splice(0)) complete();
+    },
+  };
+}
+
+NodeTest.test(
+  "native IDB scenario holds v4 across real pairing and check, then releases before hard reload",
+  () => {
+    const steps = scenarioSteps("http://fixture.invalid/pair#token=DO-NOT-PUBLISH");
+    const at = (label) => steps.findIndex((step) => step.label === label);
+    const hold = at("Hold the actual legacy version-4 catalog connection");
+    const checkpoint = at("Capture the saved Off catalog before the authenticated check");
+    const verify = at("New hint persistence preserves the held legacy catalog");
+    const close = at("Release the legacy catalog handle before hard reload");
+    NodeAssert.ok(at("Native IndexedDB detects the legacy upgrade hazard") < hold);
+    NodeAssert.ok(hold < steps.findIndex((step) => step.action === "type"));
+    NodeAssert.ok(checkpoint > steps.findIndex((step) => step.text === "Source matches this app."));
+    NodeAssert.ok(
+      checkpoint <
+        steps.findIndex((step) => step.locator === 'button:enabled:text-is("Check for builds")'),
+    );
+    NodeAssert.ok(
+      verify > steps.findIndex((step) => step.text === "Synthetic authenticated check completed."),
+    );
+    NodeAssert.ok(close > verify);
+    NodeAssert.deepEqual(steps[close + 1], { action: "navigate", path: "/settings/connections" });
+    NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 2);
+    NodeAssert.ok(steps.some((step) => step.name === "saved-connection-reload"));
+  },
+);
+
+NodeTest.test(
+  "IDB proof emits only booleans and detects a real-shaped version upgrade with exact cleanup",
+  async () => {
+    const fixture = indexedDbExpressionFixture();
+    NodeAssert.deepEqual(await fixture.run("upgrade-control"), {
+      versionChangeObserved: true,
+      legacyConnectionClosed: true,
+      oldVersionRejected: true,
+      temporaryDatabaseRemoved: true,
+    });
+    NodeAssert.deepEqual(
+      fixture.events.filter(([action]) => action === "delete"),
+      [["delete", "jones-install-preview-idb-owned-negative"]],
+    );
+    NodeAssert.deepEqual(await fixture.run("hold"), { legacyV4Held: true });
+    await fixture.run("checkpoint");
+    const result = await fixture.run("verify");
+    NodeAssert.ok(Object.values(result).every((value) => value === true));
+    NodeAssert.ok(!JSON.stringify(result).includes("DO-NOT-PUBLISH"));
+    NodeAssert.deepEqual(await fixture.run("close"), { legacyProofReleased: true });
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+    NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
+  },
+);
+
+NodeTest.test(
+  "IDB proof rejects closed or mutated catalogs and missing, wrong-version or empty hint stores",
+  async () => {
+    for (const fault of ["closed", "changed", "absent", "version", "empty", "wrong-environment"]) {
+      const fixture = indexedDbExpressionFixture();
+      await fixture.run("hold");
+      await fixture.run("checkpoint");
+      if (fault === "closed") fixture.window.__jonesLegacyIndexedDbProof.database.onversionchange();
+      if (fault === "changed")
+        fixture.data.get(fixture.runtimeName).stores.set("catalog", "changed");
+      if (fault === "absent") fixture.data.delete(fixture.hintName);
+      if (fault === "version") fixture.data.get(fixture.hintName).version = 2;
+      if (fault === "empty")
+        fixture.data.get(fixture.hintName).stores.set("compatibility-hints", []);
+      if (fault === "wrong-environment")
+        fixture.data
+          .get(fixture.hintName)
+          .stores.set("compatibility-hints", [
+            { environmentId: "other", kind: "outdated-update", routeBinding: "other" },
+          ]);
+      try {
+        if (fault === "closed") await NodeAssert.rejects(fixture.run("verify"));
+        else {
+          const result = await fixture.run("verify");
+          NodeAssert.ok(Object.values(result).includes(false), fault);
+          if (fault === "absent" || fault === "version") {
+            NodeAssert.ok(
+              !fixture.events.some(
+                ([action, name]) => action === "open" && name === fixture.hintName,
+              ),
+            );
+          }
+        }
+      } finally {
+        fixture.window.dispatchEvent(new Event("pagehide"));
+      }
+      NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+      NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
+    }
+  },
+);
+
+NodeTest.test(
+  "IDB pagehide closes late handles and a colliding control name is never deleted",
+  async () => {
+    const fixture = indexedDbExpressionFixture();
+    fixture.delayOpen();
+    const held = fixture.run("hold");
+    await Promise.resolve();
+    fixture.window.dispatchEvent(new Event("pagehide"));
+    fixture.releaseOpen();
+    await NodeAssert.rejects(held, /proof ended/);
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+    NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
+    const collision = indexedDbExpressionFixture();
+    collision.data.set("jones-install-preview-idb-owned-negative", {
+      version: 4,
+      stores: new Map(),
+    });
+    await NodeAssert.rejects(collision.run("upgrade-control"), /already exists/);
+    NodeAssert.ok(collision.data.has("jones-install-preview-idb-owned-negative"));
+    NodeAssert.ok(!collision.events.some(([action]) => action === "delete"));
+  },
+);
+
+NodeTest.test(
+  "IDB control failure closes handles, preserves its error, and reports deletion failure",
+  async () => {
+    for (const cleanupFails of [false, true]) {
+      const fixture = indexedDbExpressionFixture();
+      fixture.failUpgrade();
+      if (cleanupFails) fixture.failDelete();
+      await NodeAssert.rejects(fixture.run("upgrade-control"), (error) => {
+        if (cleanupFails) {
+          NodeAssert.ok(error instanceof AggregateError);
+          NodeAssert.equal(error.errors[0].name, "AbortError");
+          NodeAssert.match(error.errors[1].message, /cleanup failed/);
+        } else NodeAssert.equal(error.name, "AbortError");
+        return true;
+      });
+      NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+      NodeAssert.equal(fixture.data.has("jones-install-preview-idb-owned-negative"), cleanupFails);
+      NodeAssert.ok(fixture.data.has(fixture.runtimeName));
+      NodeAssert.ok(fixture.data.has(fixture.hintName));
+    }
+    for (const version of [null, 5]) {
+      const fixture = indexedDbExpressionFixture();
+      if (version === null) fixture.data.delete(fixture.runtimeName);
+      else fixture.data.get(fixture.runtimeName).version = version;
+      await NodeAssert.rejects(fixture.run("hold"), /must remain version 4/);
+      NodeAssert.equal(fixture.events.length, 0);
+      NodeAssert.equal(fixture.window.__jonesLegacyIndexedDbProof, undefined);
+    }
+  },
+);
 
 NodeTest.test(
   "saved-host assertion requires the Base UI switch to be present, off and ARIA-disabled",

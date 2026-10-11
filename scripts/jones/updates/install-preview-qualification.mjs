@@ -585,6 +585,250 @@ export async function serveRendererFixture(directory) {
   };
 }
 
+// Serialized into native preview_evaluate; no application cache hooks or browser substitutes.
+export async function indexedDbBrowserProof(phase) {
+  const slot = "__jonesLegacyIndexedDbProof";
+  const runtimeName = "t3code:connection-runtime";
+  const hintName = "t3code:connection-compatibility-hints";
+  const require = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const makeSession = (temporaryName) => {
+    const handles = new Set();
+    let deletion;
+    const state = {
+      disposed: false,
+      temporaryOwned: false,
+      versionChanged: false,
+      unexpectedlyClosed: false,
+      database: null,
+      baseline: null,
+      environmentId: null,
+      dispose() {
+        state.disposed = true;
+        for (const database of handles) database.close();
+        handles.clear();
+        state.database = null;
+        state.baseline = null;
+        state.environmentId = null;
+        window.removeEventListener("pagehide", onPageHide);
+        if (window[slot] === state) delete window[slot];
+      },
+      removeTemporary() {
+        if (!state.temporaryOwned) return Promise.resolve();
+        if (!deletion)
+          deletion = new Promise((resolve, reject) => {
+            const request = indexedDB.deleteDatabase(temporaryName);
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(new Error("Owned IndexedDB control cleanup failed"));
+            request.onblocked = () => reject(new Error("Owned IndexedDB control cleanup blocked"));
+          });
+        return deletion;
+      },
+      open(name, version, expectedOldVersion = null) {
+        return new Promise((resolve, reject) => {
+          const request = indexedDB.open(name, version);
+          request.onupgradeneeded = (event) => {
+            if (state.disposed || expectedOldVersion !== event.oldVersion) {
+              request.transaction.abort();
+              return;
+            }
+            if (event.oldVersion === 0) {
+              if (name === temporaryName) state.temporaryOwned = true;
+              request.result.createObjectStore("probe");
+            }
+          };
+          request.onerror = () => {
+            const error = new Error("Owned IndexedDB open failed");
+            error.name = request.error?.name ?? "Error";
+            reject(error);
+          };
+          request.onblocked = () => reject(new Error("Owned IndexedDB open blocked"));
+          request.onsuccess = () => {
+            const database = request.result;
+            // A native tool cancellation can outlive this promise. Never retain a late handle.
+            if (state.disposed) {
+              database.close();
+              reject(new Error("Owned IndexedDB proof ended"));
+              return;
+            }
+            handles.add(database);
+            resolve(database);
+          };
+        });
+      },
+      read(database, store, all = false) {
+        return new Promise((resolve, reject) => {
+          const transaction = database.transaction(store, "readonly");
+          const objectStore = transaction.objectStore(store);
+          const request = all ? objectStore.getAll(undefined, 129) : objectStore.get("document");
+          transaction.oncomplete = () => resolve(request.result);
+          transaction.onabort = () => reject(new Error("Owned IndexedDB read aborted"));
+          transaction.onerror = () => reject(new Error("Owned IndexedDB read failed"));
+        });
+      },
+      hold(database) {
+        state.database = database;
+        database.onversionchange = () => {
+          state.versionChanged = true;
+          database.close();
+        };
+        database.onclose = () => {
+          state.unexpectedlyClosed = true;
+        };
+      },
+    };
+    const onPageHide = () => {
+      state.dispose();
+      // The same deletion promise is awaited below on ordinary success/failure.
+      if (temporaryName) void state.removeTemporary().catch(() => {});
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return state;
+  };
+  if (phase === "upgrade-control") {
+    const temporaryName = `jones-install-preview-idb-${crypto.randomUUID()}`;
+    const state = makeSession(temporaryName);
+    let result;
+    let failure;
+    try {
+      require(!(await indexedDB.databases()).some(
+        (entry) => entry.name === temporaryName,
+      ), "Owned IndexedDB control name already exists");
+      state.hold(await state.open(temporaryName, 4, 0));
+      require(state.temporaryOwned, "IndexedDB control creation was not owned");
+      await state.open(temporaryName, 5, 4);
+      let closed = false;
+      try {
+        state.database.transaction("probe", "readonly");
+      } catch (error) {
+        closed = error.name === "InvalidStateError";
+      }
+      let oldVersionRejected = false;
+      try {
+        await state.open(temporaryName, 4);
+      } catch (error) {
+        oldVersionRejected = error.name === "VersionError";
+      }
+      result = {
+        versionChangeObserved: state.versionChanged,
+        legacyConnectionClosed: closed,
+        oldVersionRejected,
+      };
+    } catch (error) {
+      failure = error;
+    } finally {
+      state.dispose();
+      try {
+        await state.removeTemporary();
+      } catch (cleanupError) {
+        if (failure)
+          throw new AggregateError([failure, cleanupError], "IndexedDB control and cleanup failed");
+        throw cleanupError;
+      }
+    }
+    if (failure) throw failure;
+    return {
+      ...result,
+      temporaryDatabaseRemoved: !(await indexedDB.databases()).some(
+        (entry) => entry.name === temporaryName,
+      ),
+    };
+  }
+  if (phase === "hold") {
+    require(window[slot] === undefined, "Legacy IndexedDB proof already active");
+    const state = makeSession();
+    window[slot] = state;
+    try {
+      require((await indexedDB.databases()).some(
+        (entry) => entry.name === runtimeName && entry.version === 4,
+      ), "Existing connection catalog must remain version 4");
+      state.hold(await state.open(runtimeName, 4));
+      return { legacyV4Held: state.database.version === 4 };
+    } catch (error) {
+      state.dispose();
+      throw error;
+    }
+  }
+  const state = window[slot];
+  require(state && !state.disposed, "Legacy IndexedDB proof is not active");
+  try {
+    if (phase === "checkpoint") {
+      const raw = await state.read(state.database, "catalog");
+      let catalog;
+      try {
+        catalog = JSON.parse(raw);
+      } catch {
+        throw new Error("Synthetic catalog is not valid JSON");
+      }
+      require(typeof raw === "string" &&
+        catalog.disabledEnvironmentIds?.length ===
+          1, "Synthetic catalog must contain exactly one saved Off environment");
+      state.baseline = raw;
+      state.environmentId = catalog.disabledEnvironmentIds[0];
+      return {
+        savedOffCatalogCaptured: true,
+        legacyConnectionUnchanged: !state.versionChanged && !state.unexpectedlyClosed,
+      };
+    }
+    if (phase === "verify") {
+      require(typeof state.baseline === "string", "Synthetic catalog checkpoint is absent");
+      const catalogUnchanged = (await state.read(state.database, "catalog")) === state.baseline;
+      const reopened = await state.open(runtimeName, 4);
+      let reopenedCatalogUnchanged;
+      try {
+        reopenedCatalogUnchanged = (await state.read(reopened, "catalog")) === state.baseline;
+      } finally {
+        reopened.close();
+      }
+      const separateHintDatabase = (await indexedDB.databases()).some(
+        (entry) => entry.name === hintName && entry.version === 1,
+      );
+      let hintRecordPresent = false;
+      if (separateHintDatabase) {
+        const hints = await state.open(hintName, 1);
+        try {
+          if (hints.objectStoreNames.contains("compatibility-hints")) {
+            const records = await state.read(hints, "compatibility-hints", true);
+            hintRecordPresent = records.some(
+              (record) =>
+                record.environmentId === state.environmentId &&
+                record.kind === "outdated-update" &&
+                typeof record.routeBinding === "string" &&
+                record.routeBinding.length > 0,
+            );
+          }
+        } finally {
+          hints.close();
+        }
+      }
+      return {
+        legacyConnectionUnchanged: !state.versionChanged && !state.unexpectedlyClosed,
+        catalogUnchanged,
+        reopenedV4: reopened.version === 4,
+        reopenedCatalogUnchanged,
+        separateHintDatabase,
+        hintRecordPresent,
+      };
+    }
+    require(phase === "close", "Unknown IndexedDB proof phase");
+    state.dispose();
+    return { legacyProofReleased: window[slot] === undefined };
+  } catch (error) {
+    state.dispose();
+    throw error;
+  }
+}
+
+function indexedDbStep(phase, label, expected) {
+  return {
+    action: "assert-evaluate",
+    label,
+    expression: `(${indexedDbBrowserProof.toString()})(${JSON.stringify(phase)})`,
+    expected,
+  };
+}
+
 export function scenarioSteps(remotePairing) {
   const disabledPreference = {
     action: "assert-evaluate",
@@ -597,6 +841,15 @@ export function scenarioSteps(remotePairing) {
     { action: "navigate", path: "/settings/connections" },
     { action: "wait", text: "Add environment" },
     { action: "capture", name: "connections-before", contains: ["Add environment"] },
+    indexedDbStep("upgrade-control", "Native IndexedDB detects the legacy upgrade hazard", {
+      versionChangeObserved: true,
+      legacyConnectionClosed: true,
+      oldVersionRejected: true,
+      temporaryDatabaseRemoved: true,
+    }),
+    indexedDbStep("hold", "Hold the actual legacy version-4 catalog connection", {
+      legacyV4Held: true,
+    }),
     { action: "click", locator: 'role=button[name="Add environment"]' },
     { action: "type", locator: 'role=textbox[name="Host"]', text: remotePairing },
     { action: "click", locator: 'role=dialog >> role=button[name="Add environment"]' },
@@ -608,6 +861,10 @@ export function scenarioSteps(remotePairing) {
       excludes: ["A newer Jones source is available."],
     },
     disabledPreference,
+    indexedDbStep("checkpoint", "Capture the saved Off catalog before the authenticated check", {
+      savedOffCatalogCaptured: true,
+      legacyConnectionUnchanged: true,
+    }),
     { action: "click", locator: 'button:enabled:text-is("Check for builds")' },
     { action: "wait", text: "Synthetic authenticated check completed." },
     {
@@ -616,6 +873,14 @@ export function scenarioSteps(remotePairing) {
       contains: ["Synthetic authenticated check completed."],
     },
     disabledPreference,
+    indexedDbStep("verify", "New hint persistence preserves the held legacy catalog", {
+      legacyConnectionUnchanged: true,
+      catalogUnchanged: true,
+      reopenedV4: true,
+      reopenedCatalogUnchanged: true,
+      separateHintDatabase: true,
+      hintRecordPresent: true,
+    }),
     { action: "click", locator: 'role=button[name="Refresh status"]' },
     { action: "wait", text: "Source relationship has not been verified." },
     {
@@ -624,6 +889,9 @@ export function scenarioSteps(remotePairing) {
       contains: ["Source relationship has not been verified."],
       excludes: ["A newer Jones source is available."],
     },
+    indexedDbStep("close", "Release the legacy catalog handle before hard reload", {
+      legacyProofReleased: true,
+    }),
     { action: "navigate", path: "/settings/connections" },
     { action: "wait", text: "Source relationship has not been verified." },
     {
