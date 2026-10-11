@@ -166,7 +166,7 @@
       "anchors": [
         {
           "path": "packages/shared/package.json",
-          "sha256": "79309ae52dec87a217dee73d2f20bb86d87120994a242a2675d91f261ea65d5c"
+          "sha256": "de582d0694ee57e4938221f67c7cec680e833ada2854915f673b439a1decb36b"
         }
       ],
       "targets": []
