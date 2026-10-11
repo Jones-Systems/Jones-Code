@@ -671,8 +671,9 @@ describe("durable compatibility hints", () => {
       }),
   );
 
-  for (const failure of ["read", "clear"] as const) {
-    it.effect(`hint ${failure} failure does not prevent register, edit, Off or remove`, () =>
+  it.effect.each(["read", "clear"] as const)(
+    "hint %s failure does not prevent register, edit, Off or remove",
+    (failure) =>
       Effect.gen(function* () {
         let raw = encodeCatalog({ ...emptyCatalog, targets: [target], profiles: [profile] });
         let cleanups = 0;
@@ -719,8 +720,7 @@ describe("durable compatibility hints", () => {
           if (failure === "clear") expect(cleanups).toBe(2);
         }).pipe(Effect.provide(ConnectionStorage.layer));
       }),
-    );
-  }
+  );
 
   it.effect("hint cleanup failure does not hide an authoritative catalog write failure", () =>
     Effect.gen(function* () {

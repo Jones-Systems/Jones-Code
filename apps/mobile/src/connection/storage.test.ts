@@ -229,8 +229,9 @@ describe("isolated mobile compatibility hints", () => {
     }),
   );
 
-  for (const failure of ["read", "clear"] as const) {
-    it.effect(`hint ${failure} failure leaves catalog edits, Off and removal available`, () =>
+  it.effect.each(["read", "clear"] as const)(
+    "hint %s failure leaves catalog edits, Off and removal available",
+    (failure) =>
       Effect.gen(function* () {
         const memory = makeStorage({ [CONNECTION_CATALOG_KEY]: encode(document) });
         let cleanups = 0;
@@ -299,8 +300,7 @@ describe("isolated mobile compatibility hints", () => {
         expect(decode(memory.values.get(CONNECTION_CATALOG_KEY)!).targets).toEqual([target]);
         if (failure === "clear") expect(cleanups).toBe(2);
       }),
-    );
-  }
+  );
 
   it.effect("the mobile persistence service reports hint failure without backend details", () =>
     Effect.gen(function* () {
