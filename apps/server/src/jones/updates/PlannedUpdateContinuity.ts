@@ -1,6 +1,13 @@
+import {
+  PlannedContinuityError,
+  PlannedUpdateContinuity,
+} from "./PlannedUpdateContinuityService.ts";
+export {
+  PlannedUpdateContinuity,
+  type PlannedUpdateProof,
+} from "./PlannedUpdateContinuityService.ts";
 import { CommandId, ThreadId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -12,14 +19,8 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadCommands from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ServerSettings from "../../serverSettings.ts";
-import {
-  workModeCandidate,
-  workModeCommand,
-  workModeContext,
-  type WorkModeCandidate,
-} from "../workMode/Policy.ts";
-import { sameOperationBinding, type NativeOperationBinding } from "./launcherOperation.ts";
-import type { QualifiedRuntimeBinding } from "../cloud/qualifiedRuntime.ts";
+import { workModeCandidate, workModeCommand, workModeContext } from "../workMode/Policy.ts";
+import { sameOperationBinding } from "./launcherOperation.ts";
 import {
   PlannedThreadSnapshot,
   captureThreadContinuity,
@@ -29,46 +30,6 @@ import {
   samePlannedThread,
   workOwnerIdentity,
 } from "./plannedContinuityPolicy.ts";
-
-export class PlannedContinuityError extends Schema.TaggedError<PlannedContinuityError>()(
-  "PlannedContinuityError",
-  { cause: Schema.Defect() },
-) {}
-
-export interface PlannedUpdateProof {
-  readonly operationId: string;
-  readonly outcome: "committed" | "rolled-back";
-  readonly binding: NativeOperationBinding;
-  readonly current: QualifiedRuntimeBinding;
-}
-
-export class PlannedUpdateContinuity extends Context.Service<
-  PlannedUpdateContinuity,
-  {
-    readonly capture: (input: {
-      readonly operationId: string;
-      readonly binding: NativeOperationBinding;
-      readonly continueRunningThreads: boolean;
-    }) => Effect.Effect<void, PlannedContinuityError>;
-    readonly activate: (proof: PlannedUpdateProof) => Effect.Effect<void, PlannedContinuityError>;
-    readonly queueThreadIds: Effect.Effect<ReadonlyArray<ThreadId>>;
-    readonly queueCommand: (
-      projection: OrchestrationV2ThreadProjection,
-    ) => Effect.Effect<CommandId | undefined, PlannedContinuityError>;
-    readonly finishQueue: (threadId: ThreadId) => Effect.Effect<void, PlannedContinuityError>;
-    readonly hasWork: (threadId: ThreadId) => Effect.Effect<boolean, PlannedContinuityError>;
-    readonly admitWork: (
-      projection: OrchestrationV2ThreadProjection,
-      candidate: WorkModeCandidate,
-      nowMs: number,
-    ) => Effect.Effect<boolean, PlannedContinuityError>;
-    readonly finishWork: (threadId: ThreadId) => Effect.Effect<void, PlannedContinuityError>;
-    readonly allowWorkStart: (
-      threadId: ThreadId,
-      messageId: string,
-    ) => Effect.Effect<boolean, PlannedContinuityError>;
-  }
->()("t3/jones/updates/PlannedUpdateContinuity") {}
 
 const decodeBinding = Schema.decodeUnknownSync(
   Schema.fromJsonString(
@@ -141,7 +102,11 @@ export const make = Effect.gen(function* () {
         // A missing anchor cannot distinguish pruning/rowid reuse from a quiet thread.
         if (anchor[0]?.command_id !== snapshot.receiptCommandId) return false;
       }
-      const receipts = yield* sql<{ command_id: string; command_type: string; accepted_at: string }>`
+      const receipts = yield* sql<{
+        command_id: string;
+        command_type: string;
+        accepted_at: string;
+      }>`
       SELECT command_id,command_type,accepted_at FROM orchestration_command_receipts
       WHERE aggregate_kind='thread' AND aggregate_id=${snapshot.threadId}
         AND rowid>${snapshot.receiptRowId} AND status='accepted'`;
@@ -180,7 +145,9 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const preferences = yield* settings.getSettings;
           const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-          const queued = new Set(yield* projections.getRecoveryThreadIds("planned-update-queued-runs"));
+          const queued = new Set(
+            yield* projections.getRecoveryThreadIds("planned-update-queued-runs"),
+          );
           const shells = yield* projections.getShellSnapshot({
             location: "active",
             unsettledOnly: true,

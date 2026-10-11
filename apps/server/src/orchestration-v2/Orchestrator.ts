@@ -1,4 +1,4 @@
-import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
+import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as CapturedRuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";

@@ -1,4 +1,4 @@
-import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
+import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { isWorkModeKeepWarm, workModeProviderPrompt } from "../jones/provider/workModePrompt.ts";
