@@ -172,16 +172,24 @@ it.effect(
           if (cursors.length === 1) return Effect.succeed(staged);
           if (cursors.length === 2)
             return Effect.fail({ _tag: "RemoteEnvironmentAuthTimeoutError" });
-          return Effect.succeed({ ...staged, revision: 3 });
+          if (cursors.length === 3) return Effect.succeed({ ...staged, revision: 3 });
+          return Effect.succeed(null);
         },
         (failure) =>
           Effect.sync(() => {
             delays.push(failure);
           }),
-      ).pipe(Stream.take(3), Stream.runCollect);
-      expect(states.map((snapshot) => snapshot.freshness)).toEqual(["fresh", "stale", "fresh"]);
+      ).pipe(Stream.runCollect);
+      expect(states.map((snapshot) => snapshot.freshness)).toEqual([
+        "fresh",
+        "stale",
+        "fresh",
+        "unsupported",
+      ]);
       expect(states[1]?.state).toEqual(staged);
-      expect(cursors).toEqual([undefined, 2, 2]);
+      expect(states[2]?.state).toEqual({ ...staged, revision: 3 });
+      expect(states[3]?.state).toBeNull();
+      expect(cursors).toEqual([undefined, 2, 2, 3]);
       expect(delays).toEqual([1]);
     }),
 );
@@ -200,20 +208,26 @@ it.effect("connection replacement cancels a pending read retry and resets its cu
         cursors.push(after);
         return reads === 1
           ? Effect.fail({ _tag: "RemoteEnvironmentAuthTimeoutError" })
-          : Effect.succeed(staged);
+          : Effect.succeed(reads === 2 ? staged : null);
       },
       () =>
         Deferred.succeed(waiting, undefined).pipe(
           Effect.andThen(Effect.never),
           Effect.onInterrupt(() => Deferred.succeed(canceled, undefined)),
         ),
-    ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    ).pipe(Stream.take(3), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(waiting);
     yield* SubscriptionRef.set(connections, Option.some("replacement"));
     yield* Deferred.await(canceled);
     const results = yield* Fiber.join(observer);
-    expect(results.map((snapshot) => snapshot.freshness)).toEqual(["stale", "fresh"]);
-    expect(cursors).toEqual([undefined, undefined]);
+    expect(results.map((snapshot) => snapshot.freshness)).toEqual([
+      "stale",
+      "fresh",
+      "unsupported",
+    ]);
+    expect(results[1]?.state).toEqual(staged);
+    expect(results[2]?.state).toBeNull();
+    expect(cursors).toEqual([undefined, undefined, 2]);
   }),
 );
 
