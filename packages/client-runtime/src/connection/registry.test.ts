@@ -556,7 +556,7 @@ describe("EnvironmentRegistry", () => {
     platform: { os: "linux", arch: "x64" },
     serverVersion: "0.0.45-preview.20261011.1.1",
     orchestrationProtocolVersion: compatible ? ORCHESTRATION_PROTOCOL_VERSION : 0,
-    capabilities: { serverSelfUpdate: "boot-service" },
+    capabilities: { repositoryIdentity: true, serverSelfUpdate: "boot-service" },
   });
   const reloadHint: StoredConnectionCompatibilityHint = {
     environmentId: RELAY_TARGET.environmentId,
