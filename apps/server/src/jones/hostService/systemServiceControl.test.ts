@@ -51,9 +51,11 @@ function perl(args: readonly string[], env: Record<string, string>) {
 
 // Loads the worker without its entry point, points its fixed roots at task
 // scratch, accepts the test user as the owner of root files, and replaces only
-// systemctl: `show` returns the scripted state, and a mutation may switch it.
+// systemctl: `show` returns the scripted state, and a mutation may switch it,
+// queue a different state for the `show` after next, or remove scripted paths.
 const harness = `my ($worker, $state, $policy, $systemd, $archive, $proc, $cgroup, @operation) = @ARGV;
 do $worker or die($@ || $!);
+require File::Path;
 no warnings "redefine";
 $main::POLICY_PATH = $policy;
 $main::SYSTEMD_DIRECTORY = $systemd;
@@ -63,6 +65,15 @@ $main::CGROUP_ROOT = $cgroup;
 $main::ROOT_UID = $<;
 *main::trusted_self = sub { 1 };
 *main::trusted_chain = sub { 1 };
+# Fixture paths an event removes once, as the kernel removes a stopped cgroup.
+sub scripted_removal {
+  my ($event) = @_;
+  open(my $list, "<", "$state/remove-$event") or return;
+  chomp(my @paths = <$list>);
+  close($list);
+  unlink("$state/remove-$event");
+  File::Path::remove_tree(@paths);
+}
 *main::systemctl = sub {
   my @args = @_;
   open(my $log, ">>", "$state/calls") or die;
@@ -71,11 +82,22 @@ $main::ROOT_UID = $<;
   if ($args[0] eq "show") {
     open(my $show, "<", "$state/show") or die;
     local $/;
-    return (1, scalar <$show>);
+    my $text = <$show>;
+    close($show);
+    rename("$state/next-show", "$state/show") if -e "$state/next-show";
+    return (1, $text);
   }
   return (0, "") if -e "$state/fail-$args[0]";
   rename("$state/after-$args[0]", "$state/show") if -e "$state/after-$args[0]";
+  rename("$state/then-$args[0]", "$state/next-show") if -e "$state/then-$args[0]";
+  scripted_removal($args[0]);
   return (1, "");
+};
+# After an effect, a scripted cgroup may vanish as its event file is opened.
+my $read_small = \\&main::read_small;
+*main::read_small = sub {
+  scripted_removal("events") if $main::EFFECT_STARTED && $_[0] =~ m{/cgroup\\.events\\z};
+  return $read_small->(@_);
 };
 # Only install-launcher's second scan names its stage. A scripted action then
 # lands between the two scans: a foreign entry, or another inode at the stage.
@@ -108,6 +130,13 @@ const staged = async (directory: string) =>
 interface ShowState {
   readonly dropins?: readonly string[];
   readonly active?: boolean;
+  /** `ActiveState SubState` instead of the default for `active`. */
+  readonly state?: string;
+  readonly mainPid?: number;
+  readonly job?: string;
+  readonly controlGroup?: string;
+  /** A property systemd's output leaves out. */
+  readonly omit?: string;
   readonly exec?: string;
   readonly user?: string;
   readonly nnp?: string;
@@ -186,9 +215,15 @@ async function createFixture() {
     `Name:\tt3\nUid:\t${account.uid}\t${account.uid}\t${account.uid}\t${account.uid}\nGid:\t0\n`,
   );
   await file(NodePath.join(proc, "4242", "cgroup"), `0::${controlGroup}\n`);
-  await file(NodePath.join(cgroup, controlGroup, "cgroup.procs"), "");
-  const show = (input: ShowState = {}) =>
-    [
+  // A unified hierarchy root and the running unit's cgroup, still populated.
+  await file(NodePath.join(cgroup, "cgroup.controllers"), "cpu io memory pids\n");
+  const events = NodePath.join(cgroup, controlGroup, "cgroup.events");
+  await file(events, "populated 1\nfrozen 0\n");
+  const show = (input: ShowState = {}) => {
+    const [activeState = "", subState = ""] = (
+      input.state ?? (input.active === false ? "inactive dead" : "active running")
+    ).split(" ");
+    return [
       `FragmentPath=${fragment}`,
       `DropInPaths=${(input.dropins ?? ["jones-code.conf"]).map((name) => NodePath.join(dropins, name)).join(" ")}`,
       `User=${input.user ?? account.username}`,
@@ -196,16 +231,24 @@ async function createFixture() {
       `NoNewPrivileges=${input.nnp ?? "yes"}`,
       "KillMode=control-group",
       `Slice=${input.slice ?? "hostdev.slice"}`,
-      `ControlGroup=${input.active === false ? "" : controlGroup}`,
-      `ActiveState=${input.active === false ? "inactive" : "active"}`,
-      `SubState=${input.active === false ? "dead" : "running"}`,
-      `MainPID=${input.active === false ? 0 : 4242}`,
+      `ControlGroup=${input.controlGroup ?? (input.active === false ? "" : controlGroup)}`,
+      `ActiveState=${activeState}`,
+      `SubState=${subState}`,
+      `Job=${input.job ?? ""}`,
+      `MainPID=${input.mainPid ?? (input.active === false ? 0 : 4242)}`,
       `ExecStart={ path=${retained} ; argv[]=${input.exec ?? serveCommand} ; ignore_errors=no ; start_time=[n/a] }`,
       `WorkingDirectory=${input.workingDirectory ?? home}`,
       "",
-    ].join("\n");
-  const setShow = (input?: ShowState, after?: string) =>
-    file(NodePath.join(state, after === undefined ? "show" : `after-${after}`), show(input));
+    ]
+      .filter((line) => input.omit === undefined || !line.startsWith(`${input.omit}=`))
+      .join("\n");
+  };
+  // `after-OP` is shown once OP ran; `then-OP` from the second `show` after it.
+  const setShow = (input?: ShowState, after?: string, when: "after" | "then" = "after") =>
+    file(NodePath.join(state, after === undefined ? "show" : `${when}-${after}`), show(input));
+  /** Paths removed once, when the mutation runs or the post-effect event file is read. */
+  const removeOn = (event: string, ...paths: readonly string[]) =>
+    file(NodePath.join(state, `remove-${event}`), paths.map((path) => `${path}\n`).join(""));
   await setShow();
   const run = async (
     operation: readonly string[],
@@ -237,10 +280,12 @@ async function createFixture() {
     dropins,
     archive,
     cgroup,
+    events,
     launcherEntry,
     serveCommand,
     file,
     setShow,
+    removeOn,
     run,
     digest,
   };
@@ -570,21 +615,308 @@ it.skipIf(!runnable)(
       await NodeFSP.rm(NodePath.join(f.state, "fail-stop"));
       // The unit stays active after the stop job: the effect is unknown.
       expect((await f.run(stop())).stdout).toMatch(/\nunknown stop-readback\n$/);
+      // Stopped, but the cgroup it ran in still holds a process.
       await f.setShow({ active: false }, "stop");
-      await f.file(NodePath.join(f.cgroup, controlGroup, "cgroup.procs"), "4242\n");
       expect((await f.run(stop())).stdout).toMatch(/\nunknown stop-readback\n$/);
       await f.setShow();
       await f.setShow({ active: false }, "stop");
-      await f.file(NodePath.join(f.cgroup, controlGroup, "cgroup.procs"), "");
+      await f.file(f.events, "populated 0\nfrozen 0\n");
       const stopped = await f.run(stop());
-      expect(stopped.calls).toContain(`stop ${unit}`);
+      expect(stopped.calls.filter((call) => !call.startsWith("show "))).toEqual([`stop ${unit}`]);
       expect(
         parseSystemControlResult({ outcome: "exited", signal: null, ...stopped }),
       ).toMatchObject({
         status: "complete",
-        inspection: { activeState: "inactive", mainPid: 0, unitDigest: digest },
+        inspection: { activeState: "inactive", subState: "dead", mainPid: 0, unitDigest: digest },
       });
     }),
+);
+
+it.skipIf(!runnable)(
+  "completes a stop only in an exact stopped state with its original cgroup unpopulated",
+  () =>
+    fixture(async (f) => {
+      const digest = await f.digest();
+      const stop = [
+        "stop",
+        "--expect-unit",
+        digest,
+        "--expect-owned",
+        "absent",
+        "--expect-main-pid",
+        "4242",
+        "--expect-main-birth",
+        "777",
+      ];
+      const parse = (result: Awaited<ReturnType<typeof f.run>>) =>
+        parseSystemControlResult({ outcome: "exited", signal: null, ...result });
+      const group = NodePath.join(f.cgroup, controlGroup);
+      const unpopulated = "populated 0\nfrozen 0\n";
+      // Each attempt starts from the running unit and scripts what the stop leaves.
+      const attempt = async (after: ShowState) => {
+        await f.setShow();
+        await f.setShow(after, "stop");
+        return f.run(stop);
+      };
+      const uncertain = (reason: string) => ({
+        code: 3,
+        stdout: expect.stringMatching(new RegExp(`\\nunknown ${reason}\\n$`)),
+      });
+
+      // A running unit's readback without the private Job property is refused
+      // before any effect, and an incomplete readback after the stop is unknown.
+      await f.setShow({ omit: "Job" });
+      const incomplete = await f.run(stop);
+      expect(incomplete.stdout).toBe(`${header}\nrejected show\n`);
+      expect(incomplete.calls.every((call) => call.startsWith("show "))).toBe(true);
+      await f.file(f.events, unpopulated);
+      expect(await attempt({ active: false, omit: "Job" })).toMatchObject(uncertain("show"));
+
+      // A retained server exiting unclean during stop may leave failed/failed. The
+      // stop completes with that state reported as it is and nothing reset.
+      const failed = await attempt({ active: false, state: "failed failed" });
+      expect(failed.calls.filter((call) => !call.startsWith("show "))).toEqual([`stop ${unit}`]);
+      expect(parse(failed)).toMatchObject({
+        status: "complete",
+        inspection: { activeState: "failed", subState: "failed", mainPid: 0, unitDigest: digest },
+      });
+      expect(failed.stdout).not.toMatch(/^(?:control-group|main-birth) /m);
+
+      for (const after of [
+        { active: false, state: "inactive failed" },
+        { active: false, state: "failed dead" },
+        { active: false, state: "deactivating stop-sigterm" },
+        { active: false, state: "activating auto-restart" },
+        { active: false, state: "active exited" },
+        { active: false, mainPid: 4242 },
+        { active: false, state: "failed failed", mainPid: 4243 },
+        { active: false, job: "731" },
+        { active: false, state: "failed failed", job: "731" },
+        { active: false, controlGroup },
+        { active: false, state: "failed failed", controlGroup },
+      ] satisfies ShowState[])
+        expect(await attempt(after), JSON.stringify(after)).toMatchObject(
+          uncertain("stop-readback"),
+        );
+
+      // The second readback must report the same stopped state as the first;
+      // a drift between them is unknown and nothing follows the stop.
+      for (const later of [
+        { active: false },
+        { active: false, state: "failed failed", job: "731" },
+      ] satisfies ShowState[]) {
+        await f.setShow(later, "stop", "then");
+        const drifted = await attempt({ active: false, state: "failed failed" });
+        expect(drifted, JSON.stringify(later)).toMatchObject(uncertain("stop-readback"));
+        expect(drifted.calls.filter((call) => !call.startsWith("show "))).toEqual([`stop ${unit}`]);
+        expect(drifted.stdout).not.toMatch(/^policy /m);
+      }
+
+      // Population covers descendants: the unit's own process list is empty
+      // while a child cgroup still holds a process after the stop.
+      const child = NodePath.join(group, "leftover");
+      await NodeFSP.mkdir(child);
+      await f.file(NodePath.join(group, "cgroup.procs"), "");
+      await f.file(NodePath.join(child, "cgroup.procs"), "4243\n");
+      await f.file(NodePath.join(child, "cgroup.events"), "populated 1\nfrozen 0\n");
+      await f.file(f.events, "populated 1\nfrozen 0\n");
+      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
+      await NodeFSP.rm(child, { recursive: true });
+
+      // Before the stop, the running unit's job and cgroup must allow the later
+      // proof. These refusals precede any effect: only the admission `show` ran.
+      const beforeStop = async (current: ShowState = {}) => {
+        await f.setShow(current);
+        return f.run(stop);
+      };
+      const refused = (reason: string) => ({
+        code: 2,
+        stdout: `${header}\nrejected ${reason}\n`,
+        calls: [expect.stringMatching(/^show /)],
+      });
+      expect(await beforeStop({ job: "731" })).toMatchObject(refused("unit-job"));
+      for (const events of [
+        "",
+        "frozen 0\n",
+        "populated 0\npopulated 0\n",
+        "populated 1\npopulated 0\n",
+        "populated 0",
+        "populated  0\n",
+        "populated 00\n",
+        "populated yes\n",
+        "populated 0\r\n",
+        "populated 0\nfrozen\n",
+      ]) {
+        await f.file(f.events, events);
+        expect(await beforeStop(), JSON.stringify(events)).toMatchObject(refused("unit-cgroup"));
+      }
+      // An existing cgroup without its event file can prove nothing.
+      await NodeFSP.rm(f.events);
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
+      const elsewhere = NodePath.join(f.root, "elsewhere.events");
+      await f.file(elsewhere, unpopulated);
+      for (const [label, place] of [
+        ["directory", () => NodeFSP.mkdir(f.events)],
+        ["symlink", () => NodeFSP.symlink(elsewhere, f.events)],
+        ["unreadable", () => f.file(f.events, unpopulated).then(() => NodeFSP.chmod(f.events, 0))],
+        ["oversized", () => f.file(f.events, `${unpopulated}${"frozen 0\n".repeat(600)}`)],
+      ] as const) {
+        await place();
+        expect(await beforeStop(), label).toMatchObject(refused("read"));
+        await NodeFSP.rm(f.events, { recursive: true, force: true });
+      }
+      // The cgroup path itself must be a real directory, and present while running.
+      await NodeFSP.rm(group, { recursive: true });
+      await f.file(group, unpopulated);
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
+      await NodeFSP.rm(group);
+      const real = NodePath.join(f.root, "real-group");
+      await NodeFSP.mkdir(real);
+      await f.file(NodePath.join(real, "cgroup.events"), unpopulated);
+      await NodeFSP.symlink(real, group);
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
+      await NodeFSP.rm(group);
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
+      const running = async () => {
+        await NodeFSP.mkdir(group, { recursive: true });
+        await f.file(f.events, "populated 1\nfrozen 0\n");
+      };
+      await running();
+      // Without the unified hierarchy's root marker, nothing can be proved.
+      const controllers = NodePath.join(f.cgroup, "cgroup.controllers");
+      await NodeFSP.rm(controllers);
+      expect(await beforeStop()).toMatchObject(refused("unit-cgroup"));
+      await f.file(controllers, "cpu io memory pids\n");
+      // Only systemd's path for the policy slice and unit is ever examined.
+      const procCgroup = NodePath.join(f.root, "proc", "4242", "cgroup");
+      for (const foreign of [
+        "/hostdev.slice/other.service",
+        `/hostdev.slice/../hostdev.slice/${unit}`,
+      ]) {
+        await NodeFSP.mkdir(NodePath.join(f.cgroup, foreign), { recursive: true });
+        await f.file(NodePath.join(f.cgroup, foreign, "cgroup.events"), unpopulated);
+        await f.file(procCgroup, `0::${foreign}\n`);
+        expect(await beforeStop({ controlGroup: foreign }), foreign).toMatchObject(
+          refused("unit-cgroup"),
+        );
+      }
+      await f.file(procCgroup, `0::${controlGroup}\n`);
+
+      // After the stop, an existing cgroup that lost its event file proves nothing.
+      await running();
+      await f.removeOn("stop", f.events);
+      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
+      // The kernel removed the stopped unit's cgroup, at the stop or as its
+      // event file was opened.
+      for (const event of ["stop", "events"]) {
+        await running();
+        await f.removeOn(event, group);
+        expect(
+          parse(await attempt({ active: false, state: "failed failed" })),
+          event,
+        ).toMatchObject({
+          status: "complete",
+          inspection: { activeState: "failed", subState: "failed" },
+        });
+      }
+      // The root marker is read before the cgroup in every reading, so without
+      // it after the stop a missing cgroup is not taken as absent.
+      await running();
+      await f.removeOn("stop", group, controllers);
+      expect(await attempt({ active: false })).toMatchObject(uncertain("stop-readback"));
+    }),
+);
+
+it.skipIf(!runnable)("installs and starts a failed unit only while it stays exactly stopped", () =>
+  fixture(async (f) => {
+    const digest = await f.digest();
+    const install = [
+      "install-launcher",
+      "--expect-unit",
+      digest,
+      "--expect-owned",
+      "absent",
+      "--launcher-version",
+      launcherVersion,
+    ];
+    const owned = NodePath.join(f.dropins, OWNED_SYSTEM_DROPIN);
+    const expected = renderOwnedSystemDropin({
+      base: f.base,
+      launcherVersion,
+      serve: { port: 3773, host: "127.0.0.1" },
+    });
+    const start = ["start", "--expect-unit", digest, "--expect-owned", sha256(expected)];
+    const launcherExec = `${f.launcherEntry} __service-launcher`;
+    const withOwned = { dropins: ["jones-code.conf", OWNED_SYSTEM_DROPIN], exec: launcherExec };
+    const failed = { active: false, state: "failed failed" } as const;
+
+    for (const state of [
+      { active: false, state: "failed dead" },
+      { active: false, state: "inactive failed" },
+      { active: false, state: "deactivating stop-sigterm" },
+      { active: false, job: "731" },
+      { ...failed, job: "731" },
+      { ...failed, mainPid: 4242 },
+      { ...failed, controlGroup },
+    ] satisfies ShowState[]) {
+      await f.setShow(state);
+      const refused = await f.run(install);
+      expect(refused, JSON.stringify(state)).toMatchObject({
+        code: 2,
+        stdout: `${header}\nrejected unit-active\n`,
+      });
+      expect(refused.calls.every((call) => call.startsWith("show "))).toBe(true);
+      await f.setShow({ ...state, ...withOwned });
+      await f.file(owned, expected);
+      expect((await f.run(start)).stdout, JSON.stringify(state)).toBe(
+        `${header}\nrejected unit-active\n`,
+      );
+      await NodeFSP.rm(owned);
+    }
+
+    // The reload must leave the same stopped state; drift is unknown and the
+    // published drop-in stays as evidence.
+    for (const drift of [
+      { active: false },
+      { active: false, state: "activating start" },
+      { ...failed, job: "731" },
+      { ...failed, mainPid: 4243 },
+    ] satisfies ShowState[]) {
+      await f.setShow(failed);
+      await f.setShow({ ...drift, ...withOwned }, "daemon-reload");
+      expect(await f.run(install), JSON.stringify(drift)).toMatchObject({
+        code: 3,
+        stdout: expect.stringMatching(/\nunknown stopped-readback\n$/),
+      });
+      expect(await NodeFSP.readFile(owned, "utf8")).toBe(expected);
+      await NodeFSP.rm(owned);
+    }
+
+    await f.setShow(failed);
+    await f.setShow({ ...failed, ...withOwned }, "daemon-reload");
+    const installed = await f.run(install);
+    expect(installed.calls.filter((call) => !call.startsWith("show "))).toEqual(["daemon-reload"]);
+    expect(
+      parseSystemControlResult({ outcome: "exited", signal: null, ...installed }),
+    ).toMatchObject({
+      status: "complete",
+      inspection: {
+        owned: sha256(expected),
+        activeState: "failed",
+        subState: "failed",
+        exec: `launcher ${launcherVersion}`,
+      },
+    });
+    await f.setShow(withOwned, "start");
+    const started = await f.run(start);
+    expect(started.calls.filter((call) => !call.startsWith("show "))).toEqual([`start ${unit}`]);
+    expect(parseSystemControlResult({ outcome: "exited", signal: null, ...started })).toMatchObject(
+      {
+        status: "complete",
+        inspection: { activeState: "active", mainPid: 4242, exec: `launcher ${launcherVersion}` },
+      },
+    );
+  }),
 );
 
 it.skipIf(!runnable)("writes, reloads and archives only the owned launcher drop-in", () =>

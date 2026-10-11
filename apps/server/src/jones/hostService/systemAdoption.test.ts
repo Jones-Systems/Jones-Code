@@ -162,11 +162,23 @@ async function processEntry(
   await NodeFSP.symlink(executable, NodePath.join(directory, "exe"));
 }
 
+/** What the worker reports for a unit that is not running. */
+interface StoppedReport {
+  readonly activeState: string;
+  readonly subState: string;
+  readonly mainPid?: number;
+  readonly controlGroup?: string;
+}
+
 interface FixtureOptions {
   readonly proofFails?: boolean;
   readonly stateAppearsDuringProof?: boolean;
   readonly stopResult?: SystemControlResult["status"];
+  /** The complete stop's report; inactive/dead otherwise. */
+  readonly stoppedAs?: StoppedReport;
   readonly installResult?: SystemControlResult["status"];
+  /** The complete launcher installation's report; the stop's state otherwise. */
+  readonly installedAs?: StoppedReport;
   readonly childReceiptAfterStart?: boolean;
   readonly writers?: boolean;
   readonly socket?: "installed" | "absent";
@@ -306,7 +318,19 @@ async function populateFixture(root: string, options: FixtureOptions) {
     serve: options.startForm ? { port: 3773, host: "127.0.0.1", mode: "web" } : { port: 3773 },
   });
   const events: string[] = [];
-  const unitState = { active: true, mainPid: 4242, owned: "absent", exec: "retained" };
+  const unitState: {
+    active: boolean;
+    stopped: StoppedReport;
+    mainPid: number;
+    owned: string;
+    exec: string;
+  } = {
+    active: true,
+    stopped: { activeState: "inactive", subState: "dead" },
+    mainPid: 4242,
+    owned: "absent",
+    exec: "retained",
+  };
   let showExec = retainedCommand;
   let showUser = account.username;
   let showNnp = "yes";
@@ -331,15 +355,17 @@ async function populateFixture(root: string, options: FixtureOptions) {
       unitDigest: await digest(),
       owned: unitState.owned,
       files: [],
-      activeState: unitState.active ? "active" : "inactive",
-      subState: unitState.active ? "running" : "dead",
-      mainPid: unitState.active ? unitState.mainPid : 0,
+      activeState: unitState.active ? "active" : unitState.stopped.activeState,
+      subState: unitState.active ? "running" : unitState.stopped.subState,
+      mainPid: unitState.active ? unitState.mainPid : (unitState.stopped.mainPid ?? 0),
       ...(unitState.active
         ? {
             mainBirth: unitState.mainPid === 4242 ? "777" : String(unitState.mainPid * 10),
             controlGroup,
           }
-        : {}),
+        : unitState.stopped.controlGroup === undefined
+          ? {}
+          : { controlGroup: unitState.stopped.controlGroup }),
       killMode: "control-group",
       exec: unitState.exec,
       serve: { port: 3773 },
@@ -355,6 +381,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
         if (options.stopResult === "rejected")
           return { status: "rejected", reason: "main-process" };
         unitState.active = false;
+        unitState.stopped = options.stoppedAs ?? unitState.stopped;
         await NodeFSP.rm(NodePath.join(proc, "4242"), { recursive: true });
         return inspection();
       case "install-launcher":
@@ -363,6 +390,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
         await NodeFSP.writeFile(NodePath.join(dropins, OWNED_SYSTEM_DROPIN), ownedText);
         unitState.owned = sha(ownedText);
         unitState.exec = `launcher ${newVersion}`;
+        unitState.stopped = options.installedAs ?? unitState.stopped;
         return inspection();
       case "start":
         unitState.active = true;
@@ -874,9 +902,93 @@ it("records an uncertain stop as unknown and attempts nothing after it", () =>
         phase: "stop-requested",
         runtimeMode: verifiedRuntimeMode,
       });
+      for (const path of [
+        NodePath.join(f.runtime, "service-state.json"),
+        NodePath.join(f.dropins, OWNED_SYSTEM_DROPIN),
+      ])
+        await expect(NodeFSP.lstat(path), path).rejects.toMatchObject({ code: "ENOENT" });
+      // The unknown record blocks a new trial and stays exactly as written.
+      const receiptPath = NodePath.join(f.runtime, SYSTEM_ADOPTION_RECEIPT);
+      const recorded = await NodeFSP.readFile(receiptPath, "utf8");
+      await expect(planSystemAdoption(f.input, f.host)).rejects.toThrow(
+        new RegExp(`Existing ${SYSTEM_ADOPTION_RECEIPT}`),
+      );
+      expect(await NodeFSP.readFile(receiptPath, "utf8")).toBe(recorded);
     },
     { stopResult: "unknown" },
   ));
+
+it("adopts a unit the retained server left failed/failed on stop, as the worker reported it", () =>
+  fixture(
+    async (f) => {
+      const unitFiles = [await NodeFSP.readFile(f.fragment), await NodeFSP.readFile(f.conf)];
+      await expect(applyApproved(f)).resolves.toMatchObject({
+        state: "adopted",
+        launcherProcessId: 5000,
+        childProcessId: 5001,
+      });
+      // The kernel-lease proof still runs between the stop and every later effect.
+      expect(f.events.filter((event) => !event.startsWith("preflight"))).toEqual([
+        "control inspect",
+        "readiness 4242",
+        "control inspect",
+        "control stop",
+        "stopped-writer-proof",
+        "control install-launcher",
+        "control start",
+        "control inspect",
+        "readiness 5001",
+      ]);
+      expect(await f.receipt()).toMatchObject({ status: "applied", phase: "applied" });
+      expect([await NodeFSP.readFile(f.fragment), await NodeFSP.readFile(f.conf)]).toEqual(
+        unitFiles,
+      );
+    },
+    { stoppedAs: { activeState: "failed", subState: "failed" } },
+  ));
+
+it.each([
+  ["inactive/failed", { activeState: "inactive", subState: "failed" }],
+  ["failed/dead", { activeState: "failed", subState: "dead" }],
+  ["a stopping unit", { activeState: "deactivating", subState: "stop-sigterm" }],
+  ["a restarting unit", { activeState: "activating", subState: "auto-restart" }],
+  ["a main process", { activeState: "inactive", subState: "dead", mainPid: 4243 }],
+  ["a failed main process", { activeState: "failed", subState: "failed", mainPid: 4243 }],
+  ["a current cgroup", { activeState: "failed", subState: "failed", controlGroup }],
+] as const)(
+  "records a stop that reports %s as unknown and attempts nothing after it",
+  (_, report) =>
+    fixture(
+      async (f) => {
+        await expect(applyApproved(f)).rejects.toThrow(/stop readback differs/);
+        expect(f.events.at(-1)).toBe("control stop");
+        expect(await f.receipt()).toMatchObject({ status: "unknown", phase: "stop-requested" });
+        await expect(
+          NodeFSP.lstat(NodePath.join(f.runtime, "service-state.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      },
+      { stoppedAs: report },
+    ),
+);
+
+it.each([
+  ["a starting unit", { activeState: "activating", subState: "start" }],
+  ["failed/dead", { activeState: "failed", subState: "dead" }],
+  ["a main process", { activeState: "failed", subState: "failed", mainPid: 4243 }],
+  ["a current cgroup", { activeState: "failed", subState: "failed", controlGroup }],
+] as const)("does not start after a launcher installation that reports %s", (_, report) =>
+  fixture(
+    async (f) => {
+      await expect(applyApproved(f)).rejects.toThrow(/launcher installation readback differs/);
+      expect(f.events.at(-1)).toBe("control install-launcher");
+      expect(await f.receipt()).toMatchObject({
+        status: "unknown",
+        phase: "launcher-install-requested",
+      });
+    },
+    { stoppedAs: { activeState: "failed", subState: "failed" }, installedAs: report },
+  ),
+);
 
 it("records a refused stop as partial with the service untouched", () =>
   fixture(
