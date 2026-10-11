@@ -6,6 +6,7 @@ PROTOCOL = 1
 STARTUP_GATE_PROTOCOL = 1
 SETTINGS = ('settings.json', 'desktop-settings.json', 'client-settings.json', 'saved-environments.json')
 TRANSIENT_PROFILE = {'SingletonLock', 'SingletonCookie', 'SingletonSocket'}
+RECOVERY_HEADROOM = 256 * 1024 * 1024
 
 def read(path):
     with open(path, 'r', encoding='utf8') as stream:
@@ -80,14 +81,33 @@ def same_binding(left, right):
 
 def process_identity(pid):
     result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'command='], capture_output=True, text=True)
-    if result.returncode != 0 or not result.stdout.strip(): return None
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
+    if result.returncode != 0 or result.stderr.strip() or len(result.stdout.strip().splitlines()) != 1:
+        raise RuntimeError('Process inspection failed; signal withheld.')
     return result.stdout.strip()
+
+def process_start(pid):
+    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart=', '-o', 'stat='], capture_output=True, text=True)
+    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip(): return None
+    fields = result.stdout.strip().rsplit(None, 1)
+    if result.returncode != 0 or result.stderr.strip() or len(result.stdout.strip().splitlines()) != 1 or len(fields) != 2:
+        raise RuntimeError('Process inspection failed; signal withheld.')
+    birth, status = fields
+    if status[0] not in 'DIRSTUWXYZt' or any(flag not in '<>AELNSTVWXslN+' for flag in status[1:]):
+        raise RuntimeError('Process inspection failed; signal withheld.')
+    return status, ' '.join(birth.split())
 
 def alive(proof):
     identity = process_identity(proof['pid'])
     if identity is None: return False
-    if identity != proof['identity']: raise RuntimeError('Process identity changed; signal withheld.')
-    return True
+    if identity == proof['identity']: return True
+    start = process_start(proof['pid'])
+    if start is None: return False
+    # lstart is locale-owned text. An unreaped exit retains that complete birth
+    # field while losing its command; both observations must retain the binding.
+    prefix = start[1] + ' '
+    if start[0].startswith('Z') and all(' '.join(value.split()).startswith(prefix) for value in (identity, proof['identity'])): return False
+    raise RuntimeError('Process identity changed; signal withheld.')
 
 def stop_exact(proofs):
     for proof in proofs:
@@ -170,8 +190,59 @@ def clone_tree(source, target, profile=False):
             copied = pathlib.Path(target) / name
             if copied.exists() or copied.is_symlink(): copied.unlink()
 
+def tree_storage_size(root):
+    root = pathlib.Path(root)
+    if root.is_symlink() or not root.is_dir(): raise RuntimeError('Native storage root is not a real directory.')
+    total, count = 0, 0
+    for entry in root.rglob('*'):
+        count += 1
+        if count > 200000: raise RuntimeError('Native storage exceeds its file-count bound.')
+        info = entry.lstat()
+        if stat.S_ISREG(info.st_mode): total += info.st_size
+        elif not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            raise RuntimeError('Native storage contains an unsupported file type.')
+    return total
+
+def recovery_topology(expected, transaction):
+    database = pathlib.Path(expected['databasePath'])
+    profile = pathlib.Path(expected['profile'])
+    roots = [database.parent.resolve(strict=True), profile.resolve(strict=True), pathlib.Path(transaction).resolve(strict=True)]
+    state, profile, transaction = roots
+    if state == profile or state.is_relative_to(profile) or profile.is_relative_to(state):
+        raise RuntimeError('Native database and profile roots overlap; installation held.')
+    if any(transaction == source or transaction.is_relative_to(source) for source in (state, profile)):
+        raise RuntimeError('Native recovery would copy its own destination; installation held.')
+    if len({path.stat().st_dev for path in roots}) != 1:
+        raise RuntimeError('Native state and profile require same-volume recovery; installation held.')
+    return roots
+
+def storage_preflight(expected, staged, transaction):
+    state, profile, transaction = recovery_topology(expected, transaction)
+    database = pathlib.Path(expected['databasePath'])
+    state_bytes = tree_storage_size(profile)
+    for path in [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')] + [state / name for name in SETTINGS]:
+        if path.exists():
+            if path.is_symlink() or not path.is_file(): raise RuntimeError('Native recovery file type is unknown.')
+            state_bytes += path.stat().st_size
+    app_parent = pathlib.Path(expected['appPath']).parent.resolve(strict=True)
+    candidate_bytes = tree_storage_size(staged['appPath'])
+    requirements = {}
+    for path, amount in ((transaction, state_bytes * 2), (app_parent, candidate_bytes)):
+        device = path.stat().st_dev
+        if device not in requirements: requirements[device] = [path, RECOVERY_HEADROOM]
+        requirements[device][1] += amount
+    # Budget physical copies even when clonefile currently works: fallback and
+    # later copy-on-write allocation must not consume rollback's entire budget.
+    for path, required in requirements.values():
+        space = os.statvfs(path)
+        if space.f_bavail * space.f_frsize < required:
+            raise RuntimeError('Insufficient free space for native installation and paired recovery; installation held.')
+    return {'stateBytes': state_bytes, 'candidateBytes': candidate_bytes,
+            'requiredBytes': sum(required for _, required in requirements.values()), 'headroomBytesPerVolume': RECOVERY_HEADROOM}
+
 def pair_state(expected, directory):
     directory.mkdir(mode=0o700)
+    sync_parent(directory)
     database = pathlib.Path(expected['databasePath'])
     started = time.time()
     copied = clone_file(database, directory / 'state.sqlite')
@@ -204,13 +275,21 @@ def restore_pair(expected, directory, advanced):
     if pair['expected'] != expected or not (directory / 'state.sqlite').is_file() or not (directory / 'profile').is_dir():
         raise RuntimeError('Recovery pair no longer binds the previous app and state.')
     if set(pair['settings']) != set(SETTINGS): raise RuntimeError('Recovery settings presence is unknown.')
+    recovery_topology(expected, advanced.parent)
     prove_quiescence(expected)
     advanced.mkdir(mode=0o700)
+    sync_parent(advanced)
     database = pathlib.Path(expected['databasePath'])
     for name in (database.name, database.name + '-wal', database.name + '-shm') + SETTINGS:
         source = database.parent / name
-        if source.exists(): os.rename(source, advanced / name)
+        if source.exists():
+            os.rename(source, advanced / name)
+            sync_parent(source)
+            sync_parent(advanced / name)
     os.rename(expected['profile'], advanced / 'profile')
+    sync_parent(expected['profile'])
+    sync_parent(advanced / 'profile')
+    sync_tree(advanced)
     for suffix in ('', '-wal', '-shm'):
         source = directory / ('state.sqlite' + suffix)
         if source.exists() and not clone_file(source, pathlib.Path(str(database) + suffix)):
@@ -219,10 +298,15 @@ def restore_pair(expected, directory, advanced):
         if exists and not clone_file(directory / name, database.parent / name): shutil.copy2(directory / name, database.parent / name)
     clone_tree(directory / 'profile', pathlib.Path(expected['profile']), profile=True)
     sync_tree(expected['profile'])
-    for restored in [database] + [database.parent / name for name, exists in pair['settings'].items() if exists]:
+    sync_parent(expected['profile'])
+    restored_files = [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')]
+    restored_files += [database.parent / name for name, exists in pair['settings'].items() if exists]
+    for restored in restored_files:
+        if not restored.exists(): continue
         descriptor = os.open(restored, os.O_RDONLY | os.O_NOFOLLOW)
         try: os.fsync(descriptor)
         finally: os.close(descriptor)
+    sync_parent(database)
     durable(advanced / 'retained.json', {'protocol': PROTOCOL, 'previous': expected}, True)
 
 def sync_parent(path):
@@ -348,7 +432,8 @@ def activate(intent_file):
     incoming = previous = None
     startup_unknown = False
     try:
-        record('preparing')
+        storage = storage_preflight(expected, staged, tx)
+        record('preparing', storage=storage)
         incoming, previous = prepare_bundle(expected, staged, intent['transactionId'])
         record('preparing', incomingBundle=str(incoming), previousBundle=str(previous))
         preserve_restart_tunnel(expected, intent['transactionId'])
