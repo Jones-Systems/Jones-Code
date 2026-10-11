@@ -273,6 +273,26 @@ export function redact(value, secrets = []) {
     .replace(/JONES_PREVIEW_SCENARIO:[A-Za-z0-9+/=]+/g, "JONES_PREVIEW_SCENARIO:[redacted]");
 }
 
+export function scenarioSecrets(scenario) {
+  const inputs = [
+    scenario.pairingUrl,
+    ...(scenario.steps?.filter((step) => step.action === "type").map((step) => step.text) ?? []),
+  ].filter(Boolean);
+  const secrets = new Set(inputs);
+  for (const input of inputs) {
+    try {
+      const url = new URL(input);
+      // Match shared/remote.getPairingTokenFromUrl: the UI separates this code from the pasted URL.
+      const hashToken = new URLSearchParams(url.hash.slice(1)).get("token")?.trim() ?? "";
+      const token = hashToken || url.searchParams.get("token")?.trim();
+      if (token) secrets.add(token);
+    } catch {
+      // Non-URL typed input is already included verbatim.
+    }
+  }
+  return [...secrets];
+}
+
 async function connectInjectedMcp(descriptor, source, onTransportCreated) {
   NodeAssert.equal(descriptor?.name, "t3-code", "Normal T3 MCP injection is required");
   NodeAssert.equal(typeof descriptor.command, "string");
@@ -383,8 +403,13 @@ export async function runScenario(client, scenario, report) {
     scenarioError = error;
     report.failedAction = report.currentAction ?? { action: "initial-navigation" };
     try {
-      const snapshot = await call("preview_snapshot", { tabId, save: true, includeImage: true });
-      report.captures.push({ name: "failure-reconciliation", snapshot });
+      // A failed pairing dialog can still display a plain-text code. Never persist its pixels or text.
+      const snapshot = await call("preview_snapshot", { tabId, save: false, includeImage: false });
+      report.failureReconciliation = {
+        kind: "text-only",
+        visibleTextLength: (snapshot.visibleText ?? "").length,
+        contentOmitted: true,
+      };
       report.controlledPageReconciled = true;
     } catch (snapshotError) {
       report.controlledPageReconciled = false;
@@ -486,11 +511,7 @@ export async function runAgent() {
     };
     let mcp;
     let replied = false;
-    const secrets = [
-      milestone.nonce,
-      scenario.pairingUrl,
-      ...(scenario.steps?.filter((step) => step.action === "type").map((step) => step.text) ?? []),
-    ];
+    const secrets = [milestone.nonce, ...scenarioSecrets(scenario)];
     const providerIdentity = await processIdentity(process.pid);
     try {
       await publishMilestone(

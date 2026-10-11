@@ -19,6 +19,7 @@ import {
   awaitMilestoneRelease,
   readAcknowledgedMilestone,
   runScenario,
+  scenarioSecrets,
 } from "./install-preview-agent.mjs";
 import {
   hashTree,
@@ -120,7 +121,9 @@ NodeTest.test(
       text: "Source matches this app.",
     });
     NodeAssert.equal(report.calls.filter((call) => call.ok === false).length, 1);
-    NodeAssert.deepEqual(report.captures, [{ name: "failure-reconciliation", snapshot }]);
+    NodeAssert.deepEqual(report.captures, []);
+    NodeAssert.equal(report.failureReconciliation.kind, "text-only");
+    NodeAssert.equal(report.failureReconciliation.contentOmitted, true);
     NodeAssert.equal(report.controlledPageReconciled, true);
     NodeAssert.equal(report.nativeTabClosed, true);
   },
@@ -167,6 +170,94 @@ NodeTest.test(
       }),
       "transport authorization refused",
     );
+  },
+);
+
+NodeTest.test(
+  "failed pairing reconciliation publishes no pixels, pasted URL or separated pairing code",
+  async () => {
+    await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      await withFixtureCleanup(async (defer) => {
+        const code = "SYNTHETIC+PAIRING/CODE";
+        const pairingUrl = `http://127.0.0.1:41001/pair#token=${encodeURIComponent(code)}`;
+        const primaryCode = "SYNTHETIC-PRIMARY-CODE";
+        const scenario = {
+          origin: "http://127.0.0.1:41000",
+          pairingUrl: `http://127.0.0.1:41000/pair#token=${primaryCode}`,
+          initialText: "Project",
+          steps: [
+            { action: "type", locator: 'role=textbox[name="Host"]', text: pairingUrl },
+            { action: "click", locator: 'role=button[name="Add environment"]' },
+            { action: "wait", text: "Source matches this app." },
+          ],
+        };
+        const failure = new Error(`Pairing failed for ${pairingUrl}; displayed code ${code}`);
+        const imageBytes = Buffer.from(`pixels containing ${code}`).toString("base64");
+        const snapshotCalls = [];
+        let waits = 0;
+        const client = {
+          callTool: async ({ name, arguments: args }) => {
+            if (name === "preview_wait_for" && ++waits === 2) throw failure;
+            if (name === "preview_snapshot") {
+              snapshotCalls.push(args);
+              return {
+                structuredContent: {
+                  url: pairingUrl,
+                  visibleText: `Host 127.0.0.1 Pairing code ${code}`,
+                  interactiveElements: [{ value: code }],
+                  screenshot: { data: imageBytes },
+                  screenshotPath: "/owned/must-not-publish.png",
+                },
+              };
+            }
+            return { structuredContent: name === "preview_open" ? { tabId: "pairing-tab" } : {} };
+          },
+        };
+        const report = { calls: [], captures: [], negativeControls: {} };
+        await NodeAssert.rejects(
+          runScenario(client, scenario, report),
+          (error) => error === failure,
+        );
+        report.error = failure.message;
+        NodeAssert.deepEqual(snapshotCalls, [
+          { tabId: "pairing-tab", save: false, includeImage: false },
+        ]);
+        NodeAssert.equal(waits, 2);
+        NodeAssert.deepEqual(report.captures, []);
+        NodeAssert.equal(report.nativeTabClosed, true);
+        const secrets = scenarioSecrets(scenario);
+        NodeAssert.ok(secrets.includes(code) && secrets.includes(primaryCode));
+        NodeAssert.ok(
+          scenarioSecrets({
+            pairingUrl: `http://127.0.0.1/pair?token=${encodeURIComponent(code)}`,
+          }).includes(code),
+        );
+        const files = milestoneFiles(root);
+        const channel = await createMilestoneChannel({
+          runId: "failed-pairing",
+          caseId: "redaction",
+          files,
+        });
+        defer(() => channel.close());
+        const published = JSON.parse(redact(report, secrets));
+        await publishMilestone(channel.binding, "final", files.final, published);
+        const readback = await readAcknowledgedMilestone(
+          files.final,
+          await channel.wait(["final"]),
+        );
+        const text = JSON.stringify(readback);
+        for (const secret of [pairingUrl, scenario.pairingUrl, code, primaryCode, imageBytes])
+          NodeAssert.equal(text.includes(secret), false);
+        NodeAssert.equal(text.includes("screenshotPath"), false);
+        NodeAssert.deepEqual(Object.keys(readback.failureReconciliation).sort(), [
+          "contentOmitted",
+          "kind",
+          "visibleTextLength",
+        ]);
+        NodeAssert.equal(readback.failureReconciliation.contentOmitted, true);
+        NodeAssert.deepEqual(await NodeFSP.readdir(root), ["final.json"]);
+      });
+    });
   },
 );
 
