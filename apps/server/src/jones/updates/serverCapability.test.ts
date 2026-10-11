@@ -27,7 +27,12 @@ describe("qualified server update capability", () => {
     let nativeEffects = 0;
     const updater = new JonesUpdater(
       {
-        initialState: { source: "jones-actions", channel: "jones-main", phase: "no-new", capability },
+        initialState: {
+          source: "jones-actions",
+          channel: "jones-main",
+          phase: "no-new",
+          capability,
+        },
         platform: "linux",
         architecture: "x64",
         cacheRoot: "unused-capability-fixture",
@@ -63,7 +68,11 @@ describe("qualified server update capability", () => {
         reason: "bootstrap-required",
       });
     }
-    expect(qualifiedServerCapability(ready)).toEqual({ check: true, download: true, install: true });
+    expect(qualifiedServerCapability(ready)).toEqual({
+      check: true,
+      download: true,
+      install: true,
+    });
   });
 
   it("keeps staging separate from activation and rejects unsupported/unqualified hosts", () => {

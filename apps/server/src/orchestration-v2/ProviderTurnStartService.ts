@@ -1410,7 +1410,12 @@ export const layer: Layer.Layer<
             .filter((part) => part !== "")
             .join("\n\n");
           yield* startWithConfiguredEffort(
-            continuationPrompt(turnInput, { sameNativeThread, noteContinuation, context, userText }),
+            continuationPrompt(turnInput, {
+              sameNativeThread,
+              noteContinuation,
+              context,
+              userText,
+            }),
             compact,
           ).pipe(
             // A pending marker would make the next turn abandon this native
