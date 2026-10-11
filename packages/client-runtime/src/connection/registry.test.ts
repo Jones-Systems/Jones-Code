@@ -68,6 +68,7 @@ import * as RpcSession from "../rpc/session.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
 import { watchDiscoveredCompatibility } from "./layer.ts";
+import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import type { RelayEnvironmentStatusResponse } from "@t3tools/contracts/relay";
 import { runDesktopCommitWithReconnectObserver } from "../state/server.ts";
@@ -748,6 +749,118 @@ describe("EnvironmentRegistry", () => {
           Effect.provide(harness.layer),
         );
       }),
+  );
+
+  it.effect(
+    "a fresh unchanged incompatible check retries a failed save without republishing live state",
+    () =>
+      Effect.gen(function* () {
+        let failing = true;
+        let writes = 0;
+        const harness = yield* makeHarness([RELAY_TARGET], [], [], {
+          initialDisabled: [RELAY_TARGET.environmentId],
+          beforeHintWrite: Effect.suspend(() => {
+            writes++;
+            return failing
+              ? Effect.fail(
+                  new Persistence.ConnectionPersistenceError({
+                    operation: "set-compatibility-hint",
+                    message: "Synthetic save failure",
+                  }),
+                )
+              : Effect.void;
+          }),
+        });
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const descriptor = updateDescriptor(false);
+          const initial = (yield* SubscriptionRef.get(registry.entries)).get(
+            RELAY_TARGET.environmentId,
+          )!;
+          expect(yield* registry.recordUpdateCompatibility(initial, descriptor)).toBe(true);
+          const blocked = (yield* SubscriptionRef.get(registry.entries)).get(
+            RELAY_TARGET.environmentId,
+          )!;
+          expect(blocked.serverUpdateRequired).toBe(true);
+          expect(blocked.enabled).toBe(false);
+          expect(yield* Ref.get(harness.storedCompatibilityHints)).toEqual([]);
+          expect(writes).toBe(1);
+          failing = false;
+          yield* registry.setCompatibility(
+            RELAY_TARGET.environmentId,
+            orchestrationProtocolCompatibilityError(descriptor),
+          );
+          expect(writes).toBe(1);
+          const current = (yield* SubscriptionRef.get(registry.entries)).get(
+            RELAY_TARGET.environmentId,
+          )!;
+          expect(current).toBe(blocked);
+          expect(yield* registry.recordUpdateCompatibility(current, descriptor)).toBe(true);
+          expect(writes).toBe(2);
+          expect(yield* Ref.get(harness.storedCompatibilityHints)).toEqual([reloadHint]);
+          expect(
+            (yield* SubscriptionRef.get(registry.entries)).get(RELAY_TARGET.environmentId),
+          ).toBe(blocked);
+          expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(
+            true,
+          );
+          expect(yield* Ref.get(harness.sessions)).toHaveLength(0);
+        }).pipe(Effect.provide(harness.layer));
+      }),
+  );
+
+  it.effect("a fresh unchanged compatible check retries a failed clear and preserves Off", () =>
+    Effect.gen(function* () {
+      let failing = true;
+      let writes = 0;
+      const harness = yield* makeHarness([RELAY_TARGET], [], [], {
+        initialDisabled: [RELAY_TARGET.environmentId],
+        initialCompatibilityHints: [reloadHint],
+        beforeHintWrite: Effect.suspend(() => {
+          writes++;
+          return failing
+            ? Effect.fail(
+                new Persistence.ConnectionPersistenceError({
+                  operation: "set-compatibility-hint",
+                  message: "Synthetic clear failure",
+                }),
+              )
+            : Effect.void;
+        }),
+      });
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const descriptor = updateDescriptor(true);
+        const initial = (yield* SubscriptionRef.get(registry.entries)).get(
+          RELAY_TARGET.environmentId,
+        )!;
+        expect(yield* registry.recordUpdateCompatibility(initial, descriptor)).toBe(true);
+        const compatible = (yield* SubscriptionRef.get(registry.entries)).get(
+          RELAY_TARGET.environmentId,
+        )!;
+        expect(compatible.compatibilityHint).toBeUndefined();
+        expect(compatible.unsupportedReason).toBeUndefined();
+        expect(compatible.serverUpdateRequired).toBeUndefined();
+        expect(compatible.enabled).toBe(false);
+        expect(yield* Ref.get(harness.storedCompatibilityHints)).toEqual([reloadHint]);
+        expect(writes).toBe(1);
+        failing = false;
+        yield* registry.setCompatibility(RELAY_TARGET.environmentId, null);
+        expect(writes).toBe(1);
+        const current = (yield* SubscriptionRef.get(registry.entries)).get(
+          RELAY_TARGET.environmentId,
+        )!;
+        expect(current).toBe(compatible);
+        expect(yield* registry.recordUpdateCompatibility(current, descriptor)).toBe(true);
+        expect(writes).toBe(2);
+        expect(yield* Ref.get(harness.storedCompatibilityHints)).toEqual([]);
+        expect((yield* SubscriptionRef.get(registry.entries)).get(RELAY_TARGET.environmentId)).toBe(
+          compatible,
+        );
+        expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(true);
+        expect(yield* Ref.get(harness.sessions)).toHaveLength(0);
+      }).pipe(Effect.provide(harness.layer));
+    }),
   );
 
   it.effect("continues to report an authoritative Off persistence failure", () =>

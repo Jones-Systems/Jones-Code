@@ -1153,13 +1153,28 @@ export const make = Effect.gen(function* () {
         const persisted = !(yield* Ref.get(platformEnvironmentIds)).has(environmentId);
         const hint: ConnectionCatalogEntry["compatibilityHint"] =
           kind !== null && routeBinding !== null && persisted ? { routeBinding, kind } : undefined;
+        const persistHint = () =>
+          persisted && routeBinding !== null && registrations.setCompatibilityHint !== undefined
+            ? registrations
+                .setCompatibilityHint(environmentId, routeBinding, kind)
+                .pipe(
+                  Effect.catch(() =>
+                    Effect.logWarning(
+                      "Could not persist historical connection compatibility hints.",
+                    ),
+                  ),
+                )
+            : Effect.void;
         if (
           entry.unsupportedReason === (error?.message ?? undefined) &&
           entry.serverUpdateRequired === (error?.serverUpdateRequired ?? undefined) &&
           entry.compatibilityHint?.kind === hint?.kind &&
           entry.compatibilityHint?.routeBinding === hint?.routeBinding
-        )
+        ) {
+          // A fresh captured check can retry persistence without republishing unchanged live state.
+          if (capturedEntry !== undefined) yield* persistHint();
           return true;
+        }
         const {
           unsupportedReason: _previousReason,
           serverUpdateRequired: _previousUpdateRequired,
@@ -1190,19 +1205,7 @@ export const make = Effect.gen(function* () {
           new Map(current).set(environmentId, next),
         );
         // Fresh compatibility and disconnection do not depend on historical persistence.
-        if (
-          persisted &&
-          routeBinding !== null &&
-          registrations.setCompatibilityHint !== undefined
-        ) {
-          yield* registrations
-            .setCompatibilityHint(environmentId, routeBinding, kind)
-            .pipe(
-              Effect.catch(() =>
-                Effect.logWarning("Could not persist historical connection compatibility hints."),
-              ),
-            );
-        }
+        yield* persistHint();
         return true;
       }).pipe(Effect.uninterruptible),
     );
