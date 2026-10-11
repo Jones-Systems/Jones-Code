@@ -61,10 +61,18 @@ NodeTest.test("missing bundle and substituted executor cannot qualify", async ()
   });
   await withBundle(async ({ app, resources }) => {
     const executor = NodePath.join(resources, "jones-bootstrap/executor.py");
+    const original = await NodeFSP.readFile(executor, "utf8");
     await NodeFSP.chmod(executor, 0o600);
-    await NodeFSP.writeFile(executor, "unexpected executor\n");
-    await NodeFSP.chmod(executor, 0o500);
-    await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata));
+    try {
+      await NodeFSP.writeFile(executor, "unexpected executor\n");
+    } finally {
+      await NodeFSP.chmod(executor, 0o500);
+    }
+    await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata), {
+      code: "ERR_ASSERTION",
+      actual: "unexpected executor\n",
+      expected: original,
+    });
   });
 });
 
@@ -75,9 +83,19 @@ NodeTest.test("wrong source binding and writable bootstrap cannot qualify", asyn
         ...metadata,
         jonesSource: { ...metadata.jonesSource, sha: "c".repeat(40) },
       }),
+      (error) => {
+        NodeAssert.equal(error.code, "ERR_ASSERTION");
+        NodeAssert.equal(JSON.parse(error.actual).sourceSha, metadata.jonesSource.sha);
+        NodeAssert.equal(JSON.parse(error.expected).sourceSha, "c".repeat(40));
+        return true;
+      },
     );
     await NodeFSP.chmod(NodePath.join(resources, "jones-bootstrap/bootstrap.py"), 0o700);
-    await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata));
+    await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata), {
+      code: "ERR_ASSERTION",
+      actual: 0o700,
+      expected: 0o500,
+    });
   });
 });
 

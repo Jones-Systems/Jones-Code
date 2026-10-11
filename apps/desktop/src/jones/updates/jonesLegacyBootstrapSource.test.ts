@@ -4,7 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { createJonesLegacyBootstrapBundle } from "../../../../../scripts/jones/updates/legacy-bootstrap-bundle.ts";
 
 const fixture = String.raw`
-import contextlib, hashlib, io, json, os, pathlib, plistlib, signal, struct, sys, tempfile, zipfile
+import contextlib, hashlib, io, json, os, pathlib, plistlib, signal, stat, struct, sys, tempfile, zipfile
 
 payload = json.load(sys.stdin)
 fault = payload['fault']
@@ -24,9 +24,17 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 def write(path, data, mode=0o600):
+    assert path.is_relative_to(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    path.chmod(mode)
+    try: existing = path.lstat()
+    except FileNotFoundError: existing = None
+    if existing is not None:
+        assert stat.S_ISREG(existing.st_mode) and existing.st_uid == os.getuid() and existing.st_nlink == 1
+        path.chmod(stat.S_IMODE(existing.st_mode) | stat.S_IWUSR)
+    try:
+        path.write_bytes(data)
+    finally:
+        if existing is not None or path.exists(): path.chmod(mode)
 
 def metadata_app(app, source, tree, version, packaged=False):
     metadata = {'version': version, 'jonesSource': {'repository': 'Jones-Systems/Jones-Code', 'sha': source, 'tree': tree}}
@@ -138,7 +146,7 @@ with tempfile.TemporaryDirectory(prefix='jones-legacy-bootstrap-') as temporary:
     elif fault == 'candidate-changed': write(candidate_app / 'Contents/MacOS/Jones', b'changed', 0o500)
     elif fault == 'protected-link': (candidate_app / 'Contents/Resources/protected-link').symlink_to(database)
     elif fault == 'archive-changed': write(artifact_dir / 'github-artifact.zip', b'changed')
-    elif fault == 'bundle-changed': write(entry.parent / 'BUNDLE.json', b'{}')
+    elif fault == 'bundle-changed': write(entry.parent / 'BUNDLE.json', b'{}', 0o400)
     elif fault == 'pending-transaction': write(updater / 'transactions' / ('f' * 64) / 'prepare-intent.json', b'{}')
     elif fault == 'terminal-transaction':
         tx = updater / 'transactions' / ('f' * 64)
@@ -168,7 +176,6 @@ with tempfile.TemporaryDirectory(prefix='jones-legacy-bootstrap-') as temporary:
             info = os.fstat(fd)
             if stat.S_ISREG(info.st_mode) and info.st_size == len(files[1]['content'].encode()) and info.st_mode & 0o777 == 0o500:
                 write(manifest, original_manifest + b' ')
-        import stat
         os.fsync = racing_sync
     elif fault in ('final-output-sync-failed', 'final-output-sync-persistent', 'bootstrap-parent-sync-failed', 'bootstrap-parent-sync-persistent'):
         real_sync = os.fsync
