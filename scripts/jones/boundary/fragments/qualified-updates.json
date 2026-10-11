@@ -2,6 +2,8 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.ts",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts",
     "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
     "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts",
     "apps/desktop/src/jones/updates/jonesActivation.ts",
@@ -78,6 +80,8 @@
     "apps/web/src/jones/updates/fixtures/InstallPreview.tsx"
   ],
   "hookPaths": [
+    "apps/server/src/orchestration-v2/RestartContinuation.ts",
+    "apps/server/src/orchestration-v2/RestartContinuationPolicy.ts",
     "apps/desktop/src/boot.ts",
     "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
     "apps/server/src/persistence/Sqlite.ts",

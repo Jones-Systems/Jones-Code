@@ -16,6 +16,8 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - apps/server/src/jones/updates/**
+      - apps/server/src/orchestration-v2/RestartContinuation*
+      - apps/server/src/orchestration-v2/ServerUpdateContinuation*
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - apps/web/src/jones/updates/**
       - apps/web/jones-install-fixture.html
@@ -88,6 +90,8 @@ jobs:
           apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
           apps/desktop/src/jones/updates/jonesMacStaging.test.ts
           apps/server/src/jones/updates/trialGate.test.ts
+          apps/server/src/orchestration-v2/RestartContinuation.test.ts
+          apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
           apps/server/src/jones/cloud/qualifiedStartup.test.ts
           scripts/stamp-jones-build.test.ts

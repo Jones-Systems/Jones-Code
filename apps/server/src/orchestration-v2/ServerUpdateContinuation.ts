@@ -1,5 +1,4 @@
-import { CommandId, type ThreadId } from "@t3tools/contracts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import type { ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -8,7 +7,10 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { randomUuidV4 } from "./RandomUuid.ts";
-import { restartContinuationRun } from "./RestartContinuation.ts";
+import {
+  serverUpdateContinuationEffect,
+  serverUpdateContinuationRun,
+} from "./ServerUpdateContinuationPolicy.ts";
 
 const mark = (optedInOnly: boolean) =>
   Effect.gen(function* () {
@@ -24,14 +26,8 @@ const mark = (optedInOnly: boolean) =>
         const marked: ThreadId[] = [];
         for (const threadId of yield* projections.getRecoveryThreadIds("runtime")) {
           const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
-          if (
-            preferences !== null &&
-            !resolveProjectSettings(preferences, projection.thread.projectId).settings
-              .continueThreadsAfterServerUpdate
-          )
-            continue;
-          const run = restartContinuationRun(projection);
-          if (run === undefined || run.status !== "running") continue;
+          const run = serverUpdateContinuationRun(projection, preferences);
+          if (run === undefined) continue;
           const existing = yield* sql<{
             effect_id: string;
           }>`SELECT effect_id FROM orchestration_v2_effect_outbox
@@ -50,23 +46,16 @@ const mark = (optedInOnly: boolean) =>
             continue;
           }
           const preparationId = yield* randomUuidV4;
-          const commandId = CommandId.make(`command:server-update-prepare:${preparationId}`);
+          const effect = serverUpdateContinuationEffect({
+            preparationId,
+            threadId,
+            sourceRunId: run.id,
+            optedInOnly,
+          });
           yield* sink.writeWithEffects({
-            commandId,
+            commandId: effect.commandId,
             events: [],
-            effects: [
-              {
-                id: `effect:server-update-continuation:${preparationId}`,
-                commandId,
-                threadId,
-                request: {
-                  type: "provider-runtime.continue",
-                  sourceRunId: run.id,
-                  preparedForRestart: true,
-                  continueWithoutPreference: !optedInOnly,
-                },
-              },
-            ],
+            effects: [effect],
           });
           marked.push(threadId);
         }
