@@ -43,6 +43,7 @@ async function runScenario(
     readonly startupGateProtocol?: 1 | "missing";
     readonly operationFailure?: "archive" | "reserve";
     readonly retryWithDifferentOperation?: boolean;
+    readonly delayedGracefulClose?: boolean;
   } = {},
 ) {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
@@ -109,6 +110,13 @@ if (context.update?.status === "pending") {
   process.send({type:"prepared", updateId:context.update.id, startupGateProtocol:1, qualified:receipt});
 } else if (context.update === undefined) {
   const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
+  if (${JSON.stringify(options.delayedGracefulClose === true)}) process.once("SIGTERM", () => {
+    setTimeout(() => {
+      const db = new NodeSqlite.DatabaseSync(${JSON.stringify(dbPath)});
+      try { db.exec("UPDATE marker SET value='gracefully-drained'"); } finally { db.close(); }
+      process.exit(0);
+    }, 10);
+  });
   let rejections = 0;
   process.on("message", m => {if (m.type === "update-accepted") {
     writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "observed-active-launcher.json"))}, JSON.stringify({
@@ -303,6 +311,24 @@ it("refuses a different operation ID after a preacceptance reservation became un
     undefined,
     undefined,
     { operationFailure: "reserve", retryWithDifferentOperation: true },
+  );
+});
+
+it("waits for graceful child drain before capturing the rollback database", async () => {
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update?.status, "committed");
+      assert.equal(
+        readMarker(NodePath.join(base, "runtime", "db-backup", state.update!.id, "database")),
+        "gracefully-drained",
+      );
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "after");
+    },
+    undefined,
+    undefined,
+    { delayedGracefulClose: true },
   );
 });
 

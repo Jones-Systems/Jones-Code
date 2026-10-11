@@ -14,7 +14,9 @@
     "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
     "apps/server/src/jones/updates/plannedContinuityPolicy.ts",
     "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
-    "apps/server/src/jones/updates/plannedContinuityStartup.ts"
+    "apps/server/src/jones/updates/plannedContinuityStartup.ts",
+    "apps/server/src/jones/cloud/shutdownBudget.ts",
+    "apps/server/src/jones/cloud/shutdownBudget.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -54,6 +56,18 @@
     {
       "from": "apps/server/src/serverRuntimeStartup.ts",
       "to": "apps/server/src/jones/updates/plannedContinuityStartup.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/cloud/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.ts",
+      "to": "apps/server/src/jones/cloud/shutdownBudget.ts"
     }
   ]
 }

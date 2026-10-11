@@ -6,6 +6,7 @@
 // runtime: it is the one part of the executable that cannot depend on the
 // rest of it being loadable.
 import * as NodeChildProcess from "node:child_process";
+import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "./jones/cloud/shutdownBudget.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -83,7 +84,6 @@ import {
 
 const HANDOFF_DELAY_MS = 2_000;
 const PREPARED_TIMEOUT_MS = 120_000;
-const TERMINATE_GRACE_MS = 5_000;
 
 type TerminalStatus = "committed" | "rolled-back" | "failed";
 type ChildRole = "active" | "trial";
@@ -507,7 +507,7 @@ async function terminateChild(
 ): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill(signal);
-  const force = setTimeout(() => child.kill("SIGKILL"), TERMINATE_GRACE_MS);
+  const force = setTimeout(() => child.kill("SIGKILL"), SERVER_CHILD_SHUTDOWN_GRACE_MS);
   try {
     await waitForExit(child);
   } finally {

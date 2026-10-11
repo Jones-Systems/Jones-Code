@@ -58,6 +58,7 @@ it("runs the pinned runtime's own executable as the systemd launcher", () => {
 
   expect(unit).toContain(`ExecStart=${linuxRuntime} __service-launcher`);
   expect(unit).toContain("KillMode=mixed");
+  expect(unit).toContain("TimeoutStopSec=90");
   expect(unit).not.toContain("node");
 });
 

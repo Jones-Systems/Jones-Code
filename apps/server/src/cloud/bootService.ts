@@ -1,3 +1,4 @@
+import { SERVICE_MANAGER_STOP_TIMEOUT_SECONDS } from "../jones/cloud/shutdownBudget.ts";
 import {
   HostProcessArchitecture,
   HostProcessExecutablePath,
@@ -134,6 +135,7 @@ export function renderBootServiceUnit(
     // Let the launcher mark an explicit stop before it signals the server.
     // systemd still SIGKILLs the whole cgroup if graceful shutdown times out.
     "KillMode=mixed",
+    `TimeoutStopSec=${SERVICE_MANAGER_STOP_TIMEOUT_SECONDS}`,
     // Agent tool calls run as children of the server, so they share this cgroup.
     // With the systemd default of OOMPolicy=stop, the kernel killing one greedy
     // child stops the whole unit: the server, every live agent, and the user's
@@ -163,9 +165,9 @@ export function renderBootServicePlist(
 ): string {
   // KeepAlive + ThrottleInterval mirror Restart=always + RestartSec=5. launchd
   // has no StartLimitBurst analog; a hard crash loop respawns every 5s forever.
-  // ExitTimeOut 90 matches systemd's default TimeoutStopSec. A plain stop
-  // completes within the launcher's 5s child grace, but a stop that queues
-  // behind an in-flight update transition can take much longer; launchd's
+  // ExitTimeOut matches the explicit systemd TimeoutStopSec and exceeds the
+  // launcher's 75s child grace. A stop queued behind an update transition can
+  // take longer, so timeout still leaves that transaction held. launchd's
   // system-defined default (5s on current macOS) would SIGKILL the launcher
   // (and, with it, the process group) mid-handoff.
   // ProcessType Interactive opts out of background-job resource throttling.
@@ -208,7 +210,7 @@ export function renderBootServicePlist(
     `  <key>ThrottleInterval</key>`,
     `  <integer>5</integer>`,
     `  <key>ExitTimeOut</key>`,
-    `  <integer>90</integer>`,
+    `  <integer>${SERVICE_MANAGER_STOP_TIMEOUT_SECONDS}</integer>`,
     `  <key>ProcessType</key>`,
     `  <string>Interactive</string>`,
     `  <key>StandardOutPath</key>`,
