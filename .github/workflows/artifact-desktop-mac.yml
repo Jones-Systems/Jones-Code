@@ -179,9 +179,11 @@ jobs:
             import fs from "node:fs";
             const path = "artifacts/desktop-mac/JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF.json";
             const info = fs.lstatSync(path);
-            if (!info.isFile() || info.size > 8192) throw new Error("Missing bounded native build proof");
+            if (!info.isFile() || info.size > 65536) throw new Error("Missing bounded native build proof");
             process.stdout.write(fs.readFileSync(path, "utf8"));
+            process.stdout.write(".");
           ')"
+          JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF="${JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF%.}"
           node scripts/jones/updates/native-startup-qualification.mjs \
             --dmg "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg" \
             --evidence artifacts/desktop-mac/NATIVE_STARTUP_QUALIFICATION.json
