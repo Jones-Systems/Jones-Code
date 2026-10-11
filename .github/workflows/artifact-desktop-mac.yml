@@ -15,6 +15,8 @@ on:
       - scripts/jones/updates/build-provenance.ts
       - scripts/jones/updates/native-startup-*
       - scripts/jones/updates/legacy-bootstrap-*
+      - scripts/jones/updates/legacy-admission-*
+      - scripts/jones/updates/legacy-maintenance-*
       - packages/shared/src/jones/nativeWriterFence*
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualifiedStartup.ts
@@ -67,6 +69,17 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
 
+      - name: Fetch exact public legacy helper source for qualification
+        shell: bash
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin bd20d2d2fc0ba89797698192b877a7f1312f8fe3
+          test "$(git rev-parse FETCH_HEAD)" = bd20d2d2fc0ba89797698192b877a7f1312f8fe3
+
       - name: Prepare job scratch
         run: mkdir -p "$TMPDIR"
 
@@ -79,6 +92,12 @@ jobs:
           node-version-file: package.json
           cache: true
           run-install: true
+
+      - name: Verify native legacy admission and maintenance controls
+        run: >-
+          node --test --test-concurrency=1
+          scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs
+          scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -119,6 +138,20 @@ jobs:
           node scripts/jones/updates/native-startup-qualification.mjs
           --dmg "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
           --evidence artifacts/desktop-mac/NATIVE_STARTUP_QUALIFICATION.json
+
+      - name: Preserve native primitive proof reports
+        run: |
+          node scripts/jones/updates/legacy-admission-native-fixture.mjs > artifacts/desktop-mac/LEGACY_ADMISSION_QUALIFICATION.json
+          node scripts/jones/updates/legacy-maintenance-fixture.mjs > artifacts/desktop-mac/LEGACY_MAINTENANCE_QUALIFICATION.json
+
+      - name: Upload bounded legacy primitive evidence
+        if: always() && hashFiles('artifacts/desktop-mac/LEGACY_*_QUALIFICATION.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: legacy-primitive-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/desktop-mac/LEGACY_*_QUALIFICATION.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Preserve bounded native startup qualification evidence
         if: always() && hashFiles('artifacts/desktop-mac/NATIVE_STARTUP_QUALIFICATION.json') != ''

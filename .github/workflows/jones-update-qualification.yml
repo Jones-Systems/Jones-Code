@@ -78,7 +78,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Check startup qualification fixtures
-        run: node --test --test-concurrency=1 scripts/jones/updates/native-startup-fixture.node-test.mjs scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs
+        run: node --test --test-concurrency=1 scripts/jones/updates/native-startup-fixture.node-test.mjs scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs
 
       - name: Qualify Chromium-mode native startup refusal
         run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
