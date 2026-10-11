@@ -681,7 +681,75 @@ else:
         owner.current_lock = current_lock
         tx = transaction_type(owner)
         initial = tx.observe_members()
-        if scenario == 'profile-volume':
+        if scenario in ('cold-c-device-renumber', 'cold-c-native-drift', 'cold-c-foreign-volume',
+                        'live-root-device-drift', 'live-root-inode-drift', 'live-root-native-drift'):
+            # Model retained boot-A stat numbers without changing real FD observations
+            # or their durable native proof. This is not an actual APFS remount.
+            original_intent = tx.make_intent
+            def prior_epoch_intent(transaction_id, roots):
+                return original_intent(transaction_id, [dict(item, device=str(int(item['device']) + 1)) for item in roots])
+            tx.make_intent = prior_epoch_intent
+            tx.snapshot()
+            write(database, b'advanced-db')
+            write(root / 'profile/Preferences', b'advanced-profile')
+            original_root_identity = tx.root_identity
+            def prior_advanced_identity(path):
+                result = original_root_identity(path)
+                return dict(result, device=str(int(result['device']) + 1)) if path == tx.root / 'advanced-state' else result
+            tx.root_identity = prior_advanced_identity
+            tx.begin_restore()
+            tx.root_identity = original_root_identity
+            retained = {name: (tx.root / name).read_bytes() for name in ('intent.json', 'pair-descriptor.json', 'restore-intent.json')}
+            retained_journal = (tx.root / 'journal.json').read_bytes()
+            retained_owner = (owner.directory / 'journal.json').read_bytes()
+            before_restore = tx.observe_members()
+            if scenario in ('cold-c-native-drift', 'cold-c-foreign-volume'):
+                original_method = transaction_type.root_identity
+                def changed_root(actual, path):
+                    result = original_method(actual, path)
+                    if path == database.parent:
+                        if scenario == 'cold-c-foreign-volume': result = dict(result, device=str(int(result['device']) + 1))
+                        else:
+                            native = list(result['native'])
+                            native[1] = str(int(native[1]) + 1)
+                            result = dict(result, native=native)
+                    return result
+                transaction_type.root_identity = changed_root
+                try: expect_refusal(lambda: transaction_type(owner))
+                finally: transaction_type.root_identity = original_method
+            else:
+                recovered = transaction_type(owner)
+                if scenario.startswith('live-root-'):
+                    original_method = recovered.root_identity
+                    def changed_root(path):
+                        result = original_method(path)
+                        if path == database.parent:
+                            if scenario == 'live-root-native-drift':
+                                native = list(result['native'])
+                                native[1] = str(int(native[1]) + 1)
+                                result = dict(result, native=native)
+                            else:
+                                field = 'device' if scenario == 'live-root-device-drift' else 'inode'
+                                result = dict(result, **{field: str(int(result[field]) + 1)})
+                        return result
+                    recovered.root_identity = changed_root
+                    expect_refusal(recovered.reconcile_restore)
+                    expect_refusal(recovered.reconcile_restore)
+                else:
+                    result = recovered.reconcile_restore()
+                    assert result['status'] == 'pair-restored-gates-retained'
+                    restored = recovered.observe_members()
+                    for name, item in initial.items():
+                        assert (restored[name] is None) == (item is None)
+                        if item is not None: assert restored[name]['content'] == item['content']
+                    assert recovered.observe_members(recovered.root / 'advanced-state') == before_restore
+                    assert transaction_type(owner).reconcile_restore() == result
+            if scenario != 'cold-c-device-renumber':
+                assert tx.observe_members() == before_restore
+                assert (tx.root / 'journal.json').read_bytes() == retained_journal
+            assert all((tx.root / name).read_bytes() == raw for name, raw in retained.items())
+            assert (owner.directory / 'journal.json').read_bytes() == retained_owner
+        elif scenario == 'profile-volume':
             original_identity = tx.root_identity
             observed_profile = []
             def foreign_profile(path):
@@ -899,6 +967,12 @@ print(json.dumps(report))
 `;
 
 export const coldPairCases = [
+  "cold-c-device-renumber",
+  "cold-c-native-drift",
+  "cold-c-foreign-volume",
+  "live-root-device-drift",
+  "live-root-inode-drift",
+  "live-root-native-drift",
   "profile-volume",
   "nofollow-before-open",
   "nofollow-after-open",

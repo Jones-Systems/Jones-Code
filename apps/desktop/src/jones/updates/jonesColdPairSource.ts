@@ -70,6 +70,7 @@ class _ColdPairTransaction:
         self.members += [('profile', self.profile)]
         require(len({str(path) for _, path in self.members}) == len(self.members))
         self.journal = self.journal_raw = self.intent = None
+        self.live_root_identities = {}
         fence = maintenance.journal.get('stateTransaction')
         if fence is not None:
             raw = read_owned(self.root / 'intent.json')
@@ -112,8 +113,10 @@ class _ColdPairTransaction:
 
     def check_roots(self):
         self.check()
-        roots = [self.root_identity(path) for path in (self.database.parent, self.profile.parent, self.owner.directory)]
-        require(self.intent['roots'] == roots and len({item['device'] for item in roots}) == 1)
+        paths = (self.database.parent, self.profile.parent, self.owner.directory)
+        require(isinstance(self.intent['roots'], list) and len(self.intent['roots']) == len(paths))
+        roots = [self.bind_root_identity(path, expected) for path, expected in zip(paths, self.intent['roots'])]
+        require(len({item['device'] for item in roots}) == 1)
         state, transaction = self.database.parent, self.owner.directory
         for left, right in ((state, self.profile), (state, transaction), (self.profile, transaction)):
             require(left != right and not left.is_relative_to(right) and not right.is_relative_to(left))
@@ -126,6 +129,17 @@ class _ColdPairTransaction:
                 require(stat.S_ISDIR(info.st_mode) and str(info.st_dev) == roots[0]['device'])
                 actual = self.root_identity(self.profile)
                 require(actual['device'] == roots[0]['device'] and actual['inode'] == str(info.st_ino))
+
+    def bind_root_identity(self, path, expected):
+        require(isinstance(expected, dict) and set(expected) == {'device', 'inode', 'native'})
+        require(all(isinstance(expected[key], str) and re.fullmatch('[0-9]+', expected[key]) for key in ('device', 'inode')))
+        actual = self.root_identity(path)
+        # Persisted stat numbers may change after remount; native identity binds epochs.
+        # Once observed here, all three fields remain exact for this live transaction.
+        require(actual['native'] == expected['native'])
+        if path in self.live_root_identities: require(actual == self.live_root_identities[path])
+        else: self.live_root_identities[path] = actual
+        return actual
 
     def make_intent(self, transaction_id, roots):
         return {'schema': 1, 'transactionId': transaction_id,
@@ -458,7 +472,7 @@ class _ColdPairTransaction:
         require(set(value) == {'schema', 'intentSha256', 'pairSha256', 'live', 'staged', 'advancedIdentity'})
         require(value['schema'] == 1 and value['intentSha256'] == self.journal['intentSha256'] and value['pairSha256'] == self.journal['pairSha256'])
         require(set(value['live']) == set(value['staged']) == {name for name, _ in self.members})
-        require(value['advancedIdentity'] == self.root_identity(self.root / 'advanced-state'))
+        self.bind_root_identity(self.root / 'advanced-state', value['advancedIdentity'])
 
     def move(self, source, target, expected, profile):
         self.check()
