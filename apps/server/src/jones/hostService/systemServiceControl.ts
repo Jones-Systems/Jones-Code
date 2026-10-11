@@ -18,7 +18,7 @@ export const SYSTEM_SERVICE_CONTROL_PATH =
 export const SYSTEM_SERVICE_POLICY_PATH = "/etc/jones-code/system-service.policy";
 /** SHA-256 of systemServiceControl.pl; a root installation reads this digest back. */
 export const SYSTEM_SERVICE_CONTROL_SHA256 =
-  "93fd38b9a1038725cd8deea90d829a7927618cba616f4f40d5281c76fb808551";
+  "97a48bf8d4096007bd9bc9d8a969a370a71dc8300a10b9d374604d1505376051";
 export const OWNED_SYSTEM_DROPIN = "zzzz-jones-qualified-launcher.conf";
 const OWNED_MARKER = "# Jones qualified system launcher protocol 1";
 const HEADER = "jones-system-service-control 1";
