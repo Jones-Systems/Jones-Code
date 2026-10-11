@@ -79,6 +79,8 @@
         "src/preview-pick-preload.ts!",
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
+        // The hosted two-process store test launches this captured child by filename.
+        "src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
         "src/preview/Annotation.css!",
         // The namespace launcher stages and loads these modules by filename.
         "scripts/ui-evidence/probe.mjs",

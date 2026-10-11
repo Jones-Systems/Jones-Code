@@ -24,9 +24,15 @@
     "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
     "packages/client-runtime/src/jones/fleetUpdates/campaignController.ts",
     "packages/client-runtime/src/jones/fleetUpdates/hostBridge.ts",
-    "packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts"
+    "packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
+    "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
+    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx"
   ],
-  "hookPaths": ["apps/web/vite.config.ts"],
+  "hookPaths": [
+    "apps/web/vite.config.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
     {
@@ -84,6 +90,10 @@
     {
       "from": "packages/contracts/src/ipc.ts",
       "to": "packages/contracts/src/jones/fleetUpdates/campaign.ts"
+    },
+    {
+      "from": "apps/desktop/src/ipc/methods/connectionCatalog.ts",
+      "to": "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts"
     }
   ]
 }
