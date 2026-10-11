@@ -34,7 +34,7 @@ const USER = /^[a-z_][a-z0-9_-]{0,31}$/;
 const ID = /^[1-9]\d{0,9}$/;
 const PATH = /^(?:\/[A-Za-z0-9._@+-]{1,255}){1,64}$/;
 
-export class SystemServiceControlError extends Error {
+class SystemServiceControlError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SystemServiceControlError";

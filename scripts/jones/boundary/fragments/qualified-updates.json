@@ -2,11 +2,6 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
-    "apps/server/src/jones/hostService/systemServiceControl.pl",
-    "apps/server/src/jones/hostService/systemServiceControl.ts",
-    "apps/server/src/jones/hostService/systemServiceControl.test.ts",
-    "apps/server/src/jones/hostService/systemAdoption.ts",
-    "apps/server/src/jones/hostService/systemAdoption.test.ts",
     "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
     "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts",
     "apps/desktop/src/jones/updates/jonesActivation.ts",
