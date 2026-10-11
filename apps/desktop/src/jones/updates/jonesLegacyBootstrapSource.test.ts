@@ -539,7 +539,7 @@ print(json.dumps(result))
 
 function inventoryScenario(fault: string) {
   const output = NodeChildProcess.execFileSync("python3", ["-c", inventoryFixture], {
-    input: JSON.stringify({ files: bundle, fault }),
+    input: JSON.stringify({ files, fault }),
     encoding: "utf8",
     timeout: 15000,
     maxBuffer: 1024 * 1024,
@@ -716,7 +716,7 @@ it("schema 2 preserves standalone executor staging and never executes its extra 
   );
   const wire = bundle.map((file) =>
     typeof file.content === "string"
-      ? file
+      ? { ...file, content: file.content }
       : { ...file, content: "", binaryHex: Buffer.from(file.content).toString("hex") },
   );
   const result = scenario("success", wire);
