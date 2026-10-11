@@ -900,7 +900,15 @@
     "apps/web/src/jones/workQueue/classifySentPrompts.ts": "jones-owned",
     "apps/web/src/jones/workQueue/classifySentPrompts.test.ts": "jones-owned",
     "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts": "jones-owned",
-    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts": "jones-owned"
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts": "jones-owned",
+    "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts": "jones-owned",
+    "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts": "jones-owned",
+    "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs": "jones-owned",
+    "scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs": "jones-owned",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts": "jones-owned",
+    "apps/server/src/jones/updates/offlinePreparation.ts": "jones-owned",
+    "apps/server/src/jones/updates/offlinePreparation.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

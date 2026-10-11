@@ -96,6 +96,8 @@ jobs:
           apps/server/src/jones/updates/trialGate.test.ts
           apps/server/src/orchestration-v2/RestartContinuation.test.ts
           apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts
+          apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts
+          apps/server/src/jones/updates/offlinePreparation.test.ts
           apps/server/src/ServerSettingsPersistence.test.ts
           apps/server/src/serverSettings.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
@@ -105,6 +107,7 @@ jobs:
           scripts/build-desktop-artifact.test.ts
           apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts
           scripts/jones/updates/legacy-bootstrap-bundle.test.ts
+          apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts
 
       - name: Install virtual display for Chromium startup qualification
         run: sudo apt-get update && sudo apt-get install -y xvfb

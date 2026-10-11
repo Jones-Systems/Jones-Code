@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as NodeAssert from "node:assert/strict";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -13,7 +14,7 @@ const posix = {
   skip: !["linux", "darwin"].includes(Context.get(Context.empty(), HostProcessPlatform)),
 };
 
-async function fixture(test) {
+async function fixture(test, withNative = false) {
   const ownership = new FixtureOwnership();
   const allocated = await ownership.temporary(NodePath.join(NodeOS.tmpdir(), "jones-after-pack-"));
   test.after(async () => {
@@ -37,12 +38,40 @@ async function fixture(test) {
       tree: "b".repeat(40),
     },
   };
-  const files = createJonesLegacyBootstrapBundle({
+  const identity = {
     repository: metadata.jonesSource.repository,
     sourceSha: metadata.jonesSource.sha,
     sourceTree: metadata.jonesSource.tree,
     version: metadata.version,
-  });
+  };
+  let files = createJonesLegacyBootstrapBundle(identity);
+  if (withNative) {
+    const binary = Buffer.alloc(160);
+    [0xfeedfacf, 0x0100000c, 0, 2, 2, 96, 0, 0].forEach((value, index) =>
+      binary.writeUInt32LE(value, index * 4),
+    );
+    binary.writeUInt32LE(0x19, 32);
+    binary.writeUInt32LE(72, 36);
+    binary.write("__TEXT", 40, "ascii");
+    binary.writeBigUInt64LE(160n, 80);
+    binary.writeUInt32LE(0x80000028, 104);
+    binary.writeUInt32LE(24, 108);
+    binary.writeBigUInt64LE(128n, 112);
+    const source = await NodeFSP.readFile(
+      new URL(
+        "../../../apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
+        import.meta.url,
+      ),
+    );
+    const { jonesLegacyMaintenanceSource } =
+      await import("../../../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts");
+    files = createJonesLegacyBootstrapBundle(identity, {
+      identityNative: binary,
+      identityNativeSourceSha256: NodeCrypto.createHash("sha256").update(source).digest("hex"),
+      maintenanceSource: jonesLegacyMaintenanceSource,
+    });
+  }
+  const nativeProof = withNative ? files[2].content : undefined;
   for (const file of files) {
     const filename = NodePath.join(resources, file.relativePath);
     await NodeFSP.writeFile(filename, file.content, { flag: "wx", mode: 0o600 });
@@ -57,7 +86,7 @@ async function fixture(test) {
       appInfo: { version: metadata.version, productFilename: "Jones Code" },
     },
   };
-  return { root, resources, files, context };
+  return { root, resources, files, context, nativeProof };
 }
 
 async function modes(resources, files) {
@@ -253,5 +282,69 @@ NodeTest.test(
       /bundle contains unexpected entries/,
     );
     NodeAssert.deepEqual(await modes(resources, files), [0o555, 0o555, 0o444]);
+  },
+);
+
+NodeTest.test(
+  "v2 afterPack binds all five resources to the independent build record",
+  posix,
+  async (test) => {
+    const { resources, files, context, nativeProof } = await fixture(test, true);
+    await legacyBootstrapAfterPack(context, nativeProof);
+    NodeAssert.deepEqual(await modes(resources, files), [0o500, 0o500, 0o400, 0o500, 0o500]);
+    for (const file of files)
+      NodeAssert.deepEqual(
+        await NodeFSP.readFile(NodePath.join(resources, file.relativePath)),
+        Buffer.from(file.content),
+      );
+    await legacyBootstrapAfterPack(context, nativeProof);
+  },
+);
+
+NodeTest.test(
+  "matching copied native and manifest tampering cannot replace independent build proof",
+  posix,
+  async (test) => {
+    const { resources, files, context, nativeProof } = await fixture(test, true);
+    const binary = Buffer.from(files[4].content);
+    binary[159] = 255;
+    const manifest = JSON.parse(nativeProof);
+    manifest.identityNativeSha256 = NodeCrypto.createHash("sha256").update(binary).digest("hex");
+    for (const [index, content] of [
+      [4, binary],
+      [2, JSON.stringify(manifest) + "\n"],
+    ]) {
+      const filename = NodePath.join(resources, files[index].relativePath);
+      await NodeFSP.chmod(filename, 0o600);
+      await NodeFSP.writeFile(filename, content);
+      await NodeFSP.chmod(filename, index === 2 ? 0o444 : 0o555);
+    }
+    await NodeAssert.rejects(
+      legacyBootstrapAfterPack(context, nativeProof),
+      /Native build bytes changed/,
+    );
+    NodeAssert.deepEqual(await modes(resources, files), [0o555, 0o555, 0o444, 0o555, 0o555]);
+  },
+);
+
+NodeTest.test(
+  "v2 afterPack refuses missing proof, extensions and changed source identity before chmod",
+  posix,
+  async (test) => {
+    const { resources, files, context, nativeProof } = await fixture(test, true);
+    await NodeAssert.rejects(legacyBootstrapAfterPack(context), /unexpected entries/);
+    const proof = JSON.parse(nativeProof);
+    await NodeAssert.rejects(
+      legacyBootstrapAfterPack(context, JSON.stringify({ ...proof, command: "untrusted" })),
+      /exact source and architecture/,
+    );
+    await NodeAssert.rejects(
+      legacyBootstrapAfterPack(
+        context,
+        JSON.stringify({ ...proof, identityNativeSourceSha256: "a".repeat(64) }),
+      ),
+      /Native source differs/,
+    );
+    NodeAssert.deepEqual(await modes(resources, files), [0o555, 0o555, 0o444, 0o555, 0o555]);
   },
 );

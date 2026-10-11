@@ -1,11 +1,15 @@
 import * as NodeAssert from "node:assert/strict";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
+import {
+  createJonesLegacyBootstrapBundle,
+  readJonesLegacyBootstrapNativeProof,
+} from "./legacy-bootstrap-bundle.ts";
 
-const resourceNames = [
+const v1ResourceNames = [
   "jones-bootstrap/bootstrap.py",
   "jones-bootstrap/executor.py",
   "jones-bootstrap/BUNDLE.json",
@@ -39,8 +43,11 @@ async function verifyBytes(handle, content, name) {
 
 // electron-builder 26.15.6 copies extraResources before afterPack and signs /
 // emits distributables afterwards. Its builder-util 26.15.3 copier broadens
-// owner-only read/execute bits; restore only the verified three-file bundle.
-export default async function legacyBootstrapAfterPack(context) {
+// owner-only read/execute bits; restore only the verified fixed resource set.
+export default async function legacyBootstrapAfterPack(
+  context,
+  nativeProofRaw = process.env.JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF,
+) {
   NodeAssert.equal(context?.electronPlatformName, "darwin", "Bootstrap hook requires Darwin.");
   const metadata = context.packager?.info?.metadata;
   const originalMetadata = context.packager?.info?.originalMetadata;
@@ -69,16 +76,20 @@ export default async function legacyBootstrapAfterPack(context) {
     source && typeof source.sha === "string" && typeof source.tree === "string",
     "Bootstrap build provenance is missing.",
   );
-  const files = createJonesLegacyBootstrapBundle({
+  const bundleIdentity = {
     repository: source.repository,
     sourceSha: source.sha,
     sourceTree: source.tree,
     version: metadata.version,
-  });
-  NodeAssert.deepEqual(
-    files.map((file) => file.relativePath),
-    resourceNames,
-  );
+  };
+  const nativeProof =
+    nativeProofRaw === undefined
+      ? undefined
+      : readJonesLegacyBootstrapNativeProof(nativeProofRaw, bundleIdentity);
+  const resourceNames =
+    nativeProof === undefined
+      ? v1ResourceNames
+      : [...v1ResourceNames, "jones-bootstrap/maintenance.py", "jones-bootstrap/identity-native"];
   const product = appInfo.productFilename;
   NodeAssert.equal(product, "Jones Code", "Bootstrap product filename is invalid.");
   const projectDir = context.packager.info.projectDir;
@@ -125,6 +136,79 @@ export default async function legacyBootstrapAfterPack(context) {
     );
   };
   const resources = directories.at(-2);
+  await verifyDirectories();
+  let files;
+  if (nativeProof === undefined) {
+    files = createJonesLegacyBootstrapBundle(bundleIdentity);
+  } else {
+    const binaryPath = NodePath.join(resources, "jones-bootstrap/identity-native");
+    const before = await NodeFSP.lstat(binaryPath, { bigint: true });
+    NodeAssert.ok(
+      before.isFile() && before.uid === owner && before.nlink === 1n && before.size <= 4194304n,
+    );
+    const binaryHandle = await NodeFSP.open(
+      binaryPath,
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+    );
+    let binary;
+    try {
+      unchanged(await binaryHandle.stat({ bigint: true }), before);
+      binary = Buffer.alloc(Number(before.size));
+      let offset = 0;
+      while (offset < binary.length) {
+        const { bytesRead } = await binaryHandle.read(
+          binary,
+          offset,
+          binary.length - offset,
+          offset,
+        );
+        NodeAssert.ok(bytesRead > 0, "Native resource was truncated.");
+        offset += bytesRead;
+      }
+      NodeAssert.equal(
+        (await binaryHandle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead,
+        0,
+        "Native resource grew during verification.",
+      );
+      unchanged(await binaryHandle.stat({ bigint: true }), before);
+      unchanged(await NodeFSP.lstat(binaryPath, { bigint: true }), before);
+    } finally {
+      await binaryHandle.close();
+    }
+    const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+    NodeAssert.equal(
+      digest(binary),
+      nativeProof.identityNativeSha256,
+      "Native build bytes changed after compilation/signing.",
+    );
+    const nativeSource = await NodeFSP.readFile(
+      new URL(
+        "../../../apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
+        import.meta.url,
+      ),
+    );
+    NodeAssert.equal(
+      digest(nativeSource),
+      nativeProof.identityNativeSourceSha256,
+      "Native source differs from the build proof.",
+    );
+    const { jonesLegacyMaintenanceSource } =
+      await import("../../../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts");
+    files = createJonesLegacyBootstrapBundle(bundleIdentity, {
+      identityNative: binary,
+      identityNativeSourceSha256: digest(nativeSource),
+      maintenanceSource: jonesLegacyMaintenanceSource,
+    });
+    NodeAssert.deepEqual(
+      JSON.parse(files[2].content),
+      nativeProof,
+      "Native build proof and packaged sources differ.",
+    );
+  }
+  NodeAssert.deepEqual(
+    files.map((file) => file.relativePath),
+    resourceNames,
+  );
   const opened = [];
   let failure;
   try {

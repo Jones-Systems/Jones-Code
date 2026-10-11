@@ -48,6 +48,9 @@ import {
 import { loadRepoEnv } from "./lib/public-config.ts";
 import {
   createJonesLegacyBootstrapBundle,
+  verifyJonesLegacyIdentityMachO,
+  readJonesLegacyBootstrapNativeProof,
+  type JonesLegacyBootstrapNativeInput,
   type JonesLegacyBootstrapBundleFile,
 } from "./jones/updates/legacy-bootstrap-bundle.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
@@ -1116,7 +1119,7 @@ export const verifyJonesPackagedMacResources = Effect.fn("verifyJonesPackagedMac
     readonly packagedAsar: string;
     readonly version: string;
     readonly source: JonesBuildSource;
-    readonly bootstrapBundle: ReadonlyArray<JonesLegacyBootstrapBundleFile>;
+    readonly bootstrapBundle: ReadonlyArray<JonesLegacyBootstrapBundleFile<string | Uint8Array>>;
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1152,16 +1155,24 @@ export const verifyJonesPackagedMacResources = Effect.fn("verifyJonesPackagedMac
         );
       }
       const content = yield* fs
-        .readFileString(packagedFile)
+        .readFile(packagedFile)
         .pipe(Effect.mapError((cause) => failure("bootstrap file read", file.relativePath, cause)));
-      if (content !== file.content) {
-        const digest = (value: string) =>
+      const expected =
+        typeof file.content === "string" ? Buffer.from(file.content, "utf8") : file.content;
+      if (!Buffer.from(content).equals(Buffer.from(expected))) {
+        const digest = (value: string | Uint8Array) =>
           NodeCrypto.createHash("sha256").update(value).digest("hex");
         return yield* failure(
           "bootstrap file bytes",
           file.relativePath,
           `expected SHA-256 ${digest(file.content)}; observed ${digest(content)}`,
         );
+      }
+      if (file.relativePath === "jones-bootstrap/identity-native") {
+        yield* Effect.try({
+          try: () => verifyJonesLegacyIdentityMachO(content),
+          catch: (cause) => failure("native architecture", file.relativePath, cause),
+        });
       }
     }
   },
@@ -2300,6 +2311,70 @@ export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(func
       path.join(destination, "protocols"),
     );
   }
+});
+
+const stageJonesLegacyIdentity = Effect.fn("stageJonesLegacyIdentity")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageRoot: string;
+  readonly verbose: boolean;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const platform = yield* HostProcessPlatform;
+  if (platform !== "darwin")
+    return yield* new BundleNotSelfContainedError({
+      exitCode: -1,
+      output: "Native identity packaging requires a Darwin build host.",
+    });
+  const directory = path.join(input.stageRoot, "jones-identity-build");
+  yield* fs.makeDirectory(directory);
+  yield* fs.chmod(directory, 0o700);
+  const source = yield* fs.readFile(
+    path.join(input.repoRoot, "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"),
+  );
+  const sourcePath = path.join(directory, "identity.c");
+  const binaryPath = path.join(directory, "identity-native");
+  yield* fs.writeFile(sourcePath, source);
+  yield* fs.chmod(sourcePath, 0o400);
+  const nativeEnvironment = {
+    ...process.env,
+    TMPDIR: directory,
+    CLANG_MODULE_CACHE_PATH: path.join(directory, "clang-cache"),
+  };
+  for (const [command, args] of [
+    [
+      "/usr/bin/clang",
+      [
+        "-target",
+        "arm64-apple-macos13.0",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        sourcePath,
+        "-o",
+        binaryPath,
+      ],
+    ],
+    ["/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", binaryPath]],
+    ["/usr/bin/codesign", ["--verify", "--strict", binaryPath]],
+  ] as const) {
+    yield* runCommand(
+      ChildProcess.make(command, args, { cwd: directory, env: nativeEnvironment }),
+      { label: `Jones native identity ${command}`, verbose: input.verbose },
+    );
+  }
+  yield* fs.chmod(binaryPath, 0o500);
+  const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(binaryPath));
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4194304)
+    return yield* new BundleNotSelfContainedError({
+      exitCode: -1,
+      output: "Native identity build output is not a bounded regular file.",
+    });
+  const identityNative = yield* fs.readFile(binaryPath);
+  yield* Effect.try(() => verifyJonesLegacyIdentityMachO(identityNative));
+  const identityNativeSourceSha256 = NodeCrypto.createHash("sha256").update(source).digest("hex");
+  return { identityNative, identityNativeSourceSha256 };
 });
 
 export const stageResourceMonitor = Effect.fn("stageResourceMonitor")(function* (input: {
@@ -3865,21 +3940,50 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   };
 
   const legacyBootstrapSource = stagePackageJson.jonesSource;
+  let legacyNative: JonesLegacyBootstrapNativeInput | undefined;
+  if (legacyBootstrapBundled && options.arch === "arm64") {
+    const native = yield* stageJonesLegacyIdentity({
+      repoRoot,
+      stageRoot,
+      verbose: options.verbose,
+    });
+    const { jonesLegacyMaintenanceSource } = yield* Effect.promise(
+      () => import("../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts"),
+    );
+    legacyNative = { ...native, maintenanceSource: jonesLegacyMaintenanceSource };
+  }
   const legacyBootstrapBundle =
     legacyBootstrapBundled && legacyBootstrapSource !== undefined
-      ? yield* Effect.try(() =>
-          createJonesLegacyBootstrapBundle({
+      ? yield* Effect.try(() => {
+          const identity = {
             repository: legacyBootstrapSource.repository,
             sourceSha: legacyBootstrapSource.sha,
             sourceTree: legacyBootstrapSource.tree,
             version: appVersion,
-          }),
-        )
+          };
+          return legacyNative === undefined
+            ? createJonesLegacyBootstrapBundle(identity)
+            : createJonesLegacyBootstrapBundle(identity, legacyNative);
+        })
       : [];
+  const legacyNativeProof =
+    legacyNative === undefined ? undefined : String(legacyBootstrapBundle[2]!.content);
+  if (legacyNativeProof !== undefined && legacyBootstrapSource !== undefined)
+    yield* Effect.try(() =>
+      readJonesLegacyBootstrapNativeProof(legacyNativeProof, {
+        repository: legacyBootstrapSource.repository,
+        sourceSha: legacyBootstrapSource.sha,
+        sourceTree: legacyBootstrapSource.tree,
+        version: appVersion,
+      }),
+    );
   for (const file of legacyBootstrapBundle) {
     const destination = path.join(stageProdResourcesDir, file.relativePath);
     yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
-    yield* fs.writeFileString(destination, file.content);
+    yield* fs.writeFile(
+      destination,
+      typeof file.content === "string" ? Buffer.from(file.content, "utf8") : file.content,
+    );
     yield* fs.chmod(destination, file.mode);
   }
 
@@ -3956,6 +4060,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const buildEnv: NodeJS.ProcessEnv = {
     ...process.env,
   };
+  // Only this build's independently retained proof can authorize the copied native bytes.
+  delete buildEnv.JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF;
+  if (legacyNativeProof !== undefined)
+    buildEnv.JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF = legacyNativeProof;
   buildEnv.npm_config_user_agent = resolvePackageManagerUserAgent(rootPackageJson.packageManager);
   for (const [key, value] of Object.entries(buildEnv)) {
     if (value === "") {
@@ -4078,6 +4186,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   const stageEntries = yield* fs.readDirectory(stageDistDir);
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
+
+  if (legacyNativeProof !== undefined)
+    yield* fs.writeFileString(
+      path.join(options.outputDir, "JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF.json"),
+      legacyNativeProof,
+    );
 
   const copiedArtifacts: string[] = [];
   for (const entry of stageEntries) {

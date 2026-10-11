@@ -1,4 +1,5 @@
 import * as NodeAssert from "node:assert/strict";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -21,24 +22,52 @@ const metadata = {
   },
 };
 
-async function withBundle(body) {
+async function withBundle(body, withNative = false) {
   const ownership = new FixtureOwnership();
   const root = await ownership.temporary(NodePath.join(NodeOS.tmpdir(), "jones-bootstrap-bundle-"));
   try {
     const app = NodePath.join(root, "Candidate.app");
     const resources = NodePath.join(app, "Contents/Resources");
     await NodeFSP.mkdir(NodePath.join(resources, "jones-bootstrap"), { recursive: true });
-    const files = createJonesLegacyBootstrapBundle({
+    const identity = {
       repository: metadata.jonesSource.repository,
       sourceSha: metadata.jonesSource.sha,
       sourceTree: metadata.jonesSource.tree,
       version: metadata.version,
-    });
+    };
+    let files = createJonesLegacyBootstrapBundle(identity);
+    if (withNative) {
+      const binary = Buffer.alloc(160);
+      [0xfeedfacf, 0x0100000c, 0, 2, 2, 96, 0, 0].forEach((value, index) =>
+        binary.writeUInt32LE(value, index * 4),
+      );
+      binary.writeUInt32LE(0x19, 32);
+      binary.writeUInt32LE(72, 36);
+      binary.write("__TEXT", 40, "ascii");
+      binary.writeBigUInt64LE(160n, 80);
+      binary.writeUInt32LE(0x80000028, 104);
+      binary.writeUInt32LE(24, 108);
+      binary.writeBigUInt64LE(128n, 112);
+      const source = await NodeFSP.readFile(
+        new URL(
+          "../../../apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
+          import.meta.url,
+        ),
+      );
+      const { jonesLegacyMaintenanceSource } =
+        await import("../../../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts");
+      files = createJonesLegacyBootstrapBundle(identity, {
+        identityNative: binary,
+        identityNativeSourceSha256: NodeCrypto.createHash("sha256").update(source).digest("hex"),
+        maintenanceSource: jonesLegacyMaintenanceSource,
+      });
+    }
+    const nativeProof = withNative ? files[2].content : undefined;
     for (const file of files) {
       const filename = NodePath.join(resources, file.relativePath);
       await NodeFSP.writeFile(filename, file.content, { flag: "wx", mode: file.mode });
     }
-    return await body({ root, app, resources });
+    return await body({ root, app, resources, files, nativeProof });
   } finally {
     await ownership.cleanup();
     await NodeAssert.rejects(NodeFSP.lstat(root), { code: "ENOENT" });
@@ -295,5 +324,33 @@ NodeTest.test(
     observer.events.push({ path: "/unrelated", flags: 0x01 });
     NodeAssert.equal(evidence.eventCount, 1);
     NodeAssert.ok(Object.isFrozen(evidence));
+  },
+);
+
+NodeTest.test(
+  "v2 packaged bootstrap requires the independent proof and exact final native bytes",
+  async () => {
+    await withBundle(async ({ app, resources, files, nativeProof }) => {
+      const bundle = await verifyPackagedBootstrap(app, metadata, nativeProof);
+      NodeAssert.equal(bundle.schema, 2);
+      NodeAssert.equal(bundle.nativeArchitecture, "arm64");
+      await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata));
+      const binary = Buffer.from(files[4].content);
+      binary[159] = 255;
+      const changed = {
+        ...bundle,
+        identityNativeSha256: NodeCrypto.createHash("sha256").update(binary).digest("hex"),
+      };
+      for (const [index, content] of [
+        [4, binary],
+        [2, JSON.stringify(changed) + "\n"],
+      ]) {
+        const filename = NodePath.join(resources, files[index].relativePath);
+        await NodeFSP.chmod(filename, 0o600);
+        await NodeFSP.writeFile(filename, content);
+        await NodeFSP.chmod(filename, files[index].mode);
+      }
+      await NodeAssert.rejects(verifyPackagedBootstrap(app, metadata, nativeProof));
+    }, true);
   },
 );

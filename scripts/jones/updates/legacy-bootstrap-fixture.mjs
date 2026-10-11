@@ -1,8 +1,12 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { createJonesLegacyBootstrapBundle } from "./legacy-bootstrap-bundle.ts";
+import {
+  createJonesLegacyBootstrapBundle,
+  readJonesLegacyBootstrapNativeProof,
+} from "./legacy-bootstrap-bundle.ts";
 import { cleanLaunchEnvironment, runOwnedChild, snapshotTree } from "./native-startup-fixture.mjs";
 import { protectedMutations } from "./native-startup-observer.mjs";
 
@@ -33,20 +37,82 @@ export async function closeStartupObservation(observer, start, protectedPaths, e
   });
 }
 
-export async function verifyPackagedBootstrap(app, metadata) {
-  const files = createJonesLegacyBootstrapBundle({
+export async function verifyPackagedBootstrap(
+  app,
+  metadata,
+  nativeProofRaw = process.env.JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF,
+) {
+  const identity = {
     repository: metadata.jonesSource.repository,
     sourceSha: metadata.jonesSource.sha,
     sourceTree: metadata.jonesSource.tree,
     version: metadata.version,
-  });
+  };
+  let files;
+  if (nativeProofRaw === undefined) {
+    files = createJonesLegacyBootstrapBundle(identity);
+  } else {
+    const proof = readJonesLegacyBootstrapNativeProof(nativeProofRaw, identity);
+    const nativeSource = await NodeFSP.readFile(
+      new URL(
+        "../../../apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
+        import.meta.url,
+      ),
+    );
+    NodeAssert.equal(sha256(nativeSource), proof.identityNativeSourceSha256);
+    const nativePath = NodePath.join(app, "Contents/Resources/jones-bootstrap/identity-native");
+    const info = await NodeFSP.lstat(nativePath);
+    NodeAssert.ok(info.isFile() && info.nlink === 1 && info.size <= 4194304);
+    const binary = Buffer.alloc(info.size);
+    const handle = await NodeFSP.open(
+      nativePath,
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+    );
+    try {
+      const before = await handle.stat();
+      NodeAssert.deepEqual(
+        [before.dev, before.ino, before.size, before.mode, before.ctimeMs],
+        [info.dev, info.ino, info.size, info.mode, info.ctimeMs],
+      );
+      let offset = 0;
+      while (offset < binary.length) {
+        const { bytesRead } = await handle.read(binary, offset, binary.length - offset, offset);
+        NodeAssert.ok(bytesRead > 0);
+        offset += bytesRead;
+      }
+      NodeAssert.equal((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead, 0);
+      const after = await handle.stat();
+      NodeAssert.deepEqual(
+        [after.dev, after.ino, after.size, after.mode, after.ctimeMs],
+        [info.dev, info.ino, info.size, info.mode, info.ctimeMs],
+      );
+    } finally {
+      await handle.close();
+    }
+    NodeAssert.equal(sha256(binary), proof.identityNativeSha256);
+    const { jonesLegacyMaintenanceSource } =
+      await import("../../../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts");
+    files = createJonesLegacyBootstrapBundle(identity, {
+      identityNative: binary,
+      identityNativeSourceSha256: sha256(nativeSource),
+      maintenanceSource: jonesLegacyMaintenanceSource,
+    });
+    NodeAssert.deepEqual(JSON.parse(files[2].content), proof);
+  }
+  const directory = NodePath.join(app, "Contents/Resources/jones-bootstrap");
   for (const file of files) {
     const filename = NodePath.join(app, "Contents", "Resources", file.relativePath);
     const info = await NodeFSP.lstat(filename);
     NodeAssert.ok(info.isFile() && !info.isSymbolicLink());
     NodeAssert.equal(info.mode & 0o777, file.mode);
-    NodeAssert.equal(await NodeFSP.readFile(filename, "utf8"), file.content);
+    if (typeof file.content === "string")
+      NodeAssert.equal(await NodeFSP.readFile(filename, "utf8"), file.content);
+    else NodeAssert.deepEqual(await NodeFSP.readFile(filename), Buffer.from(file.content));
   }
+  NodeAssert.deepEqual(
+    (await NodeFSP.readdir(directory)).sort(),
+    files.map((file) => NodePath.basename(file.relativePath)).sort(),
+  );
   return JSON.parse(files.find((file) => file.relativePath.endsWith("BUNDLE.json")).content);
 }
 

@@ -80,7 +80,15 @@
     "apps/web/vite.install-preview.config.ts",
     "apps/web/src/jones/updates/fixtures/install-preview-entry.ts",
     "apps/web/src/jones/updates/fixtures/install-preview-bridge.ts",
-    "apps/web/src/jones/updates/fixtures/InstallPreview.tsx"
+    "apps/web/src/jones/updates/fixtures/InstallPreview.tsx",
+    "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts",
+    "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts",
+    "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs",
+    "scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.ts",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
+    "apps/server/src/jones/updates/offlinePreparation.ts",
+    "apps/server/src/jones/updates/offlinePreparation.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

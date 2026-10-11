@@ -918,6 +918,47 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
         assert.include(missingFailure.output, "ENOENT");
         assert.notInclude(missingFailure.output, "UnknownError");
+
+        const native = Buffer.alloc(160);
+        [0xfeedfacf, 0x0100000c, 0, 2, 2, 96, 0, 0].forEach((value, index) =>
+          native.writeUInt32LE(value, index * 4),
+        );
+        native.writeUInt32LE(0x19, 32);
+        native.writeUInt32LE(72, 36);
+        native.write("__TEXT", 40, "ascii");
+        native.writeBigUInt64LE(160n, 80);
+        native.writeUInt32LE(0x80000028, 104);
+        native.writeUInt32LE(24, 108);
+        native.writeBigUInt64LE(128n, 112);
+        native[159] = 0xff;
+        const nativeFile = {
+          relativePath: "jones-bootstrap/identity-native",
+          content: native,
+          mode: 0o500,
+        };
+        const nativePath = path.join(resources, nativeFile.relativePath);
+        yield* fs.writeFile(nativePath, native);
+        yield* fs.chmod(nativePath, 0o500);
+        const nativeInput = { ...input, bootstrapBundle: [nativeFile] };
+        yield* verifyJonesPackagedMacResources(nativeInput);
+        const changed = Buffer.from(native);
+        changed[159] = 0xfe;
+        yield* fs.chmod(nativePath, 0o600);
+        yield* fs.writeFile(nativePath, changed);
+        yield* fs.chmod(nativePath, 0o500);
+        const changedFailure = yield* verifyJonesPackagedMacResources(nativeInput).pipe(
+          Effect.flip,
+        );
+        assert.include(changedFailure.output, "bootstrap file bytes");
+        changed.writeUInt32LE(0x01000007, 4);
+        yield* fs.chmod(nativePath, 0o600);
+        yield* fs.writeFile(nativePath, changed);
+        yield* fs.chmod(nativePath, 0o500);
+        const architectureFailure = yield* verifyJonesPackagedMacResources({
+          ...input,
+          bootstrapBundle: [{ ...nativeFile, content: changed }],
+        }).pipe(Effect.flip);
+        assert.include(architectureFailure.output, "native architecture");
       }),
     ),
   );

@@ -17,6 +17,8 @@ on:
       - scripts/jones/updates/legacy-bootstrap-*
       - scripts/jones/updates/legacy-admission-*
       - scripts/jones/updates/legacy-maintenance-*
+      - scripts/jones/updates/legacy-cold-maintenance-*
+      - scripts/jones/updates/legacy-identity-native-*
       - scripts/jones/updates/legacy-process-custody-*
       - scripts/jones/updates/legacy-identity-*
       - packages/shared/src/jones/nativeWriterFence*
@@ -96,12 +98,14 @@ jobs:
           run-install: true
 
       - name: Verify native legacy admission and maintenance controls
+        id: legacy_primitives
         run: >-
           node --test --test-concurrency=1
           scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs
           scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs
           scripts/jones/updates/legacy-process-custody-fixture.node-test.mjs
           scripts/jones/updates/legacy-identity-native-fixture.node-test.mjs
+          scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -138,12 +142,22 @@ jobs:
         id: native_qualification
         env:
           BUILD_VERSION: ${{ steps.version.outputs.value }}
-        run: >-
-          node scripts/jones/updates/native-startup-qualification.mjs
-          --dmg "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
-          --evidence artifacts/desktop-mac/NATIVE_STARTUP_QUALIFICATION.json
+        run: |
+          set -euo pipefail
+          export JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF
+          JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF="$(node --input-type=module -e '
+            import fs from "node:fs";
+            const path = "artifacts/desktop-mac/JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF.json";
+            const info = fs.lstatSync(path);
+            if (!info.isFile() || info.size > 8192) throw new Error("Missing bounded native build proof");
+            process.stdout.write(fs.readFileSync(path, "utf8"));
+          ')"
+          node scripts/jones/updates/native-startup-qualification.mjs \
+            --dmg "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg" \
+            --evidence artifacts/desktop-mac/NATIVE_STARTUP_QUALIFICATION.json
 
       - name: Preserve native primitive proof reports
+        id: legacy_primitive_reports
         run: |
           node scripts/jones/updates/legacy-admission-native-fixture.mjs > artifacts/desktop-mac/LEGACY_ADMISSION_QUALIFICATION.json
           node scripts/jones/updates/legacy-maintenance-fixture.mjs > artifacts/desktop-mac/LEGACY_MAINTENANCE_QUALIFICATION.json
@@ -221,9 +235,17 @@ jobs:
       - name: Clean job scratch
         # A failed or cancelled qualifier may retain a mounted image or owned
         # process group. Never override its uncertainty hold by deleting a parent.
-        if: always() && (steps.native_qualification.outcome == 'success' || steps.native_qualification.outcome == 'skipped')
+        if: >-
+          always() &&
+          (steps.native_qualification.outcome == 'success' || steps.native_qualification.outcome == 'skipped') &&
+          (steps.legacy_primitives.outcome == 'success' || steps.legacy_primitives.outcome == 'skipped') &&
+          (steps.legacy_primitive_reports.outcome == 'success' || steps.legacy_primitive_reports.outcome == 'skipped')
         run: rm -rf -- "$GITHUB_WORKSPACE/.artifact-desktop-scratch"
 
       - name: Report retained qualification scratch
-        if: always() && steps.native_qualification.outcome != 'success' && steps.native_qualification.outcome != 'skipped'
+        if: >-
+          always() && (
+          (steps.native_qualification.outcome != 'success' && steps.native_qualification.outcome != 'skipped') ||
+          (steps.legacy_primitives.outcome != 'success' && steps.legacy_primitives.outcome != 'skipped') ||
+          (steps.legacy_primitive_reports.outcome != 'success' && steps.legacy_primitive_reports.outcome != 'skipped'))
         run: echo 'Native qualification did not prove cleanup; job scratch is retained for runner disposal.' >> "$GITHUB_STEP_SUMMARY"
