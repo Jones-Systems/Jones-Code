@@ -17,6 +17,7 @@ on:
       - scripts/jones/updates/legacy-bootstrap-*
       - scripts/jones/updates/legacy-admission-*
       - scripts/jones/updates/legacy-maintenance-*
+      - scripts/jones/updates/legacy-process-custody-*
       - packages/shared/src/jones/nativeWriterFence*
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualifiedStartup.ts
@@ -98,6 +99,7 @@ jobs:
           node --test --test-concurrency=1
           scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs
           scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs
+          scripts/jones/updates/legacy-process-custody-fixture.node-test.mjs
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -143,6 +145,7 @@ jobs:
         run: |
           node scripts/jones/updates/legacy-admission-native-fixture.mjs > artifacts/desktop-mac/LEGACY_ADMISSION_QUALIFICATION.json
           node scripts/jones/updates/legacy-maintenance-fixture.mjs > artifacts/desktop-mac/LEGACY_MAINTENANCE_QUALIFICATION.json
+          node scripts/jones/updates/legacy-process-custody-fixture.mjs > artifacts/desktop-mac/LEGACY_PROCESS_CUSTODY_QUALIFICATION.json
 
       - name: Upload bounded legacy primitive evidence
         if: always() && hashFiles('artifacts/desktop-mac/LEGACY_*_QUALIFICATION.json') != ''
