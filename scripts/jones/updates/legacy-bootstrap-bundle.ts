@@ -87,8 +87,8 @@ export function createJonesLegacyBootstrapBundle(
 ): ReadonlyArray<JonesLegacyBootstrapBundleFile<string | Uint8Array>> {
   if (
     input.repository !== "Jones-Systems/Jones-Code" ||
-    !/^[a-f0-9]{40}$/.test(input.sourceSha) ||
-    !/^[a-f0-9]{40}$/.test(input.sourceTree) ||
+    !isHash(input.sourceSha, 40) ||
+    !isHash(input.sourceTree, 40) ||
     !/^\d+\.\d+\.\d+-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(input.version) ||
     input.version.length > 128 ||
     /\s/.test(input.version)
@@ -99,7 +99,7 @@ export function createJonesLegacyBootstrapBundle(
   if (native !== undefined) {
     verifyJonesLegacyIdentityMachO(native.identityNative);
     if (
-      !/^[a-f0-9]{64}$/.test(native.identityNativeSourceSha256) ||
+      !isHash(native.identityNativeSourceSha256, 64) ||
       native.maintenanceSource.length === 0 ||
       Buffer.byteLength(native.maintenanceSource) > 1048576
     )
@@ -149,4 +149,53 @@ export function createJonesLegacyBootstrapBundle(
           },
         ]),
   ];
+}
+
+export interface JonesLegacyBootstrapNativeProof extends JonesLegacyBootstrapBundleInput {
+  readonly schema: 2;
+  readonly bootstrapSha256: string;
+  readonly executorSha256: string;
+  readonly maintenanceSha256: string;
+  readonly identityNativeSha256: string;
+  readonly identityNativeSourceSha256: string;
+  readonly nativeArchitecture: "arm64";
+}
+
+/** This record is supplied independently by the build, never read from the copied bundle. */
+export function readJonesLegacyBootstrapNativeProof(
+  raw: string,
+  identity: JonesLegacyBootstrapBundleInput,
+): JonesLegacyBootstrapNativeProof {
+  if (Buffer.byteLength(raw) > 8192) throw new Error("Native build proof exceeds its bound.");
+  const value: unknown = JSON.parse(raw);
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Native build proof is not an object.");
+  const proof = value as Record<string, unknown>;
+  const hashes = [
+    "bootstrapSha256",
+    "executorSha256",
+    "maintenanceSha256",
+    "identityNativeSha256",
+    "identityNativeSourceSha256",
+  ];
+  const keys = [
+    "schema",
+    "repository",
+    "sourceSha",
+    "sourceTree",
+    "version",
+    "nativeArchitecture",
+    ...hashes,
+  ];
+  if (
+    !isHash(identity.sourceSha, 40) ||
+    !isHash(identity.sourceTree, 40) ||
+    Object.keys(proof).sort().join(",") !== keys.sort().join(",") ||
+    proof.schema !== 2 ||
+    proof.nativeArchitecture !== "arm64" ||
+    Object.entries(identity).some(([key, expected]) => proof[key] !== expected) ||
+    hashes.some((key) => !isHash(proof[key], 64))
+  )
+    throw new Error("Native build proof does not match the exact source and architecture.");
+  return proof as unknown as JonesLegacyBootstrapNativeProof;
 }

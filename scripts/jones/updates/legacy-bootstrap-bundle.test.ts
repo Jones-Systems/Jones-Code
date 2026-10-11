@@ -132,3 +132,70 @@ describe("schema 2 maintenance resources", () => {
     },
   );
 });
+
+for (const terminator of ["\n", "\r", "\u2028", "\u2029"]) {
+  it(`rejects trailing hash terminator ${JSON.stringify(terminator)} in bundle and proof identities`, () => {
+    const native = {
+      identityNative: inertArm64Executable(),
+      identityNativeSourceSha256: "c".repeat(64),
+      maintenanceSource: "# fixture\n",
+    };
+    for (const key of ["sourceSha", "sourceTree"] as const) {
+      const changed = { ...identity, [key]: identity[key] + terminator };
+      expect(() => createJonesLegacyBootstrapBundle(changed)).toThrow();
+      expect(() => createJonesLegacyBootstrapBundle(changed, native)).toThrow();
+    }
+    expect(() =>
+      createJonesLegacyBootstrapBundle(identity, {
+        ...native,
+        identityNativeSourceSha256: native.identityNativeSourceSha256 + terminator,
+      }),
+    ).toThrow();
+    const proof = JSON.parse(
+      String(createJonesLegacyBootstrapBundle(identity, native)[2]!.content),
+    );
+    expect(readJonesLegacyBootstrapNativeProof(JSON.stringify(proof), identity)).toEqual(proof);
+    for (const key of [
+      "sourceSha",
+      "sourceTree",
+      "bootstrapSha256",
+      "executorSha256",
+      "maintenanceSha256",
+      "identityNativeSha256",
+      "identityNativeSourceSha256",
+    ]) {
+      expect(() =>
+        readJonesLegacyBootstrapNativeProof(
+          JSON.stringify({ ...proof, [key]: proof[key] + terminator }),
+          identity,
+        ),
+      ).toThrow();
+    }
+    const invalidIdentity = { ...identity, sourceSha: identity.sourceSha + terminator };
+    expect(() =>
+      readJonesLegacyBootstrapNativeProof(
+        JSON.stringify({ ...proof, sourceSha: invalidIdentity.sourceSha }),
+        invalidIdentity,
+      ),
+    ).toThrow();
+  });
+}
+
+it("rejects proof extensions, architecture changes, and mismatched independent hashes", () => {
+  const proof = JSON.parse(
+    String(
+      createJonesLegacyBootstrapBundle(identity, {
+        identityNative: inertArm64Executable(),
+        identityNativeSourceSha256: "c".repeat(64),
+        maintenanceSource: "# fixture\n",
+      })[2]!.content,
+    ),
+  );
+  for (const changed of [
+    { ...proof, path: "/untrusted" },
+    { ...proof, nativeArchitecture: "x64" },
+    { ...proof, schema: 1 },
+    { ...proof, identityNativeSha256: "bad" },
+  ])
+    expect(() => readJonesLegacyBootstrapNativeProof(JSON.stringify(changed), identity)).toThrow();
+});
