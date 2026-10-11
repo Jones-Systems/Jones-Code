@@ -82,8 +82,12 @@ It starts at the user's GUI login and stops at logout. Keep the Mac logged in an
 awake for unattended access. Setup over SSH with nobody logged in at the screen
 can report `installed-awaiting-gui-login`; installed does not mean running.
 Starting before GUI login requires a separate operational decision and is not
-provided by this LaunchAgent. The current artifact workflows do not provide a
-Mac CLI archive for this setup; the desktop DMG is not a substitute.
+provided by this LaunchAgent. The manual
+[Mac CLI artifact workflow](../operations/build-artifacts.md#mac-cli-artifact)
+provides an Apple Silicon archive for initial setup. A successful native build
+and the approved host setup are separate requirements. After qualified launcher
+adoption, routine Mac updates use the verified desktop DMG through the headless
+runtime wrapper; the DMG itself is not an initial CLI setup command.
 
 Windows background services are not supported. T3 Connect and the background
 service are managed separately; signing out of Connect does not stop the service.

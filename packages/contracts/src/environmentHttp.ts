@@ -766,6 +766,7 @@ const {
   EnvironmentPreviewCompanionHttpApi,
   EnvironmentImportedHistoryHttpApi,
   EnvironmentJonesUpdatesHttpApi,
+  EnvironmentFleetUpdatesHttpApi,
   EnvironmentVoiceReviewHttpApi,
   EnvironmentHostStatusHttpApi,
   EnvironmentWorkQueueMetadataHttpApi: WorkQueueMetadataHttpApi,
@@ -1014,6 +1015,7 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentConversationLibraryHttpApi)
   .add(EnvironmentJonesUpdatesHttpApi)
+  .add(EnvironmentFleetUpdatesHttpApi)
   .add(EnvironmentImportedHistoryHttpApi)
   .add(EnvironmentPreviewCompanionHttpApi)
   .add(EnvironmentWebhooksHttpApi) {}

@@ -858,7 +858,12 @@
     "scripts/notify-discord-release.test.ts": "accepted-shared",
     "scripts/release-smoke.ts": "accepted-shared",
     "scripts/stamp-jones-build.test.ts": "jones-owned",
-    "scripts/stamp-jones-build.ts": "jones-owned"
+    "scripts/stamp-jones-build.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/fleet-update-access.json": "jones-owned",
+    "apps/web/src/branding.ts": "accepted-shared",
+    "apps/web/src/versionSkew.test.ts": "accepted-shared",
+    "apps/web/src/vite-env.d.ts": "accepted-shared",
+    "packages/client-runtime/src/connection/resolver.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

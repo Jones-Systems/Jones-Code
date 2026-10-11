@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/fleet-updates": {
+      "types": "./src/jones/fleetUpdates/index.ts",
+      "default": "./src/jones/fleetUpdates/index.ts"
+    },
     "./jones/preview-companion/http": {
       "types": "./src/jones/previewCompanion/http.ts",
       "default": "./src/jones/previewCompanion/http.ts"

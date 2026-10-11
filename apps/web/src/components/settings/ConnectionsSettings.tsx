@@ -1,3 +1,4 @@
+import { FleetEnrollmentControls } from "../../jones/fleetUpdates/FleetEnrollmentControls";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
 import {
   ChevronRightIcon,
@@ -1759,6 +1760,7 @@ function SavedBackendListRow({
       below={
         <>
           {enabled ? <JonesUpdateControls environmentId={environmentId} /> : null}
+          <FleetEnrollmentControls environmentId={environmentId} label={environment.label} />
           {serverUpdateState.status !== "idle" ? (
             <div className="mt-1 max-w-md">
               <ServerUpdateProgress state={serverUpdateState} />

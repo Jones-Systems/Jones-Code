@@ -12,6 +12,7 @@ import {
   JonesUpdateState,
 } from "./jonesUpdates.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
+import { makeFleetUpdatesHttpGroup } from "./fleetUpdates/http.ts";
 import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
 import {
   VoiceReviewRecentList,
@@ -475,6 +476,10 @@ export const makeJonesHttpGroups = ({
     ) {}
 
   return {
+    EnvironmentFleetUpdatesHttpApi: makeFleetUpdatesHttpGroup({
+      OptionalBearerHeaders, EnvironmentAuthenticatedAuth, EnvironmentScopeRequiredError,
+      EnvironmentInternalError, EnvironmentHttpBadRequestError,
+    }),
     EnvironmentPreviewCompanionHttpApi: makePreviewCompanionHttpGroup({
       OptionalBearerHeaders,
       EnvironmentAuthenticatedAuth,

@@ -36,12 +36,16 @@
     },
     {
       "id": "work-queue-preview",
-      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
+      "tests": [
+        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
+      ],
       "scope": "Explicit sample preview components remain covered by WorkQueuePage.test.tsx. Ordinary Prompts navigation uses UnifiedQueuePage with genuine voice review and read-only durable queue metadata; integration coverage belongs to work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
-      "tests": ["scripts/jones/check-boundary.test.ts"]
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ]
     },
     {
       "id": "provider-settlement",
@@ -445,7 +449,9 @@
     },
     {
       "id": "composer-thread-query",
-      "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
+      "tests": [
+        "apps/web/src/jones/composer/threadMentionTrigger.test.ts"
+      ],
       "scope": "Web/desktop and shared mobile one-space @ query; preserves matcher identities and legacy file chip delimiters."
     },
     {
@@ -492,6 +498,15 @@
         "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
+      ]
+    },
+    {
+      "id": "fleet-update-access",
+      "tests": [
+        "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
+        "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts"
       ]
     }
   ]
