@@ -144,6 +144,26 @@ describe("durable offline preparation plan codec", () => {
     expect(reloaded.selections[1]?.existingId).toBe(historical.preservedRows[0]?.effect_id);
   });
 
+  it.each(["0000-01-01T00:00:00.000Z", "2024-02-29T23:59:59.999Z"])(
+    "preserves canonical calendar timestamp %s without a wall-clock read",
+    (timestamp) => {
+      const original = fixture();
+      const plan = {
+        ...original,
+        timestamp,
+        expectedRows: original.expectedRows.map((row) => ({
+          ...row,
+          available_at: timestamp,
+          created_at: timestamp,
+          updated_at: timestamp,
+        })),
+      };
+      expect(decodeOfflinePreparationPlan(encodeOfflinePreparationPlan(plan)).plan.timestamp).toBe(
+        timestamp,
+      );
+    },
+  );
+
   it("accepts a bounded empty plan without fabricating continuation rows", () => {
     const plan = { ...fixture(), selections: [], expectedRows: [], preservedRows: [] };
     expect(decodeOfflinePreparationPlan(encodeOfflinePreparationPlan(plan)).plan).toEqual(plan);

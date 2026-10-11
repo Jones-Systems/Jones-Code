@@ -10,6 +10,9 @@ import * as NodeSea from "node:sea";
 import * as NodeURL from "node:url";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -37,9 +40,9 @@ const hashPattern = /^[a-f0-9]{64}$/;
 const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const sha = (bytes: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
-class WorkerRefused extends Error {
-  constructor() {
-    super("Closed preparation worker refused.");
+class WorkerRefused extends Schema.TaggedError<WorkerRefused>()("WorkerRefused", {}) {
+  override get message() {
+    return "Closed preparation worker refused.";
   }
 }
 function requireValue(condition: unknown): asserts condition {
@@ -139,10 +142,12 @@ function validateHeader(value: unknown) {
         text(item.planId),
       ),
     );
-    // @effect-diagnostics-next-line globalDate:off -- Validate an owner-supplied fixed timestamp, without consulting wall time.
+    const timestamp = text(item.timestamp);
+    const parsed = DateTime.make(timestamp);
     requireValue(
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text(item.timestamp)) &&
-        new Date(text(item.timestamp)).toISOString() === item.timestamp,
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(timestamp) &&
+        Option.isSome(parsed) &&
+        DateTime.formatIso(parsed.value) === timestamp,
     );
   }
   if (type === "SQL_SCOPE_OPENED")
@@ -260,6 +265,31 @@ function ownedFile(info: NativeStat, maximum: number) {
       info.size <= BigInt(maximum),
   );
 }
+/** Bounded descriptor reads only; the caller retains ownership, identity checks and closure. */
+export async function readBoundedPreparationMetadata(
+  handle: {
+    read(
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ): Promise<{ bytesRead: number }>;
+  },
+  maximum: number,
+): Promise<Buffer> {
+  integer(maximum, 64 * 1024 * 1024);
+  const value = Buffer.allocUnsafe(maximum + 1);
+  let offset = 0;
+  while (offset < value.length) {
+    const length = Math.min(65536, value.length - offset);
+    const { bytesRead } = await handle.read(value, offset, length, offset);
+    integer(bytesRead, length);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  requireValue(offset <= maximum);
+  return value.subarray(0, offset);
+}
 async function bytes(path: string, maximum = limits.metadata): Promise<Buffer> {
   const handle = await NodeFSP.open(
     path,
@@ -268,9 +298,9 @@ async function bytes(path: string, maximum = limits.metadata): Promise<Buffer> {
   try {
     const before = await handle.stat({ bigint: true });
     ownedFile(before, maximum);
-    const value = await handle.readFile();
+    const value = await readBoundedPreparationMetadata(handle, maximum);
     requireValue(
-      value.length <= maximum &&
+      BigInt(value.length) === before.size &&
         sameFile(before, await handle.stat({ bigint: true })) &&
         sameFile(before, await NodeFSP.lstat(path, { bigint: true })),
     );

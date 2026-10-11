@@ -27,6 +27,7 @@ import {
 import {
   encodeOfflinePreparationPlan,
   decodeOfflinePreparationPlan,
+  type OfflinePreparationPlan,
 } from "./offlinePreparationPlan.ts";
 import {
   decodePreparationFrame,
@@ -35,6 +36,7 @@ import {
   preparationWorkerSql,
   requirePreparationCorrelation,
   runInheritedPreparationWorker,
+  readBoundedPreparationMetadata,
 } from "./offlinePreparationWorker.ts";
 
 const sessionId = "a".repeat(64),
@@ -513,7 +515,7 @@ function sqlLayer(path: string, readonly = false) {
   );
 }
 
-it.scoped(
+it.effect(
   "rejects non-SEA dispatch and independently closes both owned inherited descriptors",
   () =>
     Effect.gen(function* () {
@@ -565,10 +567,10 @@ it.scoped(
         if (failures.length > 0)
           throw new AggregateError(failures, "Owned descriptor cleanup failed");
       }
-    }),
+    }).pipe(Effect.scoped),
 );
 
-it.scoped("uses actual WAL SQL to plan, apply and read-only reconcile the exact durable plan", () =>
+it.effect("uses actual WAL SQL to plan, apply and read-only reconcile the exact durable plan", () =>
   Effect.gen(function* () {
     const root = yield* scratch,
       path = NodePath.join(root, "state.sqlite");
@@ -579,7 +581,7 @@ it.scoped("uses actual WAL SQL to plan, apply and read-only reconcile the exact 
       Effect.provide(sqlLayer(path)),
     );
     assert.equal(planned.kind, "plan");
-    if (planned.kind !== "plan") throw new Error("Expected basis");
+    if (planned.kind !== "plan") return yield* Effect.die("Expected basis");
     assert.equal(planned.basis.selections.length, 1);
     assert.equal(planned.basis.selections[0]!.threadId, "thread:worker");
     assert.equal(planned.basis.selections[0]!.runId, "run:thread:worker");
@@ -612,7 +614,7 @@ it.scoped("uses actual WAL SQL to plan, apply and read-only reconcile the exact 
       ),
       { kind: "result", outcome: "applied" },
     );
-    const expectedRow = {
+    const expectedRow: OfflinePreparationPlan["expectedRows"][number] = {
       effect_id: "effect:server-update-continuation:" + preparationId,
       command_id: "command:server-update-prepare:" + preparationId,
       thread_id: "thread:worker",
@@ -653,10 +655,10 @@ it.scoped("uses actual WAL SQL to plan, apply and read-only reconcile the exact 
     );
     assert.deepEqual(yield* readPreparationRows.pipe(Effect.provide(sqlLayer(path, true))), after);
     assert.deepEqual(yield* Effect.promise(() => NodeFSP.readFile(planPath)), Buffer.from(bytes));
-  }),
+  }).pipe(Effect.scoped),
 );
 
-it.scoped("does not create an absent SQLite family with mode=rw", () =>
+it.effect("does not create an absent SQLite family with mode=rw", () =>
   Effect.gen(function* () {
     const root = yield* scratch,
       path = NodePath.join(root, "absent.sqlite");
@@ -666,10 +668,10 @@ it.scoped("does not create an absent SQLite family with mode=rw", () =>
     );
     assert.isTrue(Exit.isFailure(result));
     assert.deepEqual(yield* Effect.promise(() => NodeFSP.readdir(root)), []);
-  }),
+  }).pipe(Effect.scoped),
 );
 
-it.scoped("settles a query rejection only after the SQL layer is closed", () =>
+it.effect("settles a query rejection only after the SQL layer is closed", () =>
   Effect.gen(function* () {
     const root = yield* scratch,
       path = NodePath.join(root, "state.sqlite");
@@ -699,10 +701,10 @@ it.scoped("settles a query rejection only after the SQL layer is closed", () =>
     } finally {
       reopened.close();
     }
-  }),
+  }).pipe(Effect.scoped),
 );
 
-it.scoped("refuses drifted historic ledgers without running migrations", () =>
+it.effect("refuses drifted historic ledgers without running migrations", () =>
   Effect.gen(function* () {
     const root = yield* scratch,
       path = NodePath.join(root, "state.sqlite");
@@ -726,10 +728,10 @@ it.scoped("refuses drifted historic ledgers without running migrations", () =>
     } finally {
       reopened.close();
     }
-  }),
+  }).pipe(Effect.scoped),
 );
 
-it.scoped("does not turn a SQL finalizer failure into a settled query result", () =>
+it.effect("does not turn a SQL finalizer failure into a settled query result", () =>
   Effect.gen(function* () {
     const root = yield* scratch,
       path = NodePath.join(root, "state.sqlite");
@@ -754,5 +756,63 @@ it.scoped("does not turn a SQL finalizer failure into a settled query result", (
     } finally {
       close.mockRestore();
     }
-  }),
+  }).pipe(Effect.scoped),
 );
+
+for (const scenario of ["short-read", "exact-limit", "growth", "read-failure"] as const) {
+  it.effect(`bounds metadata ${scenario} and closes the owned descriptor`, () =>
+    Effect.gen(function* () {
+      const root = yield* scratch;
+      yield* Effect.promise(async () => {
+        const path = NodePath.join(root, "metadata");
+        const initial = Buffer.from(scenario === "exact-limit" ? "12345678" : "12");
+        await NodeFSP.writeFile(path, initial, { flag: "wx", mode: 0o600 });
+        const handle = await NodeFSP.open(path, "r");
+        const fd = handle.fd;
+        let delivered = 0;
+        let eof = false;
+        let failure: unknown;
+        let result: Buffer | undefined;
+        try {
+          assert.equal((await handle.stat()).size, initial.length);
+          if (scenario === "growth") await NodeFSP.appendFile(path, "345678901234567890");
+          result = await readBoundedPreparationMetadata(
+            {
+              async read(buffer, offset, length, position) {
+                assert.equal(buffer.length, 9);
+                assert.equal(position, delivered);
+                assert.isAtMost(length, 9 - delivered);
+                if (scenario === "read-failure" && delivered !== 0)
+                  throw new Error("Synthetic metadata read failure");
+                const read = await handle.read(buffer, offset, Math.min(length, 2), position);
+                delivered += read.bytesRead;
+                if (read.bytesRead === 0) eof = true;
+                return read;
+              },
+            },
+            8,
+          );
+        } catch (cause) {
+          failure = cause;
+        } finally {
+          await handle.close();
+        }
+        assert.throws(() => NodeFS.fstatSync(fd), /EBADF/);
+        if (scenario === "growth" || scenario === "read-failure") {
+          assert.isDefined(failure);
+          assert.isUndefined(result);
+          assert.isFalse(eof);
+          assert.equal(delivered, scenario === "growth" ? 9 : 2);
+          if (scenario === "growth")
+            assert.equal((failure as { readonly _tag?: string })._tag, "WorkerRefused");
+          else assert.equal((failure as Error).message, "Synthetic metadata read failure");
+        } else {
+          assert.isUndefined(failure);
+          assert.deepEqual(result, initial);
+          assert.isTrue(eof);
+          assert.equal(delivered, initial.length);
+        }
+      });
+    }).pipe(Effect.scoped),
+  );
+}

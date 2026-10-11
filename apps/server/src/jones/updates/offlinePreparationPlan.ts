@@ -1,6 +1,8 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Hash the exact validated plan bytes without opening application state.
 import * as NodeCrypto from "node:crypto";
 import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 export const offlinePreparationPlanLimits = Object.freeze({
   bytes: 8 * 1024 * 1024,
@@ -35,8 +37,8 @@ const identifier = boundedText(offlinePreparationPlanLimits.idBytes).check(
 const timestamp = Schema.String.check(
   Schema.makeFilter((value) => {
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
-    const millis = Date.parse(value);
-    return Number.isFinite(millis) && new Date(millis).toISOString() === value;
+    const parsed = DateTime.make(value);
+    return Option.isSome(parsed) && DateTime.formatIso(parsed.value) === value;
   }),
 );
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
