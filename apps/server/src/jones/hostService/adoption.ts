@@ -382,7 +382,9 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
         ? classification.state.activeVersion
         : classification.activeVersion,
   };
-  const retainedBackups = legacy ? await LegacyBootstrap.assertNoBootstrapHazards(baseDir) : [];
+  const retainedBackups = legacy
+    ? await LegacyBootstrap.assertNoBootstrapHazards(baseDir, host.uid)
+    : [];
   if (legacy && input.serviceUnit === undefined)
     return refuse("Legacy bootstrap requires explicit service-unit selection.");
   const serviceUnit = input.serviceUnit ?? "jones-code.service";
@@ -849,7 +851,7 @@ export async function adoptHost(
       if (`${db.dev}:${db.ino}` !== inspected.databaseIdentity)
         return refuse("Native database identity changed.");
       if (inspected.legacy) {
-        await LegacyBootstrap.assertNoBootstrapHazards(plan.baseDir);
+        await LegacyBootstrap.assertNoBootstrapHazards(plan.baseDir, host.uid);
         if ((await hashFile(inspected.task!.executable)) !== inspected.task!.executableSha256)
           return refuse("Bound running executable changed after planning.");
       }
