@@ -9,6 +9,7 @@
     "**/*.ts",
     "../apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts",
     "../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts",
-    "../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts"
+    "../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
+    "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts"
   ]
 }

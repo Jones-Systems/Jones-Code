@@ -86,7 +86,9 @@
     "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.ts",
     "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
     "apps/server/src/jones/updates/offlinePreparation.ts",
-    "apps/server/src/jones/updates/offlinePreparation.test.ts"
+    "apps/server/src/jones/updates/offlinePreparation.test.ts",
+    "apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
+    "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
