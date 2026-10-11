@@ -211,6 +211,8 @@
     "apps/server/src/jones/cloud/qualifiedWriterObserver.pl": "jones-owned",
     "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts": "jones-owned",
     "apps/server/src/jones/cloud/qualifiedWriterObserver.ts": "jones-owned",
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts": "jones-owned",
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts": "jones-owned",
     "apps/server/src/jones/device/DeviceDirectAdmission.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/device/DeviceDirectAdmission.ts": "jones-owned",
     "apps/server/src/jones/device/DeviceDirectGrants.test.ts": "jones-tests-in-upstream",
