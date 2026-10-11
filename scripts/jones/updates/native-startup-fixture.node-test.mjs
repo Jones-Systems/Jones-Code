@@ -3,8 +3,104 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { cleanLaunchEnvironment, runOwnedChild } from "./native-startup-fixture.mjs";
+import {
+  assertFixtureProcessesStopped,
+  cleanLaunchEnvironment,
+  createNativeState,
+  FixtureOwnership,
+  packagedStartupNames,
+  runOwnedChild,
+} from "./native-startup-fixture.mjs";
 import { protectedMutations } from "./native-startup-observer.mjs";
+
+test("qualification accepts the real stage-root package and derives product paths from bundle metadata", () => {
+  const metadata = {
+    name: "t3code",
+    main: "apps/desktop/dist-electron/boot.cjs",
+    build: { productName: "Jones Code" },
+  };
+  const bundle = {
+    executableName: "Jones Code",
+    bundleName: "Jones Code",
+    bundleIdentifier: "com.t3tools.t3code",
+  };
+  assert.deepEqual(packagedStartupNames(metadata, bundle), [
+    "t3code",
+    "Jones Code",
+    "com.t3tools.t3code",
+  ]);
+  assert.throws(() =>
+    packagedStartupNames({ ...metadata, main: "dist-electron/boot.cjs" }, bundle),
+  );
+});
+
+test("fixture creation and cleanup preserve a competing home or profile creator", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jones-fixture-ownership-"));
+  const metadata = {
+    version: "fixture",
+    jonesSource: { sha: "a".repeat(40), tree: "b".repeat(40) },
+  };
+  try {
+    for (const collision of ["home", "profile"]) {
+      const directory = path.join(root, collision);
+      await fs.mkdir(directory);
+      const home = path.join(directory, "home");
+      const profile = path.join(directory, "profile");
+      const competing = collision === "home" ? home : profile;
+      await assert.rejects(fs.lstat(competing), { code: "ENOENT" });
+      // A negative observation is deliberately followed by a competing create.
+      await fs.mkdir(competing);
+      await fs.writeFile(path.join(competing, "foreign"), "preserve");
+      const ownership = new FixtureOwnership();
+      await assert.rejects(createNativeState(home, profile, metadata, ownership), {
+        code: "EEXIST",
+      });
+      await ownership.cleanup();
+      assert.equal(await fs.readFile(path.join(competing, "foreign"), "utf8"), "preserve");
+      if (collision === "profile") await assert.rejects(fs.stat(home), { code: "ENOENT" });
+    }
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fixture cleanup preserves replaced roots and does not adopt occupied lease paths", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "jones-fixture-replaced-"));
+  try {
+    const profile = path.join(root, "profile");
+    const ownership = new FixtureOwnership();
+    await ownership.mkdir(profile);
+    await fs.rename(profile, `${profile}.retained`);
+    await fs.mkdir(profile);
+    await fs.writeFile(path.join(profile, "foreign"), "preserve");
+    await assert.rejects(ownership.cleanup(), /ownership/);
+    assert.equal(await fs.readFile(path.join(profile, "foreign"), "utf8"), "preserve");
+    const lease = path.join(root, "lease.sqlite");
+    await fs.writeFile(lease, "foreign lease");
+    const files = new FixtureOwnership();
+    await assert.rejects(files.file(lease, "replacement"), { code: "EEXIST" });
+    await files.cleanup();
+    assert.equal(await fs.readFile(lease, "utf8"), "foreign lease");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a closed leader cannot leave an unref'd same-group grandchild alive", async () => {
+  const result = await runOwnedChild(process.execPath, [
+    "-e",
+    `
+    const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'ignore'});
+    child.unref();
+    process.stdout.write(JSON.stringify({ group: process.pid, grandchild: child.pid }));
+  `,
+  ]);
+  assert.equal(result.code, 0, result.stderr);
+  const ids = JSON.parse(result.stdout);
+  assert.throws(() => process.kill(-ids.group, 0), { code: "ESRCH" });
+  assert.throws(() => process.kill(ids.grandchild, 0), { code: "ESRCH" });
+  assertFixtureProcessesStopped();
+});
 
 test("qualification removes pre-JS logging and Node-mode overrides while preserving the native home", () => {
   const env = cleanLaunchEnvironment(
@@ -87,6 +183,7 @@ test("cancelled qualification reaps only its captured child before fixture remov
     clearInterval(timer);
     controller.abort();
     await completion?.catch(() => {});
+    assertFixtureProcessesStopped();
     await fs.rm(root, { recursive: true, force: true });
   }
 });

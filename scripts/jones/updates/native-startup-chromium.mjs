@@ -10,6 +10,7 @@ import {
   assertStartupRefused,
   cleanLaunchEnvironment,
   createNativeState,
+  FixtureOwnership,
   leasePaths,
   runOwnedChild,
   snapshotTree,
@@ -27,7 +28,8 @@ const require = createRequire(path.join(desktop, "package.json"));
 const expectedElectron = JSON.parse(await fs.readFile(path.join(desktop, "package.json"), "utf8"))
   .dependencies.electron;
 assert.equal(require("electron/package.json").version, expectedElectron);
-const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "jones-chromium-startup-"));
+const ownership = new FixtureOwnership();
+const temporary = await ownership.temporary(path.join(os.tmpdir(), "jones-chromium-startup-"));
 const controller = new AbortController();
 const cancel = () => controller.abort();
 process.on("SIGINT", cancel);
@@ -61,7 +63,7 @@ try {
     },
   };
   await fs.writeFile(path.join(app, "package.json"), JSON.stringify(metadata));
-  const active = await createNativeState(home, profile, metadata);
+  const active = await createNativeState(home, profile, metadata, ownership);
   const marker = path.join(root, "loaded-after-refusal");
   for (const name of ["compileCache.cjs", "main.cjs"])
     await fs.writeFile(
@@ -115,5 +117,5 @@ require('./dist-electron/boot.cjs');
 } finally {
   process.removeListener("SIGINT", cancel);
   process.removeListener("SIGTERM", cancel);
-  await fs.rm(temporary, { recursive: true, force: true });
+  await ownership.cleanup();
 }
