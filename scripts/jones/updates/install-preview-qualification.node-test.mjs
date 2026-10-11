@@ -32,6 +32,7 @@ import {
   scenarioSteps,
   indexedDbBrowserProof,
   waitInactive,
+  waitProviderReady,
   openRpc,
 } from "./install-preview-qualification.mjs";
 
@@ -76,7 +77,7 @@ NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
   );
 });
 
-function shellSubscriptionFixture() {
+function shellSubscriptionFixture(expectedTag = "orchestration.subscribeShell") {
   let onItem;
   let resolveExit, rejectExit;
   let interrupts = 0;
@@ -88,7 +89,7 @@ function shellSubscriptionFixture() {
   return {
     rpc: {
       call(tag, payload, receive) {
-        NodeAssert.equal(tag, "orchestration.subscribeShell");
+        NodeAssert.equal(tag, expectedTag);
         NodeAssert.deepEqual(payload, {});
         NodeAssert.equal(onItem, undefined);
         onItem = receive;
@@ -232,6 +233,156 @@ NodeTest.test(
       fixture.snapshot(
         malformed ? { id: "owned-thread" } : { id: "owned-thread", activeRunId: null },
       );
+      await Promise.resolve();
+      NodeAssert.equal(fixture.interrupts, 1);
+      fixture.fail(cleanup);
+      await rejected;
+    }
+  },
+);
+
+const ownedPreviewProvider = {
+  instanceId: "preview-browser-disabled",
+  driver: "acpRegistry",
+  enabled: true,
+};
+
+NodeTest.test(
+  "native provider readiness accepts an existing instance only after subscription drain",
+  async () => {
+    for (const availability of [undefined, "available"]) {
+      const fixture = shellSubscriptionFixture("subscribeServerConfig");
+      let settled = false;
+      const waiting = waitProviderReady(fixture.rpc, ownedPreviewProvider.instanceId).then(
+        (value) => {
+          settled = true;
+          return value;
+        },
+      );
+      fixture.emit({
+        type: "snapshot",
+        config: { providers: [{ ...ownedPreviewProvider, availability }] },
+      });
+      await Promise.resolve();
+      NodeAssert.equal(fixture.interrupts, 1);
+      NodeAssert.equal(settled, false);
+      fixture.acknowledgeInterrupt();
+      NodeAssert.deepEqual(await waiting, ownedPreviewProvider);
+    }
+  },
+);
+
+NodeTest.test(
+  "native provider launch remains held through absent and unrelated registration events",
+  async () => {
+    const fixture = shellSubscriptionFixture("subscribeServerConfig");
+    let launches = 0;
+    const launched = waitProviderReady(fixture.rpc, ownedPreviewProvider.instanceId).then(() => {
+      launches += 1;
+    });
+    fixture.emit({ type: "snapshot", config: { providers: [] } });
+    fixture.emit({
+      type: "settingsUpdated",
+      payload: {
+        settings: {
+          providerInstances: { [ownedPreviewProvider.instanceId]: ownedPreviewProvider },
+        },
+      },
+    });
+    fixture.emit({
+      type: "providerStatuses",
+      payload: { providers: [{ ...ownedPreviewProvider, instanceId: "preview-active" }] },
+    });
+    await Promise.resolve();
+    NodeAssert.equal(launches, 0);
+    NodeAssert.equal(fixture.interrupts, 0);
+    fixture.emit({ type: "providerStatuses", payload: { providers: [ownedPreviewProvider] } });
+    await Promise.resolve();
+    NodeAssert.equal(launches, 0);
+    NodeAssert.equal(fixture.interrupts, 1);
+    fixture.acknowledgeInterrupt();
+    await launched;
+    NodeAssert.equal(launches, 1);
+  },
+);
+
+NodeTest.test(
+  "native provider readiness rejects unavailable, disabled, wrong-driver and malformed observations",
+  async () => {
+    for (const [providers, message] of [
+      [[{ ...ownedPreviewProvider, availability: "unavailable" }], /unavailable/],
+      [[{ ...ownedPreviewProvider, availability: "unknown" }], /unavailable/],
+      [[{ ...ownedPreviewProvider, driver: "codex" }], /wrong driver/],
+      [[{ ...ownedPreviewProvider, enabled: false }], /disabled/],
+      [[{ ...ownedPreviewProvider, enabled: undefined }], /disabled/],
+      [[ownedPreviewProvider, ownedPreviewProvider], /duplicate/],
+      [undefined, /missing providers/],
+    ]) {
+      const fixture = shellSubscriptionFixture("subscribeServerConfig");
+      const rejected = NodeAssert.rejects(
+        waitProviderReady(fixture.rpc, ownedPreviewProvider.instanceId),
+        message,
+      );
+      fixture.emit({ type: "snapshot", config: { providers } });
+      await Promise.resolve();
+      NodeAssert.equal(fixture.interrupts, 1);
+      fixture.acknowledgeInterrupt();
+      await rejected;
+    }
+  },
+);
+
+NodeTest.test(
+  "native provider readiness preserves failure, deadline, cancellation and premature end",
+  async () => {
+    for (const reason of [
+      "Native provider stream failed",
+      "Native RPC timed out: subscribeServerConfig",
+      "Owned qualification cancelled",
+    ]) {
+      const fixture = shellSubscriptionFixture("subscribeServerConfig");
+      const original = new Error(reason);
+      const rejected = NodeAssert.rejects(
+        waitProviderReady(fixture.rpc, ownedPreviewProvider.instanceId),
+        (error) => error === original,
+      );
+      fixture.emit({ type: "snapshot", config: { providers: [] } });
+      fixture.fail(original);
+      await rejected;
+      NodeAssert.equal(fixture.interrupts, 0);
+    }
+    const fixture = shellSubscriptionFixture("subscribeServerConfig");
+    const rejected = NodeAssert.rejects(
+      waitProviderReady(fixture.rpc, ownedPreviewProvider.instanceId),
+      /ended before provider readiness/,
+    );
+    fixture.end();
+    await rejected;
+    NodeAssert.equal(fixture.interrupts, 0);
+  },
+);
+
+NodeTest.test(
+  "native provider cleanup failure prevents launch and preserves an earlier readiness failure",
+  async () => {
+    for (const disabled of [false, true]) {
+      const fixture = shellSubscriptionFixture("subscribeServerConfig");
+      const cleanup = new Error("Native provider subscription finalizer failed");
+      const rejected = NodeAssert.rejects(
+        waitProviderReady(fixture.rpc, ownedPreviewProvider.instanceId),
+        (error) => {
+          if (disabled) {
+            NodeAssert.ok(error instanceof AggregateError);
+            NodeAssert.match(error.errors[0].message, /disabled/);
+            NodeAssert.equal(error.errors[1], cleanup);
+          } else NodeAssert.equal(error, cleanup);
+          return true;
+        },
+      );
+      fixture.emit({
+        type: "snapshot",
+        config: { providers: [{ ...ownedPreviewProvider, enabled: !disabled }] },
+      });
       await Promise.resolve();
       NodeAssert.equal(fixture.interrupts, 1);
       fixture.fail(cleanup);
