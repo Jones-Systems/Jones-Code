@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import * as Fs from "node:fs/promises";
-import * as Os from "node:os";
-import * as Path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import type { PendingServiceUpdate } from "../../cloud/serviceProtocol.ts";
 import { decodeServiceLauncherChildMessage } from "../../cloud/serviceProtocol.ts";
 import type { StagedQualifiedRuntime } from "../cloud/qualifiedRuntime.ts";
@@ -17,22 +17,24 @@ import {
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) {
-    await Fs.rm(root, { recursive: true, force: true });
-    await expect(Fs.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    await NodeFSP.rm(root, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
   }
 });
 
 const operationId = "12345678-1234-4234-8234-123456789abc";
 async function fixture() {
-  const allocated = await Fs.mkdtemp(Path.join(Os.tmpdir(), "jones-update-operation-"));
+  const allocated = await NodeFSP.mkdtemp(
+    NodePath.join(NodeOS.tmpdir(), "jones-update-operation-"),
+  );
   roots.push(allocated);
-  const baseDir = await Fs.realpath(allocated);
+  const baseDir = await NodeFSP.realpath(allocated);
   const qualified: StagedQualifiedRuntime = {
     protocol: 1,
     stagedHandle: "22345678-1234-4234-8234-123456789abc",
     binding: {
       baseDir,
-      dbPath: Path.join(baseDir, "userdata", "statev2.sqlite"),
+      dbPath: NodePath.join(baseDir, "userdata", "statev2.sqlite"),
       environmentId: "test-environment",
       activeVersion: "0.0.0-preview.20261010.1.1",
       activeSourceSha: "a".repeat(40),
@@ -135,8 +137,8 @@ describe("native update operation receipts", () => {
 
   it("uses the same canonical operation root through trailing separators, dot paths, and symlinks", async () => {
     const { baseDir, qualified, pending } = await fixture();
-    const alias = Path.join(baseDir, "alias");
-    await Fs.symlink(baseDir, alias, "dir");
+    const alias = NodePath.join(baseDir, "alias");
+    await NodeFSP.symlink(baseDir, alias, "dir");
     await reserveUpdateOperation(`${baseDir}/`, operationId, operationBinding(qualified));
     for (const root of [`${baseDir}/.`, alias]) {
       expect((await reconcileUpdateOperation(root, operationId, pending)).state).toBe("pending");

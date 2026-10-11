@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as Fs from "node:fs/promises";
-import * as Path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import type { ServiceLauncherClient } from "../../cloud/serviceLauncherClient.ts";
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
@@ -31,9 +31,9 @@ export function activatePlannedUpdateContinuity(input: {
     const version = input.launcher.currentVersion;
     const proof = yield* Effect.tryPromise({
       try: async (): Promise<PlannedUpdateProof> => {
-        const baseDir = await Fs.realpath(input.baseDir);
+        const baseDir = await NodeFSP.realpath(input.baseDir);
         const state = parseServiceState(
-          await Fs.readFile(Path.join(baseDir, "runtime", "service-state.json"), "utf8"),
+          await NodeFSP.readFile(NodePath.join(baseDir, "runtime", "service-state.json"), "utf8"),
         );
         const update = state?.update;
         if (
@@ -47,7 +47,7 @@ export function activatePlannedUpdateContinuity(input: {
         if (native.state !== outcome.status)
           throw new Error("Native operation outcome is not proven.");
         const current = await currentQualifiedRuntimeBinding(baseDir, version);
-        if (current.dbPath !== (await Fs.realpath(input.dbPath)))
+        if (current.dbPath !== (await NodeFSP.realpath(input.dbPath)))
           throw new Error("Running database differs from planned update binding.");
         return {
           operationId: outcome.id,

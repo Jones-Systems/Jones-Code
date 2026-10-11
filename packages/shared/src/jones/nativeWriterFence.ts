@@ -2,11 +2,11 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import type * as NodeSqlite from "node:sqlite";
 
 type JsonRecord = Record<string, unknown>;
 interface Lease {
-  readonly database: DatabaseSync;
+  readonly database: NodeSqlite.DatabaseSync;
   readonly device: string;
   readonly inode: string;
   readonly scope: string;

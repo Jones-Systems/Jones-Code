@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // The detached launcher owns these receipts outside the rollback database.
-import * as Fs from "node:fs/promises";
-import * as Path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import type { ServiceUpdateRecord } from "../../cloud/serviceProtocol.ts";
 import type { StagedQualifiedRuntime } from "../cloud/qualifiedRuntime.ts";
 
@@ -71,7 +71,7 @@ function publicBinding(binding: NativeOperationBinding): OperationBinding {
 
 function receiptPath(baseDir: string, operationId: string, outcome = false): string {
   if (!isUpdateOperationId(operationId)) throw new Error("Update operation ID must be a UUID v4.");
-  return Path.join(
+  return NodePath.join(
     baseDir,
     "runtime",
     "jones-update-operations",
@@ -81,10 +81,10 @@ function receiptPath(baseDir: string, operationId: string, outcome = false): str
 
 async function readJson(file: string): Promise<unknown | undefined> {
   try {
-    const stat = await Fs.lstat(file);
+    const stat = await NodeFSP.lstat(file);
     if (!stat.isFile() || stat.size > 64 * 1024)
       throw new Error("Invalid update operation receipt.");
-    return JSON.parse(await Fs.readFile(file, "utf8"));
+    return JSON.parse(await NodeFSP.readFile(file, "utf8"));
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw cause;
@@ -92,22 +92,22 @@ async function readJson(file: string): Promise<unknown | undefined> {
 }
 
 async function writeExclusive(file: string, value: unknown): Promise<void> {
-  const directory = Path.dirname(file);
-  await Fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const parent = await Fs.open(Path.dirname(directory), "r");
+  const directory = NodePath.dirname(file);
+  await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+  const parent = await NodeFSP.open(NodePath.dirname(directory), "r");
   try {
     await parent.sync();
   } finally {
     await parent.close();
   }
-  const handle = await Fs.open(file, "wx", 0o600);
+  const handle = await NodeFSP.open(file, "wx", 0o600);
   try {
     await handle.writeFile(`${JSON.stringify(value)}\n`);
     await handle.sync();
   } finally {
     await handle.close();
   }
-  const dir = await Fs.open(directory, "r");
+  const dir = await NodeFSP.open(directory, "r");
   try {
     await dir.sync();
   } finally {
@@ -119,7 +119,7 @@ export async function readOperationReservation(
   baseDir: string,
   operationId: string,
 ): Promise<OperationReservation | undefined> {
-  baseDir = await Fs.realpath(baseDir);
+  baseDir = await NodeFSP.realpath(baseDir);
   const value = await readJson(receiptPath(baseDir, operationId));
   if (value === undefined) return undefined;
   const row = value as Partial<OperationReservation>;
@@ -151,7 +151,7 @@ export async function reserveUpdateOperation(
   operationId: string,
   binding: NativeOperationBinding,
 ): Promise<void> {
-  baseDir = await Fs.realpath(baseDir);
+  baseDir = await NodeFSP.realpath(baseDir);
   if (binding.baseDir !== baseDir)
     throw new Error("Update operation binding must use the canonical runtime root.");
   await writeExclusive(receiptPath(baseDir, operationId), { schema: 1, operationId, binding });
@@ -163,7 +163,7 @@ export async function archiveUpdateOperation(
 ): Promise<void> {
   if (update === undefined || update.status === "pending" || !isUpdateOperationId(update.id))
     return;
-  baseDir = await Fs.realpath(baseDir);
+  baseDir = await NodeFSP.realpath(baseDir);
   const reserved = await readOperationReservation(baseDir, update.id);
   if (reserved === undefined) return;
   if (
@@ -193,7 +193,7 @@ export async function reconcileUpdateOperation(
   current: ServiceUpdateRecord | undefined,
 ): Promise<OperationReconciliation> {
   try {
-    baseDir = await Fs.realpath(baseDir);
+    baseDir = await NodeFSP.realpath(baseDir);
     const reserved = await readOperationReservation(baseDir, operationId);
     if (reserved === undefined) {
       return current?.id === operationId
@@ -265,12 +265,13 @@ export async function assertNoUnreconciledUpdateOperations(
   baseDir: string,
   current: ServiceUpdateRecord | undefined,
 ): Promise<void> {
-  baseDir = await Fs.realpath(baseDir);
-  let directory: Awaited<ReturnType<typeof Fs.opendir>>;
+  baseDir = await NodeFSP.realpath(baseDir);
+  let directory: Awaited<ReturnType<typeof NodeFSP.opendir>>;
   try {
-    const path = Path.join(baseDir, "runtime", "jones-update-operations");
-    if (!(await Fs.lstat(path)).isDirectory()) throw new Error("Invalid native receipt directory.");
-    directory = await Fs.opendir(path);
+    const path = NodePath.join(baseDir, "runtime", "jones-update-operations");
+    if (!(await NodeFSP.lstat(path)).isDirectory())
+      throw new Error("Invalid native receipt directory.");
+    directory = await NodeFSP.opendir(path);
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
     throw cause;

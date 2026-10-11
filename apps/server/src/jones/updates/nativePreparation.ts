@@ -3,7 +3,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
+import * as NodeUtil from "node:util";
 import * as Schema from "effect/Schema";
 
 const Manifest = Schema.Struct({
@@ -105,7 +105,7 @@ export async function prepareNativeContinuationReceipt(input: {
     profile: manifest.profile,
     environmentId: input.environmentId,
   };
-  if (!isDeepStrictEqual(claim, expectedClaim))
+  if (!NodeUtil.isDeepStrictEqual(claim, expectedClaim))
     throw new Error("Native preparation requires the current helper claim protocol.");
   const selection = await boundedJson(selectionPath);
   const selectedApp = selection.value.app;
@@ -116,7 +116,7 @@ export async function prepareNativeContinuationReceipt(input: {
     selection.value.home !== home ||
     selection.value.profile !== manifest.profile ||
     selection.value.currentVersion !== input.version ||
-    !isDeepStrictEqual(selection.value.active, active.value) ||
+    !NodeUtil.isDeepStrictEqual(selection.value.active, active.value) ||
     selectedApp === null ||
     typeof selectedApp !== "object" ||
     Array.isArray(selectedApp) ||
@@ -134,8 +134,8 @@ export async function prepareNativeContinuationReceipt(input: {
   });
   if (prior !== undefined) {
     if (
-      !isDeepStrictEqual(prior.value, receipt) ||
-      !isDeepStrictEqual(
+      !NodeUtil.isDeepStrictEqual(prior.value, receipt) ||
+      !NodeUtil.isDeepStrictEqual(
         (await boundedJson(NodePath.join(directory, "prepare-dispatched.json"))).value,
         expectedClaim,
       )
@@ -145,7 +145,7 @@ export async function prepareNativeContinuationReceipt(input: {
   }
   if (
     (await boundedJson(manifestPath)).raw !== active.raw ||
-    !isDeepStrictEqual((await boundedJson(claimPath)).value, expectedClaim)
+    !NodeUtil.isDeepStrictEqual((await boundedJson(claimPath)).value, expectedClaim)
   )
     throw new Error("The native preparation claim changed before dispatch.");
   // The helper's claim prevents discard. A separate durable dispatch record
