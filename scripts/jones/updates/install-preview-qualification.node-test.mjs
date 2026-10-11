@@ -31,6 +31,8 @@ import {
   fixtureProxy,
   scenarioSteps,
   indexedDbBrowserProof,
+  waitInactive,
+  openRpc,
 } from "./install-preview-qualification.mjs";
 
 const source = NodePath.resolve(
@@ -73,6 +75,221 @@ NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
     /Missing visible text/,
   );
 });
+
+function shellSubscriptionFixture() {
+  let onItem;
+  let resolveExit, rejectExit;
+  let interrupts = 0;
+  let settled = false;
+  const result = new Promise((resolve, reject) => {
+    resolveExit = resolve;
+    rejectExit = reject;
+  });
+  return {
+    rpc: {
+      call(tag, payload, receive) {
+        NodeAssert.equal(tag, "orchestration.subscribeShell");
+        NodeAssert.deepEqual(payload, {});
+        NodeAssert.equal(onItem, undefined);
+        onItem = receive;
+        return {
+          result,
+          interrupt: () => {
+            if (!settled) interrupts += 1;
+          },
+        };
+      },
+    },
+    emit: (item) => onItem(item),
+    snapshot: (...threads) =>
+      onItem({ kind: "snapshot", snapshot: { threads, archivedThreads: [] } }),
+    update: (thread) => onItem({ kind: "thread.updated", thread }),
+    fail: (error) => {
+      settled = true;
+      rejectExit(error);
+    },
+    end: () => {
+      settled = true;
+      resolveExit();
+    },
+    acknowledgeInterrupt: () => {
+      NodeAssert.equal(interrupts, 1);
+      settled = true;
+      rejectExit(
+        Object.assign(new Error("Native RPC interrupted"), { nativeRpcInterrupted: true }),
+      );
+    },
+    get interrupts() {
+      return interrupts;
+    },
+  };
+}
+
+NodeTest.test(
+  "initial idle shell waits for native interrupt completion before release",
+  async () => {
+    const fixture = shellSubscriptionFixture();
+    let completed = false;
+    const waiting = waitInactive(fixture.rpc, "owned-thread").then((value) => {
+      completed = true;
+      return value;
+    });
+    fixture.snapshot({ id: "owned-thread", activeRunId: null });
+    await Promise.resolve();
+    NodeAssert.equal(fixture.interrupts, 1);
+    NodeAssert.equal(completed, false);
+    fixture.acknowledgeInterrupt();
+    NodeAssert.deepEqual(await waiting, { thread: { id: "owned-thread", activeRunId: null } });
+  },
+);
+
+NodeTest.test(
+  "shell inactivity ignores unrelated updates and observes the matching active-to-idle transition",
+  async () => {
+    const fixture = shellSubscriptionFixture();
+    const waiting = waitInactive(fixture.rpc, "owned-thread");
+    fixture.snapshot(
+      { id: "other", activeRunId: null },
+      { id: "owned-thread", activeRunId: "run:active" },
+    );
+    fixture.update({ id: "other", activeRunId: null });
+    fixture.emit({ kind: "synchronized" });
+    await Promise.resolve();
+    NodeAssert.equal(fixture.interrupts, 0);
+    fixture.update({ id: "owned-thread", activeRunId: null });
+    await Promise.resolve();
+    fixture.acknowledgeInterrupt();
+    NodeAssert.equal((await waiting).thread.activeRunId, null);
+  },
+);
+
+NodeTest.test(
+  "missing, inherited and invalid activeRunId never count as native inactivity",
+  async () => {
+    for (const thread of [
+      { id: "owned-thread" },
+      Object.assign(Object.create({ activeRunId: null }), { id: "owned-thread" }),
+      { id: "owned-thread", activeRunId: "" },
+      { id: "owned-thread", activeRunId: 0 },
+    ]) {
+      const fixture = shellSubscriptionFixture();
+      const rejected = NodeAssert.rejects(
+        waitInactive(fixture.rpc, "owned-thread"),
+        /missing a valid activeRunId/,
+      );
+      fixture.snapshot(thread);
+      await Promise.resolve();
+      fixture.acknowledgeInterrupt();
+      await rejected;
+    }
+  },
+);
+
+NodeTest.test(
+  "native shell failure, deadline and cancellation settle without another subscription",
+  async () => {
+    for (const reason of [
+      "Native RPC socket closed",
+      "Native RPC timed out: orchestration.subscribeShell",
+      "Owned qualification cancelled",
+    ]) {
+      const fixture = shellSubscriptionFixture();
+      const original = new Error(reason);
+      const rejected = NodeAssert.rejects(
+        waitInactive(fixture.rpc, "owned-thread"),
+        (error) => error === original,
+      );
+      fixture.snapshot({ id: "owned-thread", activeRunId: "run:active" });
+      fixture.fail(original);
+      await rejected;
+      NodeAssert.equal(fixture.interrupts, 0);
+    }
+    const fixture = shellSubscriptionFixture();
+    const rejected = NodeAssert.rejects(
+      waitInactive(fixture.rpc, "owned-thread"),
+      /ended before inactivity/,
+    );
+    fixture.end();
+    await rejected;
+    NodeAssert.equal(fixture.interrupts, 0);
+  },
+);
+
+NodeTest.test(
+  "native subscription cleanup failures cannot produce successful inactivity or replace a prior error",
+  async () => {
+    for (const malformed of [false, true]) {
+      const fixture = shellSubscriptionFixture();
+      const cleanup = new Error("Native finalizer failed");
+      const rejected = NodeAssert.rejects(waitInactive(fixture.rpc, "owned-thread"), (error) => {
+        if (malformed) {
+          NodeAssert.ok(error instanceof AggregateError);
+          NodeAssert.match(error.errors[0].message, /missing a valid activeRunId/);
+          NodeAssert.equal(error.errors[1], cleanup);
+        } else NodeAssert.equal(error, cleanup);
+        return true;
+      });
+      fixture.snapshot(
+        malformed ? { id: "owned-thread" } : { id: "owned-thread", activeRunId: null },
+      );
+      await Promise.resolve();
+      NodeAssert.equal(fixture.interrupts, 1);
+      fixture.fail(cleanup);
+      await rejected;
+    }
+  },
+);
+
+NodeTest.test(
+  "RPC interruption classification uses actual encoded Exit reasons and drains the request",
+  async (t) => {
+    for (const cause of [
+      [{ _tag: "Interrupt", fiberId: null }],
+      [
+        { _tag: "Interrupt", fiberId: 1 },
+        { _tag: "Die", defect: "failed cleanup" },
+      ],
+      [],
+    ]) {
+      const sent = [];
+      let socket;
+      const mock = t.mock.method(globalThis, "WebSocket", function () {
+        socket = new EventTarget();
+        socket.send = (value) => sent.push(JSON.parse(value));
+        socket.close = () => socket.dispatchEvent(new Event("close"));
+        queueMicrotask(() => socket.dispatchEvent(new Event("open")));
+        return socket;
+      });
+      let rpc;
+      try {
+        rpc = await openRpc("ws://owned-fixture.invalid", new AbortController().signal);
+        const subscription = rpc.call("orchestration.subscribeShell", {}, () => {});
+        const requestId = sent[0].id;
+        const rejected = NodeAssert.rejects(subscription.result, (error) => {
+          NodeAssert.equal(error.nativeRpcInterrupted, cause.length === 1);
+          return true;
+        });
+        subscription.interrupt();
+        NodeAssert.deepEqual(sent[1], { _tag: "Interrupt", requestId });
+        socket.dispatchEvent(
+          new MessageEvent("message", {
+            data: JSON.stringify({
+              _tag: "Exit",
+              requestId,
+              exit: { _tag: "Failure", cause },
+            }),
+          }),
+        );
+        await rejected;
+        subscription.interrupt();
+        NodeAssert.equal(sent.length, 2);
+      } finally {
+        await rpc?.close();
+        mock.mock.restore();
+      }
+    }
+  },
+);
 
 // A deterministic IDB event model checks the emitted expression's guards and cleanup;
 // only the hosted native Preview scenario establishes actual browser compatibility.

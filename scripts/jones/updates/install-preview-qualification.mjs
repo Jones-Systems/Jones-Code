@@ -165,10 +165,17 @@ export async function openRpc(url, signal) {
         } else if (frame._tag === "Exit") {
           pending.delete(String(frame.requestId));
           if (frame.exit._tag === "Success") entry.resolve(frame.exit.value);
-          else
-            entry.reject(
-              new Error(`Native RPC ${entry.tag} failed: ${JSON.stringify(frame.exit.cause)}`),
+          else {
+            const error = new Error(
+              `Native RPC ${entry.tag} failed: ${JSON.stringify(frame.exit.cause)}`,
             );
+            // Effect RPC encodes interruption as a nonempty array of Interrupt reasons.
+            error.nativeRpcInterrupted =
+              Array.isArray(frame.exit.cause) &&
+              frame.exit.cause.length > 0 &&
+              frame.exit.cause.every((reason) => reason?._tag === "Interrupt");
+            entry.reject(error);
+          }
         }
       }
     } catch (error) {
@@ -189,7 +196,12 @@ export async function openRpc(url, signal) {
         pending.set(requestId, { tag, resolve, reject, onItem });
         send({ _tag: "Request", id: requestId, tag, payload, headers: [] });
       }).finally(() => clearTimeout(timer));
-      return { result, interrupt: () => send({ _tag: "Interrupt", requestId }) };
+      return {
+        result,
+        interrupt: () => {
+          if (pending.has(requestId)) send({ _tag: "Interrupt", requestId });
+        },
+      };
     },
     async close() {
       closePending(new Error("Qualification closed RPC"));
@@ -1075,45 +1087,67 @@ function rendererSteps(origin, sourceSha, runId) {
   return steps;
 }
 
-async function waitInactive(rpc, threadId) {
+export async function waitInactive(rpc, threadId) {
   let resolveInactive, rejectInactive;
   const inactive = new Promise((resolve, reject) => {
     resolveInactive = resolve;
     rejectInactive = reject;
   });
-  let examining = false;
-  let changed = false;
-  const inspect = async () => {
-    if (examining) {
-      changed = true;
+  let finished = false;
+  const inspect = (thread) => {
+    if (finished || thread?.id !== threadId) return;
+    if (
+      !Object.hasOwn(thread, "activeRunId") ||
+      !(
+        thread.activeRunId === null ||
+        (typeof thread.activeRunId === "string" && thread.activeRunId.length > 0)
+      )
+    ) {
+      rejectInactive(new Error("Native thread shell is missing a valid activeRunId"));
       return;
     }
-    examining = true;
-    try {
-      const projection = await rpc.call("orchestration.getThreadProjection", { threadId }).result;
-      const actual = projection.projection ?? projection;
-      if (actual.thread.activeRunId === null) resolveInactive(actual);
-    } catch (error) {
-      rejectInactive(error);
-    } finally {
-      examining = false;
-      if (changed) {
-        changed = false;
-        void inspect();
-      }
-    }
+    if (thread.activeRunId === null) resolveInactive({ thread });
   };
-  const subscription = rpc.call(
-    "orchestration.subscribeThread",
-    { threadId },
-    () => void inspect(),
+  const subscription = rpc.call("orchestration.subscribeShell", {}, (item) => {
+    if (finished) return;
+    if (item.kind === "snapshot") {
+      for (const thread of [...item.snapshot.threads, ...item.snapshot.archivedThreads])
+        inspect(thread);
+    } else if (item.kind === "thread.updated") inspect(item.thread);
+  });
+  // Attach both handlers immediately; a native failure also settles the inactivity wait.
+  const terminal = subscription.result.then(
+    () => {
+      if (!finished) rejectInactive(new Error("Native shell subscription ended before inactivity"));
+      return { error: null };
+    },
+    (error) => {
+      if (!finished) rejectInactive(error);
+      return { error };
+    },
   );
-  subscription.result.catch(rejectInactive);
+  let failure;
   try {
-    await inspect();
     return await inactive;
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    subscription.interrupt();
+    finished = true;
+    try {
+      subscription.interrupt();
+      // Do not leave a pending RPC/timer behind or accept a failed native finalizer.
+      const exit = await terminal;
+      if (exit.error && exit.error !== failure && exit.error.nativeRpcInterrupted !== true)
+        throw exit.error;
+    } catch (cleanupError) {
+      if (failure && cleanupError !== failure)
+        throw new AggregateError(
+          [failure, cleanupError],
+          "Native inactivity observation and subscription cleanup failed",
+        );
+      throw cleanupError;
+    }
   }
 }
 
