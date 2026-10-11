@@ -14,6 +14,7 @@ import {
   type FleetUpdateMemberInput,
 } from "@t3tools/contracts/jones/fleet-updates";
 
+/** Supplied only by the native controller after binding its journal attempt to the staged selection. */
 export interface FleetInstallBinding {
   readonly campaignId: string;
   readonly stagedHandle: string;
@@ -302,10 +303,16 @@ export function createDesktopFleetStore(options: {
           campaign === undefined ||
           campaign.desktopStagedHandle !== binding.stagedHandle ||
           campaign.targetSource !== binding.targetSource ||
-          binding.transactionId !== binding.stagedHandle ||
+          !/^[a-f0-9]{64}$/.test(binding.transactionId) ||
+          !/^[a-f0-9]{64}$/.test(binding.stagedHandle) ||
           (campaign.phase !== "prepared" && campaign.phase !== "installing")
         )
           throw new Error("The selected desktop update does not match its fleet campaign.");
+        if (state.campaigns.some((entry) =>
+          entry.campaignId !== binding.campaignId &&
+          entry.installation?.transactionId === binding.transactionId
+        ))
+          throw new Error("The native installation attempt already belongs to another fleet campaign.");
         if (
           campaign.installation !== undefined &&
           (campaign.installation.transactionId !== binding.transactionId ||

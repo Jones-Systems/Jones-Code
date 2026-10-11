@@ -8,6 +8,8 @@ import { createDesktopFleetStore } from "./store.ts";
 const campaignId = "11111111-1111-4111-8111-111111111111";
 const enrollmentId = "22222222-2222-4222-8222-222222222222";
 const source = "a".repeat(40);
+const stagedHandle = "c".repeat(64);
+const transactionId = "d".repeat(64);
 const enrollment = {
   enrollmentId,
   environmentId: EnvironmentId.make("fleet-test-host"),
@@ -23,7 +25,7 @@ async function fixture(
     await store.request({ action: "enroll", enrollment });
     await store.request({
       action: "prepare",
-      input: { campaignId, targetSource: source, desktopStagedHandle: "selected-handle" },
+      input: { campaignId, targetSource: source, desktopStagedHandle: stagedHandle },
     });
     await run(home, store);
   } finally {
@@ -48,9 +50,9 @@ describe("native fleet commit gate", () => {
       await expect(store.request(dispatch)).rejects.toThrow("has not committed");
       await store.bindInstall({
         campaignId,
-        stagedHandle: "selected-handle",
+        stagedHandle: stagedHandle,
         targetSource: source,
-        transactionId: "selected-handle",
+        transactionId,
         fromGeneration: "previous",
       });
       await store.recordOutcome({
@@ -61,14 +63,14 @@ describe("native fleet commit gate", () => {
       });
       await expect(store.request(dispatch)).rejects.toThrow("has not committed");
       await store.recordOutcome({
-        transactionId: "selected-handle",
+        transactionId,
         status: "committed",
-        activeGeneration: "selected-handle",
+        activeGeneration: transactionId,
         activeSource: source,
       });
       const restarted = createDesktopFleetStore({ home, profile: undefined });
       const after = await restarted.request(dispatch);
-      expect(after.campaigns[0]?.committedGeneration).toBe("selected-handle");
+      expect(after.campaigns[0]?.committedGeneration).toBe(transactionId);
       expect(after.campaigns[0]?.members[0]?.phase).toBe("dispatching");
     }));
 
@@ -77,15 +79,15 @@ describe("native fleet commit gate", () => {
       await fixture(async (_home, store) => {
         await store.bindInstall({
           campaignId,
-          stagedHandle: "selected-handle",
+          stagedHandle: stagedHandle,
           targetSource: source,
-          transactionId: "selected-handle",
+          transactionId: stagedHandle,
           fromGeneration: "previous",
         });
         await store.recordOutcome({
-          transactionId: "selected-handle",
+          transactionId: stagedHandle,
           status: mismatch ? "committed" : "rolled-back",
-          activeGeneration: mismatch ? "selected-handle" : "previous",
+          activeGeneration: mismatch ? stagedHandle : "previous",
           activeSource: "b".repeat(40),
         });
         const state = await store.request({ action: "read" });
@@ -132,15 +134,15 @@ describe("native fleet commit gate", () => {
       ).rejects.toThrow("source binding changed");
       await store.bindInstall({
         campaignId,
-        stagedHandle: "selected-handle",
+        stagedHandle: stagedHandle,
         targetSource: source,
-        transactionId: "selected-handle",
+        transactionId: stagedHandle,
         fromGeneration: "previous",
       });
       await store.recordOutcome({
-        transactionId: "selected-handle",
+        transactionId: stagedHandle,
         status: "committed",
-        activeGeneration: "selected-handle",
+        activeGeneration: stagedHandle,
         activeSource: source,
       });
       await store.request({
@@ -214,4 +216,50 @@ it("holds an old unaccepted stage for exact retirement instead of forgetting its
         })
       ).campaigns[1]?.members[0]?.phase,
     ).toBe("staging");
+  }));
+
+
+it("binds one native attempt to one campaign and retains it on repeated calls after reload", async () =>
+  fixture(async (home, store) => {
+    const binding = {campaignId, stagedHandle, transactionId, targetSource: source, fromGeneration: "previous"};
+    const before = await store.request({action: "read"});
+    await store.bindInstall(binding);
+    const restarted = createDesktopFleetStore({home, profile: undefined});
+    await restarted.bindInstall(binding);
+    expect((await restarted.request({action: "read"})).campaigns[0]?.members).toEqual(before.campaigns[0]?.members);
+    for (const altered of [
+      {...binding, transactionId: "e".repeat(64)},
+      {...binding, fromGeneration: "another-generation"},
+      {...binding, stagedHandle: "f".repeat(64)},
+      {...binding, targetSource: "b".repeat(40)},
+      {...binding, transactionId: "not-a-native-attempt"},
+    ]) await expect(restarted.bindInstall(altered)).rejects.toThrow();
+    expect((await restarted.request({action: "read"})).campaigns[0]?.installation).toEqual({transactionId, fromGeneration: "previous"});
+  }));
+
+it("uses a fresh campaign and host operation after rollback without reusing the old native attempt", async () =>
+  fixture(async (home, store) => {
+    const first = {campaignId, stagedHandle, transactionId, targetSource: source, fromGeneration: "previous"};
+    await store.bindInstall(first);
+    await store.recordOutcome({transactionId, status: "rolled-back", activeGeneration: "previous", activeSource: "b".repeat(40)});
+    const firstState = await store.request({action: "read"});
+    const oldOperationId = firstState.campaigns[0]!.members[0]!.operationId;
+    await expect(store.bindInstall({...first, transactionId: "e".repeat(64)})).rejects.toThrow();
+    const nextId = "33333333-3333-4333-8333-333333333333";
+    const prepared = await store.request({action: "prepare", input: {campaignId: nextId, targetSource: source, desktopStagedHandle: stagedHandle}});
+    expect(prepared.campaigns[0]?.phase).toBe("rolled-back");
+    const nextOperationId = prepared.campaigns[1]!.members[0]!.operationId;
+    expect(nextOperationId).not.toBe(oldOperationId);
+    await expect(store.bindInstall({...first, campaignId: nextId})).rejects.toThrow("already belongs");
+    const nextAttempt = "e".repeat(64);
+    await store.bindInstall({...first, campaignId: nextId, transactionId: nextAttempt});
+    const restarted = createDesktopFleetStore({home, profile: undefined});
+    await restarted.bindInstall({...first, campaignId: nextId, transactionId: nextAttempt});
+    await restarted.recordOutcome({transactionId, status: "committed", activeGeneration: transactionId, activeSource: source});
+    expect((await restarted.request({action: "read"})).campaigns.map((campaign) => campaign.phase)).toEqual(["rolled-back", "installing"]);
+    await restarted.recordOutcome({transactionId: nextAttempt, status: "committed", activeGeneration: nextAttempt, activeSource: source});
+    const final = await restarted.request({action: "read"});
+    expect(final.campaigns.map((campaign) => campaign.phase)).toEqual(["rolled-back", "committed"]);
+    expect(final.campaigns[1]?.members[0]?.operationId).toBe(nextOperationId);
+    expect(final.campaigns[1]?.committedGeneration).toBe(nextAttempt);
   }));
