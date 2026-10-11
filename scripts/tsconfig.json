@@ -2,8 +2,13 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
-    "types": ["node"],
-    "lib": ["ESNext", "esnext.disposable"]
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ESNext",
+      "esnext.disposable"
+    ]
   },
   "include": [
     "**/*.ts",
@@ -13,6 +18,7 @@
     "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
     "../apps/desktop/src/jones/updates/jonesColdPairSource.ts",
     "../apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
+    "../apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts",
     "jones/updates/legacy-bootstrap-after-pack.d.mts"
   ]
 }
