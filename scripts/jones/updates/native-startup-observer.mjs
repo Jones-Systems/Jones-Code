@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { FixtureOwnership } from "./native-startup-fixture.mjs";
 
 const historyLost = 0x01 | 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80;
 const mutation = 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000 | 0x4000 | 0x8000;
@@ -139,9 +140,11 @@ export async function startObserver(executable, roots, signal) {
 export async function observerControl(observer, roots) {
   const offset = await observer.flush();
   const names = [];
+  const ownership = new FixtureOwnership();
   try {
     for (const root of roots) {
-      const name = path.join(root, `.jones-observer-control-${randomUUID()}`);
+      const directory = await ownership.temporary(path.join(root, ".jones-observer-control-"));
+      const name = path.join(directory, "sentinel");
       names.push(name, `${name}.renamed`);
       await fs.writeFile(name, "created", { flag: "wx", mode: 0o600 });
       await fs.appendFile(name, "-changed");
@@ -161,6 +164,6 @@ export async function observerControl(observer, roots) {
       );
     }
   } finally {
-    for (const name of names) await fs.rm(name, { force: true });
+    await ownership.cleanup();
   }
 }

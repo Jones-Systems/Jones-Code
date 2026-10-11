@@ -8,8 +8,10 @@ import {
   assertStartupRefused,
   cleanLaunchEnvironment,
   createNativeState,
+  FixtureOwnership,
   initializeFixtureLeases,
   leasePaths,
+  packagedStartupNames,
   runOwnedChild,
   snapshotTree,
   withExclusiveLeases,
@@ -27,10 +29,11 @@ assert.equal(args[0], "--dmg");
 assert.equal(args[2], "--evidence");
 const dmg = await fs.realpath(args[1]);
 const evidencePath = path.resolve(args[3]);
-const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "jones-packaged-startup-"));
+const scratch = new FixtureOwnership();
+const ownership = new FixtureOwnership();
+const temporary = await scratch.temporary(path.join(os.tmpdir(), "jones-packaged-startup-"));
 const root = await fs.realpath(temporary);
 const mount = path.join(root, "mount");
-const ownedPaths = [];
 const controller = new AbortController();
 const cancel = () => controller.abort();
 process.on("SIGINT", cancel);
@@ -67,13 +70,12 @@ const command = async (executable, argv, timeout = 15000) => {
   assert.equal(result.code, 0, result.stderr);
   return result.stdout;
 };
-const claimAbsent = async (filename) => {
+const requireAbsent = async (filename) => {
   await assert.rejects(
     fs.lstat(filename),
     { code: "ENOENT" },
     `Refusing to inspect or replace pre-existing runner state: ${filename}`,
   );
-  ownedPaths.push(filename);
 };
 try {
   const executable = path.join(root, "observer");
@@ -117,7 +119,6 @@ try {
       "utf8",
     ),
   );
-  assert.equal(metadata.main, "dist-electron/boot.cjs");
   assert.equal(metadata.jonesSource.repository, "Jones-Systems/Jones-Code");
   assert.equal(metadata.jonesSource.sha, process.env.GITHUB_SHA);
   assert.match(metadata.jonesSource.tree, /^[a-f0-9]{40}$/);
@@ -153,19 +154,18 @@ try {
       path.join(app, "Contents", "Info.plist"),
     ])
   ).trim();
+  const bundleName = (
+    await command("/usr/libexec/PlistBuddy", [
+      "-c",
+      "Print :CFBundleName",
+      path.join(app, "Contents", "Info.plist"),
+    ])
+  ).trim();
   assert.equal(path.basename(executableName), executableName);
   const binary = path.join(app, "Contents", "MacOS", executableName);
   const home = path.join(native.home, ".t3");
   const profile = path.join(native.applicationSupport, "t3code-v2");
-  const names = new Set([metadata.productName, metadata.name, executableName, bundleIdentifier]);
-  for (const name of names)
-    assert.ok(
-      typeof name === "string" &&
-        name.length > 0 &&
-        path.basename(name) === name &&
-        name !== "." &&
-        name !== "..",
-    );
+  const names = packagedStartupNames(metadata, { executableName, bundleIdentifier, bundleName });
   const protectedPaths = [
     ...new Set([
       home,
@@ -176,13 +176,13 @@ try {
       ]),
     ]),
   ];
-  for (const filename of protectedPaths) await claimAbsent(filename);
-  const active = await createNativeState(home, profile, metadata);
+  for (const filename of protectedPaths) await requireAbsent(filename);
+  const active = await createNativeState(home, profile, metadata, ownership);
   for (const filename of leasePaths(active).filter((name) => !name.startsWith(home + path.sep))) {
-    await claimAbsent(filename);
-    await claimAbsent(`${filename}.identity.json`);
+    await requireAbsent(filename);
+    await requireAbsent(`${filename}.identity.json`);
   }
-  await initializeFixtureLeases(active);
+  await initializeFixtureLeases(active, ownership);
   const before = await Promise.all(protectedPaths.map(snapshotTree));
   const watchRoots = [native.home, native.applicationSupport, native.caches];
   observer = await startObserver(executable, watchRoots, controller.signal);
@@ -246,12 +246,10 @@ try {
   // Persist bounded evidence before removing any fixture state, including on a
   // failed qualification. Cleanup failures also make the job fail.
   await persist();
-  for (const filename of ownedPaths.reverse()) {
-    try {
-      await fs.rm(filename, { recursive: true, force: true });
-    } catch (error) {
-      recordCleanupFailure(error);
-    }
+  try {
+    await ownership.cleanup();
+  } catch (error) {
+    recordCleanupFailure(error);
   }
   if (mounted) {
     try {
@@ -265,7 +263,7 @@ try {
   if (failure) evidence.outcome = "failed";
   if (!mounted) {
     try {
-      await fs.rm(temporary, { recursive: true, force: true });
+      await scratch.cleanup();
     } catch (error) {
       recordCleanupFailure(error);
     }

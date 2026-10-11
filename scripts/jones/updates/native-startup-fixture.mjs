@@ -5,6 +5,142 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+const outstandingGroups = new Set();
+
+export function packagedStartupNames(metadata, { executableName, bundleIdentifier, bundleName }) {
+  assert.equal(metadata.main, "apps/desktop/dist-electron/boot.cjs");
+  const names = new Set([metadata.name, executableName, bundleIdentifier, bundleName]);
+  if (metadata.productName !== undefined) names.add(metadata.productName);
+  for (const name of names)
+    assert.ok(
+      typeof name === "string" &&
+        name.length > 0 &&
+        path.basename(name) === name &&
+        name !== "." &&
+        name !== "..",
+    );
+  return [...names];
+}
+
+export function assertFixtureProcessesStopped() {
+  assert.equal(
+    outstandingGroups.size,
+    0,
+    "An owned process group is unresolved; fixture cleanup is held.",
+  );
+}
+
+function groupExists(group) {
+  try {
+    process.kill(-group, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function drainGroup(group) {
+  for (const [signal, allowance] of [
+    ["SIGTERM", 1000],
+    ["SIGKILL", 4000],
+  ]) {
+    if (!groupExists(group)) {
+      outstandingGroups.delete(group);
+      return;
+    }
+    try {
+      process.kill(-group, signal);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+    const deadline = Date.now() + allowance;
+    while (Date.now() < deadline) {
+      if (!groupExists(group)) {
+        outstandingGroups.delete(group);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  if (!groupExists(group)) {
+    outstandingGroups.delete(group);
+    return;
+  }
+  throw new Error("Owned process group did not drain; fixture cleanup is held.");
+}
+
+export class FixtureOwnership {
+  #paths = [];
+
+  async #remember(filename, info) {
+    this.#paths.push({
+      filename,
+      device: info.dev,
+      inode: info.ino,
+      directory: info.isDirectory(),
+    });
+  }
+
+  async mkdir(filename) {
+    await fs.mkdir(filename, { mode: 0o700 });
+    await this.#remember(filename, await fs.lstat(filename, { bigint: true }));
+  }
+
+  async temporary(prefix) {
+    const filename = await fs.mkdtemp(prefix);
+    await this.#remember(filename, await fs.lstat(filename, { bigint: true }));
+    return filename;
+  }
+
+  async file(filename, contents) {
+    const handle = await fs.open(filename, "wx", 0o600);
+    try {
+      await this.#remember(filename, await handle.stat({ bigint: true }));
+      await handle.writeFile(contents);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async cleanup() {
+    assertFixtureProcessesStopped();
+    const failures = [];
+    const preserved = [];
+    for (const receipt of [...this.#paths].reverse()) {
+      try {
+        assert.ok(
+          !preserved.some((filename) => filename.startsWith(receipt.filename + path.sep)),
+          `A descendant's ownership changed; preserving ${receipt.filename}`,
+        );
+        let current;
+        try {
+          current = await fs.lstat(receipt.filename, { bigint: true });
+        } catch (error) {
+          if (error.code === "ENOENT") continue;
+          throw error;
+        }
+        assert.ok(
+          !current.isSymbolicLink() &&
+            current.dev === receipt.device &&
+            current.ino === receipt.inode &&
+            current.isDirectory() === receipt.directory,
+          `Fixture ownership changed; preserving ${receipt.filename}`,
+        );
+        await fs.rm(receipt.filename, { recursive: receipt.directory, force: false });
+      } catch (error) {
+        failures.push(error);
+        preserved.push(receipt.filename);
+      }
+    }
+    if (failures.length)
+      throw new AggregateError(
+        failures,
+        "Some fixture ownership could not be verified; paths were preserved.",
+      );
+  }
+}
+
 export function cleanLaunchEnvironment(environment, temporary) {
   const env = { ...environment };
   for (const key of Object.keys(env)) {
@@ -24,8 +160,8 @@ export function cleanLaunchEnvironment(environment, temporary) {
   };
 }
 
-// Only captured child process groups are signalled. Close precedes scratch cleanup,
-// including timeout, output overflow, and cancellation paths.
+// Only captured child process groups are signalled. A leader's close is followed
+// by group absence, including on timeout, output overflow, and cancellation.
 export function runOwnedChild(command, args, { signal, timeout = 15000, ...options } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -33,6 +169,7 @@ export function runOwnedChild(command, args, { signal, timeout = 15000, ...optio
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    if (child.pid !== undefined) outstandingGroups.add(child.pid);
     let failure;
     let stdout = "";
     let stderr = "";
@@ -67,19 +204,25 @@ export function runOwnedChild(command, args, { signal, timeout = 15000, ...optio
     child.once("close", (code, exitSignal) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
-      if (failure) reject(failure);
-      else resolve({ code, signal: exitSignal, stdout, stderr });
+      const drained = child.pid === undefined ? Promise.resolve() : drainGroup(child.pid);
+      void drained.then(() => {
+        if (failure) reject(failure);
+        else resolve({ code, signal: exitSignal, stdout, stderr });
+      }, reject);
     });
   });
 }
 
-export async function createNativeState(home, profile, metadata) {
-  await fs.mkdir(path.join(home, "userdata"), { recursive: true });
-  await fs.mkdir(path.join(home, "runtime"), { recursive: true });
-  await fs.mkdir(profile, { recursive: true });
+export async function createNativeState(home, profile, metadata, ownership) {
+  await ownership.mkdir(home);
+  await ownership.mkdir(profile);
+  await fs.mkdir(path.join(home, "userdata"));
+  await fs.mkdir(path.join(home, "runtime"));
   const databasePath = path.join(home, "userdata", "statev2.sqlite");
-  await fs.writeFile(databasePath, "synthetic application database; must never open");
-  await fs.writeFile(path.join(profile, "protected-sentinel"), "unchanged");
+  await fs.writeFile(databasePath, "synthetic application database; must never open", {
+    flag: "wx",
+  });
+  await fs.writeFile(path.join(profile, "protected-sentinel"), "unchanged", { flag: "wx" });
   const active = {
     protocol: 1,
     owner: "desktop",
@@ -96,11 +239,13 @@ export async function createNativeState(home, profile, metadata) {
   await fs.writeFile(
     path.join(home, "runtime", "jones-active-install.json"),
     JSON.stringify(active),
-    { mode: 0o600 },
+    { flag: "wx", mode: 0o600 },
   );
   const transaction = path.join(home, "runtime", "jones-updates", "transactions", "f".repeat(64));
-  await fs.mkdir(transaction, { recursive: true });
-  await fs.writeFile(path.join(transaction, "intent.json"), "{}");
+  await fs.mkdir(path.join(home, "runtime", "jones-updates"));
+  await fs.mkdir(path.dirname(transaction));
+  await fs.mkdir(transaction);
+  await fs.writeFile(path.join(transaction, "intent.json"), "{}", { flag: "wx" });
   return active;
 }
 
@@ -114,9 +259,9 @@ export function leasePaths(active) {
   ].sort();
 }
 
-export async function initializeFixtureLeases(active) {
+export async function initializeFixtureLeases(active, ownership) {
   for (const filename of leasePaths(active)) {
-    await fs.writeFile(filename, "", { flag: "wx", mode: 0o600 });
+    await ownership.file(filename, "");
     const scope = filename.startsWith(active.home + path.sep)
       ? `home:${active.home}`
       : `profile:${active.profile}`;
@@ -130,10 +275,9 @@ export async function initializeFixtureLeases(active) {
       connection.close();
     }
     const info = await fs.stat(filename, { bigint: true });
-    await fs.writeFile(
+    await ownership.file(
       `${filename}.identity.json`,
       JSON.stringify({ protocol: 1, scope, device: String(info.dev), inode: String(info.ino) }),
-      { flag: "wx", mode: 0o600 },
     );
   }
 }

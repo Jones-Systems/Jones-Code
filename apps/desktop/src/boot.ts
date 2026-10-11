@@ -17,6 +17,7 @@ function startDesktop(): void {
   });
   try {
     holdJonesDesktopNativeWriterFence({
+      // oxlint-disable-next-line t3code/no-global-process-runtime -- Synchronous admission must precede profile and Effect runtime initialization.
       platform: process.platform,
       env: process.env,
       homeDirectory: electron.app.getPath("home"),
