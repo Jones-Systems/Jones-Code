@@ -77,9 +77,9 @@ const NativeStageReceipt = Schema.Struct({
 
 const decodeNativeSelectionResult = Schema.decodeUnknownSync(Schema.Struct({
   protocol: Schema.Literal(1),
-  operation: Schema.Literals(["discard-staged", "claim-activation"]),
+  operation: Schema.Literals(["discard-staged", "claim-preparation", "claim-activation"]),
   handle: Schema.String,
-  status: Schema.Literals(["discarded", "claimed", "refused", "uncertain"]),
+  status: Schema.Literals(["discarded", "preparation-claimed", "claimed", "refused", "uncertain"]),
   intentPath: Schema.optionalKey(Schema.String),
   reason: Schema.optionalKey(Schema.String),
 }));
@@ -838,6 +838,19 @@ export class JonesDesktopUpdateController {
         if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
       await this.#publish("preparing", "downloaded");
+      // Claim preparation under the same native lock as discard before the backend can create effects.
+      this.#activationBlocked = true;
+      const preparation = decodeNativeSelectionResult(JSON.parse(await runNativeCommand("/usr/bin/python3", [
+        helper, "--manifest", this.manifestPath, "--claim-preparation", handle,
+        "--selection", selectionPath, "--selection-sha256",
+        NodeCrypto.createHash("sha256").update(selectionRaw).digest("hex"),
+      ])));
+      if (preparation.operation !== "claim-preparation" || preparation.handle !== handle)
+        throw new Error("Native preparation claim identity changed.");
+      if (preparation.status === "refused" && preparation.reason === "selection-mismatch")
+        this.#activationBlocked = false;
+      if (preparation.status !== "preparation-claimed")
+        throw new Error("Native preparation claim was not confirmed.");
       await this.#options.prepareNative?.(handle, expected);
       // A missing preparation receipt is a real capability blocker; never manufacture it.
       const continuationReceipt = jonesContinuationReceiptPath(this.#options.home, handle);

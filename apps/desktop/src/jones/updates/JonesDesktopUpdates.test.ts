@@ -375,10 +375,13 @@ describe("Jones desktop updates", () => {
     const nativeCommand = vi.mocked(NodeChildProcess.execFile);
     const preflight = vi.mocked(preflightJonesCandidateStartupGate);
     const campaignId = "11111111-1111-4111-8111-111111111111";
-    const fleet = { bindInstall: vi.fn().mockRejectedValue(new Error("storage unavailable")), recordOutcome: vi.fn() };
+    const order: string[] = [];
+    const fleet = { bindInstall: vi.fn(async () => { order.push("bind"); throw new Error("storage unavailable"); }), recordOutcome: vi.fn() };
     try {
       const controller = new JonesDesktopUpdateController({ ...f.options, fleet,
         prepareNative: async (selected) => {
+          order.push("prepare");
+          expect(order).toEqual(["claim", "prepare"]);
           await NodeFSP.writeFile(NodePath.join(f.home, "runtime", "jones-updates", "transactions", selected, "continuation.json"),
             JSON.stringify({ prepared: true, transactionId: selected }));
         },
@@ -389,9 +392,14 @@ describe("Jones desktop updates", () => {
       preflight.mockResolvedValueOnce(undefined);
       nativeCommand.mockImplementation((command, args, _options, callback) => {
         expect(command).toBe("/usr/bin/python3");
-        expect(args).toEqual(["--version"]);
         if (typeof callback !== "function") throw new Error("Missing callback.");
-        callback(null, "Python 3", "");
+        if (args?.[0] === "--version") callback(null, "Python 3", "");
+        else {
+          expect(args?.[3]).toBe("--claim-preparation");
+          expect(args?.[4]).toBe(handle);
+          order.push("claim");
+          callback(null, JSON.stringify({ protocol: 1, operation: "claim-preparation", handle, status: "preparation-claimed" }), "");
+        }
         return new NodeChildProcess.ChildProcess();
       });
       expect(await controller.install(handle, campaignId)).toMatchObject({ accepted: false, completed: false, failed: true });
@@ -400,7 +408,11 @@ describe("Jones desktop updates", () => {
         transactionId: handle, fromGeneration: f.active.generation,
       });
       await expect(NodeFSP.lstat(NodePath.join(f.home, "runtime", "jones-updates", "transactions", handle, "intent.json"))).rejects.toMatchObject({ code: "ENOENT" });
-      expect(nativeCommand).toHaveBeenCalledOnce();
+      expect(nativeCommand).toHaveBeenCalledTimes(2);
+      expect(order).toEqual(["claim", "prepare", "bind"]);
+      expect(controller.state.jones?.capability.reason).toBe("blocked");
+      expect(await controller.install(handle, campaignId)).toMatchObject({ accepted: false, failed: false });
+      expect(nativeCommand).toHaveBeenCalledTimes(2);
       expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
     } finally {
       preflight.mockReset();
@@ -408,6 +420,63 @@ describe("Jones desktop updates", () => {
       await f.cleanup();
     }
   });
+
+  it.each(["selection-mismatch", "activation-pending", "unknown-state", "busy", "uncertain", "malformed", "wrong-handle", "wrong-operation", "transport"] as const)(
+    "does not prepare the backend after a %s preparation claim",
+    async (outcome) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+      const prepareNative = vi.fn();
+      try {
+        const controller = new JonesDesktopUpdateController({ ...f.options, prepareNative });
+        await controller.configure();
+        await controller.check();
+        await controller.download();
+        preflight.mockResolvedValueOnce(undefined);
+        nativeCommand.mockImplementation((command, args, _options, callback) => {
+          expect(command).toBe("/usr/bin/python3");
+          if (typeof callback !== "function") throw new Error("Missing callback.");
+          if (args?.[0] === "--version") callback(null, "Python 3", "");
+          else {
+            expect(args?.[3]).toBe("--claim-preparation");
+            expect(args?.[4]).toBe(handle);
+            expect(args?.[5]).toBe("--selection");
+            expect(args?.[7]).toBe("--selection-sha256");
+            if (outcome === "transport") callback(new Error("helper response lost"), "", "");
+            else if (outcome === "malformed") callback(null, "invalid JSON", "");
+            else callback(null, JSON.stringify({
+              protocol: 1, operation: outcome === "wrong-operation" ? "claim-activation" : "claim-preparation",
+              handle: outcome === "wrong-handle" ? "different" : handle,
+              status: outcome === "uncertain" ? "uncertain" : outcome === "wrong-handle" ? "preparation-claimed" : "refused",
+              reason: outcome,
+            }), "");
+          }
+          return new NodeChildProcess.ChildProcess();
+        });
+        expect(await controller.install(handle)).toMatchObject({ accepted: false, completed: false, failed: true });
+        expect(prepareNative).not.toHaveBeenCalled();
+        expect(nativeCommand).toHaveBeenCalledTimes(2);
+        const claimArgs = nativeCommand.mock.calls[1]?.[1];
+        const selectionPath = claimArgs?.[6];
+        if (typeof selectionPath !== "string") throw new Error("Missing fixed selection path.");
+        expect(claimArgs?.[8]).toBe(NodeCrypto.createHash("sha256")
+          .update(await NodeFSP.readFile(selectionPath, "utf8")).digest("hex"));
+        expect(controller.state.jones?.stagedHandle).toBe(handle);
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+        if (outcome === "selection-mismatch") expect(controller.state.jones?.capability.reason).not.toBe("blocked");
+        else {
+          expect(controller.state.jones?.capability.reason).toBe("blocked");
+          expect(await controller.install(handle)).toMatchObject({ accepted: false, failed: false });
+          expect(nativeCommand).toHaveBeenCalledTimes(2);
+        }
+      } finally {
+        preflight.mockReset();
+        nativeCommand.mockReset();
+        await f.cleanup();
+      }
+    },
+  );
 
   it.each(["committed", "rolled-back"] as const)(
     "records fleet %s proof only after native journal and active-install reconciliation",
