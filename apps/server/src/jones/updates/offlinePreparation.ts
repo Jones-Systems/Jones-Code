@@ -196,6 +196,10 @@ type FailurePoint =
   | "evidence-directory-sync"
   | "cancel-before-write"
   | "cancel-after-commit"
+  | "initializer-close-after-close"
+  | "mutation-close-after-close"
+  | "read-scope-after-close"
+  | "write-scope-after-close"
   | "cleanup";
 type FixtureMutation =
   | "missing-database"
@@ -217,6 +221,7 @@ interface SyntheticSeed {
   readonly capabilities: OrchestrationV2ProviderCapabilities;
   readonly settings?: string;
   readonly schema?: "unsupported-ledger" | "unsupported-schema";
+  readonly failure?: "initializer-close-after-close";
 }
 interface Selection {
   readonly threadId: ThreadId;
@@ -396,8 +401,7 @@ async function syncDirectory(path: string) {
 
 // Only this fixture initializer creates a database. The maintenance operations
 // below require an existing, bound file and never execute these DDL statements.
-function initializeFixture(path: string, seed: SyntheticSeed) {
-  const database = new NodeSqlite.DatabaseSync(path);
+function initializeFixture(database: NodeSqlite.DatabaseSync, seed: SyntheticSeed) {
   const insert = (table: string, values: Record<string, string | number | null>) => {
     const columns = Object.keys(values);
     database
@@ -413,220 +417,214 @@ function initializeFixture(path: string, seed: SyntheticSeed) {
       .run(...Object.values(values));
   };
   const now = "2026-10-11T12:00:00.000Z";
-  try {
-    database.exec("BEGIN IMMEDIATE");
-    for (const ddl of Object.values(legacyTables)) database.exec(ddl);
-    for (const [table, ledger] of [
-      ["effect_sql_migrations", legacyLedgers.upstream],
-      ["jones_sql_migrations", legacyLedgers.jones],
-    ] as const) {
-      database.exec(ledgerDefinition(table));
-      for (const [id, name] of ledger)
-        database
-          .prepare("INSERT INTO " + table + " (migration_id, name) VALUES (?, ?)")
-          .run(id, name);
-    }
-    for (const item of seed.threads) {
-      const id = item.id;
-      const run = "run:" + id,
-        session = "session:" + id,
-        providerThread = "provider-thread:" + id;
-      const attempt = "attempt:" + id,
-        turn = "turn:" + id,
-        node = "node:" + id;
-      const status = item.status ?? "running";
-      const payload = (value: Record<string, unknown>) => JSON.stringify(value);
-      const modelSelection = { instanceId: "codex", model: "synthetic" };
-      insert("orchestration_v2_projection_threads", {
-        thread_id: id,
-        project_id: "project:synthetic",
+  database.exec("BEGIN IMMEDIATE");
+  for (const ddl of Object.values(legacyTables)) database.exec(ddl);
+  for (const [table, ledger] of [
+    ["effect_sql_migrations", legacyLedgers.upstream],
+    ["jones_sql_migrations", legacyLedgers.jones],
+  ] as const) {
+    database.exec(ledgerDefinition(table));
+    for (const [id, name] of ledger)
+      database
+        .prepare("INSERT INTO " + table + " (migration_id, name) VALUES (?, ?)")
+        .run(id, name);
+  }
+  for (const item of seed.threads) {
+    const id = item.id;
+    const run = "run:" + id,
+      session = "session:" + id,
+      providerThread = "provider-thread:" + id;
+    const attempt = "attempt:" + id,
+      turn = "turn:" + id,
+      node = "node:" + id;
+    const status = item.status ?? "running";
+    const payload = (value: Record<string, unknown>) => JSON.stringify(value);
+    const modelSelection = { instanceId: "codex", model: "synthetic" };
+    insert("orchestration_v2_projection_threads", {
+      thread_id: id,
+      project_id: "project:synthetic",
+      title: id,
+      default_provider: "codex",
+      runtime_mode: "full-access",
+      interaction_mode: "default",
+      active_provider_thread_id: providerThread,
+      created_at: now,
+      updated_at: now,
+      archived_at: null,
+      deleted_at: null,
+      payload_json: payload({
+        id,
+        projectId: "project:synthetic",
         title: id,
-        default_provider: "codex",
-        runtime_mode: "full-access",
-        interaction_mode: "default",
-        active_provider_thread_id: providerThread,
+        providerInstanceId: "codex",
+        modelSelection,
+        createdBy: "user",
+        creationSource: "web",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: providerThread,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        deletedAt: null,
+      }),
+    });
+    insert("orchestration_v2_projection_runs", {
+      run_id: run,
+      thread_id: id,
+      ordinal: 1,
+      provider: "codex",
+      provider_thread_id: providerThread,
+      status,
+      requested_at: now,
+      completed_at: null,
+      payload_json: payload({
+        id: run,
+        threadId: id,
+        ordinal: 1,
+        providerInstanceId: "codex",
+        modelSelection,
+        providerThreadId: providerThread,
+        userMessageId: "message:" + id,
+        rootNodeId: node,
+        activeAttemptId: attempt,
+        status,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      }),
+    });
+    insert("orchestration_v2_projection_run_attempts", {
+      attempt_id: attempt,
+      thread_id: id,
+      run_id: run,
+      attempt_ordinal: 1,
+      root_node_id: node,
+      provider: "codex",
+      provider_thread_id: providerThread,
+      provider_turn_id: turn,
+      status: "running",
+      payload_json: payload({
+        id: attempt,
+        runId: run,
+        attemptOrdinal: 1,
+        rootNodeId: node,
+        providerInstanceId: "codex",
+        providerThreadId: providerThread,
+        providerTurnId: turn,
+        reason: "initial",
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      }),
+    });
+    insert("orchestration_v2_projection_provider_sessions", {
+      provider_session_id: session,
+      thread_id: id,
+      provider: "codex",
+      status: "ready",
+      model: "synthetic",
+      updated_at: now,
+      payload_json: payload({
+        id: session,
+        driver: "codex",
+        providerInstanceId: "codex",
+        status: "ready",
+        cwd: "/synthetic",
+        model: "synthetic",
+        capabilities: seed.capabilities,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      }),
+    });
+    insert("orchestration_v2_projection_provider_session_bindings", {
+      provider_session_id: session,
+      thread_id: id,
+    });
+    insert("orchestration_v2_projection_provider_threads", {
+      provider_thread_id: providerThread,
+      thread_id: id,
+      owner_node_id: null,
+      provider: "codex",
+      provider_session_id: session,
+      status: "active",
+      first_run_ordinal: 1,
+      last_run_ordinal: 1,
+      updated_at: now,
+      payload_json: payload({
+        id: providerThread,
+        driver: "codex",
+        providerInstanceId: "codex",
+        providerSessionId: session,
+        appThreadId: id,
+        ownerNodeId: null,
+        nativeThreadRef: { driver: "codex", nativeId: "synthetic:" + id, strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    });
+    insert("orchestration_v2_projection_provider_turns", {
+      provider_turn_id: turn,
+      thread_id: id,
+      provider_thread_id: providerThread,
+      node_id: node,
+      run_attempt_id: attempt,
+      ordinal: 1,
+      status: "running",
+      started_at: now,
+      completed_at: null,
+      payload_json: payload({
+        id: turn,
+        providerThreadId: providerThread,
+        nodeId: node,
+        runAttemptId: attempt,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      }),
+    });
+    if (item.malformedMessage)
+      insert("orchestration_v2_projection_messages", {
+        message_id: "bad:" + id,
+        thread_id: id,
+        run_id: run,
+        node_id: null,
+        role: "assistant",
+        streaming: 1,
         created_at: now,
         updated_at: now,
-        archived_at: null,
-        deleted_at: null,
-        payload_json: payload({
-          id,
-          projectId: "project:synthetic",
-          title: id,
-          providerInstanceId: "codex",
-          modelSelection,
-          createdBy: "user",
-          creationSource: "web",
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          activeProviderThreadId: providerThread,
-          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
-          forkedFrom: null,
-          createdAt: now,
-          updatedAt: now,
-          archivedAt: null,
-          deletedAt: null,
-        }),
+        payload_json: "{}",
       });
-      insert("orchestration_v2_projection_runs", {
-        run_id: run,
-        thread_id: id,
-        ordinal: 1,
-        provider: "codex",
-        provider_thread_id: providerThread,
-        status,
-        requested_at: now,
-        completed_at: null,
-        payload_json: payload({
-          id: run,
-          threadId: id,
-          ordinal: 1,
-          providerInstanceId: "codex",
-          modelSelection,
-          providerThreadId: providerThread,
-          userMessageId: "message:" + id,
-          rootNodeId: node,
-          activeAttemptId: attempt,
-          status,
-          requestedAt: now,
-          startedAt: now,
-          completedAt: null,
-          checkpointId: null,
-          contextHandoffId: null,
-        }),
+    if (item.existingMarker) {
+      const effect = serverUpdateContinuationEffect({
+        preparationId: "existing:" + id,
+        threadId: ThreadId.make(id),
+        sourceRunId: RunId.make(run),
+        optedInOnly: true,
       });
-      insert("orchestration_v2_projection_run_attempts", {
-        attempt_id: attempt,
-        thread_id: id,
-        run_id: run,
-        attempt_ordinal: 1,
-        root_node_id: node,
-        provider: "codex",
-        provider_thread_id: providerThread,
-        provider_turn_id: turn,
-        status: "running",
-        payload_json: payload({
-          id: attempt,
-          runId: run,
-          attemptOrdinal: 1,
-          rootNodeId: node,
-          providerInstanceId: "codex",
-          providerThreadId: providerThread,
-          providerTurnId: turn,
-          reason: "initial",
-          status: "running",
-          startedAt: now,
-          completedAt: null,
-        }),
-      });
-      insert("orchestration_v2_projection_provider_sessions", {
-        provider_session_id: session,
-        thread_id: id,
-        provider: "codex",
-        status: "ready",
-        model: "synthetic",
-        updated_at: now,
-        payload_json: payload({
-          id: session,
-          driver: "codex",
-          providerInstanceId: "codex",
-          status: "ready",
-          cwd: "/synthetic",
-          model: "synthetic",
-          capabilities: seed.capabilities,
-          createdAt: now,
-          updatedAt: now,
-          lastError: null,
-        }),
-      });
-      insert("orchestration_v2_projection_provider_session_bindings", {
-        provider_session_id: session,
-        thread_id: id,
-      });
-      insert("orchestration_v2_projection_provider_threads", {
-        provider_thread_id: providerThread,
-        thread_id: id,
-        owner_node_id: null,
-        provider: "codex",
-        provider_session_id: session,
-        status: "active",
-        first_run_ordinal: 1,
-        last_run_ordinal: 1,
-        updated_at: now,
-        payload_json: payload({
-          id: providerThread,
-          driver: "codex",
-          providerInstanceId: "codex",
-          providerSessionId: session,
-          appThreadId: id,
-          ownerNodeId: null,
-          nativeThreadRef: { driver: "codex", nativeId: "synthetic:" + id, strength: "strong" },
-          nativeConversationHeadRef: null,
-          status: "active",
-          firstRunOrdinal: 1,
-          lastRunOrdinal: 1,
-          handoffIds: [],
-          forkedFrom: null,
-          createdAt: now,
-          updatedAt: now,
-        }),
-      });
-      insert("orchestration_v2_projection_provider_turns", {
-        provider_turn_id: turn,
-        thread_id: id,
-        provider_thread_id: providerThread,
-        node_id: node,
-        run_attempt_id: attempt,
-        ordinal: 1,
-        status: "running",
-        started_at: now,
-        completed_at: null,
-        payload_json: payload({
-          id: turn,
-          providerThreadId: providerThread,
-          nodeId: node,
-          runAttemptId: attempt,
-          nativeTurnRef: null,
-          ordinal: 1,
-          status: "running",
-          startedAt: now,
-          completedAt: null,
-        }),
-      });
-      if (item.malformedMessage)
-        insert("orchestration_v2_projection_messages", {
-          message_id: "bad:" + id,
-          thread_id: id,
-          run_id: run,
-          node_id: null,
-          role: "assistant",
-          streaming: 1,
-          created_at: now,
-          updated_at: now,
-          payload_json: "{}",
-        });
-      if (item.existingMarker) {
-        const effect = serverUpdateContinuationEffect({
-          preparationId: "existing:" + id,
-          threadId: ThreadId.make(id),
-          sourceRunId: RunId.make(run),
-          optedInOnly: true,
-        });
-        insert("orchestration_v2_effect_outbox", expectedRow(effect, now));
-      }
+      insert("orchestration_v2_effect_outbox", expectedRow(effect, now));
     }
-    if (seed.schema === "unsupported-ledger")
-      database.exec(
-        "UPDATE jones_sql_migrations SET name = 'unrecognized' WHERE migration_id = 105",
-      );
-    if (seed.schema === "unsupported-schema")
-      database.exec("ALTER TABLE orchestration_v2_effect_outbox ADD COLUMN unexpected TEXT");
-    database.exec("COMMIT");
-  } finally {
-    database.close();
   }
+  if (seed.schema === "unsupported-ledger")
+    database.exec("UPDATE jones_sql_migrations SET name = 'unrecognized' WHERE migration_id = 105");
+  if (seed.schema === "unsupported-schema")
+    database.exec("ALTER TABLE orchestration_v2_effect_outbox ADD COLUMN unexpected TEXT");
+  database.exec("COMMIT");
 }
 
 function expectedRow(
@@ -681,17 +679,36 @@ export async function withSyntheticPreparationFixture<A>(
   const audit: string[] = [];
   const plans = new WeakSet<ContinuationPlan>();
   let currentPlan: ContinuationPlan | undefined;
+  let accepting = true;
   let active = true;
   let inFlight: Promise<unknown> | undefined;
-  let unresolved = false;
+  let unresolvedEffect = false;
   let writeStarted = false;
   let cancelled = false;
-  let failurePoint: FailurePoint | undefined;
+  let failurePoint: FailurePoint | undefined = seed.failure;
+  // Row reconciliation can resolve effects, never a lost handle-finalization proof.
+  const custodyFailures: Array<{ source: string; failure: OfflinePreparationError }> = [];
   let initialHash = "";
   let originalIdentity: { dev: number; ino: number } | undefined;
 
   const assertActive = () => {
     if (!active) throw new OfflinePreparationError({ reason: "expired-fixture" });
+  };
+  const assertAdmission = () => {
+    if (!accepting) throw new OfflinePreparationError({ reason: "expired-fixture" });
+  };
+  const assertCustody = () => {
+    if (custodyFailures.length !== 0)
+      throw new OfflinePreparationError({
+        reason: "sqlite-custody-unresolved",
+        cause: custodyFailures[0]?.failure,
+      });
+  };
+  const loseCustody = (source: string, cause: unknown) => {
+    const failure = new OfflinePreparationError({ reason: "sqlite-scope-unresolved", cause });
+    custodyFailures.push({ source, failure });
+    audit.push(source + ":close-unresolved");
+    return failure;
   };
   const checkPlan = (plan: ContinuationPlan) => {
     assertActive();
@@ -706,7 +723,7 @@ export async function withSyntheticPreparationFixture<A>(
     }
   };
   const operation = async <T>(run: () => Promise<T>): Promise<T> => {
-    assertActive();
+    assertAdmission();
     if (inFlight !== undefined)
       return Promise.reject(new OfflinePreparationError({ reason: "fixture-busy" }));
     const pending = run();
@@ -717,6 +734,40 @@ export async function withSyntheticPreparationFixture<A>(
       })
       .catch(() => {});
     return pending;
+  };
+  const withCapturedDatabase = <T>(
+    source: "initializer" | "mutation",
+    run: (database: NodeSqlite.DatabaseSync) => T,
+  ): T => {
+    assertCustody();
+    const database = new NodeSqlite.DatabaseSync(databasePath);
+    let operationFailure: unknown;
+    try {
+      return run(database);
+    } catch (cause) {
+      operationFailure = cause;
+      throw cause;
+    } finally {
+      try {
+        database.close();
+        audit.push(source + ":native-close-completed");
+        // The closed fault set loses confirmation only after the real captured
+        // handle closes, allowing tests to consume evidence and remove their root.
+        failAt(
+          source === "initializer" ? "initializer-close-after-close" : "mutation-close-after-close",
+        );
+      } catch (cause) {
+        throw loseCustody(
+          source,
+          operationFailure === undefined
+            ? cause
+            : new AggregateError(
+                [operationFailure, cause],
+                "Synthetic operation and SQLite close failed.",
+              ),
+        );
+      }
+    }
   };
   const existingFile = async (path: string) => {
     const stat = await NodeFSP.lstat(path);
@@ -747,6 +798,7 @@ export async function withSyntheticPreparationFixture<A>(
       SqlClient.SqlClient | ProjectionStore.ProjectionStoreV2 | EffectOutbox.EffectOutboxV2
     >,
   ): Promise<T> => {
+    assertCustody();
     const stat = await existingFile(path);
     if (
       path === databasePath &&
@@ -767,13 +819,34 @@ export async function withSyntheticPreparationFixture<A>(
     // Capture operation failure as a value inside the layer so a failed scope
     // finalizer remains distinguishable from a query rejection. Never remove a
     // root whose SQLite close did not complete successfully.
+    const source = readonly ? "read-scope" : "write-scope";
+    let operationFailure: unknown;
     const completed = await Effect.runPromise(
-      program.pipe(Effect.exit, Effect.provide(layer)),
-    ).catch((cause: unknown) => {
-      unresolved = true;
-      throw new OfflinePreparationError({ reason: "sqlite-scope-unresolved", cause });
-    });
-    audit.push("database:closed");
+      program.pipe(
+        Effect.exit,
+        Effect.map((exit) => {
+          if (exit._tag === "Failure") operationFailure = Cause.squash(exit.cause);
+          return exit;
+        }),
+        Effect.provide(layer),
+      ),
+    )
+      .then((exit) => {
+        audit.push("database:closed", source + ":native-close-completed");
+        failAt(readonly ? "read-scope-after-close" : "write-scope-after-close");
+        return exit;
+      })
+      .catch((cause: unknown) => {
+        throw loseCustody(
+          source,
+          operationFailure === undefined
+            ? cause
+            : new AggregateError(
+                [operationFailure, cause],
+                "Synthetic operation and SQLite scope close failed.",
+              ),
+        );
+      });
     if (completed._tag === "Failure") throw Cause.squash(completed.cause);
     return completed.value;
   };
@@ -878,17 +951,17 @@ export async function withSyntheticPreparationFixture<A>(
       return evidence(plan, "applied");
     }
     if (preserved && absent && digest(await NodeFSP.readFile(databasePath)) === initialHash) {
-      unresolved = false;
+      unresolvedEffect = false;
       return evidence(plan, "not-applied");
     }
-    unresolved = true;
+    unresolvedEffect = true;
     return evidence(plan, "held");
   };
 
   let result: A | undefined;
   let failure: unknown;
   try {
-    initializeFixture(databasePath, seed);
+    withCapturedDatabase("initializer", (database) => initializeFixture(database, seed));
     const stat = await existingFile(databasePath);
     originalIdentity = { dev: stat.dev, ino: stat.ino };
     const original = await NodeFSP.readFile(databasePath);
@@ -952,6 +1025,7 @@ export async function withSyntheticPreparationFixture<A>(
         }),
       apply: (plan) =>
         operation(async () => {
+          assertCustody();
           checkPlan(plan);
           if (cancelled) throw new OfflinePreparationError({ reason: "preparation-cancelled" });
           if (writeStarted)
@@ -963,7 +1037,7 @@ export async function withSyntheticPreparationFixture<A>(
           await withDatabase(databasePath, true, verifySchema);
           failAt("cancel-before-write");
           writeStarted = true;
-          unresolved = true;
+          unresolvedEffect = true;
           await withDatabase(
             databasePath,
             false,
@@ -1027,18 +1101,18 @@ export async function withSyntheticPreparationFixture<A>(
           failAt("cancel-after-commit");
           const applied = await reconcile(plan);
           if (applied.status !== "applied") return applied;
-          unresolved = true;
+          unresolvedEffect = true;
           await publish("evidence", evidencePath, JSON.stringify(applied));
-          unresolved = false;
+          unresolvedEffect = false;
           return applied;
         }),
       reconcile: (plan) =>
         operation(async () => {
           const result = await reconcile(plan);
           if (result.status === "applied") {
-            unresolved = true;
+            unresolvedEffect = true;
             await recordReconciliation(result);
-            unresolved = false;
+            unresolvedEffect = false;
           }
           return result;
         }),
@@ -1049,6 +1123,7 @@ export async function withSyntheticPreparationFixture<A>(
         }),
       restoreSnapshot: () =>
         operation(async () => {
+          assertCustody();
           if (digest(await NodeFSP.readFile(snapshotPath)) !== initialHash)
             throw new OfflinePreparationError({ reason: "snapshot-changed" });
           // Only the owned fixture performs restoration. Production rollback
@@ -1075,15 +1150,16 @@ export async function withSyntheticPreparationFixture<A>(
           await syncDirectory(root);
           if (digest(await NodeFSP.readFile(databasePath)) !== initialHash)
             throw new OfflinePreparationError({ reason: "restore-mismatch" });
-          unresolved = false;
+          unresolvedEffect = false;
           audit.push("snapshot-pair:restored");
         }),
       injectFailure: (point) => {
-        assertActive();
+        assertAdmission();
         failurePoint = point;
       },
       mutate: (point, plan) =>
         operation(async () => {
+          assertCustody();
           if (point === "missing-database") {
             await NodeFSP.unlink(databasePath);
             return;
@@ -1092,8 +1168,7 @@ export async function withSyntheticPreparationFixture<A>(
             await syncFile(databasePath + "-wal", "incomplete");
             return;
           }
-          const database = new NodeSqlite.DatabaseSync(databasePath);
-          try {
+          withCapturedDatabase("mutation", (database) => {
             if (point === "unsupported-ledger")
               database.exec(
                 "UPDATE jones_sql_migrations SET name = 'unrecognized' WHERE migration_id = 105",
@@ -1140,11 +1215,9 @@ export async function withSyntheticPreparationFixture<A>(
                     "UPDATE orchestration_v2_projection_provider_threads SET payload_json = json_set(payload_json, '$.nativeThreadRef.nativeId', 'changed-native-thread') WHERE thread_id = ?",
                   )
                   .run(row.thread_id);
-              unresolved = true;
+              unresolvedEffect = true;
             }
-          } finally {
-            database.close();
-          }
+          });
         }),
       inspect: () =>
         operation(async () => ({
@@ -1167,17 +1240,26 @@ export async function withSyntheticPreparationFixture<A>(
   } catch (cause) {
     failure = cause;
   } finally {
-    active = false;
+    accepting = false;
     try {
       await inFlight;
     } catch (cause) {
       failure ??= cause;
     }
-    if (unresolved) {
+    active = false;
+    if (unresolvedEffect || custodyFailures.length !== 0) {
+      const causes: unknown[] = custodyFailures.map((entry) => entry.failure);
+      if (failure !== undefined && !causes.includes(failure)) causes.unshift(failure);
       const retained = new OfflinePreparationError({
-        reason: "unresolved-synthetic-effect",
+        reason:
+          custodyFailures.length !== 0
+            ? "unresolved-sqlite-custody"
+            : "unresolved-synthetic-effect",
         retainedRoot: root,
-        cause: failure,
+        cause:
+          causes.length > 1
+            ? new AggregateError(causes, "Synthetic scope has unresolved custody.")
+            : causes[0],
       });
       try {
         await syncFile(
@@ -1187,6 +1269,7 @@ export async function withSyntheticPreparationFixture<A>(
             planId: currentPlan?.id ?? null,
             source: legacySource,
             provenance: legacyProvenance,
+            custody: custodyFailures.map(({ source }) => ({ source, status: "unresolved" })),
             audit,
             productionInvocation: false,
           }),

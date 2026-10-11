@@ -407,8 +407,193 @@ it("drains a started operation before scope cleanup and preserves ordinary callb
   await absent(root);
 });
 
+it("drains fire-and-forget apply through internal reconciliation after closing external admission", async () => {
+  let root = "";
+  let pending: ReturnType<Fixture["apply"]> | undefined;
+  let observed: Promise<void> | undefined;
+  let escaped: Fixture | undefined;
+  let admissionClosed = false;
+  await withSyntheticPreparationFixture(seed, async (fixture) => {
+    escaped = fixture;
+    root = (await fixture.inspect()).scratchRoot;
+    const plan = await fixture.plan();
+    pending = fixture.apply(plan);
+    // This reaction cannot run until apply's admitted transaction/reconciliation
+    // completes; the callback has already returned and closed external admission.
+    observed = pending.then(async () => {
+      await NodeAssert.rejects(fixture.cancel(), /expired-fixture/);
+      admissionClosed = true;
+    });
+    void observed.catch(() => {});
+  });
+  assert.isDefined(pending);
+  assert.equal((await pending!).status, "applied");
+  await NodeAssert.rejects(escaped!.inspect(), /expired-fixture/);
+  await observed;
+  assert.isTrue(admissionClosed);
+  await absent(root);
+});
+
+it("retains SQLite custody uncertainty after actual read, write, and mutation handles close", async () => {
+  for (const source of ["read-scope", "write-scope", "mutation"] as const) {
+    const callbackFailure = new Error("callback failed after custody loss");
+    let root: string | undefined;
+    let closeFailure: unknown;
+    let cleanupProved = false;
+    try {
+      await withSyntheticPreparationFixture(seed, async (fixture) => {
+        root = (await fixture.inspect()).scratchRoot;
+        const plan = await fixture.plan();
+        if (source === "read-scope") await fixture.apply(plan);
+        fixture.injectFailure(
+          source === "mutation"
+            ? "mutation-close-after-close"
+            : source === "read-scope"
+              ? "read-scope-after-close"
+              : "write-scope-after-close",
+        );
+        await NodeAssert.rejects(
+          source === "mutation"
+            ? fixture.mutate("projection-drift", plan)
+            : source === "read-scope"
+              ? fixture.reconcile(plan)
+              : fixture.apply(plan),
+          (cause: unknown) => {
+            assert.instanceOf(cause, OfflinePreparationError);
+            closeFailure = cause;
+            assert.equal((cause as OfflinePreparationError).reason, "sqlite-scope-unresolved");
+            return true;
+          },
+        );
+        const before = await NodeFSP.readFile(NodePath.join(root, "state.sqlite"));
+        await NodeAssert.rejects(fixture.reconcile(plan), /sqlite-custody-unresolved/);
+        await NodeAssert.rejects(fixture.restoreSnapshot(), /sqlite-custody-unresolved/);
+        await NodeAssert.rejects(fixture.apply(plan), /sqlite-custody-unresolved/);
+        await NodeAssert.rejects(fixture.mutate("missing-database"), /sqlite-custody-unresolved/);
+        await NodeAssert.rejects(fixture.inspect(), /sqlite-custody-unresolved/);
+        assert.deepEqual(await NodeFSP.readFile(NodePath.join(root, "state.sqlite")), before);
+        // Swallowing the operation error cannot restore cleanup authority.
+        if (source === "mutation") throw callbackFailure;
+      });
+      assert.fail("Expected sticky custody retention.");
+    } catch (cause) {
+      assert.instanceOf(cause, OfflinePreparationError);
+      const error = cause as OfflinePreparationError;
+      assert.equal(error.retainedRoot, root);
+      const evidence = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(root!, "retained-evidence.json"), "utf8"),
+      );
+      const closed = evidence.audit.lastIndexOf(source + ":native-close-completed");
+      cleanupProved = closed >= 0 && evidence.audit[closed + 1] === source + ":close-unresolved";
+      assert.isTrue(cleanupProved);
+      assert.equal(error.reason, "unresolved-sqlite-custody");
+      if (source === "mutation") {
+        assert.instanceOf(error.cause, AggregateError);
+        const errors = (error.cause as AggregateError).errors as unknown[];
+        assert.strictEqual(errors[0], callbackFailure);
+        assert.strictEqual(errors[1], closeFailure);
+      } else assert.strictEqual(error.cause, closeFailure);
+      assert.deepEqual(evidence.custody, [{ source, status: "unresolved" }]);
+      assert.notInclude(evidence.audit, "snapshot-pair:restored");
+      await NodeFSP.stat(NodePath.join(root!, "previous.sqlite"));
+    } finally {
+      // These named faults occur after native close, proved in retained evidence.
+      // An actual close failure lacks that proof and must retain its exact root.
+      if (cleanupProved && root !== undefined)
+        await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+    await absent(root!);
+  }
+});
+
+it("retains initializer finalization uncertainty before exposing a fixture", async () => {
+  let root: string | undefined;
+  let cleanupProved = false;
+  let exposed = false;
+  try {
+    await withSyntheticPreparationFixture(
+      { ...seed, failure: "initializer-close-after-close" },
+      async () => {
+        exposed = true;
+      },
+    );
+    assert.fail("Expected initializer custody retention.");
+  } catch (cause) {
+    assert.instanceOf(cause, OfflinePreparationError);
+    const error = cause as OfflinePreparationError;
+    root = error.retainedRoot;
+    const evidence = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(root!, "retained-evidence.json"), "utf8"),
+    );
+    cleanupProved =
+      evidence.audit[0] === "initializer:native-close-completed" &&
+      evidence.audit[1] === "initializer:close-unresolved";
+    assert.isTrue(cleanupProved);
+    assert.isFalse(exposed);
+    assert.equal(error.reason, "unresolved-sqlite-custody");
+    assert.deepEqual(evidence.custody, [{ source: "initializer", status: "unresolved" }]);
+    assert.instanceOf(error.cause, OfflinePreparationError);
+    assert.equal(
+      ((error.cause as OfflinePreparationError).cause as OfflinePreparationError).reason,
+      "initializer-close-after-close",
+    );
+  } finally {
+    if (cleanupProved && root !== undefined)
+      await NodeFSP.rm(root, { recursive: true, force: true });
+  }
+  await absent(root!);
+});
+
+it("preserves both an operation rejection and a lost SQLite close confirmation", async () => {
+  for (const source of ["read-scope", "mutation"] as const) {
+    let root: string | undefined;
+    let cleanupProved = false;
+    try {
+      await withSyntheticPreparationFixture(
+        { ...seed, threads: [{ id: "thread:malformed", malformedMessage: true }] },
+        async (fixture) => {
+          root = (await fixture.inspect()).scratchRoot;
+          fixture.injectFailure(
+            source === "mutation" ? "mutation-close-after-close" : "read-scope-after-close",
+          );
+          if (source === "mutation") await fixture.mutate("projection-drift");
+          else await fixture.plan();
+        },
+      );
+      assert.fail("Expected both operation and finalization failures.");
+    } catch (cause) {
+      assert.instanceOf(cause, OfflinePreparationError);
+      const error = cause as OfflinePreparationError;
+      const evidence = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(root!, "retained-evidence.json"), "utf8"),
+      );
+      const closed = evidence.audit.lastIndexOf(source + ":native-close-completed");
+      cleanupProved = closed >= 0 && evidence.audit[closed + 1] === source + ":close-unresolved";
+      assert.isTrue(cleanupProved);
+      assert.equal(error.reason, "unresolved-sqlite-custody");
+      const custody = error.cause as OfflinePreparationError;
+      assert.instanceOf(custody, OfflinePreparationError);
+      assert.instanceOf(custody.cause, AggregateError);
+      const errors = (custody.cause as AggregateError).errors as unknown[];
+      assert.lengthOf(errors, 2);
+      if (source === "mutation")
+        assert.equal((errors[0] as OfflinePreparationError).reason, "missing-fixture-plan");
+      else assert.match(String(errors[0]), /Projection|projection|decode|Decode/);
+      assert.equal(
+        (errors[1] as OfflinePreparationError).reason,
+        source === "mutation" ? "mutation-close-after-close" : "read-scope-after-close",
+      );
+    } finally {
+      if (cleanupProved && root !== undefined)
+        await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+    await absent(root!);
+  }
+});
+
 it("retains bounded recovery evidence and the original failure when commit is unresolved", async () => {
   let retained: string | undefined;
+  let cleanupProved = false;
   try {
     await withSyntheticPreparationFixture(seed, async (fixture) => {
       const plan = await fixture.plan();
@@ -427,6 +612,8 @@ it("retains bounded recovery evidence and the original failure when commit is un
     const evidence = JSON.parse(
       await NodeFSP.readFile(NodePath.join(retained!, "retained-evidence.json"), "utf8"),
     );
+    assert.deepEqual(evidence.custody, []);
+    cleanupProved = true;
     assert.include(evidence.audit, "transaction:committed");
     assert.isFalse(evidence.productionInvocation);
     assert.equal(evidence.source, "bd20d2d2fc0ba89797698192b877a7f1312f8fe3");
@@ -435,7 +622,8 @@ it("retains bounded recovery evidence and the original failure when commit is un
   } finally {
     // This test owns the returned synthetic root; all scoped SQLite clients
     // have already closed, and the assertions consumed its required evidence.
-    if (retained !== undefined) await NodeFSP.rm(retained, { recursive: true, force: true });
+    if (cleanupProved && retained !== undefined)
+      await NodeFSP.rm(retained, { recursive: true, force: true });
   }
   await absent(retained!);
 });
