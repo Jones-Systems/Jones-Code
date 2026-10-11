@@ -94,7 +94,9 @@
     "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
     "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
     "apps/server/src/jones/updates/offlinePreparationEntry.ts",
-    "apps/server/src/jones/updates/offlinePreparationEntry.test.ts"
+    "apps/server/src/jones/updates/offlinePreparationEntry.test.ts",
+    "apps/server/src/jones/updates/offlinePreparationPlan.ts",
+    "apps/server/src/jones/updates/offlinePreparationPlan.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
