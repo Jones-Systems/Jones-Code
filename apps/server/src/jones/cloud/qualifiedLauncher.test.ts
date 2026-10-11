@@ -42,6 +42,7 @@ async function runScenario(
     readonly productionMain?: boolean;
     readonly startupGateProtocol?: 1 | "missing";
     readonly operationFailure?: "archive" | "reserve";
+    readonly retryWithDifferentOperation?: boolean;
   } = {},
 ) {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
@@ -108,11 +109,18 @@ if (context.update?.status === "pending") {
   process.send({type:"prepared", updateId:context.update.id, startupGateProtocol:1, qualified:receipt});
 } else if (context.update === undefined) {
   const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
+  let rejections = 0;
   process.on("message", m => {if (m.type === "update-accepted") {
     writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "observed-active-launcher.json"))}, JSON.stringify({
       receipt: JSON.parse(readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "jones-launcher-capability.json"))}, "utf8")), childPid:process.pid,
     }));
   } else if (m.type === "update-rejected") {
+    rejections += 1;
+    if (${JSON.stringify(options.retryWithDifferentOperation === true)} && rejections === 1) {
+      process.send({type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle,
+        operationId:"32345678-1234-4234-8234-123456789abc"});
+      return;
+    }
     writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "rejected.json"))}, JSON.stringify(m));
     setImmediate(() => {
       writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "old-child-survived.json"))}, JSON.stringify({pid:process.pid, context}));
@@ -272,6 +280,17 @@ it.each(["archive", "reserve"] as const)(
     );
   },
 );
+
+it("refuses a different operation ID after a preacceptance reservation became uncertain", async () => {
+  await runScenario("commit", async (base) => {
+    const rejected = JSON.parse(await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"));
+    assert.equal(rejected.operationId, "32345678-1234-4234-8234-123456789abc");
+    assert.match(rejected.reason, /^operation-reconciliation-required:/);
+    await NodeFSP.access(NodePath.join(base, "runtime", "old-child-survived.json"));
+    assert.deepEqual(await readServiceState(NodePath.join(base, "runtime", "service-state.json")), {protocol: 4, activeVersion: baseline});
+    assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "jones-update-operations")), ["12345678-1234-4234-8234-123456789abc.json"]);
+  }, undefined, undefined, {operationFailure: "reserve", retryWithDifferentOperation: true});
+});
 
 it("commits a qualified trial after readiness and retains its previous binary/state pair", async () => {
   await runScenario("commit", async (base) => {
