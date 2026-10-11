@@ -20,19 +20,25 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import packageJson from "../../../package.json" with { type: "json" };
-import { retainStagedSelection, restoreStagedSelection } from "./stagedSelection.ts";
+import {
+  retainStagedSelection,
+  restoreStagedSelection,
+  retireStagedSelection,
+} from "./stagedSelection.ts";
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
 import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
 import { qualifiedServerCapability } from "./serverCapability.ts";
 import {
   isUpdateOperationId,
+  assertNoUnreconciledUpdateOperations,
+  operationBinding,
   reconcileUpdateOperation,
   type OperationReconciliation,
 } from "./launcherOperation.ts";
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
-import { JonesUpdater } from "./JonesUpdater.ts";
+import { JonesUpdater, type JonesStagedRetirementInput } from "./JonesUpdater.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
@@ -60,6 +66,9 @@ export class JonesUpdates extends Context.Service<
         readonly expectedInstalledSource: string;
       },
     ) => Effect.Effect<JonesUpdateState>;
+    readonly retireStagedOperation: (
+      input: JonesStagedRetirementInput,
+    ) => Effect.Effect<{ readonly retired: boolean; readonly reason?: string }>;
     readonly reconcileOperation: (operationId: string) => Effect.Effect<OperationReconciliation>;
   }
 >()("t3/jones/updates/service/JonesUpdates") {}
@@ -91,6 +100,11 @@ export const layer = Layer.effect(
       : undefined;
     const nativeReceipt = runtimeReceipt !== undefined;
     const unsupportedOperations = {
+      retireStagedOperation: () =>
+        Effect.succeed({
+          retired: false,
+          reason: "Caller-bound native updates are unavailable on this host.",
+        }),
       fleetOperationsSupported: false,
       stageExact: () =>
         Effect.succeed(blocked("Caller-bound native updates are unavailable on this host.")),
@@ -469,10 +483,63 @@ export const layer = Layer.effect(
           ...(migrationPlan === undefined ? {} : { migrationPlan }),
         };
       },
+      retireStaged: async (input) => {
+        const prior = await run(reconcileOperation(input.operationId));
+        if (
+          launcher.qualifiedOperations !== true ||
+          prior.state !== "absent" ||
+          input.currentVersion !== version ||
+          input.expectedInstalledSource !== runtimeReceipt?.sourceSha
+        )
+          throw new Error(
+            "The exact staged operation is not proven unaccepted on this running source.",
+          );
+        const nativeState = parseServiceState(
+          await NodeFSP.readFile(
+            NodePath.join(config.baseDir, "runtime", "service-state.json"),
+            "utf8",
+          ),
+        );
+        if (nativeState === undefined) throw new Error("Native operation state is unreadable.");
+        await assertNoUnreconciledUpdateOperations(config.baseDir, nativeState.update);
+        await retireStagedSelection(config.baseDir, version, input);
+      },
       install: async (input) => {
         if (qualifiedSelfUpdate.installQualified === undefined)
           throw new Error("bootstrap-required: Qualified Install is unavailable.");
-        const accepted = await run(qualifiedSelfUpdate.installQualified(input));
+        const operationId =
+          input.operationId ??
+          (launcher.qualifiedOperations === true ? NodeCrypto.randomUUID() : undefined);
+        const accepted = await run(
+          qualifiedSelfUpdate.installQualified(
+            { ...input, ...(operationId === undefined ? {} : { operationId }) },
+            undefined,
+            (staged) =>
+              operationId === undefined
+                ? Effect.void
+                : startup.capturePlannedUpdate === undefined
+                  ? Effect.fail(
+                      new ServerSelfUpdateError({
+                        reason: "Planned update continuity is not configured.",
+                      }),
+                    )
+                  : startup
+                      .capturePlannedUpdate({
+                        operationId,
+                        binding: operationBinding(staged),
+                        continueRunningThreads: input.continueRunningThreads === true,
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new ServerSelfUpdateError({
+                              reason: "Could not capture planned update continuity.",
+                              cause,
+                            }),
+                        ),
+                      ),
+          ),
+        );
         return {
           ...(accepted.updateId === undefined ? {} : { updateId: accepted.updateId }),
           ...(launcher.qualifiedUpdateMigrationPlan === undefined
@@ -528,6 +595,7 @@ export const layer = Layer.effect(
         return yield* Effect.promise(() => updater.install(input));
       });
     return JonesUpdates.of({
+      retireStagedOperation: (input) => Effect.promise(() => updater.retireStagedOperation(input)),
       fleetOperationsSupported:
         launcher.managed && launcher.qualifiedOperations === true && supported && nativeReceipt,
       stageExact: (input) =>

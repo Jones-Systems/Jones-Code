@@ -4,13 +4,17 @@
     {
       "id": "jones-update-continuity",
       "tests": [
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
         "apps/server/src/jones/updates/launcherOperation.test.ts",
         "apps/server/src/jones/updates/operationHandoff.test.ts",
-        "apps/server/src/jones/updates/continuationPrompt.test.ts",
-        "apps/server/src/jones/updates/serverCapability.test.ts"
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/updates/launcherOperation.test.ts apps/server/src/jones/updates/operationHandoff.test.ts apps/server/src/jones/updates/continuationPrompt.test.ts apps/server/src/jones/updates/serverCapability.test.ts"
+        "vp test run apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts apps/server/src/jones/updates/continuationPrompt.test.ts apps/server/src/jones/updates/launcherOperation.test.ts apps/server/src/jones/updates/operationHandoff.test.ts apps/server/src/jones/updates/plannedContinuityPolicy.test.ts apps/server/src/jones/updates/serverCapability.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts"
       ]
     },
     {

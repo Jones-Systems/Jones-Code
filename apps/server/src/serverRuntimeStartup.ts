@@ -1,3 +1,6 @@
+import * as Option from "effect/Option";
+import * as PlannedUpdateContinuity from "./jones/updates/PlannedUpdateContinuity.ts";
+import { activatePlannedUpdateContinuity } from "./jones/updates/plannedContinuityStartup.ts";
 import * as ServerUpdateContinuation from "./orchestration-v2/ServerUpdateContinuation.ts";
 import {
   CommandId,
@@ -74,6 +77,9 @@ export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeS
 export class ServerRuntimeStartup extends Context.Service<
   ServerRuntimeStartup,
   {
+    readonly capturePlannedUpdate?: (
+      input: Parameters<PlannedUpdateContinuity.PlannedUpdateContinuity["Service"]["capture"]>[0],
+    ) => Effect.Effect<void, ServerRuntimeStartupError>;
     readonly markRunningProviderSessionsForContinuation: Effect.Effect<
       ReadonlyArray<ThreadId>,
       ServerRuntimeStartupError
@@ -461,6 +467,9 @@ const make = (options?: StartupOptions) =>
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
     const crypto = yield* Crypto.Crypto;
     const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+    const plannedContinuity = yield* Effect.serviceOption(
+      PlannedUpdateContinuity.PlannedUpdateContinuity,
+    );
 
     const continuationContext = yield* Effect.context<
       | Effect.Services<typeof ServerUpdateContinuation.markRunningProviderSessionsForContinuation>
@@ -581,10 +590,28 @@ const make = (options?: StartupOptions) =>
             ),
           ),
         ),
-        recover: runStartupPhase("orchestration-v2.recovery", providerRuntimeRecovery.recover),
+        recover: runStartupPhase(
+          "orchestration-v2.recovery",
+          Effect.gen(function* () {
+            if (Option.isSome(plannedContinuity))
+              yield* activatePlannedUpdateContinuity({
+                baseDir: serverConfig.baseDir,
+                dbPath: serverConfig.dbPath,
+                launcher,
+                continuity: plannedContinuity.value,
+              }).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Planned update continuity remains held", { cause }),
+                ),
+              );
+            return yield* providerRuntimeRecovery.recover;
+          }),
+        ),
         recoverDelegatedTasks: runStartupPhase(
           "orchestration-v2.delegated-tasks.recover",
-          orchestrator.recoverDelegatedTasks,
+          orchestrator.recoverDelegatedTasks.pipe(
+            Effect.andThen(orchestrator.recoverPlannedUpdateQueues ?? Effect.void),
+          ),
         ),
         startEffectWorker: runStartupPhase(
           "orchestration-v2.effect-worker.start",
@@ -751,6 +778,12 @@ const make = (options?: StartupOptions) =>
     );
 
     return {
+      capturePlannedUpdate: (
+        input: Parameters<PlannedUpdateContinuity.PlannedUpdateContinuity["Service"]["capture"]>[0],
+      ) =>
+        Option.isSome(plannedContinuity)
+          ? plannedContinuity.value.capture(input).pipe(Effect.mapError(continuationError))
+          : Effect.fail(continuationError("Planned update continuity is not configured.")),
       markRunningProviderSessionsForContinuation:
         ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
           Effect.provide(continuationContext),

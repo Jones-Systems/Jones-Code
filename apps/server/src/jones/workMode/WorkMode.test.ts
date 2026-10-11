@@ -1,3 +1,4 @@
+import * as PlannedUpdateContinuity from "../updates/PlannedUpdateContinuity.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -442,5 +443,74 @@ it.effect("a completed persisted context without a live session never starts a r
     assert.isTrue(
       Option.isNone(yield* receipts.getByCommandId(workModeCommand(candidate).commandId)),
     );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("planned queue startup recovery uses the normal idempotent queue command", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const current = yield* Orchestrator.OrchestratorV2;
+    yield* current.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("planned-active"),
+      messageId: MessageId.make("planned-active-message"),
+      threadId,
+      text: "Active work",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "start_immediately" },
+    });
+    yield* current.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("planned-queued"),
+      messageId: MessageId.make("planned-queued-message"),
+      threadId,
+      text: "Queued work",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "queue_after_active" },
+    });
+    const before = yield* projections.getThreadProjection(threadId);
+    const queued = before.runs.find((run) => run.status === "queued")!;
+    const active = before.runs.find((run) => run.status === "starting")!;
+    const now = yield* DateTime.now;
+    yield* projections.apply({
+      id: EventId.make("planned-held"),
+      type: "run.updated",
+      threadId,
+      occurredAt: now,
+      payload: { ...queued, queueHeld: true },
+    });
+    yield* projections.apply({
+      id: EventId.make("planned-completed"),
+      type: "run.updated",
+      threadId,
+      occurredAt: now,
+      payload: { ...active, status: "completed", startedAt: now, completedAt: now },
+    });
+    const commandId = CommandId.make("command:planned-update-queue:fixture");
+    let finished = false;
+    const planned = Layer.mock(PlannedUpdateContinuity.PlannedUpdateContinuity)({
+      queueThreadIds: Effect.succeed([threadId]),
+      queueCommand: () => Effect.sync(() => (finished ? undefined : commandId)),
+      finishQueue: () =>
+        Effect.sync(() => {
+          finished = true;
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      yield* orchestrator.recoverPlannedUpdateQueues!;
+      yield* orchestrator.recoverPlannedUpdateQueues!;
+    }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(planned))));
+    assert.isTrue(finished);
+    const after = yield* projections.getThreadProjection(threadId);
+    assert.equal(after.runs.find((run) => run.id === queued.id)?.status, "starting");
+    assert.lengthOf(after.runs, before.runs.length);
+    const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+    assert.isTrue(Option.isSome(yield* receipts.getByCommandId(commandId)));
   }).pipe(Effect.provide(testLayer)),
 );

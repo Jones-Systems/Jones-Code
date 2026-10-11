@@ -24,6 +24,13 @@ export function admitWorkMode<E>(
     readonly hasLiveSession: (
       owner: NonNullable<ReturnType<typeof workModeContext>>,
     ) => Effect.Effect<boolean, E>;
+    readonly hasPlannedContext?: Effect.Effect<boolean, E>;
+    readonly admitPlannedContext?: (
+      projection: OrchestrationV2ThreadProjection,
+      candidate: WorkModeCandidate,
+      nowMs: number,
+    ) => Effect.Effect<boolean, E>;
+    readonly finishPlannedContext?: Effect.Effect<void, E>;
     readonly dispatch: (command: ReturnType<typeof workModeCommand>) => Effect.Effect<unknown, E>;
   },
 ): Effect.Effect<
@@ -48,18 +55,25 @@ export function admitWorkMode<E>(
         if (
           currentOwner?.providerSessionId == null ||
           currentOwner.status !== "idle" ||
-          currentOwner.nativeThreadRef == null ||
-          !(yield* dependencies.hasLiveSession(currentOwner))
+          currentOwner.nativeThreadRef == null
         )
+          return "skipped" as const;
+        const live = yield* dependencies.hasLiveSession(currentOwner);
+        if (!live && !(yield* dependencies.hasPlannedContext ?? Effect.succeed(false)))
           return "skipped" as const;
         const projection = yield* dependencies.getProjection;
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
         const fresh = workModeCandidate(threadShellFromProjection(projection), nowMs);
         if (fresh === null || fresh.generation !== candidate.generation) return "skipped" as const;
-        const owner = workModeContext(projection, nowMs);
-        if (owner === null || !(yield* dependencies.hasLiveSession(owner)))
+        const planned =
+          !live &&
+          dependencies.admitPlannedContext !== undefined &&
+          (yield* dependencies.admitPlannedContext(projection, fresh, nowMs));
+        const owner = workModeContext(projection, nowMs, { allowStoppedSession: planned });
+        if (owner === null || (!planned && !(yield* dependencies.hasLiveSession(owner))))
           return "skipped" as const;
         yield* dependencies.dispatch(workModeCommand(candidate, projection.thread.modelSelection));
+        yield* dependencies.finishPlannedContext ?? Effect.void;
         return "dispatched" as const;
       }),
     );
