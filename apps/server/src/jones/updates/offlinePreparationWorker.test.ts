@@ -10,6 +10,7 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import type { OrchestrationV2ProviderCapabilities } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -18,6 +19,8 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import {
   createContinuationPlan,
+  classifyPreparation,
+  readPreparationRows,
   offlinePreparationLegacy,
   preparationLedgerDefinition,
 } from "./offlinePreparationCore.ts";
@@ -197,6 +200,311 @@ function initialize(path: string, mode: "wal" | "delete" = "wal") {
     database.close();
   }
 }
+// Seed the same historical projection shapes as the owned adapter, without starting any provider.
+const historicalCapabilities = {
+  sessions: {
+    supportsMultipleProviderThreadsPerSession: false,
+    supportsModelSwitchInSession: false,
+    supportsProviderSwitchingViaHandoff: false,
+    supportsRuntimeModeSwitchInSession: false,
+    pendingRequestsSurviveRestart: false,
+  },
+  threads: {
+    canCreateEmptyThread: false,
+    canReadThreadSnapshot: false,
+    canRollbackThread: false,
+    canForkThread: false,
+    canForkFromTurn: false,
+    canForkFromSubagentThread: false,
+    exposesNativeThreadId: false,
+  },
+  turns: {
+    exposesNativeTurnId: false,
+    emitsTurnStarted: false,
+    emitsTurnCompleted: false,
+    supportsInterrupt: false,
+    supportsActiveSteering: false,
+    supportsSteeringByInterruptRestart: false,
+    supportsQueuedMessages: false,
+    terminalStatusQuality: "none",
+  },
+  streaming: {
+    streamsAssistantText: false,
+    streamsReasoning: false,
+    streamsToolOutput: false,
+    streamsPlanText: false,
+    emitsMessageCompleted: false,
+  },
+  tools: {
+    exposesToolItemIds: false,
+    emitsToolStarted: false,
+    emitsToolCompleted: false,
+    emitsToolOutput: false,
+    supportsMcpTools: false,
+    supportsDynamicToolCallbacks: false,
+  },
+  approvals: {
+    supportsCommandApproval: false,
+    supportsFileReadApproval: false,
+    supportsFileChangeApproval: false,
+    supportsApplyPatchApproval: false,
+    approvalsHaveNativeRequestIds: false,
+    approvalCallbacksAreLiveOnly: false,
+    approvalsCanOriginateFromSubagents: false,
+  },
+  planning: {
+    emitsPlanUpdated: false,
+    emitsTodoList: false,
+    emitsProposedPlan: false,
+    supportsStructuredQuestions: false,
+    planDeltasHaveItemIds: false,
+  },
+  subagents: {
+    supportsSubagents: false,
+    exposesSubagentThreadIds: false,
+    emitsSubagentLifecycle: false,
+    canWaitForSubagents: false,
+    canCloseSubagents: false,
+    canForkSubagentThread: false,
+  },
+  context: {
+    acceptsSystemContext: false,
+    acceptsDeveloperContext: false,
+    acceptsSyntheticUserContext: false,
+    canGenerateSummaries: false,
+    canConsumeHandoffSummaries: false,
+    supportsDeltaHandoff: false,
+    supportsFullThreadHandoff: false,
+    maxRecommendedHandoffChars: null,
+  },
+  checkpointing: {
+    appCanCheckpointFilesystem: false,
+    supportsNestedCheckpointScopes: false,
+    providerCanRollbackConversation: false,
+    providerRollbackReturnsSnapshot: false,
+    providerCanReadConversationSnapshot: false,
+  },
+  identity: {
+    nativeThreadIds: "none",
+    nativeTurnIds: "none",
+    nativeItemIds: "none",
+    nativeRequestIds: "none",
+  },
+  runtimePolicy: {
+    enforcement: "client-boundary",
+  },
+} as const satisfies OrchestrationV2ProviderCapabilities;
+
+const preservedRow = {
+  effect_id: "effect:preserved",
+  command_id: "command:ordinary",
+  thread_id: "thread:other",
+  effect_type: "provider-turn.start",
+  payload_json: "opaque-unrelated-payload",
+  status: "succeeded" as const,
+  attempt_count: 1,
+  available_at: "2019-01-01T00:00:00.000Z",
+  created_at: "2019-01-01T00:00:00.000Z",
+  updated_at: "2019-01-02T00:00:00.000Z",
+  lease_owner: null,
+  lease_expires_at: null,
+  completed_at: "2019-01-02T00:00:00.000Z",
+  last_error: null,
+};
+function seedEligibleHistoricalThread(path: string) {
+  const database = new NodeSqlite.DatabaseSync(path);
+  try {
+    const insert = (table: string, values: Record<string, string | number | null>) => {
+      const columns = Object.keys(values);
+      database
+        .prepare(
+          "INSERT INTO " +
+            table +
+            " (" +
+            columns.join(",") +
+            ") VALUES (" +
+            columns.map(() => "?").join(",") +
+            ")",
+        )
+        .run(...Object.values(values));
+    };
+    const now = "2026-10-11T12:00:00.000Z";
+    database.exec("BEGIN IMMEDIATE");
+    const id = "thread:worker";
+    const run = "run:" + id,
+      session = "session:" + id,
+      providerThread = "provider-thread:" + id;
+    const attempt = "attempt:" + id,
+      turn = "turn:" + id,
+      node = "node:" + id;
+    const status = "running";
+    const payload = (value: Record<string, unknown>) => JSON.stringify(value);
+    const modelSelection = { instanceId: "codex", model: "synthetic" };
+    insert("orchestration_v2_projection_threads", {
+      thread_id: id,
+      project_id: "project:synthetic",
+      title: id,
+      default_provider: "codex",
+      runtime_mode: "full-access",
+      interaction_mode: "default",
+      active_provider_thread_id: providerThread,
+      created_at: now,
+      updated_at: now,
+      archived_at: null,
+      deleted_at: null,
+      payload_json: payload({
+        id,
+        projectId: "project:synthetic",
+        title: id,
+        providerInstanceId: "codex",
+        modelSelection,
+        createdBy: "user",
+        creationSource: "web",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: providerThread,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        deletedAt: null,
+      }),
+    });
+    insert("orchestration_v2_projection_runs", {
+      run_id: run,
+      thread_id: id,
+      ordinal: 1,
+      provider: "codex",
+      provider_thread_id: providerThread,
+      status,
+      requested_at: now,
+      completed_at: null,
+      payload_json: payload({
+        id: run,
+        threadId: id,
+        ordinal: 1,
+        providerInstanceId: "codex",
+        modelSelection,
+        providerThreadId: providerThread,
+        userMessageId: "message:" + id,
+        rootNodeId: node,
+        activeAttemptId: attempt,
+        status,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      }),
+    });
+    insert("orchestration_v2_projection_run_attempts", {
+      attempt_id: attempt,
+      thread_id: id,
+      run_id: run,
+      attempt_ordinal: 1,
+      root_node_id: node,
+      provider: "codex",
+      provider_thread_id: providerThread,
+      provider_turn_id: turn,
+      status: "running",
+      payload_json: payload({
+        id: attempt,
+        runId: run,
+        attemptOrdinal: 1,
+        rootNodeId: node,
+        providerInstanceId: "codex",
+        providerThreadId: providerThread,
+        providerTurnId: turn,
+        reason: "initial",
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      }),
+    });
+    insert("orchestration_v2_projection_provider_sessions", {
+      provider_session_id: session,
+      thread_id: id,
+      provider: "codex",
+      status: "ready",
+      model: "synthetic",
+      updated_at: now,
+      payload_json: payload({
+        id: session,
+        driver: "codex",
+        providerInstanceId: "codex",
+        status: "ready",
+        cwd: "/synthetic",
+        model: "synthetic",
+        capabilities: historicalCapabilities,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      }),
+    });
+    insert("orchestration_v2_projection_provider_session_bindings", {
+      provider_session_id: session,
+      thread_id: id,
+    });
+    insert("orchestration_v2_projection_provider_threads", {
+      provider_thread_id: providerThread,
+      thread_id: id,
+      owner_node_id: null,
+      provider: "codex",
+      provider_session_id: session,
+      status: "active",
+      first_run_ordinal: 1,
+      last_run_ordinal: 1,
+      updated_at: now,
+      payload_json: payload({
+        id: providerThread,
+        driver: "codex",
+        providerInstanceId: "codex",
+        providerSessionId: session,
+        appThreadId: id,
+        ownerNodeId: null,
+        nativeThreadRef: { driver: "codex", nativeId: "synthetic:" + id, strength: "strong" },
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    });
+    insert("orchestration_v2_projection_provider_turns", {
+      provider_turn_id: turn,
+      thread_id: id,
+      provider_thread_id: providerThread,
+      node_id: node,
+      run_attempt_id: attempt,
+      ordinal: 1,
+      status: "running",
+      started_at: now,
+      completed_at: null,
+      payload_json: payload({
+        id: turn,
+        providerThreadId: providerThread,
+        nodeId: node,
+        runAttemptId: attempt,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      }),
+    });
+    insert("orchestration_v2_effect_outbox", preservedRow);
+    database.exec("COMMIT");
+  } finally {
+    database.close();
+  }
+}
+
 function sqlLayer(path: string, readonly = false) {
   const uri = NodeURL.pathToFileURL(path);
   uri.searchParams.set("mode", readonly ? "ro" : "rw");
@@ -265,29 +573,86 @@ it.scoped("uses actual WAL SQL to plan, apply and read-only reconcile the exact 
     const root = yield* scratch,
       path = NodePath.join(root, "state.sqlite");
     initialize(path);
-    const planned = yield* preparationWorkerSql({ kind: "plan", settings: undefined }).pipe(
+    seedEligibleHistoricalThread(path);
+    const settings = '{"continueThreadsAfterServerUpdate":true}';
+    const planned = yield* preparationWorkerSql({ kind: "plan", settings }).pipe(
       Effect.provide(sqlLayer(path)),
     );
     assert.equal(planned.kind, "plan");
     if (planned.kind !== "plan") throw new Error("Expected basis");
-    const bytes = encodeOfflinePreparationPlan(createContinuationPlan(planned.basis, creation));
+    assert.equal(planned.basis.selections.length, 1);
+    assert.equal(planned.basis.selections[0]!.threadId, "thread:worker");
+    assert.equal(planned.basis.selections[0]!.runId, "run:thread:worker");
+    assert.isNull(planned.basis.selections[0]!.existingId);
+    assert.deepEqual(planned.basis.rows, [preservedRow]);
+    const preparationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const bytes = encodeOfflinePreparationPlan(
+      createContinuationPlan(planned.basis, {
+        ...creation,
+        preparationIds: [preparationId],
+      }),
+    );
     const planPath = NodePath.join(root, "plan.json");
     yield* Effect.promise(() => NodeFSP.writeFile(planPath, bytes, { flag: "wx", mode: 0o400 }));
     const plan = decodeOfflinePreparationPlan(
       yield* Effect.promise(() => NodeFSP.readFile(planPath)),
     ).plan;
+    assert.equal(plan.expectedRows.length, 1);
+    assert.deepEqual(plan.preservedRows, [preservedRow]);
+    assert.equal(classifyPreparation(plan, planned.basis), "not-applied");
     assert.deepEqual(
-      yield* preparationWorkerSql({ kind: "apply", settings: undefined, plan }).pipe(
+      yield* preparationWorkerSql({ kind: "reconcile", settings, plan }).pipe(
+        Effect.provide(sqlLayer(path, true)),
+      ),
+      { kind: "result", outcome: "not-applied" },
+    );
+    assert.deepEqual(
+      yield* preparationWorkerSql({ kind: "apply", settings, plan }).pipe(
         Effect.provide(sqlLayer(path)),
       ),
       { kind: "result", outcome: "applied" },
     );
+    const expectedRow = {
+      effect_id: "effect:server-update-continuation:" + preparationId,
+      command_id: "command:server-update-prepare:" + preparationId,
+      thread_id: "thread:worker",
+      effect_type: "provider-runtime.continue",
+      payload_json:
+        '{"type":"provider-runtime.continue","sourceRunId":"run:thread:worker","preparedForRestart":true,"continueWithoutPreference":false}',
+      status: "pending",
+      attempt_count: 0,
+      available_at: creation.timestamp,
+      created_at: creation.timestamp,
+      updated_at: creation.timestamp,
+      lease_owner: null,
+      lease_expires_at: null,
+      completed_at: null,
+      last_error: null,
+    };
+    const after = yield* readPreparationRows.pipe(Effect.provide(sqlLayer(path, true)));
+    assert.equal(after.length, 2);
     assert.deepEqual(
-      yield* preparationWorkerSql({ kind: "reconcile", settings: undefined, plan }).pipe(
+      after.find((row) => row.effect_id === expectedRow.effect_id),
+      expectedRow,
+    );
+    assert.deepEqual(
+      after.find((row) => row.effect_id === preservedRow.effect_id),
+      preservedRow,
+    );
+    assert.deepEqual(
+      yield* preparationWorkerSql({ kind: "reconcile", settings, plan }).pipe(
         Effect.provide(sqlLayer(path, true)),
       ),
       { kind: "result", outcome: "applied" },
     );
+    assert.deepEqual(
+      yield* preparationWorkerSql({ kind: "apply", settings, plan }).pipe(
+        Effect.provide(sqlLayer(path)),
+      ),
+      { kind: "result", outcome: "applied" },
+    );
+    assert.deepEqual(yield* readPreparationRows.pipe(Effect.provide(sqlLayer(path, true))), after);
+    assert.deepEqual(yield* Effect.promise(() => NodeFSP.readFile(planPath)), Buffer.from(bytes));
   }),
 );
 
