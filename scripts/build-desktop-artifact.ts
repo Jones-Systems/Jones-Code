@@ -46,7 +46,10 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
-import { createJonesLegacyBootstrapBundle } from "./jones/updates/legacy-bootstrap-bundle.ts";
+import {
+  createJonesLegacyBootstrapBundle,
+  type JonesLegacyBootstrapBundleFile,
+} from "./jones/updates/legacy-bootstrap-bundle.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
@@ -1107,6 +1110,63 @@ export const JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE = {
   from: "apps/desktop/prod-resources/jones-bootstrap",
   to: "jones-bootstrap",
 } as const;
+
+export const verifyJonesPackagedMacResources = Effect.fn("verifyJonesPackagedMacResources")(
+  function* (input: {
+    readonly packagedAsar: string;
+    readonly version: string;
+    readonly source: JonesBuildSource;
+    readonly bootstrapBundle: ReadonlyArray<JonesLegacyBootstrapBundleFile>;
+  }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const failure = (check: string, resource: string, cause: unknown) =>
+      new BundleNotSelfContainedError({
+        exitCode: -1,
+        output: `Packaged Jones Mac ${check} failed for ${resource}: ${String(cause).slice(0, 1024)}`,
+      });
+    // Catch each native throw directly: Effect.try's default UnknownError string
+    // hides the cause that identifies a metadata, permission, or byte mismatch.
+    const manifestJson = yield* Effect.try({
+      try: () => extractFile(input.packagedAsar, "package.json").toString("utf8"),
+      catch: (cause) => failure("manifest extraction", "app.asar/package.json", cause),
+    });
+    const metadata = yield* decodeJsonString(manifestJson).pipe(
+      Effect.mapError((cause) => failure("manifest JSON", "app.asar/package.json", cause)),
+    );
+    yield* Effect.try({
+      try: () => verifyJonesPackagedStartupGate(metadata, input),
+      catch: (cause) => failure("startup gate", "app.asar/package.json", cause),
+    });
+    for (const file of input.bootstrapBundle) {
+      const packagedFile = path.join(path.dirname(input.packagedAsar), file.relativePath);
+      const observed = yield* Effect.tryPromise({
+        try: () => NodeFSP.lstat(packagedFile),
+        catch: (cause) => failure("bootstrap file stat", file.relativePath, cause),
+      });
+      if (!observed.isFile() || (observed.mode & 0o777) !== file.mode) {
+        return yield* failure(
+          "bootstrap file identity/mode",
+          file.relativePath,
+          `expected regular file mode 0o${file.mode.toString(8)}; observed ${observed.isFile() ? "regular file" : "non-regular file"} mode 0o${(observed.mode & 0o777).toString(8)}`,
+        );
+      }
+      const content = yield* fs
+        .readFileString(packagedFile)
+        .pipe(Effect.mapError((cause) => failure("bootstrap file read", file.relativePath, cause)));
+      if (content !== file.content) {
+        const digest = (value: string) =>
+          NodeCrypto.createHash("sha256").update(value).digest("hex");
+        return yield* failure(
+          "bootstrap file bytes",
+          file.relativePath,
+          `expected SHA-256 ${digest(file.content)}; observed ${digest(content)}`,
+        );
+      }
+    }
+  },
+);
+
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
   {
     from: "apps/desktop/prod-resources/hyprland-capture",
@@ -3989,36 +4049,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       "Resources",
       "app.asar",
     );
-    yield* Effect.gen(function* () {
-      const manifestJson = yield* Effect.try(() =>
-        extractFile(packagedAsar, "package.json").toString("utf8"),
-      );
-      const metadata = yield* decodeJsonString(manifestJson);
-      yield* Effect.try(() =>
-        verifyJonesPackagedStartupGate(metadata, { version: appVersion, source }),
-      );
-      for (const file of legacyBootstrapBundle) {
-        const packagedFile = path.join(path.dirname(packagedAsar), file.relativePath);
-        const observed = yield* Effect.tryPromise(() => NodeFSP.lstat(packagedFile));
-        yield* Effect.try(() => {
-          if (!observed.isFile() || (observed.mode & 0o777) !== file.mode)
-            throw new Error("Packaged Jones bootstrap has an unexpected file identity or mode.");
-        });
-        const content = yield* fs.readFileString(packagedFile);
-        yield* Effect.try(() => {
-          if (content !== file.content)
-            throw new Error("Packaged Jones bootstrap differs from its source-bound bundle.");
-        });
-      }
-    }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new BundleNotSelfContainedError({
-            exitCode: -1,
-            output: `Packaged Jones startup-gate verification failed: ${String(cause)}`,
-          }),
-      ),
-    );
+    yield* verifyJonesPackagedMacResources({
+      packagedAsar,
+      version: appVersion,
+      source,
+      bootstrapBundle: legacyBootstrapBundle,
+    });
   }
 
   const stageEntries = yield* fs.readDirectory(stageDistDir);
