@@ -745,6 +745,31 @@ NodeTest.test(
 );
 
 NodeTest.test(
+  "inactive-provider qualification accepts only the exact native refusal text with isError",
+  async () => {
+    const text = "The calling provider no longer owns an active thread run.";
+    const native = { content: [{ type: "text", text }], isError: true };
+    NodeAssert.equal(
+      await assertInactiveDenied({ callTool: async () => native }),
+      "tool authorization refused",
+    );
+    for (const response of [
+      { ...native, isError: false },
+      { content: native.content },
+      { ...native, content: [{ type: "text", text: text + " Retry later." }] },
+      { ...native, content: [{ type: "text", text: "Reported: " + text }] },
+      { ...native, content: [{ type: "text", text: text.slice(0, -1) }] },
+      { ...native, content: [{ type: "text", text: text.toLowerCase() }] },
+      { ...native, content: [{ type: "text", text: "The browser no longer owns an active tab." }] },
+      { ...native, content: [{ type: "image", text }] },
+      { isError: true, message: text },
+    ]) {
+      await NodeAssert.rejects(assertInactiveDenied({ callTool: async () => response }));
+    }
+  },
+);
+
+NodeTest.test(
   "failed pairing reconciliation publishes no pixels, pasted URL or separated pairing code",
   async () => {
     await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
