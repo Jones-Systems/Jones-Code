@@ -61,7 +61,8 @@
     "packages/shared/src/jones/jonesActions.test.ts",
     "packages/shared/src/jones/jonesActions.ts",
     "packages/shared/src/jones/nativeWriterFence.test.ts",
-    "packages/shared/src/jones/nativeWriterFence.ts"
+    "packages/shared/src/jones/nativeWriterFence.ts",
+    "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/boot.ts",

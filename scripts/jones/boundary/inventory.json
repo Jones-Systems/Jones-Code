@@ -865,7 +865,8 @@
     "apps/web/src/vite-env.d.ts": "accepted-shared",
     "packages/client-runtime/src/connection/resolver.ts": "accepted-shared",
     "docs/internals/server-updates.md": "accepted-shared",
-    "scripts/jones/boundary/fragments/update-continuity.json": "jones-owned"
+    "scripts/jones/boundary/fragments/update-continuity.json": "jones-owned",
+    "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

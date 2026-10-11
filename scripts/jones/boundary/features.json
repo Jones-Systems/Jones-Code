@@ -471,7 +471,8 @@
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
         "packages/shared/src/jones/nativeWriterFence.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
-        "apps/server/src/jones/updates/nativePreparation.test.ts"
+        "apps/server/src/jones/updates/nativePreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts"
       ]
     },
     {
@@ -523,7 +524,8 @@
         "apps/server/src/jones/workMode/WorkMode.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
         "apps/server/src/jones/updates/desktopInstall.test.ts",
-        "apps/server/src/jones/cloud/shutdownBudget.test.ts"
+        "apps/server/src/jones/cloud/shutdownBudget.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts"
       ]
     }
   ]
