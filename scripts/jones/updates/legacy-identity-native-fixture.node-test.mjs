@@ -158,10 +158,13 @@ NodeTest.test(
     );
     NodeAssert.equal(result.cases.length, 26);
     for (const name of ["changing-fd-list", "changing-nonvnode-fd-list"]) {
-      NodeAssert.deepEqual(result.cases.find((item) => item.case === name), {
-        case: name,
-        status: "refused",
-      });
+      NodeAssert.deepEqual(
+        result.cases.find((item) => item.case === name),
+        {
+          case: name,
+          status: "refused",
+        },
+      );
     }
     NodeAssert.equal(result.observationOnly, true);
     NodeAssert.equal(result.sqliteLifecycleQualified, false);
