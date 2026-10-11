@@ -30,7 +30,7 @@ finally: connection.close()
         throw new Error('Unexpected Electron runtime');
       const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
       const database = new DatabaseSync(${JSON.stringify(lease)});
-      database.exec('PRAGMA journal_mode=DELETE; CREATE TABLE lease (identity TEXT); INSERT INTO lease VALUES (\'fixture\'); BEGIN;');
+      database.exec("PRAGMA journal_mode=DELETE; CREATE TABLE lease (identity TEXT); INSERT INTO lease VALUES ('fixture'); BEGIN;");
       database.prepare('SELECT identity FROM lease').get();
       require('node:child_process').execFileSync('python3', ['-c', ${JSON.stringify(python)}, ${JSON.stringify(lease)}, 'held']);
       database.close();
