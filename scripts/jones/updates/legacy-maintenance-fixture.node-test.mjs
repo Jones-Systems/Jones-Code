@@ -23,6 +23,49 @@ NodeAssert.ok(
   "JONES_LEGACY_FIXTURE_PYTHON must be an absolute interpreter path.",
 );
 
+function fixtureFailureSummary(cause) {
+  let remaining = 8;
+  const text = (value, limit) =>
+    typeof value === "string"
+      ? value
+          .slice(0, 512)
+          .replace(/(?:[A-Za-z]:[\\/]|\/)[^\s"'<>)]*/g, "<path>")
+          .replace(/[\r\n\t]/g, " ")
+          .slice(0, limit)
+      : undefined;
+  const visit = (error) => {
+    if (remaining-- <= 0) return { name: "truncated" };
+    const result = {
+      name: text(error?.name, 64),
+      code: text(error?.code, 64),
+      message: text(error?.message, 192),
+    };
+    if (Array.isArray(error?.errors)) result.errors = error.errors.slice(0, 3).map(visit);
+    if (error?.cause !== undefined) result.cause = visit(error.cause);
+    return result;
+  };
+  return visit(cause);
+}
+
+NodeTest.test(
+  "fixture failure diagnostics preserve nested codes with bounded redacted text",
+  () => {
+    const primary = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    const cleanup = Object.assign(new Error("kill EPERM at /synthetic/fixture/private-marker"), {
+      code: "EPERM",
+    });
+    cleanup.cause = cleanup;
+    const summary = fixtureFailureSummary(new AggregateError([primary, cleanup], "cleanup failed"));
+    NodeAssert.equal(summary.errors[0].code, "EPIPE");
+    NodeAssert.equal(summary.errors[1].code, "EPERM");
+    const encoded = JSON.stringify(summary);
+    NodeAssert.ok(encoded.length < 4096);
+    NodeAssert.equal(encoded.includes("private-marker"), false);
+    NodeAssert.match(encoded, /<path>/);
+    NodeAssert.match(encoded, /truncated/);
+  },
+);
+
 NodeTest.test("legacy helper is selected by immutable commit, blob and byte digests", async () => {
   const helper = await readPinnedLegacyHelper(
     NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
@@ -50,7 +93,10 @@ NodeTest.test(
     `;
         await runMaintenanceProcess(process.execPath, ["-e", source], root);
       }),
-      (cause) => cause.code === "EPIPE",
+      (cause) => {
+        NodeAssert.equal(cause.code, "EPIPE", JSON.stringify(fixtureFailureSummary(cause)));
+        return true;
+      },
     );
     await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
   },

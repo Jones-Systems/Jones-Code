@@ -241,7 +241,7 @@ export const makeFleetUpdates = (options: {
           !updates.fleetOperationsSupported ||
           update?.environmentId !== environmentId ||
           !update.currentVersion ||
-          update.installedSource !== input.expectedInstalledSource
+          update.installedSource?.sha !== input.expectedInstalledSource
         ) {
           return yield* fail(
             "binding",
@@ -340,7 +340,7 @@ export const makeFleetUpdates = (options: {
           if (
             update.environmentId !== environmentId ||
             update.currentVersion !== operation.currentVersion ||
-            update.installedSource !== input.expectedInstalledSource
+            update.installedSource?.sha !== input.expectedInstalledSource
           )
             return yield* fail("binding", "The stage identity changed before retirement.");
           const result = yield* updates.retireStagedOperation({
@@ -407,7 +407,7 @@ export const makeFleetUpdates = (options: {
           const bindingStillValid =
             current?.environmentId === environmentId &&
             current.currentVersion === selected.currentVersion &&
-            current.installedSource === selected.input.expectedInstalledSource &&
+            current.installedSource?.sha === selected.input.expectedInstalledSource &&
             current.stagedHandle === selected.stagedHandle &&
             current.provenance?.sourceSha === selected.input.targetSource;
           yield* save({

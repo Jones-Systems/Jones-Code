@@ -33,6 +33,8 @@ on:
       - apps/web/src/components/desktopUpdate.logic.ts
       - apps/web/src/components/desktopUpdate.toast.tsx
       - apps/web/src/components/ConfirmDialogHost.tsx
+      - apps/web/src/confirmDialog.ts
+      - apps/web/src/localApi.ts
       - apps/web/src/components/ui/toast.tsx
       - apps/web/src/components/ui/tooltip.tsx
       - apps/web/src/jones/fleetUpdates/**
@@ -139,7 +141,7 @@ jobs:
 
       - name: Build matching server and web source
         env:
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           cp .env.example .env
