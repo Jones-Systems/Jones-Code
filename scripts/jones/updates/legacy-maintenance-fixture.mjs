@@ -37,6 +37,16 @@ export async function readPinnedLegacyHelper(repositoryRoot) {
   return extractPinnedLegacyHelper(source);
 }
 
+export class MaintenanceCustodyError extends AggregateError {
+  constructor(primary) {
+    super(
+      [primary, new Error("Owned child reaping was not proved.")],
+      "Fixture failed; scratch is retained because child custody is unresolved.",
+    );
+    this.preservedScratchRoots = [];
+  }
+}
+
 export async function withMaintenanceScratch(parent, body) {
   const allocated = await FS.mkdtemp(Path.join(parent, "jones-maintenance-"));
   let failure;
@@ -44,15 +54,18 @@ export async function withMaintenanceScratch(parent, body) {
     return await body(await FS.realpath(allocated));
   } catch (cause) {
     failure = cause;
+    if (cause instanceof MaintenanceCustodyError) cause.preservedScratchRoots.push(allocated);
     throw cause;
   } finally {
-    try {
-      await FS.rm(allocated, { recursive: true, force: false });
-      await Assert.rejects(FS.lstat(allocated), { code: "ENOENT" });
-    } catch (cleanup) {
-      if (failure !== undefined)
-        throw new AggregateError([failure, cleanup], "Fixture failed and cleanup failed.");
-      throw cleanup;
+    if (!(failure instanceof MaintenanceCustodyError)) {
+      try {
+        await FS.rm(allocated, { recursive: true, force: false });
+        await Assert.rejects(FS.lstat(allocated), { code: "ENOENT" });
+      } catch (cleanup) {
+        if (failure !== undefined)
+          throw new AggregateError([failure, cleanup], "Fixture failed and cleanup failed.");
+        throw cleanup;
+      }
     }
   }
 }
@@ -294,7 +307,7 @@ if sys.argv[1] == '--worker': worker(json.loads(sys.argv[2]))
 else: event(run(json.loads(sys.argv[1])))
 `;
 
-async function runPython(python, arguments_, root, signal, onChildrenReady) {
+export async function runMaintenanceProcess(python, arguments_, root, signal, onChildrenReady) {
   signal?.throwIfAborted();
   const child = ChildProcess.spawn(python, arguments_, {
     cwd: root,
@@ -307,9 +320,12 @@ async function runPython(python, arguments_, root, signal, onChildrenReady) {
   let failure;
   let escalation;
   let ready = false;
+  let closed = false;
+  let stopping = false;
   const terminate = (cause) => {
     failure ??= cause;
-    if (!child.pid) return;
+    if (!child.pid || closed || stopping) return;
+    stopping = true;
     try {
       process.kill(-child.pid, "SIGTERM");
     } catch (error) {
@@ -323,6 +339,8 @@ async function runPython(python, arguments_, root, signal, onChildrenReady) {
       }
     }, 3000);
   };
+  child.stdin.on("error", terminate);
+  child.on("error", terminate);
   const abort = () => terminate(signal.reason ?? new Error("Fixture cancelled."));
   signal?.addEventListener("abort", abort, { once: true });
   const timeout = setTimeout(
@@ -340,7 +358,10 @@ async function runPython(python, arguments_, root, signal, onChildrenReady) {
         const event = JSON.parse(stdout.slice(0, stdout.indexOf("\n")));
         Assert.deepEqual(event, { event: "children-ready", childCount: 2 });
         onChildrenReady?.(event);
-        if (failure === undefined) child.stdin.end("G");
+        if (failure === undefined)
+          child.stdin.end("G", (cause) => {
+            if (cause) terminate(cause);
+          });
       } catch (cause) {
         terminate(cause);
       }
@@ -349,9 +370,11 @@ async function runPython(python, arguments_, root, signal, onChildrenReady) {
   child.stdout.on("data", (bytes) => collect("stdout", bytes));
   child.stderr.on("data", (bytes) => collect("stderr", bytes));
   try {
-    const outcome = await new Promise((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", (code, stoppedBy) => resolve({ code, stoppedBy }));
+    const outcome = await new Promise((resolve) => {
+      child.once("close", (code, stoppedBy) => {
+        closed = true;
+        resolve({ code, stoppedBy });
+      });
     });
     const lines = stdout.trim().split("\n");
     const reaped = lines.some((line) => {
@@ -364,15 +387,18 @@ async function runPython(python, arguments_, root, signal, onChildrenReady) {
         return false;
       }
     });
-    if (failure !== undefined) {
-      if (ready && !reaped)
-        throw new AggregateError([failure, new Error("Owned child reaping was not proved.")]);
-      throw failure;
+    try {
+      Assert.deepEqual(outcome, { code: 0, stoppedBy: null }, stderr.slice(0, 4000));
+      Assert.equal(stderr, "");
+      Assert.equal(ready, true);
+      Assert.equal(reaped, true);
+    } catch (cause) {
+      failure ??= cause;
     }
-    Assert.deepEqual(outcome, { code: 0, stoppedBy: null }, stderr.slice(0, 4000));
-    Assert.equal(stderr, "");
-    Assert.equal(ready, true);
-    Assert.equal(reaped, true);
+    // A closed controller is not evidence that its descendants were reaped.
+    // Preserve the owned tree on every missing-proof path, even before readiness.
+    if (child.pid && !reaped) throw new MaintenanceCustodyError(failure);
+    if (failure !== undefined) throw failure;
     Assert.equal(lines.length, 3);
     return JSON.parse(lines[2]);
   } finally {
@@ -399,7 +425,7 @@ export async function runLegacyMaintenanceFixture({
     await FS.writeFile(Path.join(root, "legacy-exact.py"), helper, { flag: "wx", mode: 0o400 });
     const runner = Path.join(root, "fixture.py");
     await FS.writeFile(runner, pythonFixture, { flag: "wx", mode: 0o400 });
-    return runPython(
+    return runMaintenanceProcess(
       python,
       ["-I", "-B", runner, JSON.stringify({ root, ...legacyMaintenanceSource })],
       root,
@@ -429,6 +455,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(Path.resolve(process.ar
         operation: "qualify-legacy-maintenance",
         status: "failed",
         message: String(cause).slice(0, 4000),
+        ...(cause instanceof MaintenanceCustodyError
+          ? { preservedScratchRoots: cause.preservedScratchRoots }
+          : {}),
       }),
     );
     process.exitCode = 1;
