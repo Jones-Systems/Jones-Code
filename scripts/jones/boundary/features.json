@@ -514,7 +514,8 @@
         "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
         "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
         "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
-        "packages/contracts/src/jones/fleetUpdates/source.test.ts"
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts"
       ]
     },
     {
