@@ -13,6 +13,20 @@
       ]
     },
     {
+      "id": "update-continuity",
+      "tests": [
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts"
+      ]
+    },
+    {
+      "id": "desktop-stage-attempts",
+      "tests": [
+        "packages/shared/src/jones/jonesActionsStage.test.ts",
+        "apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts"
+      ]
+    },
+    {
       "id": "conversation-library",
       "tests": [
         "apps/server/src/conversations/Service.test.ts",
@@ -38,12 +52,16 @@
     },
     {
       "id": "work-queue-preview",
-      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
+      "tests": [
+        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
+      ],
       "scope": "Explicit sample preview components remain covered by WorkQueuePage.test.tsx. Ordinary Prompts navigation uses UnifiedQueuePage with genuine voice review and read-only durable queue metadata; integration coverage belongs to work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
-      "tests": ["scripts/jones/check-boundary.test.ts"]
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ]
     },
     {
       "id": "provider-settlement",
@@ -177,9 +195,12 @@
         "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
         "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "packages/contracts/src/jones/workQueueMetadata.test.ts"
+        "packages/contracts/src/jones/workQueueMetadata.test.ts",
+        "apps/web/src/jones/workQueue/SentPrompts.test.tsx",
+        "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
+        "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx"
       ],
-      "scope": "Validated artifact metadata configuration and reads, authenticated HTTP registration, and capability-gated shared client reads. UnifiedQueuePage presents Pending, Queued and Sent, combines genuine voice review with read-only external queue metadata, preserves editing across stage changes, and keeps unavailable and stale observations distinct from empty queues. Legacy Queue and Voice Review routes share the Prompts page; voice processing release does not establish confirmed native delivery. Jones Code settings follows Archive and saves a device-local default prompt view, defaulting existing clients to Pending."
+      "scope": "Validated artifact metadata configuration and reads, authenticated HTTP registration, and capability-gated shared client reads. UnifiedQueuePage presents Pending, Queued and Sent, combines genuine voice review with read-only external queue metadata, preserves editing across stage changes, and keeps unavailable and stale observations distinct from empty queues. Legacy Queue and Voice Review routes share the Prompts page; voice processing release does not establish confirmed native delivery. SentPrompts renders explicit confirmed-handoff presentation records; the current live page remains unavailable, and labeled sample records are isolated fixture input. Jones Code settings follows Archive and saves a device-local default prompt view, defaulting existing clients to Pending."
     },
     {
       "id": "direct-desktop-media",
@@ -380,7 +401,8 @@
         "apps/server/src/jones/hostService/HostServiceConfig.test.ts",
         "packages/tailscale/src/jones/serveOwnership.test.ts",
         "apps/server/src/cli/pair.test.ts",
-        "apps/server/src/jones/hostService/adoption.test.ts"
+        "apps/server/src/jones/hostService/adoption.test.ts",
+        "apps/server/src/jones/hostService/privateSetupCompatibility.test.ts"
       ],
       "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
     },
@@ -447,7 +469,9 @@
     },
     {
       "id": "composer-thread-query",
-      "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
+      "tests": [
+        "apps/web/src/jones/composer/threadMentionTrigger.test.ts"
+      ],
       "scope": "Web/desktop and shared mobile one-space @ query; preserves matcher identities and legacy file chip delimiters."
     },
     {

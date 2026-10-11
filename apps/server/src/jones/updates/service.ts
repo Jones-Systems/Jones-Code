@@ -24,6 +24,7 @@ import { retainStagedSelection, restoreStagedSelection } from "./stagedSelection
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
 import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
+import { qualifiedServerCapability } from "./serverCapability.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
 import { JonesUpdater } from "./JonesUpdater.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
@@ -372,29 +373,18 @@ export const layer = Layer.effect(
                 durationMs: recovery.durationMs,
               },
             }),
-        capability: {
-          check: supported && nativeReceipt,
-          download: supported && nativeReceipt && selfUpdate.stageQualified !== undefined,
-          install:
-            supported &&
-            nativeReceipt &&
-            restoreFailure === undefined &&
-            launcher.qualifiedUpdates === true &&
-            environmentId !== undefined,
-          ...(supported &&
-          nativeReceipt &&
-          restoreFailure === undefined &&
-          launcher.qualifiedUpdates === true &&
-          environmentId !== undefined
-            ? {}
-            : {
-                reason: !supported
-                  ? ("unsupported-platform" as const)
-                  : !nativeReceipt
-                    ? ("source-unqualified" as const)
-                    : ("bootstrap-required" as const),
-              }),
-        },
+        capability: qualifiedServerCapability({
+          supported,
+          qualifiedRuntime: nativeReceipt,
+          launcherManaged: launcher.managed,
+          qualifiedStaging: launcher.qualifiedStaging === true,
+          qualifiedUpdates: launcher.qualifiedUpdates === true,
+          hasCurrentVersion: launcher.currentVersion !== undefined,
+          hasStage: selfUpdate.stageQualified !== undefined,
+          hasInstall: qualifiedSelfUpdate.installQualified !== undefined,
+          hasEnvironment: environmentId !== undefined,
+          restoreFailed: restoreFailure !== undefined,
+        }),
       },
       platform: platform === "darwin" ? "darwin" : "linux",
       architecture: architecture === "arm64" ? "arm64" : "x64",

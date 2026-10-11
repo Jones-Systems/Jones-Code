@@ -14,8 +14,30 @@
       ]
     },
     {
+      "id": "jones-update-continuity",
+      "tests": [
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/updates/continuationPrompt.test.ts apps/server/src/jones/updates/serverCapability.test.ts"
+      ]
+    },
+    {
+      "id": "jones-desktop-stage-attempts",
+      "tests": [
+        "packages/shared/src/jones/jonesActionsStage.test.ts",
+        "apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/jonesActions.test.ts packages/shared/src/jones/jonesActionsStage.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts"
+      ]
+    },
+    {
       "id": "jones-boundary",
-      "tests": ["scripts/jones/check-boundary.test.ts"],
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ],
       "commands": [
         "vp test run scripts/jones/check-boundary.test.ts",
         "node scripts/jones/check-boundary.ts --strict --json",
@@ -24,7 +46,9 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
@@ -180,8 +204,12 @@
     },
     {
       "id": "jones-process-placement-build",
-      "tests": ["native/process-placement/build.test.mjs"],
-      "commands": ["node --test native/process-placement/build.test.mjs"]
+      "tests": [
+        "native/process-placement/build.test.mjs"
+      ],
+      "commands": [
+        "node --test native/process-placement/build.test.mjs"
+      ]
     },
     {
       "id": "jones-workstream-appearance",
@@ -252,10 +280,14 @@
         "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
         "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "packages/contracts/src/jones/workQueueMetadata.test.ts"
+        "packages/contracts/src/jones/workQueueMetadata.test.ts",
+        "apps/web/src/jones/workQueue/SentPrompts.test.tsx",
+        "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
+        "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/workQueue/PromptsSettings.test.tsx apps/web/src/components/settings/settingsSearch.test.ts packages/contracts/src/settings.test.ts apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts"
+        "vp test run apps/web/src/jones/workQueue/PromptsSettings.test.tsx apps/web/src/components/settings/settingsSearch.test.ts packages/contracts/src/settings.test.ts apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts apps/web/src/components/workQueue/WorkQueuePage.test.tsx packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx",
+        "vp run --filter @t3tools/web test src/jones/workQueue/SentPrompts.test.tsx"
       ]
     },
     {
@@ -398,8 +430,12 @@
     },
     {
       "id": "jones-performance-health",
-      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
-      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
+      "tests": [
+        "apps/server/scripts/jones/sqliteHealth.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/scripts/jones/sqliteHealth.test.ts"
+      ]
     },
     {
       "id": "jones-performance-diagnostics",
@@ -415,7 +451,9 @@
     },
     {
       "id": "jones-performance-migration-restore",
-      "tests": ["scripts/jones/performance/migration-restore.node-test.mjs"],
+      "tests": [
+        "scripts/jones/performance/migration-restore.node-test.mjs"
+      ],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/performance/migration-restore.node-test.mjs"
       ]
@@ -759,13 +797,14 @@
         "scripts/dev-runner.test.ts",
         "packages/ssh/src/tunnel.test.ts",
         "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
-        "apps/server/src/jones/hostService/adoption.test.ts"
+        "apps/server/src/jones/hostService/adoption.test.ts",
+        "apps/server/src/jones/hostService/privateSetupCompatibility.test.ts"
       ],
       "commands": [
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/tailscale typecheck",
         "vp run --filter @t3tools/scripts typecheck",
-        "vp test run apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts apps/server/src/cli/pair.test.ts apps/server/src/jones/hostService/artifactVerification.test.ts apps/server/src/jones/hostService/releasePolicy.test.ts apps/server/src/jones/hostService/HostServiceConfig.test.ts apps/server/src/jones/hostService/HostService.test.ts apps/server/src/jones/hostService/cli.test.ts packages/tailscale/src/tailscale.test.ts packages/tailscale/src/jones/serveOwnership.test.ts scripts/lib/dev-share.test.ts scripts/dev-runner.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts apps/server/src/jones/hostService/adoption.test.ts"
+        "vp test run apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts apps/server/src/cli/pair.test.ts apps/server/src/jones/hostService/artifactVerification.test.ts apps/server/src/jones/hostService/releasePolicy.test.ts apps/server/src/jones/hostService/HostServiceConfig.test.ts apps/server/src/jones/hostService/HostService.test.ts apps/server/src/jones/hostService/cli.test.ts packages/tailscale/src/tailscale.test.ts packages/tailscale/src/jones/serveOwnership.test.ts scripts/lib/dev-share.test.ts scripts/dev-runner.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts apps/server/src/jones/hostService/adoption.test.ts apps/server/src/jones/hostService/privateSetupCompatibility.test.ts"
       ]
     },
     {
@@ -905,7 +944,9 @@
     },
     {
       "id": "jones-desktop-workstreams-shell",
-      "tests": ["apps/desktop/src/shell/DesktopShellEnvironment.test.ts"],
+      "tests": [
+        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
+      ],
       "commands": [
         "vp test run apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
         "vp run --filter @t3tools/desktop typecheck"

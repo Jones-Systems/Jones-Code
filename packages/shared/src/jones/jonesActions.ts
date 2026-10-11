@@ -8,6 +8,18 @@ import * as NodeStream from "node:stream";
 import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeZlib from "node:zlib";
 
+import {
+  createJonesStageAttempt,
+  findJonesCompletedStage,
+  publishJonesCompletedStage,
+} from "./jonesActionsStage.ts";
+export {
+  createJonesStageAttempt,
+  findJonesCompletedStage,
+  publishJonesCompletedStage,
+  requireJonesStageDirectory,
+} from "./jonesActionsStage.ts";
+
 const JONES_ACTIONS_REPOSITORY = "Jones-Systems/Jones-Code";
 export const JONES_ACTIONS_RECEIPT_FILE = "jones-actions-stage.json";
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -428,16 +440,22 @@ export class JonesActionsClient {
     }
     const stagedHandle = jonesCandidateHandle(candidate);
     await NodeFSP.mkdir(NodePath.resolve(cacheRoot), { recursive: true, mode: 0o700 });
-    const root = await NodeFSP.realpath(NodePath.resolve(cacheRoot)),
-      final = NodePath.join(root, stagedHandle);
+    const root = await NodeFSP.realpath(NodePath.resolve(cacheRoot));
     try {
-      await NodeFSP.lstat(final);
-      return await validateJonesStagedArtifact(final, candidate);
+      const completed = await findJonesCompletedStage(
+        root,
+        stagedHandle,
+        JONES_ACTIONS_RECEIPT_FILE,
+      );
+      if (completed !== undefined) return await validateJonesStagedArtifact(completed, candidate);
     } catch (error) {
-      if (!isMissing(error))
-        throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");
+      throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");
     }
-    const working = await NodeFSP.mkdtemp(NodePath.join(root, ".download-"));
+    const attempt = await createJonesStageAttempt(root, stagedHandle);
+    const working = attempt.directory;
+    // Once publication can have happened, keep this attempt on an unknown result.
+    let retainAttempt = false;
+    let failure: unknown;
     try {
       const archive = NodePath.join(working, "github-artifact.zip");
       await this.transport.download(candidate.artifactId, archive);
@@ -483,35 +501,48 @@ export class JonesActionsClient {
         stagedHandle,
         candidate,
         receipt,
-        payloadPath: NodePath.join(final, receipt.artifact),
+        payloadPath: NodePath.join(working, receipt.artifact),
       };
       await NodeFSP.writeFile(
         NodePath.join(working, JONES_ACTIONS_RECEIPT_FILE),
         JSON.stringify(staged, null, 2) + "\n",
         { flag: "wx", mode: 0o600 },
       );
-      // The exclusive reservation protects occupied paths even on platforms where rename replaces empty directories.
-      try {
-        await NodeFSP.mkdir(final, { mode: 0o700 });
-      } catch {
-        throw new JonesActionsError("occupied-cache");
+      const verified = await validateJonesStagedArtifact(working, candidate);
+      for (const name of await NodeFSP.readdir(working)) {
+        const file = await NodeFSP.open(NodePath.join(working, name), "r");
+        try {
+          await file.sync();
+        } finally {
+          await file.close();
+        }
       }
-      try {
-        for (const name of await NodeFSP.readdir(working))
-          await NodeFSP.rename(NodePath.join(working, name), NodePath.join(final, name));
-      } catch (error) {
-        // A partial owned stage remains visibly invalid. Never recycle it as a completed cache entry.
-        throw safeTransportError(error);
-      }
-      return await validateJonesStagedArtifact(final, candidate);
+      retainAttempt = true;
+      const selected = await publishJonesCompletedStage(
+        root,
+        stagedHandle,
+        working,
+        JONES_ACTIONS_RECEIPT_FILE,
+      );
+      if (selected === working) return verified;
+      const winner = await validateJonesStagedArtifact(selected, candidate);
+      retainAttempt = false;
+      return winner;
+    } catch (cause) {
+      failure = cause;
+      throw cause;
     } finally {
-      await NodeFSP.rm(working, { recursive: true, force: true });
+      if (!retainAttempt) {
+        try {
+          await NodeFSP.rm(attempt.attemptRoot, { recursive: true, force: true });
+        } catch (cleanup) {
+          if (failure !== undefined)
+            throw new AggregateError([failure, cleanup], "Artifact staging and cleanup failed.");
+          throw cleanup;
+        }
+      }
     }
   }
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 export function jonesCandidateHandle(candidate: JonesActionsCandidate): string {

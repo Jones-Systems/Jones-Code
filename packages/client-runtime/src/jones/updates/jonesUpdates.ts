@@ -46,11 +46,7 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
     remoteAuthorization,
     group: "jonesUpdates",
     method: input.action === "state" ? "GET" : "POST",
-    url: (base) =>
-      environmentEndpointUrl(
-        base,
-        `/api/jones-updates${suffix}${input.action === "state" && input.after !== undefined ? `?after=${input.after}` : ""}`,
-      ),
+    url: (base) => environmentEndpointUrl(base, `/api/jones-updates${suffix}`),
     timeoutMs: input.action === "state" ? 35_000 : 20 * 60_000,
     request: ({ client, headers }) => {
       switch (input.action) {

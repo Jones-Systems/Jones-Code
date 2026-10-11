@@ -51,7 +51,11 @@ afterEach(async () => {
   for (const root of fixtures) await cleanupFixture(root);
 });
 
-async function fixture(bootstrap = true, terminal?: "committed" | "rolled-back") {
+async function fixture(
+  bootstrap = true,
+  terminal?: "committed" | "rolled-back",
+  attemptLayout = false,
+) {
   const parent = NodePath.join(NodeOS.homedir(), ".cache", "jones-updater-test-fixtures");
   await NodeFSP.mkdir(parent, { recursive: true, mode: 0o700 });
   const home = await NodeFSP.mkdtemp(NodePath.join(parent, "desktop-controller-"));
@@ -181,6 +185,7 @@ async function fixture(bootstrap = true, terminal?: "committed" | "rolled-back")
             "runtime",
             "jones-updates",
             "artifacts",
+            ...(attemptLayout ? ["attempts", "stage-artifact"] : []),
             handle,
             "qualified.dmg",
           ),
@@ -207,7 +212,12 @@ async function fixture(bootstrap = true, terminal?: "committed" | "rolled-back")
       },
     },
     stageApp: async (artifact, stageRoot) => {
-      const appPath = NodePath.join(stageRoot, handle, "Candidate.app");
+      const appPath = NodePath.join(
+        stageRoot,
+        ...(attemptLayout ? ["attempts", "stage-native"] : []),
+        handle,
+        "Candidate.app",
+      );
       const executablePath = NodePath.join(appPath, "Contents", "MacOS", "Jones");
       const asarPath = NodePath.join(appPath, "Contents", "Resources", "app.asar");
       await NodeFSP.mkdir(NodePath.dirname(executablePath), { recursive: true });
@@ -216,7 +226,7 @@ async function fixture(bootstrap = true, terminal?: "committed" | "rolled-back")
       await NodeFSP.writeFile(asarPath, "staged-asar");
       const staged = {
         handle,
-        receiptPath: NodePath.join(stageRoot, handle, "mac-app-receipt.json"),
+        receiptPath: NodePath.join(NodePath.dirname(appPath), "mac-app-receipt.json"),
         appPath,
         executablePath,
         version: artifact.candidate.version,
@@ -440,24 +450,27 @@ describe("Jones desktop updates", () => {
       }
     },
   );
-  it("restores the verified fixed staged app after a controller restart without downloading again", async () => {
-    const f = await fixture();
-    try {
-      await f.controller.configure();
-      await f.controller.check();
-      await f.controller.download();
-      const restored = f.restart();
-      await restored.configure();
-      expect(restored.state.jones?.phase).toBe("staged");
-      expect(restored.state.jones?.stagedHandle).toBe(handle);
-      expect(restored.state.jones?.provenance?.artifactId).toBe(candidate.artifactId);
-      expect(await restored.download()).toEqual({ accepted: true, completed: true });
-      expect(f.stages()).toBe(1);
-      expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
-    } finally {
-      await f.cleanup();
-    }
-  });
+  it.each([false, true])(
+    "restores the fixed stage after restart (attempt layout: %s)",
+    async (attemptLayout) => {
+      const f = await fixture(true, undefined, attemptLayout);
+      try {
+        await f.controller.configure();
+        await f.controller.check();
+        await f.controller.download();
+        const restored = f.restart();
+        await restored.configure();
+        expect(restored.state.jones?.phase).toBe("staged");
+        expect(restored.state.jones?.stagedHandle).toBe(handle);
+        expect(restored.state.jones?.provenance?.artifactId).toBe(candidate.artifactId);
+        expect(await restored.download()).toEqual({ accepted: true, completed: true });
+        expect(f.stages()).toBe(1);
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
   it.each(["committed", "rolled-back"] as const)(
     "reads %s after ordinary stable-path relaunch without a helper generation",
     async (terminal) => {
