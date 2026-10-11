@@ -7,6 +7,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { randomUuidV4 } from "./RandomUuid.ts";
+import { findPendingServerUpdateContinuation } from "./ServerUpdateContinuationPreparation.ts";
 import {
   serverUpdateContinuationEffect,
   serverUpdateContinuationRun,
@@ -28,14 +29,7 @@ const mark = (optedInOnly: boolean) =>
           const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
           const run = serverUpdateContinuationRun(projection, preferences);
           if (run === undefined) continue;
-          const existing = yield* sql<{
-            effect_id: string;
-          }>`SELECT effect_id FROM orchestration_v2_effect_outbox
-        WHERE thread_id = ${threadId} AND status = 'pending'
-          AND command_id GLOB 'command:server-update-prepare:*'
-          AND effect_type = 'provider-runtime.continue'
-          AND json_extract(payload_json, '$.sourceRunId') = ${run.id}
-          AND json_extract(payload_json, '$.preparedForRestart') = 1 LIMIT 1`;
+          const existing = yield* findPendingServerUpdateContinuation(threadId, run.id);
           if (existing.length > 0) {
             if (!optedInOnly) {
               yield* sql`UPDATE orchestration_v2_effect_outbox
