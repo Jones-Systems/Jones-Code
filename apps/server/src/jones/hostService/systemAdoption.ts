@@ -99,6 +99,7 @@ const SHOW_PROPERTIES = [
   "ActiveState",
   "MainPID",
   "ExecStart",
+  "WorkingDirectory",
 ] as const;
 
 export interface SystemAdoptInput {
@@ -471,9 +472,16 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
   const serve =
     argv === undefined
       ? undefined
-      : parseRetainedServeCommand(argv, input.retainedExecutable, baseDir);
+      : parseRetainedServeCommand(
+          argv,
+          input.retainedExecutable,
+          baseDir,
+          show("WorkingDirectory"),
+        );
   if (serve === undefined || (serve.port !== undefined && serve.port !== input.port))
-    return refuse("The unit does not run the retained executable with the closed serve grammar.");
+    return refuse(
+      "The unit does not run the retained executable with the closed serve or start grammar.",
+    );
 
   const retainedProcess = assertProcess(
     await processIdentity(procRoot, runtimeRecord.pid),
@@ -590,6 +598,11 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
       "Prove with kernel leases that nothing holds the selected state open for writing; on any doubt the unit stays stopped and nothing restarts automatically.",
       `Create ${statePath} exclusively with protocol ${SERVICE_LAUNCHER_PROTOCOL} and active version ${active.metadata.version}.`,
       `Install only ${ownedPath} (${sha256(ownedText)}) through the root worker and reload systemd; every other unit file stays byte-identical.`,
+      ...(serve.workingDirectory === undefined
+        ? []
+        : [
+            `Replace the retained \`start --no-browser ${serve.workingDirectory}\` with the launcher, which runs the retained version as \`serve\` from the unchanged WorkingDirectory ${serve.workingDirectory}: headless, with no automatic project bootstrap from that directory; existing projects and state are not changed.`,
+          ]),
       `Start ${input.systemUnit}; read back launcher ${launcher.metadata.version}, retained child ${active.metadata.version}, environment, database inode, unit identity and launcher receipt. Child Install stays unattested.`,
       `Preserve ${NodePath.dirname(input.retainedExecutable)} and the original unit files for separately approved recovery.`,
     ],
