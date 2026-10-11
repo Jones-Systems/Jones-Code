@@ -57,7 +57,10 @@ function decode(value: unknown): LauncherCapabilityReceipt {
   return receipt as unknown as LauncherCapabilityReceipt;
 }
 
-async function assertDirectory(baseDir: string, uid: number): Promise<void> {
+export async function assertLauncherCapabilityDirectory(
+  baseDir: string,
+  uid: number,
+): Promise<void> {
   if ((await NodeFSP.realpath(baseDir)) !== baseDir)
     throw new Error("Launcher capability home is not canonical.");
   const directory = await NodeFSP.lstat(NodePath.dirname(receiptPath(baseDir)));
@@ -66,7 +69,7 @@ async function assertDirectory(baseDir: string, uid: number): Promise<void> {
 }
 
 async function readOwned(baseDir: string, uid: number) {
-  await assertDirectory(baseDir, uid);
+  await assertLauncherCapabilityDirectory(baseDir, uid);
   const handle = await NodeFSP.open(
     receiptPath(baseDir),
     NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,

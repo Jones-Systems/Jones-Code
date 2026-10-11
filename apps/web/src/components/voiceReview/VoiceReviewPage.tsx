@@ -6,9 +6,10 @@ import type {
   ThreadRegistryWorkstreams,
 } from "@t3tools/contracts";
 import { PauseIcon, PlayIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { useVoiceReview } from "./useVoiceReview";
 import { RecentVoicePrompts } from "./RecentVoicePrompts";
 import { RoutingDiagnostics } from "./RoutingDiagnostics";
@@ -18,6 +19,15 @@ import {
   voiceReviewError,
   type VoiceReviewTransport,
 } from "./voiceReviewActions";
+
+const promptTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "America/New_York",
+  timeZoneName: "short",
+});
 
 export function EnvironmentVoiceReview({
   environmentId,
@@ -30,6 +40,8 @@ export function EnvironmentVoiceReview({
   onDirtyChange?: (dirty: boolean) => void;
   unavailable?: boolean;
 }) {
+  const viewId = useId();
+  const tabs = useRef<Array<HTMLButtonElement | null>>([]);
   const dirtyRows = useRef(new Set<string>());
   const reportDirty = useCallback(
     (id: string, dirty: boolean) => {
@@ -132,39 +144,50 @@ export function EnvironmentVoiceReview({
   );
   return (
     <div hidden={pane === "sent"} className="space-y-4">
-      <div
-        hidden={pane === "queued"}
-        className="flex gap-2"
-        role="tablist"
-        aria-label="Voice review views"
-      >
-        <Button
-          variant={tab === "review" ? "default" : "outline"}
-          role="tab"
-          aria-selected={tab === "review"}
-          aria-controls="voice-review-panel"
-          id="voice-review-tab"
-          onClick={() => setTab("review")}
+      <div hidden={pane === "queued"}>
+        <ToggleGroup
+          value={[tab]}
+          onValueChange={(values) => {
+            const next = values[0];
+            if (next === "review" || next === "routing") setTab(next);
+          }}
+          variant="segmented"
+          size="segmented"
+          role="tablist"
+          aria-label="Voice review views"
         >
-          Review
-        </Button>
-        <Button
-          variant={tab === "routing" ? "default" : "outline"}
-          role="tab"
-          aria-selected={tab === "routing"}
-          aria-controls="voice-routing-panel"
-          id="voice-routing-tab"
-          onClick={() => setTab("routing")}
-        >
-          Routing
-        </Button>
+          {(["review", "routing"] as const).map((view, index) => (
+            <Toggle
+              key={view}
+              value={view}
+              ref={(element) => {
+                tabs.current[index] = element;
+              }}
+              role="tab"
+              tabIndex={tab === view ? 0 : -1}
+              onKeyDownCapture={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const next = event.key === "Home" ? 0 : event.key === "End" ? 1 : 1 - index;
+                setTab(next === 0 ? "review" : "routing");
+                tabs.current[next]?.focus();
+              }}
+              aria-selected={tab === view}
+              aria-controls={`${viewId}-${view}-panel`}
+              id={`${viewId}-${view}-tab`}
+            >
+              {view === "review" ? "Review" : "Routing"}
+            </Toggle>
+          ))}
+        </ToggleGroup>
       </div>
       {error && pane !== "queued" ? <p role="alert">{error}</p> : null}
       {loading && pane !== "queued" ? <p role="status">Loading voice prompts…</p> : null}
       <div
         role="tabpanel"
-        aria-labelledby="voice-review-tab"
-        id="voice-review-panel"
+        aria-labelledby={`${viewId}-review-tab`}
+        id={`${viewId}-review-panel`}
         hidden={pane !== "queued" && tab !== "review"}
       >
         <div className="flex min-w-0 flex-col gap-6">
@@ -173,7 +196,6 @@ export function EnvironmentVoiceReview({
             className="flex min-w-0 flex-col gap-3"
             aria-label="Pending voice prompts"
           >
-            <h2 className="font-medium">Prompts</h2>
             {!loading && !error && pending.length === 0 ? (
               <p className="text-sm text-muted-foreground">No pending voice prompts.</p>
             ) : null}
@@ -208,11 +230,15 @@ export function EnvironmentVoiceReview({
             ) : null}
             <RecentVoicePrompts
               entries={pane === "queued" ? queuedEntries : recentEntries}
-              title={pane ? "Prompts" : "Recent prompts"}
+              title={pane ? "Voice prompts" : "Recent prompts"}
               emptyMessage={
-                metadataError || recent === null
-                  ? "Recent voice prompts have not been observed."
-                  : "No recent prompts observed."
+                metadataError
+                  ? "Recent voice prompts are unavailable."
+                  : recent === null
+                    ? "Loading recent voice prompts…"
+                    : recent.partial || recent.unavailable.length > 0
+                      ? "No prompts in this partial sample; other prompts may be unavailable."
+                      : "No recent prompts observed."
               }
               registry={registry}
               workstreams={workstreams}
@@ -224,7 +250,11 @@ export function EnvironmentVoiceReview({
         </div>
       </div>
       {tab === "routing" && pane !== "queued" ? (
-        <div role="tabpanel" aria-labelledby="voice-routing-tab" id="voice-routing-panel">
+        <div
+          role="tabpanel"
+          aria-labelledby={`${viewId}-routing-tab`}
+          id={`${viewId}-routing-panel`}
+        >
           <RoutingDiagnostics drafts={diagnosticDrafts} fetchDiagnostics={review.diagnostics} />
         </div>
       ) : null}
@@ -292,9 +322,12 @@ function VoiceReviewRow({
             <span>{seconds}s remaining · paused</span>
           ) : null}
           <span className="text-muted-foreground">
-            {current.source_id} · revision {current.revision}
+            {current.routing_target ?? "Target not yet observed"}
           </span>
         </div>
+        <time dateTime={current.created_at} className="text-xs text-muted-foreground">
+          {promptTimeFormatter.format(new Date(current.created_at))}
+        </time>
         {actions.editHandle !== null ? (
           <Textarea
             aria-label="Edit voice prompt"
@@ -313,6 +346,13 @@ function VoiceReviewRow({
             {current.text}
           </p>
         ) : null}
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">Prompt details</summary>
+          <p>
+            Source: {current.source_id} · revision {current.revision}
+          </p>
+          <p>Routing: {current.routing_state ?? "not observed"}</p>
+        </details>
         {actions.editHandle !== null && !editing ? (
           <p className="text-sm">Unsaved text is preserved. Begin a new edit before saving it.</p>
         ) : null}
