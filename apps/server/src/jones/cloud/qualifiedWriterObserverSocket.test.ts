@@ -170,26 +170,33 @@ async function serve(
 ) {
   const path = NodePath.join(directory, "o.sock");
   const connections: { received: number; closed: Promise<void> }[] = [];
+  const accepted = new Set<NodeNet.Socket>();
+  const closed: Promise<void>[] = [];
   const server = NodeNet.createServer({ allowHalfOpen: true }, (connection) => {
+    accepted.add(connection);
     const observed = {
       received: 0,
       closed: new Promise<void>((resolve) => connection.once("close", () => resolve())),
     };
     connections.push(observed);
+    closed.push(observed.closed);
     connection.on("error", () => undefined);
     connection.on("data", (bytes: Buffer) => {
       observed.received += bytes.length;
     });
     connection.once("end", () => respond(connection));
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(path, () => resolve());
-  });
   try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(path, () => resolve());
+    });
     await body({ path, connections });
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // The fixture owns its half-open peer sockets, including a silent responder.
+    for (const connection of accepted) connection.destroy();
+    await Promise.all(closed);
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
 
@@ -212,7 +219,7 @@ it("sends no request, half-closes and reads one complete reply", async () => {
   });
 });
 
-it("ends an oversized, silent or invalid reply and releases the connection", async () => {
+it("rejects oversized and invalid replies and times out a silent peer", async () => {
   await scratch(async (directory) => {
     await serve(
       directory,
@@ -240,7 +247,8 @@ it("ends an oversized, silent or invalid reply and releases the connection", asy
             outcome: "deadline",
           },
         );
-        await connections[0]!.closed;
+        assert.equal(connections[0]!.received, 0);
+        // Its writable half is still owned by this fixture after the initial FIN.
       },
     );
   });

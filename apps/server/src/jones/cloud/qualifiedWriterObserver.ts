@@ -252,7 +252,7 @@ export async function observeQualifiedWriters(
         reason: installation === "absent" ? "not-installed" : "no-new-privileges",
       };
     // A present socket never falls back: it, or the helper it runs, is misconfigured.
-    if (socket.status === "untrusted" || installation === "absent")
+    if (socket.status !== "installed" || installation === "absent")
       return { status: "unavailable" };
     const identity = socket.identity;
     return observeThrough(input, procRoot, () =>
