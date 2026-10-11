@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import {
   JonesActionsClient,
   validateJonesStagedArtifact,
+  requireJonesStageDirectory,
   type JonesActionsCandidate,
 } from "@t3tools/shared/jones/jonesActions";
 import type { DesktopUpdateState } from "@t3tools/contracts";
@@ -230,12 +231,16 @@ export class JonesDesktopUpdateController {
     if (!/^[a-f0-9]{64}$/.test(selection.app.handle))
       throw new Error("Unknown native staged handle.");
     const appsRoot = await NodeFSP.realpath(NodePath.join(this.updaterRoot, "apps"));
-    const expectedDirectory = NodePath.join(
-      await NodeFSP.realpath(NodePath.join(this.updaterRoot, "artifacts")),
+    const expectedDirectory = await requireJonesStageDirectory(
+      NodePath.join(this.updaterRoot, "artifacts"),
       selection.app.handle,
+      selection.artifactDirectory,
     );
-    if (selection.artifactDirectory !== expectedDirectory)
-      throw new Error("Unknown staged artifact path.");
+    const appDirectory = await requireJonesStageDirectory(
+      appsRoot,
+      selection.app.handle,
+      NodePath.dirname(selection.app.appPath),
+    );
     const artifact = await (this.#options.validateArtifact ?? validateJonesStagedArtifact)(
       expectedDirectory,
     );
@@ -247,9 +252,7 @@ export class JonesDesktopUpdateController {
       selection.app.sourceSha !== artifact.candidate.source ||
       selection.app.sourceTree !== artifact.candidate.tree ||
       selection.app.version !== artifact.candidate.version ||
-      NodePath.dirname(selection.app.appPath) !== NodePath.join(appsRoot, selection.app.handle) ||
-      selection.app.receiptPath !==
-        NodePath.join(appsRoot, selection.app.handle, "mac-app-receipt.json") ||
+      selection.app.receiptPath !== NodePath.join(appDirectory, "mac-app-receipt.json") ||
       (selection.app.bundleIdentifier !== undefined &&
         (await readMacBundleIdentity(selection.app.appPath)).bundleIdentifier !==
           selection.app.bundleIdentifier)

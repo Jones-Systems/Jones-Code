@@ -2,6 +2,16 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-desktop-stage-attempts",
+      "tests": [
+        "packages/shared/src/jones/jonesActionsStage.test.ts",
+        "apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/jonesActions.test.ts packages/shared/src/jones/jonesActionsStage.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts"
+      ]
+    },
+    {
       "id": "jones-boundary",
       "tests": ["scripts/jones/check-boundary.test.ts"],
       "commands": [

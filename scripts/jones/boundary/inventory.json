@@ -7,6 +7,7 @@
   },
   "baseline": "d720210996a514368ba99f4860063110033d93fa",
   "paths": {
+    "scripts/jones/boundary/fragments/desktop-stage-attempts.json": "jones-owned",
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
     ".agents/skills/test-t3-app/SKILL.md": "policy",
