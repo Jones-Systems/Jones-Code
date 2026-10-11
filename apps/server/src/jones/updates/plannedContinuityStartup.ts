@@ -10,7 +10,7 @@ import {
   PlannedContinuityError,
   type PlannedUpdateContinuity,
   type PlannedUpdateProof,
-} from "./PlannedUpdateContinuity.ts";
+} from "./PlannedUpdateContinuityService.ts";
 
 export function activatePlannedUpdateContinuity(input: {
   readonly baseDir: string;

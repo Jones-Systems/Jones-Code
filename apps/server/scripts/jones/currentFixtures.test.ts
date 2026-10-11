@@ -136,6 +136,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 103, name: "RuntimeStop" },
           { id: 104, name: "DeletionAdmission" },
           { id: 105, name: "UpstreamReferenceIsolation" },
+          { id: 106, name: "PlannedUpdateContinuity" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

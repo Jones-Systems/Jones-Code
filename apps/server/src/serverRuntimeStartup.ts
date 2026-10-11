@@ -1,5 +1,5 @@
 import * as Option from "effect/Option";
-import * as PlannedUpdateContinuity from "./jones/updates/PlannedUpdateContinuity.ts";
+import * as PlannedUpdateContinuity from "./jones/updates/PlannedUpdateContinuityService.ts";
 import { activatePlannedUpdateContinuity } from "./jones/updates/plannedContinuityStartup.ts";
 import * as ServerUpdateContinuation from "./orchestration-v2/ServerUpdateContinuation.ts";
 import {

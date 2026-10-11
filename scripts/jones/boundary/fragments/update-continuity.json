@@ -11,6 +11,7 @@
     "apps/server/src/jones/updates/operationHandoff.test.ts",
     "apps/server/src/jones/updates/desktopInstall.test.ts",
     "apps/server/src/jones/updates/PlannedUpdateContinuity.ts",
+    "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts",
     "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
     "apps/server/src/jones/updates/plannedContinuityPolicy.ts",
     "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
@@ -36,11 +37,11 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
-      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
-      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
@@ -52,7 +53,7 @@
     },
     {
       "from": "apps/server/src/serverRuntimeStartup.ts",
-      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
     },
     {
       "from": "apps/server/src/serverRuntimeStartup.ts",
