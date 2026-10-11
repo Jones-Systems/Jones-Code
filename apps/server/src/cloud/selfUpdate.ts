@@ -86,7 +86,11 @@ export class ServerSelfUpdate extends Context.Service<
       ServerSelfUpdateError
     >;
     readonly installQualified?: (
-      input: { readonly stagedHandle: string; readonly continueRunningThreads?: boolean },
+      input: {
+        readonly stagedHandle: string;
+        readonly continueRunningThreads?: boolean;
+        readonly operationId?: string;
+      },
       onHandoffAccepted?: () => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
@@ -589,6 +593,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             targetVersion: staged.receipt.version,
             dbPath: staged.binding.dbPath,
             stagedHandle: staged.stagedHandle,
+            ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
           })
           .pipe(
             Effect.mapError((cause) => failWith(cause.message, cause)),

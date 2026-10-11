@@ -79,6 +79,43 @@ const makeClient = (host: FakeLauncherProcess, currentVersion: string) =>
     Effect.provideService(HostProcessEnvironment, host.env),
   );
 
+it.effect(
+  "requires explicit caller-operation support and correlates acceptance to the exact ID",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        qualifiedUpdatesProtocol: 1,
+        startupGateProtocol: 1,
+      };
+      const input = {
+        targetVersion: "1.1.0",
+        dbPath: "/synthetic/statev2.sqlite",
+        stagedHandle: "22345678-1234-4234-8234-123456789abc",
+        operationId: "12345678-1234-4234-8234-123456789abc",
+      };
+      const oldHost = new FakeLauncherProcess(context);
+      const oldClient = yield* makeClient(oldHost, "1.0.0");
+      expect((yield* oldClient.requestUpdate(input).pipe(Effect.flip))._tag).toBe(
+        "ServiceLauncherRejectedError",
+      );
+      expect(oldHost.sent).toEqual([]);
+      const host = new FakeLauncherProcess({ ...context, updateOperationsProtocol: 1 });
+      const client = yield* makeClient(host, "1.0.0");
+      const request = yield* Effect.forkChild(client.requestUpdate(input), {
+        startImmediately: true,
+      });
+      yield* Effect.promise(() => host.sentSignal.promise);
+      host.emit({ type: "update-accepted", updateId: "other-operation" });
+      expect(host.listenerCount()).toBe(2);
+      host.emit({ type: "update-accepted", updateId: input.operationId });
+      expect(yield* Fiber.join(request)).toBe(input.operationId);
+      expect(host.sent).toEqual([{ type: "request-update", ...input }]);
+      expect(host.listenerCount()).toBe(0);
+    }),
+);
+
 it.effect("waits for the launcher to durably commit the trial update ID", () =>
   Effect.gen(function* () {
     const pending = {

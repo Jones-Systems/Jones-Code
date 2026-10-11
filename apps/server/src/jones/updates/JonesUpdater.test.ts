@@ -66,6 +66,17 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
   };
 }
 describe("host-owned Jones updater", () => {
+  it("stages only the pinned source and retains a conflicting existing handle", async () => {
+    const f = fixture();
+    const wrong = await f.updater.stageExact("f".repeat(40));
+    expect(wrong.stagedHandle).toBeUndefined();
+    expect(f.effects).toEqual([]);
+    expect((await f.updater.stageExact(candidate.source)).stagedHandle).toBe("fixed-handle");
+    f.newer();
+    expect((await f.updater.stageExact("f".repeat(40))).phase).toBe("blocked");
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+    expect(f.effects).toEqual(["stage"]);
+  });
   it("Download stages without invoking install and a later check retains the fixed handle", async () => {
     const f = fixture();
     await f.updater.check();

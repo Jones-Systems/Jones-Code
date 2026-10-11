@@ -5,11 +5,17 @@
     "apps/server/src/jones/updates/continuationPrompt.ts",
     "apps/server/src/jones/updates/continuationPrompt.test.ts",
     "apps/server/src/jones/updates/serverCapability.ts",
-    "apps/server/src/jones/updates/serverCapability.test.ts"
+    "apps/server/src/jones/updates/serverCapability.test.ts",
+    "apps/server/src/jones/updates/launcherOperation.ts",
+    "apps/server/src/jones/updates/launcherOperation.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/updates/launcherOperation.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
       "to": "apps/server/src/jones/updates/continuationPrompt.ts"

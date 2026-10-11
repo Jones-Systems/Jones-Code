@@ -153,6 +153,9 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
     download: (input) => record("download", input),
     prepareNative: (input) => record("prepareNative", input),
     install: (input) => record("install", input),
+    stageExact: (input) => record("stageExact", input),
+    installForOperation: (input) => record("installForOperation", input),
+    reconcileOperation: (operationId) => Effect.succeed({ state: "absent" as const, operationId }),
   });
   const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
     effect.pipe(

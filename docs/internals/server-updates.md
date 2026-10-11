@@ -54,6 +54,20 @@ with the ready event after reconnecting, then check the outcome and target versi
 A reconnect alone cannot distinguish successful replacement from rollback. Older
 servers without an update ID retain version-only correlation.
 
+Fleet installs use a caller-supplied UUID and an exact source selection. A launcher
+must advertise `updateOperationsProtocol: 1` before accepting that ID. It durably
+reserves the ID with the staged handle, source pair, environment, database, and
+version pair before acknowledging native acceptance. Repeating the same binding
+reads its retained operation; reusing the ID for another binding is rejected.
+The launcher archives a terminal receipt before a later operation replaces its
+service-state entry. These Jones receipts live under `runtime/jones-update-operations`,
+outside the database rollback pair.
+
+An absent reservation and absent matching service state permit submission with the
+same ID. A reservation without matching native state or a retained terminal outcome
+requires reconciliation; it does not authorize another replacement. Readback of an
+operation and observation of the currently installed source are separate checks.
+
 Desktop updates have a separate two-phase handoff because installing the app stops
 its bundled backend. Preparation returns a token while the connection is alive;
 the client commits that token only after receiving it. Otherwise backend shutdown
