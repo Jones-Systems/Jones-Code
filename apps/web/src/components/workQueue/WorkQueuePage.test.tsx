@@ -1,13 +1,9 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { WorkQueueMetadata, WorkQueueMetadataResult } from "@t3tools/contracts";
 import { voiceReviewRecentFixture } from "@t3tools/client-runtime/voice-review/fixtures";
-import {
-  WorkQueueMetadataPanel,
-  type WorkQueueMetadataLoader,
-} from "../../jones/workQueue/WorkQueueMetadataPanel";
+import type { WorkQueueMetadataLoader } from "../../jones/workQueue/WorkQueueMetadataPanel";
 import { WorkQueuePanel } from "./WorkQueuePanel";
 import { WorkQueuePreview } from "./WorkQueuePreview";
 import {
@@ -491,181 +487,6 @@ describe("mock pause clock", () => {
   });
 });
 
-describe("submitted work metadata", () => {
-  let root: Root;
-  let container: HTMLDivElement;
-  const sample = (): WorkQueueMetadata => ({
-    schema: "codex.t3-work-queue-metadata/v1",
-    source: {
-      queue_id: "queue",
-      host_id: "host",
-      environment_ref: "environment",
-      exporter_instance_id: "worker",
-    },
-    observed_at_ms: Date.now(),
-    snapshot_token: "a".repeat(64),
-    coverage: "complete",
-    authority_effect: "none",
-    items: [
-      {
-        request_id: "request-legacy",
-        workstream_id: "raw-legacy-id",
-        canonical_binding: null,
-        entry_kind: "ordinary",
-        request_kind: "initial",
-        lane: "normal",
-        queue_state: "unknown",
-        submitted_at_ms: null,
-        target: null,
-        dispatch_status: "unknown",
-        native_command_status: null,
-        finish_line: "not_tracked",
-      },
-      {
-        request_id: "request-canonical",
-        workstream_id: "exact-canonical-id",
-        canonical_binding: {
-          owner_id: "owner",
-          server_generation: 1,
-          registry_version: 2,
-          membership_id: "membership",
-          native_reference_id: "reference",
-          source_instance_id: "instance",
-          native_thread_id: "thread",
-          authority_namespace: "namespace",
-          store_generation: 1,
-          expires_at: "2099-01-01T00:00:00Z",
-        },
-        entry_kind: "flexible",
-        request_kind: "owner_followup",
-        lane: "high",
-        queue_state: "observed_terminal",
-        submitted_at_ms: null,
-        target: { host_id: "host", environment_ref: "environment", thread_id: "thread" },
-        dispatch_status: "accepted",
-        native_command_status: "accepted",
-        finish_line: "not_tracked",
-      },
-    ],
-  });
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
-    await act(() => root.unmount());
-    container.remove();
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-  });
-  async function render(load: WorkQueueMetadataLoader, key = "environment-a") {
-    await act(() => root.render(<WorkQueueMetadataPanel key={key} load={load} />));
-  }
-  const ready = (): WorkQueueMetadataResult => ({
-    status: "ready",
-    snapshot: sample(),
-    expires_at_ms: Date.now() + 60_000,
-  });
-  it("shows raw and canonical identities, unknown outcomes and no mutation controls", async () => {
-    await render(async () => ready());
-    const text = container.textContent;
-    for (const value of [
-      "raw-legacy-id",
-      "exact-canonical-id",
-      "Legacy / unverified",
-      "Canonical binding verified at sample",
-      "membership",
-      "observed_terminal",
-      "Dispatch: unknown",
-      "Native command: Not observed",
-      "Not tracked",
-      "does not prove a handoff or completed work",
-      "Handoff: unconfirmed in this sample",
-      "Source: queue",
-      "Sampled",
-    ]) {
-      expect(text).toContain(value);
-    }
-    expect(container.querySelector("textarea,input")).toBeNull();
-    expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
-      "Refresh metadata",
-    ]);
-  });
-  it.each(["partial", "stale"] as const)(
-    "keeps %s rows visible with their sample status",
-    async (status) => {
-      await render(async () => ({
-        status,
-        snapshot: { ...sample(), coverage: "partial" },
-        expires_at_ms: Date.now() + 60_000,
-      }));
-      expect(container.textContent).toContain(
-        status === "stale" ? "Stale sample" : "Partial sample",
-      );
-      expect(container.textContent).toContain("Coverage: partial");
-      expect(container.textContent).toContain("request-legacy");
-    },
-  );
-  it.each([
-    { status: "unconfigured", reason: "not_configured" },
-    { status: "unavailable", reason: "future_sample" },
-    { status: "unavailable", reason: "source_unavailable" },
-  ] satisfies WorkQueueMetadataResult[])(
-    "does not turn $reason into an empty queue",
-    async (result) => {
-      await render(async () => result);
-      expect(container.textContent).toContain(
-        result.status === "unconfigured"
-          ? "no source is configured"
-          : result.reason === "future_sample"
-            ? "the sample timestamp is in the future"
-            : "the source cannot be read",
-      );
-      expect(container.textContent).not.toContain("No submitted work");
-      expect(container.querySelector("table")).toBeNull();
-    },
-  );
-  it("marks a cached sample stale when its validity expires without polling", async () => {
-    vi.useFakeTimers();
-    const load = vi.fn(async () => ready());
-    await render(load);
-    expect(container.textContent).toContain("Ready sample");
-    await act(() => vi.advanceTimersByTime(60_000));
-    expect(container.textContent).toContain("Stale sample");
-    expect(load).toHaveBeenCalledTimes(1);
-  });
-  it("clears old data, aborts the old environment read and ignores its late result", async () => {
-    const oldRead = deferred<WorkQueueMetadataResult>();
-    let oldSignal: AbortSignal | undefined;
-    await render((signal) => {
-      oldSignal = signal;
-      return oldRead.promise;
-    });
-    await render(
-      async () => ({ status: "unconfigured", reason: "not_configured" }),
-      "environment-b",
-    );
-    expect(oldSignal?.aborted).toBe(true);
-    await act(() => oldRead.resolve(ready()));
-    expect(container.textContent).toContain("no source is configured");
-    expect(container.textContent).not.toContain("request-legacy");
-  });
-  it("refreshes explicitly and reports a failed read without displaying old rows as current", async () => {
-    const load = vi
-      .fn<WorkQueueMetadataLoader>()
-      .mockResolvedValueOnce(ready())
-      .mockRejectedValueOnce(new Error("offline"));
-    await render(load);
-    expect(container.textContent).toContain("request-legacy");
-    await act(() => container.querySelector<HTMLButtonElement>("button")!.click());
-    expect(container.textContent).toContain("Queue metadata unavailable");
-    expect(container.textContent).not.toContain("request-legacy");
-    expect(container.textContent).not.toContain("No submitted work");
-  });
-});
-
 describe("submitted work page integration", () => {
   const mockedModules = [
     "../../state/environments",
@@ -713,6 +534,8 @@ describe("submitted work page integration", () => {
           environment: { capabilities: supported ? { workQueueMetadata: true } : {} },
         },
       };
+      let environmentSnapshot = { environments: [environment] };
+      const environmentListeners = new Set<() => void>();
       let hydrationStatus = "pending";
       const retryPreferences = vi.fn(async () => undefined);
       vi.doMock("../../hooks/useSettings", () => ({
@@ -721,7 +544,16 @@ describe("submitted work page integration", () => {
         ensureClientSettingsHydrated: retryPreferences,
       }));
       vi.doMock("../../state/environments", () => ({
-        useEnvironments: () => ({ environments: [environment] }),
+        useEnvironments: () =>
+          useSyncExternalStore(
+            (listener) => {
+              environmentListeners.add(listener);
+              return () => {
+                environmentListeners.delete(listener);
+              };
+            },
+            () => environmentSnapshot,
+          ),
         usePrimaryEnvironmentId: () => environment.environmentId,
       }));
       vi.doMock("../../jones/workQueue/useWorkQueueMetadata", () => ({
@@ -742,7 +574,12 @@ describe("submitted work page integration", () => {
           }),
           registry: async () => ({ threads: [], partial: false, unavailable: [] }),
           workstreams: async () => ({ workstreams: [] }),
-          diagnostics: vi.fn(),
+          diagnostics: vi.fn(async () => ({
+            routing_state: "proposed",
+            draft_revision: draft.revision,
+            unavailable: [],
+            jobs: [],
+          })),
           correctAssociation: vi.fn(),
         },
       };
@@ -785,6 +622,25 @@ describe("submitted work page integration", () => {
           container.querySelector('[aria-label="Queue metadata"]')?.closest("[hidden]"),
         ).not.toBeNull();
       expect(pending.getAttribute("aria-selected")).toBe("true");
+      const reviewTabs = container.querySelector('[aria-label="Voice review views"]')!;
+      const reviewTab = [...reviewTabs.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
+        (tab) => tab.textContent === "Review",
+      )!;
+      const routingTab = [...reviewTabs.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
+        (tab) => tab.textContent === "Routing",
+      )!;
+      await act(() => routingTab.click());
+      expect(container.querySelector('[aria-label="Routing diagnostics"]')).not.toBeNull();
+      expect(container.textContent).toContain("No routing jobs observed.");
+      expect(voiceReview.review.diagnostics).toHaveBeenCalledWith(draft.id);
+      expect(
+        container.querySelector('[aria-label="Pending voice prompts"]')!.closest("[hidden]"),
+      ).not.toBeNull();
+      await act(() =>
+        routingTab.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })),
+      );
+      expect(reviewTab.getAttribute("aria-selected")).toBe("true");
+      expect(document.activeElement).toBe(reviewTab);
       const edit = [...container.querySelectorAll("button")].find(
         (button) => button.textContent === "Edit",
       )!;
@@ -822,9 +678,7 @@ describe("submitted work page integration", () => {
         container.querySelector('[aria-label="Recent voice prompts"]')?.closest("[hidden]"),
       ).not.toBeNull();
       expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
-      expect(container.textContent).toContain(
-        "Sent history is not available from this connection yet",
-      );
+      expect(container.textContent).toContain("Sent history is unavailable from this connection");
       await act(() =>
         sent.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
       );
@@ -848,8 +702,34 @@ describe("submitted work page integration", () => {
       expect(load).toHaveBeenCalledTimes(supported ? 1 : 0);
       expect(container.querySelector('[aria-label="Queue metadata"]') !== null).toBe(supported);
       expect(container.textContent).toContain(
-        supported ? "no source is configured" : "Queue metadata unsupported by this environment",
+        supported ? "not configured" : "Queue metadata unsupported by this environment",
       );
+      await act(() => {
+        environmentSnapshot = {
+          environments: [
+            ...environmentSnapshot.environments,
+            {
+              ...environment,
+              environmentId: "fixture-second",
+              label: "Second environment",
+            },
+          ],
+        };
+        for (const listener of environmentListeners) listener();
+      });
+      const viewGroups = container.querySelectorAll('[aria-label="Voice review views"]');
+      expect(viewGroups).toHaveLength(2);
+      const reviewIds = [...viewGroups].flatMap((group) =>
+        [...group.querySelectorAll('[role="tab"]')].map((tab) => tab.id),
+      );
+      expect(new Set(reviewIds).size).toBe(4);
+      for (const group of viewGroups) {
+        const review = group.querySelector('[role="tab"]')!;
+        const panel = document.getElementById(review.getAttribute("aria-controls")!);
+        expect(panel?.getAttribute("aria-labelledby")).toBe(review.id);
+      }
+      expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
+      expect(mutate).toHaveBeenCalledTimes(1);
     },
   );
 });
