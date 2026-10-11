@@ -385,7 +385,8 @@
         "apps/server/src/jones/hostService/HostServiceConfig.test.ts",
         "packages/tailscale/src/jones/serveOwnership.test.ts",
         "apps/server/src/cli/pair.test.ts",
-        "apps/server/src/jones/hostService/adoption.test.ts"
+        "apps/server/src/jones/hostService/adoption.test.ts",
+        "apps/server/src/jones/hostService/privateSetupCompatibility.test.ts"
       ],
       "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
     },

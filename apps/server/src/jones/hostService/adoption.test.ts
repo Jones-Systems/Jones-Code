@@ -26,14 +26,23 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const oldVersion = "0.0.0-preview.20261010.100";
 const newVersion = "0.0.0-preview.20261010.101";
+const privateSetupSource = "d3e6f8e843a0477542380a4ec0d9ae02a1084053";
+const privateSetupTree = "250db17dd136cef960e9bb8e054acadb41fba03d";
 const runtimeExecutable = (version: string) => `#!/bin/sh\n# version: ${version}\nexit 0\n`;
 const sha = (value: string | Buffer) => NodeCrypto.createHash("sha256").update(value).digest("hex");
-function tarPayload(version: string) {
+function tarPayload(version: string, privateSetup = false) {
   const executable = runtimeExecutable(version);
   const entries: Buffer[] = [];
   for (const [name, kind, body] of [
     ["payload/", "5", ""],
     ["payload/t3", "0", executable],
+    ...(privateSetup
+      ? ([
+          ["payload/client/", "5", ""],
+          ["payload/node_modules/", "5", ""],
+          ["payload/resource-monitor/", "5", ""],
+        ] as const)
+      : []),
   ] as const) {
     const header = Buffer.alloc(512);
     header.write(name, 0);
@@ -67,7 +76,11 @@ async function tree(directory: string): Promise<string[]> {
 }
 async function fixture(
   body: (f: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
-  options: { readonly legacy?: boolean; readonly migrationChanged?: boolean } = {},
+  options: {
+    readonly legacy?: boolean;
+    readonly migrationChanged?: boolean;
+    readonly privateSetup?: boolean;
+  } = {},
 ) {
   const f = await createFixture(options);
   try {
@@ -77,7 +90,11 @@ async function fixture(
   }
 }
 async function createFixture(
-  options: { readonly legacy?: boolean; readonly migrationChanged?: boolean } = {},
+  options: {
+    readonly legacy?: boolean;
+    readonly migrationChanged?: boolean;
+    readonly privateSetup?: boolean;
+  } = {},
 ) {
   const root = await NodeFSP.realpath(
     await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-adoption-test-")),
@@ -92,7 +109,11 @@ async function createFixture(
     mode: 0o755,
   });
   await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), oldVersion);
-  if (!options.legacy)
+  if (options.privateSetup) {
+    for (const name of ["client", "node_modules", "resource-monitor"])
+      await NodeFSP.mkdir(NodePath.join(active, name));
+  }
+  if (!options.legacy && !options.privateSetup)
     await NodeFSP.writeFile(
       NodePath.join(active, ".jones-provenance.json"),
       "private provenance is not qualification",
@@ -132,14 +153,17 @@ async function createFixture(
     const dir = NodePath.join(root, `artifact-${index}`);
     await NodeFSP.mkdir(dir);
     directories.push(dir);
-    const archive = tarPayload(version);
+    const archive = tarPayload(version, options.privateSetup && index === 0);
     const zip = Buffer.from(`synthetic zip envelope ${index}`);
-    const commit = (index === 0 ? "a" : "b").repeat(40);
+    const commit =
+      options.privateSetup && index === 0
+        ? privateSetupSource
+        : (index === 0 ? "a" : "b").repeat(40);
     const m = {
       schema: 1,
       repository: "Jones-Systems/Jones-Code",
       source: commit,
-      tree: "c".repeat(40),
+      tree: options.privateSetup && index === 0 ? privateSetupTree : "c".repeat(40),
       version,
       platform: "linux",
       architecture: "x64",
@@ -162,6 +186,24 @@ async function createFixture(
       bytes: zip.length,
       source: commit,
     });
+  }
+  if (options.privateSetup) {
+    const artifact = metadata.get(directories[0]!)!;
+    await NodeFSP.writeFile(
+      NodePath.join(active, ".jones-provenance.json"),
+      JSON.stringify({
+        schema: 1,
+        repository: artifact.repository,
+        source: artifact.source,
+        version: artifact.version,
+        platform: artifact.platform,
+        architecture: artifact.architecture,
+        artifact: artifact.artifact,
+        sha256: artifact.sha256,
+        entrySha256: sha(runtimeExecutable(oldVersion)),
+      }),
+      { mode: 0o600 },
+    );
   }
   const commands: Array<{ command: string; args: ReadonlyArray<string> }> = [];
   let dropins = "";
@@ -221,8 +263,13 @@ async function createFixture(
       const args = command.args;
       if (command.command === "gh") {
         const endpoint = args.at(-1)!;
-        if (endpoint.includes("/git/commits/"))
-          return JSON.stringify({ sha: endpoint.split("/").at(-1), tree: { sha: "c".repeat(40) } });
+        if (endpoint.includes("/git/commits/")) {
+          const source = endpoint.split("/").at(-1);
+          return JSON.stringify({
+            sha: source,
+            tree: { sha: source === privateSetupSource ? privateSetupTree : "c".repeat(40) },
+          });
+        }
         if (endpoint.includes("actions/workflows/ci.yml/"))
           return JSON.stringify({
             workflow_runs: [
@@ -284,7 +331,7 @@ async function createFixture(
       if (command.command === "systemctl") {
         if (args.includes("restart")) {
           restarted = true;
-          if (options.legacy)
+          if (options.legacy || options.privateSetup)
             await NodeFSP.writeFile(
               NodePath.join(runtime, "jones-launcher-capability.json"),
               JSON.stringify({
@@ -326,10 +373,14 @@ async function createFixture(
           version,
           launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
           startupGateProtocol: 1,
-          migrationPlan: {
-            pendingUpstream: [],
-            pendingJones: options.migrationChanged && restarted ? [] : [120, 121],
-          },
+          ...(options.privateSetup && version === oldVersion
+            ? {}
+            : {
+                migrationPlan: {
+                  pendingUpstream: [],
+                  pendingJones: options.migrationChanged && restarted ? [] : [120, 121],
+                },
+              }),
         });
       return `t3 v${version}\n`;
     },
@@ -344,9 +395,10 @@ async function createFixture(
   const input = {
     baseDir: base,
     activeArtifactDir: directories[0]!,
-    activeSourceCommit: "a".repeat(40),
+    activeSourceCommit: options.privateSetup ? privateSetupSource : "a".repeat(40),
     launcherArtifactDir: directories[1]!,
     launcherSourceCommit: "b".repeat(40),
+    ...(options.privateSetup ? { acceptUnattestedChildCapability: true } : {}),
     ...(options.legacy
       ? {
           legacyDirectServe: true,
@@ -471,6 +523,278 @@ it("enrolls old and new receipts, preserves native identity and starts only the 
       JSON.parse(await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8")),
     ).toMatchObject({ status: "applied", capability: { install: true } });
   }));
+it("archives authenticated private setup evidence before qualification and retains launcher-only attestation", () =>
+  fixture(
+    async (f) => {
+      const provenance = NodePath.join(f.runtime, "versions", oldVersion, ".jones-provenance.json");
+      const original = await NodeFSP.readFile(provenance, "utf8");
+      const before = await NodeFSP.lstat(provenance);
+      const stateBefore = await NodeFSP.readFile(
+        NodePath.join(f.runtime, "service-state.json"),
+        "utf8",
+      );
+      const beforeDryRun = await tree(f.root);
+      const dry = await adoptHost({ ...f.input, dryRun: true }, f.host);
+      expect(dry.plan.attestation).toBe("launcher-only");
+      expect(await tree(f.root)).toEqual(beforeDryRun);
+      let observedOrdering = false;
+      const host: AdoptionHost = {
+        ...f.host,
+        run: async (command) => {
+          if (
+            command.args.includes("__service-preflight") &&
+            command.command.includes(oldVersion)
+          ) {
+            const pending = JSON.parse(
+              await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+            );
+            expect(pending.status).toBe("pending");
+            expect(pending.privateSetupProvenance.preimage.text).toBe(original);
+            await expect(NodeFSP.lstat(provenance)).rejects.toMatchObject({ code: "ENOENT" });
+            const archived = NodePath.join(
+              pending.privateSetupProvenance.archiveDirectory,
+              ".jones-provenance.json",
+            );
+            expect(await NodeFSP.readFile(archived, "utf8")).toBe(original);
+            expect((await NodeFSP.lstat(archived)).ino).toBe(before.ino);
+            await expect(
+              NodeFSP.lstat(
+                NodePath.join(f.runtime, "versions", oldVersion, ".jones-runtime-receipt.json"),
+              ),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+            expect(f.commands.some((c) => c.args.includes("stop"))).toBe(false);
+            observedOrdering = true;
+          }
+          return f.host.run(command);
+        },
+      };
+      const result = await adoptHost(f.input, host);
+      expect(observedOrdering).toBe(true);
+      const receipt = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+      );
+      expect(receipt).toMatchObject({
+        status: "applied",
+        attestation: "launcher-only",
+        childCapability: "unattested",
+        attestationBasis: "pre-publisher-child",
+        privateSetupProvenance: { state: "archived" },
+      });
+      expect(receipt.capability).toBeUndefined();
+      const archived = NodePath.join(
+        result.plan.privateSetupProvenance!.archiveDirectory,
+        ".jones-provenance.json",
+      );
+      const after = await NodeFSP.lstat(archived);
+      expect([after.dev, after.ino, after.uid, after.mode]).toEqual([
+        before.dev,
+        before.ino,
+        before.uid,
+        before.mode,
+      ]);
+      expect(await NodeFSP.readFile(archived, "utf8")).toBe(original);
+      await expect(NodeFSP.lstat(provenance)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await NodeFSP.readFile(NodePath.join(f.runtime, "service-state.json"), "utf8")).toBe(
+        stateBefore,
+      );
+      expect(
+        (
+          await readQualifiedRuntimeReceipt(f.base, oldVersion, {
+            platform: "linux",
+            architecture: "x64",
+          })
+        ).sourceSha,
+      ).toBe(privateSetupSource);
+      expect(f.commands.some((c) => c.args.includes("restart"))).toBe(true);
+    },
+    { privateSetup: true },
+  ));
+it.each(["missing-acceptance", "current-child-receipt", "stale-child-receipt"])(
+  "refuses private setup %s before pending intent or service stop",
+  (kind) =>
+    fixture(
+      async (f) => {
+        if (kind !== "missing-acceptance")
+          await NodeFSP.writeFile(
+            NodePath.join(f.runtime, UPDATE_CAPABILITY_RECEIPT),
+            JSON.stringify({
+              schema: 1,
+              baseDir: f.base,
+              environmentId: "fixture-environment",
+              currentVersion: oldVersion,
+              processId: kind === "current-child-receipt" ? 12345 : 999,
+              qualifiedLauncher: true,
+              capability: { install: true },
+            }),
+            { mode: 0o600 },
+          );
+        const before = await tree(f.root);
+        await expect(
+          adoptHost(
+            { ...f.input, acceptUnattestedChildCapability: kind !== "missing-acceptance" },
+            f.host,
+          ),
+        ).rejects.toThrow(
+          kind === "missing-acceptance"
+            ? "explicit unattested-child acceptance"
+            : "unexpected capability receipt",
+        );
+        expect(await tree(f.root)).toEqual(before);
+        expect(f.commands.some((c) => c.args.includes("stop") || c.args.includes("restart"))).toBe(
+          false,
+        );
+        await expect(
+          NodeFSP.lstat(NodePath.join(f.runtime, ADOPTION_RECEIPT)),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      },
+      { privateSetup: true },
+    ),
+);
+it("preserves archived provenance and pending intent after pre-stop qualification interruption without retry", () =>
+  fixture(
+    async (f) => {
+      const provenance = NodePath.join(f.runtime, "versions", oldVersion, ".jones-provenance.json");
+      const original = await NodeFSP.readFile(provenance, "utf8");
+      const before = await NodeFSP.lstat(provenance);
+      const host: AdoptionHost = {
+        ...f.host,
+        run: async (command) => {
+          if (command.args.includes("__service-preflight") && command.command.includes(oldVersion))
+            throw new Error("Synthetic pre-stop qualification interruption");
+          return f.host.run(command);
+        },
+      };
+      await expect(adoptHost(f.input, host)).rejects.toThrow(
+        "Synthetic pre-stop qualification interruption",
+      );
+      const pending = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+      );
+      expect(pending.status).toBe("pending");
+      expect(pending.privateSetupProvenance.preimage.text).toBe(original);
+      const archived = NodePath.join(
+        pending.privateSetupProvenance.archiveDirectory,
+        ".jones-provenance.json",
+      );
+      expect(await NodeFSP.readFile(archived, "utf8")).toBe(original);
+      expect((await NodeFSP.lstat(archived)).ino).toBe(before.ino);
+      await expect(NodeFSP.lstat(provenance)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(f.commands.some((c) => c.args.includes("stop") || c.args.includes("restart"))).toBe(
+        false,
+      );
+      const commandCount = f.commands.length;
+      await expect(adoptHost(f.input, f.host)).rejects.toThrow("Previous adoption");
+      expect(f.commands.length).toBe(commandCount);
+      expect(await NodeFSP.readFile(archived, "utf8")).toBe(original);
+    },
+    { privateSetup: true },
+  ));
+it("compares the occupied payload with the authenticated artifact before moving provenance", () =>
+  fixture(
+    async (f) => {
+      const active = NodePath.join(f.runtime, "versions", oldVersion);
+      const provenance = NodePath.join(active, ".jones-provenance.json");
+      await NodeFSP.writeFile(
+        NodePath.join(active, "client", "unexpected-content"),
+        "different payload",
+      );
+      const original = await NodeFSP.readFile(provenance, "utf8");
+      await expect(adoptHost(f.input, f.host)).rejects.toThrow("Existing runtime differs");
+      const pending = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+      );
+      expect(pending.status).toBe("pending");
+      expect(await NodeFSP.readFile(provenance, "utf8")).toBe(original);
+      await expect(
+        NodeFSP.lstat(pending.privateSetupProvenance.archiveDirectory),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(f.commands.some((c) => c.args.includes("stop") || c.args.includes("restart"))).toBe(
+        false,
+      );
+    },
+    { privateSetup: true },
+  ));
+it.each(["missing", "stale"])("requires genuine launcher readback for private setup: %s", (kind) =>
+  fixture(
+    async (f) => {
+      const host: AdoptionHost = {
+        ...f.host,
+        run: async (command) => {
+          const output = await f.host.run(command);
+          if (command.args.includes("restart")) {
+            const path = NodePath.join(f.runtime, "jones-launcher-capability.json");
+            if (kind === "missing") await NodeFSP.rm(path);
+            else {
+              const value = JSON.parse(await NodeFSP.readFile(path, "utf8"));
+              await NodeFSP.writeFile(path, JSON.stringify({ ...value, launcherPid: 999 }));
+            }
+          }
+          return output;
+        },
+      };
+      await expect(adoptHost(f.input, host)).rejects.toThrow("readback is unavailable or stale");
+      const pending = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+      );
+      expect(pending.status).toBe("pending");
+      expect(
+        await NodeFSP.readFile(
+          NodePath.join(pending.privateSetupProvenance.archiveDirectory, ".jones-provenance.json"),
+          "utf8",
+        ),
+      ).toBe(pending.privateSetupProvenance.preimage.text);
+    },
+    { privateSetup: true },
+  ),
+);
+it("refuses ordinary unattested acceptance outside the exact authenticated private source", () =>
+  fixture(async (f) => {
+    const before = await tree(f.root);
+    await expect(
+      adoptHost({ ...f.input, acceptUnattestedChildCapability: true }, f.host),
+    ).rejects.toThrow("limited to the exact supported private setup artifact");
+    expect(await tree(f.root)).toEqual(before);
+    expect(f.commands.some((c) => c.args.includes("stop") || c.args.includes("restart"))).toBe(
+      false,
+    );
+    await expect(NodeFSP.lstat(NodePath.join(f.runtime, ADOPTION_RECEIPT))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  }));
+it("retains ordinary publisher-capable child readback requirements without the compatibility flag", () =>
+  fixture(async (f) => {
+    const host: AdoptionHost = {
+      ...f.host,
+      run: async (command) => {
+        const output = await f.host.run(command);
+        if (command.args.includes("restart"))
+          await NodeFSP.rm(NodePath.join(f.runtime, UPDATE_CAPABILITY_RECEIPT));
+        return output;
+      },
+    };
+    await expect(adoptHost(f.input, host)).rejects.toThrow("readback is unavailable or stale");
+    const pending = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+    );
+    expect(pending.status).toBe("pending");
+    expect(pending.privateSetupProvenance).toBeUndefined();
+  }));
+it("preserves the exact public service carryover drop-in during private setup adoption", () =>
+  fixture(
+    async (f) => {
+      const path = `${f.unit}.d/40-native-carryover.conf`;
+      await NodeFSP.mkdir(NodePath.dirname(path));
+      const text =
+        "[Service]\nWorkingDirectory=%h\nUMask=0077\nNoNewPrivileges=yes\nPrivateTmp=yes\nLimitNOFILE=65536\nMemoryMax=8G\n";
+      await NodeFSP.writeFile(path, text, { mode: 0o600 });
+      f.setDropins(path);
+      const before = await LegacyBootstrap.fileMetadata(path);
+      await adoptHost(f.input, f.host);
+      expect(await NodeFSP.readFile(path, "utf8")).toBe(text);
+      expect(await LegacyBootstrap.fileMetadata(path)).toBe(before);
+    },
+    { privateSetup: true },
+  ));
 it("refuses an unowned ExecStart drop-in, then explicitly supersedes without deleting it", () =>
   fixture(async (f) => {
     const unowned = `${f.unit}.d/90-owner.conf`;
