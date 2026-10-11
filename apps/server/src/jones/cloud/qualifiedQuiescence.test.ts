@@ -6,6 +6,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { leaseGrantedOnEveryDevice } from "./qualifiedLinuxLease.ts";
 import {
+  assertLeaseProofFilesystems,
   assertQualifiedReadinessObservable,
   linuxLeaseQualifiedQuiescenceAdapter,
   linuxNativeQualifiedQuiescenceAdapter,
@@ -511,6 +512,44 @@ it("admits only listed local filesystems for every selected file before any leas
       ran: false,
       scanned: false,
     });
+  });
+});
+
+it("guards each exact selected file with the same filesystem allowlist outside admission", async () => {
+  const files = [
+    { path: "/synthetic/home/userdata/statev2.sqlite" },
+    { path: "/synthetic/home/userdata/settings.json" },
+  ];
+  const guard = async (filesystemType: (path: string) => Promise<bigint>) => {
+    const observed: string[] = [];
+    const result = await assertLeaseProofFilesystems(files, async (path) => {
+      observed.push(path);
+      return filesystemType(path);
+    }).then(
+      () => "admitted" as const,
+      (cause: unknown) =>
+        cause instanceof QualifiedQuiescenceError ? cause.reason : "untyped-failure",
+    );
+    return { result, observed };
+  };
+  const every = files.map((file) => file.path);
+  for (const type of [0xef53n, 0x58465342n, 0x9123683en, 0x01021994n])
+    assert.deepEqual(await guard(async () => type), { result: "admitted", observed: every });
+  for (const type of [0x6969n, 0xff534d42n, 0x65735546n, 0x794c7630n, 0x12345678n])
+    assert.deepEqual(
+      await guard(async () => type),
+      { result: "unavailable", observed: [every[0]!] },
+      type.toString(16),
+    );
+  assert.deepEqual(
+    await guard(async () => {
+      throw Object.assign(new Error("synthetic statfs failure"), { code: "EIO" });
+    }),
+    { result: "unavailable", observed: [every[0]!] },
+  );
+  assert.deepEqual(await guard(async (path) => (path === every[1] ? 0x6969n : 0xef53n)), {
+    result: "unavailable",
+    observed: every,
   });
 });
 

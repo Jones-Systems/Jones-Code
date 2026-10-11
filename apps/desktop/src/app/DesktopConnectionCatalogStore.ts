@@ -157,6 +157,13 @@ export class DesktopConnectionCatalogStore extends Context.Service<
       | DesktopConnectionCatalogStoreMigrationError
       | DesktopConnectionCatalogStoreProtectionError
     >;
+    readonly snapshot: Effect.Effect<
+      Option.Option<string>,
+      | DesktopConnectionCatalogStoreReadError
+      | DesktopConnectionCatalogStoreDocumentDecodeError
+      | DesktopConnectionCatalogStoreDecodeError
+      | DesktopConnectionCatalogStoreProtectionError
+    >;
     readonly set: (
       catalog: string,
     ) => Effect.Effect<
@@ -471,31 +478,39 @@ export const make = Effect.gen(function* () {
     return Option.some(encoded);
   });
 
-  return DesktopConnectionCatalogStore.of({
-    get: Effect.gen(function* () {
-      const document = yield* readDocument(fileSystem, catalogPath);
-      if (Option.isNone(document)) {
-        return yield* migrateLegacyCatalog;
-      }
-      if (!(yield* encryptionAvailable)) {
-        return Option.none<string>();
-      }
-      const decrypted = yield* decodeSecretBytes(catalogPath, document.value.encryptedCatalog).pipe(
-        Effect.flatMap((encryptedCatalog) =>
-          safeStorage.decryptString(encryptedCatalog).pipe(
-            Effect.mapError(
-              (cause) =>
-                new DesktopConnectionCatalogStoreProtectionError({
-                  operation: "decrypt-catalog",
-                  catalogPath,
-                  cause,
-                }),
-            ),
-          ),
+  const decryptDocument = (document: EncryptedConnectionCatalogDocument) =>
+    Effect.gen(function* () {
+      if (!(yield* encryptionAvailable)) return Option.none<string>();
+      const encrypted = yield* decodeSecretBytes(catalogPath, document.encryptedCatalog);
+      const decrypted = yield* safeStorage.decryptString(encrypted).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DesktopConnectionCatalogStoreProtectionError({
+              operation: "decrypt-catalog",
+              catalogPath,
+              cause,
+            }),
         ),
       );
       return Option.some(decrypted);
-    }).pipe(Effect.withSpan("desktop.connectionCatalogStore.get")),
+    });
+  const snapshot = readDocument(fileSystem, catalogPath).pipe(
+    Effect.flatMap((document) =>
+      Option.isNone(document)
+        ? Effect.succeed(Option.none<string>())
+        : decryptDocument(document.value),
+    ),
+    Effect.withSpan("desktop.connectionCatalogStore.snapshot"),
+  );
+
+  return DesktopConnectionCatalogStore.of({
+    snapshot,
+    get: readDocument(fileSystem, catalogPath).pipe(
+      Effect.flatMap((document) =>
+        Option.isNone(document) ? migrateLegacyCatalog : decryptDocument(document.value),
+      ),
+      Effect.withSpan("desktop.connectionCatalogStore.get"),
+    ),
     set: Effect.fn("desktop.connectionCatalogStore.set")(function* (catalog) {
       if (!(yield* encryptionAvailable)) {
         return false;

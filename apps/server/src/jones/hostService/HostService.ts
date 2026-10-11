@@ -33,6 +33,7 @@ import * as ProcessRunner from "../../processRunner.ts";
 import { isProcessAlive, PersistedServerRuntimeState } from "../../serverRuntimeState.ts";
 import * as HostServiceConfig from "./HostServiceConfig.ts";
 import * as HostAdoption from "./adoption.ts";
+import * as SystemAdoption from "./systemAdoption.ts";
 import { JONES_BOOT_SERVICE_IDENTITY } from "./identity.ts";
 import {
   decodeJonesArtifactMetadata,
@@ -130,6 +131,14 @@ export class HostService extends Context.Service<
       { readonly state: "dry-run" | "adopted"; readonly plan: HostAdoption.AdoptionPlan },
       HostServiceError
     >;
+    /** Read-only plan for one existing system unit; creates no lock, receipt or state. */
+    readonly planSystemAdoption: (
+      input: SystemAdoption.SystemAdoptInput,
+    ) => Effect.Effect<SystemAdoption.SystemAdoptionPlanResult, HostServiceError>;
+    /** Applies only the plan whose SHA-256 the input names. */
+    readonly adoptSystem: (
+      input: SystemAdoption.SystemAdoptInput,
+    ) => Effect.Effect<SystemAdoption.SystemAdoptionResult, HostServiceError>;
     readonly stageRuntime: (
       input: StageInput,
     ) => Effect.Effect<PinnedRuntime.PinnedRuntimePaths, HostServiceError>;
@@ -382,6 +391,56 @@ const make = Effect.gen(function* () {
         });
       }),
     );
+
+  const systemAdoptionHost = () =>
+    Effect.gen(function* () {
+      const host = yield* adoptionHost();
+      if (host.platform !== "linux")
+        return yield* new HostServiceError({
+          operation: "adopt-system",
+          reason: "System-unit adoption supports Linux only.",
+        });
+      const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+      return SystemAdoption.nativeSystemAdoptionHost({
+        architecture: host.architecture,
+        run: host.run,
+        descriptor: async (port) => {
+          const observed = await runPromise(descriptor(`http://127.0.0.1:${port}`));
+          return Option.isSome(observed)
+            ? {
+                serverVersion: observed.value.serverVersion,
+                environmentId: observed.value.environmentId,
+              }
+            : undefined;
+        },
+      });
+    });
+  const systemAdoption = <A>(
+    operation: string,
+    run: (host: SystemAdoption.SystemAdoptionHost) => Promise<A>,
+  ) =>
+    wrap(
+      operation,
+      Effect.gen(function* () {
+        const host = yield* systemAdoptionHost();
+        return yield* Effect.tryPromise({
+          try: () => run(host),
+          catch: (cause) =>
+            new HostServiceError({
+              operation,
+              reason:
+                cause instanceof Error
+                  ? cause.message
+                  : "Effect requires reconciliation before retry.",
+              cause,
+            }),
+        });
+      }),
+    );
+  const planSystemAdoption: HostService["Service"]["planSystemAdoption"] = (input) =>
+    systemAdoption("adopt-system-plan", (host) => SystemAdoption.planSystemAdoption(input, host));
+  const adoptSystem: HostService["Service"]["adoptSystem"] = (input) =>
+    systemAdoption("adopt-system", (host) => SystemAdoption.adoptSystemHost(input, host));
 
   const stageRuntime: HostService["Service"]["stageRuntime"] = (input) =>
     wrap(
@@ -827,7 +886,17 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  return HostService.of({ planAdoption, adopt, stageRuntime, plan, setup, status, routeRemove });
+  return HostService.of({
+    planAdoption,
+    adopt,
+    planSystemAdoption,
+    adoptSystem,
+    stageRuntime,
+    plan,
+    setup,
+    status,
+    routeRemove,
+  });
 });
 
 export const layer = Layer.effect(HostService, make);

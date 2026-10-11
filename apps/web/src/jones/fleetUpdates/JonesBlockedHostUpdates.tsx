@@ -18,8 +18,10 @@ const command = createRuntimeCommand(connectionAtomRuntime, {
 /** An incompatible host cannot mount the ordinary connected-environment updater. */
 export function JonesBlockedHostUpdates({
   environmentId,
+  historical = false,
 }: {
   readonly environmentId: EnvironmentId;
+  readonly historical?: boolean;
 }) {
   const execute = useAtomCommand(command, { reportFailure: false });
   const [state, setState] = useState<JonesUpdateState | null>(null);
@@ -59,6 +61,9 @@ export function JonesBlockedHostUpdates({
   const busy = pending || state?.phase === "preparing" || state?.phase === "installing";
   return (
     <div className="flex max-w-md flex-col gap-2 text-xs">
+      {historical ? (
+        <p>Previously required an update. The saved connection remains switched off.</p>
+      ) : null}
       <p role="status">{message ?? "Reading qualified Jones update support…"}</p>
       <p className="text-muted-foreground">
         {currency === "current"

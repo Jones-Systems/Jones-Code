@@ -1,6 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   EnvironmentRegistry,
+  ConnectionBlockedError,
   type ConnectionCatalogEntry,
 } from "@t3tools/client-runtime/connection";
 import {
@@ -30,6 +31,13 @@ export function makeBlockedHostUpdate<E, R>(
         environmentId: input.environmentId,
       });
     const result = yield* request(entry, input.request);
+    if (!(yield* registry.recordUpdateCompatibility(entry, result.descriptor))) {
+      return yield* new ConnectionBlockedError({
+        reason: "configuration",
+        detail:
+          "The saved connection changed while its update status was being read. Refresh the current connection.",
+      });
+    }
     return {
       state: result.state,
       currency: resolveJonesSourceCurrency({
