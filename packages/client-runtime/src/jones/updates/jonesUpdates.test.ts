@@ -1,4 +1,7 @@
-import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
+import type {
+  JonesUpdateProvenance,
+  JonesUpdateState,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import { normalizeDpopHtu } from "@t3tools/shared/dpopCommon";
@@ -13,8 +16,10 @@ import * as Layer from "effect/Layer";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { JonesUpdateState as JonesUpdateStateSchema } from "@t3tools/contracts/jones/jonesUpdates";
 import {
+  compareJonesSource,
   createJonesUpdateAtoms,
   jonesUpdateActionError,
+  jonesCandidatePresentation,
   jonesUpdatePresentation,
   observeJonesUpdateSnapshot,
   observeJonesUpdateState,
@@ -447,3 +452,67 @@ it.effect("marks a replaced live connection stale before its first status read c
     expect(snapshots[1]?.state).toEqual(staged);
   }),
 );
+
+const offered: JonesUpdateProvenance = {
+  repository: "Jones-Systems/Jones-Code",
+  sourceSha: "b".repeat(40),
+  sourceTree: "c".repeat(40),
+  workflow: ".github/workflows/artifact-cli-linux.yml",
+  runId: 2,
+  runAttempt: 1,
+  artifactId: 4,
+  artifactDigest: "d".repeat(64),
+  platform: "linux",
+  architecture: "x64",
+  version: "0.0.45-preview.20261011.2.1",
+};
+
+it("presents an offered build's version before download and leaves an older host's absent", () => {
+  const { stagedHandle: _handle, ...unstaged } = staged;
+  const available = { ...unstaged, phase: "available" as const };
+  expect(jonesCandidatePresentation({ ...available, provenance: offered })).toEqual({
+    label: "Available",
+    version: offered.version,
+    sourceSha: offered.sourceSha,
+  });
+  const { version: _version, ...older } = offered;
+  expect(jonesCandidatePresentation({ ...available, provenance: older })).toEqual({
+    label: "Available",
+    version: undefined,
+    sourceSha: offered.sourceSha,
+  });
+  expect(jonesCandidatePresentation({ ...staged, provenance: offered })?.label).toBe("Downloaded");
+  expect(jonesCandidatePresentation(staged)).toBeUndefined();
+});
+
+it("does not present retained provenance as a fresh offer after another check", () => {
+  const { stagedHandle: _handle, ...unstaged } = staged;
+  for (const phase of ["building", "no-new", "blocked"] as const) {
+    expect(jonesCandidatePresentation({ ...unstaged, phase, provenance: offered })).toBeUndefined();
+    expect(jonesCandidatePresentation({ ...staged, phase, provenance: offered })?.label).toBe(
+      "Downloaded",
+    );
+  }
+});
+
+it("matches laptop and candidate by full source commit, never by version or run", () => {
+  const laptop = { repository: "Jones-Systems/Jones-Code", sha: offered.sourceSha };
+  expect(compareJonesSource(laptop, offered)).toBe("matches");
+  // Each platform workflow builds the same source under its own run and version.
+  expect(
+    compareJonesSource(laptop, { ...offered, runId: 9, version: "0.0.45-preview.20261011.9.1" }),
+  ).toBe("matches");
+  expect(compareJonesSource({ ...laptop, sha: "a".repeat(40) }, offered)).toBe("different");
+});
+
+it("keeps the comparison unavailable without both full source identities", () => {
+  const laptop = { repository: "Jones-Systems/Jones-Code", sha: offered.sourceSha };
+  expect(compareJonesSource(undefined, offered)).toBe("unavailable");
+  expect(compareJonesSource(laptop, undefined)).toBe("unavailable");
+  expect(compareJonesSource({ ...laptop, sha: offered.sourceSha.slice(0, 7) }, offered)).toBe(
+    "unavailable",
+  );
+  expect(compareJonesSource({ ...laptop, repository: "pingdotgg/t3code" }, offered)).toBe(
+    "unavailable",
+  );
+});

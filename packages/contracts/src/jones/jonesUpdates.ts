@@ -62,7 +62,13 @@ export const JonesUpdateState = Schema.Struct({
   checkedAt: Schema.optionalKey(Schema.String),
   environmentId: Schema.optionalKey(EnvironmentId),
   currentVersion: Schema.optionalKey(Schema.String),
-  installedSource: Schema.optionalKey(TrimmedNonEmptyString),
+  installedSource: Schema.optionalKey(
+    Schema.Struct({
+      repository: Schema.Literal("Jones-Systems/Jones-Code"),
+      sha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+      tree: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+    }),
+  ),
   updateId: Schema.optionalKey(TrimmedNonEmptyString),
   outcome: Schema.optionalKey(
     Schema.Struct({

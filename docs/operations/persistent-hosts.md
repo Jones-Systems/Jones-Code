@@ -316,6 +316,87 @@ remote self-update refuse the default upstream origin. An explicitly configured
 Jones provenance; prefer local staging. Cached reuse without matching provenance
 is refused. A client update offer is not a verified Jones release.
 
+Before a trial, during restart recovery and before rollback, a qualified Linux
+launcher proves that nothing holds the selected state inodes open for writing.
+It takes kernel read leases on the exact inodes without privileges, so SSH
+sessions, the user manager and other processes whose descriptors the service
+user cannot read do not block the proof; any write-open holder does. The proof
+runs a fixed program under `/usr/bin/perl`, which is essential on Debian and
+Ubuntu. If perl or lease support is missing, the launcher reports `unavailable`
+and retains the previous binary/state pair.
+
+The readiness commit must allow exactly the captured trial writer, which a lease
+cannot express. Linux reads that evidence through the root-owned writer observer
+[`qualifiedWriterObserver.pl`](../../apps/server/src/jones/cloud/qualifiedWriterObserver.pl).
+It reports only the matching file index, PID, process birth and access kind for
+the eight fixed state files, and never excludes a process. The launcher excludes
+only its captured trial, matched by PID and process birth read before and after
+the helper, and then checks that the captured child is still live. If the
+observer is not installed, or the service runs with `NoNewPrivileges=yes` where
+sudo cannot elevate, the launcher falls back to the same-user descriptor scan.
+That scan fails closed on non-dumpable processes such as the protected service
+manager and SSH sessions observed on the VPS.
+
+Install admission refuses with `writer-proof-<reason>` before accepting, taking a
+recovery generation or stopping the server. It requires a complete lease result
+on the exact state snapshot, where the requesting server's own write-open files
+are expected to be busy, and a readiness observation with that server allowed.
+Busy alone never shows lease support: Linux reports a conflicting open before it
+checks `fs.leases-enable`, and NFS reports busy without a delegation. Each device
+holding selected files therefore needs at least one granted lease. If the server
+holds every selected file on a device open for writing, Install is refused and
+that server keeps running.
+
+Before any lease or readiness work, Linux admission reads `statfs` metadata for
+every selected state file itself, not just its directory. A network or FUSE bind
+mount over one file is therefore caught. Admission accepts only local
+filesystems whose leases use the kernel's generic implementation: ext2/3/4
+(`0xef53`), XFS (`0x58465342`), Btrfs (`0x9123683e`) and tmpfs (`0x01021994`).
+Network filesystems (NFS, SMB/CIFS, Ceph) answer leases from per-file delegations
+or oplocks. They, FUSE, overlay, any unlisted type and a failed `statfs` refuse
+with `writer-proof-unavailable` before acceptance or stop. Check with
+`findmnt -T <home>/userdata` and the same for each state file. Darwin admission
+is unchanged.
+The lease probe is bounded at 5 seconds, the helper at 10 and the launcher's wait
+for it at 15. The server abandons a launcher exchange after 30 seconds. The
+launcher therefore refuses an Install with `request-expired` once 25 seconds have
+passed since the request arrived. At readiness it rolls back with
+`prepared-exchange-expired` instead of writing the pointer. On timeout the
+launcher signals only its captured sudo or probe child: SIGTERM, which sudo
+relays to the helper, then SIGKILL after a grace period.
+
+Installing the observer is a separate, per-host approved root operation. Use the
+helper bytes from the exact source commit of the adopted launcher. Install them
+as `/usr/local/libexec/jones-code/jones-qualified-writer-observer`, owned by root
+and not group- or other-writable. Every directory from `/` to the helper must be
+a real directory (not a symlink), owned by root and not group- or other-writable.
+Anyone able to rename an ancestor could substitute the helper. Both the launcher
+and the helper itself refuse any other chain. Grant the service user one exact
+command with `visudo -c` validation:
+
+```text
+SERVICE_USER ALL=(root) NOPASSWD: /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME
+```
+
+Read back the file hash, `namei -l` for the whole path, and the sudoers syntax.
+Then run the smoke test as the service user, the way the launcher calls it: an
+empty environment, no TTY on any standard stream, inside the user manager:
+
+```sh
+umask 077
+systemd-run --user --wait --pipe --quiet env -i /usr/bin/sudo -n -- \
+  /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME \
+  </dev/null >observer.out 2>observer.err
+```
+
+Require exit status 0, an empty `observer.err`, and LF-only lines in
+`observer.out` (no carriage returns): the protocol header, `file` lines and a
+final `complete` line. Remove both files afterwards. They contain process and
+inode metadata only. A `requiretty` refusal, a `use_pty` carriage return or any
+sudo warning makes the launcher report `unavailable`. With the helper file
+present, a sudo refusal blocks instead of falling back. Source changes reach a
+host only through an adopted qualified launcher artifact.
+
 Inspect first after an interrupted setup or pairing operation:
 
 ```sh

@@ -45,7 +45,11 @@ function fixture(committed = false) {
       channel: "jones-main",
       phase: "available",
       capability: { check: true, download: true, install: true },
-      installedSource: installed,
+      installedSource: {
+        repository: "Jones-Systems/Jones-Code",
+        sha: installed,
+        tree: "c".repeat(40),
+      },
       environmentId,
       currentVersion: "preview-old",
     },
