@@ -345,14 +345,31 @@ each phase in `runtime/jones-system-adoption.json` before acting:
    exchange.
 6. Rechecks the unit, process birth, executable, cgroup, descriptor, database
    inode and environment.
-7. Stops the unit through the worker.
+7. Stops the unit through the worker. Before stopping, the worker refuses a
+   unit with a queued job, or whose cgroup it could not read afterwards: a
+   path outside the policy slice and unit, no unified cgroup hierarchy, or a
+   missing, unreadable or malformed `cgroup.events`. That check shows only
+   that the later proof is possible; the running cgroup may still be
+   populated. The stop completes only when systemd reports exactly
+   `inactive`/`dead` or `failed`/`failed`, with no main process, queued job
+   or cgroup, twice with the same state, and the cgroup the unit ran in, with
+   every descendant, is unpopulated or gone. A retained server that exits
+   with a nonzero status during the stop may leave `failed`/`failed`; that
+   state is admitted only with this proof. The worker never resets a failed
+   unit or changes its exit-status settings, so systemd's recorded result
+   stays until the later start replaces it. Any other state leaves the stop
+   `unknown`, and an inspection alone never counts as proof that the unit
+   stopped.
 8. Checks that every selected state file is on one of the local filesystems
    Install admission accepts, then proves with kernel leases that nothing holds
    the state open for writing. Any other filesystem, or a failed check, keeps
    the unit stopped.
 9. Creates `service-state.json` exclusively with protocol 4 and the retained
    version.
-10. Installs the owned drop-in and starts the unit.
+10. Installs the owned drop-in and starts the unit. Each worker operation
+    requires the same exact stopped state again, as systemd reports it at
+    that moment; installation must read its terminal pair back unchanged after
+    the reload. Only the stop examines the cgroup the unit ran in.
 
 The record becomes `applied` only after the launcher and the retained child are
 observed under the unit's cgroup, together with the launcher capability receipt,
@@ -369,10 +386,13 @@ and runtimes enrolled before that phase remain, and a failure while `enrolling`
 can leave only some of them. An uncertain permission change, stop, state
 creation, launcher installation, start or readback leaves it `unknown`.
 Neither is retried, reversed or restarted automatically, and a record of either
-kind blocks a second adoption. If the writer proof fails after the stop, the
-unit stays stopped. The retained executable directory, every original unit file
-and the database are preserved. Recovery, including archiving the owned drop-in
-with `archive-launcher`, needs its own approved plan.
+kind blocks a second adoption, including one written by an earlier release:
+adoption refuses any existing record, and no newer release resumes, rewrites
+or clears it. The root worker never writes these records. If the writer proof
+fails after the stop, the unit stays stopped. The retained executable
+directory, every original unit file and the database are preserved. Recovery,
+including archiving the owned drop-in with `archive-launcher`, needs its own
+approved plan.
 
 ## Pair and validate
 
