@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - Owns synthetic SQLite files and captured cross-process fixture children.
 import * as NodeChildProcess from "node:child_process";
-import * as NodeFs from "node:fs/promises";
-import * as NodeOs from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import * as NodeUrl from "node:url";
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
@@ -118,8 +118,8 @@ describe("isolated desktop compatibility hints", () => {
 });
 
 it("serializes exact record operations across independent processes", async () => {
-  const directory = await NodeFs.mkdtemp(
-    NodePath.join(NodeOs.tmpdir(), "connection-hints-process-"),
+  const directory = await NodeFSP.mkdtemp(
+    NodePath.join(NodeOS.tmpdir(), "connection-hints-process-"),
   );
   const children: ReturnType<typeof startChild>[] = [];
   let failure: unknown;
@@ -151,7 +151,7 @@ it("serializes exact record operations across independent processes", async () =
     expect(await second.call({ operation: "read" })).toEqual([
       { environmentId, routeBinding: "route-b", kind: "outdated-update" },
     ]);
-    expect(await NodeFs.readdir(directory)).not.toContain("connection-catalog.json");
+    expect(await NodeFSP.readdir(directory)).not.toContain("connection-catalog.json");
   } catch (error) {
     failure = error;
   } finally {
@@ -163,7 +163,7 @@ it("serializes exact record operations across independent processes", async () =
         `Child custody unresolved; retained ${directory}`,
       );
     try {
-      await NodeFs.rm(directory, { recursive: true });
+      await NodeFSP.rm(directory, { recursive: true });
     } catch (error) {
       throw new AggregateError(
         [...(failure === undefined ? [] : [failure]), error],
@@ -176,7 +176,7 @@ it("serializes exact record operations across independent processes", async () =
 
 function startChild(directory: string) {
   const child = NodeChildProcess.fork(
-    NodeUrl.fileURLToPath(
+    NodeURL.fileURLToPath(
       new URL("./DesktopConnectionCompatibilityHintStore.fixture.ts", import.meta.url),
     ),
     [directory],
@@ -336,7 +336,7 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
       );
       const unresolved = new FixtureCustodyError(custody, evidencePath);
       try {
-        await NodeFs.writeFile(evidencePath, JSON.stringify(custody, null, 2) + "\n", {
+        await NodeFSP.writeFile(evidencePath, JSON.stringify(custody, null, 2) + "\n", {
           flag: "wx",
           mode: 0o600,
         });
@@ -372,7 +372,7 @@ function ownChild(child: NodeChildProcess.ChildProcess, directory: string) {
 }
 
 it("requests child-side shutdown and requires close after exit before releasing custody", async () => {
-  const directory = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "hint-close-control-"));
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "hint-close-control-"));
   // No OS process exists; events below exercise the owner's actual shutdown state machine.
   const child = new NodeChildProcess.ChildProcess();
   let owner: ReturnType<typeof ownChild> | undefined;
@@ -409,7 +409,7 @@ it("requests child-side shutdown and requires close after exit before releasing 
     expect(await stopping).toEqual({ status: "closed" });
     expect(kill).not.toHaveBeenCalled();
     expect(disconnect).not.toHaveBeenCalled();
-    expect(await NodeFs.readdir(directory)).toEqual([]);
+    expect(await NodeFSP.readdir(directory)).toEqual([]);
   } catch (error) {
     failure = error;
   } finally {
@@ -423,7 +423,7 @@ it("requests child-side shutdown and requires close after exit before releasing 
     child.unref();
     child.removeAllListeners();
     try {
-      await NodeFs.rm(directory, { recursive: true });
+      await NodeFSP.rm(directory, { recursive: true });
     } catch (error) {
       cleanupErrors.push(error);
     }
@@ -434,13 +434,15 @@ it("requests child-side shutdown and requires close after exit before releasing 
       );
   }
   if (failure !== undefined) throw failure;
-  await expect(NodeFs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(NodeFSP.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it.each(["declined", "throws"] as const)(
   "retains custody and releases owned refs when signaling %s and close never arrives",
   async (signalOutcome) => {
-    const directory = await NodeFs.mkdtemp(NodePath.join(NodeOs.tmpdir(), "hint-custody-control-"));
+    const directory = await NodeFSP.mkdtemp(
+      NodePath.join(NodeOS.tmpdir(), "hint-custody-control-"),
+    );
     const cleanup: (() => void)[] = [];
     let failure: unknown;
     try {
@@ -511,7 +513,7 @@ it.each(["declined", "throws"] as const)(
           ? "Error: controlled signal refusal"
           : "Error: Owned child SIGKILL was not delivered",
       );
-      expect(JSON.parse(await NodeFs.readFile(error.evidencePath, "utf8"))).toEqual(error.custody);
+      expect(JSON.parse(await NodeFSP.readFile(error.evidencePath, "utf8"))).toEqual(error.custody);
       expect(unref).toHaveBeenCalledExactlyOnceWith();
       expect(channel.unref).toHaveBeenCalledExactlyOnceWith();
       expect(() => child.emit("error", new Error("late signal failure"))).not.toThrow();
@@ -530,7 +532,7 @@ it.each(["declined", "throws"] as const)(
         }
       }
       try {
-        await NodeFs.rm(directory, { recursive: true });
+        await NodeFSP.rm(directory, { recursive: true });
       } catch (error) {
         cleanupErrors.push(error);
       }
@@ -541,6 +543,6 @@ it.each(["declined", "throws"] as const)(
         );
     }
     if (failure !== undefined) throw failure;
-    await expect(NodeFs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(NodeFSP.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
   },
 );

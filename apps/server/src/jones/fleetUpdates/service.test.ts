@@ -26,6 +26,23 @@ const input: FleetStageInput = {
   expectedInstalledSource: "a".repeat(40),
   targetSource: "b".repeat(40),
 };
+const installedSource: NonNullable<JonesUpdateState["installedSource"]> = {
+  repository: "Jones-Systems/Jones-Code",
+  sha: input.expectedInstalledSource,
+  tree: "e".repeat(40),
+};
+const sourceBindingFailures = ["changed", "unknown", "unavailable"] as const;
+const failedSourceState = (
+  update: JonesUpdateState,
+  failure: (typeof sourceBindingFailures)[number],
+): JonesUpdateState | null => {
+  if (failure === "unavailable") return null;
+  const { installedSource: _installedSource, ...withoutSource } = update;
+  return failure === "unknown"
+    ? withoutSource
+    : { ...update, installedSource: { ...installedSource, sha: "d".repeat(40) } };
+};
+
 const fixture = () =>
   Effect.gen(function* () {
     let savedEnrollment: FleetEnrollment | null = null;
@@ -47,11 +64,7 @@ const fixture = () =>
       capability: { check: true, download: true, install: true },
       currentVersion: "old-version",
       environmentId,
-      installedSource: {
-        repository: "Jones-Systems/Jones-Code",
-        sha: input.expectedInstalledSource,
-        tree: "e".repeat(40),
-      },
+      installedSource,
     };
     let native: Effect.Success<ReturnType<FleetHostUpdater["reconcileOperation"]>> = {
       state: "absent",
@@ -133,13 +146,32 @@ describe("fleet host coordination", () => {
       const f = yield* fixture();
       expect((yield* f.service.stage(input).pipe(Effect.flip)).message).toContain("not accepted");
       yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
-      yield* f.service.stage(input);
+      const staged = yield* f.service.stage(input);
+      expect(staged.operation).toMatchObject({ phase: "staged", input });
+      expect(staged.update?.installedSource).toEqual(installedSource);
       expect(
         (yield* f.service.stage({ ...input, targetSource: "d".repeat(40) }).pipe(Effect.flip))
           .message,
       ).toContain("another update");
       expect(f.install).not.toHaveBeenCalled();
     }),
+  );
+
+  it.effect.each(sourceBindingFailures)(
+    "refuses staging when installed source is %s without reserving or staging an operation",
+    (failure) =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        vi.spyOn(f.updates, "state").mockReturnValue(
+          Effect.succeed(failedSourceState(f.snapshot(), failure)),
+        );
+        const stage = vi.spyOn(f.updates, "stageExact");
+        expect((yield* f.service.stage(input).pipe(Effect.flip)).reason).toBe("binding");
+        expect(f.operations.size).toBe(0);
+        expect(stage).not.toHaveBeenCalled();
+        expect(f.install).not.toHaveBeenCalled();
+      }),
   );
 
   it.effect(
@@ -319,6 +351,85 @@ describe("fleet failure and retirement reconciliation", () => {
       yield* f.service.activate(input);
       expect(f.install).toHaveBeenCalledTimes(2);
     }),
+  );
+
+  it.effect.each(sourceBindingFailures)(
+    "makes preacceptance refusal terminal when installed source becomes %s",
+    (failure) =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        yield* f.service.stage(input);
+        f.install.mockImplementation(() =>
+          Effect.sync(() => {
+            vi.spyOn(f.updates, "state").mockReturnValue(
+              Effect.succeed(failedSourceState(f.snapshot(), failure)),
+            );
+            return { ...f.snapshot(), phase: "error", message: "Preparation refused." };
+          }),
+        );
+        const result = yield* f.service.activate(input);
+        expect(result.operation).toMatchObject({
+          phase: "blocked",
+          reason: "Preparation refused.",
+        });
+        expect((yield* f.service.activate(input)).operation?.phase).toBe("blocked");
+        expect(f.install).toHaveBeenCalledTimes(1);
+      }),
+  );
+
+  it.effect.each(["staging-receipt", "missing-receipt"] as const)(
+    "recovers and retires the exact structured-source slot after a crash with %s",
+    (receipt) =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        if (receipt === "staging-receipt")
+          f.operations.set(input.operationId, {
+            input,
+            currentVersion: f.snapshot().currentVersion!,
+            continueRunningThreads: enrollment.continueRunningThreads,
+            phase: "staging",
+          });
+        yield* f.updates.stageExact({
+          targetSource: input.targetSource,
+          operationId: input.operationId,
+        });
+        const retire = vi.spyOn(f.updates, "retireStagedOperation");
+        const restarted = yield* f.create();
+        expect((yield* restarted.retire(input)).operation?.phase).toBe("superseded");
+        expect(retire).toHaveBeenCalledExactlyOnceWith({
+          ...input,
+          currentVersion: "old-version",
+          stagedHandle: "staged-handle",
+        });
+        expect((yield* restarted.stage(input)).operation?.phase).toBe("superseded");
+        expect(f.install).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect.each(sourceBindingFailures)(
+    "preserves the recovered native slot when installed source is %s",
+    (failure) =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+        yield* f.updates.stageExact({
+          targetSource: input.targetSource,
+          operationId: input.operationId,
+        });
+        vi.spyOn(f.updates, "state").mockReturnValue(
+          Effect.succeed(failedSourceState(f.snapshot(), failure)),
+        );
+        const retire = vi.spyOn(f.updates, "retireStagedOperation");
+        const restarted = yield* f.create();
+        expect((yield* restarted.retire(input).pipe(Effect.flip)).reason).toBe(
+          failure === "unavailable" ? "bootstrap-required" : "binding",
+        );
+        expect(f.operations.size).toBe(0);
+        expect(retire).not.toHaveBeenCalled();
+        expect(f.install).not.toHaveBeenCalled();
+      }),
   );
 
   it.effect("retires only an unaccepted operation and tombstones a delayed old stage request", () =>
