@@ -1,7 +1,11 @@
 import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import {
+  legacyIdentityFailureReport,
+  runLegacyIdentityFixtureCommand,
   runLegacyIdentityNativeFixture,
   validateLegacyIdentityObservation,
   withLegacyIdentityScratch,
@@ -9,6 +13,229 @@ import {
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone native ABI tests require the actual host, without an application runtime dependency.
 const nativePlatform = process.platform;
+
+NodeTest.test(
+  "repeated synchronous signal errors preserve cancellation through proved closure",
+  { timeout: 10000 },
+  async (context) => {
+    let allocated;
+    await withLegacyIdentityScratch(async (root) => {
+      allocated = root;
+      const cancellation = new AbortController();
+      const original = new Error("fixture command cancellation");
+      let child;
+      let reaped;
+      let cleanupObserved = false;
+      const spawn = (...args) => {
+        child = NodeChildProcess.spawn(...args);
+        const ownedKill = child.kill.bind(child);
+        reaped = new Promise((resolve) =>
+          child.once("close", (code, signal) => {
+            cleanupObserved = true;
+            resolve({ code, signal });
+          }),
+        );
+        child.kill = () => {
+          try {
+            child.emit(
+              "error",
+              Object.assign(new Error("first injected denial"), { code: "EPERM" }),
+            );
+            child.emit(
+              "error",
+              Object.assign(new Error("second injected denial"), { code: "EPERM" }),
+            );
+            throw Object.assign(new Error("injected thrown denial"), { code: "EPERM" });
+          } finally {
+            // The test owns this still-unreaped handle; the receipt is not used to select it.
+            ownedKill("SIGKILL");
+          }
+        };
+        child.once("spawn", () => cancellation.abort(original));
+        return child;
+      };
+      let originalFailure;
+      try {
+        await NodeAssert.rejects(
+          runLegacyIdentityFixtureCommand(
+            process.execPath,
+            ["-e", "setInterval(() => {}, 1000)"],
+            root,
+            {
+              signal: AbortSignal.any([context.signal, cancellation.signal]),
+              spawn,
+            },
+          ),
+          (cause) => {
+            NodeAssert.ok(cause instanceof AggregateError);
+            NodeAssert.equal(cause.cause, original);
+            NodeAssert.equal(cause.errors[0], original);
+            NodeAssert.deepEqual(
+              cause.errors.slice(1).map((item) => item.code),
+              ["EPERM", "EPERM", "EPERM"],
+            );
+            NodeAssert.deepEqual(legacyIdentityFailureReport(cause).commandCustody, []);
+            return true;
+          },
+        );
+        NodeAssert.deepEqual(await reaped, { code: null, signal: "SIGKILL" });
+      } catch (cause) {
+        originalFailure = cause;
+        throw cause;
+      } finally {
+        if (child && !cleanupObserved) {
+          const retained = new AggregateError(
+            originalFailure ? [originalFailure] : [],
+            "Captured child closure is unproved; exact test root retained.",
+            { cause: originalFailure },
+          );
+          retained.preserveScratch = true;
+          throw retained;
+        }
+      }
+    });
+    await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
+  },
+);
+
+NodeTest.test(
+  "unresolved commands persist custody through aggregation and let their driver drain",
+  { timeout: 20000 },
+  async (context) => {
+    let allocated;
+    await withLegacyIdentityScratch(async (root) => {
+      allocated = root;
+      const fixtureModule = new URL("./legacy-identity-native-fixture.mjs", import.meta.url).href;
+      const driver = NodePath.join(root, "custody-driver.mjs");
+      await NodeFSP.writeFile(
+        driver,
+        `
+import * as fs from 'node:fs';
+import * as cp from 'node:child_process';
+import {withLegacyIdentityScratch,runLegacyIdentityFixtureCommand,legacyIdentityFailureReport} from ${JSON.stringify(fixtureModule)};
+let controller, ownedKill, controllerClosed = false, cleanupStarted = false;
+const write = (name, value) => fs.writeFileSync(name, JSON.stringify(value), {mode:0o600});
+const cleanup = (failure) => {
+  if (failure) { process.exitCode = 1; write('driver-error.json', {message:failure.message}); }
+  if (!controller || controllerClosed || cleanupStarted) return;
+  cleanupStarted = true;
+  controller.ref();
+  try { ownedKill('SIGKILL'); }
+  catch (cause) { write('controller-cleanup-error.json', {code:cause.code}); process.exitCode = 1; }
+};
+process.once('beforeExit', () => {
+  write('driver-liveness.json', {beforeExit:true,controllerAlive:!controllerClosed && controller?.exitCode === null && controller?.signalCode === null});
+  cleanup();
+});
+process.on('SIGTERM', () => cleanup(new Error('driver cancelled')));
+process.on('uncaughtException', cleanup);
+const watchdog = setTimeout(() => cleanup(new Error('driver exceeded its bound')), 10000);
+watchdog.unref();
+const cancellation = new AbortController();
+const original = new Error('fixture command cancellation');
+const spawn = (...args) => {
+  controller = cp.spawn(...args);
+  ownedKill = controller.kill.bind(controller);
+  controller.once('close', (code, signal) => {
+    controllerClosed = true;
+    clearTimeout(watchdog);
+    write('controller-reaped.json', {pid:controller.pid,code,signal});
+  });
+  controller.kill = (signal) => {
+    controller.emit('error', Object.assign(new Error('injected synchronous denial'), {code:'EPERM'}));
+    if (signal === 'SIGKILL') throw Object.assign(new Error('injected thrown denial'), {code:'EPERM'});
+    return false;
+  };
+  controller.once('spawn', () => cancellation.abort(original));
+  return controller;
+};
+try {
+  await withLegacyIdentityScratch(async (childRoot) => {
+    try {
+      await runLegacyIdentityFixtureCommand(process.execPath, ['-e','setInterval(() => {}, 1000)'], childRoot, {signal:cancellation.signal,spawn});
+    } catch (cause) {
+      if (cause.cause !== original || cause.errors.length !== 4) throw new Error('Original failure or signal errors were lost.');
+      throw new AggregateError([cause,new Error('fixture wrapper')], 'wrapped custody', {cause});
+    }
+  }, {temporaryDirectory:process.cwd()});
+  cleanup(new Error('unresolved command unexpectedly succeeded'));
+} catch (cause) {
+  const report = legacyIdentityFailureReport(cause);
+  write('driver-report.json', report);
+  process.stdout.write(JSON.stringify(report)+'\\n');
+  if (report.commandCustody.length !== 1 || !report.retainedScratch) cleanup(new Error('custody reference was lost'));
+}
+`,
+        { flag: "wx", mode: 0o600 },
+      );
+      let originalFailure;
+      try {
+        const outcome = await runLegacyIdentityFixtureCommand(process.execPath, [driver], root, {
+          signal: context.signal,
+        });
+        NodeAssert.equal(outcome.code, 0, outcome.stderr);
+        NodeAssert.equal(outcome.stoppedBy, null);
+        const report = JSON.parse(outcome.stdout);
+        NodeAssert.equal(report.status, "failed");
+        NodeAssert.equal(report.activationAllowed, false);
+        NodeAssert.equal(report.commandCustody.length, 1);
+        const custody = report.commandCustody[0];
+        NodeAssert.equal(custody.persisted, true);
+        NodeAssert.equal(NodePath.dirname(custody.evidencePath), report.retainedScratch);
+        NodeAssert.equal(NodePath.dirname(report.retainedScratch), root);
+        const receipt = JSON.parse(await NodeFSP.readFile(custody.evidencePath, "utf8"));
+        const { persisted, ...observations } = custody;
+        NodeAssert.equal(persisted, true);
+        NodeAssert.deepEqual(receipt, observations);
+        NodeAssert.equal((await NodeFSP.stat(custody.evidencePath)).mode & 0o777, 0o600);
+        NodeAssert.equal(receipt.spawnObserved, true);
+        NodeAssert.equal(receipt.exitObserved, false);
+        NodeAssert.equal(receipt.closeObserved, false);
+        NodeAssert.equal(receipt.identityScope, "captured-child-handle-only");
+        NodeAssert.equal(receipt.permitsPidSignalling, false);
+        NodeAssert.equal(receipt.permitsProcessAdoption, false);
+        NodeAssert.equal(receipt.pidMayBeReused, true);
+        NodeAssert.equal(receipt.errorCount, 3);
+        NodeAssert.deepEqual(
+          receipt.signalAttempts.map((item) => [item.signal, item.returned, item.errorCount]),
+          [
+            ["SIGTERM", false, 1],
+            ["SIGKILL", null, 2],
+          ],
+        );
+        NodeAssert.deepEqual(
+          JSON.parse(await NodeFSP.readFile(NodePath.join(root, "driver-liveness.json"), "utf8")),
+          { beforeExit: true, controllerAlive: true },
+        );
+        NodeAssert.deepEqual(
+          JSON.parse(await NodeFSP.readFile(NodePath.join(root, "controller-reaped.json"), "utf8")),
+          { pid: receipt.controllerPid, code: null, signal: "SIGKILL" },
+        );
+      } catch (cause) {
+        originalFailure = cause;
+        throw cause;
+      } finally {
+        // Require the actual captured controller's close event even when an
+        // assertion fails; otherwise retain this exact test root and its receipt.
+        try {
+          const reaped = JSON.parse(
+            await NodeFSP.readFile(NodePath.join(root, "controller-reaped.json"), "utf8"),
+          );
+          NodeAssert.equal(reaped.signal, "SIGKILL");
+        } catch (cause) {
+          const retained = new AggregateError(
+            originalFailure ? [originalFailure, cause] : [cause],
+            "Controller cleanup is unproved; exact test root retained.",
+            { cause: originalFailure ?? cause },
+          );
+          retained.preserveScratch = true;
+          throw retained;
+        }
+      }
+    });
+    await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
+  },
+);
 
 NodeTest.test(
   "native APFS identities survive one remount without rewriting mount observations",

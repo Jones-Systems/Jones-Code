@@ -17,6 +17,34 @@ const source = NodeURL.fileURLToPath(
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256 = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 
+function custodyEvidence(cause) {
+  const pending = [cause];
+  const seen = new Set();
+  const receipts = new Map();
+  let preserveScratch = false;
+  while (pending.length && seen.size < 64) {
+    const current = pending.pop();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    preserveScratch ||= current.preserveScratch === true;
+    if (current.commandCustody)
+      receipts.set(current.commandCustody.commandId, current.commandCustody);
+    pending.push(current.cause);
+    if (current instanceof AggregateError) pending.push(...current.errors.slice(0, 32));
+  }
+  return { preserveScratch, receipts: [...receipts.values()] };
+}
+
+export function legacyIdentityFailureReport(cause) {
+  return {
+    status: "failed",
+    message: String(cause.message).slice(0, 512),
+    retainedScratch: cause.scratchRoot,
+    commandCustody: custodyEvidence(cause).receipts,
+    activationAllowed: false,
+  };
+}
+
 export async function withLegacyIdentityScratch(
   body,
   { temporaryDirectory = NodeOS.tmpdir() } = {},
@@ -33,7 +61,8 @@ export async function withLegacyIdentityScratch(
   } catch (cause) {
     failure = cause;
   }
-  if (failure?.preserveScratch) {
+  if (custodyEvidence(failure).preserveScratch) {
+    failure.preserveScratch = true;
     failure.scratchRoot = root;
     throw failure;
   }
@@ -53,9 +82,16 @@ export async function withLegacyIdentityScratch(
   return result;
 }
 
-async function command(executable, args, root, { signal, fds = [] } = {}) {
+export async function runLegacyIdentityFixtureCommand(
+  executable,
+  args,
+  root,
+  { signal, fds = [], spawn = NodeChildProcess.spawn } = {},
+) {
   signal?.throwIfAborted();
-  const child = NodeChildProcess.spawn(executable, args, {
+  const commandId = NodeCrypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const child = spawn(executable, args, {
     cwd: root,
     env: {
       PATH: "/usr/bin:/bin",
@@ -71,30 +107,46 @@ async function command(executable, args, root, { signal, fds = [] } = {}) {
   let escalation;
   let custodyDeadline;
   let closed = false;
+  let exited = false;
+  let spawned = false;
+  let stopping = false;
+  let unresolved = false;
+  const signalAttempts = [];
+  const commandErrors = [];
+  let activeAttempt;
   let finish;
   const completion = new Promise((resolve) => {
     finish = resolve;
   });
   const unknownCustody = () => {
-    const cause = new Error("Native command closure is unproved; exact scratch retained.", {
-      cause: failure,
-    });
-    cause.preserveScratch = true;
-    cause.ownedPid = child.pid;
-    failure = cause;
-    child.stdout.destroy();
-    child.stderr.destroy();
-    child.unref();
+    unresolved = true;
     finish({ code: null, stoppedBy: null });
+  };
+  const recordError = (cause) => {
+    failure ??= cause;
+    commandErrors.push(cause);
+    if (activeAttempt) activeAttempt.errors.push(cause);
+  };
+  const sendSignal = (kind) => {
+    if (closed || child.exitCode !== null || child.signalCode !== null) return;
+    const attempt = { signal: kind, returned: null, errors: [] };
+    signalAttempts.push(attempt);
+    activeAttempt = attempt;
+    try {
+      attempt.returned = child.kill(kind);
+    } catch (cause) {
+      recordError(cause);
+    } finally {
+      activeAttempt = undefined;
+    }
   };
   const stop = (cause) => {
     failure ??= cause;
+    if (stopping) return;
+    stopping = true;
     custodyDeadline ??= setTimeout(unknownCustody, 6000);
-    if (closed || child.exitCode !== null || child.signalCode !== null) return;
-    child.kill("SIGTERM");
-    escalation ??= setTimeout(() => {
-      if (!closed && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    }, 3000);
+    sendSignal("SIGTERM");
+    escalation = setTimeout(() => sendSignal("SIGKILL"), 3000);
   };
   const abort = () => stop(signal.reason ?? new Error("Native identity fixture cancelled."));
   signal?.addEventListener("abort", abort, { once: true });
@@ -112,8 +164,14 @@ async function command(executable, args, root, { signal, fds = [] } = {}) {
       stop(new Error("Native identity diagnostics exceeded their bound."));
     else stderr += bytes;
   });
-  child.once("error", (cause) => {
-    failure ??= cause;
+  // kill() may emit synchronously more than once. Keep this listener for the
+  // captured handle's lifetime, including after an unresolved command returns.
+  child.on("error", recordError);
+  child.once("spawn", () => {
+    spawned = true;
+  });
+  child.once("exit", () => {
+    exited = true;
   });
   child.once("close", (code, stoppedBy) => {
     closed = true;
@@ -122,7 +180,89 @@ async function command(executable, args, root, { signal, fds = [] } = {}) {
   if (signal?.aborted) abort();
   try {
     const result = await completion;
-    if (failure) throw failure;
+    if (unresolved) {
+      const errorSummary = (cause) => ({
+        name: String(cause.name ?? "Error").slice(0, 48),
+        code: String(cause.code ?? "unknown").slice(0, 48),
+      });
+      const receipt = {
+        schema: 1,
+        commandId,
+        createdAt,
+        observedAt: new Date().toISOString(),
+        driverPid: process.pid,
+        controllerPid: child.pid ?? null,
+        identityScope: "captured-child-handle-only",
+        pidMayBeReused: true,
+        permitsPidSignalling: false,
+        permitsProcessAdoption: false,
+        spawnObserved: spawned,
+        exitObserved: exited,
+        closeObserved: closed,
+        exitCode: child.exitCode,
+        signalCode: child.signalCode,
+        driverWillReleaseHandle: true,
+        signalAttempts: signalAttempts.map((attempt) => ({
+          signal: attempt.signal,
+          returned: attempt.returned,
+          errors: attempt.errors.slice(0, 32).map(errorSummary),
+          errorCount: attempt.errors.length,
+        })),
+        errors: commandErrors.slice(0, 32).map(errorSummary),
+        errorCount: commandErrors.length,
+        evidencePath: NodePath.join(root, `identity-command-${commandId}.json`),
+      };
+      const failures = failure
+        ? [failure, ...commandErrors.filter((item) => item !== failure)]
+        : commandErrors;
+      const custody = new AggregateError(
+        failures,
+        "Native command closure is unproved; exact scratch retained.",
+        { cause: failure },
+      );
+      custody.preserveScratch = true;
+      custody.commandCustody = { ...receipt, persisted: false };
+      try {
+        const evidence = await NodeFSP.open(receipt.evidencePath, "wx", 0o600);
+        try {
+          const encoded = `${JSON.stringify(receipt)}\n`;
+          NodeAssert.ok(
+            Buffer.byteLength(encoded) <= 16 * 1024,
+            "Command custody receipt exceeded its bound.",
+          );
+          await evidence.writeFile(encoded);
+          await evidence.sync();
+        } finally {
+          await evidence.close();
+        }
+        const directory = await NodeFSP.open(
+          root,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_DIRECTORY | NodeFS.constants.O_NOFOLLOW,
+        );
+        try {
+          await directory.sync();
+        } finally {
+          await directory.close();
+        }
+        custody.commandCustody.persisted = true;
+      } catch (cause) {
+        custody.errors.push(cause);
+        custody.commandCustody.persistenceError = errorSummary(cause);
+      } finally {
+        // The receipt records observations, never authority to signal a saved
+        // PID. Persist it before relinquishing this actual captured handle.
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+      }
+      throw custody;
+    }
+    if (failure) {
+      const errors = commandErrors.filter((item) => item !== failure);
+      if (errors.length)
+        throw new AggregateError([failure, ...errors], failure.message, { cause: failure });
+      throw failure;
+    }
     return { ...result, stdout, stderr };
   } finally {
     clearTimeout(timeout);
@@ -131,6 +271,8 @@ async function command(executable, args, root, { signal, fds = [] } = {}) {
     signal?.removeEventListener("abort", abort);
   }
 }
+
+const command = runLegacyIdentityFixtureCommand;
 
 export function validateLegacyIdentityObservation(value, entries = []) {
   NodeAssert.equal(value.schema, 1);
@@ -431,9 +573,7 @@ if (
     process.stdout.write(`${JSON.stringify(result)}\n`);
     if (result.status === "unsupported") process.exitCode = 77;
   } catch (cause) {
-    process.stderr.write(
-      `${JSON.stringify({ status: "failed", message: cause.message, retainedScratch: cause.scratchRoot, activationAllowed: false })}\n`,
-    );
+    process.stderr.write(`${JSON.stringify(legacyIdentityFailureReport(cause))}\n`);
     process.exitCode = 1;
   } finally {
     for (const [name, handler] of handlers) process.removeListener(name, handler);
