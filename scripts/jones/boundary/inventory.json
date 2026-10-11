@@ -877,7 +877,11 @@
     "apps/web/src/jones/workQueue/SentPrompts.test.tsx": "jones-owned",
     "apps/web/src/jones/workQueue/SentPrompts.tsx": "jones-owned",
     "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx": "jones-owned",
-    "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx": "jones-owned"
+    "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx": "jones-owned",
+    "scripts/tsconfig.json": "hook",
+    "apps/desktop/tsconfig.json": "hook",
+    "scripts/jones/updates/legacy-bootstrap-after-pack.mjs": "jones-owned",
+    "scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

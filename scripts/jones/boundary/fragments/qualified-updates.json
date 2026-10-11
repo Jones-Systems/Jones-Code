@@ -109,7 +109,9 @@
     "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
     "apps/web/src/components/settings/SettingsPanels.tsx",
     "apps/web/src/components/LegacySidebar.tsx",
-    "apps/web/src/components/desktopUpdate.toast.tsx"
+    "apps/web/src/components/desktopUpdate.toast.tsx",
+    "scripts/tsconfig.json",
+    "apps/desktop/tsconfig.json"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -308,6 +310,10 @@
     {
       "from": "scripts/build-desktop-artifact.ts",
       "to": "scripts/jones/updates/legacy-bootstrap-bundle.ts"
+    },
+    {
+      "from": "scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs",
+      "to": "packages/shared/src/hostProcess.ts"
     }
   ]
 }
