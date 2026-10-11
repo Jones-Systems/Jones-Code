@@ -310,10 +310,6 @@
     {
       "from": "scripts/build-desktop-artifact.ts",
       "to": "scripts/jones/updates/legacy-bootstrap-bundle.ts"
-    },
-    {
-      "from": "scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs",
-      "to": "packages/shared/src/hostProcess.ts"
     }
   ]
 }
