@@ -3,12 +3,15 @@
 #
 # Root-owned, read-only process metadata for the qualified readiness commit.
 # Install it root:root, not group/other writable, with every directory up to /
-# a real root-owned directory that is not group/other writable, and grant the
-# service user exactly one NOPASSWD command shape:
+# a real root-owned directory that is not group/other writable. Then either
+# grant the service user exactly one NOPASSWD command shape:
 #
 #   SERVICE_USER ALL=(root) NOPASSWD: /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME
 #
-# The only input is the canonical Jones home, owned by the sudo caller. The
+# or, for a service with NoNewPrivileges=yes, install the rendered root socket
+# unit, which runs `--socket --base CANONICAL_HOME` once per connection.
+#
+# The only input is the canonical Jones home, owned by the caller. The
 # eight state files are fixed. It reports which processes hold those inodes
 # open for writing or through a writable shared mapping: file index, PID,
 # process birth and access kind. It reads process metadata, not application
@@ -241,14 +244,57 @@ sub run {
   exit $code;
 }
 
+# The accepted connection must be one connected AF_UNIX stream on both stdin
+# and stdout, so the answer reaches only the peer whose credentials were read.
+# Socket is loaded here so the sudo request shape never depends on it.
+sub socket_peer_uid {
+  require Socket;
+  my @input = stat(STDIN);
+  reject("peer") unless @input && -S _;
+  my @output = stat(STDOUT);
+  reject("peer") unless @output && $output[0] == $input[0] && $output[1] == $input[1];
+  my $name = getsockname(STDIN);
+  reject("peer")
+    unless defined $name && length($name) >= 2
+    && Socket::sockaddr_family($name) == Socket::AF_UNIX();
+  my $type = getsockopt(STDIN, Socket::SOL_SOCKET(), Socket::SO_TYPE());
+  reject("peer")
+    unless defined $type && length($type) == 4 && unpack("i", $type) == Socket::SOCK_STREAM();
+  # A platform without SO_PEERCRED dies here; that is a refusal, not a caller.
+  my $credentials = eval { getsockopt(STDIN, Socket::SOL_SOCKET(), Socket::SO_PEERCRED()) };
+  deadline_boundary();
+  reject("peer") unless defined $credentials && length($credentials) == 12;
+  my ($pid, $uid, $gid) = unpack("i3", $credentials);
+  reject("peer") unless $pid > 0 && $gid >= 0;
+  my ($caller) = "$uid" =~ /\A([1-9][0-9]{0,9})\z/ or reject("peer");
+  return $caller;
+}
+
+# Two closed request shapes; neither reads request bytes. Under sudo the shape
+# is `--base HOME` with sudo's SUDO_UID. Behind the root socket unit, which
+# fixes HOME, it is `--socket --base HOME`: SUDO_UID must be absent and the
+# caller's UID is the kernel's peer credential for the accepted connection.
+# Either UID must then own HOME and its userdata.
+sub request_caller {
+  my $uid;
+  if (@ARGV && $ARGV[0] eq "--socket") {
+    reject("caller") if exists $ENV{SUDO_UID};
+    reject("arguments") unless @ARGV == 3 && $ARGV[1] eq "--base";
+    $uid = socket_peer_uid();
+  } else {
+    ($uid) = (defined $ENV{SUDO_UID} ? $ENV{SUDO_UID} : "") =~ /\A([1-9][0-9]{0,9})\z/
+      or reject("caller");
+    reject("arguments") unless @ARGV == 2 && $ARGV[0] eq "--base";
+  }
+  my ($base) = $ARGV[-1] =~ m{\A((?:/[A-Za-z0-9._@+-]{1,255}){1,64})\z} or reject("base");
+  reject("base") if grep { $_ eq "." || $_ eq ".." } split m{/}, $base;
+  return ($uid, $base);
+}
+
 # Rejections exit directly; observation failures die as "incomplete <reason>".
 sub observe_request {
   reject("not-root") unless $> == 0 && $< == 0;
-  my ($uid) = (defined $ENV{SUDO_UID} ? $ENV{SUDO_UID} : "") =~ /\A([1-9][0-9]{0,9})\z/
-    or reject("caller");
-  reject("arguments") unless @ARGV == 2 && $ARGV[0] eq "--base";
-  my ($base) = $ARGV[1] =~ m{\A((?:/[A-Za-z0-9._@+-]{1,255}){1,64})\z} or reject("base");
-  reject("base") if grep { $_ eq "." || $_ eq ".." } split m{/}, $base;
+  my ($uid, $base) = request_caller();
   reject("helper-ownership") unless trusted_self();
   # Every component is a real directory, so the home is canonical.
   my $prefix = "";
