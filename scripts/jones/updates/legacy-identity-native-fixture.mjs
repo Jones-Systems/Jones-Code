@@ -627,6 +627,7 @@ export const legacyIdentityWorkerCases = [
   "truncated-fd-list",
   "inaccessible-fd-list",
   "changing-fd-list",
+  "changing-nonvnode-fd-list",
   "truncated-process-identity",
   "inaccessible-process-identity",
   "changing-process-identity",
@@ -749,6 +750,7 @@ try:
         os.close(command_read)
         os.close(report_write)
         local = []
+        phase = 'capture'
         try:
             record_custody()
             cleaning = False
@@ -787,16 +789,19 @@ try:
             if case == 'stale-pid-version': worker[1] = str((int(worker[1]) + 1) & 0xffffffff)
             args = ['observe-worker', *owner, str(pid), *worker, *exclude_args, *family_args]
             faults = {'truncated-fd-list':'short', 'inaccessible-fd-list':'denied', 'changing-fd-list':'changed',
+                      'changing-nonvnode-fd-list':'changed-nonvnode',
                       'wrong-parent':'parent', 'truncated-process-identity':'identity-short',
                       'inaccessible-process-identity':'identity-denied', 'changing-process-identity':'identity-changed',
                       'truncated-vnode':'vnode-short', 'changing-vnode':'vnode-changed'}
             executable = payload['instrumented'] if case in faults else payload['binary']
             if case in faults: args = [faults[case], *args]
+            phase = 'observe'
             result, value = observe(executable, args, local)
             assert value['operation'] == 'observe-worker'
             positive = ('native-descriptor', 'read-only-descriptor', 'witness-only', 'owner-witness',
                         'inherited-witness', 'pre-open-excluded', 'empty-worker', 'ambiguous-descriptors',
                         'family-descriptors', 'wrong-object')
+            phase = 'positive-controls' if case in positive else 'refusal-controls'
             if case in positive:
                 assert result.returncode == 0 and value['status'] == 'observed', value
                 for observed, expected in zip(value['processes'], (owner, worker)):
@@ -829,6 +834,7 @@ try:
                            'family-alias':'endpoint-type-links-or-ownership',
                            'full-fd-list':'fd-list-incomplete', 'truncated-fd-list':'fd-list-incomplete',
                            'inaccessible-fd-list':'fd-list-incomplete', 'changing-fd-list':'owner-fd-snapshot-changed',
+                           'changing-nonvnode-fd-list':'owner-fd-snapshot-changed',
                            'truncated-process-identity':'process-identity-unavailable',
                            'inaccessible-process-identity':'process-identity-unavailable',
                            'changing-process-identity':'process-bracket-changed',
@@ -836,6 +842,8 @@ try:
                 assert result.returncode == 1 and value['status'] == 'refused' and value['reason'] == reasons[case], value
                 assert value['processes'] == [] and value['matches'] == [] and value['family'] == []
             reports.append({'case':case, 'status':value['status']})
+        except Exception as cause:
+            raise AssertionError('Observer case ' + case + ' phase ' + phase) from cause
         finally:
             cleaning = True
             if report_read >= 0: os.close(report_read)
@@ -878,7 +886,7 @@ static int fixture_pidfdinfo(int, int, int, void *, int);
 #undef proc_pidinfo
 #undef proc_pidfdinfo
 static const char *fault;
-static int lists, identities;
+static int lists, identities, changed_lists;
 static int fixture_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int size) {
   int result = proc_pidinfo(pid, flavor, arg, buffer, size);
   if (flavor == PROC_PIDTBSDINFO && result == (int)sizeof(struct proc_bsdinfo) &&
@@ -893,7 +901,19 @@ static int fixture_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int 
   lists++;
   if (!strcmp(fault, "short")) return result - 1;
   if (!strcmp(fault, "denied")) { errno = EACCES; return 0; }
-  if (!strcmp(fault, "changed") && lists == 3) ((struct proc_fdinfo *)buffer)[0].proc_fd += 100000;
+  if ((!strcmp(fault, "changed") || !strcmp(fault, "changed-nonvnode")) && lists == 3) {
+    struct proc_fdinfo *fds = buffer;
+    int count = result / (int)sizeof(*fds);
+    /* Model a close between complete snapshots. Never invent a descriptor:
+       vnode readback must remain valid before the snapshot comparison. */
+    for (int i = 0; i < count && count > 1; i++) {
+      int vnode = fds[i].proc_fdtype == PROX_FDTYPE_VNODE;
+      if (vnode != !strcmp(fault, "changed")) continue;
+      memmove(&fds[i], &fds[i + 1], (size_t)(count - i - 1) * sizeof(*fds));
+      changed_lists++;
+      return result - (int)sizeof(*fds);
+    }
+  }
   return result;
 }
 static int fixture_pidfdinfo(int pid, int fd, int flavor, void *buffer, int size) {
@@ -908,7 +928,9 @@ static int fixture_pidfdinfo(int pid, int fd, int flavor, void *buffer, int size
 int main(int argc, char **argv) {
   if (argc < 2) return 2;
   fault = argv[1];
-  return observer_main(argc - 1, argv + 1);
+  int result = observer_main(argc - 1, argv + 1);
+  if ((!strcmp(fault, "changed") || !strcmp(fault, "changed-nonvnode")) && changed_lists != 1) return 78;
+  return result;
 }
 `,
       { flag: "wx", mode: 0o600 },
