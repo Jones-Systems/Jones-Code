@@ -5486,6 +5486,167 @@ it.effect("keeps two native threads' requested and observed models separate in o
   }),
 );
 
+it.effect.each([
+  "resumes another app thread",
+  "rejects a competing producer",
+  "rejects an abandoned reservation",
+  "abandons only bound threads",
+] as const)("admits shared runtime targets: %s", (scenario) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const events = yield* EventStore.EventStoreV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const firstId = ThreadId.make(`runtime-admission-first-${scenario}`);
+      const secondId = ThreadId.make(`runtime-admission-second-${scenario}`);
+      const thirdId = ThreadId.make(`runtime-admission-third-${scenario}`);
+      const sessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: firstId,
+      });
+      yield* sink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: firstId, now }),
+          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: secondId, now }),
+          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: thirdId, now }),
+        ],
+      });
+      yield* manager.open({
+        threadId: firstId,
+        providerSessionId: sessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const lifecycle = yield* Ref.get(controller);
+      if (lifecycle === undefined) return yield* Effect.die(new Error("missing launch lifecycle"));
+      const requested = requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
+      const observed = {
+        ...unobservedRuntimeIdentity(),
+        model: {
+          status: "observed" as const,
+          value: "resumed-native",
+          sourceEvent: "thread/resume",
+        },
+      };
+      const seedThread = (threadId: ThreadId, nativeThreadId: string) =>
+        Effect.gen(function* () {
+          const oldGeneration = yield* lifecycle.reserve(threadId);
+          return yield* lifecycle.bind({
+            providerThread: makeProviderThread({
+              idAllocator: ids,
+              threadId,
+              providerSessionId: sessionId,
+              now,
+              nativeThreadId,
+            }),
+            runtimeGeneration: oldGeneration,
+            requested,
+            observed: unobservedRuntimeIdentity(),
+          });
+        });
+      const second = yield* seedThread(secondId, "native-admission-second");
+      const third = yield* seedThread(thirdId, "native-admission-third");
+      const generation = yield* lifecycle.reserve(firstId);
+      yield* lifecycle.bind({
+        providerThread: makeProviderThread({
+          idAllocator: ids,
+          threadId: firstId,
+          providerSessionId: sessionId,
+          now,
+          nativeThreadId: "native-admission-first",
+        }),
+        runtimeGeneration: generation,
+        requested,
+        observed: unobservedRuntimeIdentity(),
+      });
+      const request = {
+        providerThread: second,
+        runtimeGeneration: generation,
+        requested,
+        observed,
+      };
+      const beforeAdmission = yield* events.read({ threadId: secondId }).pipe(Stream.runCollect);
+      const missingAdmission = yield* lifecycle.bind(request).pipe(Effect.flip);
+      assert.equal(missingAdmission._tag, "ProviderRuntimeBindingError");
+      assert.deepEqual((yield* store.getThreadProjection(secondId)).providerThreads, [second]);
+      assert.deepEqual(
+        yield* events.read({ threadId: secondId }).pipe(Stream.runCollect),
+        beforeAdmission,
+      );
+
+      if (scenario === "rejects an abandoned reservation") {
+        yield* lifecycle.abandon(generation);
+        const failure = yield* lifecycle
+          .admit({ runtimeGeneration: generation, threadId: secondId })
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderRuntimeBindingError");
+        assert.deepEqual((yield* store.getThreadProjection(secondId)).providerThreads, [second]);
+        assert.deepEqual(
+          yield* events.read({ threadId: secondId }).pipe(Stream.runCollect),
+          beforeAdmission,
+        );
+        return;
+      }
+
+      yield* lifecycle.admit({ runtimeGeneration: generation, threadId: secondId });
+      assert.deepEqual(
+        yield* events.read({ threadId: secondId }).pipe(Stream.runCollect),
+        beforeAdmission,
+        "admission captures ownership without publishing a native effect",
+      );
+      if (scenario === "rejects a competing producer") {
+        const competingGeneration = yield* lifecycle.reserve(secondId);
+        const competitor = yield* lifecycle.bind({
+          ...request,
+          runtimeGeneration: competingGeneration,
+        });
+        const beforeFailure = yield* events.read({ threadId: secondId }).pipe(Stream.runCollect);
+        const failure = yield* lifecycle.bind(request).pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderRuntimeBindingError");
+        assert.deepEqual((yield* store.getThreadProjection(secondId)).providerThreads, [
+          competitor,
+        ]);
+        assert.deepEqual(
+          yield* events.read({ threadId: secondId }).pipe(Stream.runCollect),
+          beforeFailure,
+        );
+        return;
+      }
+
+      const bound = yield* lifecycle.bind(request);
+      assert.equal(bound.runtimeIdentity?.runtimeGeneration, generation);
+      assert.deepEqual(bound.runtimeIdentity?.observed, observed);
+      assert.deepEqual((yield* store.getThreadProjection(secondId)).providerThreads, [bound]);
+      if (scenario === "abandons only bound threads") {
+        const thirdEvents = yield* events.read({ threadId: thirdId }).pipe(Stream.runCollect);
+        yield* lifecycle.admit({ runtimeGeneration: generation, threadId: thirdId });
+        yield* lifecycle.abandon(generation);
+        const abandoned = (yield* store.getThreadProjection(secondId)).providerThreads[0]!;
+        assert.isUndefined(abandoned.runtimeIdentity?.runtimeGeneration);
+        assert.deepEqual(abandoned.runtimeIdentity?.observed, unobservedRuntimeIdentity());
+        assert.deepEqual((yield* store.getThreadProjection(thirdId)).providerThreads, [third]);
+        assert.deepEqual(
+          yield* events.read({ threadId: thirdId }).pipe(Stream.runCollect),
+          thirdEvents,
+        );
+      }
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+        }),
+      ),
+    );
+  }),
+);
+
 it.effect("refuses a missing native ID before committing a runtime boundary", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
