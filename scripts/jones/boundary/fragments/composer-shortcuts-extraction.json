@@ -2,10 +2,13 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "composer-shortcuts-extraction",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/composer/ComposerShortcutPlate.tsx",
     "apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts",
     "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx",
     "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
     "apps/web/src/jones/composer/ReasoningEffortShortcuts.tsx",
+    "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
+    "apps/web/src/jones/composer/composerModelEffortShortcuts.ts",
     "apps/web/src/jones/composer/composerShortcutRails.test.ts",
     "apps/web/src/jones/composer/composerShortcutRails.ts"
   ],
@@ -42,6 +45,18 @@
     {
       "from": "apps/web/src/components/chat/ModelPickerContent.tsx",
       "to": "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/composerModelEffortShortcuts.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/composer/ComposerShortcutPlate.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/composer/composerModelEffortShortcuts.ts"
     }
   ]
 }

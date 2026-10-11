@@ -106,6 +106,7 @@
         "apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx",
         "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
+        "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
         "apps/web/src/jones/composer/composerShortcutRails.test.ts"
       ]
     },
