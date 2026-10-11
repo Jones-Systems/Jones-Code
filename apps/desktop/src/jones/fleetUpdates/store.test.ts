@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+// @effect-diagnostics nodeBuiltinImport:off -- Synthetic native journal fixtures exercise filesystem custody and retain exact-root cleanup.
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import { createDesktopFleetStore } from "./store.ts";
@@ -19,7 +20,7 @@ const enrollment = {
 async function fixture(
   run: (home: string, store: ReturnType<typeof createDesktopFleetStore>) => Promise<void>,
 ) {
-  const home = await mkdtemp(join(tmpdir(), "jones-fleet-store-test-"));
+  const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-fleet-store-test-"));
   try {
     const store = createDesktopFleetStore({ home, profile: undefined });
     await store.request({ action: "enroll", enrollment });
@@ -29,7 +30,7 @@ async function fixture(
     });
     await run(home, store);
   } finally {
-    await rm(home, { recursive: true, force: true });
+    await NodeFSP.rm(home, { recursive: true, force: true });
   }
 }
 

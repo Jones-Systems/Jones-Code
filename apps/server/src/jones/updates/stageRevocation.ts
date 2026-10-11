@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // Only the launcher acceptance queue publishes revocations or retires stage pointers.
-import * as Fs from "node:fs/promises";
-import * as Path from "node:path";
-import * as Os from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
 import type { ServiceUpdateRecord, ServiceUpdateRetirement } from "../../cloud/serviceProtocol.ts";
 import { verifyStagedQualifiedRuntime } from "../cloud/qualifiedRuntime.ts";
 import { retireStagedSelection, restoreStagedSelection } from "./stagedSelection.ts";
@@ -31,15 +31,15 @@ const bindingKeys = [
   "targetVersion",
 ] as const;
 const directoryPath = (baseDir: string) =>
-  Path.join(baseDir, "runtime", "jones-update-revocations");
+  NodePath.join(baseDir, "runtime", "jones-update-revocations");
 
 async function readRevocations(baseDir: string): Promise<ReadonlyArray<Revocation>> {
   const path = directoryPath(baseDir);
   let entries: string[];
   try {
-    if (!(await Fs.lstat(path)).isDirectory())
+    if (!(await NodeFSP.lstat(path)).isDirectory())
       throw new Error("Invalid stage revocation directory.");
-    entries = await Fs.readdir(path);
+    entries = await NodeFSP.readdir(path);
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw cause;
@@ -50,16 +50,16 @@ async function readRevocations(baseDir: string): Promise<ReadonlyArray<Revocatio
     const id = String(name).replace(/\.json$/, "");
     if (name !== `${id}.json` || !isUpdateOperationId(id))
       throw new Error("Unknown stage revocation entry.");
-    const file = Path.join(path, String(name));
-    const stat = await Fs.lstat(file);
+    const file = NodePath.join(path, String(name));
+    const stat = await NodeFSP.lstat(file);
     if (
       !stat.isFile() ||
       stat.size > 65536 ||
-      stat.uid !== Os.userInfo().uid ||
+      stat.uid !== NodeOS.userInfo().uid ||
       (stat.mode & 0o077) !== 0
     )
       throw new Error("Invalid stage revocation file.");
-    const row = JSON.parse(await Fs.readFile(file, "utf8")) as Revocation;
+    const row = JSON.parse(await NodeFSP.readFile(file, "utf8")) as Revocation;
     if (
       row?.schema !== 1 ||
       row.operationId !== id ||
@@ -80,7 +80,7 @@ export async function assertStageNotRevoked(
   stagedHandle: string,
   operationId?: string,
 ): Promise<void> {
-  baseDir = await Fs.realpath(baseDir);
+  baseDir = await NodeFSP.realpath(baseDir);
   if (
     (await readRevocations(baseDir)).some(
       (row) => row.binding.stagedHandle === stagedHandle || row.operationId === operationId,
@@ -98,7 +98,7 @@ export async function retireNativeStage(
   current: ServiceUpdateRecord | undefined,
   input: ServiceUpdateRetirement,
 ): Promise<void> {
-  baseDir = await Fs.realpath(baseDir);
+  baseDir = await NodeFSP.realpath(baseDir);
   if (!isUpdateOperationId(input.operationId) || input.currentVersion !== activeVersion)
     throw new Error("Retirement does not match the active operation binding.");
   if ((await reconcileUpdateOperation(baseDir, input.operationId, current)).state !== "absent")
@@ -138,14 +138,18 @@ export async function retireNativeStage(
     throw new Error("Retired stage binding differs; reconciliation required.");
   if (prior === undefined) {
     const directory = directoryPath(baseDir);
-    await Fs.mkdir(directory, { recursive: true, mode: 0o700 });
-    const parent = await Fs.open(Path.dirname(directory), "r");
+    await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+    const parent = await NodeFSP.open(NodePath.dirname(directory), "r");
     try {
       await parent.sync();
     } finally {
       await parent.close();
     }
-    const file = await Fs.open(Path.join(directory, `${input.operationId}.json`), "wx", 0o600);
+    const file = await NodeFSP.open(
+      NodePath.join(directory, `${input.operationId}.json`),
+      "wx",
+      0o600,
+    );
     try {
       await file.writeFile(
         JSON.stringify({ schema: 1, operationId: input.operationId, binding }) + "\n",
@@ -154,7 +158,7 @@ export async function retireNativeStage(
     } finally {
       await file.close();
     }
-    const handle = await Fs.open(directory, "r");
+    const handle = await NodeFSP.open(directory, "r");
     try {
       await handle.sync();
     } finally {
@@ -163,8 +167,8 @@ export async function retireNativeStage(
   }
   // A prior response may have been lost at fsync: replay establishes durability
   // again before it may acknowledge retirement or clear a pointer.
-  const retained = await Fs.open(
-    Path.join(directoryPath(baseDir), `${input.operationId}.json`),
+  const retained = await NodeFSP.open(
+    NodePath.join(directoryPath(baseDir), `${input.operationId}.json`),
     "r",
   );
   try {
@@ -172,7 +176,7 @@ export async function retireNativeStage(
   } finally {
     await retained.close();
   }
-  const retainedDirectory = await Fs.open(directoryPath(baseDir), "r");
+  const retainedDirectory = await NodeFSP.open(directoryPath(baseDir), "r");
   try {
     await retainedDirectory.sync();
   } finally {
