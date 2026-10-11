@@ -653,6 +653,20 @@ export async function planSystemAdoption(
   return { plan, planSha256, bootstrap, manifest };
 }
 
+/**
+ * The worker's stopped state as reported: exactly `inactive dead`, or the
+ * `failed failed` a retained process leaves when it exits unclean on stop,
+ * with no main process and no cgroup. A complete worker `stop` result also
+ * carries its private job and original-cgroup checks; `install-launcher`
+ * checks its private job. An inspection alone never proves quiescence.
+ */
+const stoppedUnit = (inspection: SystemUnitInspection) =>
+  ((inspection.activeState === "inactive" && inspection.subState === "dead") ||
+    (inspection.activeState === "failed" && inspection.subState === "failed")) &&
+  inspection.mainPid === 0 &&
+  inspection.mainBirth === undefined &&
+  inspection.controlGroup === undefined;
+
 function expectInspection(
   result: SystemControlResult,
   check: (inspection: SystemUnitInspection) => boolean,
@@ -718,13 +732,12 @@ export async function adoptSystemHost(
       uid: plan.uid,
       controlGroup: plan.retained.controlGroup,
     };
-    // An inactive unit reports no cgroup; running inspections must report the same one.
+    // A stopped unit reports no cgroup; every other inspection must report the same one.
     const unchangedUnit = (inspection: SystemUnitInspection) =>
       inspection.unitDigest === plan.unit.digest &&
       inspection.policySha256 === plan.bootstrap.policySha256 &&
       inspection.killMode === plan.unit.killMode &&
-      (inspection.activeState === "inactive" ||
-        inspection.controlGroup === plan.retained.controlGroup);
+      (stoppedUnit(inspection) || inspection.controlGroup === plan.retained.controlGroup);
     let phase = "prepared";
     let outcome: "partial" | "unknown" = "partial";
     let recorded = false;
@@ -994,10 +1007,7 @@ export async function adoptSystemHost(
       if (stopped.status === "rejected") outcome = "partial";
       expectInspection(
         stopped,
-        (inspection) =>
-          unchangedUnit(inspection) &&
-          inspection.activeState === "inactive" &&
-          inspection.mainPid === 0,
+        (inspection) => unchangedUnit(inspection) && stoppedUnit(inspection),
         "stop",
       );
       await step("stopped", false);
@@ -1039,7 +1049,7 @@ export async function adoptSystemHost(
           unchangedUnit(inspection) &&
           inspection.owned === plan.ownedDropin.sha256 &&
           inspection.exec === `launcher ${plan.launcher.version}` &&
-          inspection.activeState === "inactive",
+          stoppedUnit(inspection),
         "launcher installation",
       );
       await step("launcher-installed", false);
