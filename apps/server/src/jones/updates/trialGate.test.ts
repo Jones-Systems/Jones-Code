@@ -76,11 +76,11 @@ async function watchFile(file: string, signal: AbortSignal) {
   }
 }
 
-async function trial(root: string) {
+async function trial(root: string, transactionId = "synthetic-transaction") {
   const descriptor = {
     protocol: 1,
     startupGateProtocol: 1,
-    transactionId: "synthetic-transaction",
+    transactionId,
     stagedHandle: "f".repeat(64),
     home: root,
     databasePath: NodePath.join(root, "userdata/statev2.sqlite"),
@@ -109,8 +109,8 @@ async function trial(root: string) {
   };
 }
 
-async function committedTrial(root: string) {
-  const initial = await trial(root);
+async function committedTrial(root: string, legacy = false) {
+  const initial = await trial(root, legacy ? "f".repeat(64) : undefined);
   const directory = NodePath.join(
     root,
     "runtime",
@@ -141,7 +141,11 @@ async function committedTrial(root: string) {
     [input.trialReceiptPath, receipt],
     [reservationPath, receipt],
   ]);
-  for (const [path, value] of files) await NodeFSP.writeFile(path, JSON.stringify(value));
+  for (const [path, value] of files) {
+    const stored = { ...(value as Record<string, unknown>) };
+    if (legacy) delete stored.stagedHandle;
+    await NodeFSP.writeFile(path, JSON.stringify(stored));
+  }
   return { input, files, manifestPath, journalPath, reservationPath };
 }
 
@@ -157,6 +161,42 @@ it("admits repeated committed child restarts without replaying or replacing tria
     expect(NodeFSP.link).not.toHaveBeenCalled();
     expect(NodeFS.watch).not.toHaveBeenCalled();
   }));
+
+it("reads legacy equal-ID committed evidence without rewriting it on repeated restarts", async () =>
+  fixture(async (root) => {
+    const { input, files } = await committedTrial(root, true);
+    const readArtifacts = () => Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
+    const before = await readArtifacts();
+    await awaitJonesTrialCommit(input);
+    await awaitJonesTrialCommit(input);
+    expect(await readArtifacts()).toEqual(before);
+    expect(NodeFSP.link).not.toHaveBeenCalled();
+    expect(NodeFS.watch).not.toHaveBeenCalled();
+  }));
+
+it.each(["new-claim", "different-artifact", "incomplete", "different-generation", "explicit-mismatch"])(
+  "does not normalize missing staged handles for %s evidence",
+  async (fault) => fixture(async (root) => {
+    const { input, files, journalPath, manifestPath } = await committedTrial(root, true);
+    if (fault === "new-claim") {
+      await NodeFSP.writeFile(NodePath.join(NodePath.dirname(journalPath), "prepare-intent.json"), JSON.stringify({ preparationClaimProtocol: 2 }));
+    } else {
+      const path = fault === "different-generation" ? manifestPath : fault === "explicit-mismatch" ? input.commitGrantPath : journalPath;
+      const value = JSON.parse(await NodeFSP.readFile(path, "utf8"));
+      if (fault === "different-artifact") value.intent.staged.handle = "e".repeat(64);
+      if (fault === "incomplete") value.phase = "resume-intent";
+      if (fault === "different-generation") value.generation = "previous";
+      if (fault === "explicit-mismatch") value.stagedHandle = "e".repeat(64);
+      await NodeFSP.writeFile(path, JSON.stringify(value));
+    }
+    const readArtifacts = () => Promise.all([...files.keys()].map((path) => NodeFSP.readFile(path, "utf8")));
+    const before = await readArtifacts();
+    await expect(awaitJonesTrialCommit(input)).rejects.toMatchObject({ step: "identity" });
+    expect(await readArtifacts()).toEqual(before);
+    expect(NodeFSP.link).not.toHaveBeenCalled();
+    expect(NodeFS.watch).not.toHaveBeenCalled();
+  }),
+);
 
 it.each([
   ["manifest", "owner", "other"],

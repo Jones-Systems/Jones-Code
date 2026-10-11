@@ -225,6 +225,27 @@ it("admits only the exact source-bound trial permit before application state ope
     expect(allowed.status, allowed.stderr).toBe(0);
     expect(run({ ...candidate, descriptorPath: undefined }).status).not.toBe(0);
     expect(run({ ...candidate, buildMetadata: input.buildMetadata }).status).not.toBe(0);
+    const descriptor = JSON.parse(await NodeFSP.readFile(descriptorPath, "utf8"));
+    delete descriptor.stagedHandle;
+    await NodeFSP.writeFile(descriptorPath, JSON.stringify(descriptor));
+    expect(run(candidate).status).not.toBe(0);
+  }));
+
+it("admits a legacy committed generation with an inherited equal-ID descriptor", async () =>
+  fixture(async (root, input) => {
+    const transactionId = "f".repeat(64);
+    const directory = NodePath.join(root, "runtime", "jones-updates", "transactions", transactionId);
+    await NodeFSP.mkdir(directory, { recursive: true });
+    const descriptorPath = NodePath.join(directory, "trial-descriptor.json");
+    await NodeFSP.writeFile(descriptorPath, JSON.stringify({ ...input, transactionId }));
+    await NodeFSP.writeFile(NodePath.join(directory, "journal.json"), JSON.stringify({
+      phase: "resumed", intent: { protocol: 1, transactionId, staged: { handle: transactionId } },
+    }));
+    await NodeFSP.writeFile(NodePath.join(root, "runtime", "jones-active-install.json"), JSON.stringify({
+      ...input, transactionId, generation: transactionId,
+    }));
+    const result = run({ ...input, descriptorPath });
+    expect(result.status, result.stderr).toBe(0);
   }));
 it.each(["wal", "replaced", "missing-witness"])("refuses a %s lease without repairing its inode", async (fault) =>
   fixture(async (root, input) => {
