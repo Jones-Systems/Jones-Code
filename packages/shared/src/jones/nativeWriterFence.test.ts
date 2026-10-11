@@ -127,6 +127,67 @@ it("publishes one stable lease identity when two first starts race", async () =>
     }
   }));
 
+it.each([
+  "shared-profile", "aliased-profile", "missing-profile", "dangling-profile-alias",
+  "aliased-userdata", "missing-database-alias", "database-symlink", "missing-owner-manifest",
+])("refuses %s from another home while Python owns native exclusive leases", async (fault) =>
+  fixture(async (root, input) => {
+    expect(run(input).status).toBe(0);
+    const leases = nativeWriterLeasePaths(root, String(input.profile));
+    const foreignHome = NodePath.join(root, "alternate-home");
+    await NodeFSP.mkdir(foreignHome);
+    let databasePath = NodePath.join(foreignHome, "userdata", "statev2.sqlite");
+    let profile: string | undefined = String(input.profile);
+    if (fault === "aliased-profile" || fault === "dangling-profile-alias") {
+      profile = NodePath.join(foreignHome, "profile-alias");
+      await NodeFSP.symlink(String(input.profile), profile, "dir");
+    }
+    if (fault === "missing-profile" || fault === "dangling-profile-alias")
+      await NodeFSP.rename(String(input.profile), `${input.profile}.retained`);
+    if (fault === "aliased-userdata" || fault === "missing-database-alias") {
+      profile = undefined;
+      await NodeFSP.symlink(NodePath.dirname(String(input.databasePath)), NodePath.dirname(databasePath), "dir");
+      if (fault === "missing-database-alias")
+        await NodeFSP.rename(String(input.databasePath), `${input.databasePath}.retained`);
+    }
+    if (fault === "database-symlink") {
+      profile = undefined;
+      await NodeFSP.mkdir(NodePath.dirname(databasePath));
+      await NodeFSP.symlink(String(input.databasePath), databasePath);
+    }
+    if (fault === "missing-owner-manifest") {
+      profile = undefined;
+      databasePath = String(input.databasePath);
+      await NodeFSP.unlink(NodePath.join(root, "runtime", "jones-active-install.json"));
+    }
+    const marker = NodePath.join(root, "caller-write");
+    const foreign = { ...input, home: foreignHome, databasePath, profile };
+    const script = `
+      const module = await import(${JSON.stringify(moduleUrl)});
+      module.holdJonesNativeWriterFence(${JSON.stringify(foreign)});
+      const fs = await import('node:fs'); fs.writeFileSync(${JSON.stringify(marker)}, 'unsafe');
+    `;
+    const exclusiveProbe = String.raw`
+import json, sqlite3, subprocess, sys
+connections = []
+try:
+    for path in json.loads(sys.argv[1]):
+        connection = sqlite3.connect(path, timeout=0, isolation_level=None)
+        connections.append(connection)
+        connection.execute('BEGIN EXCLUSIVE')
+    result = subprocess.run(json.loads(sys.argv[2]), capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0, result.stdout
+    assert 'startup held' in result.stderr, result.stderr
+finally:
+    for connection in connections: connection.close()
+`;
+    NodeChildProcess.execFileSync("python3", [
+      "-c", exclusiveProbe, JSON.stringify(leases.map((lease) => lease.path)),
+      JSON.stringify([process.execPath, "--input-type=module", "-e", script]),
+    ], { timeout: 15000 });
+    expect(NodeFS.existsSync(marker)).toBe(false);
+  }));
+
 it.each(["intent", "quiescent", "swapped", "rollback-intent", "blocked"])(
   "denies ordinary startup before any caller write during %s",
   async (phase) => fixture(async (root, input) => {
