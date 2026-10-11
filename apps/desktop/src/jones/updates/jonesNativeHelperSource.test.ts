@@ -887,13 +887,20 @@ observe([result(proof['identity']), mismatch, result(birth + ' Z')])
 stop_exact([proof]); assert signals == [(123, signal.SIGTERM)]
 assert calls[0] == ['/bin/ps', '-p', '123', '-o', 'lstart=', '-o', 'command=']
 observe([result(proof['identity']), result(proof['identity'])])
-clock = iter((0, 31))
+clock = iter((0, 91))
 time.monotonic = lambda: next(clock)
 time.sleep = lambda delay: (_ for _ in ()).throw(AssertionError('Unexpected wait'))
 try: stop_exact([proof])
 except RuntimeError as error: assert str(error) == 'Owned native writers did not stop; recovery held.'
 else: raise AssertionError('Live process bypassed deadline')
 assert signals == [(123, signal.SIGTERM)]
+observe([result(proof['identity']), result(proof['identity']), result(proof['identity']), result(code=1)])
+clock = iter((0, 31, 76))
+time.monotonic = lambda: next(clock)
+waits = []
+time.sleep = waits.append
+stop_exact([proof])
+assert signals == [(123, signal.SIGTERM)] and waits == [0.1, 0.1]
 time.monotonic = lambda: 0
 for birth in ('Sa 10 Okt 08:20:14 2026', '2026年10月10日 08:20:14'):
     proof = {'pid': 123, 'identity': birth + ' /owned/process'}

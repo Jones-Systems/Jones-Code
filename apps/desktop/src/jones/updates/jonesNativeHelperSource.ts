@@ -112,7 +112,7 @@ def alive(proof):
 def stop_exact(proofs):
     for proof in proofs:
         if alive(proof): os.kill(proof['pid'], signal.SIGTERM)
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 90
     while any(alive(proof) for proof in proofs):
         if time.monotonic() >= deadline: raise RuntimeError('Owned native writers did not stop; recovery held.')
         time.sleep(0.1)
