@@ -9,6 +9,9 @@ import { getClientSettings, setClientSettings } from "./methods/clientSettings.t
 import {
   clearConnectionCatalog,
   getConnectionCatalog,
+  getConnectionCatalogSnapshot,
+  listConnectionCompatibilityHints,
+  setConnectionCompatibilityHint,
   setConnectionCatalog,
 } from "./methods/connectionCatalog.ts";
 import {
@@ -109,6 +112,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getClientSettings);
   yield* ipc.handle(setClientSettings);
   yield* ipc.handle(getConnectionCatalog);
+  yield* ipc.handle(getConnectionCatalogSnapshot);
+  yield* ipc.handle(listConnectionCompatibilityHints);
+  yield* ipc.handle(setConnectionCompatibilityHint);
   yield* ipc.handle(getSnapShotState);
   yield* ipc.handle(setupSnapShot);
   yield* ipc.handle(previewSnapShotConfig);

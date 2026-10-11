@@ -34,6 +34,7 @@ describe("blocked-host update command", () => {
         };
         const setEnabled = vi.fn(() => Effect.void);
         const setCompatibility = vi.fn(() => Effect.void);
+        const recordUpdateCompatibility = vi.fn(() => Effect.succeed(true));
         const request = vi.fn(() =>
           Effect.succeed({
             state: null,
@@ -59,13 +60,67 @@ describe("blocked-host update command", () => {
               networkStatus,
               setEnabled,
               setCompatibility,
+              recordUpdateCompatibility,
             }),
           ),
         );
         expect(request).toHaveBeenCalledWith(entry, { action: "state" });
         expect(setEnabled).not.toHaveBeenCalled();
         expect(setCompatibility).not.toHaveBeenCalled();
+        expect(recordUpdateCompatibility).toHaveBeenCalledWith(
+          entry,
+          expect.objectContaining({
+            environmentId: id,
+            orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+          }),
+        );
         expect((yield* SubscriptionRef.get(entries)).get(id)?.enabled).toBe(false);
+      }),
+  );
+  it.effect(
+    "a stale completion cannot publish current source status after its registration changes",
+    () =>
+      Effect.gen(function* () {
+        const id = EnvironmentId.make("replaced-update-host");
+        const entry: ConnectionCatalogEntry = {
+          target: new PrimaryConnectionTarget({
+            environmentId: id,
+            label: "Synthetic",
+            httpBaseUrl: "https://synthetic.example.test",
+            wsBaseUrl: "wss://synthetic.example.test/ws",
+          }),
+          profile: Option.none(),
+          enabled: false,
+        };
+        const entries = yield* SubscriptionRef.make<
+          ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+        >(new Map([[id, entry]]));
+        const recordUpdateCompatibility = vi.fn(() => Effect.succeed(false));
+        const execute = makeBlockedHostUpdate(() =>
+          Effect.succeed({
+            state: null,
+            descriptor: {
+              environmentId: id,
+              label: "Synthetic",
+              platform: { os: "linux", arch: "x64" },
+              serverVersion: "0.0.45-preview.20261011.1.1",
+              capabilities: {},
+              orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+            },
+          }),
+        );
+        const error = yield* Effect.flip(
+          execute({ environmentId: id, request: { action: "state" } }),
+        ).pipe(
+          Effect.provide(
+            Layer.mock(EnvironmentRegistry.EnvironmentRegistry)({
+              entries,
+              recordUpdateCompatibility,
+            }),
+          ),
+        );
+        expect(error).toMatchObject({ reason: "configuration" });
+        expect(recordUpdateCompatibility).toHaveBeenCalledWith(entry, expect.anything());
       }),
   );
 });

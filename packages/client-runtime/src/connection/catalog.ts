@@ -64,6 +64,8 @@ export interface ConnectionCatalogEntry {
   readonly alternateRoutes?: ReadonlyArray<ConnectionRoute>;
   /** False when the user switched the environment off: saved, but never connects. */
   readonly enabled: boolean;
+  /** Historical update-management hint for these saved routes; never live connection state. */
+  readonly compatibilityHint?: { readonly routeBinding: string; readonly kind: "outdated-update" };
   /** Discovery rejection stays visible while the saved connection is switched off. */
   readonly unsupportedReason?: string;
   /** The rejection came from an outdated host, which can still be updated remotely. */
