@@ -310,7 +310,14 @@ if sys.argv[1] == '--worker': worker(json.loads(sys.argv[2]))
 else: event(run(json.loads(sys.argv[1])))
 `;
 
-export async function runMaintenanceProcess(python, arguments_, root, signal, onChildrenReady) {
+export async function runMaintenanceProcess(
+  python,
+  arguments_,
+  root,
+  signal,
+  onChildrenReady,
+  onControllerExit,
+) {
   signal?.throwIfAborted();
   const child = NodeChildProcess.spawn(python, arguments_, {
     cwd: root,
@@ -322,26 +329,67 @@ export async function runMaintenanceProcess(python, arguments_, root, signal, on
   let stderr = "";
   let failure;
   let escalation;
+  let drainTimeout;
   let ready = false;
   let closed = false;
+  let exited = false;
   let stopping = false;
+  let custodyUnresolved = false;
+  let finish;
+  const completion = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const controllerExited = () => exited || child.exitCode !== null || child.signalCode !== null;
+  const boundDrain = () => {
+    drainTimeout ??= setTimeout(() => {
+      custodyUnresolved = true;
+      failure ??= new Error("Owned controller streams did not drain after shutdown.");
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish({ code: child.exitCode, stoppedBy: child.signalCode });
+    }, 3000);
+  };
+  const signalGroup = (kind) => {
+    // Once the captured controller exits, its numeric group may be stale.
+    // Missing descendant proof then retains scratch instead of signaling it.
+    if (!child.pid || closed || controllerExited()) return;
+    try {
+      process.kill(-child.pid, kind);
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        custodyUnresolved = true;
+        failure = new AggregateError([failure, error]);
+      }
+    }
+  };
   const terminate = (cause) => {
     failure ??= cause;
     if (!child.pid || closed || stopping) return;
     stopping = true;
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch (error) {
-      if (error.code !== "ESRCH") failure = new AggregateError([failure, error]);
+    if (controllerExited()) {
+      boundDrain();
+      return;
     }
+    signalGroup("SIGTERM");
     escalation ??= setTimeout(() => {
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch (error) {
-        if (error.code !== "ESRCH") failure = new AggregateError([failure, error]);
-      }
+      signalGroup("SIGKILL");
+      boundDrain();
     }, 3000);
   };
+  child.once("exit", (code, stoppedBy) => {
+    exited = true;
+    boundDrain();
+    try {
+      onControllerExit?.({ code, stoppedBy });
+    } catch (cause) {
+      terminate(cause);
+    }
+  });
+  child.once("close", (code, stoppedBy) => {
+    closed = true;
+    finish({ code, stoppedBy });
+  });
   child.stdin.on("error", terminate);
   child.on("error", terminate);
   const abort = () => terminate(signal.reason ?? new Error("Fixture cancelled."));
@@ -360,7 +408,7 @@ export async function runMaintenanceProcess(python, arguments_, root, signal, on
       try {
         const event = JSON.parse(stdout.slice(0, stdout.indexOf("\n")));
         NodeAssert.deepEqual(event, { event: "children-ready", childCount: 2 });
-        onChildrenReady?.(event);
+        onChildrenReady?.(event, child.stdin);
         if (failure === undefined)
           child.stdin.end("G", (cause) => {
             if (cause) terminate(cause);
@@ -373,12 +421,7 @@ export async function runMaintenanceProcess(python, arguments_, root, signal, on
   child.stdout.on("data", (bytes) => collect("stdout", bytes));
   child.stderr.on("data", (bytes) => collect("stderr", bytes));
   try {
-    const outcome = await new Promise((resolve) => {
-      child.once("close", (code, stoppedBy) => {
-        closed = true;
-        resolve({ code, stoppedBy });
-      });
-    });
+    const outcome = await completion;
     const lines = stdout.trim().split("\n");
     const reaped = lines.some((line) => {
       try {
@@ -400,13 +443,14 @@ export async function runMaintenanceProcess(python, arguments_, root, signal, on
     }
     // A closed controller is not evidence that its descendants were reaped.
     // Preserve the owned tree on every missing-proof path, even before readiness.
-    if (child.pid && !reaped) throw new MaintenanceCustodyError(failure);
+    if (child.pid && (!reaped || custodyUnresolved)) throw new MaintenanceCustodyError(failure);
     if (failure !== undefined) throw failure;
     NodeAssert.equal(lines.length, 3);
     return JSON.parse(lines[2]);
   } finally {
     clearTimeout(timeout);
     clearTimeout(escalation);
+    clearTimeout(drainTimeout);
     signal?.removeEventListener("abort", abort);
   }
 }

@@ -83,13 +83,19 @@ NodeTest.test(
     await NodeAssert.rejects(
       withMaintenanceScratch(NodeOS.tmpdir(), async (root) => {
         allocated = root;
-        // This lifecycle probe has no descendants. Close the read end before the
-        // readiness bytes, making the parent's acknowledgement deterministically fail.
+        // This probe has no descendants. A referenced MessagePort keeps the
+        // controller alive until SIGTERM, separating EPIPE from an exit race.
         const source = `
       const fs = require('node:fs');
+      const {MessageChannel} = require('node:worker_threads');
+      const {port1, port2} = new MessageChannel();
+      port1.on('message', () => {});
+      process.once('SIGTERM', () => {
+        fs.writeSync(1, JSON.stringify({event:'children-reaped',count:2})+'\\n');
+        port1.close(); port2.close();
+      });
       fs.closeSync(0);
-      fs.writeSync(1, JSON.stringify({event:'children-ready',childCount:2})+'\\n'+
-        JSON.stringify({event:'children-reaped',count:2})+'\\n');
+      fs.writeSync(1, JSON.stringify({event:'children-ready',childCount:2})+'\\n');
     `;
         await runMaintenanceProcess(process.execPath, ["-e", source], root);
       }),
@@ -99,6 +105,115 @@ NodeTest.test(
       },
     );
     await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
+  },
+);
+
+NodeTest.test(
+  "a captured controller exit prevents stale process-group signaling",
+  { timeout: 10000 },
+  async (test) => {
+    const kill = test.mock.method(process, "kill", () => {
+      NodeAssert.fail("An exited controller must not authorize process-group signaling.");
+    });
+    const controller = new AbortController();
+    const original = new Error("cancelled after captured controller exit");
+    let allocated;
+    let exited = false;
+    await NodeAssert.rejects(
+      withMaintenanceScratch(NodeOS.tmpdir(), async (root) => {
+        allocated = root;
+        // There are no descendants; the acknowledgement orders ordinary exit
+        // before the parent's cancellation callback.
+        const source = `
+      const fs = require('node:fs');
+      process.stdin.once('data', () => {
+        fs.writeSync(1, JSON.stringify({event:'children-reaped',count:2})+'\\n');
+        process.stdin.destroy();
+      });
+      console.log(JSON.stringify({event:'children-ready',childCount:2}));
+    `;
+        await runMaintenanceProcess(
+          process.execPath,
+          ["-e", source],
+          root,
+          controller.signal,
+          undefined,
+          (outcome) => {
+            NodeAssert.deepEqual(outcome, { code: 0, stoppedBy: null });
+            exited = true;
+            controller.abort(original);
+          },
+        );
+      }),
+      (cause) => cause === original,
+    );
+    NodeAssert.equal(exited, true);
+    NodeAssert.equal(kill.mock.callCount(), 0);
+    await NodeAssert.rejects(NodeFSP.lstat(allocated), { code: "ENOENT" });
+  },
+);
+
+NodeTest.test(
+  "a process-group permission failure preserves its cause and scratch despite controller exit",
+  { timeout: 10000 },
+  async (test) => {
+    const parent = await NodeFSP.mkdtemp(
+      NodePath.join(await NodeFSP.realpath(NodeOS.tmpdir()), "jones-maintenance-denied-test-"),
+    );
+    const denied = Object.assign(new Error("injected kill EPERM"), { code: "EPERM" });
+    const original = new Error("deliberate readiness cancellation");
+    const kill = test.mock.method(process, "kill", (pid, signal) => {
+      NodeAssert.ok(Number.isInteger(pid) && pid < 0);
+      NodeAssert.equal(signal, "SIGTERM");
+      throw denied;
+    });
+    const controller = new AbortController();
+    let captured;
+    let exited = false;
+    try {
+      await NodeAssert.rejects(
+        withMaintenanceScratch(parent, async (root) => {
+          captured = root;
+          // No descendants exist. The pipe holds the controller alive until
+          // after readiness triggers an injected signaling denial.
+          const source = `
+        const fs = require('node:fs');
+        process.stdin.once('data', () => {
+          fs.writeSync(1, JSON.stringify({event:'children-reaped',count:2})+'\\n');
+          process.stdin.destroy();
+        });
+        console.log(JSON.stringify({event:'children-ready',childCount:2}));
+      `;
+          await runMaintenanceProcess(
+            process.execPath,
+            ["-e", source],
+            root,
+            controller.signal,
+            (_event, input) => {
+              controller.abort(original);
+              input.end("G");
+            },
+            (outcome) => {
+              NodeAssert.deepEqual(outcome, { code: 0, stoppedBy: null });
+              exited = true;
+            },
+          );
+        }),
+        (cause) => {
+          NodeAssert.ok(cause instanceof MaintenanceCustodyError);
+          NodeAssert.deepEqual(cause.errors[0].errors, [original, denied]);
+          NodeAssert.deepEqual(cause.preservedScratchRoots, [captured]);
+          return true;
+        },
+      );
+      NodeAssert.equal(kill.mock.callCount(), 1);
+      NodeAssert.equal(exited, true);
+      NodeAssert.equal((await NodeFSP.lstat(captured)).isDirectory(), true);
+    } finally {
+      // Only retire retained evidence after the exact no-descendant controller exited.
+      NodeAssert.equal(exited, true);
+      await NodeFSP.rm(parent, { recursive: true, force: false });
+    }
   },
 );
 
