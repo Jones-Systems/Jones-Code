@@ -7,6 +7,11 @@
   },
   "baseline": "d720210996a514368ba99f4860063110033d93fa",
   "paths": {
+    "apps/server/src/jones/hostService/systemServiceControl.pl": "jones-owned",
+    "apps/server/src/jones/hostService/systemServiceControl.ts": "jones-owned",
+    "apps/server/src/jones/hostService/systemServiceControl.test.ts": "jones-owned",
+    "apps/server/src/jones/hostService/systemAdoption.ts": "jones-owned",
+    "apps/server/src/jones/hostService/systemAdoption.test.ts": "jones-owned",
     "docs/internals/server-updates.md": "accepted-shared",
     "scripts/jones/boundary/fragments/update-continuity.json": "jones-owned",
     "scripts/jones/boundary/fragments/desktop-stage-attempts.json": "jones-owned",

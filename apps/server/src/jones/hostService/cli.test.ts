@@ -7,6 +7,7 @@ import { Command } from "effect/cli";
 
 import * as HostService from "./HostService.ts";
 import { jonesCommand } from "./cli.ts";
+import type * as SystemAdoption from "./systemAdoption.ts";
 
 const baseDir = "/task-owned/jones-host";
 const decodeUnknownJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -16,6 +17,31 @@ const plan: HostService.HostPlan = {
   effects: ["Write Jones config.", "Reconcile jones-code.service."],
   nextStep: `t3 pair --base-dir '${baseDir}' --tailscale --tailscale-serve-port 8443`,
 };
+
+const planSha256 = "f".repeat(64);
+// Only the fields the command prints; the domain owns the full plan.
+const systemPlan = {
+  planSha256,
+  plan: {
+    effects: ["Stop the unit through the root worker."],
+    ownedDropin: { path: "/task-owned/unit.d/owned.conf", text: "[Service]\n" },
+    launcher: { version: "new" },
+    active: { version: "old" },
+  },
+  bootstrap: { worker: "installed", policy: "installed", observer: "installed", socket: "absent" },
+  manifest: {
+    files: [
+      {
+        path: "/task-owned/policy",
+        mode: "0644",
+        sha256: "e".repeat(64),
+        source: "rendered",
+        text: "policy\n",
+      },
+    ],
+    enable: ["observer.socket"],
+  },
+} as unknown as SystemAdoption.SystemAdoptionPlanResult;
 
 function testService() {
   const calls: Array<{ readonly method: string; readonly input: unknown }> = [];
@@ -50,6 +76,15 @@ function testService() {
           effects: [],
           commands: [],
         },
+      }),
+    planSystemAdoption: (input) => record("plan-system-adoption", input, systemPlan),
+    adoptSystem: (input) =>
+      record("adopt-system", input, {
+        state: "adopted" as const,
+        plan: systemPlan.plan,
+        planSha256,
+        launcherProcessId: 20,
+        childProcessId: 21,
       }),
     plan: (input) => record("plan", input, plan),
     setup: (input) =>
@@ -139,14 +174,19 @@ it.effect("setup prints the effect plan before dispatch and exposes bounded flag
   }),
 );
 
-it.effect.each(["setup", "adopt", "status", "stage-runtime", "route-remove"] as const)(
-  "%s requires explicit --base-dir before dispatch",
-  (command) =>
-    Effect.gen(function* () {
-      const t = testService();
-      yield* t.run(["host", command]).pipe(Effect.flip);
-      expect(t.calls).toEqual([]);
-    }),
+it.effect.each([
+  "setup",
+  "adopt",
+  "adopt-system",
+  "status",
+  "stage-runtime",
+  "route-remove",
+] as const)("%s requires explicit --base-dir before dispatch", (command) =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run(["host", command]).pipe(Effect.flip);
+    expect(t.calls).toEqual([]);
+  }),
 );
 
 it.effect("stage-runtime calls the local verified runtime service", () =>
@@ -228,6 +268,70 @@ it.effect("adopt exposes separate active and launcher provenance with explicit s
       activeArtifactDir: "/approved/active",
       launcherArtifactDir: "/approved/launcher",
     });
+  }),
+);
+
+const systemFlags = [
+  "host",
+  "adopt-system",
+  "--base-dir",
+  baseDir,
+  "--system-unit",
+  "host-tooling-t3.service",
+  "--port",
+  "3773",
+  "--retained-executable",
+  "/task-owned/retained/t3",
+  "--active-artifact-dir",
+  "/approved/active",
+  "--active-source-commit",
+  "a".repeat(40),
+  "--launcher-artifact-dir",
+  "/approved/launcher",
+  "--launcher-source-commit",
+  "b".repeat(40),
+  "--accept-unattested-child-capability",
+];
+
+it.effect("adopt-system dry-run prints the plan digest and root manifest without applying", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([...systemFlags, "--dry-run"]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-system-adoption"]);
+    expect(t.calls[0]?.input).toEqual({
+      baseDir,
+      systemUnit: "host-tooling-t3.service",
+      port: 3773,
+      retainedExecutable: "/task-owned/retained/t3",
+      activeArtifactDir: "/approved/active",
+      activeSourceCommit: "a".repeat(40),
+      launcherArtifactDir: "/approved/launcher",
+      launcherSourceCommit: "b".repeat(40),
+      acceptUnattestedChildCapability: true,
+    });
+    expect(t.printed.join("\n")).toContain(`plan SHA-256: ${planSha256}`);
+    expect(t.printed.join("\n")).toContain("socket absent");
+    expect(t.printed.join("\n")).toContain("adoption installs none");
+  }),
+);
+
+it.effect.each([{ extra: [] as string[] }, { extra: ["--approved-plan-sha256", "0".repeat(64)] }])(
+  "adopt-system applies nothing without the reviewed plan digest %#",
+  ({ extra }) =>
+    Effect.gen(function* () {
+      const t = testService();
+      yield* t.run([...systemFlags, ...extra]).pipe(Effect.flip);
+      expect(t.calls.map((call) => call.method)).toEqual(["plan-system-adoption"]);
+    }),
+);
+
+it.effect("adopt-system applies only the plan whose digest was reviewed", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([...systemFlags, "--approved-plan-sha256", planSha256]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-system-adoption", "adopt-system"]);
+    expect(t.calls[1]?.input).toMatchObject({ approvedPlanSha256: planSha256, port: 3773 });
+    expect(t.printed.at(-1)).toContain("child Install unattested");
   }),
 );
 
