@@ -26,7 +26,10 @@ import {
 } from "../cloud/qualifiedRuntime.ts";
 import { JONES_BOOT_SERVICE_IDENTITY as identity } from "./identity.ts";
 import * as LegacyBootstrap from "./legacyBootstrap.ts";
-import { readLauncherCapabilityReceipt } from "../cloud/launcherCapability.ts";
+import {
+  assertLauncherCapabilityDirectory,
+  readLauncherCapabilityReceipt,
+} from "../cloud/launcherCapability.ts";
 
 const repository = "Jones-Systems/Jones-Code";
 const hash = /^[a-f0-9]{64}$/;
@@ -354,6 +357,7 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
   const baseDir = await NodeFSP.realpath(input.baseDir);
   if (baseDir !== input.baseDir)
     return refuse("Base directory resolves through an alias; select its exact path.");
+  await assertLauncherCapabilityDirectory(baseDir, host.uid);
   if (
     (await optionalText(NodePath.join(baseDir, "runtime", "jones-active-install.json"))) !==
     undefined

@@ -398,6 +398,48 @@ it("dry-run qualifies both exact generations without changing any file", () =>
       ),
     ).toBe(true);
   }));
+it.each(
+  (["group-writable", "world-writable", "symlink"] as const).flatMap((hazard) =>
+    (["plan", "dry-run", "apply"] as const).map((entry) => ({ hazard, entry })),
+  ),
+)("refuses a $hazard runtime directory before $entry effects", ({ hazard, entry }) =>
+  fixture(async (f) => {
+    const realRuntime = hazard === "symlink" ? NodePath.join(f.root, "runtime-target") : f.runtime;
+    if (hazard === "symlink") {
+      await NodeFSP.rename(f.runtime, realRuntime);
+      await NodeFSP.symlink(realRuntime, f.runtime);
+    } else {
+      await NodeFSP.chmod(f.runtime, hazard === "group-writable" ? 0o775 : 0o757);
+    }
+    const before = await NodeFSP.lstat(f.runtime);
+    const statePath = NodePath.join(realRuntime, "service-state.json");
+    const stateBefore = await NodeFSP.readFile(statePath, "utf8");
+    const unitBefore = await NodeFSP.readFile(f.unit, "utf8");
+    const versionsBefore = await tree(NodePath.join(realRuntime, "versions"));
+    const operation =
+      entry === "plan"
+        ? planHostAdoption(f.input, f.host)
+        : adoptHost({ ...f.input, dryRun: entry === "dry-run" }, f.host);
+    await expect(operation).rejects.toThrow("Launcher capability directory has unknown ownership.");
+    expect(f.commands).toEqual([]);
+    await expect(NodeFSP.lstat(NodePath.join(realRuntime, ADOPTION_RECEIPT))).rejects.toMatchObject(
+      {
+        code: "ENOENT",
+      },
+    );
+    expect(await tree(NodePath.join(realRuntime, "versions"))).toEqual(versionsBefore);
+    expect(await NodeFSP.readFile(statePath, "utf8")).toBe(stateBefore);
+    expect(await NodeFSP.readFile(f.unit, "utf8")).toBe(unitBefore);
+    const after = await NodeFSP.lstat(f.runtime);
+    expect([after.dev, after.ino, after.uid, after.mode]).toEqual([
+      before.dev,
+      before.ino,
+      before.uid,
+      before.mode,
+    ]);
+    if (hazard === "symlink") expect(await NodeFSP.readlink(f.runtime)).toBe(realRuntime);
+  }),
+);
 it("enrolls old and new receipts, preserves native identity and starts only the new launcher", () =>
   fixture(async (f) => {
     const stateBefore = await NodeFSP.readFile(
