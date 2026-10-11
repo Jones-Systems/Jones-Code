@@ -17,6 +17,7 @@ import { workModeFixture } from "../workMode/Fixtures.testkit.ts";
 import { admitWorkMode } from "../workMode/Admission.ts";
 import { workModeCandidate, workModeCommand } from "../workMode/Policy.ts";
 import * as Planned from "./PlannedUpdateContinuity.ts";
+import { PlannedContinuityError } from "./PlannedUpdateContinuityService.ts";
 import type { NativeOperationBinding } from "./launcherOperation.ts";
 
 const operationId = "12345678-1234-4234-8234-123456789abc";
@@ -115,6 +116,7 @@ it.effect(
   () => {
     const state = harness();
     return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
       const threadId = state.projection.thread.id;
       yield* receipt("capture-anchor", "thread.visit", threadId);
       const continuity = yield* Planned.make;
@@ -146,6 +148,8 @@ it.effect(
           finishPlannedContext: continuity.finishWork(threadId),
           dispatch: (command) =>
             receipt(command.commandId, command.type, threadId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError((cause) => new PlannedContinuityError({ cause })),
               Effect.tap(() =>
                 Effect.sync(() => {
                   dispatched += 1;

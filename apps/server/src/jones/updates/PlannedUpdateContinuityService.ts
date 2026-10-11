@@ -44,4 +44,4 @@ export class PlannedUpdateContinuity extends Context.Service<
       messageId: string,
     ) => Effect.Effect<boolean, PlannedContinuityError>;
   }
->()("t3/jones/updates/PlannedUpdateContinuity") {}
+>()("t3/jones/updates/PlannedUpdateContinuityService/PlannedUpdateContinuity") {}
