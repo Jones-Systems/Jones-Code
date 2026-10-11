@@ -62,11 +62,22 @@ export interface ServiceLauncherContext {
   readonly childVersion: string;
   readonly qualifiedUpdatesProtocol?: 1;
   readonly updateOperationsProtocol?: 1;
+  readonly updateRetirementProtocol?: 1;
   readonly startupGateProtocol?: 1;
   readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
 }
 
+export interface ServiceUpdateRetirement {
+  readonly operationId: string;
+  readonly environmentId: string;
+  readonly currentVersion: string;
+  readonly expectedInstalledSource: string;
+  readonly targetSource: string;
+  readonly stagedHandle: string;
+}
+
 export type ServiceLauncherChildMessage =
+  | ({ readonly type: "request-retire-update" } & ServiceUpdateRetirement)
   | {
       readonly type: "request-update";
       readonly targetVersion: string;
@@ -82,6 +93,13 @@ export type ServiceLauncherChildMessage =
     };
 
 export type ServiceLauncherParentMessage =
+  | {
+      readonly type: "update-retired";
+      readonly operationId: string;
+      readonly stagedHandle: string;
+      readonly retired: boolean;
+      readonly reason?: string;
+    }
   | {
       readonly type: "update-accepted";
       readonly updateId: string;
@@ -326,6 +344,7 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
     childVersion: parsed.childVersion,
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
     ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
+    ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
     ...(parsed.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
@@ -355,6 +374,27 @@ export function decodeServiceLauncherChildMessage(
   value: unknown,
 ): ServiceLauncherChildMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "request-retire-update") {
+    const keys = [
+      "operationId",
+      "environmentId",
+      "currentVersion",
+      "expectedInstalledSource",
+      "targetSource",
+      "stagedHandle",
+    ] as const;
+    if (
+      keys.some((key) => typeof value[key] !== "string" || value[key] === "") ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+        String(value.operationId),
+      )
+    )
+      return undefined;
+    return {
+      type: "request-retire-update",
+      ...Object.fromEntries(keys.map((key) => [key, value[key]])),
+    } as Extract<ServiceLauncherChildMessage, { type: "request-retire-update" }>;
+  }
   if (
     value.type === "request-update" &&
     typeof value.targetVersion === "string" &&
@@ -397,6 +437,22 @@ export function decodeServiceLauncherParentMessage(
   value: unknown,
 ): ServiceLauncherParentMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "update-retired") {
+    if (
+      typeof value.operationId !== "string" ||
+      typeof value.stagedHandle !== "string" ||
+      typeof value.retired !== "boolean" ||
+      (value.reason !== undefined && typeof value.reason !== "string")
+    )
+      return undefined;
+    return {
+      type: "update-retired",
+      operationId: value.operationId,
+      stagedHandle: value.stagedHandle,
+      retired: value.retired,
+      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    };
+  }
   if (value.type === "update-rejected" && typeof value.reason === "string") {
     if (value.operationId !== undefined && typeof value.operationId !== "string") return undefined;
     return {

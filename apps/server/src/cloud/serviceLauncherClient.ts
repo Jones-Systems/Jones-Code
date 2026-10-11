@@ -1,3 +1,4 @@
+import type { ServiceUpdateRetirement } from "./serviceProtocol.ts";
 import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
@@ -129,6 +130,13 @@ export class ServiceLauncherClient extends Context.Service<
     readonly qualifiedUpdates?: boolean;
     readonly qualifiedStaging?: boolean;
     readonly qualifiedOperations?: boolean;
+    readonly qualifiedRetirement?: boolean;
+    readonly retireUpdate?: (
+      input: ServiceUpdateRetirement,
+    ) => Effect.Effect<
+      { readonly retired: boolean; readonly reason?: string },
+      ServiceLauncherClientError
+    >;
     readonly currentVersion?: string;
     /** Last durable terminal result; reading it never sends a prepared IPC message. */
     readonly qualifiedStartupOutcome?: ServerSelfUpdateOutcome | undefined;
@@ -442,6 +450,29 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     qualifiedUpdates: context?.qualifiedUpdatesProtocol === 1 && context.startupGateProtocol === 1,
     qualifiedStaging: context?.qualifiedUpdatesProtocol === 1,
     qualifiedOperations: context?.updateOperationsProtocol === 1,
+    qualifiedRetirement: context?.updateRetirementProtocol === 1,
+    retireUpdate: (input) =>
+      context?.updateRetirementProtocol !== 1
+        ? Effect.succeed({
+            retired: false,
+            reason: "bootstrap-required: The launcher cannot revoke retired staged updates.",
+          })
+        : exchange(
+            { type: "request-retire-update", ...input },
+            (reply) =>
+              reply.type === "update-retired" &&
+              reply.operationId === input.operationId &&
+              reply.stagedHandle === input.stagedHandle,
+          ).pipe(
+            Effect.map((reply) => {
+              if (reply.type !== "update-retired")
+                throw new Error("Unexpected retirement response.");
+              return {
+                retired: reply.retired,
+                ...(reply.reason === undefined ? {} : { reason: reply.reason }),
+              };
+            }),
+          ),
     ...(context === undefined ? {} : { currentVersion: context.childVersion }),
     requestUpdate,
     get qualifiedUpdateMigrationPlan() {

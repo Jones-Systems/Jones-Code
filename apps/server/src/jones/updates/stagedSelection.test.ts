@@ -16,6 +16,9 @@ import {
   retireStagedSelection,
 } from "./stagedSelection.ts";
 
+import { assertStageNotRevoked, retireNativeStage } from "./stageRevocation.ts";
+import { operationBinding, reserveUpdateOperation } from "./launcherOperation.ts";
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) {
@@ -158,4 +161,66 @@ it("retires an exact selection pointer while retaining its qualified receipt and
       "utf8",
     ),
   ).toContain("echo b");
+});
+
+it("persists exact revocation before retirement and safely replays a lost reply", async () => {
+  const f = await fixture();
+  await retainStagedSelection(f.selection);
+  const input = {
+    operationId: "12345678-1234-4234-8234-123456789abc",
+    ...operationBinding(f.selection),
+  };
+  await retireNativeStage(f.root, f.baseline, undefined, input);
+  await retireNativeStage(f.root, f.baseline, undefined, input);
+  expect(await restoreStagedSelection(f.root, f.baseline)).toBeUndefined();
+  await expect(assertStageNotRevoked(f.root, input.stagedHandle)).rejects.toThrow(
+    "durably retired",
+  );
+  await expect(
+    retireNativeStage(f.root, f.baseline, undefined, { ...input, targetSource: "f".repeat(40) }),
+  ).rejects.toThrow("binding");
+  const replacement = { ...f.selection, stagedHandle: NodeCrypto.randomUUID() };
+  await NodeFSP.writeFile(
+    NodePath.join(f.root, "runtime", "staged-updates", `${replacement.stagedHandle}.json`),
+    JSON.stringify(replacement),
+    { mode: 0o600 },
+  );
+  await expect(
+    retireNativeStage(f.root, f.baseline, undefined, {
+      ...input,
+      stagedHandle: replacement.stagedHandle,
+    }),
+  ).rejects.toThrow("already names another");
+  await expect(
+    assertStageNotRevoked(f.root, replacement.stagedHandle, input.operationId),
+  ).rejects.toThrow("durably retired");
+  await assertStageNotRevoked(f.root, replacement.stagedHandle);
+  expect(
+    await NodeFSP.readFile(
+      NodePath.join(f.root, "runtime", "versions", f.selection.receipt.version, "t3"),
+      "utf8",
+    ),
+  ).toContain("echo b");
+});
+
+it("preserves a stage after ambiguous native acceptance or revocation publication", async () => {
+  const f = await fixture();
+  await retainStagedSelection(f.selection);
+  const input = {
+    operationId: "12345678-1234-4234-8234-123456789abc",
+    ...operationBinding(f.selection),
+  };
+  const revocations = NodePath.join(f.root, "runtime", "jones-update-revocations");
+  await NodeFSP.mkdir(revocations);
+  await NodeFSP.writeFile(NodePath.join(revocations, `${input.operationId}.json`), "{", {
+    mode: 0o600,
+  });
+  await expect(retireNativeStage(f.root, f.baseline, undefined, input)).rejects.toThrow();
+  await expect(assertStageNotRevoked(f.root, input.stagedHandle)).rejects.toThrow();
+  expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);
+  await reserveUpdateOperation(f.root, input.operationId, operationBinding(f.selection));
+  await expect(retireNativeStage(f.root, f.baseline, undefined, input)).rejects.toThrow(
+    "may have been accepted",
+  );
+  expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);
 });

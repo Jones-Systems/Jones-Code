@@ -20,18 +20,13 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import packageJson from "../../../package.json" with { type: "json" };
-import {
-  retainStagedSelection,
-  restoreStagedSelection,
-  retireStagedSelection,
-} from "./stagedSelection.ts";
+import { retainStagedSelection, restoreStagedSelection } from "./stagedSelection.ts";
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
 import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
 import { qualifiedServerCapability } from "./serverCapability.ts";
 import {
   isUpdateOperationId,
-  assertNoUnreconciledUpdateOperations,
   operationBinding,
   reconcileUpdateOperation,
   type OperationReconciliation,
@@ -484,25 +479,11 @@ export const layer = Layer.effect(
         };
       },
       retireStaged: async (input) => {
-        const prior = await run(reconcileOperation(input.operationId));
-        if (
-          launcher.qualifiedOperations !== true ||
-          prior.state !== "absent" ||
-          input.currentVersion !== version ||
-          input.expectedInstalledSource !== runtimeReceipt?.sourceSha
-        )
-          throw new Error(
-            "The exact staged operation is not proven unaccepted on this running source.",
-          );
-        const nativeState = parseServiceState(
-          await NodeFSP.readFile(
-            NodePath.join(config.baseDir, "runtime", "service-state.json"),
-            "utf8",
-          ),
-        );
-        if (nativeState === undefined) throw new Error("Native operation state is unreadable.");
-        await assertNoUnreconciledUpdateOperations(config.baseDir, nativeState.update);
-        await retireStagedSelection(config.baseDir, version, input);
+        if (launcher.qualifiedRetirement !== true || launcher.retireUpdate === undefined)
+          throw new Error("bootstrap-required: The launcher cannot revoke retired staged updates.");
+        const result = await run(launcher.retireUpdate(input));
+        if (!result.retired)
+          throw new Error(result.reason ?? "Native stage retirement remains held.");
       },
       install: async (input) => {
         if (qualifiedSelfUpdate.installQualified === undefined)
@@ -586,6 +567,7 @@ export const layer = Layer.effect(
         }
         if (
           launcher.qualifiedOperations !== true ||
+          launcher.qualifiedRetirement !== true ||
           runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
           updater.snapshot().provenance?.sourceSha !== input.targetSource
         )
@@ -597,9 +579,15 @@ export const layer = Layer.effect(
     return JonesUpdates.of({
       retireStagedOperation: (input) => Effect.promise(() => updater.retireStagedOperation(input)),
       fleetOperationsSupported:
-        launcher.managed && launcher.qualifiedOperations === true && supported && nativeReceipt,
+        launcher.managed &&
+        launcher.qualifiedOperations === true &&
+        launcher.qualifiedRetirement === true &&
+        supported &&
+        nativeReceipt,
       stageExact: (input) =>
-        isUpdateOperationId(input.operationId) && launcher.qualifiedOperations === true
+        isUpdateOperationId(input.operationId) &&
+        launcher.qualifiedOperations === true &&
+        launcher.qualifiedRetirement === true
           ? Effect.promise(() => updater.stageExact(input.targetSource))
           : Effect.succeed(
               blocked("A UUID v4 operation ID and an operation-capable launcher are required."),
