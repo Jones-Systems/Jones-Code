@@ -899,7 +899,8 @@
     "apps/desktop/src/ipc/methods/connectionCatalog.ts": "accepted-shared",
     "packages/client-runtime/src/connection/catalog.ts": "accepted-shared",
     "packages/client-runtime/src/connection/registry.test.ts": "jones-tests-in-upstream",
-    "packages/client-runtime/src/state/threads-atoms.test.ts": "jones-tests-in-upstream"
+    "packages/client-runtime/src/state/threads-atoms.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/platform/persistence.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
