@@ -4,6 +4,14 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "fleet-update-access",
+      "tests": [
+        "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts"
+      ]
+    },
+    {
       "id": "conversation-library",
       "tests": [
         "apps/server/src/conversations/Service.test.ts",

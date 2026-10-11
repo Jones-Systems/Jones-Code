@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-const branding = vi.hoisted(() => ({ APP_VERSION: "0.0.45-preview.20261010.38048764253.1" }));
+const branding = vi.hoisted(() => ({ APP_VERSION: "0.0.45-preview.20261010.38048764253.1", APP_SOURCE_SHA: "a".repeat(40) }));
 vi.mock("../../branding", () => branding);
 
 import { resolveVersionMismatch } from "../../versionSkew";
@@ -11,11 +11,21 @@ describe("Jones preview version skew", () => {
     "0.0.45-preview.20261008.37762212791.1",
     "0.0.45-preview.20261010.38048764252.1",
     "0.0.45-preview.20261010.38048764253",
-  ])("offers an update for older preview %s on the same core release", (serverVersion) => {
-    expect(resolveVersionMismatch(serverVersion)).toMatchObject({
+  ])("does not infer source order from preview artifact %s", (serverVersion) => {
+    expect(resolveVersionMismatch(serverVersion)).toBeNull();
+    expect(resolveVersionMismatch(serverVersion, "behind")).toMatchObject({
       clientVersion: branding.APP_VERSION,
       serverVersion,
     });
+  });
+
+  it("ignores artifact ordering for a source that is equal, ahead, or unknown", () => {
+    const lowerRun = "0.0.45-preview.20261008.37762212791.1";
+    for (const currency of ["current", "ahead", "unknown", "diverged"] as const) {
+      expect(resolveVersionMismatch(lowerRun, currency)).toBeNull();
+    }
+    expect(resolveVersionMismatch("0.0.45-preview.20261011.38048764299.2", "behind"))
+      .toMatchObject({ serverVersion: "0.0.45-preview.20261011.38048764299.2" });
   });
 
   it.each([

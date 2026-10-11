@@ -1,0 +1,41 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "fleet-update-access",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx",
+    "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
+    "apps/web/src/jones/fleetUpdates/sourceCurrency.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/index.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
+    "packages/client-runtime/src/jones/fleetUpdates/updateBridge.ts",
+    "packages/contracts/src/jones/fleetUpdates/index.ts",
+    "packages/contracts/src/jones/fleetUpdates/source.test.ts",
+    "packages/contracts/src/jones/fleetUpdates/source.ts"
+  ],
+  "hookPaths": [
+    "apps/web/vite.config.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/index.ts"
+    },
+    {
+      "from": "apps/web/vite.config.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/index.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/fleetUpdates/source.ts"
+    },
+    {
+      "from": "apps/web/src/versionSkew.ts",
+      "to": "apps/web/src/jones/fleetUpdates/sourceCurrency.ts"
+    },
+    {
+      "from": "apps/web/src/components/ServerUpdateAction.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
+    }
+  ]
+}
