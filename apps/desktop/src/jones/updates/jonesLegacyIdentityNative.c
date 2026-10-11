@@ -8,7 +8,9 @@
 #ifdef __APPLE__
 #include <fcntl.h>
 #include <limits.h>
+#include <libproc.h>
 #include <stddef.h>
+#include <sys/proc_info.h>
 #include <sys/attr.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -251,6 +253,334 @@ static void print_object(const struct observation *object, int index) {
   printf(",\"local\":true,\"ownershipHonored\":true,\"executable\":true,"
          "\"persistentObjectIds\":true,\"objectIds64Bit\":true},\"current\":true}");
 }
+
+/* xnu-11215.81.4 and xnu-12377.81.4 bsd/sys/proc_info_private.h, flavor 17.
+   Public SDKs omit this declaration. Offset 36 was reserved in 11215 and is
+   deliberately unused; exact byte counts and consumed offsets fail closed. */
+struct owner_unique_info {
+  unsigned char uuid[16];
+  uint64_t unique_id, parent_unique_id;
+  int32_t version, original_parent_version;
+  uint64_t reserved[2];
+};
+_Static_assert(sizeof(struct owner_unique_info) == 56, "process identity ABI");
+_Static_assert(offsetof(struct owner_unique_info, unique_id) == 16, "unique ID ABI");
+_Static_assert(offsetof(struct owner_unique_info, parent_unique_id) == 24, "parent unique ID ABI");
+_Static_assert(offsetof(struct owner_unique_info, version) == 32, "PID version ABI");
+_Static_assert(sizeof(struct proc_fdinfo) == 8, "FD list ABI");
+#define OWNER_UNIQUE_FLAVOR 17
+#define MAX_PROCESS_FDS 256
+#define MAX_FAMILY_MEMBERS 4
+#define MAX_EXCLUDED_FDS 64
+
+struct process_identity {
+  pid_t pid, parent_pid;
+  uint64_t unique_id, parent_unique_id;
+  uint32_t version, uid;
+};
+struct family_member {
+  const char *name;
+  struct observation object;
+};
+struct fd_snapshot {
+  struct proc_fdinfo fds[MAX_PROCESS_FDS];
+  struct vnode_fdinfo vnodes[MAX_PROCESS_FDS];
+  int count;
+};
+
+static int decimal(const char *text, uint64_t maximum, uint64_t *value) {
+  if (!*text || (text[0] == '0' && text[1])) return refuse("invalid-process-arguments", 0, 0);
+  for (const char *p = text; *p; p++)
+    if (*p < '0' || *p > '9') return refuse("invalid-process-arguments", 0, 0);
+  char *end;
+  errno = 0;
+  unsigned long long parsed = strtoull(text, &end, 10);
+  if (errno || *end || parsed > maximum) return refuse("invalid-process-arguments", 0, 0);
+  *value = (uint64_t)parsed;
+  return 0;
+}
+
+static int same_process(const struct process_identity *a, const struct process_identity *b) {
+  return a->pid == b->pid && a->parent_pid == b->parent_pid && a->unique_id == b->unique_id &&
+    a->parent_unique_id == b->parent_unique_id && a->version == b->version && a->uid == b->uid;
+}
+
+static int read_process(pid_t pid, struct process_identity *result) {
+  struct owner_unique_info first = {0}, last = {0};
+  struct proc_bsdinfo bsd = {0};
+  if (proc_pidinfo(pid, OWNER_UNIQUE_FLAVOR, 0, &first, sizeof(first)) != (int)sizeof(first) ||
+      proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, sizeof(bsd)) != (int)sizeof(bsd) ||
+      proc_pidinfo(pid, OWNER_UNIQUE_FLAVOR, 0, &last, sizeof(last)) != (int)sizeof(last))
+    return refuse("process-identity-unavailable", errno, 0);
+  if (!first.unique_id || first.unique_id != last.unique_id || first.version != last.version ||
+      first.parent_unique_id != last.parent_unique_id || bsd.pbi_pid != (uint32_t)pid ||
+      bsd.pbi_uid != getuid() || bsd.pbi_ruid != getuid() || bsd.pbi_svuid != getuid())
+    return refuse("process-identity-changed-or-owner", 0, 0);
+  *result = (struct process_identity){pid, (pid_t)bsd.pbi_ppid, first.unique_id,
+    first.parent_unique_id, (uint32_t)first.version, bsd.pbi_uid};
+  return 0;
+}
+
+static int fd_order(const void *a, const void *b) {
+  const struct proc_fdinfo *left = a, *right = b;
+  return (left->proc_fd > right->proc_fd) - (left->proc_fd < right->proc_fd);
+}
+
+static int read_fds(pid_t pid, struct proc_fdinfo *fds) {
+  const int capacity = MAX_PROCESS_FDS * (int)sizeof(*fds);
+  int bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds, capacity);
+  if (bytes <= 0 || bytes >= capacity || bytes % (int)sizeof(*fds))
+    return refuse("fd-list-incomplete", errno, 0);
+  int count = bytes / (int)sizeof(*fds);
+  qsort(fds, (size_t)count, sizeof(*fds), fd_order);
+  for (int i = 0; i < count; i++)
+    if (fds[i].proc_fd < 0 || (i && fds[i].proc_fd == fds[i - 1].proc_fd))
+      return refuse("fd-list-invalid", 0, 0);
+  return count;
+}
+
+static int read_snapshot(pid_t pid, struct fd_snapshot *snapshot) {
+  snapshot->count = read_fds(pid, snapshot->fds);
+  if (snapshot->count < 0) return -1;
+  for (int i = 0; i < snapshot->count; i++) {
+    if (snapshot->fds[i].proc_fdtype != PROX_FDTYPE_VNODE) continue;
+    struct vnode_fdinfo *value = &snapshot->vnodes[i];
+    memset(value, 0, sizeof(*value));
+    if (proc_pidfdinfo(pid, snapshot->fds[i].proc_fd, PROC_PIDFDVNODEINFO,
+                       value, sizeof(*value)) != (int)sizeof(*value))
+      return refuse("vnode-observation-unavailable", errno, 0);
+  }
+  return 0;
+}
+
+static int same_snapshot(const struct fd_snapshot *a, const struct fd_snapshot *b) {
+  if (a->count != b->count || memcmp(a->fds, b->fds, (size_t)a->count * sizeof(*a->fds))) return 0;
+  for (int i = 0; i < a->count; i++)
+    if (a->fds[i].proc_fdtype == PROX_FDTYPE_VNODE &&
+        memcmp(&a->vnodes[i], &b->vnodes[i], sizeof(*a->vnodes))) return 0;
+  return 1;
+}
+
+static int member_matches(const struct family_member *member, const struct vnode_fdinfo *value) {
+  const struct vinfo_stat *s = &value->pvi.vi_stat;
+  const struct stat *expected = &member->object.info;
+  if (s->vst_dev != (uint32_t)expected->st_dev || s->vst_ino != member->object.file_id ||
+      memcmp(&value->pvi.vi_fsid, &member->object.mount.f_fsid, sizeof(fsid_t))) return 0;
+  if (!(s->vst_uid == expected->st_uid && s->vst_gid == expected->st_gid &&
+    s->vst_mode == expected->st_mode && s->vst_nlink == expected->st_nlink &&
+    s->vst_size == expected->st_size && s->vst_flags == expected->st_flags &&
+    s->vst_birthtime == expected->st_birthtimespec.tv_sec &&
+    s->vst_birthtimensec == expected->st_birthtimespec.tv_nsec))
+    return refuse("family-vnode-mismatch", 0, 0);
+  return 1;
+}
+
+static const char *fd_access(const struct vnode_fdinfo *value) {
+  if (value->pfi.fi_openflags & O_EVTONLY) return "event-only";
+  /* Kernel fg_flag uses FREAD/FWRITE (1/2), not user O_RDONLY/O_RDWR. */
+  switch (value->pfi.fi_openflags & 3) {
+    case 1: return "read-only";
+    case 2: return "write-only";
+    case 3: return "read-write";
+    default: return "none";
+  }
+}
+
+static const char *fd_exclusion(int owner, int fd, const struct vnode_fdinfo *value,
+                                const int *excluded, int count) {
+  if (owner) return "owner";
+  for (int i = 0; i < count; i++) if (fd == excluded[i]) return "pre-open-inherited";
+  if (value->pfi.fi_openflags & O_EVTONLY) return "event-only";
+  if (value->pfi.fi_status & PROC_FP_SHARED) return "shared";
+  if (!(value->pfi.fi_openflags & 1)) return "not-readable";
+  return NULL;
+}
+
+static void print_process(const struct process_identity *p, const char *role, int count) {
+  printf("{\"role\":\"%s\",\"pid\":%d,\"parentPid\":%d,\"uniqueId\":\"%" PRIu64
+         "\",\"parentUniqueId\":\"%" PRIu64 "\",\"pidVersion\":%u,\"uid\":%u,\"fdCount\":%d}",
+         role, p->pid, p->parent_pid, p->unique_id, p->parent_unique_id, p->version, p->uid, count);
+}
+
+/* The caller binds its captured lifecycle, not serialized adoption authority.
+   Family witnesses are inherited by this helper only, never opened in the
+   worker as surrogate SQLite handles. Exclusions are source-fixed descriptors
+   recorded before spawning the worker, not a worker-selected post-open list.
+   Discovery covers supplied present objects only; omitted/unlinked sidecars,
+   descriptor origin, SQLite close and child reap remain unproved. */
+static int observe_worker(int argc, char **argv) {
+  int capture = !strcmp(argv[1], "capture-worker");
+  const char *operation = capture ? "capture-worker" : "observe-worker";
+  struct family_member members[MAX_FAMILY_MEMBERS] = {0};
+  struct process_identity owner, worker, after;
+  struct fd_snapshot owner_fds = {0}, worker_fds = {0}, fresh = {0};
+  int excluded[MAX_EXCLUDED_FDS], excluded_count = 0;
+  int checked = 0, count = 0, seen = 0;
+  uint64_t inputs[9] = {0};
+  const uint64_t maxima[9] = {UINT64_MAX, UINT32_MAX, UINT64_MAX, UINT32_MAX,
+    INT_MAX, UINT64_MAX, UINT32_MAX, UINT64_MAX, UINT32_MAX};
+  const char *names[] = {"--database", "--wal", "--shm", "--journal"};
+  const char *suffixes[] = {"", "-wal", "-shm", "-journal"};
+  uuid_string_t boot, after_boot;
+  pid_t parent = getppid();
+  if (getuid() == 0 || getuid() != geteuid() || parent <= 1) {
+    refuse("rootless-owner-required", 0, 0); goto failed_worker;
+  }
+  int first = capture ? 3 : 11;
+  if (argc < first + 3 || argc > first + 2 * MAX_EXCLUDED_FDS + 3 * MAX_FAMILY_MEMBERS) {
+    refuse("invalid-process-arguments", 0, 0); goto failed_worker;
+  }
+  if (capture) {
+    if (decimal(argv[2], INT_MAX, &inputs[4])) goto failed_worker;
+  } else {
+    for (int i = 0; i < 9; i++) if (decimal(argv[i + 2], maxima[i], &inputs[i])) goto failed_worker;
+  }
+  if (inputs[4] <= 1 || inputs[4] == (uint64_t)parent || inputs[4] == (uint64_t)getpid() ||
+      (!capture && (!inputs[0] || !inputs[1] || inputs[3] != getuid() || !inputs[5] ||
+                    !inputs[6] || inputs[7] != inputs[0] || inputs[8] != getuid()))) {
+    refuse("invalid-process-binding", 0, 0); goto failed_worker;
+  }
+  if (read_process(parent, &owner)) goto failed_worker;
+  if (!capture && (owner.unique_id != inputs[0] || owner.version != inputs[1] ||
+      owner.parent_unique_id != inputs[2] || owner.uid != inputs[3])) {
+    refuse("owner-identity-mismatch", 0, 0); goto failed_worker;
+  }
+  if (read_process((pid_t)inputs[4], &worker)) goto failed_worker;
+  if (worker.parent_unique_id != owner.unique_id || worker.parent_pid != parent ||
+      (!capture && (worker.unique_id != inputs[5] || worker.version != inputs[6] || worker.uid != inputs[8]))) {
+    refuse("worker-identity-mismatch", 0, 0); goto failed_worker;
+  }
+  int arg = first;
+  while (arg < argc && !strcmp(argv[arg], "--exclude-worker-fd")) {
+    uint64_t value;
+    if (arg + 1 >= argc || excluded_count == MAX_EXCLUDED_FDS ||
+        decimal(argv[arg + 1], INT_MAX, &value)) {
+      refuse("invalid-excluded-fd", 0, 0); goto failed_worker;
+    }
+    for (int i = 0; i < excluded_count; i++)
+      if (excluded[i] == (int)value) { refuse("duplicate-excluded-fd", 0, 0); goto failed_worker; }
+    excluded[excluded_count++] = (int)value;
+    arg += 2;
+  }
+  if (arg == argc || (argc - arg) % 3 || (argc - arg) / 3 > MAX_FAMILY_MEMBERS) {
+    refuse("invalid-family-arguments", 0, 0); goto failed_worker;
+  }
+  count = (argc - arg) / 3;
+  size_t path_bytes = 0;
+  for (int i = 0; i < count; i++) {
+    struct family_member *member = &members[i];
+    int kind = -1;
+    for (int j = 0; j < MAX_FAMILY_MEMBERS; j++)
+      if (!strcmp(argv[arg + i * 3], names[j])) kind = j;
+    if (kind < 0 || (seen & (1 << kind)) || (i == 0 && kind != 0)) {
+      refuse("invalid-family-role", 0, 0); goto failed_worker;
+    }
+    seen |= 1 << kind;
+    uint64_t local;
+    if (decimal(argv[arg + i * 3 + 1], INT_MAX, &local)) goto failed_worker;
+    if (local < 3 || fcntl((int)local, F_GETFD) < 0) {
+      refuse("invalid-inherited-fd", errno, 0); goto failed_worker;
+    }
+    for (int j = 0; j < i; j++)
+      if (members[j].object.fd == (int)local) { refuse("duplicate-family-fd", 0, 0); goto failed_worker; }
+    member->name = names[kind] + 2;
+    member->object.fd = (int)local;
+    member->object.path = argv[arg + i * 3 + 2];
+    checked++;
+    path_bytes += strlen(member->object.path);
+    if (path_bytes > MAX_PATH_BYTES || canonical_path(member->object.path)) goto failed_worker;
+    if (i) {
+      size_t base = strlen(members[0].object.path), suffix = strlen(suffixes[kind]);
+      if (strlen(member->object.path) != base + suffix ||
+          strncmp(member->object.path, members[0].object.path, base) ||
+          strcmp(member->object.path + base, suffixes[kind])) {
+        refuse("invalid-family-path", 0, 0); goto failed_worker;
+      }
+    }
+  }
+  if (boot_uuid(boot)) goto failed_worker;
+  for (int i = 0; i < count; i++) {
+    struct observation *object = &members[i].object;
+    if (read_object(object) || !timestamp_supported(object->info.st_mtimespec) ||
+        !timestamp_supported(object->info.st_ctimespec) ||
+        !timestamp_supported(object->info.st_birthtimespec)) goto failed_worker;
+    for (int j = 0; j < i; j++)
+      if (object->file_id == members[j].object.file_id &&
+          !strcmp(object->volume_uuid, members[j].object.volume_uuid)) {
+        refuse("aliased-family-object", 0, 0); goto failed_worker;
+      }
+  }
+  if (read_snapshot(parent, &owner_fds) || read_snapshot(worker.pid, &worker_fds)) goto failed_worker;
+  if (read_snapshot(parent, &fresh)) goto failed_worker;
+  if (!same_snapshot(&fresh, &owner_fds)) { refuse("owner-fd-snapshot-changed", 0, 0); goto failed_worker; }
+  if (read_snapshot(worker.pid, &fresh)) goto failed_worker;
+  if (!same_snapshot(&fresh, &worker_fds)) { refuse("worker-fd-snapshot-changed", 0, 0); goto failed_worker; }
+  for (int i = 0; i < count; i++) {
+    struct observation object = members[i].object;
+    if (read_object(&object)) goto failed_worker;
+    if (!same_stat(&object.info, &members[i].object.info) ||
+        strcmp(object.volume_uuid, members[i].object.volume_uuid) ||
+        object.file_id != members[i].object.file_id) {
+      refuse("family-object-changed", 0, 0); goto failed_worker;
+    }
+  }
+  if (read_process(worker.pid, &after) || !same_process(&worker, &after) ||
+      read_process(parent, &after) || !same_process(&owner, &after) || getppid() != parent ||
+      boot_uuid(after_boot) || strcmp(boot, after_boot)) {
+    refuse("process-bracket-changed", 0, 0); goto failed_worker;
+  }
+  for (int process = 0; process < 2; process++) {
+    const struct fd_snapshot *snapshot = process ? &worker_fds : &owner_fds;
+    for (int i = 0; i < snapshot->count; i++)
+      if (snapshot->fds[i].proc_fdtype == PROX_FDTYPE_VNODE)
+        for (int j = 0; j < count; j++)
+          if (member_matches(&members[j], &snapshot->vnodes[i]) < 0) goto failed_worker;
+  }
+  printf("{\"schema\":1,\"operation\":\"%s\",\"status\":\"observed\",\"bootSessionUuid\":\"%s\",\"processes\":[", operation, boot);
+  print_process(&owner, "owner", owner_fds.count); putchar(','); print_process(&worker, "worker", worker_fds.count);
+  printf("],\"excludedWorkerFds\":[");
+  for (int i = 0; i < excluded_count; i++) { if (i) putchar(','); printf("%d", excluded[i]); }
+  printf("],\"family\":[");
+  for (int i = 0; i < count; i++) {
+    if (i) putchar(',');
+    printf("{\"role\":\"%s\",\"object\":", members[i].name);
+    print_object(&members[i].object, i); putchar('}');
+  }
+  printf("],\"matches\":[");
+  int printed = 0;
+  for (int process = 0; process < 2; process++) {
+    const struct fd_snapshot *snapshot = process ? &worker_fds : &owner_fds;
+    for (int i = 0; i < snapshot->count; i++) {
+      if (snapshot->fds[i].proc_fdtype != PROX_FDTYPE_VNODE) continue;
+      for (int j = 0; j < count; j++) {
+        const struct vnode_fdinfo *value = &snapshot->vnodes[i];
+        if (!member_matches(&members[j], value)) continue;
+        int fd = snapshot->fds[i].proc_fd;
+        const char *exclusion = fd_exclusion(!process, fd, value, excluded, excluded_count);
+        if (printed++) putchar(',');
+        printf("{\"process\":\"%s\",\"familyRole\":\"%s\",\"fd\":%d,\"access\":\"%s\",\"shared\":%s,"
+               "\"eligibleOpenObservation\":%s,\"exclusion\":",
+          process ? "worker" : "owner", members[j].name, fd, fd_access(value),
+          (value->pfi.fi_status & PROC_FP_SHARED) ? "true" : "false", exclusion ? "false" : "true");
+        if (exclusion) json_string(exclusion); else printf("null");
+        putchar('}');
+      }
+    }
+  }
+  for (int i = 0; i < checked; i++) close(members[i].object.fd);
+  puts("],\"suppliedFamilyOnly\":true,\"familyMembershipComplete\":false,\"observationOnly\":true,"
+       "\"sqliteOpenProved\":false,\"databaseSyncCloseProved\":false,\"workerReaped\":false,"
+       "\"stateAdmissionAllowed\":false,\"launchMembershipComplete\":false,\"processCustody\":\"unobserved\",\"activationAllowed\":false}");
+  return fflush(stdout) == 0 ? 0 : 1;
+failed_worker:
+  for (int i = 0; i < checked; i++) close(members[i].object.fd);
+  printf("{\"schema\":1,\"operation\":\"%s\",\"status\":\"refused\",\"reason\":\"%s\",\"errno\":%d,"
+         "\"processes\":[],\"excludedWorkerFds\":[],\"family\":[],\"matches\":[],"
+         "\"suppliedFamilyOnly\":true,\"familyMembershipComplete\":false,\"observationOnly\":true,\"sqliteOpenProved\":false,"
+         "\"databaseSyncCloseProved\":false,\"workerReaped\":false,\"stateAdmissionAllowed\":false,"
+         "\"launchMembershipComplete\":false,\"processCustody\":\"unobserved\",\"activationAllowed\":false}\n", operation, reason, failure_errno);
+  return 1;
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -259,6 +589,7 @@ int main(int argc, char **argv) {
   puts("{\"schema\":1,\"operation\":\"unsupported\",\"status\":\"unsupported\",\"reason\":\"darwin-required\",\"objects\":[],\"observationOnly\":true,\"activationAllowed\":false}");
   return 77;
 #else
+  if (argc > 1 && (!strcmp(argv[1], "observe-worker") || !strcmp(argv[1], "capture-worker"))) return observe_worker(argc, argv);
   struct observation objects[MAX_OBJECTS] = {0};
   int count = 0, checked = 0, failed_index = -1;
   const char *operation = argc > 1 && strcmp(argv[1], "boot") == 0 ? "boot" : "inspect";

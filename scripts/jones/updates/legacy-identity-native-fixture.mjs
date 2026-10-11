@@ -555,6 +555,362 @@ export async function runLegacyIdentityNativeFixture({ signal, temporaryDirector
   );
 }
 
+export const legacyIdentityWorkerCases = [
+  "native-descriptor",
+  "read-only-descriptor",
+  "owner-witness",
+  "witness-only",
+  "inherited-witness",
+  "pre-open-excluded",
+  "empty-worker",
+  "ambiguous-descriptors",
+  "family-descriptors",
+  "wrong-object",
+  "invalid-family-path",
+  "family-alias",
+  "capture-parent-pid",
+  "stale-unique-id",
+  "stale-pid-version",
+  "wrong-parent",
+  "full-fd-list",
+  "truncated-fd-list",
+  "inaccessible-fd-list",
+  "changing-fd-list",
+  "truncated-process-identity",
+  "inaccessible-process-identity",
+  "changing-process-identity",
+  "truncated-vnode",
+  "changing-vnode",
+];
+
+const workerObserverDriver = String.raw`
+import sys
+sys.dont_write_bytecode = True
+import json, os, pathlib, resource, select, signal, subprocess, time
+root = pathlib.Path(sys.argv[1]).resolve(strict=True)
+payload = json.loads((root / 'observer.json').read_text())
+class Cancelled(BaseException): pass
+cancelled, cleaning = False, False
+def cancel(signum, frame):
+    global cancelled
+    cancelled = True
+    if not cleaning: raise Cancelled()
+for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP): signal.signal(signum, cancel)
+def tokens(value):
+    return [value['uniqueId'], str(value['pidVersion']), value['parentUniqueId'], str(value['uid'])]
+def reap(pid):
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+        if waited == pid: return status
+        time.sleep(0.01)
+    # Only this captured, still-unreaped direct child may be signalled.
+    os.kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+        if waited == pid: return status
+        time.sleep(0.01)
+    raise AssertionError('Owned worker reap is unproved')
+def receive(fd):
+    assert select.select([fd], [], [], 5)[0], 'Worker readiness timed out'
+    raw = os.read(fd, 4096)
+    assert raw.endswith(b'\n')
+    return json.loads(raw)
+def observe(executable, args, local):
+    result = subprocess.run([executable, *args], pass_fds=tuple(local), capture_output=True, timeout=5, check=False)
+    assert len(result.stdout) < 262144 and result.stderr == b''
+    value = json.loads(result.stdout)
+    assert value['observationOnly'] is True and value['suppliedFamilyOnly'] is True
+    assert value['processCustody'] == 'unobserved'
+    for field in ('sqliteOpenProved', 'databaseSyncCloseProved', 'workerReaped', 'activationAllowed',
+                  'stateAdmissionAllowed', 'launchMembershipComplete', 'familyMembershipComplete'):
+        assert value[field] is False
+    return result, value
+reports = []
+owned = set()
+def record_custody():
+    raw = json.dumps({'capturedUnreapedChildren':sorted(owned), 'driverPid':os.getpid(),
+                      'permitsPidSignalling':False, 'permitsProcessAdoption':False}).encode()
+    fd = os.open(root / 'observer-custody.json', os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        assert os.write(fd, raw) == len(raw)
+        os.fsync(fd)
+    finally: os.close(fd)
+try:
+    for case in payload['cases']:
+        if cancelled: raise Cancelled()
+        directory = root / case
+        directory.mkdir(mode=0o700)
+        path = directory / 'state.sqlite'
+        path.write_bytes(b'owned descriptor bytes, not a SQLite DatabaseSync handle')
+        path.chmod(0o600)
+        other = directory / 'other'
+        other.write_bytes(b'other object')
+        other.chmod(0o600)
+        sidecars = [pathlib.Path(str(path) + suffix) for suffix in ('-wal', '-shm', '-journal')]
+        if case == 'family-descriptors':
+            for sidecar in sidecars:
+                sidecar.write_bytes(b'owned sidecar identity')
+                sidecar.chmod(0o600)
+        inherited = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        # This intentional negative model records the FD before fork. A real
+        # worker inherits no database witness and never nominates its SQLite FD.
+        excluded = [inherited] if case == 'pre-open-excluded' else []
+        command_read, command_write = os.pipe()
+        report_read, report_write = os.pipe()
+        cleaning = True
+        pid = os.fork()
+        if pid == 0:
+            for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP): signal.signal(signum, signal.SIG_DFL)
+            os.close(command_write)
+            os.close(report_read)
+            try:
+                retained = case in ('inherited-witness', 'pre-open-excluded')
+                if not retained: os.close(inherited)
+                os.write(report_write, b'{"ready":true}\n')
+                request = os.read(command_read, 1)
+                if request == b'': os._exit(0)
+                assert request == b'o'
+                targets = []
+                if retained: targets = [inherited]
+                elif case not in ('owner-witness', 'empty-worker'):
+                    flags = 0x8000 if case == 'witness-only' else (os.O_RDONLY if case == 'read-only-descriptor' else os.O_RDWR)
+                    targets = [os.open(path, flags | os.O_NOFOLLOW)]
+                    if case == 'ambiguous-descriptors': targets.append(os.open(path, os.O_RDWR | os.O_NOFOLLOW))
+                    if case == 'family-descriptors':
+                        targets.extend(os.open(item, os.O_RDWR | os.O_NOFOLLOW) for item in sidecars)
+                extra = []
+                if case == 'full-fd-list':
+                    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+                    assert hard == resource.RLIM_INFINITY or hard >= 512
+                    raised = soft if soft == resource.RLIM_INFINITY else max(soft, 512)
+                    resource.setrlimit(resource.RLIMIT_NOFILE, (raised, hard))
+                    extra = [os.open(path, os.O_RDONLY | os.O_NOFOLLOW) for _ in range(256)]
+                os.write(report_write, json.dumps({'fds':targets}).encode() + b'\n')
+                os.close(report_write)
+                assert os.read(command_read, 1) in (b'', b'q')
+                for fd in extra + targets: os.close(fd)
+                os.close(command_read)
+                os._exit(0)
+            except BaseException: os._exit(1)
+        owned.add(pid)
+        os.close(command_read)
+        os.close(report_write)
+        local = []
+        try:
+            record_custody()
+            cleaning = False
+            if cancelled: raise Cancelled()
+            assert receive(report_read) == {'ready':True}
+            witness_path = other if case == 'wrong-object' else path
+            local.append(os.open(witness_path, 0x8000 | os.O_NOFOLLOW))
+            family_args = ['--database', str(local[0]), str(witness_path)]
+            exclude_args = [arg for fd in excluded for arg in ('--exclude-worker-fd', str(fd))]
+            capture_args = ['capture-worker', str(os.getpid() if case == 'capture-parent-pid' else pid), *exclude_args, *family_args]
+            captured, baseline = observe(payload['binary'], capture_args, local)
+            assert baseline['operation'] == 'capture-worker'
+            if case == 'capture-parent-pid':
+                assert captured.returncode == 1 and baseline['reason'] == 'invalid-process-binding', baseline
+                reports.append({'case':case, 'status':'refused'})
+                continue
+            assert captured.returncode == 0 and baseline['status'] == 'observed', baseline
+            assert baseline['processes'][0]['pid'] == os.getpid() and baseline['processes'][1]['pid'] == pid
+            assert not any(item['eligibleOpenObservation'] for item in baseline['matches'])
+            owner, worker = [tokens(item) for item in baseline['processes']]
+            assert worker[2] == owner[0]
+            if case == 'pre-open-excluded':
+                os.close(inherited)
+                inherited = None
+            if case == 'family-alias': os.link(path, sidecars[0])
+            if case in ('family-descriptors', 'invalid-family-path', 'family-alias'):
+                items = sidecars if case == 'family-descriptors' else [other if case == 'invalid-family-path' else sidecars[0]]
+                for role, item in zip(('wal', 'shm', 'journal'), items):
+                    local.append(os.open(item, 0x8000 | os.O_NOFOLLOW))
+                    family_args.extend(['--' + role, str(local[-1]), str(item)])
+            os.write(command_write, b'o')
+            remote_fds = receive(report_read)['fds']
+            os.close(report_read)
+            report_read = -1
+            if case == 'stale-unique-id': worker[0] = str(int(worker[0]) + 1)
+            if case == 'stale-pid-version': worker[1] = str((int(worker[1]) + 1) & 0xffffffff)
+            args = ['observe-worker', *owner, str(pid), *worker, *exclude_args, *family_args]
+            faults = {'truncated-fd-list':'short', 'inaccessible-fd-list':'denied', 'changing-fd-list':'changed',
+                      'wrong-parent':'parent', 'truncated-process-identity':'identity-short',
+                      'inaccessible-process-identity':'identity-denied', 'changing-process-identity':'identity-changed',
+                      'truncated-vnode':'vnode-short', 'changing-vnode':'vnode-changed'}
+            executable = payload['instrumented'] if case in faults else payload['binary']
+            if case in faults: args = [faults[case], *args]
+            result, value = observe(executable, args, local)
+            assert value['operation'] == 'observe-worker'
+            positive = ('native-descriptor', 'read-only-descriptor', 'witness-only', 'owner-witness',
+                        'inherited-witness', 'pre-open-excluded', 'empty-worker', 'ambiguous-descriptors',
+                        'family-descriptors', 'wrong-object')
+            if case in positive:
+                assert result.returncode == 0 and value['status'] == 'observed', value
+                for observed, expected in zip(value['processes'], (owner, worker)):
+                    assert tokens(observed) == expected and 0 < observed['fdCount'] < 256
+                assert value['excludedWorkerFds'] == excluded
+                assert value['family'][0]['role'] == 'database'
+                assert value['family'][0]['object']['persistent']['fileId'] == str(witness_path.stat().st_ino)
+                matches = [item for item in value['matches'] if item['process'] == 'worker']
+                assert all(not item['eligibleOpenObservation'] and item['exclusion'] == 'owner'
+                           for item in value['matches'] if item['process'] == 'owner')
+                if case in ('empty-worker', 'owner-witness', 'wrong-object'):
+                    assert matches == [], matches
+                else:
+                    assert sorted(item['fd'] for item in matches) == sorted(remote_fds), matches
+                    for item in matches:
+                        expected_exclusion = {'witness-only':'event-only', 'inherited-witness':'shared',
+                                              'pre-open-excluded':'pre-open-inherited'}.get(case)
+                        assert item['exclusion'] == expected_exclusion
+                        assert item['eligibleOpenObservation'] == (expected_exclusion is None)
+                        access = 'event-only' if case == 'witness-only' else ('read-only' if case == 'read-only-descriptor' else 'read-write')
+                        assert item['access'] == access, item
+                    if case == 'family-descriptors':
+                        assert sorted(item['familyRole'] for item in matches) == ['database', 'journal', 'shm', 'wal']
+                    elif case == 'ambiguous-descriptors':
+                        assert len(matches) == 2 and all(item['familyRole'] == 'database' for item in matches)
+                    else: assert len(matches) == 1 and matches[0]['familyRole'] == 'database'
+            else:
+                reasons = {'stale-unique-id':'worker-identity-mismatch', 'stale-pid-version':'worker-identity-mismatch',
+                           'wrong-parent':'worker-identity-mismatch', 'invalid-family-path':'invalid-family-path',
+                           'family-alias':'endpoint-type-links-or-ownership',
+                           'full-fd-list':'fd-list-incomplete', 'truncated-fd-list':'fd-list-incomplete',
+                           'inaccessible-fd-list':'fd-list-incomplete', 'changing-fd-list':'owner-fd-snapshot-changed',
+                           'truncated-process-identity':'process-identity-unavailable',
+                           'inaccessible-process-identity':'process-identity-unavailable',
+                           'changing-process-identity':'process-bracket-changed',
+                           'truncated-vnode':'vnode-observation-unavailable', 'changing-vnode':'owner-fd-snapshot-changed'}
+                assert result.returncode == 1 and value['status'] == 'refused' and value['reason'] == reasons[case], value
+                assert value['processes'] == [] and value['matches'] == [] and value['family'] == []
+            reports.append({'case':case, 'status':value['status']})
+        finally:
+            cleaning = True
+            if report_read >= 0: os.close(report_read)
+            for fd in local: os.close(fd)
+            if inherited is not None: os.close(inherited)
+            os.close(command_write)
+            status = reap(pid)
+            owned.remove(pid)
+            record_custody()
+            cleaning = False
+            assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, 'Worker cleanup failed'
+finally:
+    if not owned:
+        (root / 'observer-children-closed.json').write_text(json.dumps({'childrenClosed':True}))
+print(json.dumps({'cases':reports, 'observationOnly':True, 'sqliteLifecycleQualified':False,
+                  'offlineAdmissionQualified':False, 'cleanupProved':True}))
+`;
+
+export async function runLegacyIdentityWorkerFixture({ signal } = {}) {
+  signal?.throwIfAborted();
+  if (nativePlatform !== "darwin") return { status: "unsupported", reason: "darwin-required" };
+  return withLegacyIdentityScratch(async (root) => {
+    const binary = NodePath.join(root, "observer-native");
+    const instrumented = NodePath.join(root, "observer-instrumented");
+    const wrapper = NodePath.join(root, "observer-wrapper.c");
+    const driver = NodePath.join(root, "observer.py");
+    await NodeFSP.writeFile(
+      wrapper,
+      `#include <errno.h>
+#include <libproc.h>
+#include <stdint.h>
+#include <string.h>
+static int fixture_pidinfo(int, int, uint64_t, void *, int);
+static int fixture_pidfdinfo(int, int, int, void *, int);
+#define proc_pidinfo fixture_pidinfo
+#define proc_pidfdinfo fixture_pidfdinfo
+#define main observer_main
+#include ${JSON.stringify(source)}
+#undef main
+#undef proc_pidinfo
+#undef proc_pidfdinfo
+static const char *fault;
+static int lists, identities;
+static int fixture_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int size) {
+  int result = proc_pidinfo(pid, flavor, arg, buffer, size);
+  if (flavor == PROC_PIDTBSDINFO && result == (int)sizeof(struct proc_bsdinfo) &&
+      !strcmp(fault, "parent") && pid != getppid()) ((struct proc_bsdinfo *)buffer)->pbi_ppid = 0;
+  if (flavor == OWNER_UNIQUE_FLAVOR && result == (int)sizeof(struct owner_unique_info)) {
+    identities++;
+    if (!strcmp(fault, "identity-short")) return result - 1;
+    if (!strcmp(fault, "identity-denied")) { errno = EACCES; return 0; }
+    if (!strcmp(fault, "identity-changed") && identities == 5) ((struct owner_unique_info *)buffer)->unique_id++;
+  }
+  if (flavor != PROC_PIDLISTFDS || result <= 0) return result;
+  lists++;
+  if (!strcmp(fault, "short")) return result - 1;
+  if (!strcmp(fault, "denied")) { errno = EACCES; return 0; }
+  if (!strcmp(fault, "changed") && lists == 3) ((struct proc_fdinfo *)buffer)[0].proc_fd += 100000;
+  return result;
+}
+static int fixture_pidfdinfo(int pid, int fd, int flavor, void *buffer, int size) {
+  int result = proc_pidfdinfo(pid, fd, flavor, buffer, size);
+  if (flavor == PROC_PIDFDVNODEINFO && result == (int)sizeof(struct vnode_fdinfo)) {
+    if (!strcmp(fault, "vnode-short")) return result - 1;
+    if (!strcmp(fault, "vnode-changed") && lists >= 3)
+      ((struct vnode_fdinfo *)buffer)->pfi.fi_offset++;
+  }
+  return result;
+}
+int main(int argc, char **argv) {
+  if (argc < 2) return 2;
+  fault = argv[1];
+  return observer_main(argc - 1, argv + 1);
+}
+`,
+      { flag: "wx", mode: 0o600 },
+    );
+    for (const [input, output] of [
+      [source, binary],
+      [wrapper, instrumented],
+    ]) {
+      const result = await command(
+        "/usr/bin/clang",
+        ["-std=c11", "-Wall", "-Wextra", "-Werror", input, "-o", output],
+        root,
+        { signal },
+      );
+      NodeAssert.equal(result.code, 0, result.stderr);
+    }
+    await NodeFSP.writeFile(driver, workerObserverDriver, { flag: "wx", mode: 0o600 });
+    await NodeFSP.writeFile(
+      NodePath.join(root, "observer.json"),
+      JSON.stringify({ binary, instrumented, cases: legacyIdentityWorkerCases }),
+      { flag: "wx", mode: 0o600 },
+    );
+    let originalFailure;
+    try {
+      const result = await command("/usr/bin/python3", ["-I", "-B", driver, root], root, {
+        signal,
+      });
+      NodeAssert.equal(result.code, 0, result.stderr);
+      NodeAssert.equal(result.stoppedBy, null);
+      return JSON.parse(result.stdout);
+    } catch (cause) {
+      originalFailure = cause;
+      throw cause;
+    } finally {
+      const closure = await NodeFSP.readFile(
+        NodePath.join(root, "observer-children-closed.json"),
+        "utf8",
+      )
+        .then((raw) => JSON.parse(raw))
+        .catch(() => undefined);
+      if (closure?.childrenClosed !== true) {
+        const failure = new AggregateError(
+          originalFailure ? [originalFailure] : [],
+          "Native observer child closure is unproved; scratch retained.",
+          { cause: originalFailure },
+        );
+        failure.preserveScratch = true;
+        throw failure;
+      }
+    }
+  });
+}
+
 if (
   process.argv[1] &&
   NodeURL.pathToFileURL(NodePath.resolve(process.argv[1])).href === import.meta.url

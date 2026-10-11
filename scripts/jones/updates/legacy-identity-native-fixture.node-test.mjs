@@ -5,14 +5,56 @@ import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import {
   legacyIdentityFailureReport,
+  legacyIdentityWorkerCases,
   runLegacyIdentityFixtureCommand,
   runLegacyIdentityNativeFixture,
+  runLegacyIdentityWorkerFixture,
   validateLegacyIdentityObservation,
   withLegacyIdentityScratch,
 } from "./legacy-identity-native-fixture.mjs";
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone native ABI tests require the actual host, without an application runtime dependency.
 const nativePlatform = process.platform;
+
+NodeTest.test(
+  "native discovery binds captured workers, distinguishes access and exposes excluded witnesses",
+  { skip: nativePlatform !== "darwin", timeout: 120000 },
+  async (context) => {
+    const result = await runLegacyIdentityWorkerFixture({ signal: context.signal });
+    NodeAssert.deepEqual(
+      result.cases,
+      legacyIdentityWorkerCases.map((name) => ({
+        case: name,
+        status: [
+          "native-descriptor",
+          "read-only-descriptor",
+          "owner-witness",
+          "witness-only",
+          "inherited-witness",
+          "pre-open-excluded",
+          "empty-worker",
+          "ambiguous-descriptors",
+          "family-descriptors",
+          "wrong-object",
+        ].includes(name)
+          ? "observed"
+          : "refused",
+      })),
+    );
+    NodeAssert.equal(result.observationOnly, true);
+    NodeAssert.equal(result.sqliteLifecycleQualified, false);
+    NodeAssert.equal(result.offlineAdmissionQualified, false);
+    NodeAssert.equal(result.cleanupProved, true);
+  },
+);
+
+NodeTest.test("pre-cancellation starts no worker observer resources", async () => {
+  const original = new Error("cancelled observer before allocation");
+  await NodeAssert.rejects(
+    runLegacyIdentityWorkerFixture({ signal: AbortSignal.abort(original) }),
+    (cause) => cause === original,
+  );
+});
 
 NodeTest.test(
   "repeated synchronous signal errors preserve cancellation through proved closure",
