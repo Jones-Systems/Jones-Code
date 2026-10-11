@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeZlib from "node:zlib";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
@@ -10,6 +11,7 @@ import {
   JonesActionsError,
   JONES_ACTIONS_RECEIPT_FILE,
   jonesCandidateHandle,
+  readJonesArtifactMetadata,
   validateJonesStagedArtifact,
   type JonesActionsCandidate,
   type JonesActionsTransport,
@@ -36,32 +38,67 @@ async function cache() {
   return await NodeFSP.realpath(root);
 }
 
-/** Flat stored ZIP fixture: the transport digest authenticates its complete envelope. */
-function zip(entries: Array<{ name: string; content: string; mode?: number }>): Buffer {
+interface ZipFixtureEntry {
+  readonly name: string;
+  readonly content: string | Buffer;
+  readonly mode?: number;
+  /** Raw deflate (method 8) instead of stored. */
+  readonly deflate?: boolean;
+  /** Bit 3: zero local CRC/sizes followed by a data descriptor, as streaming writers emit. */
+  readonly descriptor?: boolean;
+  /** Recorded CRC-32 and expanded size; default to the content's real values. */
+  readonly crc?: number;
+  readonly bytes?: number;
+  /** Recorded entry data; defaults to the stored or deflated content. */
+  readonly data?: Buffer;
+}
+
+/** Flat ZIP fixture with real CRC-32: the transport digest authenticates its complete envelope. */
+function zip(entries: ReadonlyArray<ZipFixtureEntry>): Buffer {
   const locals: Buffer[] = [],
     centrals: Buffer[] = [];
   let offset = 0;
   for (const entry of entries) {
     const name = Buffer.from(entry.name),
       content = Buffer.from(entry.content);
+    const data = entry.data ?? (entry.deflate ? NodeZlib.deflateRawSync(content) : content);
+    const crc = entry.crc ?? NodeZlib.crc32(content),
+      bytes = entry.bytes ?? content.length;
+    const flags = entry.descriptor ? 0x08 : 0,
+      method = entry.deflate ? 8 : 0;
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50);
     local.writeUInt16LE(20, 4);
-    local.writeUInt32LE(content.length, 18);
-    local.writeUInt32LE(content.length, 22);
+    local.writeUInt16LE(flags, 6);
+    local.writeUInt16LE(method, 8);
+    if (!entry.descriptor) {
+      local.writeUInt32LE(crc, 14);
+      local.writeUInt32LE(data.length, 18);
+      local.writeUInt32LE(bytes, 22);
+    }
     local.writeUInt16LE(name.length, 26);
+    const descriptor = Buffer.alloc(entry.descriptor ? 16 : 0);
+    if (entry.descriptor) {
+      descriptor.writeUInt32LE(0x08074b50);
+      descriptor.writeUInt32LE(crc, 4);
+      descriptor.writeUInt32LE(data.length, 8);
+      descriptor.writeUInt32LE(bytes, 12);
+    }
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50);
     central.writeUInt16LE(0x0314, 4);
     central.writeUInt16LE(20, 6);
-    central.writeUInt32LE(content.length, 20);
-    central.writeUInt32LE(content.length, 24);
+    central.writeUInt16LE(flags, 8);
+    central.writeUInt16LE(method, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(bytes, 24);
     central.writeUInt16LE(name.length, 28);
     central.writeUInt32LE(((entry.mode ?? 0o100600) << 16) >>> 0, 38);
     central.writeUInt32LE(offset, 42);
-    locals.push(local, name, content);
+    locals.push(local, name, data, descriptor);
     centrals.push(central, name);
-    offset += local.length + name.length + content.length;
+    offset += local.length + name.length + data.length + descriptor.length;
   }
   const central = Buffer.concat(centrals),
     end = Buffer.alloc(22);
@@ -483,5 +520,99 @@ describe("Jones Actions staging", () => {
     await expect(changedSource.client.stage(candidate, await cache())).rejects.toMatchObject({
       reason: "unqualified",
     });
+  });
+});
+
+describe("Jones artifact metadata envelope", () => {
+  const metadata = JSON.stringify({ schema: 1, source: CURRENT, padding: "x".repeat(512) });
+  // A case variant is a distinct entry; only the exact name is selected.
+  const companions: ZipFixtureEntry[] = [
+    { name: "SOURCE_COMMIT", content: CURRENT },
+    { name: "artifact.json", content: "not the metadata entry" },
+  ];
+  async function archive(bytes: Buffer): Promise<string> {
+    const file = NodePath.join(await cache(), "github-artifact.zip");
+    await NodeFSP.writeFile(file, bytes, { flag: "wx" });
+    return file;
+  }
+  async function expectIntegrity(bytes: Buffer) {
+    await expect(readJonesArtifactMetadata(await archive(bytes))).rejects.toMatchObject({
+      reason: "integrity",
+    });
+  }
+  type Encoding = Pick<ZipFixtureEntry, "deflate" | "descriptor">;
+
+  it.each<{ readonly label: string } & Encoding>([
+    { label: "stored" },
+    { label: "deflated", deflate: true },
+    { label: "deflated data-descriptor", deflate: true, descriptor: true },
+    { label: "stored data-descriptor", descriptor: true },
+  ])("reads exact $label metadata natively", async ({ label: _label, ...encoding }) => {
+    const bytes = zip([{ name: "ARTIFACT.json", content: metadata, ...encoding }, ...companions]);
+    // Streaming writers leave local CRC/sizes zero; the central record governs.
+    if (encoding.descriptor) expect(bytes.readUInt32LE(14)).toBe(0);
+    expect((await readJonesArtifactMetadata(await archive(bytes))).toString("utf8")).toBe(metadata);
+  });
+  it.each<Encoding>([{}, { deflate: true }, { deflate: true, descriptor: true }])(
+    "rejects decoded metadata that differs from its recorded CRC-32 %j",
+    async (encoding) => {
+      const crc = (NodeZlib.crc32(metadata) ^ 1) >>> 0;
+      await expectIntegrity(
+        zip([{ name: "ARTIFACT.json", content: metadata, crc, ...encoding }, ...companions]),
+      );
+    },
+  );
+  it.each<[string, ZipFixtureEntry[]]>([
+    ["missing", companions],
+    [
+      "duplicate",
+      [
+        { name: "ARTIFACT.json", content: metadata },
+        { name: "ARTIFACT.json", content: metadata },
+      ],
+    ],
+  ])("rejects %s metadata entries", async (_label, entries) => {
+    await expectIntegrity(zip(entries));
+  });
+  it.each<[string, ZipFixtureEntry]>([
+    ["expanded stored", { name: "ARTIFACT.json", content: "x".repeat(65537) }],
+    ["expanded deflated", { name: "ARTIFACT.json", content: "x".repeat(65537), deflate: true }],
+    [
+      "compressed",
+      {
+        name: "ARTIFACT.json",
+        content: metadata,
+        deflate: true,
+        data: Buffer.concat([NodeZlib.deflateRawSync(metadata), Buffer.alloc(131072)]),
+      },
+    ],
+    [
+      "decompression",
+      { name: "ARTIFACT.json", content: Buffer.alloc(1024 * 1024), deflate: true, bytes: 512 },
+    ],
+    [
+      "actual expanded length",
+      { name: "ARTIFACT.json", content: metadata, deflate: true, bytes: metadata.length + 1 },
+    ],
+  ])("rejects metadata beyond its %s bound", async (_label, entry) => {
+    await expectIntegrity(zip([entry, ...companions]));
+  });
+  // Each mutation targets the first (metadata) local header or its central record.
+  it.each<[string, (bytes: Buffer) => Buffer | undefined]>([
+    ["non-ZIP bytes", () => Buffer.from("corrupt")],
+    ["truncated end record", (bytes) => bytes.subarray(0, bytes.length - 1)],
+    ["local signature", (bytes) => void bytes.writeUInt32LE(0, 0)],
+    ["local flags", (bytes) => void bytes.writeUInt16LE(0x08, 6)],
+    ["local method", (bytes) => void bytes.writeUInt16LE(8, 8)],
+    ["local CRC without data descriptor", (bytes) => void bytes.writeUInt32LE(0, 14)],
+    ["local size without data descriptor", (bytes) => void bytes.writeUInt32LE(0, 22)],
+    ["local name", (bytes) => void bytes.write("a", 30)],
+    [
+      "encrypted central entry",
+      (bytes) => void bytes.writeUInt16LE(1, bytes.readUInt32LE(bytes.length - 6) + 8),
+    ],
+  ])("rejects a malformed %s header", async (_label, malform) => {
+    const bytes = zip([{ name: "ARTIFACT.json", content: metadata }, ...companions]);
+    await expectIntegrity(malform(bytes) ?? bytes);
   });
 });
