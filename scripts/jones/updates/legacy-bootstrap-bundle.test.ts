@@ -5,6 +5,7 @@ import { jonesLegacyBootstrapSource } from "../../../apps/desktop/src/jones/upda
 import { jonesNativeHelperSource } from "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts";
 import {
   createJonesLegacyBootstrapBundle,
+  readJonesLegacyBootstrapNativeProof,
   verifyJonesLegacyIdentityMachO,
 } from "./legacy-bootstrap-bundle.ts";
 
@@ -144,6 +145,12 @@ for (const terminator of ["\n", "\r", "\u2028", "\u2029"]) {
       const changed = { ...identity, [key]: identity[key] + terminator };
       expect(() => createJonesLegacyBootstrapBundle(changed)).toThrow();
       expect(() => createJonesLegacyBootstrapBundle(changed, native)).toThrow();
+      expect(() =>
+        createJonesLegacyBootstrapBundle({
+          ...identity,
+          [key]: identity[key].slice(1) + terminator,
+        }),
+      ).toThrow();
     }
     expect(() =>
       createJonesLegacyBootstrapBundle(identity, {

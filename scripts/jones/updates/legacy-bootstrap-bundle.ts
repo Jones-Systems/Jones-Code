@@ -3,6 +3,9 @@ import * as NodeCrypto from "node:crypto";
 import { jonesLegacyBootstrapSource } from "../../../apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts";
 import { jonesNativeHelperSource } from "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts";
 
+const isHash = (value: unknown, length: number): value is string =>
+  typeof value === "string" && value.length === length && !/[^a-f0-9]/.test(value);
+
 export interface JonesLegacyBootstrapBundleInput {
   readonly repository: "Jones-Systems/Jones-Code";
   readonly sourceSha: string;
