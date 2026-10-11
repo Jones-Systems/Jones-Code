@@ -165,7 +165,7 @@ describe("desktop install IPC decoding", () => {
       const selection = { artifactId: 123, sourceSha: "a".repeat(40) };
       yield* invokeDownload(selection);
       expect(downloadSelected).toHaveBeenCalledExactlyOnceWith(selection);
-      expect((yield* invokeDownload(undefined)).accepted).toBe(false);
+      expect(yield* invokeDownload(undefined)).toMatchObject({ accepted: false });
       expect(download).not.toHaveBeenCalled();
       expect(Exit.isFailure(yield* Effect.exit(invokeDownload({ artifactId: "bad" })))).toBe(true);
       expect(downloadSelected).toHaveBeenCalledOnce();

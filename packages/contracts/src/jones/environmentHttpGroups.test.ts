@@ -25,7 +25,7 @@ describe("Jones environment HTTP registration", () => {
       "connect",
       "conversationLibrary",
       "jonesUpdates",
-      "fleetUpdates",
+      "jonesFleetUpdates",
       "jonesImportedHistory",
       "previewCompanion",
       "webhooks",
