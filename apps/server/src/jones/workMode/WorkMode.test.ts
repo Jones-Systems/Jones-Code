@@ -217,7 +217,10 @@ const seed = Effect.gen(function* () {
   return value.thread.id;
 });
 
-function completeLatestRun(checkpoint = false) {
+function completeLatestRun(
+  checkpoint = false,
+  beforeCheckpoint?: () => Effect.Effect<unknown, unknown>,
+) {
   return Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const projection = yield* projections.getThreadProjection(fixture.thread.id);
@@ -261,6 +264,7 @@ function completeLatestRun(checkpoint = false) {
       payload: { ...owner, status: "idle", updatedAt: now },
     });
     if (checkpoint) {
+      if (beforeCheckpoint !== undefined) yield* beforeCheckpoint();
       const scope = projection.checkpointScopes.find((row) => row.runId === run.id)!;
       const materialize = (
         input: Parameters<CheckpointService.CheckpointServiceV2["Service"]["capture"]>[0],
@@ -615,7 +619,19 @@ it.effect.each([
           dispatchMode: { type: "start_immediately" },
           restartContinuationOfRunId: source.id,
         });
-        yield* completeLatestRun(true);
+        // Checkpoint completion can release the queue synchronously. The negative
+        // case records Stop before that release becomes eligible.
+        yield* completeLatestRun(
+          true,
+          stop
+            ? () =>
+                orchestrator.dispatch({
+                  type: "thread.stop",
+                  commandId: CommandId.make("planned:later-stop"),
+                  threadId,
+                })
+            : undefined,
+        );
         const continued = (yield* projections.getThreadProjection(threadId)).runs.find(
           (run) => run.restartContinuationOfRunId === source.id,
         )!;
@@ -627,12 +643,6 @@ it.effect.each([
             ),
           ),
         );
-        if (stop)
-          yield* orchestrator.dispatch({
-            type: "thread.stop",
-            commandId: CommandId.make("planned:later-stop"),
-            threadId,
-          });
         yield* orchestrator.recoverPlannedUpdateQueues!;
         yield* orchestrator.recoverPlannedUpdateQueues!;
       }).pipe(Effect.provide(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(planned))));
