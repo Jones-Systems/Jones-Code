@@ -9,6 +9,7 @@ import * as NodeURL from "node:url";
 const source = NodeURL.fileURLToPath(new URL("./legacy-process-custody-native.c", import.meta.url));
 const scenarios = new Set(["run", "missing-symbol", "missing-flavor"]);
 const outputLimit = 64 * 1024;
+const readyCallbackTimeoutMs = 1_000;
 
 function checkCancellation(signal) {
   if (signal?.aborted) throw signal.reason ?? new Error("Process custody fixture cancelled.");
@@ -61,12 +62,21 @@ async function ownedCommand(command, args, { root, signal, native = false, onRea
   let stderr = "";
   let pending = "";
   let failure;
-  let callbacks = Promise.resolve();
+  let readySeen = false;
+  let readyPending = false;
+  let readyTimeout;
+  let closed = false;
   let forcedEnd;
   let settle;
   const events = [];
+  const cancelReady = () => {
+    readyPending = false;
+    clearTimeout(readyTimeout);
+  };
   const stop = (error) => {
     failure ??= error;
+    cancelReady();
+    if (closed) return;
     child.stdin.end();
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
     forcedEnd ??= setTimeout(() => {
@@ -85,7 +95,7 @@ async function ownedCommand(command, args, { root, signal, native = false, onRea
     30_000,
   );
   child.stdin.on("error", (error) => {
-    failure ??= error;
+    stop(error);
   });
   child.stdout.on("data", (chunk) => {
     stdout += chunk;
@@ -96,19 +106,39 @@ async function ownedCommand(command, args, { root, signal, native = false, onRea
     while (native && (boundary = pending.indexOf("\n")) >= 0) {
       const line = pending.slice(0, boundary);
       pending = pending.slice(boundary + 1);
-      callbacks = callbacks
-        .then(async () => {
-          const event = JSON.parse(line);
-          events.push(event);
-          if (event.event === "ready") {
-            NodeAssert.ok(Number.isInteger(event.pid) && event.pid > 0);
-            NodeAssert.ok(Number.isInteger(event.pidversion) && event.pidversion > 0);
-            await onReady?.(event);
+      try {
+        const event = JSON.parse(line);
+        events.push(event);
+        if (event.event !== "ready") continue;
+        NodeAssert.equal(readySeen, false, "Native custody emitted duplicate readiness.");
+        readySeen = true;
+        NodeAssert.ok(Number.isInteger(event.pid) && event.pid > 0);
+        NodeAssert.ok(Number.isInteger(event.pidversion) && event.pidversion > 0);
+        if (failure || closed) continue;
+        readyPending = true;
+        readyTimeout = setTimeout(() => {
+          const error = new Error("Process custody readiness callback exceeded 1 second.");
+          error.code = "ERR_PROCESS_CUSTODY_READY_TIMEOUT";
+          stop(error);
+        }, readyCallbackTimeoutMs);
+        // Callback settlement cannot hold up native cleanup evidence. Cancellation,
+        // timeout and close invalidate the continuation, including late rejection.
+        Promise.resolve()
+          .then(() => {
+            if (readyPending) return onReady?.(event);
+          })
+          .then(() => {
+            if (!readyPending) return;
             checkCancellation(signal);
+            cancelReady();
             child.stdin.end("R");
-          }
-        })
-        .catch(stop);
+          })
+          .catch((error) => {
+            if (!closed && !failure) stop(error);
+          });
+      } catch (error) {
+        stop(error);
+      }
     }
   });
   child.stderr.on("data", (chunk) => {
@@ -122,24 +152,44 @@ async function ownedCommand(command, args, { root, signal, native = false, onRea
       child.once("error", (error) => {
         failure ??= error;
       });
-      child.once("close", (code, exitSignal) => resolve({ code, signal: exitSignal }));
+      child.once("close", (code, exitSignal) => {
+        closed = true;
+        cancelReady();
+        resolve({ code, signal: exitSignal });
+      });
     });
-    await callbacks;
-    const final = events.at(-1);
-    if (native && (final?.event !== "result" || final.cleanupProved !== true)) {
-      failure ??= new Error("Native process custody ended without proved child cleanup.");
-      failure.preserveScratch = true;
-    }
+    if (native) requireNativeCleanup({ ...result, events }, failure);
     if (failure) throw failure;
     return { ...result, events, stdout, stderr };
   } finally {
+    closed = true;
+    cancelReady();
     clearTimeout(timeout);
     clearTimeout(forcedEnd);
     signal?.removeEventListener("abort", cancelled);
   }
 }
 
+function requireNativeCleanup(result, failure) {
+  const final = result.events.at(-1);
+  const cleanupProved = final?.event === "result" && final.cleanupProved === true;
+  if (!cleanupProved) {
+    failure ??= new Error("Native process custody ended without proved child cleanup.");
+    failure.preserveScratch = true;
+  }
+  if (failure) {
+    failure.nativeCleanup = {
+      cleanupProved,
+      result: final ?? null,
+      exitCode: result.code,
+      exitSignal: result.signal,
+    };
+    throw failure;
+  }
+}
+
 export function validateProcessCustodyResult(result) {
+  requireNativeCleanup(result);
   const final = result.events.at(-1);
   NodeAssert.equal(result.signal, null);
   NodeAssert.equal(final?.event, "result");

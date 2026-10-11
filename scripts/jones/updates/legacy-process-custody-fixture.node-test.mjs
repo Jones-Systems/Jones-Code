@@ -75,9 +75,73 @@ for (const kind of ["cancel", "callback-failure"]) {
               else throw original;
             },
           }),
-          (error) => error === original && !error.preserveScratch,
+          (error) => {
+            NodeAssert.equal(error, original);
+            NodeAssert.equal(error.preserveScratch, undefined);
+            NodeAssert.equal(error.nativeCleanup.cleanupProved, true);
+            NodeAssert.equal(
+              error.nativeCleanup.result.reason,
+              "fixture-cancelled-or-control-closed",
+            );
+            return true;
+          },
         );
         NodeAssert.equal(ready, true);
+        NodeAssert.deepEqual(await NodeFSP.readdir(parent), []);
+      });
+    },
+  );
+}
+
+for (const kind of ["abort", "timeout"]) {
+  NodeTest.test(
+    `a pending async readiness callback cannot block ${kind} or native cleanup`,
+    { ...darwin, timeout: 15_000 },
+    async (context) => {
+      await withProcessCustodyScratch(async (parent) => {
+        const cancellation = new AbortController();
+        const signal = AbortSignal.any([context.signal, cancellation.signal]);
+        const original = new Error("aborted while callback remains pending");
+        let readyAt;
+        let settleLate;
+        let callbackSettled = false;
+        await NodeAssert.rejects(
+          runLegacyProcessCustodyFixture({
+            signal,
+            temporaryDirectory: parent,
+            onReady: async () => {
+              readyAt = performance.now();
+              if (kind === "abort") cancellation.abort(original);
+              await new Promise((resolve, reject) => {
+                settleLate = kind === "abort" ? () => reject(new Error("late rejection")) : resolve;
+              });
+              callbackSettled = true;
+            },
+          }),
+          (error) => {
+            if (kind === "abort") NodeAssert.equal(error, original);
+            else NodeAssert.equal(error.code, "ERR_PROCESS_CUSTODY_READY_TIMEOUT");
+            NodeAssert.equal(error.preserveScratch, undefined);
+            NodeAssert.equal(error.nativeCleanup.cleanupProved, true);
+            NodeAssert.equal(error.nativeCleanup.exitCode, 1);
+            NodeAssert.equal(error.nativeCleanup.exitSignal, null);
+            NodeAssert.equal(
+              error.nativeCleanup.result.reason,
+              "fixture-cancelled-or-control-closed",
+            );
+            return true;
+          },
+        );
+        NodeAssert.equal(typeof readyAt, "number");
+        NodeAssert.ok(
+          performance.now() - readyAt < 8_000,
+          "Native cleanup must have a finite bound.",
+        );
+        NodeAssert.equal(callbackSettled, false);
+        NodeAssert.deepEqual(await NodeFSP.readdir(parent), []);
+        settleLate();
+        await new Promise((resolve) => setImmediate(resolve));
+        NodeAssert.equal(callbackSettled, kind === "timeout");
         NodeAssert.deepEqual(await NodeFSP.readdir(parent), []);
       });
     },
@@ -140,6 +204,46 @@ NodeTest.test("cleanup failure preserves the original error", async () => {
       return true;
     },
   );
+});
+
+NodeTest.test("missing native cleanup evidence retains exact scratch for its owner", async () => {
+  await withProcessCustodyScratch(async (parent) => {
+    for (const events of [
+      [],
+      [{ event: "result", status: "failed", reason: "cleanup-unproved", cleanupProved: false }],
+    ]) {
+      let retainedRoot;
+      try {
+        await NodeAssert.rejects(
+          withProcessCustodyScratch(
+            async (root) => {
+              retainedRoot = root;
+              await NodeFSP.writeFile(NodePath.join(root, "evidence"), "synthetic cleanup record", {
+                flag: "wx",
+              });
+              validateProcessCustodyResult({ code: 2, signal: null, events, stderr: "" });
+            },
+            { temporaryDirectory: parent },
+          ),
+          (error) => {
+            NodeAssert.equal(error.preserveScratch, true);
+            NodeAssert.equal(error.scratchRoot, retainedRoot);
+            NodeAssert.equal(error.nativeCleanup.cleanupProved, false);
+            NodeAssert.match(error.message, /without proved child cleanup/);
+            return true;
+          },
+        );
+        NodeAssert.equal(
+          await NodeFSP.readFile(NodePath.join(retainedRoot, "evidence"), "utf8"),
+          "synthetic cleanup record",
+        );
+      } finally {
+        // This retention test creates records only; it has no native child to drain.
+        if (retainedRoot) await NodeFSP.rm(retainedRoot, { recursive: true, force: true });
+      }
+      NodeAssert.deepEqual(await NodeFSP.readdir(parent), []);
+    }
+  });
 });
 
 NodeTest.test("a partial or contradictory native result cannot qualify", () => {
