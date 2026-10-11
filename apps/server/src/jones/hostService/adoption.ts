@@ -5,7 +5,10 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
-import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
+import {
+  readJonesArtifactMetadata,
+  type JonesStagedArtifact,
+} from "@t3tools/shared/jones/jonesActions";
 import {
   bootServiceBaseDirOf,
   renderBootServicePlist,
@@ -39,7 +42,11 @@ const source = /^[a-f0-9]{40}$/;
 const versionPattern = /^\d+\.\d+\.\d+-preview\.\d{8}\.\d+(?:\.\d+)?$/;
 const marker = "# Jones qualified host adoption protocol 1";
 export const ADOPTION_RECEIPT = "jones-host-adoption.json";
+/** Written only by system-unit adoption; each adoption refuses a home holding the other's receipt. */
+export const SYSTEM_ADOPTION_RECEIPT = "jones-system-adoption.json";
 export const UPDATE_CAPABILITY_RECEIPT = "jones-update-capability.json";
+/** Artifact verification needs only the host identity and its bounded command runner. */
+export type ArtifactVerificationHost = Pick<AdoptionHost, "platform" | "architecture" | "run">;
 export interface AdoptInput extends LegacyBootstrap.LegacyBootstrapBinding {
   readonly baseDir: string;
   readonly activeArtifactDir: string;
@@ -150,7 +157,7 @@ async function regular(file: string, owner?: number): Promise<NodeFSP.FileHandle
   }
   return descriptor;
 }
-async function readText(file: string, owner?: number): Promise<string> {
+export async function readText(file: string, owner?: number): Promise<string> {
   const fd = await regular(file, owner);
   try {
     if ((await fd.stat()).size > 128 * 1024)
@@ -164,7 +171,7 @@ async function readText(file: string, owner?: number): Promise<string> {
     await fd.close();
   }
 }
-async function hashFile(file: string): Promise<string> {
+export async function hashFile(file: string): Promise<string> {
   const fd = await regular(file);
   try {
     const digest = NodeCrypto.createHash("sha256");
@@ -182,7 +189,11 @@ async function optionalText(file: string, owner?: number): Promise<string | unde
     throw error;
   }
 }
-function decodeMetadata(value: unknown, host: AdoptionHost, expected: string): ArtifactMetadata {
+function decodeMetadata(
+  value: unknown,
+  host: ArtifactVerificationHost,
+  expected: string,
+): ArtifactMetadata {
   const m = object(value);
   const workflow =
     host.platform === "linux" ? ".github/workflows/artifact-cli-linux.yml" : m.workflow;
@@ -229,7 +240,7 @@ function decodeMetadata(value: unknown, host: AdoptionHost, expected: string): A
 export async function verifyAdoptionArtifact(
   directory: string,
   expected: string,
-  host: AdoptionHost,
+  host: ArtifactVerificationHost,
 ): Promise<VerifiedArtifact> {
   if (!NodePath.isAbsolute(directory) || (await NodeFSP.realpath(directory)) !== directory)
     return refuse("Artifact directory must be a real absolute path.");
@@ -321,8 +332,18 @@ export async function verifyAdoptionArtifact(
   const zipStat = await NodeFSP.lstat(zip);
   if (zipStat.size !== a.size_in_bytes || (await hashFile(zip)) !== digest)
     return refuse("Actions ZIP digest does not match this artifact generation.");
-  const embedded = await host.run({ command: "unzip", args: ["-p", zip, "ARTIFACT.json"] });
-  const original = decodeMetadata(JSON.parse(embedded) as unknown, host, expected);
+  // The digest check above authenticates the archive. This native read adds only envelope
+  // and corruption checks; reopening by pathname is not race protection.
+  let embedded: unknown;
+  try {
+    const bytes = await readJonesArtifactMetadata(zip);
+    const text = bytes.toString("utf8");
+    if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error("Inexact UTF-8 metadata.");
+    embedded = JSON.parse(text) as unknown;
+  } catch {
+    return refuse("Actions ZIP lacks exact bounded ARTIFACT.json metadata.");
+  }
+  const original = decodeMetadata(embedded, host, expected);
   for (const key of Object.keys(m) as Array<keyof ArtifactMetadata>)
     if (original[key] !== m[key])
       return refuse("Local metadata differs from the authenticated Actions ZIP.");
@@ -369,6 +390,10 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     undefined
   )
     return refuse("This home is desktop-owned.");
+  if (
+    (await optionalText(NodePath.join(baseDir, "runtime", SYSTEM_ADOPTION_RECEIPT))) !== undefined
+  )
+    return refuse("A system-unit adoption record owns this home; reconcile it separately.");
   const previousAdoptionText = await optionalText(
     NodePath.join(baseDir, "runtime", ADOPTION_RECEIPT),
   );
@@ -829,7 +854,7 @@ export async function planHostAdoption(
 ): Promise<AdoptionPlan> {
   return (await inspectAdoption(input, host)).plan;
 }
-async function durableReplace(file: string, contents: string): Promise<void> {
+export async function durableReplace(file: string, contents: string): Promise<void> {
   await NodeFSP.mkdir(NodePath.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.write-${NodeCrypto.randomUUID()}`;
   const fd = await NodeFSP.open(temporary, "wx", 0o600);

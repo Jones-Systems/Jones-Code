@@ -139,6 +139,81 @@ const adopt = Command.make("adopt", {
     }),
   ),
 );
+const adoptSystem = Command.make("adopt-system", {
+  ...baseFlags,
+  systemUnit: Flag.String("system-unit"),
+  port: Flag.Int("port"),
+  retainedExecutable: Flag.String("retained-executable"),
+  activeArtifactDir: Flag.String("active-artifact-dir"),
+  activeSourceCommit: Flag.String("active-source-commit"),
+  launcherArtifactDir: Flag.String("launcher-artifact-dir"),
+  launcherSourceCommit: Flag.String("launcher-source-commit"),
+  acceptUnattestedChildCapability: Flag.Boolean("accept-unattested-child-capability").pipe(
+    Flag.withDefault(false),
+    Flag.withDescription(
+      "Accept launcher-only evidence for the exact pre-publisher private setup build; never claim child Install.",
+    ),
+  ),
+  approvedPlanSha256: Flag.String("approved-plan-sha256").pipe(
+    Flag.optional,
+    Flag.withDescription("Apply only when the current plan has this reviewed SHA-256."),
+  ),
+  dryRun,
+}).pipe(
+  Command.withDescription(
+    "Plan, or apply one reviewed plan, to adopt a qualified launcher for an existing system unit running the retained private setup build.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const input = {
+        baseDir: flags.baseDir,
+        systemUnit: flags.systemUnit,
+        port: flags.port,
+        retainedExecutable: flags.retainedExecutable,
+        activeArtifactDir: flags.activeArtifactDir,
+        activeSourceCommit: flags.activeSourceCommit,
+        launcherArtifactDir: flags.launcherArtifactDir,
+        launcherSourceCommit: flags.launcherSourceCommit,
+        acceptUnattestedChildCapability: flags.acceptUnattestedChildCapability,
+      };
+      const service = yield* HostService.HostService;
+      const planned = yield* service.planSystemAdoption(input);
+      const bootstrap = planned.bootstrap;
+      yield* Console.log(
+        [
+          `Jones system adoption plan SHA-256: ${planned.planSha256}`,
+          ...planned.plan.effects.map((effect) => `  ${effect}`),
+          `Owned drop-in ${planned.plan.ownedDropin.path}:`,
+          planned.plan.ownedDropin.text,
+          `Root bootstrap observed: worker ${bootstrap.worker}, policy ${bootstrap.policy}, observer ${bootstrap.observer}, socket ${bootstrap.socket}.`,
+          "Root bootstrap manifest (a separate approved root operation; adoption installs none):",
+          ...planned.manifest.files.flatMap((file) => [
+            `  ${file.path} mode ${file.mode} sha256 ${file.sha256} from ${file.source}`,
+            ...(file.text === undefined ? [] : [file.text]),
+          ]),
+          `  enable ${planned.manifest.enable.join(", ")}`,
+        ].join("\n"),
+      );
+      if (flags.dryRun) return;
+      if (
+        Option.isNone(flags.approvedPlanSha256) ||
+        flags.approvedPlanSha256.value !== planned.planSha256
+      )
+        return yield* new HostService.HostServiceError({
+          operation: "adopt-system",
+          reason:
+            "Apply requires --approved-plan-sha256 equal to the reviewed plan; nothing was changed.",
+        });
+      const result = yield* service.adoptSystem({
+        ...input,
+        approvedPlanSha256: flags.approvedPlanSha256.value,
+      });
+      yield* Console.log(
+        `adopted: launcher ${result.plan.launcher.version} PID ${result.launcherProcessId}; retained child ${result.plan.active.version} PID ${result.childProcessId}; child Install unattested`,
+      );
+    }),
+  ),
+);
 const status = Command.make("status", {
   ...baseFlags,
   json: Flag.Boolean("json").pipe(Flag.withDefault(false)),
@@ -187,7 +262,9 @@ const routeRemove = Command.make("route-remove", { ...baseFlags, dryRun }).pipe(
 
 export const jonesCommand = Command.make("jones").pipe(
   Command.withSubcommands([
-    Command.make("host").pipe(Command.withSubcommands([stage, setup, adopt, status, routeRemove])),
+    Command.make("host").pipe(
+      Command.withSubcommands([stage, setup, adopt, adoptSystem, status, routeRemove]),
+    ),
   ]),
 );
 

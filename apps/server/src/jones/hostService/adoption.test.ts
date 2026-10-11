@@ -66,6 +66,96 @@ function tarPayload(version: string, privateSetup = false) {
   entries.push(Buffer.alloc(1024));
   return NodeZlib.gzipSync(Buffer.concat(entries));
 }
+interface EnvelopeEncoding {
+  readonly deflate?: boolean;
+  /** Bit 3: zero local CRC/sizes and a trailing data descriptor, as streaming writers emit. */
+  readonly descriptor?: boolean;
+  readonly corruptCrc?: boolean;
+}
+interface EnvelopeOptions extends EnvelopeEncoding {
+  /** Embedded ARTIFACT.json document or exact bytes; null omits it; defaults to local metadata. */
+  readonly embedded?: Record<string, unknown> | Buffer | null;
+}
+/** Flat Actions ZIP with real CRC-32; its bytes alone determine the faked GitHub digest. */
+function zipEnvelope(
+  entries: ReadonlyArray<
+    { readonly name: string; readonly content: string | Buffer } & EnvelopeEncoding
+  >,
+): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name);
+    const content = Buffer.from(entry.content);
+    const data = entry.deflate ? NodeZlib.deflateRawSync(content) : content;
+    const crc = (NodeZlib.crc32(content) ^ (entry.corruptCrc ? 1 : 0)) >>> 0;
+    const flags = entry.descriptor ? 0x08 : 0;
+    const method = entry.deflate ? 8 : 0;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(flags, 6);
+    local.writeUInt16LE(method, 8);
+    if (!entry.descriptor) {
+      local.writeUInt32LE(crc, 14);
+      local.writeUInt32LE(data.length, 18);
+      local.writeUInt32LE(content.length, 22);
+    }
+    local.writeUInt16LE(name.length, 26);
+    const descriptor = Buffer.alloc(entry.descriptor ? 16 : 0);
+    if (entry.descriptor) {
+      descriptor.writeUInt32LE(0x08074b50);
+      descriptor.writeUInt32LE(crc, 4);
+      descriptor.writeUInt32LE(data.length, 8);
+      descriptor.writeUInt32LE(content.length, 12);
+    }
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50);
+    central.writeUInt16LE(0x0314, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(flags, 8);
+    central.writeUInt16LE(method, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(content.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE((0o100644 << 16) >>> 0, 38);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, name, data, descriptor);
+    centrals.push(central, name);
+    offset += local.length + name.length + data.length + descriptor.length;
+  }
+  const central = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, central, end]);
+}
+function artifactEnvelope(
+  m: Record<string, unknown>,
+  archive: Buffer,
+  options: EnvelopeOptions = {},
+): Buffer {
+  const { embedded, ...encoding } = options;
+  return zipEnvelope([
+    ...(embedded === null
+      ? []
+      : [
+          {
+            name: "ARTIFACT.json",
+            content: Buffer.isBuffer(embedded) ? embedded : JSON.stringify(embedded ?? m),
+            ...encoding,
+          },
+        ]),
+    { name: "SOURCE_COMMIT", content: `${String(m.source)}\n` },
+    { name: String(m.artifact), content: archive },
+    { name: "SHA256SUMS", content: `${String(m.sha256)}  ${String(m.artifact)}\n` },
+  ]);
+}
 async function tree(directory: string): Promise<string[]> {
   const results: string[] = [];
   for (const name of (await NodeFSP.readdir(directory)).sort()) {
@@ -87,29 +177,36 @@ async function expectOnlyRuntimeLockCreated(
 }
 async function fixture(
   body: (f: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
-  options: {
-    readonly legacy?: boolean;
-    readonly migrationChanged?: boolean;
-    readonly privateSetup?: boolean;
-  } = {},
+  options: FixtureOptions = {},
 ) {
   const f = await createFixture(options);
   try {
     await body(f);
   } finally {
     await NodeFSP.rm(f.root, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(f.root)).rejects.toMatchObject({ code: "ENOENT" });
   }
 }
-async function createFixture(
-  options: {
-    readonly legacy?: boolean;
-    readonly migrationChanged?: boolean;
-    readonly privateSetup?: boolean;
-  } = {},
-) {
-  const root = await NodeFSP.realpath(
-    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-adoption-test-")),
-  );
+type FixtureOptions = {
+  readonly legacy?: boolean;
+  readonly migrationChanged?: boolean;
+  readonly privateSetup?: boolean;
+};
+/** Owns the allocated scratch from mkdtemp, so a failed setup removes it and rethrows. */
+async function createFixture(options: FixtureOptions = {}) {
+  const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-adoption-test-"));
+  try {
+    return await populateFixture(await NodeFSP.realpath(allocated), options);
+  } catch (failure) {
+    try {
+      await NodeFSP.rm(allocated, { recursive: true, force: true });
+    } catch (cleanup) {
+      throw new AggregateError([failure, cleanup], "Fixture setup and cleanup failed.");
+    }
+    throw failure;
+  }
+}
+async function populateFixture(root: string, options: FixtureOptions) {
   const base = NodePath.join(root, "base");
   const home = NodePath.join(root, "home");
   const runtime = NodePath.join(base, "runtime");
@@ -157,46 +254,91 @@ async function createFixture(
   const metadata = new Map<string, Record<string, unknown>>();
   const artifacts = new Map<
     number,
-    { name: string; id: number; digest: string; bytes: number; source: string }
+    {
+      name: string;
+      id: number;
+      digest: string;
+      bytes: number;
+      source: string;
+      workflow: string;
+      event: string;
+    }
   >();
-  const directories: string[] = [];
-  for (const [index, version] of [oldVersion, newVersion].entries()) {
-    const dir = NodePath.join(root, `artifact-${index}`);
+  const runIds = new Map<string, number>();
+  /** Replaces the local ZIP and the GitHub record it must match, as a new generation would. */
+  const setEnvelope = async (dir: string, zip: Buffer) => {
+    const runId = runIds.get(dir)!;
+    await NodeFSP.writeFile(NodePath.join(dir, "github-artifact.zip"), zip);
+    artifacts.set(runId, { ...artifacts.get(runId)!, digest: sha(zip), bytes: zip.length });
+  };
+  const envelope = async (dir: string, envelopeOptions?: EnvelopeOptions) => {
+    const m = metadata.get(dir)!;
+    return artifactEnvelope(
+      m,
+      await NodeFSP.readFile(NodePath.join(dir, String(m.artifact))),
+      envelopeOptions,
+    );
+  };
+  const writeArtifact = async (artifact: {
+    readonly index: number;
+    readonly version: string;
+    readonly source: string;
+    readonly tree: string;
+    readonly archive: Buffer;
+    readonly platform?: "linux" | "darwin";
+    readonly architecture?: "x64" | "arm64";
+    readonly workflow?: string;
+  }) => {
+    const dir = NodePath.join(root, `artifact-${artifact.index}`);
     await NodeFSP.mkdir(dir);
-    directories.push(dir);
-    const archive = tarPayload(version, options.privateSetup && index === 0);
-    const zip = Buffer.from(`synthetic zip envelope ${index}`);
-    const commit =
-      options.privateSetup && index === 0
-        ? privateSetupSource
-        : (index === 0 ? "a" : "b").repeat(40);
+    const runId = 100 + artifact.index;
+    const platform = artifact.platform ?? "linux";
+    const architecture = artifact.architecture ?? "x64";
+    const workflow = artifact.workflow ?? ".github/workflows/artifact-cli-linux.yml";
     const m = {
       schema: 1,
       repository: "Jones-Systems/Jones-Code",
-      source: commit,
-      tree: options.privateSetup && index === 0 ? privateSetupTree : "c".repeat(40),
-      version,
-      platform: "linux",
-      architecture: "x64",
-      workflow: ".github/workflows/artifact-cli-linux.yml",
-      event: "push",
+      source: artifact.source,
+      tree: artifact.tree,
+      version: artifact.version,
+      platform,
+      architecture,
+      workflow,
+      event: workflow === ".github/workflows/artifact-cli-mac.yml" ? "workflow_dispatch" : "push",
       ref: "refs/heads/main",
-      runId: String(100 + index),
+      runId: String(runId),
       runAttempt: "1",
-      artifact: `t3-${version}-linux-x64.tar.gz`,
-      sha256: sha(archive),
+      artifact: `t3-${artifact.version}-${platform}-${architecture}.tar.gz`,
+      sha256: sha(artifact.archive),
     };
     await NodeFSP.writeFile(NodePath.join(dir, "ARTIFACT.json"), JSON.stringify(m));
-    await NodeFSP.writeFile(NodePath.join(dir, m.artifact), archive);
-    await NodeFSP.writeFile(NodePath.join(dir, "github-artifact.zip"), zip);
+    await NodeFSP.writeFile(NodePath.join(dir, m.artifact), artifact.archive);
     metadata.set(dir, m);
-    artifacts.set(100 + index, {
-      name: `jones-code-cli-linux-x64-${100 + index}-1--${version}`,
-      id: 200 + index,
-      digest: sha(zip),
-      bytes: zip.length,
-      source: commit,
+    runIds.set(dir, runId);
+    artifacts.set(runId, {
+      name: `jones-code-cli-${platform === "darwin" ? "mac" : "linux"}-${architecture}-${runId}-1--${artifact.version}`,
+      id: 200 + artifact.index,
+      digest: "",
+      bytes: 0,
+      source: artifact.source,
+      workflow,
+      event: m.event,
     });
+    await setEnvelope(dir, await envelope(dir));
+    return dir;
+  };
+  const directories: string[] = [];
+  for (const [index, version] of [oldVersion, newVersion].entries()) {
+    const privateArtifact = options.privateSetup === true && index === 0;
+    directories.push(
+      await writeArtifact({
+        index,
+        version,
+        source: privateArtifact ? privateSetupSource : (index === 0 ? "a" : "b").repeat(40),
+        tree: privateArtifact ? privateSetupTree : "c".repeat(40),
+        archive: tarPayload(version, privateArtifact),
+      }),
+    );
   }
   if (options.privateSetup) {
     const artifact = metadata.get(directories[0]!)!;
@@ -321,18 +463,18 @@ async function createFixture(
         return JSON.stringify({
           id: runId,
           run_attempt: generation,
-          path: ".github/workflows/artifact-cli-linux.yml",
+          path: artifact.workflow,
           head_sha: artifact.source,
           head_branch: "main",
-          event: "push",
+          event: artifact.event,
           status: "completed",
           conclusion: "success",
           repository: { id: 123, full_name: "Jones-Systems/Jones-Code" },
           head_repository: { full_name: "Jones-Systems/Jones-Code" },
         });
       }
-      if (command.command === "unzip")
-        return JSON.stringify(metadata.get(NodePath.dirname(args[1]!)));
+      // Hosts may lack an external unzip; embedded metadata is read natively.
+      if (command.command === "unzip") throw new Error("External unzip must never be invoked.");
       if (command.command === "readlink") return directExecutable;
       if (args.includes("--property=MainPID")) return String(restarted ? 12347 : 12345);
       if (args.includes("--property=FragmentPath")) return unit;
@@ -433,6 +575,9 @@ async function createFixture(
     input,
     commands,
     metadata,
+    envelope,
+    setEnvelope,
+    writeArtifact,
     taskPath,
     taskText,
     stateText,
@@ -455,11 +600,7 @@ it("dry-run qualifies both exact generations without changing any file", () =>
     expect(result.plan.launcherVersion).toBe(newVersion);
     expect(result.plan.serviceContents).toContain("ExecStart=\n");
     expect(await tree(f.root)).toEqual(before);
-    expect(
-      f.commands.every(
-        (c) => c.command === "gh" || c.command === "unzip" || c.args.includes("show"),
-      ),
-    ).toBe(true);
+    expect(f.commands.every((c) => c.command === "gh" || c.args.includes("show"))).toBe(true);
   }));
 it.each(
   (["group-writable", "world-writable", "symlink"] as const).flatMap((hazard) =>
@@ -944,6 +1085,141 @@ it("refuses stale Actions generation and an unauthenticated local ZIP", () =>
       verifyAdoptionArtifact(f.input.activeArtifactDir, f.input.activeSourceCommit, f.host),
     ).rejects.toThrow("ZIP digest");
   }));
+it("refuses a well-formed ZIP that is not the recorded generation's exact bytes", () =>
+  fixture(async (f) => {
+    const dir = f.input.activeArtifactDir;
+    await NodeFSP.writeFile(
+      NodePath.join(dir, "github-artifact.zip"),
+      await f.envelope(dir, { deflate: true }),
+    );
+    await expect(verifyAdoptionArtifact(dir, f.input.activeSourceCommit, f.host)).rejects.toThrow(
+      "ZIP digest",
+    );
+  }));
+it.each<EnvelopeEncoding>([
+  { deflate: true },
+  { deflate: true, descriptor: true },
+  { descriptor: true },
+])("reads authenticated embedded metadata natively from envelope %j", (encoding) =>
+  fixture(async (f) => {
+    const dir = f.input.activeArtifactDir;
+    const zip = await f.envelope(dir, encoding);
+    await f.setEnvelope(dir, zip);
+    const verified = await verifyAdoptionArtifact(dir, f.input.activeSourceCommit, f.host);
+    expect(verified.metadata).toEqual(f.metadata.get(dir));
+    expect(verified.artifact.artifactDigest).toBe(`sha256:${sha(zip)}`);
+    expect(f.commands.every((c) => c.command === "gh")).toBe(true);
+  }),
+);
+it.each<[string, (m: Record<string, unknown>) => EnvelopeOptions, string]>([
+  ["stored CRC mismatch", () => ({ corruptCrc: true }), "lacks exact bounded ARTIFACT.json"],
+  [
+    "deflated data-descriptor CRC mismatch",
+    () => ({ deflate: true, descriptor: true, corruptCrc: true }),
+    "lacks exact bounded ARTIFACT.json",
+  ],
+  ["missing metadata", () => ({ embedded: null }), "lacks exact bounded ARTIFACT.json"],
+  [
+    "oversized metadata",
+    (m) => ({ embedded: { ...m, padding: "x".repeat(65536) } }),
+    "lacks exact bounded ARTIFACT.json",
+  ],
+  [
+    "different metadata",
+    (m) => ({ embedded: { ...m, sha256: "e".repeat(64) } }),
+    "Local metadata differs from the authenticated Actions ZIP",
+  ],
+  [
+    "unbound metadata",
+    (m) => ({ embedded: { ...m, source: "f".repeat(40) } }),
+    "does not bind the exact source",
+  ],
+  [
+    // Lossy decoding would yield a JSON object equal to the local metadata plus one key.
+    "invalid UTF-8 metadata",
+    (m) => ({
+      embedded: Buffer.concat([
+        Buffer.from(`${JSON.stringify(m).slice(0, -1)},"note":"`),
+        Buffer.from([0xff]),
+        Buffer.from('"}'),
+      ]),
+    }),
+    "lacks exact bounded ARTIFACT.json",
+  ],
+])("refuses an authenticated envelope with %s", (_label, options, message) =>
+  fixture(async (f) => {
+    const dir = f.input.activeArtifactDir;
+    await f.setEnvelope(dir, await f.envelope(dir, options(f.metadata.get(dir)!)));
+    await expect(verifyAdoptionArtifact(dir, f.input.activeSourceCommit, f.host)).rejects.toThrow(
+      message,
+    );
+    expect(f.commands.every((c) => c.command === "gh")).toBe(true);
+  }),
+);
+it("natively qualifies an authentic CLI mac workflow_dispatch envelope", () =>
+  fixture(async (f) => {
+    const source = "e".repeat(40);
+    const version = "0.0.0-preview.20261010.102";
+    const workflow = ".github/workflows/artifact-cli-mac.yml";
+    const dir = await f.writeArtifact({
+      index: 2,
+      version,
+      source,
+      tree: "c".repeat(40),
+      archive: tarPayload(version),
+      platform: "darwin",
+      architecture: "arm64",
+      workflow,
+    });
+    await f.setEnvelope(dir, await f.envelope(dir, { deflate: true, descriptor: true }));
+    const verified = await verifyAdoptionArtifact(dir, source, {
+      ...f.host,
+      platform: "darwin",
+      architecture: "arm64",
+    });
+    expect(verified.metadata).toMatchObject({
+      workflow,
+      event: "workflow_dispatch",
+      artifact: `t3-${version}-darwin-arm64.tar.gz`,
+    });
+    expect(verified.artifact).toMatchObject({
+      workflow,
+      runId: 102,
+      artifactId: 202,
+      platform: "darwin",
+      architecture: "arm64",
+    });
+    expect(f.commands.every((c) => c.command === "gh")).toBe(true);
+  }));
+it("removes owned fixture scratch and rethrows when setup fails after allocation", async () => {
+  const native = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  const archive = NodePath.join("artifact-0", `t3-${oldVersion}-linux-x64.tar.gz`);
+  const failure = new Error("Synthetic artifact envelope read failure");
+  let owned: string | undefined;
+  // Fails the first artifact read that builds its ZIP envelope, inside the owned root.
+  const readGuard = vi.mocked(NodeFSP.readFile).mockImplementation((...args) => {
+    if (owned === undefined && String(args[0]).endsWith(`${NodePath.sep}${archive}`)) {
+      owned = NodePath.dirname(NodePath.dirname(String(args[0])));
+      throw failure;
+    }
+    return native.readFile(...args);
+  });
+  let outcome: unknown;
+  try {
+    outcome = await createFixture().then(
+      async (f) => {
+        await NodeFSP.rm(f.root, { recursive: true, force: true });
+        return "created";
+      },
+      (error: unknown) => error,
+    );
+  } finally {
+    readGuard.mockImplementation(native.readFile);
+  }
+  expect(outcome).toBe(failure);
+  expect(NodePath.basename(owned!)).toMatch(/^jones-adoption-test-/);
+  await expect(NodeFSP.lstat(owned!)).rejects.toMatchObject({ code: "ENOENT" });
+});
 it("retains a pending receipt after uncertain activation and refuses a blind retry", () =>
   fixture(async (f) => {
     const host = {
