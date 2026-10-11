@@ -1820,8 +1820,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             ),
           );
         const admitThread = (producer: CodexRuntimeProducer, threadId: ThreadId) =>
-          input.runtimeLifecycle?.admit({ runtimeGeneration: producer.generation, threadId }) ??
-          Effect.void;
+          Effect.suspend(() =>
+            nativeStartUnknown || !producer.active || producer !== currentProducer
+              ? Effect.fail(
+                  new ProviderRuntimeBindingError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Codex cannot admit a thread to an unconfirmed or replaced runtime.",
+                  }),
+                )
+              : (input.runtimeLifecycle?.admit({
+                  runtimeGeneration: producer.generation,
+                  threadId,
+                }) ?? Effect.void),
+          );
         const openProducer = (threadId: ThreadId, runtimePolicy: ProviderAdapterV2RuntimePolicy) =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
@@ -9087,6 +9098,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   )
                 : lifecyclePermit.withPermits(1)(
                     Effect.gen(function* () {
+                      if (nativeStartUnknown || capacityScopeClosed)
+                        return yield* toProtocolError(
+                          "Codex has an unconfirmed native effect; another prompt is not safe.",
+                        );
                       let dispatchInput = value;
                       if (
                         value.modelSelection.instanceId === adapterOptions.instanceId &&
@@ -9147,7 +9162,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ),
             ),
           interruptTurn: (value) => withProducer(runtime.interruptTurn(value)),
-          rollbackThread: (value) => withProducer(runtime.rollbackThread(value)),
+          rollbackThread: (value) =>
+            lifecyclePermit.withPermits(1)(
+              Effect.suspend(() =>
+                nativeStartUnknown
+                  ? toProtocolError("Codex has an unconfirmed native effect; rollback is not safe.")
+                  : withProducer(runtime.rollbackThread(value)),
+              ),
+            ),
         } satisfies ProviderAdapterV2SessionRuntime;
       }).pipe(
         Effect.mapError(

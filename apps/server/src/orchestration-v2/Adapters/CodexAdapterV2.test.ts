@@ -10685,43 +10685,54 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   const recordingRuntimeLifecycle = (
     timeline: Array<string>,
     reject: (phase: "admit" | "bind", threadId: ThreadId | null) => boolean = () => false,
-  ): ProviderRuntimeLifecycle => ({
-    reserve: () => Effect.succeed("shared-producer-generation"),
-    admit: ({ threadId }) =>
-      Effect.suspend(() => {
-        timeline.push(`admit:${threadId}`);
-        return reject("admit", threadId)
-          ? Effect.fail(
-              new ProviderRuntimeBindingError({
-                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
-                detail: "Synthetic admission rejection before native effects.",
-              }),
-            )
-          : Effect.void;
-      }),
-    bind: ({ providerThread, runtimeGeneration, requested, observed }) =>
-      Effect.suspend(() => {
-        timeline.push(`bind:${providerThread.appThreadId}`);
-        return reject("bind", providerThread.appThreadId)
-          ? Effect.fail(
-              new ProviderRuntimeBindingError({
-                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
-                detail: "Synthetic binding rejection after a native effect.",
-              }),
-            )
-          : Effect.succeed({
-              ...providerThread,
-              runtimeIdentity: {
-                runtimeGeneration,
-                evidenceRevision: (providerThread.runtimeIdentity?.evidenceRevision ?? 0) + 1,
-                requested,
-                observed,
-              },
-            });
-      }),
-    abandon: () => Effect.void,
-    invalidate: () => Effect.void,
-  });
+    beforeBind: (threadId: ThreadId | null) => Effect.Effect<void> = () => Effect.void,
+  ): ProviderRuntimeLifecycle => {
+    let ordinal = 0;
+    const admitted = new Map<ThreadId, string>();
+    return {
+      reserve: () => Effect.sync(() => `shared-producer-generation-${++ordinal}`),
+      admit: ({ threadId, runtimeGeneration }) =>
+        Effect.suspend(() => {
+          timeline.push(`admit:${threadId}@${runtimeGeneration}`);
+          admitted.set(threadId, runtimeGeneration);
+          return reject("admit", threadId)
+            ? Effect.fail(
+                new ProviderRuntimeBindingError({
+                  driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                  detail: "Synthetic admission rejection before native effects.",
+                }),
+              )
+            : Effect.void;
+        }),
+      bind: ({ providerThread, runtimeGeneration, requested, observed }) =>
+        beforeBind(providerThread.appThreadId).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              timeline.push(`bind:${providerThread.appThreadId}@${runtimeGeneration}`);
+              assert.equal(admitted.get(providerThread.appThreadId!), runtimeGeneration);
+              return reject("bind", providerThread.appThreadId)
+                ? Effect.fail(
+                    new ProviderRuntimeBindingError({
+                      driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                      detail: "Synthetic binding rejection after a native effect.",
+                    }),
+                  )
+                : Effect.succeed({
+                    ...providerThread,
+                    runtimeIdentity: {
+                      runtimeGeneration,
+                      evidenceRevision: (providerThread.runtimeIdentity?.evidenceRevision ?? 0) + 1,
+                      requested,
+                      observed,
+                    },
+                  });
+            }),
+          ),
+        ),
+      abandon: () => Effect.void,
+      invalidate: () => Effect.void,
+    };
+  };
 
   it.effect("admits each shared producer target before native resume and creation", () =>
     Effect.scoped(
@@ -10794,6 +10805,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               }),
           },
         );
+        const generation = harness.providerThread.runtimeIdentity!.runtimeGeneration;
         timeline.length = 0;
         const resumed = yield* harness.runtime.resumeThread({
           providerThread: {
@@ -10813,26 +10825,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
         });
         assert.deepEqual(timeline, [
-          `admit:${targetB}`,
+          `admit:${targetB}@${generation}`,
           "thread/resume",
-          `bind:${targetB}`,
-          `admit:${targetC}`,
+          `bind:${targetB}@${generation}`,
+          `admit:${targetC}@${generation}`,
           "thread/start",
-          `bind:${targetC}`,
+          `bind:${targetC}@${generation}`,
         ]);
-        assert.equal(resumed.runtimeIdentity?.runtimeGeneration, "shared-producer-generation");
-        assert.equal(created.runtimeIdentity?.runtimeGeneration, "shared-producer-generation");
+        assert.equal(resumed.runtimeIdentity?.runtimeGeneration, generation);
+        assert.equal(created.runtimeIdentity?.runtimeGeneration, generation);
       }),
     ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
   it.effect.each(["admit", "bind"] as const)(
-    "keeps native uncertainty fenced only after a $phase failure has native effects",
+    "handles direct resume %s rejection with the corresponding native-effect fence",
     (phase) =>
       Effect.scoped(
         Effect.gen(function* () {
           const timeline: Array<string> = [];
           const target = ThreadId.make(`shared-rejected-${phase}`);
+          const bindEntered = yield* Deferred.make<void>();
+          const releaseBind = yield* Deferred.make<void>();
           let reject = true;
           const harness = yield* makeCodexReplayHarness(
             makeCodexReplayTranscript({
@@ -10904,9 +10918,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               runtimeLifecycle: recordingRuntimeLifecycle(
                 timeline,
                 (stage, threadId) => reject && stage === phase && threadId === target,
+                (threadId) =>
+                  phase === "bind" && threadId === target
+                    ? Deferred.succeed(bindEntered, undefined).pipe(
+                        Effect.andThen(Deferred.await(releaseBind)),
+                        Effect.asVoid,
+                      )
+                    : Effect.void,
               ),
             },
           );
+          const generation = harness.providerThread.runtimeIdentity!.runtimeGeneration;
           timeline.length = 0;
           const targetRow = {
             ...harness.providerThread,
@@ -10918,16 +10940,37 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               strength: "strong" as const,
             },
           };
-          const error = yield* harness.runtime
+          const now = yield* DateTime.now;
+          const turnInput = makeCodexTestTurnInput({
+            threadId: target,
+            providerThread: targetRow,
+            now,
+            attemptId: RunAttemptId.make("attempt-queued-behind-binding-failure"),
+            text: "Must not launch after unknown binding",
+          });
+          const resumeFiber = yield* harness.runtime
             .resumeThread({ providerThread: targetRow })
-            .pipe(Effect.flip);
+            .pipe(Effect.flip, Effect.forkScoped);
+          const queuedStart =
+            phase === "bind"
+              ? yield* Effect.gen(function* () {
+                  yield* Deferred.await(bindEntered);
+                  const started = yield* harness.runtime
+                    .startTurn(turnInput)
+                    .pipe(Effect.flip, Effect.forkScoped);
+                  yield* Effect.yieldNow;
+                  yield* Deferred.succeed(releaseBind, undefined);
+                  return started;
+                })
+              : undefined;
+          const error = yield* Fiber.join(resumeFiber);
           assert.equal(error._tag, "ProviderAdapterResumeThreadError");
           assert.nestedPropertyVal(error, "cause._tag", "ProviderRuntimeBindingError");
           assert.deepEqual(
             timeline,
             phase === "admit"
-              ? [`admit:${target}`]
-              : [`admit:${target}`, "thread/resume", `bind:${target}`],
+              ? [`admit:${target}@${generation}`]
+              : [`admit:${target}@${generation}`, "thread/resume", `bind:${target}@${generation}`],
           );
           reject = false;
           const ensure = harness.runtime.ensureThread({
@@ -10939,19 +10982,41 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             const recovered = yield* ensure;
             assert.equal(recovered.nativeThreadRef?.nativeId, "native-recovered");
             assert.deepEqual(timeline, [
-              `admit:${target}`,
-              `admit:${target}`,
+              `admit:${target}@${generation}`,
+              `admit:${target}@${generation}`,
               "thread/start",
-              `bind:${target}`,
+              `bind:${target}@${generation}`,
             ]);
           } else {
             const before = [...timeline];
+            const queuedError = yield* Fiber.join(queuedStart!);
+            assert.equal(queuedError._tag, "ProviderAdapterTurnStartError");
+            assert.nestedPropertyVal(queuedError, "cause._tag", "ProviderAdapterProtocolError");
+            const firstTurn = codexReplaySourceTurn({
+              id: "provider-turn-before-failed-binding",
+              ordinal: 1,
+              nativeId: "native-turn-before-failed-binding",
+              providerThreadId: targetRow.id,
+              now,
+            });
+            const rollbackError = yield* harness.runtime
+              .rollbackThread({
+                providerThread: targetRow,
+                target: {
+                  type: "provider_turn",
+                  checkpointId: CheckpointId.make("checkpoint-after-failed-binding"),
+                  appRunOrdinal: 1,
+                  providerTurn: firstTurn,
+                },
+                providerThreadTurns: [firstTurn],
+              })
+              .pipe(Effect.flip);
+            assert.equal(rollbackError._tag, "ProviderAdapterProtocolError");
             assert.instanceOf(yield* ensure.pipe(Effect.flip), ProviderRuntimeBindingError);
             assert.instanceOf(
               yield* harness.runtime.resumeThread({ providerThread: targetRow }).pipe(Effect.flip),
               ProviderRuntimeBindingError,
             );
-            const now = yield* DateTime.now;
             const startError = yield* harness.runtime
               .startTurn(
                 makeCodexTestTurnInput({
@@ -10963,11 +11028,203 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 }),
               )
               .pipe(Effect.flip);
-            assert.equal(startError._tag, "ProviderAdapterProtocolError");
+            assert.equal(startError._tag, "ProviderAdapterTurnStartError");
+            assert.nestedPropertyVal(startError, "cause._tag", "ProviderAdapterProtocolError");
             assert.deepEqual(timeline, before);
           }
         }),
       ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect("conservatively fences an admission rejection reached through startTurn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const timeline: Array<string> = [];
+        const target = ThreadId.make("start-turn-admission-rejected");
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "start-turn-admission-rejection",
+            entries: codexReplayPreamble({
+              nativeThreadId: "native-start-turn-admission-opener",
+              nativeTurnId: "unused",
+              prompt: "unused",
+            }).slice(0, 5),
+          }),
+          undefined,
+          (method) =>
+            Effect.sync(() => {
+              timeline.push(method);
+            }),
+          undefined,
+          {
+            runtimeLifecycle: recordingRuntimeLifecycle(
+              timeline,
+              (phase, threadId) => phase === "admit" && threadId === target,
+            ),
+            onRawRequest: (method) =>
+              Effect.sync(() => {
+                timeline.push(method);
+              }),
+          },
+        );
+        const generation = harness.providerThread.runtimeIdentity!.runtimeGeneration;
+        const row: OrchestrationV2ProviderThread = {
+          ...harness.providerThread,
+          id: ProviderThreadId.make("provider-thread-start-turn-admission-rejected"),
+          appThreadId: target,
+          nativeThreadRef: {
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeId: "native-start-turn-admission-target",
+            strength: "strong",
+          },
+        };
+        const now = yield* DateTime.now;
+        timeline.length = 0;
+        const input = makeCodexTestTurnInput({
+          threadId: target,
+          providerThread: row,
+          now,
+          attemptId: RunAttemptId.make("attempt-start-turn-admission-rejection"),
+          text: "Must not send a native request",
+        });
+        const first = yield* harness.runtime.startTurn(input).pipe(Effect.flip);
+        assert.equal(first._tag, "ProviderAdapterTurnStartError");
+        assert.nestedPropertyVal(first, "cause._tag", "ProviderAdapterResumeThreadError");
+        assert.nestedPropertyVal(first, "cause.cause._tag", "ProviderRuntimeBindingError");
+        const later = yield* harness.runtime.startTurn(input).pipe(Effect.flip);
+        assert.equal(later._tag, "ProviderAdapterTurnStartError");
+        assert.nestedPropertyVal(later, "cause._tag", "ProviderAdapterProtocolError");
+        assert.instanceOf(
+          yield* harness.runtime.resumeThread({ providerThread: row }).pipe(Effect.flip),
+          ProviderRuntimeBindingError,
+        );
+        assert.deepEqual(timeline, [`admit:${target}@${generation}`]);
+      }),
+    ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect.each([true, false])("admits an unbound rollback target with loaded=%s", (loaded) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const timeline: Array<string> = [];
+        const target = ThreadId.make(`rollback-target-loaded-${loaded}`);
+        const nativeThreadId = `native-rollback-loaded-${loaded}`;
+        const entries = codexReplayPreamble({
+          nativeThreadId: "native-rollback-opener",
+          nativeTurnId: "unused",
+          prompt: "unused",
+        }).slice(0, 5);
+        let requestId = 3;
+        const exchange = (method: string, params: unknown, result: unknown) => {
+          const id = requestId++;
+          entries.push(
+            { type: "expect_outbound", frame: { id, method, params } },
+            { type: "emit_inbound", frame: { id, result } },
+          );
+        };
+        exchange(
+          "thread/read",
+          { threadId: nativeThreadId, includeTurns: false },
+          {
+            thread: {
+              id: nativeThreadId,
+              historyMode: "paginated",
+              status: { type: loaded ? "idle" : "notLoaded" },
+            },
+          },
+        );
+        if (!loaded) {
+          exchange(
+            "thread/resume",
+            {
+              threadId: nativeThreadId,
+              excludeTurns: true,
+              config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+            },
+            codexReplayThreadResult({ nativeThreadId, forkedFromId: null }),
+          );
+        }
+        exchange(
+          "thread/turns/list",
+          {
+            threadId: nativeThreadId,
+            cursor: null,
+            limit: 1,
+            sortDirection: "desc",
+            itemsView: "summary",
+          },
+          {
+            data: [
+              { id: "native-rollback-second-turn", items: [], status: "completed", error: null },
+            ],
+            nextCursor: null,
+          },
+        );
+        exchange(
+          "thread/revert",
+          {
+            threadId: nativeThreadId,
+            beforeTurnId: "native-rollback-second-turn",
+          },
+          codexReplayThreadResult({ nativeThreadId, forkedFromId: null }),
+        );
+        const recordRequest = (method: string) =>
+          Effect.sync(() => {
+            timeline.push(method);
+          });
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({ scenario: `rollback-admission-${loaded}`, entries }),
+          undefined,
+          recordRequest,
+          undefined,
+          {
+            runtimeLifecycle: recordingRuntimeLifecycle(timeline),
+            onRawRequest: recordRequest,
+          },
+        );
+        const generation = harness.providerThread.runtimeIdentity!.runtimeGeneration;
+        const row: OrchestrationV2ProviderThread = {
+          ...harness.providerThread,
+          id: ProviderThreadId.make(`provider-thread-rollback-loaded-${loaded}`),
+          appThreadId: target,
+          nativeThreadRef: {
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeId: nativeThreadId,
+            strength: "strong",
+          },
+        };
+        const now = yield* DateTime.now;
+        const turns = [1, 2].map((ordinal) =>
+          codexReplaySourceTurn({
+            id: `provider-turn-rollback-${ordinal}`,
+            ordinal,
+            nativeId: ordinal === 1 ? "native-rollback-first-turn" : "native-rollback-second-turn",
+            providerThreadId: row.id,
+            now,
+          }),
+        );
+        timeline.length = 0;
+        const rolledBack = yield* harness.runtime.rollbackThread({
+          providerThread: row,
+          target: {
+            type: "provider_turn",
+            checkpointId: CheckpointId.make(`checkpoint-rollback-loaded-${loaded}`),
+            appRunOrdinal: 1,
+            providerTurn: turns[0]!,
+          },
+          providerThreadTurns: turns,
+        });
+        assert.deepEqual(timeline, [
+          "thread/read",
+          `admit:${target}@${generation}`,
+          ...(!loaded ? ["thread/resume"] : []),
+          `bind:${target}@${generation}`,
+          "thread/turns/list",
+          "thread/revert",
+        ]);
+        assert.equal(rolledBack.providerThread.runtimeIdentity?.runtimeGeneration, generation);
+      }),
+    ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
   it.effect("buffers a native reroute until its thread-open generation is bound", () =>
@@ -11478,13 +11735,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         undefined,
         { runtimeLifecycle: recordingRuntimeLifecycle(timeline) },
       );
+      const generation = harness.providerThread.runtimeIdentity!.runtimeGeneration;
       timeline.length = 0;
       const targetThreadId = ThreadId.make("thread-fork-admission-target");
       yield* harness.runtime.forkThread({
         sourceProviderThread: harness.providerThread,
         targetThreadId,
       });
-      assert.equal(timeline[0], `admit:${targetThreadId}`);
+      assert.equal(timeline[0], `admit:${targetThreadId}@${generation}`);
       assert.equal(timeline[1], "thread/fork");
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
