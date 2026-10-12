@@ -4,6 +4,14 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "remote-host-status",
+      "tests": [
+        "apps/web/src/hostStatus.test.ts",
+        "apps/web/src/components/chat/HostStatusIndicators.test.tsx"
+      ],
+      "scope": "Host status badges use the active thread environment and its shared HTTP authentication; environment switches cancel old polling and clear old samples."
+    },
+    {
       "id": "qualified-updates",
       "tests": [
         "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",

@@ -1,27 +1,8 @@
 import type { HostStatus, HostStatusSnapshot } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-
-import { PrimaryEnvironmentHttpClient, layer } from "./environments/primary/httpClient";
-import { layer as primaryEnvironmentHttpLayer } from "./environments/primary/httpLayer";
+export { fetchHostStatus } from "./jones/hostStatus/state";
 
 export const HOST_STATUS_NAMES = { vps: "VPS", test: "Test", mini: "Mini", home: "Home" } as const;
 export const HOST_STATUS_IDS = ["vps", "test", "mini", "home"] as const;
-
-const hostStatusRequest = PrimaryEnvironmentHttpClient.pipe(
-  Effect.flatMap((client) => client.hostStatus.snapshot({ headers: {} })),
-  Effect.timeout("8 seconds"),
-);
-
-export function fetchHostStatus(signal: AbortSignal): Promise<HostStatusSnapshot> {
-  // Retain RequestInit alongside the client so browser cookie credentials reach the request.
-  return Effect.runPromise(
-    hostStatusRequest.pipe(
-      Effect.provide(layer.pipe(Layer.provideMerge(primaryEnvironmentHttpLayer))),
-    ),
-    { signal },
-  );
-}
 
 const HOST_STATUS_MAX_AGE_MS = 30_000;
 
@@ -91,7 +72,7 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
 export function observeHostStatus(
   visibility: Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">,
   receive: (snapshot: HostStatusSnapshot | null) => void,
-  request = fetchHostStatus,
+  request: (signal: AbortSignal) => Promise<HostStatusSnapshot>,
 ) {
   let disposed = false;
   let pending = false;

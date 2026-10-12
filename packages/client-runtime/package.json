@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/host-status/http": {
+      "types": "./src/jones/hostStatus/http.ts",
+      "default": "./src/jones/hostStatus/http.ts"
+    },
     "./jones/preview-companion/http": {
       "types": "./src/jones/previewCompanion/http.ts",
       "default": "./src/jones/previewCompanion/http.ts"

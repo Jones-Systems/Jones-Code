@@ -2,6 +2,17 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-remote-host-status",
+      "tests": [
+        "apps/web/src/hostStatus.test.ts",
+        "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
+        "packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/hostStatus.test.ts apps/web/src/components/chat/HostStatusIndicators.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+      ]
+    },
+    {
       "id": "jones-update-continuity",
       "tests": [
         "apps/server/src/jones/updates/continuationPrompt.test.ts",
