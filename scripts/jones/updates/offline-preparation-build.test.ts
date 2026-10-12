@@ -984,7 +984,10 @@ describe("unqualified preparation producer graph", () => {
       expect(captured.status).toBe("held");
       expect(captured.imported).toBe(false);
       expect(captured.files).toHaveLength(34);
-      expect(captured.files.find((file) => file.capturedPath.endsWith("offlinePreparationProducer.mjs"))?.sha256).toBe(sha(code));
+      expect(
+        captured.files.find((file) => file.capturedPath.endsWith("offlinePreparationProducer.mjs"))
+          ?.sha256,
+      ).toBe(sha(code));
       expect(captured.cleanup).toEqual({ disposition: "removed", root: captured.codeRoot });
       expect(NodeFS.existsSync(captured.codeRoot)).toBe(false);
       expect(NodeFS.readdirSync(stageRoot)).toEqual([]);

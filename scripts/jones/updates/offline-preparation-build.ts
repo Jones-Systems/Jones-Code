@@ -90,7 +90,9 @@ const digest = (bytes: string | Uint8Array) =>
 let preparationParser: typeof TypeScript | undefined;
 function preparationTypeScript(): typeof TypeScript {
   // Parsing is an explicit operation; capturing the producer must not initialize TypeScript.
-  return (preparationParser ??= NodeModule.createRequire(import.meta.url)("typescript-legacy") as typeof TypeScript);
+  return (preparationParser ??= NodeModule.createRequire(import.meta.url)(
+    "typescript-legacy",
+  ) as typeof TypeScript);
 }
 
 /** An oracle for the fixed held entry, not a sandbox for arbitrary JavaScript. */
@@ -105,8 +107,9 @@ export function verifyPreparationClosure(source: string): readonly string[] {
     true,
     ts.ScriptKind.JS,
   );
-  const diagnostics = (file as TypeScript.SourceFile & { parseDiagnostics: readonly TypeScript.Diagnostic[] })
-    .parseDiagnostics;
+  const diagnostics = (
+    file as TypeScript.SourceFile & { parseDiagnostics: readonly TypeScript.Diagnostic[] }
+  ).parseDiagnostics;
   if (diagnostics.length) throw new Error("Preparation bundle is not valid JavaScript.");
   const imports = new Set<string>();
   const inspectSpecifier = (node: TypeScript.Node | undefined) => {
@@ -1698,8 +1701,9 @@ function inspectPreparationJavaScript(source: string, producerFileName?: string)
     true,
     ts.ScriptKind.JS,
   );
-  const diagnostics = (file as TypeScript.SourceFile & { parseDiagnostics: readonly TypeScript.Diagnostic[] })
-    .parseDiagnostics;
+  const diagnostics = (
+    file as TypeScript.SourceFile & { parseDiagnostics: readonly TypeScript.Diagnostic[] }
+  ).parseDiagnostics;
   if (diagnostics.length) throw new Error("Candidate entry is not valid JavaScript.");
   const location = (expression: TypeScript.Node) => ({
     file: file.fileName,

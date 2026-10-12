@@ -11,32 +11,55 @@ const producerPath = `${artifactDirectory}/offlinePreparationProducer.mjs`;
 const reportPath = `${artifactDirectory}/producer-candidate-graph.json`;
 const emittedPath = "scripts/jones/updates/offlinePreparationProducer.mjs";
 const sharedPaths = [
-  "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json",
-  "apps/server/package.json", "apps/desktop/package.json", "apps/web/package.json",
-  "packages/contracts/package.json", "apps/server/vite.config.ts", "vite.config.ts",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "package.json",
+  "apps/server/package.json",
+  "apps/desktop/package.json",
+  "apps/web/package.json",
+  "packages/contracts/package.json",
+  "apps/server/vite.config.ts",
+  "vite.config.ts",
   "scripts/jones/updates/offline-preparation-build.ts",
 ];
 const producerPaths = [
-  ...sharedPaths, "scripts/package.json",
+  ...sharedPaths,
+  "scripts/package.json",
   "scripts/jones/updates/offline-preparation-producer-entry.ts",
-  "scripts/jones/updates/functional-policy.ts", "scripts/jones/updates/legacy-bootstrap-bundle.ts",
+  "scripts/jones/updates/functional-policy.ts",
+  "scripts/jones/updates/legacy-bootstrap-bundle.ts",
 ];
 const qualifierPaths = [
   ...sharedPaths,
-  ...["offlinePreparationEntry.ts", "offlinePreparation.ts", "offlinePreparationCore.ts",
-    "offlinePreparationPlan.ts", "offlinePreparationWorker.ts", "offlinePreparationWorker.test.ts"]
-    .map((name) => `apps/server/src/jones/updates/${name}`),
-  ...["legacy-preparation-native-fixture.mjs", "legacy-preparation-native-fixture.d.mts",
-    "legacy-cold-maintenance-fixture.mjs", "legacy-identity-native-fixture.mjs"]
-    .map((name) => `scripts/jones/updates/${name}`),
-  ...["jonesLegacyBootstrapSource.ts", "jonesLegacyMaintenanceSource.ts", "jonesNativeHelperSource.ts",
-    "jonesPairedStateSource.ts", "jonesColdPairSource.ts", "jonesLegacyIdentityNative.c",
-    "jonesColdOwnerSource.ts", "jonesPreparationWorkerSource.ts"]
-    .map((name) => `apps/desktop/src/jones/updates/${name}`),
+  ...[
+    "offlinePreparationEntry.ts",
+    "offlinePreparation.ts",
+    "offlinePreparationCore.ts",
+    "offlinePreparationPlan.ts",
+    "offlinePreparationWorker.ts",
+    "offlinePreparationWorker.test.ts",
+  ].map((name) => `apps/server/src/jones/updates/${name}`),
+  ...[
+    "legacy-preparation-native-fixture.mjs",
+    "legacy-preparation-native-fixture.d.mts",
+    "legacy-cold-maintenance-fixture.mjs",
+    "legacy-identity-native-fixture.mjs",
+  ].map((name) => `scripts/jones/updates/${name}`),
+  ...[
+    "jonesLegacyBootstrapSource.ts",
+    "jonesLegacyMaintenanceSource.ts",
+    "jonesNativeHelperSource.ts",
+    "jonesPairedStateSource.ts",
+    "jonesColdPairSource.ts",
+    "jonesLegacyIdentityNative.c",
+    "jonesColdOwnerSource.ts",
+    "jonesPreparationWorkerSource.ts",
+  ].map((name) => `apps/desktop/src/jones/updates/${name}`),
 ];
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const content = (bytes) => ({ sha256: sha256(bytes), size: bytes.length });
-const sameIdentity = (left, right) => left.dev === right.dev && left.ino === right.ino && left.uid === right.uid;
+const sameIdentity = (left, right) =>
+  left.dev === right.dev && left.ino === right.ino && left.uid === right.uid;
 
 async function withFixture(t, run) {
   const parent = await fs.realpath(os.tmpdir());
@@ -57,10 +80,17 @@ async function withFixture(t, run) {
     const stageRoot = path.join(fixtureRoot, "stage");
     await fs.mkdir(sourceRoot, { mode: 0o700 });
     await fs.mkdir(stageRoot, { mode: 0o700 });
-    const bytes = new Map([...new Set([...producerPaths, ...qualifierPaths])]
-      .map((name, index) => [name, Buffer.from(`// synthetic source ${index}: π\r\n`)]));
+    const bytes = new Map(
+      [...new Set([...producerPaths, ...qualifierPaths])].map((name, index) => [
+        name,
+        Buffer.from(`// synthetic source ${index}: π\r\n`),
+      ]),
+    );
     bytes.set(producerPath, Buffer.from('throw new Error("producer sentinel executed");\n'));
-    const row = (name) => ({ path: name, content: { availability: "observed", path: name, ...content(bytes.get(name)) } });
+    const row = (name) => ({
+      path: name,
+      content: { availability: "observed", path: name, ...content(bytes.get(name)) },
+    });
     const producer = content(bytes.get(producerPath));
     const report = {
       schemaVersion: 1,
@@ -74,12 +104,25 @@ async function withFixture(t, run) {
       loadedCollectorBytesAttested: false,
       observation: "partial",
       entry: "scripts/jones/updates/offline-preparation-producer-entry.ts",
-      source: { repository: "Jones-Systems/Jones-Code", sha: "a".repeat(40), tree: "b".repeat(40),
-        buildOnlyOverlays: [], inputs: producerPaths.map(row) },
-      lateQualifierSources: { basis: "fixed-late-qualifier-file-inputs", computedImportsResolved: false,
-        completeDependencyClosure: false, files: qualifierPaths.map(row) },
-      emitted: { format: "esm", fileName: "offlinePreparationProducer.mjs", ...producer,
-        files: [{ fileName: "offlinePreparationProducer.mjs", ...producer }] },
+      source: {
+        repository: "Jones-Systems/Jones-Code",
+        sha: "a".repeat(40),
+        tree: "b".repeat(40),
+        buildOnlyOverlays: [],
+        inputs: producerPaths.map(row),
+      },
+      lateQualifierSources: {
+        basis: "fixed-late-qualifier-file-inputs",
+        computedImportsResolved: false,
+        completeDependencyClosure: false,
+        files: qualifierPaths.map(row),
+      },
+      emitted: {
+        format: "esm",
+        fileName: "offlinePreparationProducer.mjs",
+        ...producer,
+        files: [{ fileName: "offlinePreparationProducer.mjs", ...producer }],
+      },
     };
     const writeReport = async () => {
       bytes.set(reportPath, Buffer.from(JSON.stringify(report)));
@@ -105,11 +148,21 @@ async function withFixture(t, run) {
         });
         if (!current) continue;
         if (!original || !current.isDirectory() || !sameIdentity(original, current))
-          throw Object.assign(new Error(`Test scratch custody changed: ${name}`), { retainedRoot: name, preserveScratch: true });
+          throw Object.assign(new Error(`Test scratch custody changed: ${name}`), {
+            retainedRoot: name,
+            preserveScratch: true,
+          });
         await fs.rm(name, { recursive: true });
-      } catch (cause) { failures.push(cause); }
+      } catch (cause) {
+        failures.push(cause);
+      }
     }
-    if (failures.length) throw new AggregateError(failed ? [primary, ...failures] : failures, "Capture test cleanup failed.", { cause: primary });
+    if (failures.length)
+      throw new AggregateError(
+        failed ? [primary, ...failures] : failures,
+        "Capture test cleanup failed.",
+        { cause: primary },
+      );
     if (failed) throw primary;
   }
 }
@@ -139,12 +192,24 @@ test("capture copies exact bytes into distinct roots, returns held and never exe
     assert.deepEqual(result.cleanup, { disposition: "removed", root: result.codeRoot });
     await assert.rejects(fs.lstat(result.codeRoot), { code: "ENOENT" });
     for (const file of result.files) {
-      assert.deepEqual(copied.get(path.join(result.codeRoot, file.capturedPath)), bytes.get(file.sourcePath));
-      assert.deepEqual(content(bytes.get(file.sourcePath)), { sha256: file.sha256, size: file.size });
+      assert.deepEqual(
+        copied.get(path.join(result.codeRoot, file.capturedPath)),
+        bytes.get(file.sourcePath),
+      );
+      assert.deepEqual(content(bytes.get(file.sourcePath)), {
+        sha256: file.sha256,
+        size: file.size,
+      });
       assert.notDeepEqual(file.sourceIdentity, file.capturedIdentity);
     }
-    assert.equal(result.files.find((file) => file.sourcePath === producerPath).capturedPath, emittedPath);
-    assert.equal(path.resolve(result.codeRoot, path.dirname(emittedPath), "../../.."), result.codeRoot);
+    assert.equal(
+      result.files.find((file) => file.sourcePath === producerPath).capturedPath,
+      emittedPath,
+    );
+    assert.equal(
+      path.resolve(result.codeRoot, path.dirname(emittedPath), "../../.."),
+      result.codeRoot,
+    );
     assert.deepEqual(await fs.readdir(stageRoot), []);
   }));
 
@@ -163,16 +228,66 @@ test("concurrent captures own different roots and clean up independently", (t) =
 
 for (const [name, mutate] of [
   ["extra path", (report) => report.source.inputs.push({ path: "../../outside" })],
-  ["replacement path", (report) => { report.source.inputs[0].path = "../../outside"; }],
-  ["duplicate path", (report) => { report.source.inputs[0] = report.source.inputs[1]; }],
-  ["content path expansion", (report) => { report.source.inputs[0].content.path = "/outside"; }],
-  ["unavailable source", (report) => { report.source.inputs[0].content.availability = "unavailable"; }],
-  ["oversized source", (report) => { report.source.inputs[0].content.size = 8 * 1024 * 1024 + 1; }],
-  ["disagreeing inventories", (report) => { report.source.inputs[0].content.sha256 = "f".repeat(64); }],
-  ["qualified report", (report) => { report.qualification = "qualified"; }],
-  ["claimed closure", (report) => { report.completeDependencyClosure = true; }],
-  ["claimed attestation", (report) => { report.loadedCollectorBytesAttested = true; }],
-  ["expanded outputs", (report) => { report.emitted.files.push({ fileName: "../other.mjs" }); }],
+  [
+    "replacement path",
+    (report) => {
+      report.source.inputs[0].path = "../../outside";
+    },
+  ],
+  [
+    "duplicate path",
+    (report) => {
+      report.source.inputs[0] = report.source.inputs[1];
+    },
+  ],
+  [
+    "content path expansion",
+    (report) => {
+      report.source.inputs[0].content.path = "/outside";
+    },
+  ],
+  [
+    "unavailable source",
+    (report) => {
+      report.source.inputs[0].content.availability = "unavailable";
+    },
+  ],
+  [
+    "oversized source",
+    (report) => {
+      report.source.inputs[0].content.size = 8 * 1024 * 1024 + 1;
+    },
+  ],
+  [
+    "disagreeing inventories",
+    (report) => {
+      report.source.inputs[0].content.sha256 = "f".repeat(64);
+    },
+  ],
+  [
+    "qualified report",
+    (report) => {
+      report.qualification = "qualified";
+    },
+  ],
+  [
+    "claimed closure",
+    (report) => {
+      report.completeDependencyClosure = true;
+    },
+  ],
+  [
+    "claimed attestation",
+    (report) => {
+      report.loadedCollectorBytesAttested = true;
+    },
+  ],
+  [
+    "expanded outputs",
+    (report) => {
+      report.emitted.files.push({ fileName: "../other.mjs" });
+    },
+  ],
 ]) {
   test(`refuses ${name} before opening any producer or source file`, (t) =>
     withFixture(t, async ({ sourceRoot, stageRoot, report, writeReport }) => {
@@ -181,7 +296,8 @@ for (const [name, mutate] of [
       const open = fs.open;
       const reads = [];
       t.mock.method(fs, "open", async (name, ...args) => {
-        if (name.startsWith(`${sourceRoot}${path.sep}`)) reads.push(path.relative(sourceRoot, name));
+        if (name.startsWith(`${sourceRoot}${path.sep}`))
+          reads.push(path.relative(sourceRoot, name));
         return open(name, ...args);
       });
       await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
@@ -195,7 +311,8 @@ for (const [name, mutate] of [
 for (const kind of ["source", "producer", "report"]) {
   test(`refuses ${kind} replacement after opening its descriptor and removes owned scratch`, (t) =>
     withFixture(t, async ({ sourceRoot, stageRoot, bytes }) => {
-      const relative = kind === "source" ? "package.json" : kind === "producer" ? producerPath : reportPath;
+      const relative =
+        kind === "source" ? "package.json" : kind === "producer" ? producerPath : reportPath;
       const target = path.join(sourceRoot, relative);
       const open = fs.open;
       let replaced = false;
@@ -223,7 +340,11 @@ test("same-size source mutation after copying fails the final source recheck", (
     let mutated = false;
     t.mock.method(fs, "open", async (name, ...args) => {
       const handle = await open(name, ...args);
-      if (!mutated && allocated.has(path.dirname(name)) && path.basename(name) === "vite.config.ts") {
+      if (
+        !mutated &&
+        allocated.has(path.dirname(name)) &&
+        path.basename(name) === "vite.config.ts"
+      ) {
         mutated = true;
         const target = path.join(sourceRoot, "package.json");
         await fs.writeFile(target, Buffer.alloc(bytes.get("package.json").length, 120));
@@ -258,7 +379,10 @@ for (const kind of ["missing", "symlink", "hardlink"]) {
 
 test("capture refuses stage and scratch overlap before allocating a root", (t) =>
   withFixture(t, async ({ sourceRoot, allocated }) => {
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot: await fs.realpath(os.tmpdir()) }), /overlaps|owned directory/);
+    await assert.rejects(
+      capturePreparationProducer({ sourceRoot, stageRoot: await fs.realpath(os.tmpdir()) }),
+      /overlaps|owned directory/,
+    );
     assert.equal(allocated.size, 1);
   }));
 
@@ -288,15 +412,25 @@ for (const [name, relative, limit] of [
 
 test("caller import URLs, callbacks and admission flags are outside the API", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot, allocated }) => {
-    for (const option of [{ importURL: "file:///outside" }, { callback: () => assert.fail("callback executed") }, { admitted: true }])
-      await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot, ...option }), /accepts only/);
+    for (const option of [
+      { importURL: "file:///outside" },
+      { callback: () => assert.fail("callback executed") },
+      { admitted: true },
+    ])
+      await assert.rejects(
+        capturePreparationProducer({ sourceRoot, stageRoot, ...option }),
+        /accepts only/,
+      );
     assert.equal(allocated.size, 1);
   }));
 
 test("pre-cancellation preserves the exact reason and creates no scratch", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot, allocated }) => {
     const reason = Object.freeze(new Error("capture cancelled before allocation"));
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot, signal: AbortSignal.abort(reason) }), (error) => error === reason);
+    await assert.rejects(
+      capturePreparationProducer({ sourceRoot, stageRoot, signal: AbortSignal.abort(reason) }),
+      (error) => error === reason,
+    );
     assert.equal(allocated.size, 1);
   }));
 
@@ -310,11 +444,14 @@ test("cancellation during capture cleans its tree and preserves a frozen abort r
       if (name === path.join(sourceRoot, producerPath)) controller.abort(reason);
       return handle;
     });
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot, signal: controller.signal }), (error) => {
-      assert.equal(error.cause, reason);
-      assert.equal(error.cleanup.disposition, "removed");
-      return true;
-    });
+    await assert.rejects(
+      capturePreparationProducer({ sourceRoot, stageRoot, signal: controller.signal }),
+      (error) => {
+        assert.equal(error.cause, reason);
+        assert.equal(error.cleanup.disposition, "removed");
+        return true;
+      },
+    );
   }));
 
 test("cleanup failure retains the exact root and preserves the original read failure", (t) =>
@@ -326,7 +463,9 @@ test("cleanup failure retains the exact root and preserves the original read fai
       if (name === path.join(sourceRoot, producerPath)) throw primary;
       return open(name, ...args);
     });
-    t.mock.method(fs, "rmdir", async () => { throw cleanup; });
+    t.mock.method(fs, "rmdir", async () => {
+      throw cleanup;
+    });
     await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
       assert.ok(error instanceof AggregateError);
       assert.equal(error.cause, primary);
@@ -347,11 +486,14 @@ test("cancellation during cleanup finishes cleanup before rejecting", (t) =>
       controller.abort(reason);
       return unlink(...args);
     });
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot, signal: controller.signal }), (error) => {
-      assert.equal(error, reason);
-      assert.equal(error.cleanup.disposition, "removed");
-      return true;
-    });
+    await assert.rejects(
+      capturePreparationProducer({ sourceRoot, stageRoot, signal: controller.signal }),
+      (error) => {
+        assert.equal(error, reason);
+        assert.equal(error.cleanup.disposition, "removed");
+        return true;
+      },
+    );
   }));
 
 test("descriptor close uncertainty retains scratch after an otherwise complete capture", (t) =>
@@ -456,6 +598,5 @@ test("an unowned scratch entry makes retention sticky even after that entry disa
       return true;
     });
     assert.equal(observed, true);
-    for (const name of allocated.keys())
-      assert.equal((await fs.lstat(name)).isDirectory(), true);
+    for (const name of allocated.keys()) assert.equal((await fs.lstat(name)).isDirectory(), true);
   }));
