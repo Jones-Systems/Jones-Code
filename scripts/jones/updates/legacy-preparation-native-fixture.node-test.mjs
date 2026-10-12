@@ -7,6 +7,10 @@ import {
   PreparationNativeUnavailable,
   preparationFixtureLiteral,
   preparationNativeSourceInputs,
+  preparationNativeQualifierSourceInputs,
+  preparationNativeCases,
+  readPreparationNativeQualifierSourceHashes,
+  validatePreparationNativeResult,
   preparationInputOpenFlags,
   preparationRepeatOracleSource,
   runLegacyPreparationNativeFixture,
@@ -29,7 +33,10 @@ function input() {
     classification: "synthetic-preparation-native-input",
     sourceSha: "b".repeat(40),
     sourceTree: "c".repeat(40),
-    nativeSourceSha256: "d".repeat(64),
+    nativeSourceSha256: "e".repeat(64),
+    qualifierSourceHashes: Object.fromEntries(
+      preparationNativeQualifierSourceInputs.map((name) => [name, "e".repeat(64)]),
+    ),
     preparation: {
       schema: 1,
       protocol: 1,
@@ -40,6 +47,7 @@ function input() {
       entry: { sha256: "a".repeat(64), size: 32 },
       seaConfig: { sha256: "a".repeat(64), size: 32 },
       provenanceSha256: "a".repeat(64),
+      sqlite: { version: "3.50.0", sourceId: "2026-01-01 00:00:00 " + "f".repeat(64) },
       node: {
         version: "26.8.2",
         platform: "darwin",
@@ -344,3 +352,517 @@ process.stdout.write('fifo-refused');
     NodeAssert.equal(result.stdout, "fifo-refused");
   });
 });
+
+// Representative fixed C records and Python barrier order; these are validator controls, not native evidence.
+function nativeCaseEvidence(name, template, boot) {
+  const prefix = ["ready", "closed-supplement", "plan-open"];
+  const planned = [...prefix, "PLAN_READY", "intent-durable"];
+  const applied = [...planned, "apply-open", "CLOSED_RESULT"];
+  const settled = [...applied, "reaped", "observed"];
+  const events = {
+    apply: settled,
+    reconcile: [...settled, "ready", "reconcile-open", "CLOSED_RESULT", "reaped", "observed"],
+    "repeat-plan": planned,
+    "durable-plan-drift": planned,
+    "repeat-apply": applied,
+    "close-uncertainty": applied,
+    "wrong-scope": prefix,
+    "paused-cancel": prefix,
+    "custody-uncertainty": prefix,
+    "closed-query-failure": [...prefix, "CLOSED_RESULT", "reaped"],
+  }[name];
+  let session = 0;
+  const nativeObservations = [],
+    observationContexts = [];
+  for (const [eventIndex, phase] of events.entries()) {
+    if (["intent-durable", "reaped", "observed"].includes(phase)) continue;
+    if (phase === "ready") session += 1;
+    const planning =
+      ["closed-supplement", "plan-open", "PLAN_READY"].includes(phase) ||
+      (phase === "CLOSED_RESULT" && name === "closed-query-failure");
+    const databasePath = planning ? "/owned/preparation/state.sqlite" : "/owned/live/state.sqlite";
+    const access = phase.endsWith("-open")
+      ? phase === "reconcile-open"
+        ? "read-only"
+        : "read-write"
+      : null;
+    const observation = structuredClone(template);
+    observation.operation = phase === "ready" ? "capture-worker" : "observe-worker";
+    observation.processes[1].pid = 123 + session;
+    observation.processes[1].uniqueId = String(123 + session);
+    observation.excludedWorkerFds = [3, 4];
+    observation.family = ["database", "wal", "shm"].map((role, index) => ({
+      role,
+      object: {
+        index,
+        path: databasePath + ["", "-wal", "-shm"][index],
+        kind: "file",
+        current: true,
+        persistent: { volumeUuid: boot, fileId: String(index + 1) },
+        stat: {
+          device: "1",
+          inode: String(index + 1),
+          uid: 501,
+          gid: 20,
+          nlink: "1",
+          mode: 384,
+          flags: 0,
+          size: "4096",
+          mtimeNs: "1",
+          ctimeNs: "1",
+          birthtimeNs: "1",
+        },
+        mount: {
+          filesystem: "apfs",
+          flags: 0,
+          mountPoint: "/",
+          local: true,
+          ownershipHonored: true,
+          executable: true,
+          persistentObjectIds: true,
+          objectIds64Bit: true,
+        },
+      },
+    }));
+    observation.matches =
+      access === null
+        ? []
+        : [
+            {
+              process: "worker",
+              familyRole: "database",
+              fd: 12,
+              access,
+              shared: false,
+              eligibleOpenObservation: true,
+              exclusion: null,
+            },
+          ];
+    const sessionId = String(session).repeat(64),
+      sequence = planning || session === 2 ? 1 : 2;
+    let frame = null;
+    if (!["ready", "closed-supplement"].includes(phase)) {
+      frame = {
+        schema: 1,
+        type: access !== null ? "SQL_SCOPE_OPENED" : phase,
+        sessionId,
+        sequence,
+        payloadBytes: phase === "PLAN_READY" ? 256 : 0,
+      };
+      if (access !== null)
+        Object.assign(frame, {
+          scopeId: String(sequence).repeat(64),
+          purpose: phase.slice(0, -5),
+          access,
+        });
+      else if (phase === "PLAN_READY") frame.planSha256 = "a".repeat(64);
+      else
+        Object.assign(frame, {
+          scopeId: String(sequence).repeat(64),
+          planSha256: name === "closed-query-failure" ? null : "a".repeat(64),
+          outcome: name === "closed-query-failure" ? "query-failed" : "applied",
+          errorCode: name === "closed-query-failure" ? "query-rejected" : null,
+        });
+    }
+    nativeObservations.push(observation);
+    observationContexts.push({
+      eventIndex,
+      sessionId,
+      workerPid: observation.processes[1].pid,
+      databasePath,
+      databaseKind: planning ? "planning" : "live",
+      access,
+      frame,
+    });
+  }
+  const closed = closure();
+  closed.capturedChildren = session;
+  closed.processes = Array.from({ length: session }, (_, index) => ({
+    ...closure().processes[0],
+    pid: 124 + index,
+  }));
+  return {
+    events,
+    nativeObservations,
+    observationContexts,
+    observerCalls: nativeObservations.length,
+    closure: closed,
+  };
+}
+
+function aggregate(value = input()) {
+  const boot = "12345678-1234-1234-1234-123456789abc";
+  const observation = {
+    schema: 1,
+    operation: "capture-worker",
+    status: "observed",
+    bootSessionUuid: boot,
+    processes: [
+      {
+        role: "owner",
+        pid: 123,
+        parentPid: 1,
+        uniqueId: "123",
+        parentUniqueId: "1",
+        pidVersion: 1,
+        uid: 501,
+        fdCount: 3,
+      },
+      {
+        role: "worker",
+        pid: 124,
+        parentPid: 123,
+        uniqueId: "124",
+        parentUniqueId: "123",
+        pidVersion: 1,
+        uid: 501,
+        fdCount: 3,
+      },
+    ],
+    excludedWorkerFds: [],
+    family: [],
+    matches: [],
+    suppliedFamilyOnly: true,
+    familyMembershipComplete: false,
+    observationOnly: true,
+    sqliteOpenProved: false,
+    databaseSyncCloseProved: false,
+    workerReaped: false,
+    stateAdmissionAllowed: false,
+    launchMembershipComplete: false,
+    processCustody: "unobserved",
+    activationAllowed: false,
+  };
+  return {
+    schema: 1,
+    qualification: "synthetic-native-preparation",
+    fixtureClosure: true,
+    producerQualified: false,
+    priorBootModeled: true,
+    nativeColdOwnerQualified: false,
+    stateAdmissionAllowed: false,
+    activationAllowed: false,
+    qualifierSourceHashes: value.qualifierSourceHashes,
+    fixtureDataSourceHashes: {
+      core: value.qualifierSourceHashes["apps/server/src/jones/updates/offlinePreparationCore.ts"],
+      workerTests:
+        value.qualifierSourceHashes[
+          "apps/server/src/jones/updates/offlinePreparationWorker.test.ts"
+        ],
+    },
+    artifact: {
+      ...Object.fromEntries(
+        Object.entries(value.files).map(([name, file]) => [name + "Sha256", file.sha256]),
+      ),
+      fileSizes: Object.fromEntries(
+        Object.entries(value.files).map(([name, file]) => [name, file.size]),
+      ),
+      sourceSha: value.sourceSha,
+      sourceTree: value.sourceTree,
+      nativeSourceSha256: value.nativeSourceSha256,
+    },
+    cases: preparationNativeCases.map((name) => {
+      const held = !["apply", "reconcile", "closed-query-failure"].includes(name);
+      const evidence = nativeCaseEvidence(name, observation, boot);
+      return {
+        schema: 1,
+        qualification: "synthetic-native-preparation",
+        fixtureClosure: true,
+        producerQualified: false,
+        nativeColdOwnerQualified: false,
+        stateAdmissionAllowed: false,
+        activationAllowed: false,
+        uri: {
+          ...value.preparation.sqlite,
+          nodeVersion: "26.8.2",
+          missingFileCreated: false,
+          existingUriRead: true,
+        },
+        closure: evidence.closure,
+        cases: [
+          {
+            case: name,
+            status: held
+              ? "expected-refusal"
+              : name === "closed-query-failure"
+                ? "query-failed"
+                : "applied",
+            events: evidence.events,
+            observerCalls: evidence.observerCalls,
+            nativeObservations: evidence.nativeObservations,
+            observationContexts: evidence.observationContexts,
+            sqliteDescriptorObservations: true,
+            rawPairPreserved: true,
+            currentBootObserved: boot,
+            priorBootModeled: true,
+            workerReaped: true,
+            productionAdmission: false,
+            productionCustodyHeld: held,
+            independentCleanupRecovered: name === "custody-uncertainty",
+            heldCustodyReceipt: held ? { phase: "custody-held" } : null,
+            repeatRejection: name.startsWith("repeat-")
+              ? {
+                  started: true,
+                  outputBytes: 0,
+                  firstHeader: null,
+                  exitCode: 70,
+                  reapedBeforeCleanup: true,
+                  stdinStayedOpen: true,
+                  signalsBeforeCleanup: [],
+                  stderr: "Closed preparation worker refused.\n",
+                }
+              : null,
+          },
+        ],
+      };
+    }),
+  };
+}
+NodeTest.test("result structure binds all ten cases without minting native authority", () => {
+  validatePreparationNativeResult(aggregate(), input());
+});
+for (const [name, mutate] of [
+  [
+    "unknown field",
+    (value) => {
+      value.admission = true;
+    },
+  ],
+  [
+    "sparse case",
+    (value) => {
+      delete value.cases[0];
+    },
+  ],
+  ["missing case", (value) => value.cases.pop()],
+  [
+    "duplicate case",
+    (value) => {
+      value.cases[1] = value.cases[0];
+    },
+  ],
+  [
+    "unknown case",
+    (value) => {
+      value.cases[0].cases[0].case = "parent-death";
+    },
+  ],
+  [
+    "closure false",
+    (value) => {
+      value.cases[0].closure.complete = false;
+    },
+  ],
+  [
+    "missing close",
+    (value) => {
+      value.cases[0].closure.processes[0].streamsClosed = false;
+    },
+  ],
+  [
+    "producer authority",
+    (value) => {
+      value.producerQualified = true;
+    },
+  ],
+  [
+    "unmodeled boot claim",
+    (value) => {
+      value.priorBootModeled = false;
+    },
+  ],
+  [
+    "artifact rebound",
+    (value) => {
+      value.artifact.entrySha256 = "0".repeat(64);
+    },
+  ],
+  [
+    "qualifier drift",
+    (value) => {
+      value.qualifierSourceHashes = {
+        ...value.qualifierSourceHashes,
+        [preparationNativeQualifierSourceInputs[0]]: "0".repeat(64),
+      };
+    },
+  ],
+  [
+    "oversized report",
+    (value) => {
+      value.cases[0].cases[0].events = ["x".repeat(262145)];
+    },
+  ],
+])
+  NodeTest.test("result structure refuses " + name, () => {
+    const result = aggregate();
+    mutate(result);
+    NodeAssert.throws(() => validatePreparationNativeResult(result, input()));
+  });
+NodeTest.test(
+  "fixed source snapshot detects actual seed drift and refuses replaced symlinks",
+  async () => {
+    await withLegacyIdentityScratch(async (root) => {
+      for (const name of preparationNativeQualifierSourceInputs) {
+        const path = NodePath.join(root, name);
+        await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+        await NodeFSP.writeFile(path, "owned source", { flag: "wx", mode: 0o600 });
+      }
+      const before = await readPreparationNativeQualifierSourceHashes(root);
+      const name = "apps/server/src/jones/updates/offlinePreparationWorker.test.ts";
+      const path = NodePath.join(root, name);
+      await NodeFSP.writeFile(path, "changed seed");
+      const after = await readPreparationNativeQualifierSourceHashes(root);
+      NodeAssert.notEqual(before[name], after[name]);
+      const value = input();
+      value.qualifierSourceHashes = before;
+      value.preparation.sourceInputHashes = Object.fromEntries(
+        preparationNativeSourceInputs.map((key) => [key, before[key]]),
+      );
+      value.nativeSourceSha256 =
+        before["apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"];
+      const result = aggregate(value);
+      result.qualifierSourceHashes = after;
+      NodeAssert.throws(() => validatePreparationNativeResult(result, value));
+      await NodeFSP.unlink(path);
+      await NodeFSP.symlink(NodePath.join(root, preparationNativeQualifierSourceInputs[0]), path);
+      await NodeAssert.rejects(readPreparationNativeQualifierSourceHashes(root));
+    });
+  },
+);
+
+for (const [name, mutate] of [
+  [
+    "malformed excluded FD",
+    (item) => {
+      item.nativeObservations[0].excludedWorkerFds = ["3"];
+    },
+  ],
+  [
+    "duplicate excluded FD",
+    (item) => {
+      item.nativeObservations[0].excludedWorkerFds = [3, 3];
+    },
+  ],
+  [
+    "unknown family role",
+    (item) => {
+      item.nativeObservations[0].family[0].role = "other";
+    },
+  ],
+  [
+    "extra object field",
+    (item) => {
+      item.nativeObservations[0].family[0].object.admitted = true;
+    },
+  ],
+  [
+    "malformed stat",
+    (item) => {
+      item.nativeObservations[0].family[0].object.stat.size = -1;
+    },
+  ],
+  [
+    "malformed mount",
+    (item) => {
+      item.nativeObservations[0].family[0].object.mount.local = false;
+    },
+  ],
+  [
+    "wrong sidecar path",
+    (item) => {
+      item.nativeObservations[0].family[1].object.path = "/foreign/wal";
+    },
+  ],
+  [
+    "extra match field",
+    (item) => {
+      item.nativeObservations[2].matches[0].proof = true;
+    },
+  ],
+  [
+    "malformed match FD",
+    (item) => {
+      item.nativeObservations[2].matches[0].fd = -1;
+    },
+  ],
+  [
+    "excluded FD presented eligible",
+    (item) => {
+      item.nativeObservations[2].matches[0].fd = 3;
+    },
+  ],
+  [
+    "missing database open",
+    (item) => {
+      item.nativeObservations[2].matches = [];
+    },
+  ],
+  [
+    "capture only",
+    (item) => {
+      item.nativeObservations.forEach((observation) => {
+        observation.operation = "capture-worker";
+        observation.matches = [];
+      });
+    },
+  ],
+  [
+    "empty family",
+    (item) => {
+      item.nativeObservations[0].family = [];
+    },
+  ],
+  [
+    "missing events",
+    (item) => {
+      item.events = [];
+    },
+  ],
+  [
+    "worker identity drift",
+    (item) => {
+      item.nativeObservations[2].processes[1].uniqueId = "999";
+    },
+  ],
+  [
+    "worker PID mismatch",
+    (item) => {
+      item.observationContexts[2].workerPid = 999;
+    },
+  ],
+  [
+    "wrong database context",
+    (item) => {
+      item.observationContexts[2].databasePath = "/foreign/database";
+    },
+  ],
+  [
+    "wrong open purpose",
+    (item) => {
+      item.observationContexts[2].frame.purpose = "apply";
+    },
+  ],
+  [
+    "wrong closed scope",
+    (item) => {
+      item.observationContexts.at(-1).frame.scopeId = "f".repeat(64);
+    },
+  ],
+])
+  NodeTest.test("native evidence validator refuses " + name, () => {
+    const result = aggregate();
+    mutate(result.cases[0].cases[0]);
+    NodeAssert.throws(() => validatePreparationNativeResult(result, input()));
+  });
+NodeTest.test(
+  "reconcile requires its own captured identity, read-only live open and closed result",
+  () => {
+    const result = aggregate();
+    const item = result.cases[1].cases[0];
+    const at = item.observationContexts.findIndex(
+      (context) => item.events[context.eventIndex] === "reconcile-open",
+    );
+    item.nativeObservations[at].matches[0].access = "read-write";
+    NodeAssert.throws(() => validatePreparationNativeResult(result, input()));
+  },
+);

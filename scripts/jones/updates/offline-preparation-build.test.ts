@@ -5,12 +5,16 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Fixture digests bind exact synthetic bytes.
 import * as NodeCrypto from "node:crypto";
+import * as NodeURL from "node:url";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Git commands initialize only the captured synthetic checkout and have a fixed deadline.
+import * as NodeChildProcess from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
 import {
   preparationSeaConfig,
   preparePreparationOutput,
   offlinePreparationPack,
   offlinePreparationCandidatePack,
+  offlinePreparationProducerCandidatePack,
   inspectPreparationCandidateJavaScript,
   inspectPreparationCandidateCode,
   inspectPreparationCandidateExternal,
@@ -26,6 +30,9 @@ import {
   verifyPreparationSeaConfig,
   verifyPreparationSourceOverlay,
   verifyPreparationSQLiteObservation,
+  buildQualifiedPreparation,
+  stageQualifiedPreparation,
+  type QualifiedPreparationHandle,
 } from "./offline-preparation-build.ts";
 
 const sha = (bytes: string) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
@@ -550,6 +557,119 @@ describe("closed preparation SEA build", () => {
     }));
 });
 
+describe("same-process preparation producer handles", () => {
+  const identity = { repository: "Jones-Systems/Jones-Code" as const, sourceSha: "a".repeat(40), sourceTree: "b".repeat(40), version: "1.0.0-preview.20261011.1" };
+  for (const [name, value] of [
+    ["caller boolean", true],
+    ["frozen lookalike", Object.freeze({ qualified: true })],
+    ["serialized completion", JSON.parse('{"observation":"complete","preparationCapable":true}') as unknown],
+    ["verifier callback", () => true],
+    ["empty clone", structuredClone(Object.freeze({}))],
+  ] as const) {
+    it(`refuses ${name} without opening the supplied destination`, async () => {
+      let destinationRead = false;
+      await expect(stageQualifiedPreparation({
+        handle: value as QualifiedPreparationHandle,
+        expectedSource: identity,
+        get stageResourcesDir() { destinationRead = true; throw new Error("Destination must remain unopened"); },
+      })).rejects.toThrow(/absent, expired, or consumed/);
+      expect(destinationRead).toBe(false);
+    });
+  }
+
+  it("pre-aborted build refuses before resolving paths or allocating native resources", async () => {
+    const abort = new AbortController(), reason = new Error("owned pre-build abort");
+    abort.abort(reason);
+    let inspected = false;
+    await expect(buildQualifiedPreparation({
+      signal: abort.signal,
+      get repoRoot() { inspected = true; throw new Error("No source read after abort"); },
+      get stageRoot() { inspected = true; throw new Error("No stage read after abort"); },
+    })).rejects.toBe(reason);
+    expect(inspected).toBe(false);
+  });
+
+  it("refuses a different checkout without creating any producer child or output", () =>
+    withCandidateRoot(async (root) => {
+      await expect(buildQualifiedPreparation({ repoRoot: root, stageRoot: root })).rejects.toThrow(/own bound checkout/);
+      expect(NodeFS.readdirSync(root)).toEqual([]);
+    }));
+
+  it("refuses an aliased stage before candidate reads or native work", () =>
+    withCandidateRoot(async (root) => {
+      const actual = NodePath.join(root, "actual"), alias = NodePath.join(root, "alias");
+      NodeFS.mkdirSync(actual, { mode: 0o700 }); NodeFS.symlinkSync(actual, alias);
+      await expect(buildQualifiedPreparation({ repoRoot: NodeURL.fileURLToPath(new URL("../../../", import.meta.url)), stageRoot: alias })).rejects.toThrow(/aliased or unowned/);
+      expect(NodeFS.readdirSync(actual)).toEqual([]);
+    }));
+});
+
+async function withQualifiedProducerStage(body: (input: { repoRoot: string; stageRoot: string; resources: string; source: { repository: "Jones-Systems/Jones-Code"; sourceSha: string; sourceTree: string; version: string } }) => Promise<void>) {
+  const outer = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-qualified-preparation-test-")));
+  process.stderr.write(`${JSON.stringify({ event: "qualified-preparation-test-root", root: outer })}\n`);
+  const captured = NodeFS.lstatSync(outer);
+  let primary: unknown;
+  try {
+    const stageRoot = NodePath.join(outer, "stage"), resources = NodePath.join(stageRoot, "resources");
+    NodeFS.mkdirSync(resources, { recursive: true, mode: 0o700 });
+    const repoRoot = NodeFS.realpathSync(NodeURL.fileURLToPath(new URL("../../../", import.meta.url)));
+    const graph = JSON.parse(NodeFS.readFileSync(NodePath.join(repoRoot, "apps/server/dist-exe/preparation-candidate/candidate-graph.json"), "utf8")) as { source: { sha: string; tree: string; version: string } };
+    await body({ repoRoot, stageRoot, resources, source: { repository: "Jones-Systems/Jones-Code", sourceSha: graph.source.sha, sourceTree: graph.source.tree, version: graph.source.version } });
+  } catch (cause) { primary = cause; }
+  const stageMustRemain = (cause: unknown, depth = 0): boolean => {
+    if (depth > 8 || typeof cause !== "object" || cause === null) return false;
+    return ("preserveStageRoot" in cause && cause.preserveStageRoot === true) ||
+      (cause instanceof AggregateError && cause.errors.slice(0, 32).some((inner: unknown) => stageMustRemain(inner, depth + 1))) ||
+      ("cause" in cause && stageMustRemain(cause.cause, depth + 1));
+  };
+  if (stageMustRemain(primary)) throw Object.assign(new AggregateError([primary], "Qualified producer test retains its owning stage."), { retainedRoot: outer });
+  try {
+    const current = NodeFS.lstatSync(outer);
+    expect(current.isDirectory() && current.dev === captured.dev && current.ino === captured.ino).toBe(true);
+    NodeFS.rmSync(outer, { recursive: true, force: false });
+    expect(NodeFS.existsSync(outer)).toBe(false);
+  } catch (cleanup) { throw new AggregateError(primary === undefined ? [cleanup] : [primary, cleanup], `Qualified producer test cleanup failed: ${outer}`); }
+  if (primary !== undefined) throw primary;
+}
+
+// These cases mint only through the actual native ten-case producer. A skipped case supplies no qualification evidence.
+const nativeProducerTest = process.env.JONES_PREPARATION_PRODUCER_NATIVE_TESTS === "1" ? it : it.skip;
+nativeProducerTest("native producer rejects copied handles, stages exact bytes once, then refuses replay", () =>
+  withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
+    const handle = await buildQualifiedPreparation({ repoRoot, stageRoot });
+    for (const copy of [Object.assign({}, handle), structuredClone(handle), JSON.parse(JSON.stringify(handle)) as unknown, Object.create(handle) as unknown])
+      await expect(stageQualifiedPreparation({ handle: copy as QualifiedPreparationHandle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/absent, expired, or consumed/);
+    expect(NodeFS.readdirSync(resources)).toEqual([]);
+    const result = await stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources });
+    const runtime = NodeFS.readFileSync(NodePath.join(resources, result.bootstrapRuntime.relativePath));
+    expect(NodeCrypto.createHash("sha256").update(runtime).digest("hex")).toBe(result.bootstrapRuntime.sha256);
+    expect(runtime.length).toBe(result.bootstrapRuntime.size);
+    expect(NodeFS.statSync(NodePath.join(resources, result.bootstrapRuntime.relativePath)).mode & 0o777).toBe(0o500);
+    expect(result.diagnosticEvidence.nativeColdOwnerQualified).toBe(false);
+    const before = NodeFS.readdirSync(NodePath.join(resources, "jones-bootstrap")).sort();
+    await expect(stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/absent, expired, or consumed/);
+    expect(NodeFS.readdirSync(NodePath.join(resources, "jones-bootstrap")).sort()).toEqual(before);
+  }), 30 * 60_000);
+
+nativeProducerTest("native producer revokes an issued handle on cancellation before staging", () =>
+  withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
+    const abort = new AbortController();
+    const handle = await buildQualifiedPreparation({ repoRoot, stageRoot, signal: abort.signal });
+    abort.abort(new Error("owned cancellation after native qualification"));
+    await expect(stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/absent, expired, or consumed/);
+    expect(NodeFS.readdirSync(resources)).toEqual([]);
+  }), 30 * 60_000);
+
+nativeProducerTest("native producer refuses a replaced stage incarnation and consumes the stale handle", () =>
+  withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
+    const handle = await buildQualifiedPreparation({ repoRoot, stageRoot });
+    NodeFS.renameSync(stageRoot, stageRoot + "-retained");
+    NodeFS.mkdirSync(resources, { recursive: true, mode: 0o700 });
+    await expect(stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/stage identity changed/);
+    expect(NodeFS.readdirSync(resources)).toEqual([]);
+    await expect(stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/absent, expired, or consumed/);
+  }), 30 * 60_000);
+
 async function withCandidateRoot(run: (root: string) => Promise<void>) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-preparation-candidate-test-")),
@@ -561,6 +681,21 @@ async function withCandidateRoot(run: (root: string) => Promise<void>) {
     failure = cause;
     throw cause;
   } finally {
+    const custodyUnknown = (cause: unknown, depth = 0): boolean => {
+      if (depth > 8 || typeof cause !== "object" || cause === null) return false;
+      return (
+        ("preserveScratch" in cause && cause.preserveScratch === true) ||
+        ("retainedRoot" in cause && typeof cause.retainedRoot === "string") ||
+        (cause instanceof AggregateError &&
+          cause.errors.slice(0, 32).some((inner: unknown) => custodyUnknown(inner, depth + 1))) ||
+        ("cause" in cause && custodyUnknown(cause.cause, depth + 1))
+      );
+    };
+    if (custodyUnknown(failure))
+      throw Object.assign(
+        new AggregateError([failure], "Candidate fixture retains its checkout after uncertain custody."),
+        { retainedRoot: root },
+      );
     try {
       NodeFS.rmSync(root, { recursive: true, force: true });
     } catch (cleanup) {
@@ -571,6 +706,310 @@ async function withCandidateRoot(run: (root: string) => Promise<void>) {
     }
   }
 }
+
+async function withProducerCandidateCheckout(
+  run: (root: string) => Promise<void>,
+  options: { readonly absent?: string; readonly oversized?: string } = {},
+) {
+  await withCandidateRoot(async (root) => {
+    const files = new Set([
+      ...Object.keys(artifactManifest("", "", "").source.hashes),
+      "scripts/package.json",
+      "scripts/jones/updates/offline-preparation-producer-entry.ts",
+      "scripts/jones/updates/functional-policy.ts",
+      "scripts/jones/updates/legacy-bootstrap-bundle.ts",
+      "scripts/jones/updates/legacy-preparation-native-fixture.mjs",
+      "scripts/jones/updates/legacy-preparation-native-fixture.d.mts",
+      "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs",
+      "scripts/jones/updates/legacy-identity-native-fixture.mjs",
+      ...[
+        "jonesLegacyBootstrapSource.ts",
+        "jonesLegacyMaintenanceSource.ts",
+        "jonesNativeHelperSource.ts",
+        "jonesPairedStateSource.ts",
+        "jonesColdPairSource.ts",
+        "jonesLegacyIdentityNative.c",
+        "jonesColdOwnerSource.ts",
+        "jonesPreparationWorkerSource.ts",
+      ].map((name) => `apps/desktop/src/jones/updates/${name}`),
+      "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+    ]);
+    for (const path of files) {
+      if (path === options.absent) continue;
+      const destination = NodePath.join(root, path);
+      NodeFS.mkdirSync(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
+      NodeFS.writeFileSync(
+        destination,
+        path === options.oversized
+          ? Buffer.alloc(8 * 1024 * 1024 + 1)
+          : path.endsWith("package.json")
+            ? JSON.stringify({ name: "synthetic-producer-package", version: "1.0.0" })
+            : path === "pnpm-workspace.yaml"
+              ? "patchedDependencies:\n"
+              : "export {};\n",
+        { flag: "wx", mode: 0o600 },
+      );
+    }
+    NodeFS.writeFileSync(NodePath.join(root, ".gitignore"), "apps/server/dist-exe/\nnode_modules/\n");
+    const git = (...args: string[]) =>
+      NodeChildProcess.execFileSync("/usr/bin/git", args, {
+        cwd: root,
+        timeout: 10_000,
+        stdio: "pipe",
+        env: {
+          ...process.env,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_TERMINAL_PROMPT: "0",
+        },
+      });
+    git("init", "--quiet");
+    git("add", "--all");
+    git(
+      "-c",
+      "user.name=Candidate Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "synthetic candidate inputs",
+    );
+    await run(root);
+  });
+}
+
+async function startProducerCandidate(root: string) {
+  const candidate = offlinePreparationProducerCandidatePack(root);
+  const start = candidate.plugins[0]!.buildStart;
+  if (typeof start !== "function") throw new Error("Missing producer candidate build hook.");
+  await start.call({} as never, {} as never);
+  return candidate;
+}
+
+function emitProducerCandidate(
+  candidate: ReturnType<typeof offlinePreparationProducerCandidatePack>,
+  root: string,
+  code: string,
+  options: {
+    readonly fileName?: string;
+    readonly moduleCount?: number;
+    readonly moduleId?: string;
+  } = {},
+) {
+  const fileName = options.fileName ?? "offlinePreparationProducer.mjs";
+  const id =
+    options.moduleId ??
+    NodePath.join(root, "scripts/jones/updates/offline-preparation-producer-entry.ts");
+  const generate = candidate.plugins[0]!.generateBundle;
+  if (typeof generate !== "function") throw new Error("Missing producer candidate graph hook.");
+  generate.call(
+    {
+      getModuleIds: () =>
+        options.moduleCount
+          ? Array.from({ length: options.moduleCount }, (_, index) => `${id}?${index}`)
+          : [id],
+      getModuleInfo: () => ({
+        isEntry: true,
+        importedIds: ["node:fs"],
+        dynamicallyImportedIds: [],
+        code,
+      }),
+      meta: {},
+    } as never,
+    {} as never,
+    {
+      [fileName]: {
+        type: "chunk",
+        isEntry: true,
+        fileName,
+        code,
+        modules: { [id]: { renderedLength: code.length, code } },
+        imports: ["node:fs"],
+        dynamicImports: [],
+        map: null,
+      },
+    } as never,
+    false,
+  );
+}
+
+describe("unqualified preparation producer graph", () => {
+  it("keeps the producer, SEA candidate and held outputs separate without a runtime package whitelist", () =>
+    withArtifact((root) => {
+      const producer = offlinePreparationProducerCandidatePack(root);
+      const sea = offlinePreparationCandidatePack(root);
+      const held = offlinePreparationPack(root);
+      expect(producer.entry).toEqual({
+        offlinePreparationProducer: NodePath.join(
+          NodeFS.realpathSync(root),
+          "scripts/jones/updates/offline-preparation-producer-entry.ts",
+        ),
+      });
+      expect(sea.entry).toEqual({
+        offlinePreparationEntry: "src/jones/updates/offlinePreparationEntry.ts",
+      });
+      expect(new Set([producer.outDir, sea.outDir, held.outDir]).size).toBe(3);
+      expect(producer.clean).toBe(false);
+      expect("exe" in producer).toBe(false);
+      expect(producer.deps.alwaysBundle("effect/Schema")).toBe(true);
+      expect(producer.deps.alwaysBundle("typescript-legacy")).toBe(true);
+      expect(producer.deps.neverBundle("typescript-legacy")).toBe(false);
+      expect(producer.deps.neverBundle("node:fs")).toBe(true);
+      expect(Object.keys(verifyPreparationArtifact(root).source.hashes)).toHaveLength(15);
+    }));
+
+  it("keeps missing and oversized fixed inputs as unavailable evidence", () =>
+    withProducerCandidateCheckout(
+      async (root) => {
+        const candidate = await startProducerCandidate(root);
+        emitProducerCandidate(candidate, root, "export {};\n");
+        NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), "export {};\n");
+        await candidate.onSuccess();
+        const report = JSON.parse(
+          NodeFS.readFileSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json"), "utf8"),
+        ) as {
+          source: { inputs: { path: string; content: { availability: string } }[] };
+          lateQualifierSources: { files: { path: string; content: { availability: string } }[] };
+        };
+        expect(report.source.inputs).toHaveLength(14);
+        expect(report.lateQualifierSources.files).toHaveLength(28);
+        expect(
+          report.source.inputs.find((item) => item.path.endsWith("functional-policy.ts"))!.content
+            .availability,
+        ).toBe("unavailable");
+        expect(
+          report.lateQualifierSources.files.find((item) => item.path.endsWith(".d.mts"))!.content
+            .availability,
+        ).toBe("unavailable");
+      },
+      {
+        absent: "scripts/jones/updates/legacy-preparation-native-fixture.d.mts",
+        oversized: "scripts/jones/updates/functional-policy.ts",
+      },
+    ));
+
+  it.each([
+    {
+      name: "observed loader syntax",
+      code: 'import "node:fs"; throw new Error("emitted producer must never execute");\n',
+    },
+    { name: "bounded unavailable loader syntax", code: 'require("node:fs");\n'.repeat(2050) },
+  ])("publishes exact unexecuted bytes with $name", ({ code, name }) =>
+    withProducerCandidateCheckout(async (root) => {
+      const candidate = await startProducerCandidate(root);
+      emitProducerCandidate(candidate, root, code);
+      NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), code);
+      await candidate.onSuccess();
+      const report = JSON.parse(
+        NodeFS.readFileSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json"), "utf8"),
+      ) as {
+        source: unknown;
+        lateQualifierSources: { files: unknown[] };
+        emitted: { syntax: unknown };
+        modules: { staticImports: unknown[] }[];
+      };
+      expect(report).toMatchObject({
+        classification: "preparation-producer-candidate-graph",
+        qualification: "unqualified",
+        observation: "partial",
+        emittedProducerExecuted: false,
+        completeDependencyClosure: false,
+        loadedCollectorBytesAttested: false,
+        emitted: { sha256: sha(code), size: Buffer.byteLength(code) },
+      });
+      expect(report.source).not.toHaveProperty("hashes");
+      expect(report.lateQualifierSources.files).toHaveLength(28);
+      expect(report.modules[0]!.staticImports[0]).toMatchObject({ id: "node:fs", builtin: true });
+      if (name === "bounded unavailable loader syntax")
+        expect(report.emitted.syntax).toMatchObject({
+          availability: "unavailable",
+          reason: "Candidate loader observations exceed bound.",
+        });
+      else
+        expect(report.emitted.syntax).toMatchObject({
+          imports: expect.arrayContaining([expect.objectContaining({ specifier: "node:fs" })]),
+        });
+      expect(
+        NodeFS.existsSync(NodePath.join(root, "apps/server/dist-exe/preparation-candidate")),
+      ).toBe(false);
+      expect(NodeFS.existsSync(NodePath.join(candidate.outDir, "jones-offline-preparation"))).toBe(false);
+    }));
+
+  it("refuses SEA entry names and excessive module graphs without publishing a report", () =>
+    withProducerCandidateCheckout(async (root) => {
+      const candidate = await startProducerCandidate(root);
+      expect(() =>
+        emitProducerCandidate(candidate, root, "export {};", {
+          fileName: "offlinePreparationEntry.mjs",
+        }),
+      ).toThrow(/fixed ESM entry/);
+      expect(() =>
+        emitProducerCandidate(candidate, root, "export {};", { moduleCount: 4097 }),
+      ).toThrow(/module bound/);
+      expect(NodeFS.readdirSync(candidate.outDir)).toEqual([]);
+    }));
+
+  it("rejects a fixed source change before observing the graph", () =>
+    withProducerCandidateCheckout(async (root) => {
+      const candidate = await startProducerCandidate(root);
+      NodeFS.appendFileSync(
+        NodePath.join(root, "scripts/jones/updates/functional-policy.ts"),
+        "\n// changed\n",
+      );
+      expect(() => emitProducerCandidate(candidate, root, "export {};")).toThrow(
+        /source inputs changed/,
+      );
+      expect(NodeFS.readdirSync(candidate.outDir)).toEqual([]);
+    }));
+
+  it("rejects changed emitted bytes before reporting and retains those bytes", () =>
+    withProducerCandidateCheckout(async (root) => {
+      const candidate = await startProducerCandidate(root);
+      emitProducerCandidate(candidate, root, "export {};\n");
+      const output = NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs");
+      NodeFS.writeFileSync(output, "changed emitted bytes");
+      await expect(candidate.onSuccess()).rejects.toThrow(/emitted bytes changed/);
+      expect(NodeFS.readFileSync(output, "utf8")).toBe("changed emitted bytes");
+      expect(NodeFS.existsSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json"))).toBe(false);
+    }));
+
+  it.each(["index.js", "package.json"])(
+    "rejects drift in an observed installed %s before reporting",
+    (changed) =>
+      withProducerCandidateCheckout(async (root) => {
+        const directory = NodePath.join(root, "node_modules/synthetic-dependency");
+        NodeFS.mkdirSync(directory, { recursive: true, mode: 0o700 });
+        const moduleId = NodePath.join(directory, "index.js");
+        NodeFS.writeFileSync(moduleId, "export {};\n");
+        NodeFS.writeFileSync(
+          NodePath.join(directory, "package.json"),
+          '{"name":"synthetic-dependency","version":"1.0.0"}',
+        );
+        const candidate = await startProducerCandidate(root);
+        emitProducerCandidate(candidate, root, "export {};\n", { moduleId });
+        NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), "export {};\n");
+        NodeFS.appendFileSync(NodePath.join(directory, changed), "\n ");
+        await expect(candidate.onSuccess()).rejects.toThrow(/graph inputs changed/);
+        expect(NodeFS.existsSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json"))).toBe(false);
+      }),
+  );
+
+  it("refuses publication without a graph and preserves pre-cancellation", () =>
+    withCandidateRoot(async (root) => {
+      await expect(offlinePreparationProducerCandidatePack(root).onSuccess()).rejects.toThrow(
+        /incomplete/,
+      );
+      const reason = Object.freeze(new Error("producer collector cancelled"));
+      const candidate = offlinePreparationProducerCandidatePack(root, {
+        signal: AbortSignal.abort(reason),
+      });
+      const start = candidate.plugins[0]!.buildStart;
+      if (typeof start !== "function") throw new Error("Missing producer candidate build hook.");
+      await expect(start.call({} as never, {} as never)).rejects.toBe(reason);
+      expect(NodeFS.existsSync(candidate.outDir)).toBe(false);
+    }));
+});
 
 describe("unqualified preparation candidate graph", () => {
   it("keeps emitted imports and builtin calls separate from stale bundler metadata", () => {

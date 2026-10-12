@@ -4,7 +4,10 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
-import { readColdMaintenanceSources } from "./legacy-cold-maintenance-fixture.mjs";
+import {
+  materializeColdMaintenance,
+  materializePairedExecutor,
+} from "./legacy-cold-maintenance-fixture.mjs";
 import {
   runLegacyIdentityFixtureCommand,
   withLegacyIdentityScratch,
@@ -105,16 +108,24 @@ export function validatePreparationNativeInput(value) {
     "sourceTree",
     "preparation",
     "nativeSourceSha256",
+    "qualifierSourceHashes",
     "files",
   ]);
   NodeAssert.equal(value.schema, 1);
   NodeAssert.equal(value.classification, "synthetic-preparation-native-input");
   for (const key of ["sourceSha", "sourceTree"]) NodeAssert.match(value[key], /^[a-f0-9]{40}$/);
   NodeAssert.match(value.nativeSourceSha256, hex);
+  exact(value.qualifierSourceHashes, preparationNativeQualifierSourceInputs);
+  for (const digest of Object.values(value.qualifierSourceHashes)) NodeAssert.match(digest, hex);
   exact(value.files, ["executable", "node", "native", "entry", "seaConfig", "provenance"]);
   for (const [name, file] of Object.entries(value.files)) {
     exact(file, ["path", "sha256", "size"]);
-    NodeAssert.ok(NodePath.isAbsolute(file.path) && NodePath.normalize(file.path) === file.path);
+    NodeAssert.ok(
+      typeof file.path === "string" &&
+        file.path.length <= 4096 &&
+        NodePath.isAbsolute(file.path) &&
+        NodePath.normalize(file.path) === file.path,
+    );
     NodeAssert.match(file.sha256, hex);
     const bound =
       name === "native"
@@ -136,12 +147,22 @@ export function validatePreparationNativeInput(value) {
     NodeAssert.equal(proof[name].sha256, value.files[name].sha256);
     NodeAssert.equal(proof[name].size, value.files[name].size);
   }
+  NodeAssert.equal(proof.executable.name, "jones-offline-preparation");
   NodeAssert.equal(proof.provenanceSha256, value.files.provenance.sha256);
   NodeAssert.equal(proof.node.runtimeSha256, value.files.node.sha256);
   NodeAssert.equal(proof.node.runtimeBytes, value.files.node.size);
   NodeAssert.equal(proof.node.version, "26.8.2");
   NodeAssert.equal(proof.node.platform, "darwin");
   NodeAssert.equal(proof.node.architecture, "arm64");
+  exact(proof.sqlite, ["version", "sourceId"]);
+  NodeAssert.match(
+    proof.sqlite.version,
+    /^(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})$/,
+  );
+  NodeAssert.match(
+    proof.sqlite.sourceId,
+    /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [a-f0-9]{64}$/,
+  );
   return value;
 }
 
@@ -174,8 +195,8 @@ async function openRegularInput(path, maximum, signal) {
   }
 }
 
-export async function readPreparationNativeInputFile(path, signal) {
-  const { handle, info } = await openRegularInput(path, 65536, signal);
+async function readCurrentSource(path, maximum, signal) {
+  const { handle, info } = await openRegularInput(path, maximum, signal);
   let raw, primary;
   try {
     signal?.throwIfAborted();
@@ -189,6 +210,10 @@ export async function readPreparationNativeInputFile(path, signal) {
     }
     NodeAssert.equal(offset, Number(info.size));
     raw = buffer.subarray(0, offset);
+    const after = await handle.stat({ bigint: true });
+    const current = await NodeFSP.lstat(path, { bigint: true });
+    for (const key of ["dev", "ino", "size", "mtimeNs", "ctimeNs", "mode", "nlink"])
+      NodeAssert.ok(info[key] === after[key] && info[key] === current[key]);
   } catch (error) {
     primary = error;
   }
@@ -205,6 +230,10 @@ export async function readPreparationNativeInputFile(path, signal) {
   }
   if (primary) throw primary;
   return raw;
+}
+
+export async function readPreparationNativeInputFile(path, signal) {
+  return readCurrentSource(path, 65536, signal);
 }
 
 export async function copyPreparationNativeArtifact(file, destination, signal) {
@@ -736,6 +765,7 @@ def run_case(case, bundle):
     baseline = readonly_rows(database)
     events, observations, sessions, sent, faults = [], [], [], {}, []
     repeat_evidence = {}
+    contexts, scope_frames = [], {}
     held_receipt = None
     original_receive, original_observe, original_send, original_finish = Worker.receive, Worker.observe, Worker.send, Worker.finish
     original_durable = scope['durable_file']
@@ -746,6 +776,9 @@ def run_case(case, bundle):
         assert report['bootSessionUuid'] == actual_boot and report['sqliteOpenProved'] is False
         observations.append(report)
         events.append('ready' if capture else 'closed-supplement' if access is None else ('plan-open' if path != database else 'reconcile-open' if access == 'read-only' else 'apply-open'))
+        contexts.append(dict(eventIndex=len(events)-1, sessionId=self.session_id, workerPid=self.process.child.pid,
+                             databasePath=str(path), databaseKind='live' if path == database else 'planning',
+                             access=access, frame=scope_frames[self.session_id] if access is not None else None))
         if access is not None:
             assert report['processes'][1]['pid'] == self.process.child.pid
             if path == database:
@@ -757,12 +790,16 @@ def run_case(case, bundle):
     Worker.observe = observe
     def receive(self, kinds):
         result, raw = original_receive(self, kinds)
+        if result['type'] == 'SQL_SCOPE_OPENED': scope_frames[self.session_id] = result.copy()
         if result['type'] in ('PLAN_READY', 'CLOSED_RESULT'):
             target = self.work / 'state.sqlite' if result['type'] == 'PLAN_READY' or result.get('planSha256') is None else database
             original_observe(self, target)
             report = json.loads(bytes(self.observers[-1].output)); observations.append(report)
             assert not any(item['eligibleOpenObservation'] and item['process'] == 'worker' for item in report['matches'])
             events.append(result['type'])
+            contexts.append(dict(eventIndex=len(events)-1, sessionId=self.session_id, workerPid=self.process.child.pid,
+                                 databasePath=str(target), databaseKind='live' if target == database else 'planning',
+                                 access=None, frame=result.copy()))
         return result, raw
     Worker.receive = receive
     def send(self, kind, **fields):
@@ -901,7 +938,7 @@ def run_case(case, bundle):
                 assert receipt['pidSignalAuthority'] is False
                 assert all(item['reaped'] and item['streamsClosed'] for item in receipt['observers'])
         return dict(case=case, status=result['status'], events=events,
-                    observerCalls=len(observations), nativeObservations=observations,
+                    observerCalls=len(observations), nativeObservations=observations, observationContexts=contexts,
                     sqliteDescriptorObservations=True, rawPairPreserved=True, currentBootObserved=actual_boot,
                     priorBootModeled=True, workerReaped=True, productionAdmission=False,
                     productionCustodyHeld=held_receipt is not None,
@@ -963,6 +1000,603 @@ export const preparationNativeSourceInputs = Object.freeze([
   "apps/server/src/jones/updates/offlinePreparationWorker.ts",
 ]);
 
+export const preparationNativeQualifierSourceInputs = Object.freeze([
+  ...preparationNativeSourceInputs,
+  "scripts/jones/updates/legacy-preparation-native-fixture.mjs",
+  "scripts/jones/updates/legacy-preparation-native-fixture.d.mts",
+  "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs",
+  "scripts/jones/updates/legacy-identity-native-fixture.mjs",
+  "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts",
+  "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts",
+  "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
+  "apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
+  "apps/desktop/src/jones/updates/jonesColdPairSource.ts",
+  "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
+  "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
+  "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts",
+  "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+]);
+
+/** Fixed-list source observation only; hashes do not grant native or producer authority. */
+export async function readPreparationNativeQualifierSourceHashes(directory = repository, signal) {
+  return (await qualifierSnapshot(directory, signal)).hashes;
+}
+async function qualifierSnapshot(directory, signal) {
+  const hashes = {},
+    bytes = new Map();
+  for (const name of preparationNativeQualifierSourceInputs) {
+    const raw = await readCurrentSource(NodePath.join(directory, name), 4 * 1024 * 1024, signal);
+    hashes[name] = hash(raw);
+    bytes.set(name, raw);
+  }
+  return { hashes, bytes };
+}
+
+function boundedResult(value, maximum) {
+  let budget = maximum,
+    nodes = 0;
+  function visit(item, depth) {
+    NodeAssert.ok(depth <= 32 && ++nodes <= 100000);
+    if (typeof item === "string") {
+      NodeAssert.ok(item.length <= maximum);
+      budget -= Buffer.byteLength(JSON.stringify(item));
+    } else if (item === null || typeof item === "boolean") budget -= 5;
+    else if (typeof item === "number") {
+      NodeAssert.ok(Number.isFinite(item));
+      budget -= 32;
+    } else {
+      NodeAssert.ok(item && typeof item === "object");
+      const entries = Object.entries(item);
+      NodeAssert.ok(entries.length <= 4096);
+      budget -= entries.length * 2 + 2;
+      for (const [key, child] of entries) {
+        if (!Array.isArray(item)) visit(key, depth + 1);
+        visit(child, depth + 1);
+      }
+    }
+    NodeAssert.ok(budget >= 0);
+  }
+  visit(value, 0);
+}
+
+const nativeUuid = /^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$/;
+function nativeInteger(value, maximum = 2147483647) {
+  NodeAssert.ok(Number.isSafeInteger(value) && value >= 0 && value <= maximum);
+}
+function nativeDecimal(value, maximum = 18446744073709551615n) {
+  NodeAssert.match(value, /^(?:0|[1-9][0-9]{0,19})$/);
+  NodeAssert.ok(BigInt(value) <= maximum);
+}
+function nativePath(value) {
+  NodeAssert.ok(
+    typeof value === "string" &&
+      Buffer.byteLength(value) <= 4096 &&
+      !value.includes("\0") &&
+      NodePath.isAbsolute(value) &&
+      NodePath.normalize(value) === value,
+  );
+}
+function validateNativeFamily(observation) {
+  const excluded = observation.excludedWorkerFds;
+  NodeAssert.ok(Array.isArray(excluded) && excluded.length <= 64);
+  excluded.forEach((fd, index) => {
+    nativeInteger(fd);
+    if (index) NodeAssert.ok(excluded[index - 1] < fd);
+  });
+  const family = observation.family;
+  NodeAssert.ok(Array.isArray(family) && family.length >= 1 && family.length <= 4);
+  const roles = ["database", "wal", "shm", "journal"],
+    suffixes = ["", "-wal", "-shm", "-journal"];
+  const seen = new Set(),
+    objects = new Set();
+  family.forEach((member, index) => {
+    exact(member, ["role", "object"]);
+    NodeAssert.ok(roles.includes(member.role) && !seen.has(member.role));
+    seen.add(member.role);
+    if (index === 0) NodeAssert.equal(member.role, "database");
+    const object = exact(member.object, [
+      "index",
+      "path",
+      "kind",
+      "persistent",
+      "stat",
+      "mount",
+      "current",
+    ]);
+    NodeAssert.equal(object.index, index);
+    nativePath(object.path);
+    NodeAssert.equal(object.path, family[0].object.path + suffixes[roles.indexOf(member.role)]);
+    NodeAssert.equal(object.kind, "file");
+    NodeAssert.equal(object.current, true);
+    exact(object.persistent, ["volumeUuid", "fileId"]);
+    NodeAssert.match(object.persistent.volumeUuid, nativeUuid);
+    nativeDecimal(object.persistent.fileId);
+    NodeAssert.notEqual(object.persistent.fileId, "0");
+    const identity = object.persistent.volumeUuid + ":" + object.persistent.fileId;
+    NodeAssert.ok(!objects.has(identity));
+    objects.add(identity);
+    const stat = exact(object.stat, [
+      "device",
+      "inode",
+      "uid",
+      "gid",
+      "nlink",
+      "mode",
+      "flags",
+      "size",
+      "mtimeNs",
+      "ctimeNs",
+      "birthtimeNs",
+    ]);
+    for (const key of ["device", "inode", "nlink"]) nativeDecimal(stat[key]);
+    for (const key of ["size", "mtimeNs", "ctimeNs", "birthtimeNs"])
+      nativeDecimal(stat[key], 9223372036854775807n);
+    for (const key of ["uid", "gid", "flags"]) nativeInteger(stat[key], 4294967295);
+    nativeInteger(stat.mode, 4095);
+    NodeAssert.notEqual(stat.nlink, "0");
+    const mount = exact(object.mount, [
+      "filesystem",
+      "flags",
+      "mountPoint",
+      "local",
+      "ownershipHonored",
+      "executable",
+      "persistentObjectIds",
+      "objectIds64Bit",
+    ]);
+    NodeAssert.equal(mount.filesystem, "apfs");
+    nativeInteger(mount.flags, 4294967295);
+    nativePath(mount.mountPoint);
+    for (const key of [
+      "local",
+      "ownershipHonored",
+      "executable",
+      "persistentObjectIds",
+      "objectIds64Bit",
+    ])
+      NodeAssert.equal(mount[key], true);
+  });
+  NodeAssert.ok(Array.isArray(observation.matches) && observation.matches.length <= 512);
+  const matches = new Set();
+  for (const match of observation.matches) {
+    exact(match, [
+      "process",
+      "familyRole",
+      "fd",
+      "access",
+      "shared",
+      "eligibleOpenObservation",
+      "exclusion",
+    ]);
+    NodeAssert.ok(["owner", "worker"].includes(match.process) && seen.has(match.familyRole));
+    nativeInteger(match.fd);
+    NodeAssert.ok(
+      ["read-only", "write-only", "read-write", "event-only", "none"].includes(match.access),
+    );
+    NodeAssert.equal(typeof match.shared, "boolean");
+    const exclusion =
+      match.process === "owner"
+        ? "owner"
+        : excluded.includes(match.fd)
+          ? "pre-open-inherited"
+          : match.access === "event-only"
+            ? "event-only"
+            : match.shared
+              ? "shared"
+              : !["read-only", "read-write"].includes(match.access)
+                ? "not-readable"
+                : null;
+    NodeAssert.equal(match.exclusion, exclusion);
+    NodeAssert.equal(match.eligibleOpenObservation, exclusion === null);
+    const identity = match.process + ":" + match.fd;
+    NodeAssert.ok(!matches.has(identity));
+    matches.add(identity);
+  }
+  for (const process of observation.processes)
+    NodeAssert.ok(
+      observation.matches.filter((match) => match.process === process.role).length <=
+        process.fdCount,
+    );
+}
+function validateCaseObservations(item, closure) {
+  const prefix = ["ready", "closed-supplement", "plan-open"];
+  const planned = [...prefix, "PLAN_READY", "intent-durable"];
+  const applied = [...planned, "apply-open", "CLOSED_RESULT"];
+  const settled = [...applied, "reaped", "observed"];
+  const expected = {
+    apply: settled,
+    reconcile: [...settled, "ready", "reconcile-open", "CLOSED_RESULT", "reaped", "observed"],
+    "repeat-plan": planned,
+    "durable-plan-drift": planned,
+    "repeat-apply": applied,
+    "close-uncertainty": applied,
+    "wrong-scope": prefix,
+    "paused-cancel": prefix,
+    "custody-uncertainty": prefix,
+    "closed-query-failure": [...prefix, "CLOSED_RESULT", "reaped"],
+  }[item.case];
+  NodeAssert.deepEqual(item.events, expected);
+  NodeAssert.ok(Array.isArray(item.observationContexts));
+  NodeAssert.equal(item.observationContexts.length, item.nativeObservations.length);
+  const eventIndices = item.events.flatMap((event, index) =>
+    ["intent-durable", "reaped", "observed"].includes(event) ? [] : [index],
+  );
+  NodeAssert.equal(eventIndices.length, item.nativeObservations.length);
+  const sessions = new Map();
+  let livePath, planSha256;
+  item.observationContexts.forEach((context, index) => {
+    exact(context, [
+      "eventIndex",
+      "sessionId",
+      "workerPid",
+      "databasePath",
+      "databaseKind",
+      "access",
+      "frame",
+    ]);
+    NodeAssert.equal(context.eventIndex, eventIndices[index]);
+    NodeAssert.match(context.sessionId, hex);
+    nativeInteger(context.workerPid);
+    nativePath(context.databasePath);
+    const phase = item.events[context.eventIndex],
+      observation = item.nativeObservations[index];
+    const processes = observation.processes.map(({ fdCount, ...identity }) => identity);
+    NodeAssert.equal(context.workerPid, processes[1].pid);
+    NodeAssert.ok(
+      closure.processes.some(
+        (process) => process.pid === context.workerPid && process.reaped && process.streamsClosed,
+      ),
+    );
+    if (phase === "ready") {
+      NodeAssert.ok(!sessions.has(context.sessionId));
+      sessions.set(context.sessionId, {
+        processes,
+        excluded: observation.excludedWorkerFds,
+        opened: null,
+        planningPath: null,
+      });
+      NodeAssert.equal(observation.operation, "capture-worker");
+    } else NodeAssert.equal(observation.operation, "observe-worker");
+    const session = sessions.get(context.sessionId);
+    NodeAssert.ok(session);
+    NodeAssert.deepEqual(processes, session.processes);
+    NodeAssert.deepEqual(observation.excludedWorkerFds, session.excluded);
+    const planning =
+      ["closed-supplement", "plan-open", "PLAN_READY"].includes(phase) ||
+      (phase === "CLOSED_RESULT" && item.case === "closed-query-failure");
+    NodeAssert.equal(context.databaseKind, planning ? "planning" : "live");
+    if (planning) {
+      if (session.planningPath === null) session.planningPath = context.databasePath;
+      NodeAssert.equal(context.databasePath, session.planningPath);
+      NodeAssert.notEqual(context.databasePath, livePath);
+    } else {
+      if (livePath === undefined) livePath = context.databasePath;
+      NodeAssert.equal(context.databasePath, livePath);
+    }
+    NodeAssert.equal(observation.family[0].object.path, context.databasePath);
+    NodeAssert.ok(!observation.family.some((member) => member.role === "journal"));
+    const access = phase.endsWith("-open")
+      ? phase === "reconcile-open"
+        ? "read-only"
+        : "read-write"
+      : null;
+    NodeAssert.equal(context.access, access);
+    const eligible = observation.matches.filter(
+      (match) => match.process === "worker" && match.eligibleOpenObservation,
+    );
+    if (access === null) NodeAssert.equal(eligible.length, 0);
+    else {
+      const databases = eligible.filter((match) => match.familyRole === "database");
+      NodeAssert.equal(databases.length, 1);
+      NodeAssert.equal(databases[0].access, access);
+    }
+    if (["ready", "closed-supplement"].includes(phase)) {
+      NodeAssert.equal(context.frame, null);
+      return;
+    }
+    const frame = context.frame;
+    const type = access !== null ? "SQL_SCOPE_OPENED" : phase;
+    const extra =
+      type === "SQL_SCOPE_OPENED"
+        ? ["scopeId", "purpose", "access"]
+        : type === "PLAN_READY"
+          ? ["planSha256"]
+          : ["scopeId", "planSha256", "outcome", "errorCode"];
+    exact(frame, ["schema", "type", "sessionId", "sequence", "payloadBytes", ...extra]);
+    NodeAssert.equal(frame.schema, 1);
+    NodeAssert.equal(frame.type, type);
+    NodeAssert.equal(frame.sessionId, context.sessionId);
+    NodeAssert.equal(
+      frame.sequence,
+      planning || phase === "reconcile-open" || sessions.size === 2 ? 1 : 2,
+    );
+    nativeInteger(frame.payloadBytes, 8 * 1024 * 1024);
+    NodeAssert.ok(type === "PLAN_READY" ? frame.payloadBytes > 0 : frame.payloadBytes === 0);
+    if (type === "SQL_SCOPE_OPENED") {
+      NodeAssert.match(frame.scopeId, hex);
+      NodeAssert.equal(frame.purpose, phase.slice(0, -5));
+      NodeAssert.equal(frame.access, access);
+      session.opened = frame;
+    } else {
+      NodeAssert.ok(session.opened);
+      NodeAssert.equal(session.opened.sequence, frame.sequence);
+      if (type === "CLOSED_RESULT") {
+        NodeAssert.equal(frame.scopeId, session.opened.scopeId);
+        const failed = item.case === "closed-query-failure";
+        NodeAssert.equal(frame.outcome, failed ? "query-failed" : "applied");
+        NodeAssert.equal(frame.errorCode, failed ? "query-rejected" : null);
+        if (failed) NodeAssert.equal(frame.planSha256, null);
+        else {
+          NodeAssert.match(frame.planSha256, hex);
+          NodeAssert.equal(frame.planSha256, planSha256);
+        }
+      } else {
+        NodeAssert.match(frame.planSha256, hex);
+        if (planSha256 === undefined) planSha256 = frame.planSha256;
+        NodeAssert.equal(frame.planSha256, planSha256);
+      }
+    }
+  });
+  NodeAssert.equal(sessions.size, item.case === "reconcile" ? 2 : 1);
+}
+
+/** Validate recorded structure and binding; only the real native run supplies observations. */
+export function validatePreparationNativeResult(result, input) {
+  const artifact = validatePreparationNativeInput(input);
+  boundedResult(result, 4 * 1024 * 1024);
+  exact(result, [
+    "schema",
+    "qualification",
+    "cases",
+    "artifact",
+    "fixtureDataSourceHashes",
+    "qualifierSourceHashes",
+    "fixtureClosure",
+    "producerQualified",
+    "priorBootModeled",
+    "nativeColdOwnerQualified",
+    "stateAdmissionAllowed",
+    "activationAllowed",
+  ]);
+  NodeAssert.equal(result.schema, 1);
+  NodeAssert.equal(result.qualification, "synthetic-native-preparation");
+  NodeAssert.equal(result.fixtureClosure, true);
+  NodeAssert.equal(result.priorBootModeled, true);
+  for (const key of [
+    "producerQualified",
+    "nativeColdOwnerQualified",
+    "stateAdmissionAllowed",
+    "activationAllowed",
+  ])
+    NodeAssert.equal(result[key], false);
+  exact(result.qualifierSourceHashes, preparationNativeQualifierSourceInputs);
+  NodeAssert.deepEqual(result.qualifierSourceHashes, artifact.qualifierSourceHashes);
+  for (const name of preparationNativeSourceInputs)
+    NodeAssert.equal(
+      result.qualifierSourceHashes[name],
+      artifact.preparation.sourceInputHashes[name],
+    );
+  NodeAssert.equal(
+    result.qualifierSourceHashes["apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"],
+    artifact.nativeSourceSha256,
+  );
+  exact(result.artifact, [
+    "executableSha256",
+    "nativeSha256",
+    "nodeSha256",
+    "entrySha256",
+    "seaConfigSha256",
+    "provenanceSha256",
+    "nativeSourceSha256",
+    "fileSizes",
+    "sourceSha",
+    "sourceTree",
+  ]);
+  exact(result.artifact.fileSizes, Object.keys(artifact.files));
+  for (const [name, file] of Object.entries(artifact.files)) {
+    NodeAssert.equal(result.artifact[name + "Sha256"], file.sha256);
+    NodeAssert.equal(result.artifact.fileSizes[name], file.size);
+  }
+  for (const name of ["sourceSha", "sourceTree", "nativeSourceSha256"])
+    NodeAssert.equal(result.artifact[name], artifact[name]);
+  exact(result.fixtureDataSourceHashes, ["core", "workerTests"]);
+  NodeAssert.equal(
+    result.fixtureDataSourceHashes.core,
+    result.qualifierSourceHashes["apps/server/src/jones/updates/offlinePreparationCore.ts"],
+  );
+  NodeAssert.equal(
+    result.fixtureDataSourceHashes.workerTests,
+    result.qualifierSourceHashes["apps/server/src/jones/updates/offlinePreparationWorker.test.ts"],
+  );
+  NodeAssert.ok(Array.isArray(result.cases));
+  NodeAssert.equal(result.cases.length, preparationNativeCases.length);
+  [...result.cases].forEach((report, index) => {
+    boundedResult(report, 327680);
+    exact(report, [
+      "schema",
+      "qualification",
+      "producerQualified",
+      "nativeColdOwnerQualified",
+      "stateAdmissionAllowed",
+      "activationAllowed",
+      "uri",
+      "cases",
+      "fixtureClosure",
+      "closure",
+    ]);
+    NodeAssert.equal(report.schema, 1);
+    NodeAssert.equal(report.qualification, result.qualification);
+    NodeAssert.equal(report.fixtureClosure, true);
+    for (const key of [
+      "producerQualified",
+      "nativeColdOwnerQualified",
+      "stateAdmissionAllowed",
+      "activationAllowed",
+    ])
+      NodeAssert.equal(report[key], false);
+    validatePreparationNativeClosure(report.closure);
+    exact(report.uri, [
+      "version",
+      "sourceId",
+      "nodeVersion",
+      "missingFileCreated",
+      "existingUriRead",
+    ]);
+    NodeAssert.equal(report.uri.version, artifact.preparation.sqlite.version);
+    NodeAssert.equal(report.uri.sourceId, artifact.preparation.sqlite.sourceId);
+    NodeAssert.equal(report.uri.nodeVersion, "26.8.2");
+    NodeAssert.equal(report.uri.missingFileCreated, false);
+    NodeAssert.equal(report.uri.existingUriRead, true);
+    NodeAssert.ok(Array.isArray(report.cases) && report.cases.length === 1);
+    const item = report.cases[0],
+      name = preparationNativeCases[index];
+    exact(item, [
+      "case",
+      "status",
+      "events",
+      "observerCalls",
+      "nativeObservations",
+      "observationContexts",
+      "sqliteDescriptorObservations",
+      "rawPairPreserved",
+      "currentBootObserved",
+      "priorBootModeled",
+      "workerReaped",
+      "productionAdmission",
+      "productionCustodyHeld",
+      "independentCleanupRecovered",
+      "heldCustodyReceipt",
+      "repeatRejection",
+    ]);
+    NodeAssert.equal(item.case, name);
+    NodeAssert.equal(
+      item.status,
+      ["apply", "reconcile"].includes(name)
+        ? "applied"
+        : name === "closed-query-failure"
+          ? "query-failed"
+          : "expected-refusal",
+    );
+    for (const key of [
+      "sqliteDescriptorObservations",
+      "rawPairPreserved",
+      "priorBootModeled",
+      "workerReaped",
+    ])
+      NodeAssert.equal(item[key], true);
+    NodeAssert.equal(item.productionAdmission, false);
+    NodeAssert.equal(item.independentCleanupRecovered, name === "custody-uncertainty");
+    NodeAssert.equal(item.productionCustodyHeld, item.status === "expected-refusal");
+    NodeAssert.equal(item.heldCustodyReceipt !== null, item.productionCustodyHeld);
+    NodeAssert.equal(
+      item.repeatRejection !== null,
+      name === "repeat-plan" || name === "repeat-apply",
+    );
+    NodeAssert.match(
+      item.currentBootObserved,
+      /^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$/,
+    );
+    NodeAssert.ok(
+      Array.isArray(item.events) &&
+        item.events.length <= 128 &&
+        item.events.every((event) => typeof event === "string" && event.length <= 64),
+    );
+    NodeAssert.ok(
+      Array.isArray(item.nativeObservations) &&
+        item.nativeObservations.length > 0 &&
+        item.nativeObservations.length <= 64,
+    );
+    NodeAssert.equal(item.observerCalls, item.nativeObservations.length);
+    for (const observation of item.nativeObservations) {
+      exact(observation, [
+        "schema",
+        "operation",
+        "status",
+        "bootSessionUuid",
+        "processes",
+        "excludedWorkerFds",
+        "family",
+        "matches",
+        "suppliedFamilyOnly",
+        "familyMembershipComplete",
+        "observationOnly",
+        "sqliteOpenProved",
+        "databaseSyncCloseProved",
+        "workerReaped",
+        "stateAdmissionAllowed",
+        "launchMembershipComplete",
+        "processCustody",
+        "activationAllowed",
+      ]);
+      NodeAssert.equal(observation.schema, 1);
+      NodeAssert.ok(["capture-worker", "observe-worker"].includes(observation.operation));
+      NodeAssert.equal(observation.status, "observed");
+      NodeAssert.equal(observation.bootSessionUuid, item.currentBootObserved);
+      for (const key of ["suppliedFamilyOnly", "observationOnly"])
+        NodeAssert.equal(observation[key], true);
+      for (const key of [
+        "familyMembershipComplete",
+        "sqliteOpenProved",
+        "databaseSyncCloseProved",
+        "workerReaped",
+        "stateAdmissionAllowed",
+        "launchMembershipComplete",
+        "activationAllowed",
+      ])
+        NodeAssert.equal(observation[key], false);
+      NodeAssert.equal(observation.processCustody, "unobserved");
+      NodeAssert.ok(Array.isArray(observation.processes) && observation.processes.length === 2);
+      observation.processes.forEach((process, index) => {
+        exact(process, [
+          "role",
+          "pid",
+          "parentPid",
+          "uniqueId",
+          "parentUniqueId",
+          "pidVersion",
+          "uid",
+          "fdCount",
+        ]);
+        NodeAssert.equal(process.role, index === 0 ? "owner" : "worker");
+        for (const key of ["pid", "parentPid", "pidVersion", "uid", "fdCount"])
+          NodeAssert.ok(Number.isSafeInteger(process[key]) && process[key] >= 0);
+        NodeAssert.ok(process.pid > 0);
+        nativeInteger(process.pid);
+        nativeInteger(process.parentPid);
+        nativeInteger(process.uid, 4294967295);
+        nativeInteger(process.pidVersion, 4294967295);
+        nativeInteger(process.fdCount, 256);
+        for (const key of ["uniqueId", "parentUniqueId"])
+          NodeAssert.match(process[key], /^[0-9]{1,20}$/);
+      });
+      NodeAssert.equal(observation.processes[1].parentPid, observation.processes[0].pid);
+      NodeAssert.equal(observation.processes[1].parentUniqueId, observation.processes[0].uniqueId);
+      validateNativeFamily(observation);
+    }
+    validateCaseObservations(item, report.closure);
+    if (item.repeatRejection !== null) {
+      const rejection = item.repeatRejection;
+      exact(rejection, [
+        "started",
+        "outputBytes",
+        "firstHeader",
+        "exitCode",
+        "reapedBeforeCleanup",
+        "stdinStayedOpen",
+        "signalsBeforeCleanup",
+        "stderr",
+      ]);
+      for (const key of ["started", "reapedBeforeCleanup", "stdinStayedOpen"])
+        NodeAssert.equal(rejection[key], true);
+      NodeAssert.equal(rejection.outputBytes, 0);
+      NodeAssert.equal(rejection.firstHeader, null);
+      NodeAssert.equal(rejection.exitCode, 70);
+      NodeAssert.deepEqual(rejection.signalsBeforeCleanup, []);
+      NodeAssert.equal(rejection.stderr, "Closed preparation worker refused.\n");
+    }
+  });
+}
+
 export function validatePreparationNativeClosure(value) {
   exact(value, [
     "schema",
@@ -985,6 +1619,27 @@ export function validatePreparationNativeClosure(value) {
     Array.isArray(value.processes) && value.processes.length > 0 && value.processes.length <= 64,
   );
   for (const item of value.processes) {
+    exact(item, [
+      "pid",
+      "spawnAttempted",
+      "spawnUnknown",
+      "reaped",
+      "streamsClosed",
+      "signals",
+      "pidSignalAuthority",
+    ]);
+    NodeAssert.ok(Number.isSafeInteger(item.pid) && item.pid > 0);
+    NodeAssert.ok(Array.isArray(item.signals) && item.signals.length <= 16);
+    for (const signal of item.signals) {
+      exact(
+        signal,
+        signal.outcome === "failed" ? ["operation", "outcome", "errno"] : ["operation", "outcome"],
+      );
+      NodeAssert.ok(["terminate", "kill"].includes(signal.operation));
+      NodeAssert.ok(["returned", "failed"].includes(signal.outcome));
+      if (signal.outcome === "failed")
+        NodeAssert.ok(signal.errno === null || Number.isSafeInteger(signal.errno));
+    }
     NodeAssert.equal(item.spawnUnknown, false);
     NodeAssert.equal(item.spawnAttempted, true);
     NodeAssert.equal(item.reaped, true);
@@ -1004,22 +1659,43 @@ export async function runLegacyPreparationNativeFixture({
     throw new PreparationNativeUnavailable("darwin arm64 required");
   const artifact = validatePreparationNativeInput(input);
   exact(artifact.preparation.sourceInputHashes, preparationNativeSourceInputs);
-  const sources = await readColdMaintenanceSources();
+  const snapshot = await qualifierSnapshot(repository, signal);
+  const qualifierHashes = snapshot.hashes;
+  NodeAssert.deepEqual(qualifierHashes, artifact.qualifierSourceHashes);
+  const source = (name) =>
+    snapshot.bytes.get("apps/desktop/src/jones/updates/" + name).toString("utf8");
+  const bootstrapText = source("jonesLegacyBootstrapSource.ts");
+  const marker = "String.raw`";
+  const start = bootstrapText.indexOf(marker);
+  NodeAssert.ok(start >= 0 && bootstrapText.trimEnd().endsWith("`;"));
+  const bootstrap = bootstrapText.slice(start + marker.length, bootstrapText.lastIndexOf("`;"));
+  NodeAssert.ok(bootstrap.endsWith("if __name__ == '__main__':\n    sys.exit(main())\n"));
+  const sources = {
+    bootstrap,
+    maintenance: materializeColdMaintenance(
+      bootstrapText,
+      source("jonesLegacyMaintenanceSource.ts"),
+      source("jonesColdPairSource.ts"),
+      source("jonesPairedStateSource.ts"),
+      source("jonesColdOwnerSource.ts"),
+      source("jonesPreparationWorkerSource.ts"),
+    ),
+    executor: materializePairedExecutor(
+      source("jonesNativeHelperSource.ts"),
+      source("jonesPairedStateSource.ts"),
+    ),
+    nativeSourceSha256:
+      qualifierHashes["apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"],
+  };
   NodeAssert.equal(artifact.nativeSourceSha256, sources.nativeSourceSha256);
-  const inputBytes = new Map();
-  for (const name of preparationNativeSourceInputs) {
-    NodeAssert.match(artifact.preparation.sourceInputHashes[name], hex);
-    const bytes = await NodeFSP.readFile(NodePath.join(repository, name));
-    NodeAssert.equal(hash(bytes), artifact.preparation.sourceInputHashes[name], name);
-    inputBytes.set(name, bytes);
-  }
-  const core = inputBytes
+  for (const name of preparationNativeSourceInputs)
+    NodeAssert.equal(qualifierHashes[name], artifact.preparation.sourceInputHashes[name], name);
+  const core = snapshot.bytes
     .get("apps/server/src/jones/updates/offlinePreparationCore.ts")
     .toString("utf8");
-  const test = await NodeFSP.readFile(
-    NodePath.join(repository, "apps/server/src/jones/updates/offlinePreparationWorker.test.ts"),
-    "utf8",
-  );
+  const test = snapshot.bytes
+    .get("apps/server/src/jones/updates/offlinePreparationWorker.test.ts")
+    .toString("utf8");
   const tables = preparationFixtureLiteral(
     core,
     "const legacyTables: Readonly<Record<string, string>> = ",
@@ -1077,12 +1753,11 @@ export async function runLegacyPreparationNativeFixture({
           mode: 0o600,
           flag: "wx",
         });
-        for (const [name, before] of inputBytes)
-          NodeAssert.ok(
-            before.equals(await NodeFSP.readFile(NodePath.join(repository, name))),
-            "Source changed before native fixture: " + name,
-          );
-        let result, primary;
+        NodeAssert.deepEqual(
+          await readPreparationNativeQualifierSourceHashes(repository, signal),
+          qualifierHashes,
+        );
+        let result, primary, closure;
         try {
           result = await runLegacyIdentityFixtureCommand(
             "/usr/bin/python3",
@@ -1096,9 +1771,8 @@ export async function runLegacyPreparationNativeFixture({
           primary = error;
         }
         try {
-          const raw = await NodeFSP.readFile(evidence);
-          NodeAssert.ok(raw.length <= 65536);
-          validatePreparationNativeClosure(JSON.parse(raw));
+          const raw = await readPreparationNativeInputFile(evidence);
+          closure = validatePreparationNativeClosure(JSON.parse(raw));
         } catch (cleanup) {
           const failure = new AggregateError(
             primary ? [primary, cleanup] : [cleanup],
@@ -1109,9 +1783,23 @@ export async function runLegacyPreparationNativeFixture({
           failure.evidencePath = evidence;
           throw failure;
         }
+        try {
+          NodeAssert.deepEqual(
+            await readPreparationNativeQualifierSourceHashes(repository),
+            qualifierHashes,
+          );
+        } catch (drift) {
+          throw primary
+            ? new AggregateError(
+                [primary, drift],
+                "Native execution and source-currentness failed.",
+                { cause: primary },
+              )
+            : drift;
+        }
         if (primary) throw primary;
-        NodeAssert.ok(result.stdout.length <= 262144);
-        const report = JSON.parse(result.stdout);
+        NodeAssert.ok(Buffer.byteLength(result.stdout) <= 262144);
+        const report = { ...JSON.parse(result.stdout), closure };
         NodeAssert.equal(report.fixtureClosure, true);
         NodeAssert.equal(report.producerQualified, false);
         NodeAssert.equal(report.nativeColdOwnerQualified, false);
@@ -1127,7 +1815,7 @@ export async function runLegacyPreparationNativeFixture({
     );
     records.push(result);
   }
-  return {
+  const result = {
     schema: 1,
     qualification: "synthetic-native-preparation",
     cases: records,
@@ -1136,16 +1824,30 @@ export async function runLegacyPreparationNativeFixture({
       nativeSha256: artifact.files.native.sha256,
       nodeSha256: artifact.files.node.sha256,
       entrySha256: artifact.files.entry.sha256,
+      seaConfigSha256: artifact.files.seaConfig.sha256,
+      provenanceSha256: artifact.files.provenance.sha256,
+      nativeSourceSha256: artifact.nativeSourceSha256,
+      fileSizes: Object.fromEntries(
+        Object.entries(artifact.files).map(([name, file]) => [name, file.size]),
+      ),
       sourceSha: artifact.sourceSha,
       sourceTree: artifact.sourceTree,
     },
     fixtureDataSourceHashes: { core: hash(core), workerTests: hash(test) },
+    qualifierSourceHashes: qualifierHashes,
+    fixtureClosure: true,
     producerQualified: false,
     priorBootModeled: true,
     nativeColdOwnerQualified: false,
     stateAdmissionAllowed: false,
     activationAllowed: false,
   };
+  NodeAssert.deepEqual(
+    await readPreparationNativeQualifierSourceHashes(repository, signal),
+    qualifierHashes,
+  );
+  validatePreparationNativeResult(result, artifact);
+  return result;
 }
 
 if (

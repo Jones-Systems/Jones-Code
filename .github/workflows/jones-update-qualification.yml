@@ -73,6 +73,7 @@ on:
       - packages/contracts/src/resourceTelemetry.ts
       - apps/web/src/versionSkew.ts
       - scripts/stamp-jones-build*
+      - scripts/package.json
       - scripts/build-desktop-artifact.ts
       - scripts/jones/updates/**
       - scripts/jones/boundary/**
@@ -224,6 +225,21 @@ jobs:
         with:
           name: preparation-candidate-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/server/dist-exe/preparation-candidate/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Collect the producer bundle graph without importing or executing it
+        working-directory: apps/server
+        env:
+          JONES_PACK_PREPARATION_PRODUCER_CANDIDATE: "1"
+        run: vp pack
+
+      - name: Preserve unqualified producer graph evidence
+        if: always() && hashFiles('apps/server/dist-exe/preparation-producer-candidate/producer-candidate-graph.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preparation-producer-candidate-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/server/dist-exe/preparation-producer-candidate/
           if-no-files-found: error
           retention-days: 7
 
