@@ -3684,7 +3684,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     );
 
   it.effect(
-    "keeps five promptless capacity retries frozen and completes the original logical turn once",
+    "keeps twelve promptless capacity retries frozen and completes the original logical turn once",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -3713,7 +3713,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             capacityErrorEntry(threadId, "capacity-0"),
             capacityCompletionEntry(threadId, "capacity-0"),
           );
-          for (let retry = 1; retry <= 5; retry++) {
+          for (let retry = 1; retry <= 12; retry++) {
             entries.push(
               ...capacityPreamble(threadId, `capacity-${retry}`)
                 .slice(5, 7)
@@ -3747,7 +3747,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           }
           let sends = 0;
           const harness = yield* makeCodexReplayHarness(
-            makeCodexReplayTranscript({ scenario: "capacity-five-frozen", entries }),
+            makeCodexReplayTranscript({ scenario: "capacity-twelve-frozen", entries }),
             undefined,
             (method) =>
               Effect.sync(() => {
@@ -3771,7 +3771,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             }),
             modelSelection,
           });
-          for (let retry = 1; retry <= 5; retry++) {
+          for (let retry = 1; retry <= 12; retry++) {
             yield* awaitUntil(
               () =>
                 harness.terminalEvents().length > 0 ||
@@ -3793,7 +3793,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               { id: "reasoningEffort", value: "high" },
               { id: "serviceTier", value: "flex" },
             ];
-            yield* TestClock.adjust("9 seconds");
+            yield* TestClock.adjust("4 seconds");
             assert.equal(sends, retry);
             yield* TestClock.adjust("1 second");
             yield* awaitUntil(() => sends === retry + 1, "promptless capacity send");
@@ -3819,10 +3819,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           assert.deepEqual(
             [...nativeAttempts],
-            ["capacity-0", "capacity-1", "capacity-2", "capacity-3", "capacity-4", "capacity-5"],
+            Array.from({ length: 13 }, (_, index) => `capacity-${index}`),
           );
           yield* TestClock.adjust("1 minute");
-          assert.equal(sends, 6);
+          assert.equal(sends, 13);
         }),
       ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
@@ -4341,7 +4341,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.isTrue(
             yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
           );
-          yield* TestClock.adjust("9 seconds");
+          yield* TestClock.adjust("4 seconds");
           assert.equal(checks, 2);
           assert.equal(sends, 1);
           yield* TestClock.adjust("1 second");
@@ -4458,7 +4458,107 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
-  it.effect.each(["native-retry", "noncapacity", "completion-only"] as const)(
+  it.effect.each([
+    "notification",
+    "completion",
+    "early-completion",
+    "overload-completion",
+  ] as const)(
+    "recovers capacity reported by %s with a five-second promptless continuation",
+    (surface) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const threadId = `native-model-capacity-${surface}`;
+          const failure = capacityCompletionEntry(threadId, "model-capacity-original");
+          const notification = capacityErrorEntry(threadId, "model-capacity-original", "other");
+          const withModelCapacity = (entry: CodexReplay.CodexAppServerReplayEntry) => {
+            if (entry.type !== "emit_inbound" || !Predicate.isObject(entry.frame)) return entry;
+            const params = entry.frame.params as Record<string, unknown>;
+            const error = {
+              message: "Selected model is at capacity. Please try a different model.",
+              codexErrorInfo: "other",
+              additionalDetails: null,
+            };
+            return {
+              ...entry,
+              frame: {
+                ...entry.frame,
+                params: {
+                  ...params,
+                  ...(entry.frame.method === "error"
+                    ? { error }
+                    : {
+                        turn: {
+                          ...(params.turn as Record<string, unknown>),
+                          error,
+                        },
+                      }),
+                },
+              },
+            };
+          };
+          const completion =
+            surface === "overload-completion" ? failure : withModelCapacity(failure);
+          const entries = [...capacityPreamble(threadId, "model-capacity-original")];
+          if (surface === "early-completion") entries.splice(entries.length - 1, 0, completion);
+          else {
+            if (surface === "notification") entries.push(withModelCapacity(notification));
+            entries.push(completion);
+          }
+          entries.push(
+            ...capacityTurnExchange(threadId, "model-capacity-success", 4, { input: [] }),
+            capacityCompletionEntry(threadId, "model-capacity-success", "completed"),
+          );
+          let sends = 0;
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({ scenario: `model-capacity-${surface}`, entries }),
+            undefined,
+            (method) =>
+              Effect.sync(() => {
+                if (method === "turn/start") sends++;
+              }),
+          );
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`capacity-${surface}`),
+              text: "Work",
+            }),
+          );
+          yield* awaitCapacityDelay(harness);
+          const retry = harness.events.find(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "error" &&
+              event.turnItem.status === "running",
+          );
+          assert.equal(
+            retry?.type === "turn_item.updated" &&
+              retry.turnItem.type === "error" &&
+              retry.turnItem.retry?.retryDelayMs,
+            5000,
+          );
+          assert.equal(
+            retry?.type === "turn_item.updated" &&
+              retry.turnItem.type === "error" &&
+              retry.turnItem.retry?.maxAttempts,
+            12,
+          );
+          yield* TestClock.adjust("4 seconds");
+          assert.equal(sends, 1);
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* TestClock.adjust("1 second");
+          yield* harness.firstTerminal;
+          assert.equal(sends, 2);
+          assert.lengthOf(harness.terminalEvents(), 1);
+          assert.equal(harness.terminalEvents()[0]!.status, "completed");
+        }),
+      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect.each(["native-retry", "noncapacity"] as const)(
     "leaves unconfirmed or native-owned capacity recovery alone: %s",
     (outcome) =>
       Effect.scoped(
@@ -4471,23 +4571,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           let sends = 0;
           const entries = [...capacityPreamble(threadId, "native-owned")];
-          if (outcome !== "completion-only")
-            entries.push(
-              outcome === "native-retry" &&
-                error.type === "emit_inbound" &&
-                Predicate.isObject(error.frame)
-                ? {
-                    ...error,
-                    frame: {
-                      ...error.frame,
-                      params: {
-                        ...(error.frame.params as Record<string, unknown>),
-                        willRetry: true,
-                      },
+          entries.push(
+            outcome === "native-retry" &&
+              error.type === "emit_inbound" &&
+              Predicate.isObject(error.frame)
+              ? {
+                  ...error,
+                  frame: {
+                    ...error.frame,
+                    params: {
+                      ...(error.frame.params as Record<string, unknown>),
+                      willRetry: true,
                     },
-                  }
-                : error,
-            );
+                  },
+                }
+              : error,
+          );
           entries.push(capacityCompletionEntry(threadId, "native-owned"));
           const harness = yield* makeCodexReplayHarness(
             makeCodexReplayTranscript({ scenario: `capacity-owned-${outcome}`, entries }),

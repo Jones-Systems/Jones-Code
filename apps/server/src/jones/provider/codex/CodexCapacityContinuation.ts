@@ -12,6 +12,7 @@ export type CodexCapacityCancellationReason = "stop" | "superseded" | "closed" |
 interface CodexCapacityNativeFacts {
   readonly error?: {
     readonly code: string | null;
+    readonly message?: string;
     readonly willRetry: boolean;
   };
   readonly completion?: CodexCapacityTerminalStatus;
@@ -39,12 +40,14 @@ export type CodexCapacityContinuationSignal = {
       readonly type: "nativeError";
       readonly nativeTurnId: string;
       readonly code: string | null;
+      readonly message?: string;
       readonly willRetry: boolean;
     }
   | {
       readonly type: "nativeCompleted";
       readonly nativeTurnId: string;
       readonly status: CodexCapacityTerminalStatus;
+      readonly error?: { readonly code: string | null; readonly message?: string };
     }
   | { readonly type: "retryReady"; readonly retryOrdinal: number }
   | { readonly type: "cancel"; readonly reason: CodexCapacityCancellationReason }
@@ -54,7 +57,7 @@ export type CodexCapacityContinuationSignal = {
 // These actions describe the logical request. Cancellation and unknown starts
 // do not confirm native interruption; the adapter owns native operations.
 export type CodexCapacityContinuationAction =
-  | { readonly type: "scheduleRetry"; readonly retryOrdinal: number; readonly delayMs: 10000 }
+  | { readonly type: "scheduleRetry"; readonly retryOrdinal: number; readonly delayMs: number }
   | { readonly type: "retry"; readonly retryOrdinal: number; readonly promptless: true }
   | {
       readonly type: "terminal";
@@ -71,7 +74,18 @@ export interface CodexCapacityContinuationReduction {
 const emptyFacts: CodexCapacityNativeFacts = Object.freeze({});
 const emptyPending: Readonly<Record<string, CodexCapacityNativeFacts>> = Object.freeze({});
 const noActions: ReadonlyArray<CodexCapacityContinuationAction> = Object.freeze([]);
-const maxRetries = 5;
+export const codexCapacityRetryPolicy = Object.freeze({ maxRetries: 12, delayMs: 5000 });
+
+function isCapacityError(error: {
+  readonly code: string | null;
+  readonly message?: string;
+}): boolean {
+  return (
+    error.code === "serverOverloaded" ||
+    ((error.code === null || error.code === "other" || error.code === "internalServerError") &&
+      error.message?.trim() === "Selected model is at capacity. Please try a different model.")
+  );
+}
 
 // The adapter retains the effective settings for this logical request; retries
 // only request another promptless send and never resolve settings themselves.
@@ -135,9 +149,10 @@ function reduceCompletion(
   if (status === undefined) return unchanged(state);
   if (
     status === "failed" &&
-    state.nativeFacts.error?.code === "serverOverloaded" &&
+    state.nativeFacts.error !== undefined &&
+    isCapacityError(state.nativeFacts.error) &&
     state.nativeFacts.error.willRetry === false &&
-    state.retryOrdinal < maxRetries
+    state.retryOrdinal < codexCapacityRetryPolicy.maxRetries
   ) {
     const retryOrdinal = state.retryOrdinal + 1;
     return {
@@ -151,7 +166,7 @@ function reduceCompletion(
         Object.freeze<CodexCapacityContinuationAction>({
           type: "scheduleRetry",
           retryOrdinal,
-          delayMs: 10000,
+          delayMs: codexCapacityRetryPolicy.delayMs,
         }),
       ]),
     };
@@ -166,9 +181,22 @@ function updateFacts(
   return signal.type === "nativeError"
     ? Object.freeze({
         ...facts,
-        error: Object.freeze({ code: signal.code, willRetry: signal.willRetry }),
+        error: Object.freeze({
+          code: signal.code,
+          ...(signal.message === undefined ? {} : { message: signal.message }),
+          willRetry: signal.willRetry,
+        }),
       })
-    : Object.freeze({ ...facts, completion: facts.completion ?? signal.status });
+    : Object.freeze({
+        ...facts,
+        // Completion can supply missing failure evidence, but cannot take
+        // retry ownership away from an earlier native capacity notification.
+        ...(signal.error !== undefined &&
+        (facts.error === undefined || !isCapacityError(signal.error))
+          ? { error: Object.freeze({ ...signal.error, willRetry: false }) }
+          : {}),
+        completion: facts.completion ?? signal.status,
+      });
 }
 
 // Wakeups carry the freshly checked current binding. Replaying the request's

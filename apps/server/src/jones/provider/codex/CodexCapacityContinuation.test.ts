@@ -31,6 +31,7 @@ function nativeError(
   nativeTurnId: string,
   code: string | null = "serverOverloaded",
   willRetry = false,
+  message?: string,
 ) {
   return reduceCodexCapacityContinuation(state, {
     type: "nativeError",
@@ -38,6 +39,7 @@ function nativeError(
     nativeTurnId,
     code,
     willRetry,
+    ...(message === undefined ? {} : { message }),
   });
 }
 
@@ -60,6 +62,85 @@ function waitingForRetry() {
 }
 
 describe("Codex capacity continuation", () => {
+  it.each([null, "other", "internalServerError"])(
+    "retries the exact model capacity error with generic code %s after five seconds",
+    (code) => {
+      let state = acknowledge(makeCodexCapacityContinuation(binding), "turn-original").state;
+      state = nativeError(
+        state,
+        "turn-original",
+        code,
+        false,
+        "Selected model is at capacity. Please try a different model.",
+      ).state;
+      expect(complete(state, "turn-original").actions).toEqual([
+        { type: "scheduleRetry", retryOrdinal: 1, delayMs: 5000 },
+      ]);
+    },
+  );
+
+  it.each(["usageLimitExceeded", "rateLimitExceeded", "unauthorized", "badRequest", "unknown"])(
+    "does not override the explicit %s classification with capacity text",
+    (code) => {
+      let state = acknowledge(makeCodexCapacityContinuation(binding), "turn-original").state;
+      state = nativeError(
+        state,
+        "turn-original",
+        code,
+        false,
+        "Selected model is at capacity. Please try a different model.",
+      ).state;
+      expect(complete(state, "turn-original").actions).toEqual([
+        { type: "terminal", status: "failed", nativeTurnId: "turn-original" },
+      ]);
+    },
+  );
+
+  it("preserves native retry ownership when completion repeats capacity evidence", () => {
+    const state = nativeError(
+      acknowledge(makeCodexCapacityContinuation(binding), "turn").state,
+      "turn",
+      "serverOverloaded",
+      true,
+    ).state;
+    expect(
+      reduceCodexCapacityContinuation(state, {
+        type: "nativeCompleted",
+        binding,
+        nativeTurnId: "turn",
+        status: "failed",
+        error: { code: "serverOverloaded" },
+      }).actions,
+    ).toEqual([{ type: "terminal", status: "failed", nativeTurnId: "turn" }]);
+  });
+
+  it("uses a noncapacity completion error instead of an earlier overload", () => {
+    const state = nativeError(
+      acknowledge(makeCodexCapacityContinuation(binding), "turn").state,
+      "turn",
+    ).state;
+    expect(
+      reduceCodexCapacityContinuation(state, {
+        type: "nativeCompleted",
+        binding,
+        nativeTurnId: "turn",
+        status: "failed",
+        error: { code: "usageLimitExceeded", message: "Quota exhausted" },
+      }).actions,
+    ).toEqual([{ type: "terminal", status: "failed", nativeTurnId: "turn" }]);
+  });
+
+  it.each(["Selected model is unavailable", "The provider is at capacity", "Unknown error"])(
+    "does not infer capacity from generic text: %s",
+    (message) => {
+      let state = acknowledge(makeCodexCapacityContinuation(binding), "turn").state;
+      state = nativeError(state, "turn", "other", false, message).state;
+      expect(complete(state, "turn").actions).toEqual([
+        { type: "terminal", status: "failed", nativeTurnId: "turn" },
+      ]);
+    },
+  );
+
   it("requires an acknowledged matching overload and failed completion before scheduling a retry", () => {
     const started = acknowledge(makeCodexCapacityContinuation(binding), "turn-original");
     expect(started.actions).toEqual([]);
@@ -67,24 +148,24 @@ describe("Codex capacity continuation", () => {
     expect(overloaded.actions).toEqual([]);
     expect(complete(overloaded.state, "other-turn").actions).toEqual([]);
     const failed = complete(overloaded.state, "turn-original");
-    expect(failed.actions).toEqual([{ type: "scheduleRetry", retryOrdinal: 1, delayMs: 10000 }]);
+    expect(failed.actions).toEqual([{ type: "scheduleRetry", retryOrdinal: 1, delayMs: 5000 }]);
     expect(failed.state.phase).toBe("waiting_retry");
     expect(failed.state.binding).toEqual(binding);
   });
 
-  it("allows exactly five delayed promptless retries and one logical terminal", () => {
+  it("allows exactly twelve delayed promptless retries and one logical terminal", () => {
     let state = makeCodexCapacityContinuation(binding);
     const actions: CodexCapacityContinuationAction[] = [];
-    for (let retryOrdinal = 0; retryOrdinal <= 5; retryOrdinal++) {
+    for (let retryOrdinal = 0; retryOrdinal <= 12; retryOrdinal++) {
       const nativeTurnId = `turn-${retryOrdinal}`;
       state = acknowledge(state, nativeTurnId).state;
       state = nativeError(state, nativeTurnId).state;
       const failed = complete(state, nativeTurnId);
       state = failed.state;
       actions.push(...failed.actions);
-      if (retryOrdinal < 5) {
+      if (retryOrdinal < 12) {
         expect(failed.actions).toEqual([
-          { type: "scheduleRetry", retryOrdinal: retryOrdinal + 1, delayMs: 10000 },
+          { type: "scheduleRetry", retryOrdinal: retryOrdinal + 1, delayMs: 5000 },
         ]);
         const ready = reduceCodexCapacityContinuation(state, {
           type: "retryReady",
@@ -98,19 +179,19 @@ describe("Codex capacity continuation", () => {
         state = ready.state;
       }
     }
-    expect(actions.filter((action) => action.type === "scheduleRetry")).toHaveLength(5);
-    expect(actions.filter((action) => action.type === "retry")).toHaveLength(5);
+    expect(actions.filter((action) => action.type === "scheduleRetry")).toHaveLength(12);
+    expect(actions.filter((action) => action.type === "retry")).toHaveLength(12);
     expect(actions.filter((action) => action.type === "terminal")).toEqual([
-      { type: "terminal", status: "failed", nativeTurnId: "turn-5" },
+      { type: "terminal", status: "failed", nativeTurnId: "turn-12" },
     ]);
     expect(state.phase).toBe("terminal");
-    expect(complete(state, "turn-5").actions).toEqual([]);
-    expect(nativeError(state, "turn-5").actions).toEqual([]);
+    expect(complete(state, "turn-12").actions).toEqual([]);
+    expect(nativeError(state, "turn-12").actions).toEqual([]);
     expect(
       reduceCodexCapacityContinuation(state, {
         type: "retryReady",
         binding,
-        retryOrdinal: 6,
+        retryOrdinal: 13,
       }).actions,
     ).toEqual([]);
   });
@@ -168,7 +249,7 @@ describe("Codex capacity continuation", () => {
     expect(earlyCompletion.actions).toEqual([]);
     expect(earlyCompletion.state.phase).toBe("awaiting_start");
     expect(acknowledge(earlyCompletion.state, "turn-early").actions).toEqual([
-      { type: "scheduleRetry", retryOrdinal: 1, delayMs: 10000 },
+      { type: "scheduleRetry", retryOrdinal: 1, delayMs: 5000 },
     ]);
     expect(initial.pendingNativeTurns).toEqual({});
     expect(initial.nativeTurnId).toBeNull();
@@ -178,7 +259,7 @@ describe("Codex capacity continuation", () => {
     let state = complete(makeCodexCapacityContinuation(binding), "turn-early").state;
     state = nativeError(state, "turn-early").state;
     expect(acknowledge(state, "turn-early").actions).toEqual([
-      { type: "scheduleRetry", retryOrdinal: 1, delayMs: 10000 },
+      { type: "scheduleRetry", retryOrdinal: 1, delayMs: 5000 },
     ]);
   });
 

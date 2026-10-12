@@ -7,6 +7,7 @@ import type { ServerProviderModel } from "@t3tools/contracts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import {
+  codexCapacityRetryPolicy,
   makeCodexCapacityContinuation,
   reduceCodexCapacityContinuation,
   type CodexCapacityContinuationState,
@@ -4953,6 +4954,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     type: "nativeError",
                     nativeTurnId: payload.turnId,
                     code: codexErrorInfoCode(payload.error.codexErrorInfo),
+                    message: payload.error.message,
                     willRetry: payload.willRetry,
                   });
                 }
@@ -4962,6 +4964,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 type: "nativeError",
                 nativeTurnId: payload.turnId,
                 code: codexErrorInfoCode(payload.error.codexErrorInfo),
+                message: payload.error.message,
                 willRetry: payload.willRetry,
               });
             }
@@ -6531,6 +6534,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     type: "nativeCompleted",
                     nativeTurnId: payload.turn.id,
                     status,
+                    ...(payload.turn.error == null
+                      ? {}
+                      : {
+                          error: {
+                            code: codexErrorInfoCode(payload.turn.error.codexErrorInfo),
+                            message: payload.turn.error.message,
+                          },
+                        }),
                   });
                 }
               }
@@ -6551,19 +6562,18 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               request.state.nativeTurnId === payload.turn.id &&
               (status === "completed" || status === "failed" || status === "interrupted")
             ) {
-              const completionCode = codexErrorInfoCode(payload.turn.error?.codexErrorInfo);
-              if (status === "failed" && completionCode !== "serverOverloaded") {
-                reduceCapacity(request, {
-                  type: "nativeError",
-                  nativeTurnId: payload.turn.id,
-                  code: completionCode,
-                  willRetry: false,
-                });
-              }
               reduceCapacity(request, {
                 type: "nativeCompleted",
                 nativeTurnId: payload.turn.id,
                 status,
+                ...(payload.turn.error == null
+                  ? {}
+                  : {
+                      error: {
+                        code: codexErrorInfoCode(payload.turn.error.codexErrorInfo),
+                        message: payload.turn.error.message,
+                      },
+                    }),
               });
             }
             const continuingCapacity =
@@ -6768,18 +6778,6 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             request.logicalContext ??= context;
             request.nativeContexts.push(context);
             capacityByTurn.set(started.turn.id, request);
-            const earlyFailure = request.earlyCompletions.get(started.turn.id)?.turn;
-            if (
-              earlyFailure?.status === "failed" &&
-              codexErrorInfoCode(earlyFailure.error?.codexErrorInfo) !== "serverOverloaded"
-            ) {
-              reduceCapacity(request, {
-                type: "nativeError",
-                nativeTurnId: started.turn.id,
-                code: codexErrorInfoCode(earlyFailure.error?.codexErrorInfo),
-                willRetry: false,
-              });
-            }
             reduceCapacity(request, {
               type: "startAcknowledged",
               retryOrdinal,
@@ -6820,7 +6818,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   context.latestProviderFailure?.nativeMessage ??
                   "Codex is at capacity; retrying without resending the prompt.",
               }),
-              retry: { attempt: retryOrdinal, maxAttempts: 5, retryDelayMs: 10000 },
+              retry: {
+                attempt: retryOrdinal,
+                maxAttempts: codexCapacityRetryPolicy.maxRetries,
+                retryDelayMs: codexCapacityRetryPolicy.delayMs,
+              },
               startedAt: request.capacityRetry?.startedAt ?? now,
               itemOrdinal:
                 request.capacityRetry?.itemOrdinal ??
@@ -6828,7 +6830,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             };
             let timer: Fiber.Fiber<void> | undefined;
             timer = yield* Effect.gen(function* () {
-              yield* Effect.sleep("10 seconds");
+              yield* Effect.sleep(codexCapacityRetryPolicy.delayMs);
               if (
                 !request.recoveryEnabled ||
                 request.state.phase !== "waiting_retry" ||
