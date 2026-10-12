@@ -2525,6 +2525,22 @@ const qualifierFiles = Object.freeze([
   ].map((name) => `apps/desktop/src/jones/updates/${name}`),
   "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
 ]);
+const producerSourceFiles = Object.freeze([
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "package.json",
+  "scripts/package.json",
+  ...releaseManifests,
+  "apps/server/vite.config.ts",
+  "vite.config.ts",
+  producerCandidateEntry,
+  "scripts/jones/updates/offline-preparation-build.ts",
+  "scripts/jones/updates/functional-policy.ts",
+  "scripts/jones/updates/legacy-bootstrap-bundle.ts",
+]);
+const producerRawSourceFiles = Object.freeze([
+  ...new Set([...producerSourceFiles, ...qualifierFiles]),
+]);
 
 function inspectLateQualifierModule(
   root: string,
@@ -2629,19 +2645,7 @@ function inspectPreparationProducerCandidateSources(root: string) {
     files.map((path) => ({ path, content: candidateFile(root, NodePath.join(root, path)) }));
   const qualifierInputs = observe(qualifierFiles);
   return {
-    producerInputs: observe([
-      "pnpm-lock.yaml",
-      "pnpm-workspace.yaml",
-      "package.json",
-      "scripts/package.json",
-      ...releaseManifests,
-      "apps/server/vite.config.ts",
-      "vite.config.ts",
-      producerCandidateEntry,
-      "scripts/jones/updates/offline-preparation-build.ts",
-      "scripts/jones/updates/functional-policy.ts",
-      "scripts/jones/updates/legacy-bootstrap-bundle.ts",
-    ]),
+    producerInputs: observe(producerSourceFiles),
     lateQualifierInputs: {
       basis: "fixed-late-qualifier-file-inputs",
       computedImportsResolved: false,
@@ -2653,10 +2657,7 @@ function inspectPreparationProducerCandidateSources(root: string) {
     },
   };
 }
-const producerRoot = NodeFS.realpathSync(
-  NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
-);
-const producerPolicyFile = "scripts/jones/updates/functional-policy.ts";
+const codeRoot = NodeFS.realpathSync(NodeURL.fileURLToPath(new URL("../../../", import.meta.url)));
 
 function observeProducerFiles(root: string, files: readonly string[]) {
   return Object.fromEntries(
@@ -2664,12 +2665,9 @@ function observeProducerFiles(root: string, files: readonly string[]) {
   );
 }
 
-// Imported code cannot be refreshed by hashing a newer checkout after it entered this process.
-const producerLoadedFiles = observeProducerFiles(producerRoot, [
-  ...qualifierFiles,
-  producerPolicyFile,
-  "scripts/jones/updates/legacy-bootstrap-bundle.ts",
-]);
+// Raw source bytes beside this module are a consistency baseline, not loaded-code attestation.
+// Hashing a newer checkout cannot refresh code that has already entered this process.
+const boundCodeSourceHashes = Object.freeze(observeProducerFiles(codeRoot, producerRawSourceFiles));
 
 function qualificationCustodyUnknown(cause: unknown, depth = 0): boolean {
   if (depth > 8 || typeof cause !== "object" || cause === null) return false;
@@ -2739,11 +2737,13 @@ export interface QualifiedPreparationStageResult {
   };
 }
 interface QualifiedPreparationRecord {
-  readonly root: string;
+  readonly sourceRoot: string;
+  readonly codeRoot: string;
   readonly stageRoot: string;
   readonly verifyStage: () => void;
   readonly source: Awaited<ReturnType<typeof observeSource>>;
   readonly sourceHashes: Readonly<Record<string, string>>;
+  readonly codeSourceHashes: Readonly<Record<string, string>>;
   readonly reportBytes: Buffer;
   readonly entryBytes: Buffer;
   readonly graph: ReturnType<typeof verifyFunctionalPreparationGraph>;
@@ -2757,21 +2757,23 @@ const qualifiedPreparationHandles = new WeakMap<object, QualifiedPreparationReco
 
 /** Build and exercise the exact candidate. Serialized observations never enter the handle registry. */
 export async function buildQualifiedPreparation(input: {
+  /** Original Git checkout; raw source is checked against this module's private code root. */
   readonly repoRoot: string;
   readonly stageRoot: string;
   readonly signal?: AbortSignal;
 }): Promise<QualifiedPreparationHandle> {
   input.signal?.throwIfAborted();
-  const root = NodeFS.realpathSync(input.repoRoot);
-  if (root !== producerRoot)
-    throw new Error("Preparation producer must use its own bound checkout.");
+  const sourceRoot = NodeFS.realpathSync(input.repoRoot);
   const stageRoot = input.stageRoot;
   const verifyStage = capturedStage(stageRoot);
   const scratchParent = NodeFS.realpathSync(NodeOS.tmpdir());
   if (isWithin(stageRoot, scratchParent))
     throw new Error("Producer scratch must remain outside the packaging stage.");
-  assertProducerFiles(root, producerLoadedFiles);
-  const candidate = NodePath.join(root, candidateRelative);
+  assertProducerFiles(codeRoot, boundCodeSourceHashes);
+  const sourceHashes = Object.freeze(observeProducerFiles(sourceRoot, producerRawSourceFiles));
+  if (encode(sourceHashes) !== encode(boundCodeSourceHashes))
+    throw new Error("Preparation checkout raw source differs from the bound code source.");
+  const candidate = NodePath.join(sourceRoot, candidateRelative);
   const verifyCandidate = capturedStage(candidate);
   if (
     encode(NodeFS.readdirSync(candidate).sort()) !==
@@ -2780,8 +2782,10 @@ export async function buildQualifiedPreparation(input: {
     throw new Error("Functional preparation requires the exact candidate graph and single entry.");
   const reportBytes = readFile(NodePath.join(candidate, candidateReportName), candidateReportLimit);
   const entryBytes = readFile(NodePath.join(candidate, bundleName), maxBundleBytes);
-  const graph = verifyFunctionalPreparationGraph({ repoRoot: root, reportBytes, entryBytes });
-  const sourceHashes = observeProducerFiles(root, qualifierFiles);
+  const graph = verifyFunctionalPreparationGraph({ repoRoot: sourceRoot, reportBytes, entryBytes });
+  const qualifierHashes = Object.freeze(
+    Object.fromEntries(qualifierFiles.map((name) => [name, boundCodeSourceHashes[name]!])),
+  );
   const completed = await withPreparationBuildScope(
     scratchParent,
     "jones-preparation-code-",
@@ -2789,15 +2793,16 @@ export async function buildQualifiedPreparation(input: {
     async (codeScope) => {
       process.stderr.write(`${encode({ event: "preparation-code-root", root: codeScope.root })}\n`);
       for (const name of qualifierFiles) {
-        const bytes = readFile(NodePath.join(root, name), 8 * 1024 * 1024);
-        if (digest(bytes) !== sourceHashes[name])
+        const bytes = readFile(NodePath.join(codeRoot, name), 8 * 1024 * 1024);
+        if (digest(bytes) !== qualifierHashes[name])
           throw new Error("Qualifier source changed before snapshotting.");
         const destination = NodePath.join(codeScope.root, name);
         NodeFS.mkdirSync(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
         NodeFS.writeFileSync(destination, bytes, { flag: "wx", mode: 0o400 });
       }
-      assertProducerFiles(codeScope.root, sourceHashes);
-      assertProducerFiles(root, sourceHashes);
+      assertProducerFiles(codeScope.root, qualifierHashes);
+      assertProducerFiles(codeRoot, boundCodeSourceHashes);
+      assertProducerFiles(sourceRoot, sourceHashes);
       // A unique captured tree prevents an older ESM cache entry from satisfying this execution.
       const qualifier: typeof import("./legacy-preparation-native-fixture.mjs") = await import(
         NodeURL.pathToFileURL(
@@ -2828,12 +2833,12 @@ export async function buildQualifiedPreparation(input: {
       if (
         capturedTools.maintenance !== jonesLegacyMaintenanceSource ||
         capturedTools.nativeSourceSha256 !==
-          sourceHashes["apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"]
+          qualifierHashes["apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"]
       )
         throw new Error(
           "Loaded maintenance composition differs from the captured qualifier source.",
         );
-      assertProducerFiles(codeScope.root, sourceHashes);
+      assertProducerFiles(codeScope.root, qualifierHashes);
       try {
         return await withPreparationBuildScope(
           scratchParent,
@@ -2844,7 +2849,7 @@ export async function buildQualifiedPreparation(input: {
               `${encode({ event: "preparation-build-root", root: scope.root })}\n`,
             );
             // Every native child uses this root or the qualifier's independently owned roots, never stageRoot.
-            const source = await observeSource(root, scope.command);
+            const source = await observeSource(sourceRoot, scope.command);
             const observedGraphSource = Schema.decodeUnknownSync(
               Schema.Struct({
                 source: Schema.Unknown,
@@ -2852,14 +2857,14 @@ export async function buildQualifiedPreparation(input: {
             )(decode(reportBytes.toString("utf8"))).source;
             if (encode(observedGraphSource) !== encode(source))
               throw new Error("Candidate graph source is stale.");
-            const native = await buildPreparationNativeBytes(scope, root, entryBytes);
+            const native = await buildPreparationNativeBytes(scope, sourceRoot, entryBytes);
             verifyPreparationHeldOutput(
               (await scope.command(native.executable, [], scope.root, 4096)).toString("utf8"),
             );
             await verifyArgumentRefusal(scope.command, native.executable, scope.root);
             const cSourceName = "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c";
-            const cSource = readFile(NodePath.join(root, cSourceName), 4 * 1024 * 1024);
-            if (digest(cSource) !== sourceHashes[cSourceName])
+            const cSource = readFile(NodePath.join(codeRoot, cSourceName), 4 * 1024 * 1024);
+            if (digest(cSource) !== qualifierHashes[cSourceName])
               throw new Error("Observer source changed before compilation.");
             const cPath = NodePath.join(scope.root, "identity.c"),
               observerPath = NodePath.join(scope.root, "identity-native");
@@ -2903,7 +2908,7 @@ export async function buildQualifiedPreparation(input: {
               classification: "preparation-mechanical-artifact",
               source,
               graph,
-              qualifierSourceHashes: sourceHashes,
+              qualifierSourceHashes: qualifierHashes,
               entry: record(entryBytes),
               seaConfig: record(native.configBytes),
               executable: record(runtime),
@@ -2963,7 +2968,7 @@ export async function buildQualifiedPreparation(input: {
               sourceTree: source.tree,
               nativeSourceSha256: digest(cSource),
               preparation,
-              qualifierSourceHashes: sourceHashes,
+              qualifierSourceHashes: qualifierHashes,
               files: {
                 executable: file(native.executable, runtime),
                 node: file(native.runtimePath, native.runtime),
@@ -3018,9 +3023,9 @@ export async function buildQualifiedPreparation(input: {
               ["--verify", "--strict", observerPath],
               scope.root,
             );
-            assertProducerFiles(root, producerLoadedFiles);
-            assertProducerFiles(root, sourceHashes);
-            assertProducerFiles(codeScope.root, sourceHashes);
+            assertProducerFiles(codeRoot, boundCodeSourceHashes);
+            assertProducerFiles(sourceRoot, sourceHashes);
+            assertProducerFiles(codeScope.root, qualifierHashes);
             verifyCandidate();
             verifyStage();
             if (
@@ -3031,9 +3036,9 @@ export async function buildQualifiedPreparation(input: {
               ) ||
               !readFile(NodePath.join(candidate, bundleName), maxBundleBytes).equals(entryBytes) ||
               encode(
-                verifyFunctionalPreparationGraph({ repoRoot: root, reportBytes, entryBytes }),
+                verifyFunctionalPreparationGraph({ repoRoot: sourceRoot, reportBytes, entryBytes }),
               ) !== encode(graph) ||
-              encode(await observeSource(root, scope.command)) !== encode(source)
+              encode(await observeSource(sourceRoot, scope.command)) !== encode(source)
             )
               throw new Error("Preparation graph or source changed during qualification.");
             const bundle = createJonesLegacyBootstrapPreparationBundle(
@@ -3098,7 +3103,8 @@ export async function buildQualifiedPreparation(input: {
   // withPreparationBuildScope returns only after every captured child and its scratch have finalized.
   input.signal?.throwIfAborted();
   verifyStage();
-  assertProducerFiles(root, producerLoadedFiles);
+  assertProducerFiles(codeRoot, boundCodeSourceHashes);
+  assertProducerFiles(sourceRoot, sourceHashes);
   const handle = Object.freeze(Object.create(null)) as QualifiedPreparationHandle;
   const revoke = () => {
     qualifiedPreparationHandles.delete(handle);
@@ -3106,10 +3112,12 @@ export async function buildQualifiedPreparation(input: {
   };
   qualifiedPreparationHandles.set(handle, {
     ...completed,
-    root,
+    sourceRoot,
+    codeRoot,
     stageRoot,
     verifyStage,
     sourceHashes,
+    codeSourceHashes: boundCodeSourceHashes,
     reportBytes,
     entryBytes,
     graph,
@@ -3178,8 +3186,8 @@ export async function stageQualifiedPreparation(input: {
   input.signal?.throwIfAborted();
   stored.signal?.throwIfAborted();
   stored.verifyStage();
-  assertProducerFiles(stored.root, producerLoadedFiles);
-  assertProducerFiles(stored.root, stored.sourceHashes);
+  assertProducerFiles(stored.codeRoot, stored.codeSourceHashes);
+  assertProducerFiles(stored.sourceRoot, stored.sourceHashes);
   if (
     input.expectedSource.repository !== stored.source.repository ||
     input.expectedSource.sourceSha !== stored.source.sha ||
@@ -3191,7 +3199,7 @@ export async function stageQualifiedPreparation(input: {
   if (!isWithin(stored.stageRoot, destination) || destination === stored.stageRoot)
     throw new Error("Preparation resources must belong to the captured packaging stage.");
   const verifyDestination = capturedStage(destination);
-  const candidate = NodePath.join(stored.root, candidateRelative);
+  const candidate = NodePath.join(stored.sourceRoot, candidateRelative);
   if (
     encode(NodeFS.readdirSync(candidate).sort()) !==
       encode([bundleName, candidateReportName].sort()) ||
@@ -3201,7 +3209,7 @@ export async function stageQualifiedPreparation(input: {
     !readFile(NodePath.join(candidate, bundleName), maxBundleBytes).equals(stored.entryBytes) ||
     encode(
       verifyFunctionalPreparationGraph({
-        repoRoot: stored.root,
+        repoRoot: stored.sourceRoot,
         reportBytes: stored.reportBytes,
         entryBytes: stored.entryBytes,
       }),
@@ -3213,7 +3221,7 @@ export async function stageQualifiedPreparation(input: {
     "jones-preparation-stage-check-",
     input.signal,
     async (scope) => {
-      if (encode(await observeSource(stored.root, scope.command)) !== encode(stored.source))
+      if (encode(await observeSource(stored.sourceRoot, scope.command)) !== encode(stored.source))
         throw new Error("Preparation checkout identity changed before staging.");
     },
   );
@@ -3221,6 +3229,8 @@ export async function stageQualifiedPreparation(input: {
   stored.signal?.throwIfAborted();
   verifyDestination();
   stored.verifyStage();
+  assertProducerFiles(stored.codeRoot, stored.codeSourceHashes);
+  assertProducerFiles(stored.sourceRoot, stored.sourceHashes);
   const directory = NodePath.join(destination, "jones-bootstrap");
   try {
     NodeFS.mkdirSync(directory, { mode: 0o700 });
@@ -3270,6 +3280,8 @@ export async function stageQualifiedPreparation(input: {
     verifyDirectory();
     verifyDestination();
     stored.verifyStage();
+    assertProducerFiles(stored.codeRoot, stored.codeSourceHashes);
+    assertProducerFiles(stored.sourceRoot, stored.sourceHashes);
     input.signal?.throwIfAborted();
     stored.signal?.throwIfAborted();
     for (const parent of [directory, destination]) {

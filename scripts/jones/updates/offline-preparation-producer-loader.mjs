@@ -1,8 +1,8 @@
-import fs from "node:fs/promises";
-import { constants } from "node:fs";
-import { createHash } from "node:crypto";
-import path from "node:path";
-import os from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
+import * as NodeCrypto from "node:crypto";
+import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
 
 const producerDirectory = "apps/server/dist-exe/preparation-producer-candidate";
 const producerFile = `${producerDirectory}/offlinePreparationProducer.mjs`;
@@ -61,13 +61,15 @@ const sourceInputs = [...new Set([...producerInputs, ...qualifierInputs])].sort(
 const sourceLimit = 8 * 1024 * 1024;
 const producerLimit = 32 * 1024 * 1024;
 const reportLimit = 16 * 1024 * 1024;
-const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const hash = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const contains = (parent, child) => {
-  const relative = path.relative(parent, child);
+  const relative = NodePath.relative(parent, child);
   return (
     relative === "" ||
-    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    (relative !== ".." &&
+      !relative.startsWith(`..${NodePath.sep}`) &&
+      !NodePath.isAbsolute(relative))
   );
 };
 const overlaps = (left, right) => contains(left, right) || contains(right, left);
@@ -196,7 +198,7 @@ export async function capturePreparationProducer(options) {
   const checkAbort = () => signal?.throwIfAborted();
   checkAbort();
   const uid = process.getuid?.();
-  if (uid === undefined || constants.O_NOFOLLOW === undefined)
+  if (uid === undefined || NodeFS.constants.O_NOFOLLOW === undefined)
     throw new Error("Owned no-follow producer capture is unavailable on this platform.");
   const ownedDirectory = (stat) =>
     stat.isDirectory() && stat.uid === BigInt(uid) && (stat.mode & 0o022n) === 0n;
@@ -208,17 +210,17 @@ export async function capturePreparationProducer(options) {
     stat.size >= 0n &&
     stat.size <= BigInt(limit);
   const root = async (value) => {
-    if (typeof value !== "string" || !path.isAbsolute(value))
+    if (typeof value !== "string" || !NodePath.isAbsolute(value))
       throw new Error("Capture roots must be absolute directories.");
-    const name = await fs.realpath(value);
-    const stat = await fs.lstat(name, { bigint: true });
+    const name = await NodeFSP.default.realpath(value);
+    const stat = await NodeFSP.default.lstat(name, { bigint: true });
     if (!ownedDirectory(stat)) throw new Error("Capture root is not an owned directory.");
     return { path: name, stat };
   };
   const source = await root(options.sourceRoot);
   const stage = await root(options.stageRoot);
-  const temporary = await fs.realpath(os.tmpdir());
-  const prefix = path.join(temporary, "jones-preparation-producer-");
+  const temporary = await NodeFSP.default.realpath(NodeOS.tmpdir());
+  const prefix = NodePath.join(temporary, "jones-preparation-producer-");
   if (overlaps(source.path, prefix) || overlaps(stage.path, prefix))
     throw new Error("Producer scratch placement overlaps a source or stage root.");
   checkAbort();
@@ -243,7 +245,7 @@ export async function capturePreparationProducer(options) {
   };
   const checkDirectory = async (name, original, scratch = false) => {
     try {
-      const current = await fs.lstat(name, { bigint: true });
+      const current = await NodeFSP.default.lstat(name, { bigint: true });
       if (!ownedDirectory(current) || !sameIdentity(original, current))
         throw new Error(`Directory identity changed: ${name}`);
     } catch (cause) {
@@ -254,12 +256,11 @@ export async function capturePreparationProducer(options) {
   const checkSourceParents = async (name) => {
     await checkDirectory(source.path, source.stat);
     let parent = source.path;
-    for (const part of path
-      .relative(source.path, path.dirname(name))
-      .split(path.sep)
+    for (const part of NodePath.relative(source.path, NodePath.dirname(name))
+      .split(NodePath.sep)
       .filter(Boolean)) {
-      parent = path.join(parent, part);
-      const stat = await fs.lstat(parent, { bigint: true });
+      parent = NodePath.join(parent, part);
+      const stat = await NodeFSP.default.lstat(parent, { bigint: true });
       if (!ownedDirectory(stat))
         throw new Error("Producer source parent is not an owned directory.");
       const previous = sourceDirectories.get(parent);
@@ -283,7 +284,7 @@ export async function capturePreparationProducer(options) {
   const checkInput = async (input, reread = false) => {
     await checkSourceParents(input.path);
     const descriptor = await input.handle.stat({ bigint: true });
-    const pathname = await fs.lstat(input.path, { bigint: true });
+    const pathname = await NodeFSP.default.lstat(input.path, { bigint: true });
     if (
       !ownedFile(descriptor, input.limit) ||
       !ownedFile(pathname, input.limit) ||
@@ -296,14 +297,14 @@ export async function capturePreparationProducer(options) {
   };
   const readInput = async (relative, limit, expected) => {
     checkAbort();
-    const name = path.join(source.path, relative);
+    const name = NodePath.join(source.path, relative);
     await checkSourceParents(name);
-    const before = await fs.lstat(name, { bigint: true });
+    const before = await NodeFSP.default.lstat(name, { bigint: true });
     if (!ownedFile(before, limit))
       throw new Error(`Producer input is not a bounded owned regular file: ${relative}`);
-    const handle = await fs.open(
+    const handle = await NodeFSP.default.open(
       name,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
     );
     handles.push(handle);
     const stat = await handle.stat({ bigint: true });
@@ -321,16 +322,15 @@ export async function capturePreparationProducer(options) {
   };
   const makeParents = async (name) => {
     let parent = scratchRoot;
-    for (const part of path
-      .relative(scratchRoot, path.dirname(name))
-      .split(path.sep)
+    for (const part of NodePath.relative(scratchRoot, NodePath.dirname(name))
+      .split(NodePath.sep)
       .filter(Boolean)) {
       await checkDirectory(parent, directories.get(parent), true);
-      parent = path.join(parent, part);
+      parent = NodePath.join(parent, part);
       if (directories.has(parent)) continue;
       try {
-        await fs.mkdir(parent, { mode: 0o700 });
-        const stat = await fs.lstat(parent, { bigint: true });
+        await NodeFSP.default.mkdir(parent, { mode: 0o700 });
+        const stat = await NodeFSP.default.lstat(parent, { bigint: true });
         if (!ownedDirectory(stat)) throw new Error("Created capture parent is not owned.");
         directories.set(parent, stat);
       } catch (cause) {
@@ -342,21 +342,20 @@ export async function capturePreparationProducer(options) {
   const checkCapturedParents = async (name) => {
     let parent = scratchRoot;
     await checkDirectory(parent, scratchStat, true);
-    for (const part of path
-      .relative(scratchRoot, path.dirname(name))
-      .split(path.sep)
+    for (const part of NodePath.relative(scratchRoot, NodePath.dirname(name))
+      .split(NodePath.sep)
       .filter(Boolean)) {
-      parent = path.join(parent, part);
+      parent = NodePath.join(parent, part);
       await checkDirectory(parent, directories.get(parent), true);
     }
   };
   const copy = async ({ input, bytes }, relative) => {
     checkAbort();
-    const name = path.join(scratchRoot, relative);
+    const name = NodePath.join(scratchRoot, relative);
     await makeParents(name);
     let handle;
     try {
-      handle = await fs.open(name, "wx+", 0o600);
+      handle = await NodeFSP.default.open(name, "wx+", 0o600);
       handles.push(handle);
       const initial = await handle.stat({ bigint: true });
       if (!ownedFile(initial, input.limit)) throw new Error("Captured file is not owned.");
@@ -384,15 +383,15 @@ export async function capturePreparationProducer(options) {
       for (const [name, stat] of directories) {
         await checkDirectory(name, stat, true);
         const expected = [...directories.keys(), ...captured.map((file) => file.path)]
-          .filter((child) => child !== name && path.dirname(child) === name)
-          .map((child) => path.basename(child))
+          .filter((child) => child !== name && NodePath.dirname(child) === name)
+          .map((child) => NodePath.basename(child))
           .sort();
-        const actual = (await fs.readdir(name)).sort();
+        const actual = (await NodeFSP.default.readdir(name)).sort();
         if (JSON.stringify(actual) !== JSON.stringify(expected))
           throw custodyError("Producer scratch contains an unowned entry.");
       }
       for (const output of captured) {
-        const stat = await fs.lstat(output.path, { bigint: true });
+        const stat = await NodeFSP.default.lstat(output.path, { bigint: true });
         if (!ownedFile(stat, output.input.limit) || !sameFile(output.stat, stat))
           throw custodyError("Captured producer file identity changed.");
       }
@@ -403,8 +402,8 @@ export async function capturePreparationProducer(options) {
 
   // Cleanup custody begins immediately after allocation, before any artifact or source is read.
   try {
-    scratchRoot = await fs.mkdtemp(prefix);
-    scratchStat = await fs.lstat(scratchRoot, { bigint: true });
+    scratchRoot = await NodeFSP.default.mkdtemp(prefix);
+    scratchStat = await NodeFSP.default.lstat(scratchRoot, { bigint: true });
     if (
       !ownedDirectory(scratchStat) ||
       overlaps(source.path, scratchRoot) ||
@@ -475,17 +474,17 @@ export async function capturePreparationProducer(options) {
       await checkScratch();
       for (const output of [...captured].reverse()) {
         await checkCapturedParents(output.path);
-        const stat = await fs.lstat(output.path, { bigint: true });
+        const stat = await NodeFSP.default.lstat(output.path, { bigint: true });
         if (!sameFile(output.stat, stat))
           throw custodyError("Captured file changed before cleanup.");
-        await fs.unlink(output.path);
+        await NodeFSP.default.unlink(output.path);
       }
       for (const [name, stat] of [...directories].reverse()) {
         if (name !== scratchRoot) await checkCapturedParents(name);
         await checkDirectory(name, stat, true);
-        await fs.rmdir(name);
+        await NodeFSP.default.rmdir(name);
       }
-      const remaining = await fs.lstat(scratchRoot).catch((cause) => {
+      const remaining = await NodeFSP.default.lstat(scratchRoot).catch((cause) => {
         if (cause.code === "ENOENT") return undefined;
         throw cause;
       });

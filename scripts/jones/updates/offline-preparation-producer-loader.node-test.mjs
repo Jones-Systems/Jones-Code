@@ -1,9 +1,9 @@
-import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import { createHash } from "node:crypto";
-import os from "node:os";
-import path from "node:path";
-import { test } from "node:test";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeCrypto from "node:crypto";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeTest from "node:test";
 import { capturePreparationProducer } from "./offline-preparation-producer-loader.mjs";
 
 const artifactDirectory = "apps/server/dist-exe/preparation-producer-candidate";
@@ -56,30 +56,32 @@ const qualifierPaths = [
     "jonesPreparationWorkerSource.ts",
   ].map((name) => `apps/desktop/src/jones/updates/${name}`),
 ];
-const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const sha256 = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 const content = (bytes) => ({ sha256: sha256(bytes), size: bytes.length });
 const sameIdentity = (left, right) =>
   left.dev === right.dev && left.ino === right.ino && left.uid === right.uid;
 
 async function withFixture(t, run) {
-  const parent = await fs.realpath(os.tmpdir());
-  const fixtureRoot = await fs.mkdtemp(path.join(parent, "jones-producer-capture-test-"));
+  const parent = await NodeFSP.default.realpath(NodeOS.tmpdir());
+  const fixtureRoot = await NodeFSP.default.mkdtemp(
+    NodePath.join(parent, "jones-producer-capture-test-"),
+  );
   const allocated = new Map([[fixtureRoot, undefined]]);
   let primary;
   let failed = false;
   try {
-    allocated.set(fixtureRoot, await fs.lstat(fixtureRoot, { bigint: true }));
-    const originalMkdtemp = fs.mkdtemp;
-    t.mock.method(fs, "mkdtemp", async (...args) => {
+    allocated.set(fixtureRoot, await NodeFSP.default.lstat(fixtureRoot, { bigint: true }));
+    const originalMkdtemp = NodeFSP.default.mkdtemp;
+    t.mock.method(NodeFSP.default, "mkdtemp", async (...args) => {
       const name = await originalMkdtemp(...args);
       allocated.set(name, undefined);
-      allocated.set(name, await fs.lstat(name, { bigint: true }));
+      allocated.set(name, await NodeFSP.default.lstat(name, { bigint: true }));
       return name;
     });
-    const sourceRoot = path.join(fixtureRoot, "source");
-    const stageRoot = path.join(fixtureRoot, "stage");
-    await fs.mkdir(sourceRoot, { mode: 0o700 });
-    await fs.mkdir(stageRoot, { mode: 0o700 });
+    const sourceRoot = NodePath.join(fixtureRoot, "source");
+    const stageRoot = NodePath.join(fixtureRoot, "stage");
+    await NodeFSP.default.mkdir(sourceRoot, { mode: 0o700 });
+    await NodeFSP.default.mkdir(stageRoot, { mode: 0o700 });
     const bytes = new Map(
       [...new Set([...producerPaths, ...qualifierPaths])].map((name, index) => [
         name,
@@ -126,11 +128,21 @@ async function withFixture(t, run) {
     };
     const writeReport = async () => {
       bytes.set(reportPath, Buffer.from(JSON.stringify(report)));
-      await fs.writeFile(path.join(sourceRoot, reportPath), bytes.get(reportPath), { mode: 0o600 });
+      await NodeFSP.default.writeFile(
+        NodePath.join(sourceRoot, reportPath),
+        bytes.get(reportPath),
+        { mode: 0o600 },
+      );
     };
     for (const [name, data] of bytes) {
-      await fs.mkdir(path.dirname(path.join(sourceRoot, name)), { recursive: true, mode: 0o700 });
-      await fs.writeFile(path.join(sourceRoot, name), data, { flag: "wx", mode: 0o600 });
+      await NodeFSP.default.mkdir(NodePath.dirname(NodePath.join(sourceRoot, name)), {
+        recursive: true,
+        mode: 0o700,
+      });
+      await NodeFSP.default.writeFile(NodePath.join(sourceRoot, name), data, {
+        flag: "wx",
+        mode: 0o600,
+      });
     }
     await writeReport();
     await run({ sourceRoot, stageRoot, fixtureRoot, bytes, report, writeReport, allocated });
@@ -142,7 +154,7 @@ async function withFixture(t, run) {
     const failures = [];
     for (const [name, original] of [...allocated].reverse()) {
       try {
-        const current = await fs.lstat(name, { bigint: true }).catch((cause) => {
+        const current = await NodeFSP.default.lstat(name, { bigint: true }).catch((cause) => {
           if (cause.code === "ENOENT") return undefined;
           throw cause;
         });
@@ -152,7 +164,7 @@ async function withFixture(t, run) {
             retainedRoot: name,
             preserveScratch: true,
           });
-        await fs.rm(name, { recursive: true });
+        await NodeFSP.default.rm(name, { recursive: true });
       } catch (cause) {
         failures.push(cause);
       }
@@ -167,64 +179,68 @@ async function withFixture(t, run) {
   }
 }
 
-test("capture copies exact bytes into distinct roots, returns held and never executes the sentinel", (t) =>
-  withFixture(t, async ({ sourceRoot, stageRoot, bytes }) => {
-    const unlink = fs.unlink;
-    const copied = new Map();
-    t.mock.method(fs, "unlink", async (name) => {
-      copied.set(name, await fs.readFile(name));
-      return unlink(name);
-    });
-    const result = await capturePreparationProducer({ sourceRoot, stageRoot });
-    assert.equal(result.status, "held");
-    assert.equal(result.reason, "producer-execution-closure-unqualified");
-    assert.equal(result.imported, false);
-    assert.equal(result.qualification, "unqualified");
-    assert.equal(result.completeDependencyClosure, false);
-    assert.equal(result.loadedCollectorBytesAttested, false);
-    assert.equal(result.reportedGitIdentity.attested, false);
-    assert.equal(result.reportedGitIdentity.sha, "a".repeat(40));
-    assert.equal(result.sourceRoot, sourceRoot);
-    assert.equal(result.stageRoot, stageRoot);
-    assert.equal(new Set([sourceRoot, stageRoot, result.codeRoot]).size, 3);
-    assert.notDeepEqual(result.sourceIdentity, result.codeIdentity);
-    assert.equal(result.files.length, 34);
-    assert.deepEqual(result.cleanup, { disposition: "removed", root: result.codeRoot });
-    await assert.rejects(fs.lstat(result.codeRoot), { code: "ENOENT" });
-    for (const file of result.files) {
-      assert.deepEqual(
-        copied.get(path.join(result.codeRoot, file.capturedPath)),
-        bytes.get(file.sourcePath),
-      );
-      assert.deepEqual(content(bytes.get(file.sourcePath)), {
-        sha256: file.sha256,
-        size: file.size,
+NodeTest.test(
+  "capture copies exact bytes into distinct roots, returns held and never executes the sentinel",
+  (t) =>
+    withFixture(t, async ({ sourceRoot, stageRoot, bytes }) => {
+      const unlink = NodeFSP.default.unlink;
+      const copied = new Map();
+      t.mock.method(NodeFSP.default, "unlink", async (name) => {
+        copied.set(name, await NodeFSP.default.readFile(name));
+        return unlink(name);
       });
-      assert.notDeepEqual(file.sourceIdentity, file.capturedIdentity);
-    }
-    assert.equal(
-      result.files.find((file) => file.sourcePath === producerPath).capturedPath,
-      emittedPath,
-    );
-    assert.equal(
-      path.resolve(result.codeRoot, path.dirname(emittedPath), "../../.."),
-      result.codeRoot,
-    );
-    assert.deepEqual(await fs.readdir(stageRoot), []);
-  }));
+      const result = await capturePreparationProducer({ sourceRoot, stageRoot });
+      NodeAssert.equal(result.status, "held");
+      NodeAssert.equal(result.reason, "producer-execution-closure-unqualified");
+      NodeAssert.equal(result.imported, false);
+      NodeAssert.equal(result.qualification, "unqualified");
+      NodeAssert.equal(result.completeDependencyClosure, false);
+      NodeAssert.equal(result.loadedCollectorBytesAttested, false);
+      NodeAssert.equal(result.reportedGitIdentity.attested, false);
+      NodeAssert.equal(result.reportedGitIdentity.sha, "a".repeat(40));
+      NodeAssert.equal(result.sourceRoot, sourceRoot);
+      NodeAssert.equal(result.stageRoot, stageRoot);
+      NodeAssert.equal(new Set([sourceRoot, stageRoot, result.codeRoot]).size, 3);
+      NodeAssert.notDeepEqual(result.sourceIdentity, result.codeIdentity);
+      NodeAssert.equal(result.files.length, 34);
+      NodeAssert.deepEqual(result.cleanup, { disposition: "removed", root: result.codeRoot });
+      await NodeAssert.rejects(NodeFSP.default.lstat(result.codeRoot), { code: "ENOENT" });
+      for (const file of result.files) {
+        NodeAssert.deepEqual(
+          copied.get(NodePath.join(result.codeRoot, file.capturedPath)),
+          bytes.get(file.sourcePath),
+        );
+        NodeAssert.deepEqual(content(bytes.get(file.sourcePath)), {
+          sha256: file.sha256,
+          size: file.size,
+        });
+        NodeAssert.notDeepEqual(file.sourceIdentity, file.capturedIdentity);
+      }
+      NodeAssert.equal(
+        result.files.find((file) => file.sourcePath === producerPath).capturedPath,
+        emittedPath,
+      );
+      NodeAssert.equal(
+        NodePath.resolve(result.codeRoot, NodePath.dirname(emittedPath), "../../.."),
+        result.codeRoot,
+      );
+      NodeAssert.deepEqual(await NodeFSP.default.readdir(stageRoot), []);
+    }),
+);
 
-test("concurrent captures own different roots and clean up independently", (t) =>
+NodeTest.test("concurrent captures own different roots and clean up independently", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot }) => {
     const results = await Promise.all([
       capturePreparationProducer({ sourceRoot, stageRoot }),
       capturePreparationProducer({ sourceRoot, stageRoot }),
     ]);
-    assert.notEqual(results[0].codeRoot, results[1].codeRoot);
+    NodeAssert.notEqual(results[0].codeRoot, results[1].codeRoot);
     for (const result of results) {
-      assert.equal(result.cleanup.disposition, "removed");
-      await assert.rejects(fs.lstat(result.codeRoot), { code: "ENOENT" });
+      NodeAssert.equal(result.cleanup.disposition, "removed");
+      await NodeAssert.rejects(NodeFSP.default.lstat(result.codeRoot), { code: "ENOENT" });
     }
-  }));
+  }),
+);
 
 for (const [name, mutate] of [
   ["extra path", (report) => report.source.inputs.push({ path: "../../outside" })],
@@ -289,314 +305,354 @@ for (const [name, mutate] of [
     },
   ],
 ]) {
-  test(`refuses ${name} before opening any producer or source file`, (t) =>
+  NodeTest.test(`refuses ${name} before opening any producer or source file`, (t) =>
     withFixture(t, async ({ sourceRoot, stageRoot, report, writeReport }) => {
       mutate(report);
       await writeReport();
-      const open = fs.open;
+      const open = NodeFSP.default.open;
       const reads = [];
-      t.mock.method(fs, "open", async (name, ...args) => {
-        if (name.startsWith(`${sourceRoot}${path.sep}`))
-          reads.push(path.relative(sourceRoot, name));
+      t.mock.method(NodeFSP.default, "open", async (name, ...args) => {
+        if (name.startsWith(`${sourceRoot}${NodePath.sep}`))
+          reads.push(NodePath.relative(sourceRoot, name));
         return open(name, ...args);
       });
-      await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-        assert.equal(error.cleanup.disposition, "removed");
+      await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+        NodeAssert.equal(error.cleanup.disposition, "removed");
         return true;
       });
-      assert.deepEqual(reads, [reportPath]);
-    }));
+      NodeAssert.deepEqual(reads, [reportPath]);
+    }),
+  );
 }
 
 for (const kind of ["source", "producer", "report"]) {
-  test(`refuses ${kind} replacement after opening its descriptor and removes owned scratch`, (t) =>
-    withFixture(t, async ({ sourceRoot, stageRoot, bytes }) => {
-      const relative =
-        kind === "source" ? "package.json" : kind === "producer" ? producerPath : reportPath;
-      const target = path.join(sourceRoot, relative);
-      const open = fs.open;
-      let replaced = false;
-      t.mock.method(fs, "open", async (name, ...args) => {
-        const handle = await open(name, ...args);
-        if (name === target && !replaced) {
-          replaced = true;
-          await fs.rename(target, `${target}.original`);
-          await fs.writeFile(target, bytes.get(relative), { flag: "wx", mode: 0o600 });
-        }
-        return handle;
-      });
-      await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-        assert.match(error.message, /identity|replaced/);
-        assert.equal(error.cleanup.disposition, "removed");
-        return true;
-      });
-      assert.equal(replaced, true);
-    }));
+  NodeTest.test(
+    `refuses ${kind} replacement after opening its descriptor and removes owned scratch`,
+    (t) =>
+      withFixture(t, async ({ sourceRoot, stageRoot, bytes }) => {
+        const relative =
+          kind === "source" ? "package.json" : kind === "producer" ? producerPath : reportPath;
+        const target = NodePath.join(sourceRoot, relative);
+        const open = NodeFSP.default.open;
+        let replaced = false;
+        t.mock.method(NodeFSP.default, "open", async (name, ...args) => {
+          const handle = await open(name, ...args);
+          if (name === target && !replaced) {
+            replaced = true;
+            await NodeFSP.default.rename(target, `${target}.original`);
+            await NodeFSP.default.writeFile(target, bytes.get(relative), {
+              flag: "wx",
+              mode: 0o600,
+            });
+          }
+          return handle;
+        });
+        await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+          NodeAssert.match(error.message, /identity|replaced/);
+          NodeAssert.equal(error.cleanup.disposition, "removed");
+          return true;
+        });
+        NodeAssert.equal(replaced, true);
+      }),
+  );
 }
 
-test("same-size source mutation after copying fails the final source recheck", (t) =>
+NodeTest.test("same-size source mutation after copying fails the final source recheck", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot, bytes, allocated }) => {
-    const open = fs.open;
+    const open = NodeFSP.default.open;
     let mutated = false;
-    t.mock.method(fs, "open", async (name, ...args) => {
+    t.mock.method(NodeFSP.default, "open", async (name, ...args) => {
       const handle = await open(name, ...args);
       if (
         !mutated &&
-        allocated.has(path.dirname(name)) &&
-        path.basename(name) === "vite.config.ts"
+        allocated.has(NodePath.dirname(name)) &&
+        NodePath.basename(name) === "vite.config.ts"
       ) {
         mutated = true;
-        const target = path.join(sourceRoot, "package.json");
-        await fs.writeFile(target, Buffer.alloc(bytes.get("package.json").length, 120));
+        const target = NodePath.join(sourceRoot, "package.json");
+        await NodeFSP.default.writeFile(
+          target,
+          Buffer.alloc(bytes.get("package.json").length, 120),
+        );
       }
       return handle;
     });
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-      assert.match(error.message, /changed|differs/);
-      assert.equal(error.cleanup.disposition, "removed");
+    await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+      NodeAssert.match(error.message, /changed|differs/);
+      NodeAssert.equal(error.cleanup.disposition, "removed");
       return true;
     });
-    assert.equal(mutated, true);
-  }));
+    NodeAssert.equal(mutated, true);
+  }),
+);
 
 for (const kind of ["missing", "symlink", "hardlink"]) {
-  test(`refuses a ${kind} source without modifying its target`, (t) =>
+  NodeTest.test(`refuses a ${kind} source without modifying its target`, (t) =>
     withFixture(t, async ({ sourceRoot, stageRoot, fixtureRoot }) => {
-      const target = path.join(sourceRoot, "package.json");
-      const original = await fs.readFile(target);
-      const outside = path.join(fixtureRoot, "outside");
-      await fs.writeFile(outside, original, { flag: "wx", mode: 0o600 });
-      await fs.unlink(target);
-      if (kind === "symlink") await fs.symlink(outside, target);
-      if (kind === "hardlink") await fs.link(outside, target);
-      await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-        assert.equal(error.cleanup.disposition, "removed");
+      const target = NodePath.join(sourceRoot, "package.json");
+      const original = await NodeFSP.default.readFile(target);
+      const outside = NodePath.join(fixtureRoot, "outside");
+      await NodeFSP.default.writeFile(outside, original, { flag: "wx", mode: 0o600 });
+      await NodeFSP.default.unlink(target);
+      if (kind === "symlink") await NodeFSP.default.symlink(outside, target);
+      if (kind === "hardlink") await NodeFSP.default.link(outside, target);
+      await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+        NodeAssert.equal(error.cleanup.disposition, "removed");
         return true;
       });
-      assert.deepEqual(await fs.readFile(outside), original);
-    }));
+      NodeAssert.deepEqual(await NodeFSP.default.readFile(outside), original);
+    }),
+  );
 }
 
-test("capture refuses stage and scratch overlap before allocating a root", (t) =>
+NodeTest.test("capture refuses stage and scratch overlap before allocating a root", (t) =>
   withFixture(t, async ({ sourceRoot, allocated }) => {
-    await assert.rejects(
-      capturePreparationProducer({ sourceRoot, stageRoot: await fs.realpath(os.tmpdir()) }),
+    await NodeAssert.rejects(
+      capturePreparationProducer({
+        sourceRoot,
+        stageRoot: await NodeFSP.default.realpath(NodeOS.tmpdir()),
+      }),
       /overlaps|owned directory/,
     );
-    assert.equal(allocated.size, 1);
-  }));
+    NodeAssert.equal(allocated.size, 1);
+  }),
+);
 
 for (const [name, relative, limit] of [
   ["report", reportPath, 16 * 1024 * 1024],
   ["producer", producerPath, 32 * 1024 * 1024],
   ["source", "package.json", 8 * 1024 * 1024],
 ]) {
-  test(`refuses an oversized ${name} before opening its bytes`, (t) =>
+  NodeTest.test(`refuses an oversized ${name} before opening its bytes`, (t) =>
     withFixture(t, async ({ sourceRoot, stageRoot }) => {
-      const target = path.join(sourceRoot, relative);
-      await fs.truncate(target, limit + 1);
-      const open = fs.open;
+      const target = NodePath.join(sourceRoot, relative);
+      await NodeFSP.default.truncate(target, limit + 1);
+      const open = NodeFSP.default.open;
       let opened = false;
-      t.mock.method(fs, "open", async (file, ...args) => {
+      t.mock.method(NodeFSP.default, "open", async (file, ...args) => {
         if (file === target) opened = true;
         return open(file, ...args);
       });
-      await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-        assert.match(error.message, /bounded owned regular file/);
-        assert.equal(error.cleanup.disposition, "removed");
+      await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+        NodeAssert.match(error.message, /bounded owned regular file/);
+        NodeAssert.equal(error.cleanup.disposition, "removed");
         return true;
       });
-      assert.equal(opened, false);
-    }));
+      NodeAssert.equal(opened, false);
+    }),
+  );
 }
 
-test("caller import URLs, callbacks and admission flags are outside the API", (t) =>
+NodeTest.test("caller import URLs, callbacks and admission flags are outside the API", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot, allocated }) => {
     for (const option of [
       { importURL: "file:///outside" },
-      { callback: () => assert.fail("callback executed") },
+      { callback: () => NodeAssert.fail("callback executed") },
       { admitted: true },
     ])
-      await assert.rejects(
+      await NodeAssert.rejects(
         capturePreparationProducer({ sourceRoot, stageRoot, ...option }),
         /accepts only/,
       );
-    assert.equal(allocated.size, 1);
-  }));
+    NodeAssert.equal(allocated.size, 1);
+  }),
+);
 
-test("pre-cancellation preserves the exact reason and creates no scratch", (t) =>
+NodeTest.test("pre-cancellation preserves the exact reason and creates no scratch", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot, allocated }) => {
     const reason = Object.freeze(new Error("capture cancelled before allocation"));
-    await assert.rejects(
+    await NodeAssert.rejects(
       capturePreparationProducer({ sourceRoot, stageRoot, signal: AbortSignal.abort(reason) }),
       (error) => error === reason,
     );
-    assert.equal(allocated.size, 1);
-  }));
+    NodeAssert.equal(allocated.size, 1);
+  }),
+);
 
-test("cancellation during capture cleans its tree and preserves a frozen abort reason", (t) =>
-  withFixture(t, async ({ sourceRoot, stageRoot }) => {
-    const controller = new AbortController();
-    const reason = Object.freeze(new Error("owned capture cancellation"));
-    const open = fs.open;
-    t.mock.method(fs, "open", async (name, ...args) => {
-      const handle = await open(name, ...args);
-      if (name === path.join(sourceRoot, producerPath)) controller.abort(reason);
-      return handle;
-    });
-    await assert.rejects(
-      capturePreparationProducer({ sourceRoot, stageRoot, signal: controller.signal }),
-      (error) => {
-        assert.equal(error.cause, reason);
-        assert.equal(error.cleanup.disposition, "removed");
+NodeTest.test(
+  "cancellation during capture cleans its tree and preserves a frozen abort reason",
+  (t) =>
+    withFixture(t, async ({ sourceRoot, stageRoot }) => {
+      const controller = new AbortController();
+      const reason = Object.freeze(new Error("owned capture cancellation"));
+      const open = NodeFSP.default.open;
+      t.mock.method(NodeFSP.default, "open", async (name, ...args) => {
+        const handle = await open(name, ...args);
+        if (name === NodePath.join(sourceRoot, producerPath)) controller.abort(reason);
+        return handle;
+      });
+      await NodeAssert.rejects(
+        capturePreparationProducer({ sourceRoot, stageRoot, signal: controller.signal }),
+        (error) => {
+          NodeAssert.equal(error.cause, reason);
+          NodeAssert.equal(error.cleanup.disposition, "removed");
+          return true;
+        },
+      );
+    }),
+);
+
+NodeTest.test(
+  "cleanup failure retains the exact root and preserves the original read failure",
+  (t) =>
+    withFixture(t, async ({ sourceRoot, stageRoot }) => {
+      const primary = new Error("synthetic source open failure");
+      const cleanup = new Error("synthetic cleanup failure");
+      const open = NodeFSP.default.open;
+      t.mock.method(NodeFSP.default, "open", async (name, ...args) => {
+        if (name === NodePath.join(sourceRoot, producerPath)) throw primary;
+        return open(name, ...args);
+      });
+      t.mock.method(NodeFSP.default, "rmdir", async () => {
+        throw cleanup;
+      });
+      await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+        NodeAssert.ok(error instanceof AggregateError);
+        NodeAssert.equal(error.cause, primary);
+        NodeAssert.equal(error.errors[0], primary);
+        NodeAssert.equal(error.cleanup.disposition, "retained-uncertain");
+        NodeAssert.equal(error.retainedRoot, error.cleanup.root);
+        NodeAssert.equal(error.preserveScratch, true);
         return true;
-      },
-    );
-  }));
+      });
+    }),
+);
 
-test("cleanup failure retains the exact root and preserves the original read failure", (t) =>
-  withFixture(t, async ({ sourceRoot, stageRoot }) => {
-    const primary = new Error("synthetic source open failure");
-    const cleanup = new Error("synthetic cleanup failure");
-    const open = fs.open;
-    t.mock.method(fs, "open", async (name, ...args) => {
-      if (name === path.join(sourceRoot, producerPath)) throw primary;
-      return open(name, ...args);
-    });
-    t.mock.method(fs, "rmdir", async () => {
-      throw cleanup;
-    });
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-      assert.ok(error instanceof AggregateError);
-      assert.equal(error.cause, primary);
-      assert.equal(error.errors[0], primary);
-      assert.equal(error.cleanup.disposition, "retained-uncertain");
-      assert.equal(error.retainedRoot, error.cleanup.root);
-      assert.equal(error.preserveScratch, true);
-      return true;
-    });
-  }));
-
-test("cancellation during cleanup finishes cleanup before rejecting", (t) =>
+NodeTest.test("cancellation during cleanup finishes cleanup before rejecting", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot }) => {
     const controller = new AbortController();
     const reason = new Error("cancel during cleanup");
-    const unlink = fs.unlink;
-    t.mock.method(fs, "unlink", async (...args) => {
+    const unlink = NodeFSP.default.unlink;
+    t.mock.method(NodeFSP.default, "unlink", async (...args) => {
       controller.abort(reason);
       return unlink(...args);
     });
-    await assert.rejects(
+    await NodeAssert.rejects(
       capturePreparationProducer({ sourceRoot, stageRoot, signal: controller.signal }),
       (error) => {
-        assert.equal(error, reason);
-        assert.equal(error.cleanup.disposition, "removed");
+        NodeAssert.equal(error, reason);
+        NodeAssert.equal(error.cleanup.disposition, "removed");
         return true;
       },
     );
-  }));
+  }),
+);
 
-test("descriptor close uncertainty retains scratch after an otherwise complete capture", (t) =>
-  withFixture(t, async ({ sourceRoot, stageRoot }) => {
-    const open = fs.open;
-    const closeFailure = new Error("close completion unknown");
-    t.mock.method(fs, "open", async (name, ...args) => {
-      const handle = await open(name, ...args);
-      if (name === path.join(sourceRoot, reportPath)) {
-        const close = handle.close.bind(handle);
-        t.mock.method(handle, "close", async () => {
-          await close();
-          throw closeFailure;
-        });
-      }
-      return handle;
-    });
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-      assert.ok(error instanceof AggregateError);
-      assert.equal(error.errors[0].cause, closeFailure);
-      assert.equal(error.cleanup.disposition, "retained-uncertain");
-      assert.equal(error.preserveScratch, true);
-      return true;
-    });
-  }));
+NodeTest.test(
+  "descriptor close uncertainty retains scratch after an otherwise complete capture",
+  (t) =>
+    withFixture(t, async ({ sourceRoot, stageRoot }) => {
+      const open = NodeFSP.default.open;
+      const closeFailure = new Error("close completion unknown");
+      t.mock.method(NodeFSP.default, "open", async (name, ...args) => {
+        const handle = await open(name, ...args);
+        if (name === NodePath.join(sourceRoot, reportPath)) {
+          const close = handle.close.bind(handle);
+          t.mock.method(handle, "close", async () => {
+            await close();
+            throw closeFailure;
+          });
+        }
+        return handle;
+      });
+      await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+        NodeAssert.ok(error instanceof AggregateError);
+        NodeAssert.equal(error.errors[0].cause, closeFailure);
+        NodeAssert.equal(error.cleanup.disposition, "retained-uncertain");
+        NodeAssert.equal(error.preserveScratch, true);
+        return true;
+      });
+    }),
+);
 
-test("scratch root replacement is retained and never followed during cleanup", (t) =>
+NodeTest.test("scratch root replacement is retained and never followed during cleanup", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot, allocated }) => {
-    const readdir = fs.readdir;
+    const readdir = NodeFSP.default.readdir;
     let replaced;
     let replacementStat;
-    t.mock.method(fs, "readdir", async (name, ...args) => {
+    t.mock.method(NodeFSP.default, "readdir", async (name, ...args) => {
       const actual = await readdir(name, ...args);
-      if (!replaced && allocated.has(name) && name !== path.dirname(sourceRoot)) {
+      if (!replaced && allocated.has(name) && name !== NodePath.dirname(sourceRoot)) {
         replaced = name;
-        await fs.rename(name, `${name}.displaced`);
-        await fs.mkdir(name, { mode: 0o700 });
-        replacementStat = await fs.lstat(name, { bigint: true });
+        await NodeFSP.default.rename(name, `${name}.displaced`);
+        await NodeFSP.default.mkdir(name, { mode: 0o700 });
+        replacementStat = await NodeFSP.default.lstat(name, { bigint: true });
       }
       return actual;
     });
     try {
-      await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-        assert.equal(error.cleanup.disposition, "retained-uncertain");
-        assert.equal(error.retainedRoot, replaced);
+      await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+        NodeAssert.equal(error.cleanup.disposition, "retained-uncertain");
+        NodeAssert.equal(error.retainedRoot, replaced);
         return true;
       });
-      assert.deepEqual(await fs.readdir(replaced), []);
-      assert.equal((await fs.lstat(`${replaced}.displaced`)).isDirectory(), true);
+      NodeAssert.deepEqual(await NodeFSP.default.readdir(replaced), []);
+      NodeAssert.equal((await NodeFSP.default.lstat(`${replaced}.displaced`)).isDirectory(), true);
     } finally {
       if (replaced) {
-        assert.ok(sameIdentity(replacementStat, await fs.lstat(replaced, { bigint: true })));
-        await fs.rmdir(replaced);
-        await fs.rename(`${replaced}.displaced`, replaced);
+        NodeAssert.ok(
+          sameIdentity(replacementStat, await NodeFSP.default.lstat(replaced, { bigint: true })),
+        );
+        await NodeFSP.default.rmdir(replaced);
+        await NodeFSP.default.rename(`${replaced}.displaced`, replaced);
       }
     }
-  }));
+  }),
+);
 
-test("captured byte mutation retains the tree and cannot produce a held result", (t) =>
+NodeTest.test("captured byte mutation retains the tree and cannot produce a held result", (t) =>
   withFixture(t, async ({ sourceRoot, stageRoot, allocated }) => {
-    const readdir = fs.readdir;
+    const readdir = NodeFSP.default.readdir;
     let mutated = false;
-    t.mock.method(fs, "readdir", async (name, ...args) => {
+    t.mock.method(NodeFSP.default, "readdir", async (name, ...args) => {
       const actual = await readdir(name, ...args);
-      if (!mutated && allocated.has(name) && name !== path.dirname(sourceRoot)) {
+      if (!mutated && allocated.has(name) && name !== NodePath.dirname(sourceRoot)) {
         mutated = true;
-        const target = path.join(name, emittedPath);
-        const bytes = await fs.readFile(target);
-        await fs.chmod(target, 0o600);
-        await fs.writeFile(target, Buffer.alloc(bytes.length, 120));
-        await fs.chmod(target, 0o400);
+        const target = NodePath.join(name, emittedPath);
+        const bytes = await NodeFSP.default.readFile(target);
+        await NodeFSP.default.chmod(target, 0o600);
+        await NodeFSP.default.writeFile(target, Buffer.alloc(bytes.length, 120));
+        await NodeFSP.default.chmod(target, 0o400);
       }
       return actual;
     });
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-      assert.equal(error.cleanup.disposition, "retained-uncertain");
-      assert.equal(error.preserveScratch, true);
+    await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+      NodeAssert.equal(error.cleanup.disposition, "retained-uncertain");
+      NodeAssert.equal(error.preserveScratch, true);
       return true;
     });
-    assert.equal(mutated, true);
-  }));
+    NodeAssert.equal(mutated, true);
+  }),
+);
 
-test("an unowned scratch entry makes retention sticky even after that entry disappears", (t) =>
-  withFixture(t, async ({ sourceRoot, stageRoot, allocated }) => {
-    const readdir = fs.readdir;
-    let observed = false;
-    t.mock.method(fs, "readdir", async (name, ...args) => {
-      const actual = await readdir(name, ...args);
-      if (!observed && allocated.has(name) && name !== path.dirname(sourceRoot)) {
-        observed = true;
-        const unexpected = path.join(name, "unowned-entry");
-        await fs.writeFile(unexpected, "test-owned unexpected entry", { flag: "wx", mode: 0o600 });
-        const snapshot = await readdir(name, ...args);
-        await fs.unlink(unexpected);
-        return snapshot;
-      }
-      return actual;
-    });
-    await assert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
-      assert.equal(error.preserveScratch, true);
-      assert.equal(error.cleanup.disposition, "retained-uncertain");
-      return true;
-    });
-    assert.equal(observed, true);
-    for (const name of allocated.keys()) assert.equal((await fs.lstat(name)).isDirectory(), true);
-  }));
+NodeTest.test(
+  "an unowned scratch entry makes retention sticky even after that entry disappears",
+  (t) =>
+    withFixture(t, async ({ sourceRoot, stageRoot, allocated }) => {
+      const readdir = NodeFSP.default.readdir;
+      let observed = false;
+      t.mock.method(NodeFSP.default, "readdir", async (name, ...args) => {
+        const actual = await readdir(name, ...args);
+        if (!observed && allocated.has(name) && name !== NodePath.dirname(sourceRoot)) {
+          observed = true;
+          const unexpected = NodePath.join(name, "unowned-entry");
+          await NodeFSP.default.writeFile(unexpected, "test-owned unexpected entry", {
+            flag: "wx",
+            mode: 0o600,
+          });
+          const snapshot = await readdir(name, ...args);
+          await NodeFSP.default.unlink(unexpected);
+          return snapshot;
+        }
+        return actual;
+      });
+      await NodeAssert.rejects(capturePreparationProducer({ sourceRoot, stageRoot }), (error) => {
+        NodeAssert.equal(error.preserveScratch, true);
+        NodeAssert.equal(error.cleanup.disposition, "retained-uncertain");
+        return true;
+      });
+      NodeAssert.equal(observed, true);
+      for (const name of allocated.keys())
+        NodeAssert.equal((await NodeFSP.default.lstat(name)).isDirectory(), true);
+    }),
+);

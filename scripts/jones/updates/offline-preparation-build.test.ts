@@ -610,12 +610,75 @@ describe("same-process preparation producer handles", () => {
     expect(inspected).toBe(false);
   });
 
-  it("refuses a different checkout without creating any producer child or output", () =>
+  it("refuses missing source bindings without creating any producer child or output", () =>
     withCandidateRoot(async (root) => {
       await expect(buildQualifiedPreparation({ repoRoot: root, stageRoot: root })).rejects.toThrow(
-        /own bound checkout/,
+        /ENOENT/,
       );
       expect(NodeFS.readdirSync(root)).toEqual([]);
+    }));
+
+  it("accepts matching raw bytes in a distinct source root only as far as policy refusal", () =>
+    withBoundProducerSource(async ({ sourceRoot, stageRoot, candidate }) => {
+      expect(sourceRoot).not.toBe(
+        NodeFS.realpathSync(NodeURL.fileURLToPath(new URL("../../../", import.meta.url))),
+      );
+      await expect(buildQualifiedPreparation({ repoRoot: sourceRoot, stageRoot })).rejects.toThrow(
+        "The functional preparation graph policy is unqualified.",
+      );
+      expect(NodeFS.readdirSync(stageRoot)).toEqual([]);
+      expect(NodeFS.readdirSync(candidate).sort()).toEqual([
+        "candidate-graph.json",
+        "offlinePreparationEntry.mjs",
+      ]);
+    }));
+
+  it.each([
+    "scripts/package.json",
+    "scripts/jones/updates/offline-preparation-producer-entry.ts",
+    "scripts/jones/updates/functional-policy.ts",
+    "scripts/jones/updates/legacy-bootstrap-bundle.ts",
+    "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs",
+  ])("refuses source/code byte disagreement in %s before policy or native work", (relative) =>
+    withBoundProducerSource(async ({ sourceRoot, stageRoot }) => {
+      NodeFS.appendFileSync(NodePath.join(sourceRoot, relative), "\nchanged fixture bytes\n");
+      await expect(buildQualifiedPreparation({ repoRoot: sourceRoot, stageRoot })).rejects.toThrow(
+        "Preparation checkout raw source differs from the bound code source.",
+      );
+      expect(NodeFS.readdirSync(stageRoot)).toEqual([]);
+    }),
+  );
+
+  it("rechecks source drift after a prior matching request without minting a handle", () =>
+    withBoundProducerSource(async ({ sourceRoot, stageRoot }) => {
+      const build = () => buildQualifiedPreparation({ repoRoot: sourceRoot, stageRoot });
+      await expect(build()).rejects.toThrow(
+        "The functional preparation graph policy is unqualified.",
+      );
+      const path = NodePath.join(sourceRoot, "scripts/jones/updates/offline-preparation-build.ts");
+      const original = NodeFS.readFileSync(path);
+      const changed = Buffer.from(original);
+      changed[0] = changed[0]! ^ 1;
+      NodeFS.writeFileSync(path, changed);
+      await expect(build()).rejects.toThrow(
+        "Preparation checkout raw source differs from the bound code source.",
+      );
+      NodeFS.writeFileSync(path, original);
+      await expect(build()).rejects.toThrow(
+        "The functional preparation graph policy is unqualified.",
+      );
+      expect(NodeFS.readdirSync(stageRoot)).toEqual([]);
+    }));
+
+  it("refuses a missing late qualifier even when all producer-only bindings match", () =>
+    withBoundProducerSource(async ({ sourceRoot, stageRoot }) => {
+      NodeFS.unlinkSync(
+        NodePath.join(sourceRoot, "scripts/jones/updates/legacy-preparation-native-fixture.mjs"),
+      );
+      await expect(buildQualifiedPreparation({ repoRoot: sourceRoot, stageRoot })).rejects.toThrow(
+        /ENOENT/,
+      );
+      expect(NodeFS.readdirSync(stageRoot)).toEqual([]);
     }));
 
   it("refuses an aliased stage before candidate reads or native work", () =>
@@ -835,6 +898,67 @@ async function withCandidateRoot(run: (root: string) => Promise<void>) {
   }
 }
 
+function producerCandidateSourceFiles() {
+  return new Set([
+    ...Object.keys(artifactManifest("", "", "").source.hashes),
+    "scripts/package.json",
+    "scripts/jones/updates/offline-preparation-producer-entry.ts",
+    "scripts/jones/updates/functional-policy.ts",
+    "scripts/jones/updates/legacy-bootstrap-bundle.ts",
+    "scripts/jones/updates/legacy-preparation-native-fixture.mjs",
+    "scripts/jones/updates/legacy-preparation-native-fixture.d.mts",
+    "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs",
+    "scripts/jones/updates/legacy-identity-native-fixture.mjs",
+    ...[
+      "jonesLegacyBootstrapSource.ts",
+      "jonesLegacyMaintenanceSource.ts",
+      "jonesNativeHelperSource.ts",
+      "jonesPairedStateSource.ts",
+      "jonesColdPairSource.ts",
+      "jonesLegacyIdentityNative.c",
+      "jonesColdOwnerSource.ts",
+      "jonesPreparationWorkerSource.ts",
+    ].map((name) => `apps/desktop/src/jones/updates/${name}`),
+    "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+  ]);
+}
+
+async function withBoundProducerSource(
+  run: (input: { sourceRoot: string; stageRoot: string; candidate: string }) => Promise<void>,
+) {
+  await withCandidateRoot(async (root) => {
+    const sourceRoot = NodePath.join(root, "source"),
+      stageRoot = NodePath.join(root, "stage"),
+      candidate = NodePath.join(sourceRoot, "apps/server/dist-exe/preparation-candidate");
+    NodeFS.mkdirSync(candidate, { recursive: true, mode: 0o700 });
+    NodeFS.mkdirSync(stageRoot, { mode: 0o700 });
+    const codeRoot = NodeFS.realpathSync(
+      NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
+    );
+    const files = producerCandidateSourceFiles();
+    expect(files.size).toBe(32);
+    for (const name of files) {
+      const destination = NodePath.join(sourceRoot, name);
+      NodeFS.mkdirSync(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
+      NodeFS.writeFileSync(destination, NodeFS.readFileSync(NodePath.join(codeRoot, name)), {
+        flag: "wx",
+        mode: 0o600,
+      });
+    }
+    NodeFS.writeFileSync(NodePath.join(candidate, "candidate-graph.json"), "{}\n", {
+      flag: "wx",
+      mode: 0o600,
+    });
+    NodeFS.writeFileSync(
+      NodePath.join(candidate, "offlinePreparationEntry.mjs"),
+      'throw new Error("raw binding fixture must never execute");\n',
+      { flag: "wx", mode: 0o600 },
+    );
+    await run({ sourceRoot, stageRoot, candidate });
+    expect(NodeFS.readdirSync(root).sort()).toEqual(["source", "stage"]);
+  });
+}
+
 async function withProducerCandidateCheckout(
   run: (root: string) => Promise<void>,
   options: {
@@ -845,26 +969,7 @@ async function withProducerCandidateCheckout(
 ) {
   await withCandidateRoot(async (root) => {
     const files = new Set([
-      ...Object.keys(artifactManifest("", "", "").source.hashes),
-      "scripts/package.json",
-      "scripts/jones/updates/offline-preparation-producer-entry.ts",
-      "scripts/jones/updates/functional-policy.ts",
-      "scripts/jones/updates/legacy-bootstrap-bundle.ts",
-      "scripts/jones/updates/legacy-preparation-native-fixture.mjs",
-      "scripts/jones/updates/legacy-preparation-native-fixture.d.mts",
-      "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs",
-      "scripts/jones/updates/legacy-identity-native-fixture.mjs",
-      ...[
-        "jonesLegacyBootstrapSource.ts",
-        "jonesLegacyMaintenanceSource.ts",
-        "jonesNativeHelperSource.ts",
-        "jonesPairedStateSource.ts",
-        "jonesColdPairSource.ts",
-        "jonesLegacyIdentityNative.c",
-        "jonesColdOwnerSource.ts",
-        "jonesPreparationWorkerSource.ts",
-      ].map((name) => `apps/desktop/src/jones/updates/${name}`),
-      "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+      ...producerCandidateSourceFiles(),
       ...Object.keys(options.contents ?? {}),
     ]);
     for (const path of files) {
