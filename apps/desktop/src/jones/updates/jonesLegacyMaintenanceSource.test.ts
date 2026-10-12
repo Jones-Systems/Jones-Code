@@ -65,11 +65,21 @@ elif fault == 'private-worker':
     try: scope['_PreparationWorker']()
     except scope['Refused']: pass
     else: raise AssertionError('Unbound worker received a session')
-    for operation in ('prepare', 'recover_preparation', 'snapshot'):
+    for operation in ('prepare', 'recover_preparation', 'snapshot', 'prepare_handoff', 'first-transition'):
         with contextlib.redirect_stderr(io.StringIO()):
             try: scope['maintenance_main']([operation, '--manifest', '/fixture/runtime/jones-active-install.json'])
             except SystemExit as result: assert result.code == 2
             else: raise AssertionError('Public entry exposed a state operation')
+elif fault == 'handoff-listener':
+    for listener in ('http://127.0.0.1:4888', 'http://127.1.2.3:80/', 'http://[::1]:4888', 'http://127.0.0.1'):
+        assert scope['_cold_handoff_listener'](listener) == listener
+    for listener in (None, '', 'http://localhost:4888', 'https://127.0.0.1:4888', 'http://0.0.0.0:4888',
+                     'http://127.0.0.1:0', 'http://127.0.0.1:65536', 'http://127.0.0.999:4888',
+                     'http://user@127.0.0.1:4888', 'http://127.0.0.1:4888/path',
+                     'http://127.0.0.1:4888/?query', 'http://127.0.0.1:4888/#fragment', 'http://[::]:4888'):
+        try: scope['_cold_handoff_listener'](listener)
+        except scope['Refused']: pass
+        else: raise AssertionError('Invalid future trial listener accepted')
 elif fault == 'shim-bytes':
     active = {'appPath': '/fixture/Jones.app', 'executablePath': '/fixture/Jones.app/Contents/MacOS/Jones'}
     assert scope['expected_shim'](pathlib.Path('/fixture/home'), active).decode() == payload['expectedShim']
@@ -345,6 +355,7 @@ describe("standalone pre-state maintenance protocol", () => {
     "cold-owner-cursor",
     "cancel-before-state-fence",
     "private-worker",
+    "handoff-listener",
   ])("enforces %s before granting any maintenance effect", (scenario) => {
     const result = NodeChildProcess.spawnSync("python3", ["-I", "-B", "-c", protocolFixture], {
       input: JSON.stringify({

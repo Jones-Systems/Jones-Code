@@ -1603,6 +1603,23 @@ export const coldPreparationCases = [
   "cold-c-reconcile",
   "v2-held",
   "unretained-runtime",
+  "handoff-success",
+  "handoff-before-preparation",
+  "handoff-worker-unsettled",
+  "handoff-worker-unreaped",
+  "handoff-reserve-changed",
+  "handoff-selection-changed",
+  "handoff-binding-changed",
+  "handoff-owner-bytes-changed",
+  "handoff-evidence-changed",
+  "handoff-before-publication",
+  "handoff-after-publication",
+  "handoff-readback",
+  "handoff-sync",
+  "handoff-listener-changed",
+  "handoff-after-intent-restore",
+  "handoff-same-boot",
+  "handoff-later-boot",
 ];
 
 // This framed child models query results, not SQLite or native observations. The
@@ -1740,6 +1757,21 @@ bundle = dict(bundle, schema=3, repository='Jones-Systems/Jones-Code', sourceSha
 if scenario == 'v2-held':
     bundle.pop('preparation')
     bundle['schema'] = 2
+if scenario.startswith('handoff-'):
+    original.update(protocol=1, home=str(root), environmentId='synthetic-cold-handoff', version='1.0.0-preview.20261010.1', appDigest='1' * 64)
+    candidate = {'handle': '6' * 64, 'sourceSha': bundle['sourceSha'], 'sourceTree': bundle['sourceTree'],
+                 'appDigest': '7' * 64, 'version': bundle['version'], 'appPath': str(root / 'Candidate.app'),
+                 'executablePath': str(root / 'Candidate.app/Contents/MacOS/Jones')}
+    selection_path = root / 'selection.json'
+    selection_raw = encode({'app': candidate}) + b'\n'
+    write(selection_path, selection_raw)
+    with scope['fixed_lock'](manifest): pass
+    plan.update(originalManifest=encode(original).decode(), originalManifestSha256=sha(encode(original)),
+                selectionPath=str(selection_path), selectionSha256=sha(selection_raw),
+                lockIdentity=portable_identity(None, manifest.parent / 'jones-activation.lock', 'file'),
+                candidateBinding={'stagedHandle': candidate['handle'], 'sourceSha': candidate['sourceSha'],
+                                  'sourceTree': candidate['sourceTree'], 'appDigest': candidate['appDigest'],
+                                  'executorSha256': bundle['executorSha256']})
 plan['bundle'] = bundle
 plan_raw = encode(plan) + b'\n'
 journal['planSha256'] = sha(plan_raw)
@@ -1755,10 +1787,17 @@ real_durable = scope['durable_file']
 fault = {'fired': False}
 def durable(path, raw, mode, previous=None):
     is_intent = path == directory / 'state/journal.json' and json.loads(raw)['phase'] == 'preparation-intent'
+    is_handoff = path == directory / 'journal.json' and 'desktopHandoff' in json.loads(raw)
+    if is_handoff and scenario == 'handoff-before-publication':
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned failure before handoff publication')
     if scenario == 'plan-publication-failure' and path == directory / 'state/preparation-envelope.json':
         fault['fired'] = True
         raise OSError(errno.EIO, 'owned envelope publication failure')
     real_durable(path, raw, mode, previous)
+    if is_handoff and scenario == 'handoff-after-publication':
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned failure after handoff publication')
     if is_intent:
         events.append('intent-durable')
         assert (directory / 'state/preparation-plan.json').is_file() and (directory / 'state/preparation-envelope.json').is_file()
@@ -1766,6 +1805,20 @@ def durable(path, raw, mode, previous=None):
             fault['fired'] = True
             raise OSError(errno.EIO, 'owned error after intent durability')
 scope['durable_file'] = durable
+real_read_owned, real_sync_evidence = scope['read_owned'], Maintenance.sync_evidence
+def read_handoff(path, *args):
+    raw = real_read_owned(path, *args)
+    if scenario == 'handoff-readback' and path == directory / 'journal.json' and 'desktopHandoff' in json.loads(raw) and not fault['fired']:
+        fault['fired'] = True
+        return raw + b' '
+    return raw
+scope['read_owned'] = read_handoff
+def sync_handoff(self):
+    real_sync_evidence(self)
+    if scenario == 'handoff-sync' and 'desktopHandoff' in self.journal:
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned handoff sync uncertainty')
+Maintenance.sync_evidence = sync_handoff
 def observed(self, path, capture=False, access=None):
     self.check()
     self.session.boundary()
@@ -1851,11 +1904,99 @@ def failed_prepare(session):
     assert session.failure is not None
     refusal(session.begin_restore, Refused)
     refusal(session.prepare, Refused)
+def handoff(session):
+    listener = 'http://127.0.0.1:4888'
+    initial_owner = manifest.read_bytes()
+    initial_gate = (gate.read_bytes(), stat.S_IMODE(gate.stat().st_mode))
+    if scenario == 'handoff-before-preparation':
+        refusal(lambda: session.prepare_handoff(listener), Refused)
+        assert not commands and not (directory / 'state').exists()
+        assert 'desktopHandoff' not in json.loads((directory / 'journal.json').read_bytes())
+        assert manifest.read_bytes() == initial_owner and (gate.read_bytes(), stat.S_IMODE(gate.stat().st_mode)) == initial_gate
+        return
+    prepare(session)
+    pair_before = (directory / 'state/pair-descriptor.json').read_bytes()
+    pair_journal = (directory / 'state/journal.json').read_bytes()
+    previous = (directory / 'state/previous-pair/database').read_bytes()
+    reserve_path = directory / 'state/reserve.bin'
+    reserve_inode = reserve_path.stat().st_ino
+    prepared_database = database.read_bytes()
+    if scenario == 'handoff-worker-unsettled': session.worker.settled = False
+    if scenario == 'handoff-worker-unreaped': session.worker.process.reaped = False
+    if scenario == 'handoff-reserve-changed':
+        with reserve_path.open('r+b') as stream: stream.truncate(1)
+    if scenario == 'handoff-selection-changed': write(selection_path, selection_raw + b' ')
+    if scenario == 'handoff-binding-changed': session.owner.plan['candidateBinding']['sourceSha'] = 'f' * 40
+    if scenario == 'handoff-owner-bytes-changed': write(manifest, initial_owner + b' ')
+    if scenario == 'handoff-evidence-changed':
+        evidence_path = directory / 'state' / ('preparation-evidence-' + session.record['sessionId'] + '.json')
+        evidence = json.loads(evidence_path.read_bytes())
+        evidence['result']['outcome'] = 'held'
+        write(evidence_path, encode(evidence) + b'\n', 0o400)
+    held_cases = {'handoff-worker-unsettled', 'handoff-worker-unreaped', 'handoff-reserve-changed',
+                  'handoff-selection-changed', 'handoff-binding-changed', 'handoff-owner-bytes-changed', 'handoff-evidence-changed',
+                  'handoff-before-publication', 'handoff-after-publication', 'handoff-readback', 'handoff-sync'}
+    if scenario in held_cases:
+        failure = refusal(lambda: session.prepare_handoff(listener), (Refused, OSError))
+        assert session.failure is failure and session.held['failure'] is failure
+        frozen = (directory / 'journal.json').read_bytes()
+        refusal(lambda: session.prepare_handoff(listener), Refused)
+        assert (directory / 'journal.json').read_bytes() == frozen
+        published = 'desktopHandoff' in json.loads(frozen)
+        assert published == (scenario in ('handoff-after-publication', 'handoff-readback', 'handoff-sync'))
+        if scenario in ('handoff-before-publication', 'handoff-after-publication', 'handoff-readback', 'handoff-sync'):
+            assert fault['fired']
+    else:
+        result = session.prepare_handoff(listener)
+        assert result['status'] == 'desktop-handoff-intent-held' and result['activationAllowed'] is False and result['stateAdmissionAllowed'] is False
+        frozen = (directory / 'journal.json').read_bytes()
+        intent = json.loads(frozen)['desktopHandoff']
+        assert intent['desktop']['transactionId'] == result['transactionId']
+        assert result['intentSha256'] == sha(encode(intent))
+        assert intent['desktop']['candidate'] == candidate and intent['desktop']['listener'] == listener
+        assert intent['sessionId'] == session.record['sessionId'] and intent['bootSessionUuid'] == epoch_b
+        assert intent['lock']['descriptor'] == list(scope['identity'](os.fstat(session.held['fd'])))
+        assert intent['maintenanceOwner'].encode() == initial_owner
+        receiving = json.loads(intent['receivingOwner'])
+        assert receiving['owner'] == 'desktop' and receiving['transactionId'] == receiving['generation'] == result['transactionId']
+        assert receiving['appPath'] == original['appPath'] and receiving['databasePath'] == original['databasePath'] and receiving['profile'] == original['profile']
+        assert receiving['sourceSha'] == candidate['sourceSha'] and receiving['sourceTree'] == candidate['sourceTree']
+        for changed in (dict(intent, schema=True), dict(intent, phase='activated'), dict(intent, sessionId='f' * 64),
+                        dict(intent, bootSessionUuid=epoch_a), dict(intent, receivingOwner=intent['maintenanceOwner']),
+                        dict(intent, desktop=dict(intent['desktop'], transactionId=generation)),
+                        dict(intent, desktop=dict(intent['desktop'], listener='http://0.0.0.0:4888'))):
+            refusal(lambda: scope['_validate_cold_handoff_cursor'](session.owner, changed), Refused)
+        # Repeated observation must retain the exact transaction and journal bytes.
+        assert session.prepare_handoff(listener) == result
+        assert (directory / 'journal.json').read_bytes() == frozen
+        assert session.owner.reconcile() == result
+        if scenario == 'handoff-listener-changed': refusal(lambda: session.prepare_handoff('http://127.0.0.1:4889'), Refused)
+        if scenario == 'handoff-after-intent-restore': refusal(session.begin_restore, Refused)
+        assert (directory / 'journal.json').read_bytes() == frozen
+    assert (directory / 'state/pair-descriptor.json').read_bytes() == pair_before
+    assert (directory / 'state/journal.json').read_bytes() == pair_journal
+    assert (directory / 'state/previous-pair/database').read_bytes() == previous
+    assert reserve_path.stat().st_ino == reserve_inode and database.read_bytes() == prepared_database
+    assert (gate.read_bytes(), stat.S_IMODE(gate.stat().st_mode)) == initial_gate
+    assert manifest.read_bytes() == (initial_owner + b' ' if scenario == 'handoff-owner-bytes-changed' else initial_owner)
 fixture_failure = None
 try:
     failures = {'plan-id-drift', 'plan-publication-failure', 'intent-sync-failure', 'worker-exit-failure',
                 'worker-close-failure', 'paused-cancel', 'work-replaced', 'cold-c-reconcile', 'v2-held', 'unretained-runtime'}
-    if scenario in failures:
+    if scenario.startswith('handoff-'):
+        successful = {'handoff-success', 'handoff-same-boot', 'handoff-later-boot'}
+        if scenario in successful: enter(handoff)
+        else: refusal(lambda: enter(handoff), (Refused, OSError))
+        before = (directory / 'journal.json').read_bytes()
+        if scenario == 'handoff-later-boot': epoch['current'] = epoch_c
+        refusal(lambda: enter(prepare), Refused)
+        assert (directory / 'journal.json').read_bytes() == before
+        with scope['fixed_lock'](manifest) as current:
+            owner = Maintenance(manifest, current)
+            owner.load()
+            refusal(owner.cancel, Refused)
+        assert (directory / 'journal.json').read_bytes() == before
+    elif scenario in failures:
         refusal(lambda: enter(failed_prepare))
         before = (directory / 'journal.json').read_bytes()
         refusal(lambda: enter(prepare))
@@ -1908,7 +2049,8 @@ finally:
     except BaseException as failure: failures.append(failure)
     if failures: raise scope['_PreparationFailure'](failures, str(root / 'fixture-closure.json'))
 print(json.dumps({'case': scenario, 'passed': True, 'qualification': 'owned-mechanical-captured-preparation',
-                  'stateAdmissionAllowed': False, 'nativeColdOwnerQualified': False, 'sqliteQualified': False}))
+                  'stateAdmissionAllowed': False, 'nativeColdOwnerQualified': False, 'sqliteQualified': False,
+                  'bootQualification': 'synthetic-prior-boot'}))
 `;
 
 export async function runColdPreparationFixture(scenario, { signal } = {}) {

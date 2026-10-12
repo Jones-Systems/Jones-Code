@@ -9,6 +9,7 @@ import * as NodeURL from "node:url";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Git commands initialize only the captured synthetic checkout and have a fixed deadline.
 import * as NodeChildProcess from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
+import { capturePreparationProducer } from "./offline-preparation-producer-loader.mjs";
 import {
   preparationSeaConfig,
   preparePreparationOutput,
@@ -970,6 +971,26 @@ function emitProducerCandidate(
 }
 
 describe("unqualified preparation producer graph", () => {
+  it("feeds the actual collector's fixed 14/28 bindings to a held capture without executing its output", () =>
+    withProducerCandidateCheckout(async (root) => {
+      const candidate = await startProducerCandidate(root);
+      const code = 'throw new Error("collector output must remain unexecuted");\n';
+      emitProducerCandidate(candidate, root, code);
+      NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), code);
+      await candidate.onSuccess();
+      const stageRoot = NodePath.join(root, "capture-stage");
+      NodeFS.mkdirSync(stageRoot, { mode: 0o700 });
+      const captured = await capturePreparationProducer({ sourceRoot: root, stageRoot });
+      expect(captured.status).toBe("held");
+      expect(captured.imported).toBe(false);
+      expect(captured.files).toHaveLength(34);
+      expect(captured.files.find((file) => file.capturedPath.endsWith("offlinePreparationProducer.mjs"))?.sha256).toBe(sha(code));
+      expect(captured.cleanup).toEqual({ disposition: "removed", root: captured.codeRoot });
+      expect(NodeFS.existsSync(captured.codeRoot)).toBe(false);
+      expect(NodeFS.readdirSync(stageRoot)).toEqual([]);
+      expect(Object.keys(artifactManifest("", "", "").source.hashes)).toHaveLength(15);
+    }));
+
   it("keeps the producer, SEA candidate and held outputs separate without a runtime package whitelist", () =>
     withArtifact((root) => {
       const producer = offlinePreparationProducerCandidatePack(root);

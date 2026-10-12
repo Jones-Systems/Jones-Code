@@ -17,7 +17,7 @@ import * as NodeURL from "node:url";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The sole download origin is the pinned official Node release over verified TLS.
 import * as NodeHttps from "node:https";
 import * as Schema from "effect/Schema";
-import ts from "typescript-legacy";
+import type * as TypeScript from "typescript-legacy";
 import type { Plugin } from "vite-plus";
 import {
   createJonesLegacyBootstrapPreparationBundle,
@@ -87,8 +87,15 @@ const forbiddenBuiltins = new Set([
 const digest = (bytes: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 
+let preparationParser: typeof TypeScript | undefined;
+function preparationTypeScript(): typeof TypeScript {
+  // Parsing is an explicit operation; capturing the producer must not initialize TypeScript.
+  return (preparationParser ??= NodeModule.createRequire(import.meta.url)("typescript-legacy") as typeof TypeScript);
+}
+
 /** An oracle for the fixed held entry, not a sandbox for arbitrary JavaScript. */
 export function verifyPreparationClosure(source: string): readonly string[] {
+  const ts = preparationTypeScript();
   if (Buffer.byteLength(source) > maxBundleBytes)
     throw new Error("Preparation bundle exceeds bound.");
   const file = ts.createSourceFile(
@@ -98,11 +105,11 @@ export function verifyPreparationClosure(source: string): readonly string[] {
     true,
     ts.ScriptKind.JS,
   );
-  const diagnostics = (file as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] })
+  const diagnostics = (file as TypeScript.SourceFile & { parseDiagnostics: readonly TypeScript.Diagnostic[] })
     .parseDiagnostics;
   if (diagnostics.length) throw new Error("Preparation bundle is not valid JavaScript.");
   const imports = new Set<string>();
-  const inspectSpecifier = (node: ts.Node | undefined) => {
+  const inspectSpecifier = (node: TypeScript.Node | undefined) => {
     if (!node || !ts.isStringLiteralLike(node)) throw new Error("Computed preparation loader.");
     const id = node.text;
     if (!NodeModule.isBuiltin(id) || forbiddenBuiltins.has(id.replace(/^node:/, "")))
@@ -118,7 +125,7 @@ export function verifyPreparationClosure(source: string): readonly string[] {
     "process.exitCode",
     "import.meta.main",
   ]);
-  const visit = (node: ts.Node): void => {
+  const visit = (node: TypeScript.Node): void => {
     if (
       ts.isElementAccessExpression(node) ||
       ts.isComputedPropertyName(node) ||
@@ -1681,6 +1688,7 @@ export function inspectPreparationCandidateJavaScript(source: string) {
 }
 
 function inspectPreparationJavaScript(source: string, producerFileName?: string) {
+  const ts = preparationTypeScript();
   const producer = producerFileName !== undefined;
   if (Buffer.byteLength(source) > maxBundleBytes) throw new Error("Candidate entry exceeds bound.");
   const file = ts.createSourceFile(
@@ -1690,10 +1698,10 @@ function inspectPreparationJavaScript(source: string, producerFileName?: string)
     true,
     ts.ScriptKind.JS,
   );
-  const diagnostics = (file as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] })
+  const diagnostics = (file as TypeScript.SourceFile & { parseDiagnostics: readonly TypeScript.Diagnostic[] })
     .parseDiagnostics;
   if (diagnostics.length) throw new Error("Candidate entry is not valid JavaScript.");
-  const location = (expression: ts.Node) => ({
+  const location = (expression: TypeScript.Node) => ({
     file: file.fileName,
     unit: "utf16-code-units" as const,
     origin: 0 as const,
@@ -1713,8 +1721,8 @@ function inspectPreparationJavaScript(source: string, producerFileName?: string)
   let loaderHazardCount = 0;
   const record = (
     kind: "static" | "dynamic" | "require" | "process-builtin",
-    node: ts.Node | undefined,
-    expression: ts.Node,
+    node: TypeScript.Node | undefined,
+    expression: TypeScript.Node,
   ) => {
     const specifier = node && ts.isStringLiteralLike(node) ? node.text : null;
     if (specifier !== null && Buffer.byteLength(specifier) > 4096)
@@ -1730,7 +1738,7 @@ function inspectPreparationJavaScript(source: string, producerFileName?: string)
       ...(producer ? { location: location(expression) } : {}),
     });
   };
-  const visit = (node: ts.Node): void => {
+  const visit = (node: TypeScript.Node): void => {
     if (!producer && imports.length + loaderHazards.length > candidateModuleLimit)
       throw new Error("Candidate loader observations exceed bound.");
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier)
@@ -1830,6 +1838,7 @@ function inspectPreparationImports(
 
 /** Generated region bytes remain review input, not an exemption for bundler helpers. */
 export function inspectPreparationGeneratedRuntime(source: string) {
+  const ts = preparationTypeScript();
   if (Buffer.byteLength(source) > maxBundleBytes) throw new Error("Candidate entry exceeds bound.");
   const file = ts.createSourceFile(
     bundleName,
@@ -1838,7 +1847,7 @@ export function inspectPreparationGeneratedRuntime(source: string) {
     true,
     ts.ScriptKind.JS,
   );
-  const comments = new Map<number, ts.CommentRange>();
+  const comments = new Map<number, TypeScript.CommentRange>();
   for (const statement of [...file.statements, file.endOfFileToken])
     for (const comment of ts.getLeadingCommentRanges(source, statement.pos) ?? [])
       comments.set(comment.pos, comment);

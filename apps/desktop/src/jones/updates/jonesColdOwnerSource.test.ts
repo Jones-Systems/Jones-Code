@@ -73,6 +73,7 @@ describe("continuous cold-owner source", () => {
         stateAdmissionAllowed: false,
         nativeColdOwnerQualified: false,
         sqliteQualified: false,
+        bootQualification: "synthetic-prior-boot",
       });
     },
     30000,

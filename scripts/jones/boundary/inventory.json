@@ -935,6 +935,9 @@
     "scripts/jones/updates/legacy-preparation-native-fixture.d.mts": "jones-owned",
     "scripts/jones/updates/functional-policy.ts": "jones-owned",
     "scripts/jones/updates/offline-preparation-producer-entry.ts": "jones-owned",
+    "scripts/jones/updates/offline-preparation-producer-loader.mjs": "jones-owned",
+    "scripts/jones/updates/offline-preparation-producer-loader.d.mts": "jones-owned",
+    "scripts/jones/updates/offline-preparation-producer-loader.node-test.mjs": "jones-owned",
     "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts": "hook",
     "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts": "jones-tests-in-upstream"
   },

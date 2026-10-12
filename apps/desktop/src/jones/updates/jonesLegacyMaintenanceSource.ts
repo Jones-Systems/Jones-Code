@@ -538,7 +538,7 @@ class Maintenance:
         self.journal_raw = read_owned(self.directory / 'journal.json')
         self.journal = decode(self.journal_raw)
         journal_keys = {'schema', 'maintenanceGeneration', 'planSha256', 'phase', 'done', 'intent', 'armedBootSessionUuid', 'cancel'}
-        require(journal_keys <= set(self.journal) <= journal_keys | {'stateTransaction', 'coldOwner'})
+        require(journal_keys <= set(self.journal) <= journal_keys | {'stateTransaction', 'coldOwner', 'desktopHandoff'})
         require(self.journal['schema'] == 1 and self.journal['maintenanceGeneration'] == pointer['generation'] and self.journal['planSha256'] == pointer['planSha256'] and self.journal['phase'] in PHASES)
         self.native = self.directory / 'tools/identity-native'
         self.bundle = self.plan['bundle']
@@ -568,6 +568,7 @@ class Maintenance:
             fence = self.journal['stateTransaction']
             require(phase == 'armed' and isinstance(fence, dict) and set(fence) == {'schema', 'transactionId', 'intentSha256'})
             require(type(fence['schema']) is int and fence['schema'] == 1 and hex_value(fence['transactionId'], 64) and hex_value(fence['intentSha256'], 64))
+        _validate_cold_handoff_cursor(self)
         paths = [item['path'] for item in self.gates]
         if phase in ('cancel-owner-published', 'cancel-restoring', 'cancelled'):
             paths = sorted((item['path'] for item in self.gates if item['app'] == self.original['appPath']),
@@ -692,6 +693,10 @@ class Maintenance:
         require(self.journal['phase'] == 'armed' and isinstance(self.journal['armedBootSessionUuid'], str))
         boot = self.verify()
         self.sync_evidence()
+        if 'desktopHandoff' in self.journal:
+            handoff = self.journal['desktopHandoff']
+            return maintenance_report('desktop-handoff-intent-held', transactionId=handoff['desktop']['transactionId'],
+                                      intentSha256=sha(encoded(handoff)))
         status = 'armed-awaiting-cold-restart' if boot == self.journal['armedBootSessionUuid'] else 'cold-boundary-observed-admission-held'
         return maintenance_report(status, maintenanceGeneration=self.plan['maintenanceGeneration'], recoveryEntry=str(self.directory / 'tools/maintenance.py'))
 

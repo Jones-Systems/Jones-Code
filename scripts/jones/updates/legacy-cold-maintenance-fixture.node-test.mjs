@@ -57,6 +57,7 @@ for (const scenario of coldPreparationCases) {
       stateAdmissionAllowed: false,
       nativeColdOwnerQualified: false,
       sqliteQualified: false,
+      bootQualification: "synthetic-prior-boot",
     });
   });
 }
