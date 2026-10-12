@@ -165,6 +165,46 @@ server PID with `qualifiedLauncher` and `capability.install` both true. No token
 store is accessed for that readback. Source tests use synthetic state and command
 adapters; they do not prove an installed host's adoption.
 
+### Exact pre-publisher private setup compatibility
+
+Ordinary adoption has one closed exception for the authenticated Linux x64 artifact
+at source `d3e6f8e843a0477542380a4ec0d9ae02a1084053`, tree
+`250db17dd136cef960e9bb8e054acadb41fba03d`. It requires
+`--accept-unattested-child-capability` during the reviewed dry-run and apply.
+Other sources, trees and platforms retain the ordinary child capability requirement.
+A version string alone never selects this exception.
+
+Run both the old matching artifact's genuine private setup and the qualified
+adoption commands with `umask 0077`. Payload qualification compares executable
+permission bits, so both extractions must use the same mask. Adoption requires an
+owner-only `.jones-provenance.json` and checks its actual metadata. It authenticates
+all nine provenance fields against
+the Actions artifact and executable bytes, and requires the exact old root layout.
+The native pending receipt records the file's exact preimage and a new exclusive
+evidence archive under `runtime/jones-adoption`, outside the selected version root.
+After comparing the occupied payload with the authenticated archive, adoption
+preserves provenance with a same-filesystem rename into the owned 0700 archive,
+syncs both directories, and checks the preserved bytes and inode before adding the
+canonical qualified receipt. It rechecks layout, evidence and running child identity
+before stopping. Unexpected entries, metadata, changed evidence or an occupied
+archive fail closed. No database content is hashed, copied or migrated by this step.
+
+The old startup preflight proves protocol and version compatibility only. The
+explicit layout check precedes effects and stop; real runtime readiness is observed
+after restart. Success requires the actual launcher receipt bound to its live PID,
+new child PID and both artifact versions. Any child capability receipt on this
+pre-publisher path blocks completion. The adoption receipt reports
+`attestation:"launcher-only"`, `attestationBasis:"pre-publisher-child"` and an
+unattested child capability, never `capability.install:true`. The normal API update
+gate remains independent.
+
+`jones host status` may print private provenance as `unverified` after the archive
+move. That display does not authenticate qualified adoption. Use the qualified
+runtime receipt, preserved archive, and native launcher/runtime readback as evidence.
+An interrupted move leaves the pending receipt and available evidence intact and
+blocks replay. Reconciliation or any manual restoration needs a separate exact
+approval; adoption never deletes evidence or restores it automatically.
+
 ### Bound legacy direct-serve bootstrap
 
 For a Jones-owned Linux user unit running `t3 serve` directly, the additional mode
@@ -174,7 +214,10 @@ operation IDs, and task `update.status:"pending"`. That marker is distinct from 
 native pending update. Bind its exact SHA-256 and operation ID, the original unit
 SHA-256, and the task-owned drop-in 50 SHA-256. Genuine native pending updates,
 unknown fields, staged selections, interrupted restores and native authority
-folders block bootstrap.
+state block bootstrap. The empty, owner-owned 0700 authority directory created by
+ordinary server startup is preserved; other contents, permissions or ownership
+require reconciliation. The separate `runtime/native-store-authority` path
+remains a bootstrap blocker whenever it exists.
 
 ```sh
 "$JONES_CLI" jones host adopt --base-dir "$JONES_BASE" \
@@ -222,6 +265,134 @@ environment. No recovery is performed automatically. A later launcher-only
 continuation must retain the same unit and task preimage bindings and explicit
 unattested acceptance, while omitting `--legacy-direct-serve` because service state
 is then native.
+
+### Exact system-unit adoption
+
+`jones host adopt-system` adopts one existing system unit that runs the exact
+authenticated pre-publisher private setup build directly as its service user.
+It keeps the unit's owner, service user, `NoNewPrivileges=yes`, `KillMode`,
+slice, resource limits and every existing unit file. It adds only the owned
+`zzzz-jones-qualified-launcher.conf` drop-in, which selects a qualified launcher
+that supervises the same retained version. It does not move the service to a
+user unit, change the database, run migrations or claim child Install. Other
+active builds, homes with native service state or an adoption record, and
+already-owned drop-ins are refused.
+
+The unit's effective `ExecStart` must run the retained executable as `serve`
+with only `--host`, `--port`, `--base-dir` and `--mode`. The one other accepted
+form is the historical `start` with those flags, `--mode web`, and
+`--no-browser DIR` last, where `DIR` is exactly the unit's effective
+`WorkingDirectory`. The dry-run and the worker both refuse any other flag, a
+repeated flag, a boolean value instead of DIR after `--no-browser`, and a missing, extra, non-canonical
+or different directory. Adoption does not keep running `start`: the launcher
+runs the retained version as `serve` from the unchanged `WorkingDirectory`. That
+startup is headless and does not bootstrap a project from that directory
+automatically. Existing projects and state are not changed, and the plan states
+this transition.
+
+Root effects go through the closed worker
+[`systemServiceControl.pl`](../../apps/server/src/jones/hostService/systemServiceControl.pl),
+installed root-owned at `/usr/local/libexec/jones-code/jones-system-service-control`
+with the root-owned policy `/etc/jones-code/system-service.policy`. The policy
+fixes the unit, service user, UID, GID, home, slice and retained executable. The
+worker accepts only `inspect`, `stop`, `install-launcher`, `start` and
+`archive-launcher`, each with the expected unit digest and owned drop-in state.
+Its unit digest covers the fragment and every other drop-in by owner, mode and
+SHA-256. It reports metadata and digests, never unit contents, Environment values
+or a command line. It renders the owned drop-in itself from the policy home, the
+launcher version and the host, port and mode of the retained command.
+No sudoers rule grants it: the owner authenticates sudo for the session that
+runs the apply, and the CLI reaches the worker only with `sudo -n`. Normal
+Download and Install never use it.
+
+The dry-run is read-only: it creates no lock, record, scratch, permission change
+or cache, and needs no sudo. It prints the plan, its SHA-256, the owned drop-in
+text, the observed state of the root bootstrap and the bootstrap manifest.
+Installing that bootstrap is a separate, one-time, approved root operation. It
+covers the observer helper and worker bytes from the qualified source, whose
+digests are the `QUALIFIED_WRITER_OBSERVER_SHA256` and
+`SYSTEM_SERVICE_CONTROL_SHA256` constants, the rendered policy, and the observer
+socket units. Adoption installs none of them and refuses to apply until all are
+present exactly. Every unit file must be readable by the service user, so that
+the dry-run can bind it.
+
+```sh
+"$JONES_CLI" jones host adopt-system --base-dir "$JONES_BASE" \
+  --system-unit APPROVED_UNIT --port APPROVED_PORT \
+  --retained-executable /approved/retained/t3 \
+  --active-artifact-dir /approved/current-artifact --active-source-commit CURRENT_SOURCE_SHA \
+  --launcher-artifact-dir /approved/launcher-artifact --launcher-source-commit LAUNCHER_SOURCE_SHA \
+  --accept-unattested-child-capability --dry-run
+```
+
+Apply repeats the command with `--approved-plan-sha256 REVIEWED_PLAN_SHA256`
+instead of `--dry-run`, after the owner has authenticated sudo in that terminal.
+It derives the plan again and stops unless the digest matches. It then records
+each phase in `runtime/jones-system-adoption.json` before acting:
+
+1. Compares the worker's inspection with the plan.
+2. Changes an owned 0775 `runtime` directory to 0755 when the plan says so. The
+   launcher requires that nothing else can write it; `versions` and the rest of
+   the home are unchanged. Every later record carries `runtimeMode`: `applied`
+   is `false` before the attempt, missing while the change or its readback is
+   unsettled, and `true` once read back on the same directory.
+3. Enrolls both authenticated runtimes. The full retained payload must equal the
+   extracted archive.
+4. Reads the launcher's pending migration IDs without writing them.
+5. Proves through the observer socket that only the retained server writes the
+   selected state. The answer counts only if the retained process birth, the
+   socket and every selected state file's inode are unchanged after the
+   exchange.
+6. Rechecks the unit, process birth, executable, cgroup, descriptor, database
+   inode and environment.
+7. Stops the unit through the worker. Before stopping, the worker refuses a
+   unit with a queued job, or whose cgroup it could not read afterwards: a
+   path outside the policy slice and unit, no unified cgroup hierarchy, or a
+   missing, unreadable or malformed `cgroup.events`. That check shows only
+   that the later proof is possible; the running cgroup may still be
+   populated. The stop completes only when systemd reports exactly
+   `inactive`/`dead` or `failed`/`failed`, with no main process, queued job
+   or cgroup, twice with the same state, and the cgroup the unit ran in, with
+   every descendant, is unpopulated or gone. A retained server that exits
+   with a nonzero status during the stop may leave `failed`/`failed`; that
+   state is admitted only with this proof. The worker never resets a failed
+   unit or changes its exit-status settings, so systemd's recorded result
+   stays until the later start replaces it. Any other state leaves the stop
+   `unknown`, and an inspection alone never counts as proof that the unit
+   stopped.
+8. Checks that every selected state file is on one of the local filesystems
+   Install admission accepts, then proves with kernel leases that nothing holds
+   the state open for writing. Any other filesystem, or a failed check, keeps
+   the unit stopped.
+9. Creates `service-state.json` exclusively with protocol 4 and the retained
+   version.
+10. Installs the owned drop-in and starts the unit. Each worker operation
+    requires the same exact stopped state again, as systemd reports it at
+    that moment; installation must read its terminal pair back unchanged after
+    the reload. Only the stop examines the cgroup the unit ran in.
+
+The record becomes `applied` only after the launcher and the retained child are
+observed under the unit's cgroup, together with the launcher capability receipt,
+the same environment, database inode, unit digest and migration IDs, and a
+complete socket observation with that child allowed. The child is expected to
+publish no capability receipt, so the record says `attestation:"launcher-only"`
+and `childCapability:"unattested"`. Whether the retained child offers Download
+and Install is observed afterwards through its own update capability; a
+`bootstrap-required` result is a gap to report, not a reason to retry.
+
+A failure whose effects are all known leaves the record `partial` at its
+recorded phase. That does not mean nothing changed: the permission correction
+and runtimes enrolled before that phase remain, and a failure while `enrolling`
+can leave only some of them. An uncertain permission change, stop, state
+creation, launcher installation, start or readback leaves it `unknown`.
+Neither is retried, reversed or restarted automatically, and a record of either
+kind blocks a second adoption, including one written by an earlier release:
+adoption refuses any existing record, and no newer release resumes, rewrites
+or clears it. The root worker never writes these records. If the writer proof
+fails after the stop, the unit stays stopped. The retained executable
+directory, every original unit file and the database are preserved. Recovery,
+including archiving the owned drop-in with `archive-launcher`, needs its own
+approved plan.
 
 ## Pair and validate
 
@@ -272,6 +443,148 @@ remote self-update refuse the default upstream origin. An explicitly configured
 `T3CODE_RELEASE_BASE_URL` permits checksum-checked network installation without
 Jones provenance; prefer local staging. Cached reuse without matching provenance
 is refused. A client update offer is not a verified Jones release.
+
+Before a trial, during restart recovery and before rollback, a qualified Linux
+launcher proves that nothing holds the selected state inodes open for writing.
+It takes kernel read leases on the exact inodes without privileges, so SSH
+sessions, the user manager and other processes whose descriptors the service
+user cannot read do not block the proof; any write-open holder does. The proof
+runs a fixed program under `/usr/bin/perl`, which is essential on Debian and
+Ubuntu. If perl or lease support is missing, the launcher reports `unavailable`
+and retains the previous binary/state pair.
+
+The readiness commit must allow exactly the captured trial writer, which a lease
+cannot express. Linux reads that evidence through the root-owned writer observer
+[`qualifiedWriterObserver.pl`](../../apps/server/src/jones/cloud/qualifiedWriterObserver.pl).
+It reports only the matching file index, PID, process birth and access kind for
+the eight fixed state files, and never excludes a process. The launcher excludes
+only its captured trial, matched by PID and process birth read before and after
+the helper, and then checks that the captured child is still live. Without
+`NoNewPrivileges` the launcher runs the helper through one exact sudo command.
+A service with `NoNewPrivileges=yes` cannot cross sudo; there the launcher uses
+the [observer socket](#observer-socket-for-nonewprivileges-services) when one
+is present. With neither route installed, the launcher falls back to the
+same-user descriptor scan. That scan fails closed on non-dumpable processes such
+as the protected service manager and SSH sessions observed on the VPS.
+
+Install admission refuses with `writer-proof-<reason>` before accepting, taking a
+recovery generation or stopping the server. It requires a complete lease result
+on the exact state snapshot, where the requesting server's own write-open files
+are expected to be busy, and a readiness observation with that server allowed.
+Busy alone never shows lease support: Linux reports a conflicting open before it
+checks `fs.leases-enable`, and NFS reports busy without a delegation. Each device
+holding selected files therefore needs at least one granted lease. If the server
+holds every selected file on a device open for writing, Install is refused and
+that server keeps running.
+
+Before any lease or readiness work, Linux admission reads `statfs` metadata for
+every selected state file itself, not just its directory. A network or FUSE bind
+mount over one file is therefore caught. Admission accepts only local
+filesystems whose leases use the kernel's generic implementation: ext2/3/4
+(`0xef53`), XFS (`0x58465342`), Btrfs (`0x9123683e`) and tmpfs (`0x01021994`).
+Network filesystems (NFS, SMB/CIFS, Ceph) answer leases from per-file delegations
+or oplocks. They, FUSE, overlay, any unlisted type and a failed `statfs` refuse
+with `writer-proof-unavailable` before acceptance or stop. Check with
+`findmnt -T <home>/userdata` and the same for each state file. Darwin admission
+is unchanged.
+The lease probe is bounded at 5 seconds, the helper at 10 and the launcher's wait
+for it at 15; the socket unit stops a helper instance at 12. The server abandons
+a launcher exchange after 30 seconds. The
+launcher therefore refuses an Install with `request-expired` once 25 seconds have
+passed since the request arrived. At readiness it rolls back with
+`prepared-exchange-expired` instead of writing the pointer. On timeout the
+launcher signals only its captured sudo or probe child: SIGTERM, which sudo
+relays to the helper, then SIGKILL after a grace period. Through the socket it
+closes only its own connection.
+
+Installing the observer is a separate, per-host approved root operation. Use the
+helper bytes from the exact source commit of the adopted launcher. Install them
+as `/usr/local/libexec/jones-code/jones-qualified-writer-observer`, owned by root
+and not group- or other-writable. Every directory from `/` to the helper must be
+a real directory (not a symlink), owned by root and not group- or other-writable.
+Anyone able to rename an ancestor could substitute the helper. Both the launcher
+and the helper itself refuse any other chain. Grant the service user one exact
+command with `visudo -c` validation:
+
+```text
+SERVICE_USER ALL=(root) NOPASSWD: /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME
+```
+
+Read back the file hash, `namei -l` for the whole path, and the sudoers syntax.
+Then run the smoke test as the service user, the way the launcher calls it: an
+empty environment, no TTY on any standard stream, inside the user manager:
+
+```sh
+umask 077
+systemd-run --user --wait --pipe --quiet env -i /usr/bin/sudo -n -- \
+  /usr/local/libexec/jones-code/jones-qualified-writer-observer --base CANONICAL_HOME \
+  </dev/null >observer.out 2>observer.err
+```
+
+Require exit status 0, an empty `observer.err`, and LF-only lines in
+`observer.out` (no carriage returns): the protocol header, `file` lines and a
+final `complete` line. Remove both files afterwards. They contain process and
+inode metadata only. A `requiretty` refusal, a `use_pty` carriage return or any
+sudo warning makes the launcher report `unavailable`. With the helper file
+present, a sudo refusal blocks instead of falling back. Source changes reach a
+host only through an adopted qualified launcher artifact.
+
+### Observer socket for NoNewPrivileges services
+
+A service started with `NoNewPrivileges=yes` keeps that setting, so the launcher
+reaches the same helper through a root socket unit instead of sudo. Systemd
+accepts each connection on `/run/jones-code/writer-observer.sock` and runs one
+helper instance as `--socket --base CANONICAL_HOME`, with the home fixed in the
+unit. The connection is the helper's stdin and stdout. The helper requires
+`SUDO_UID` to be absent and stdin and stdout to be the same connected Unix
+stream. It takes the caller's UID from the kernel's peer credentials
+(`SO_PEERCRED`), and that UID must own the fixed home and its `userdata`.
+The launcher sends no request bytes. It closes its sending side at once and
+reads one protocol-1 result within 15 seconds and 64 KiB.
+
+The socket's peer credentials only identify the caller. Readiness still needs
+the helper's complete result. The launcher binds every reported inode to its own
+state snapshot and excludes only its captured trial by PID and process birth,
+both read before and after the exchange. The helper runs as root so that it can
+read descriptor, descriptor-flag and mapping metadata for every process,
+including the service user's non-dumpable ones. It reads no application or
+database content and no command lines. It returns only indexed file device and
+inode lines, writer index, PID, process birth and access kind, and a status
+line. It returns no process names or mapped paths.
+
+The launcher considers the socket only when its own `NoNewPrivs` is 1. A missing
+socket keeps the same-user fallback. A present socket is trusted only when every
+directory from `/` to it is real, owned by root and not group- or other-writable,
+and the socket is owned by the service user with mode 0600 and is not a symlink.
+An untrusted socket, a missing helper file, a refused or timed-out connection, a
+truncated, malformed or oversized reply, or a socket replaced during the exchange
+reports `unavailable`. None of these falls back to the same-user scan.
+
+`renderWriterObserverSocketUnits` in
+[`qualifiedWriterObserver.ts`](../../apps/server/src/jones/cloud/qualifiedWriterObserver.ts)
+renders `jones-qualified-writer-observer.socket` and
+`jones-qualified-writer-observer@.service` for one approved service user and
+canonical home. It rejects other names, systemd specifiers, quoting, whitespace
+and control characters, and returns text only. The units accept up to four
+connections, run the helper as root in `system.slice` outside the service's own
+slice, and limit it to 12 seconds, with small CPU, memory and task limits,
+`NoNewPrivileges=yes` and no network. They keep the host PID namespace and full
+`/proc` visibility: `PrivatePIDs`, `ProtectProc` and `ProcSubset` would hide the
+processes the helper must observe.
+
+Installing the socket is a separate, one-time, per-host approved root operation.
+Use the helper bytes from the adopted launcher's exact source commit, whose
+SHA-256 is `QUALIFIED_WRITER_OBSERVER_SHA256` in that source, with the ownership
+chain required above. Install the rendered units, reload systemd and enable the
+socket. No sudoers rule is needed. Read back the helper hash, `namei -l` for the
+helper and socket paths, the socket unit's listen path, owner and mode, and one
+complete observation through the socket as the service user. After that
+bootstrap, Install needs no owner sudo, password or terminal; the owner still
+starts each Install from the update controls.
+
+Source support for the socket does not install units, adopt a service or change
+a running host. A system-unit host is adopted separately through
+[exact system-unit adoption](#exact-system-unit-adoption).
 
 Inspect first after an interrupted setup or pairing operation:
 

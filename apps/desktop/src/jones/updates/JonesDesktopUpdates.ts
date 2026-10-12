@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import {
   JonesActionsClient,
   validateJonesStagedArtifact,
+  requireJonesStageDirectory,
   type JonesActionsCandidate,
 } from "@t3tools/shared/jones/jonesActions";
 import type { DesktopUpdateState } from "@t3tools/contracts";
@@ -144,6 +145,7 @@ export interface JonesDesktopUpdateOptions {
 export class JonesDesktopUpdateController {
   #state: DesktopUpdateState;
   #source: string | undefined;
+  #installedSource: JonesUpdateState["installedSource"];
   #candidate: JonesActionsCandidate | undefined;
   #staged: StagedMacApp | undefined;
   #busy: "check" | "download" | "install" | null = null;
@@ -230,12 +232,16 @@ export class JonesDesktopUpdateController {
     if (!/^[a-f0-9]{64}$/.test(selection.app.handle))
       throw new Error("Unknown native staged handle.");
     const appsRoot = await NodeFSP.realpath(NodePath.join(this.updaterRoot, "apps"));
-    const expectedDirectory = NodePath.join(
-      await NodeFSP.realpath(NodePath.join(this.updaterRoot, "artifacts")),
+    const expectedDirectory = await requireJonesStageDirectory(
+      NodePath.join(this.updaterRoot, "artifacts"),
       selection.app.handle,
+      selection.artifactDirectory,
     );
-    if (selection.artifactDirectory !== expectedDirectory)
-      throw new Error("Unknown staged artifact path.");
+    const appDirectory = await requireJonesStageDirectory(
+      appsRoot,
+      selection.app.handle,
+      NodePath.dirname(selection.app.appPath),
+    );
     const artifact = await (this.#options.validateArtifact ?? validateJonesStagedArtifact)(
       expectedDirectory,
     );
@@ -247,9 +253,7 @@ export class JonesDesktopUpdateController {
       selection.app.sourceSha !== artifact.candidate.source ||
       selection.app.sourceTree !== artifact.candidate.tree ||
       selection.app.version !== artifact.candidate.version ||
-      NodePath.dirname(selection.app.appPath) !== NodePath.join(appsRoot, selection.app.handle) ||
-      selection.app.receiptPath !==
-        NodePath.join(appsRoot, selection.app.handle, "mac-app-receipt.json") ||
+      selection.app.receiptPath !== NodePath.join(appDirectory, "mac-app-receipt.json") ||
       (selection.app.bundleIdentifier !== undefined &&
         (await readMacBundleIdentity(selection.app.appPath)).bundleIdentifier !==
           selection.app.bundleIdentifier)
@@ -307,6 +311,7 @@ export class JonesDesktopUpdateController {
       source: "jones-actions",
       channel: "jones-main",
       phase,
+      ...(this.#installedSource === undefined ? {} : { installedSource: this.#installedSource }),
       ...((phase === "preparing" || phase === "installing") && this.#staged !== undefined
         ? { updateId: this.#staged.handle }
         : journal === undefined
@@ -426,6 +431,7 @@ export class JonesDesktopUpdateController {
       ),
     );
     this.#source = metadata.jonesSource?.sha;
+    this.#installedSource = undefined;
     this.#terminalPhase = undefined;
     this.#activationMessage = undefined;
     this.#lastJournal = undefined;
@@ -467,6 +473,16 @@ export class JonesDesktopUpdateController {
         throw new Error("The native launcher does not bind the running app.");
       this.#bootstrap = active;
       this.#source = active.sourceSha;
+      if (
+        metadata.jonesSource !== undefined &&
+        /^[a-f0-9]{40}$/.test(active.sourceSha) &&
+        /^[a-f0-9]{40}$/.test(active.sourceTree)
+      )
+        this.#installedSource = {
+          repository: "Jones-Systems/Jones-Code",
+          sha: active.sourceSha,
+          tree: active.sourceTree,
+        };
       this.#activationBlocked = false;
       const transactions = NodePath.join(this.updaterRoot, "transactions");
       const entries = await NodeFSP.readdir(transactions).catch((cause: NodeJS.ErrnoException) => {

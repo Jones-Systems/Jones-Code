@@ -24,6 +24,7 @@ import { retainStagedSelection, restoreStagedSelection } from "./stagedSelection
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
 import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
+import { qualifiedServerCapability } from "./serverCapability.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
 import { JonesUpdater } from "./JonesUpdater.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
@@ -64,11 +65,20 @@ export const layer = Layer.effect(
     const context = yield* Effect.context<never>();
     const run = Effect.runPromiseWith(context);
     const version = launcher.currentVersion ?? packageJson.version;
-    const nativeReceipt = isPreviewRuntime(version)
+    const activeReceipt = isPreviewRuntime(version)
       ? yield* Effect.tryPromise(() =>
           readQualifiedRuntimeReceipt(config.baseDir, version, { platform, architecture }),
-        ).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }))
-      : false;
+        ).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      : undefined;
+    const nativeReceipt = activeReceipt?.version === version;
+    const installedSource =
+      !nativeReceipt || activeReceipt === undefined
+        ? undefined
+        : {
+            repository: activeReceipt.repository,
+            sha: activeReceipt.sourceSha,
+            tree: activeReceipt.sourceTree,
+          };
     if (
       !isJonesRuntime({
         version,
@@ -359,6 +369,7 @@ export const layer = Layer.effect(
           : { phase: "blocked" as const, message: restoreFailure }),
         ...(environmentId === undefined ? {} : { environmentId }),
         currentVersion: version,
+        ...(installedSource === undefined ? {} : { installedSource }),
         ...(launcher.qualifiedUpdateMigrationPlan === undefined
           ? {}
           : { migrationPlan: launcher.qualifiedUpdateMigrationPlan }),
@@ -372,29 +383,18 @@ export const layer = Layer.effect(
                 durationMs: recovery.durationMs,
               },
             }),
-        capability: {
-          check: supported && nativeReceipt,
-          download: supported && nativeReceipt && selfUpdate.stageQualified !== undefined,
-          install:
-            supported &&
-            nativeReceipt &&
-            restoreFailure === undefined &&
-            launcher.qualifiedUpdates === true &&
-            environmentId !== undefined,
-          ...(supported &&
-          nativeReceipt &&
-          restoreFailure === undefined &&
-          launcher.qualifiedUpdates === true &&
-          environmentId !== undefined
-            ? {}
-            : {
-                reason: !supported
-                  ? ("unsupported-platform" as const)
-                  : !nativeReceipt
-                    ? ("source-unqualified" as const)
-                    : ("bootstrap-required" as const),
-              }),
-        },
+        capability: qualifiedServerCapability({
+          supported,
+          qualifiedRuntime: nativeReceipt,
+          launcherManaged: launcher.managed,
+          qualifiedStaging: launcher.qualifiedStaging === true,
+          qualifiedUpdates: launcher.qualifiedUpdates === true,
+          hasCurrentVersion: launcher.currentVersion !== undefined,
+          hasStage: selfUpdate.stageQualified !== undefined,
+          hasInstall: qualifiedSelfUpdate.installQualified !== undefined,
+          hasEnvironment: environmentId !== undefined,
+          restoreFailed: restoreFailure !== undefined,
+        }),
       },
       platform: platform === "darwin" ? "darwin" : "linux",
       architecture: architecture === "arm64" ? "arm64" : "x64",

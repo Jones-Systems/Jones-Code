@@ -4,6 +4,28 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "qualified-updates",
+      "tests": [
+        "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
+        "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts"
+      ],
+      "scope": "Qualified update writer-observer sudo and socket transports retain one shared protocol parser, exact endpoint trust, bounded response lifecycle, and fail-closed incomplete observations."
+    },
+    {
+      "id": "update-continuity",
+      "tests": [
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts"
+      ]
+    },
+    {
+      "id": "desktop-stage-attempts",
+      "tests": [
+        "packages/shared/src/jones/jonesActionsStage.test.ts",
+        "apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts"
+      ]
+    },
+    {
       "id": "conversation-library",
       "tests": [
         "apps/server/src/conversations/Service.test.ts",
@@ -169,9 +191,13 @@
         "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
         "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "packages/contracts/src/jones/workQueueMetadata.test.ts"
+        "packages/contracts/src/jones/workQueueMetadata.test.ts",
+        "apps/web/src/jones/workQueue/SentPrompts.test.tsx",
+        "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
+        "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx",
+        "apps/web/src/jones/workQueue/classifySentPrompts.test.ts"
       ],
-      "scope": "Validated artifact metadata configuration and reads, authenticated HTTP registration, and capability-gated shared client reads. UnifiedQueuePage presents Pending, Queued and Sent, combines genuine voice review with read-only external queue metadata, preserves editing across stage changes, and keeps unavailable and stale observations distinct from empty queues. Legacy Queue and Voice Review routes share the Prompts page; voice processing release does not establish confirmed native delivery. Jones Code settings follows Archive and saves a device-local default prompt view, defaulting existing clients to Pending."
+      "scope": "Validated v1/v2 metadata reads preserve configured source and native receipt identity. Prompts joins existing source-scoped broker delivery links to exact queue request, payload digest and authenticated native environment/target evidence. Confirmed handoffs appear under Sent while unmatched sibling deliveries remain Queued. V1, denied receipt reads, mismatches and missing proof remain unconfirmed; stale/partial samples carry explicit coverage and observation time. Provider completion is separate from Sent. Existing editing, routes and device-local opening preference remain covered."
     },
     {
       "id": "direct-desktop-media",
@@ -372,9 +398,12 @@
         "apps/server/src/jones/hostService/HostServiceConfig.test.ts",
         "packages/tailscale/src/jones/serveOwnership.test.ts",
         "apps/server/src/cli/pair.test.ts",
-        "apps/server/src/jones/hostService/adoption.test.ts"
+        "apps/server/src/jones/hostService/adoption.test.ts",
+        "apps/server/src/jones/hostService/privateSetupCompatibility.test.ts",
+        "apps/server/src/jones/hostService/systemServiceControl.test.ts",
+        "apps/server/src/jones/hostService/systemAdoption.test.ts"
       ],
-      "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, and read-only host status. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
+      "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, read-only host status, and bounded system-service native adoption through the fixed root-owned controller. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
     },
     {
       "id": "preview-companion-host",

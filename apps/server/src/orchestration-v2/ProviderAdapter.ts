@@ -426,6 +426,11 @@ export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
 export interface ProviderRuntimeLifecycle {
   readonly reserve: (threadId: ThreadId) => Effect.Effect<string, ProviderAdapterV2Error>;
+  // Capture this app thread's predecessors immediately before the generation's native effect.
+  readonly admit: (input: {
+    readonly runtimeGeneration: string;
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly bind: (input: {
     readonly providerThread: OrchestrationV2ProviderThread;
     readonly runtimeGeneration: string;

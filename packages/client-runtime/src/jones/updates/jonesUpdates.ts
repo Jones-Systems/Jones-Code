@@ -1,4 +1,5 @@
 import type {
+  JonesUpdateProvenance,
   JonesUpdateState,
   JonesUpdateDownloadInput,
   JonesUpdateInstallInput,
@@ -46,11 +47,7 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
     remoteAuthorization,
     group: "jonesUpdates",
     method: input.action === "state" ? "GET" : "POST",
-    url: (base) =>
-      environmentEndpointUrl(
-        base,
-        `/api/jones-updates${suffix}${input.action === "state" && input.after !== undefined ? `?after=${input.after}` : ""}`,
-      ),
+    url: (base) => environmentEndpointUrl(base, `/api/jones-updates${suffix}`),
     timeoutMs: input.action === "state" ? 35_000 : 20 * 60_000,
     request: ({ client, headers }) => {
       switch (input.action) {
@@ -133,4 +130,61 @@ export function jonesUpdatePresentation(state: JonesUpdateState) {
       ? undefined
       : `${outcome.status === "committed" ? "Installed" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcome.fromVersion} → ${outcome.targetVersion}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
   return { busy, message, outcomeMessage };
+}
+
+/** GitHub's abbreviation; callers keep the full commit reachable. */
+export function shortJonesSource(sha: string) {
+  return sha.slice(0, 7);
+}
+
+/** Native update IDs can be full hashes; callers keep the full ID reachable. */
+export function shortJonesUpdateId(id: string) {
+  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
+}
+
+/** The host's offered or staged build. Hosts that predate offered versions omit `version`. */
+export function jonesCandidatePresentation(state: JonesUpdateState) {
+  const provenance = state.provenance;
+  if (
+    provenance === undefined ||
+    (state.stagedHandle === undefined &&
+      state.phase !== "available" &&
+      state.phase !== "downloading" &&
+      state.phase !== "verifying")
+  )
+    return undefined;
+  return {
+    label:
+      state.stagedHandle !== undefined
+        ? "Downloaded"
+        : state.phase === "available"
+          ? "Available"
+          : "Offered",
+    version: provenance.version,
+    sourceSha: provenance.sourceSha,
+  };
+}
+
+export type JonesSourceComparison = "matches" | "different" | "unavailable";
+
+const FULL_SOURCE_COMMIT = /^[a-f0-9]{40}$/;
+
+/**
+ * Compares a build with an installed source its host observed. Only full commits from the same
+ * repository compare: each platform workflow builds one source under its own run, so versions
+ * and run numbers neither establish nor rule out a match.
+ */
+export function compareJonesSource(
+  installed: { readonly repository: string; readonly sha: string } | undefined,
+  candidate: JonesUpdateProvenance | undefined,
+): JonesSourceComparison {
+  if (
+    installed === undefined ||
+    candidate === undefined ||
+    installed.repository !== candidate.repository ||
+    !FULL_SOURCE_COMMIT.test(installed.sha) ||
+    !FULL_SOURCE_COMMIT.test(candidate.sourceSha)
+  )
+    return "unavailable";
+  return installed.sha === candidate.sourceSha ? "matches" : "different";
 }

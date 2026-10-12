@@ -397,7 +397,7 @@ export const layerWithOptions = (
         const reservations = new Map<
           string,
           {
-            readonly previous: ReadonlyMap<string, string | null>;
+            readonly previous: Map<string, string | null>;
             readonly bindings: Map<string, ThreadId>;
           }
         >();
@@ -439,6 +439,28 @@ export const layerWithOptions = (
                 bindings: new Map(),
               });
               return generation;
+            }).pipe(Effect.mapError(protocolError)),
+          admit: ({ runtimeGeneration, threadId }) =>
+            Effect.gen(function* () {
+              yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                threadId,
+              });
+              const reservation = reservations.get(runtimeGeneration);
+              if (reservation === undefined)
+                return yield* protocolError("The launch reservation was lost.");
+              const rows = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+              for (const thread of rows.providerThreads) {
+                if (
+                  thread.providerInstanceId === instanceId &&
+                  thread.driver === driver &&
+                  !reservation.bindings.has(thread.id)
+                ) {
+                  reservation.previous.set(
+                    thread.id,
+                    thread.runtimeIdentity?.runtimeGeneration ?? null,
+                  );
+                }
+              }
             }).pipe(Effect.mapError(protocolError)),
           bind: (binding) =>
             Effect.gen(function* () {

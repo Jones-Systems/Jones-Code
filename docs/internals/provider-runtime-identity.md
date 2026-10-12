@@ -10,7 +10,10 @@ uses unknown and unavailable states so missing evidence stays visible.
 Identity belongs to a provider thread, not a shared session. One Codex app-server
 can serve native conversations with different models. Its process generation is
 reserved before launch and captured by its callbacks; a logical session ID or an
-idle-timer generation cannot substitute for that incarnation. Typed Codex
+idle-timer generation cannot substitute for that incarnation.
+Each app thread records its current generation immediately before the shared
+process starts, resumes, loads for rollback, or forks its native conversation;
+binding replaces only that recorded predecessor. Typed Codex
 thread-open responses provide model/backend/tier evidence. Native reroute
 notifications update only observed model. Claude SDK init provides model evidence only. Neither boundary safely
 binds an account to the process.

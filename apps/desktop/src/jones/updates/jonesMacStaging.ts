@@ -6,7 +6,12 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeModule from "node:module";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
-import { validateJonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
+import {
+  createJonesStageAttempt,
+  findJonesCompletedStage,
+  publishJonesCompletedStage,
+  validateJonesStagedArtifact,
+} from "@t3tools/shared/jones/jonesActions";
 import * as Schema from "effect/Schema";
 
 import { JonesStagedMacApp, type JonesStagedMacApp as StagedMacApp } from "./jonesActivation.ts";
@@ -125,6 +130,26 @@ export function bundleFileSystem(
   load: (id: string) => unknown = nodeRequire,
 ): typeof NodeFS {
   return versions.electron === undefined ? NodeFS : (load("original-fs") as typeof NodeFS);
+}
+
+/** Publish a completion receipt only after its copied app payload is durable. */
+async function syncMacAppTree(path: string): Promise<void> {
+  const fs = bundleFileSystem().promises;
+  const info = await fs.lstat(path);
+  if (info.isSymbolicLink()) return; // The validated internal target is synced during traversal.
+  if (info.isDirectory()) {
+    for (const name of await fs.readdir(path)) {
+      await syncMacAppTree(NodePath.join(path, name));
+    }
+  } else if (!info.isFile()) {
+    throw new Error("Unsupported staged app entry during synchronization.");
+  }
+  const handle = await fs.open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function hashMacFile(file: string): Promise<string> {
@@ -273,25 +298,32 @@ export async function stageJonesMacApp(
   if (platform !== "darwin" || artifact.candidate.platform !== "darwin")
     throw new Error("Mac staging requires macOS.");
   await validateJonesStagedArtifact(NodePath.dirname(artifact.payloadPath), artifact.candidate);
-  const directory = NodePath.join(await NodeFSP.realpath(root), artifact.stagedHandle);
-  const receiptPath = NodePath.join(directory, "mac-app-receipt.json");
-  try {
-    await NodeFSP.mkdir(directory, { mode: 0o700 });
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+  const canonicalRoot = await NodeFSP.realpath(root);
+  const receiptName = "mac-app-receipt.json";
+  const readCompleted = async (directory: string): Promise<StagedMacApp> => {
+    const receiptPath = NodePath.join(directory, receiptName);
     const receipt = decodeAppReceipt(JSON.parse(await NodeFSP.readFile(receiptPath, "utf8")));
     if (
       JSON.stringify(receipt.artifact) !== JSON.stringify(artifact) ||
-      receipt.app.handle !== artifact.stagedHandle
-    ) {
-      throw new Error("An occupied Mac stage does not bind this candidate; it was preserved.", {
-        cause,
-      });
-    }
+      JSON.stringify(receipt.candidate) !== JSON.stringify(artifact.candidate) ||
+      receipt.app.handle !== artifact.stagedHandle ||
+      receipt.app.receiptPath !== receiptPath ||
+      NodePath.dirname(receipt.app.appPath) !== directory
+    )
+      throw new Error("An occupied Mac stage does not bind this candidate; it was preserved.");
     if ((await hashMacApp(receipt.app.appPath)) !== receipt.app.appDigest)
-      throw new Error("Staged app integrity changed.", { cause });
+      throw new Error("Staged app integrity changed.");
     return receipt.app;
-  }
+  };
+  const completed = await findJonesCompletedStage(
+    canonicalRoot,
+    artifact.stagedHandle,
+    receiptName,
+  );
+  if (completed !== undefined) return readCompleted(completed);
+  const attempt = await createJonesStageAttempt(canonicalRoot, artifact.stagedHandle);
+  const directory = attempt.directory;
+  const receiptPath = NodePath.join(directory, receiptName);
   const mount = NodePath.join(directory, "mount");
   await NodeFSP.mkdir(mount, { mode: 0o700 });
   let mounted = false;
@@ -331,15 +363,22 @@ export async function stageJonesMacApp(
       executableDigest: await hashMacFile(executablePath),
       ...(startupGateProtocol === undefined ? {} : { startupGateProtocol }),
     };
+    await syncMacAppTree(appPath);
     await writeJonesNativeFile(
       receiptPath,
       JSON.stringify({ app, artifact, candidate: artifact.candidate }) + "\n",
       0o600,
     );
-    return app;
   } finally {
     if (mounted) await runNativeCommand("/usr/bin/hdiutil", ["detach", mount]);
-    // Only the newly-created empty mount directory is cleanup-owned. Failed app stages remain for inspection.
+    // Failed attempts remain unselected, so retry never reuses a partial copy or an uncertain mount.
     await NodeFSP.rmdir(mount).catch(() => undefined);
   }
+  const selected = await publishJonesCompletedStage(
+    canonicalRoot,
+    artifact.stagedHandle,
+    directory,
+    receiptName,
+  );
+  return readCompleted(selected);
 }

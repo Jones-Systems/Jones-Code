@@ -1819,6 +1819,20 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               toProtocolError("Cannot reserve a Codex process generation.", cause),
             ),
           );
+        const admitThread = (producer: CodexRuntimeProducer, threadId: ThreadId) =>
+          Effect.suspend(() =>
+            nativeStartUnknown || !producer.active || producer !== currentProducer
+              ? Effect.fail(
+                  new ProviderRuntimeBindingError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Codex cannot admit a thread to an unconfirmed or replaced runtime.",
+                  }),
+                )
+              : (input.runtimeLifecycle?.admit({
+                  runtimeGeneration: producer.generation,
+                  threadId,
+                }) ?? Effect.void),
+          );
         const openProducer = (threadId: ThreadId, runtimePolicy: ProviderAdapterV2RuntimePolicy) =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
@@ -7681,6 +7695,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   cwd: threadInput.runtimePolicy.cwd,
                 }),
               ),
+              Effect.andThen(admitThread(currentProducer, threadInput.threadId)),
               Effect.andThen(
                 client.request(
                   "thread/start",
@@ -7741,6 +7756,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 );
               }
               // excludeTurns is not in the generated request schema yet.
+              yield* admitThread(
+                currentProducer,
+                threadInput.threadId ?? threadInput.providerThread.appThreadId ?? input.threadId,
+              );
               const resume = client.raw.request("thread/resume", {
                 threadId: nativeThreadId,
                 excludeTurns: true,
@@ -8666,6 +8685,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               // process. After a restart or idle release, load it the same way
               // the next turn would before reverting.
               if (!loaded) {
+                yield* admitThread(
+                  currentProducer,
+                  threadInput.providerThread.appThreadId ?? input.threadId,
+                );
                 const resumed = yield* client.raw
                   .request("thread/resume", {
                     threadId,
@@ -8692,6 +8715,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   codexObservedRuntimeIdentity(resumed),
                 );
               } else if (!currentProducer.bindings.has(threadId)) {
+                yield* admitThread(
+                  currentProducer,
+                  threadInput.providerThread.appThreadId ?? input.threadId,
+                );
                 yield* bindRuntimeThread(
                   currentProducer,
                   threadInput.providerThread,
@@ -8737,6 +8764,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 return yield* toProtocolError("Cannot fork an unconfirmed Codex runtime.");
               const issuer = currentProducer;
               const boundary = yield* resolveCodexForkBoundary(threadInput);
+              yield* admitThread(issuer, threadInput.targetThreadId);
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
                   client.request("thread/fork", {
@@ -9070,6 +9098,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   )
                 : lifecyclePermit.withPermits(1)(
                     Effect.gen(function* () {
+                      if (nativeStartUnknown || capacityScopeClosed)
+                        return yield* toProtocolError(
+                          "Codex has an unconfirmed native effect; another prompt is not safe.",
+                        );
                       let dispatchInput = value;
                       if (
                         value.modelSelection.instanceId === adapterOptions.instanceId &&
@@ -9130,7 +9162,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ),
             ),
           interruptTurn: (value) => withProducer(runtime.interruptTurn(value)),
-          rollbackThread: (value) => withProducer(runtime.rollbackThread(value)),
+          rollbackThread: (value) =>
+            lifecyclePermit.withPermits(1)(
+              Effect.suspend(() =>
+                nativeStartUnknown
+                  ? toProtocolError("Codex has an unconfirmed native effect; rollback is not safe.")
+                  : withProducer(runtime.rollbackThread(value)),
+              ),
+            ),
         } satisfies ProviderAdapterV2SessionRuntime;
       }).pipe(
         Effect.mapError(

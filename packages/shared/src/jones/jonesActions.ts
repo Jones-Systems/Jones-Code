@@ -8,6 +8,18 @@ import * as NodeStream from "node:stream";
 import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeZlib from "node:zlib";
 
+import {
+  createJonesStageAttempt,
+  findJonesCompletedStage,
+  publishJonesCompletedStage,
+} from "./jonesActionsStage.ts";
+export {
+  createJonesStageAttempt,
+  findJonesCompletedStage,
+  publishJonesCompletedStage,
+  requireJonesStageDirectory,
+} from "./jonesActionsStage.ts";
+
 const JONES_ACTIONS_REPOSITORY = "Jones-Systems/Jones-Code";
 export const JONES_ACTIONS_RECEIPT_FILE = "jones-actions-stage.json";
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -428,16 +440,22 @@ export class JonesActionsClient {
     }
     const stagedHandle = jonesCandidateHandle(candidate);
     await NodeFSP.mkdir(NodePath.resolve(cacheRoot), { recursive: true, mode: 0o700 });
-    const root = await NodeFSP.realpath(NodePath.resolve(cacheRoot)),
-      final = NodePath.join(root, stagedHandle);
+    const root = await NodeFSP.realpath(NodePath.resolve(cacheRoot));
     try {
-      await NodeFSP.lstat(final);
-      return await validateJonesStagedArtifact(final, candidate);
+      const completed = await findJonesCompletedStage(
+        root,
+        stagedHandle,
+        JONES_ACTIONS_RECEIPT_FILE,
+      );
+      if (completed !== undefined) return await validateJonesStagedArtifact(completed, candidate);
     } catch (error) {
-      if (!isMissing(error))
-        throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");
+      throw error instanceof JonesActionsError ? error : new JonesActionsError("occupied-cache");
     }
-    const working = await NodeFSP.mkdtemp(NodePath.join(root, ".download-"));
+    const attempt = await createJonesStageAttempt(root, stagedHandle);
+    const working = attempt.directory;
+    // Once publication can have happened, keep this attempt on an unknown result.
+    let retainAttempt = false;
+    let failure: unknown;
     try {
       const archive = NodePath.join(working, "github-artifact.zip");
       await this.transport.download(candidate.artifactId, archive);
@@ -483,35 +501,48 @@ export class JonesActionsClient {
         stagedHandle,
         candidate,
         receipt,
-        payloadPath: NodePath.join(final, receipt.artifact),
+        payloadPath: NodePath.join(working, receipt.artifact),
       };
       await NodeFSP.writeFile(
         NodePath.join(working, JONES_ACTIONS_RECEIPT_FILE),
         JSON.stringify(staged, null, 2) + "\n",
         { flag: "wx", mode: 0o600 },
       );
-      // The exclusive reservation protects occupied paths even on platforms where rename replaces empty directories.
-      try {
-        await NodeFSP.mkdir(final, { mode: 0o700 });
-      } catch {
-        throw new JonesActionsError("occupied-cache");
+      const verified = await validateJonesStagedArtifact(working, candidate);
+      for (const name of await NodeFSP.readdir(working)) {
+        const file = await NodeFSP.open(NodePath.join(working, name), "r");
+        try {
+          await file.sync();
+        } finally {
+          await file.close();
+        }
       }
-      try {
-        for (const name of await NodeFSP.readdir(working))
-          await NodeFSP.rename(NodePath.join(working, name), NodePath.join(final, name));
-      } catch (error) {
-        // A partial owned stage remains visibly invalid. Never recycle it as a completed cache entry.
-        throw safeTransportError(error);
-      }
-      return await validateJonesStagedArtifact(final, candidate);
+      retainAttempt = true;
+      const selected = await publishJonesCompletedStage(
+        root,
+        stagedHandle,
+        working,
+        JONES_ACTIONS_RECEIPT_FILE,
+      );
+      if (selected === working) return verified;
+      const winner = await validateJonesStagedArtifact(selected, candidate);
+      retainAttempt = false;
+      return winner;
+    } catch (cause) {
+      failure = cause;
+      throw cause;
     } finally {
-      await NodeFSP.rm(working, { recursive: true, force: true });
+      if (!retainAttempt) {
+        try {
+          await NodeFSP.rm(attempt.attemptRoot, { recursive: true, force: true });
+        } catch (cleanup) {
+          if (failure !== undefined)
+            throw new AggregateError([failure, cleanup], "Artifact staging and cleanup failed.");
+          throw cleanup;
+        }
+      }
     }
   }
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 export function jonesCandidateHandle(candidate: JonesActionsCandidate): string {
@@ -643,13 +674,10 @@ export async function validateJonesStagedArtifact(
       )
         throw new JonesActionsError("integrity");
     }
-    const archive = NodePath.join(dir, "github-artifact.zip");
-    const entries = await readArtifactZip(archive);
-    const entry = entries.find((value) => value.name === "ARTIFACT.json");
-    if (!entry || entry.bytes > 65536 || entry.compressed > 131072)
-      throw new JonesActionsError("integrity");
     const original = parseJonesArtifactReceipt(
-      JSON.parse((await readZipMetadata(archive, entry)).toString("utf8")) as unknown,
+      JSON.parse(
+        (await selectArtifactMetadata(NodePath.join(dir, "github-artifact.zip"))).toString("utf8"),
+      ) as unknown,
       candidate,
     );
     if (original.sha256 !== receipt.sha256) throw new JonesActionsError("integrity");
@@ -671,6 +699,29 @@ interface ZipEntry {
   readonly compressed: number;
   readonly offset: number;
   readonly method: number;
+  /** Central directory CRC-32; authoritative even when a data descriptor zeroes the local copy. */
+  readonly crc: number;
+}
+
+/**
+ * Exact bounded ARTIFACT.json bytes from a flat Actions envelope, without an external unzip.
+ * Parsing grants no authenticity: callers first compare the archive's size and SHA-256 with
+ * the GitHub artifact record, and reopening by pathname is not an immutable-file identity.
+ */
+export async function readJonesArtifactMetadata(archive: string): Promise<Buffer> {
+  try {
+    return await selectArtifactMetadata(archive);
+  } catch (error) {
+    throw error instanceof JonesActionsError ? error : new JonesActionsError("integrity");
+  }
+}
+
+async function selectArtifactMetadata(archive: string): Promise<Buffer> {
+  // Duplicate names are refused by the envelope parser, so this selection is exact.
+  const entry = (await readArtifactZip(archive)).find((value) => value.name === "ARTIFACT.json");
+  if (!entry || entry.bytes > 65536 || entry.compressed > 131072)
+    throw new JonesActionsError("integrity");
+  return await readZipMetadata(archive, entry);
 }
 
 async function readZipMetadata(file: string, entry: ZipEntry): Promise<Buffer> {
@@ -683,7 +734,9 @@ async function readZipMetadata(file: string, entry: ZipEntry): Promise<Buffer> {
       entry.method === 8
         ? NodeZlib.inflateRawSync(compressed, { maxOutputLength: 65536 })
         : compressed;
-    if (data.length !== entry.bytes) throw new JonesActionsError("integrity");
+    // Matches unzip's corruption rejection; CRC-32 detects damage, not substitution.
+    if (data.length !== entry.bytes || NodeZlib.crc32(data) !== entry.crc)
+      throw new JonesActionsError("integrity");
     return data;
   } finally {
     await handle.close();
@@ -697,7 +750,8 @@ async function readArtifactZip(file: string): Promise<ZipEntry[]> {
     const size = (await handle.stat()).size;
     if (size < 22 || size > MAX_ARCHIVE_BYTES) throw new JonesActionsError("integrity");
     const tail = Buffer.alloc(Math.min(size, 65557));
-    await handle.read(tail, 0, tail.length, size - tail.length);
+    if ((await handle.read(tail, 0, tail.length, size - tail.length)).bytesRead !== tail.length)
+      throw new JonesActionsError("integrity");
     let end = tail.length - 22;
     while (end >= 0 && tail.readUInt32LE(end) !== 0x06054b50) end--;
     if (
@@ -719,7 +773,8 @@ async function readArtifactZip(file: string): Promise<ZipEntry[]> {
     )
       throw new JonesActionsError("integrity");
     const central = Buffer.alloc(bytes);
-    await handle.read(central, 0, bytes, offset);
+    if ((await handle.read(central, 0, bytes, offset)).bytesRead !== bytes)
+      throw new JonesActionsError("integrity");
     const result: ZipEntry[] = [];
     let cursor = 0;
     let expanded = 0;
@@ -735,7 +790,8 @@ async function readArtifactZip(file: string): Promise<ZipEntry[]> {
       const mode = central.readUInt32LE(cursor + 38) >>> 16;
       const flags = central.readUInt16LE(cursor + 8),
         method = central.readUInt16LE(cursor + 10);
-      const compressed = central.readUInt32LE(cursor + 20),
+      const crc = central.readUInt32LE(cursor + 16),
+        compressed = central.readUInt32LE(cursor + 20),
         entryBytes = central.readUInt32LE(cursor + 24),
         localOffset = central.readUInt32LE(cursor + 42);
       expanded += entryBytes;
@@ -751,18 +807,24 @@ async function readArtifactZip(file: string): Promise<ZipEntry[]> {
       )
         throw new JonesActionsError("integrity");
       const local = Buffer.alloc(30 + nameLength);
-      await handle.read(local, 0, local.length, localOffset);
+      if ((await handle.read(local, 0, local.length, localOffset)).bytesRead !== local.length)
+        throw new JonesActionsError("integrity");
       if (
         local.readUInt32LE(0) !== 0x04034b50 ||
         local.readUInt16LE(6) !== flags ||
         local.readUInt16LE(8) !== method ||
         local.readUInt16LE(26) !== nameLength ||
-        local.subarray(30).toString("utf8") !== name
+        local.subarray(30).toString("utf8") !== name ||
+        // A data descriptor (bit 3) may leave local CRC and sizes zero; the central record governs.
+        ((flags & 0x08) === 0 &&
+          (local.readUInt32LE(14) !== crc ||
+            local.readUInt32LE(18) !== compressed ||
+            local.readUInt32LE(22) !== entryBytes))
       )
         throw new JonesActionsError("integrity");
       const dataOffset = localOffset + 30 + nameLength + local.readUInt16LE(28);
       if (dataOffset + compressed > offset) throw new JonesActionsError("integrity");
-      result.push({ name, bytes: entryBytes, compressed, offset: dataOffset, method });
+      result.push({ name, bytes: entryBytes, compressed, offset: dataOffset, method, crc });
       cursor += 46 + nameLength + extra + comment;
     }
     if (cursor !== central.length) throw new JonesActionsError("integrity");
