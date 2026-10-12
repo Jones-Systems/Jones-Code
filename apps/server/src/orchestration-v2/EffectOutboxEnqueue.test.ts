@@ -37,7 +37,11 @@ const pending = (id: string): Enqueue.PendingOrchestrationEffectV2 => ({
 const enqueueWith = (
   path: "leaf" | "service",
   effects: ReadonlyArray<Enqueue.PendingOrchestrationEffectV2>,
-): Effect.Effect<void, Enqueue.EffectOutboxError, SqlClient.SqlClient | EffectOutbox.EffectOutboxV2> =>
+): Effect.Effect<
+  void,
+  Enqueue.EffectOutboxError,
+  SqlClient.SqlClient | EffectOutbox.EffectOutboxV2
+> =>
   path === "leaf"
     ? Enqueue.enqueue(effects)
     : Effect.flatMap(EffectOutbox.EffectOutboxV2, (outbox) => outbox.enqueue(effects));
@@ -161,7 +165,7 @@ it.effect.each(["leaf", "service"] as const)(
         .withTransaction(enqueueWith(path, [pending("before-failure"), pending("refused")]))
         .pipe(Effect.flip);
       assert.instanceOf(error, Enqueue.EffectOutboxError);
-      if (!(error instanceof Enqueue.EffectOutboxError)) return;
+      if (!Schema.is(Enqueue.EffectOutboxError)(error)) return;
       assert.equal(error.operation, "enqueue");
       assert.equal(error.message, "Orchestration effect outbox enqueue failed.");
       assert.isTrue(Schema.is(SqlError.SqlError)(error.cause));

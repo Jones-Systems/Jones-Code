@@ -350,6 +350,10 @@
       "to": "scripts/jones/updates/legacy-bootstrap-bundle.ts"
     },
     {
+      "from": "scripts/build-desktop-artifact.test.ts",
+      "to": "scripts/jones/updates/legacy-bootstrap-bundle.ts"
+    },
+    {
       "from": "scripts/build-desktop-artifact.ts",
       "to": "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts"
     },
