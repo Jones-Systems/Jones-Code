@@ -384,3 +384,51 @@ it("loads SQLite only for native ownership and denies a qualified runtime withou
     expect(ordinary.status, ordinary.stderr).toBe(0);
     expect(run({ ...input, descriptorPath: "missing" }).status).not.toBe(0);
   }));
+
+it.each([
+  { phase: "cold-receiver-prepared", fields: { kind: "cold-first-transition" } },
+  { phase: "resumed", fields: { kind: "cold-first-transition" } },
+  { phase: "rolled-back", fields: { kind: "cold-first-transition" } },
+  { phase: "trial", fields: { kind: "cold-first-transition" } },
+  { phase: "resumed", fields: { kind: "warm" } },
+  { phase: "rolled-back", fields: { kind: null } },
+  { phase: "resumed", fields: { handoffSha256: "a".repeat(64) } },
+  { phase: "resumed", fields: { maintenanceGeneration: "a".repeat(64) } },
+  { phase: "resumed", fields: { stateTransaction: {} } },
+])(
+  "holds receiver or mixed intent $fields in $phase before any caller write",
+  async ({ phase, fields }) =>
+    fixture(async (root, input) => {
+      const transactionId = "f".repeat(64);
+      const directory = NodePath.join(
+        root,
+        "runtime",
+        "jones-updates",
+        "transactions",
+        transactionId,
+      );
+      await NodeFSP.mkdir(directory, { recursive: true });
+      const raw = JSON.stringify({
+        phase,
+        intent: {
+          protocol: 1,
+          transactionId,
+          continuationReceipt: "forged-warm-receipt",
+          ...fields,
+        },
+      });
+      await NodeFSP.writeFile(NodePath.join(directory, "journal.json"), raw);
+      const manifest = NodePath.join(root, "runtime", "jones-active-install.json");
+      const before = await NodeFSP.readFile(manifest, "utf8");
+      const marker = NodePath.join(root, "profile", "caller-write");
+      const result = run(
+        input,
+        `const fs = await import('node:fs'); fs.writeFileSync(${JSON.stringify(marker)}, 'unsafe');`,
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("startup held");
+      expect(NodeFS.existsSync(marker)).toBe(false);
+      expect(await NodeFSP.readFile(manifest, "utf8")).toBe(before);
+      expect(await NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8")).toBe(raw);
+    }),
+);

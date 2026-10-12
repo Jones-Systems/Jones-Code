@@ -851,6 +851,52 @@ describe("Jones desktop updates", () => {
     },
   );
 
+  it.each([
+    { phase: "cold-receiver-prepared", fields: { kind: "cold-first-transition" } },
+    { phase: "resumed", fields: { kind: "cold-first-transition" } },
+    { phase: "rolled-back", fields: { kind: "cold-first-transition" } },
+    { phase: "resumed", fields: { kind: "warm" } },
+    { phase: "rolled-back", fields: { kind: null } },
+    { phase: "resumed", fields: { handoffSha256: "a".repeat(64) } },
+    { phase: "resumed", fields: { maintenanceGeneration: "a".repeat(64) } },
+    { phase: "resumed", fields: { stateTransaction: {} } },
+  ])(
+    "holds receiver or mixed intent $fields in $phase without reporting success or launching",
+    async ({ phase, fields }) => {
+      const f = await fixture(true, "committed");
+      const fleet = { bindInstall: vi.fn(), recordOutcome: vi.fn().mockResolvedValue(undefined) };
+      const journalPath = NodePath.join(
+        f.options.home,
+        "runtime",
+        "jones-updates",
+        "transactions",
+        handle,
+        "journal.json",
+      );
+      const manifestPath = NodePath.join(f.options.home, "runtime", "jones-active-install.json");
+      try {
+        const journal = JSON.parse(await NodeFSP.readFile(journalPath, "utf8"));
+        journal.phase = phase;
+        Object.assign(journal.intent, fields);
+        await NodeFSP.writeFile(journalPath, JSON.stringify(journal));
+        const before = await NodeFSP.readFile(manifestPath, "utf8");
+        const spawnCalls = vi.mocked(NodeChildProcess.spawn).mock.calls.length;
+        const commandCalls = vi.mocked(NodeChildProcess.execFile).mock.calls.length;
+        const controller = new JonesDesktopUpdateController({ ...f.options, fleet });
+        await controller.configure();
+        expect(controller.state.jones?.phase).toBe("blocked");
+        expect(controller.state.jones?.capability.install).toBe(false);
+        expect(fleet.recordOutcome).not.toHaveBeenCalled();
+        expect(vi.mocked(NodeChildProcess.spawn).mock.calls).toHaveLength(spawnCalls);
+        expect(vi.mocked(NodeChildProcess.execFile).mock.calls).toHaveLength(commandCalls);
+        expect(await NodeFSP.readFile(manifestPath, "utf8")).toBe(before);
+        expect(await NodeFSP.readFile(journalPath, "utf8")).toBe(JSON.stringify(journal));
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
   it.each(["committed", "rolled-back"] as const)(
     "records fleet %s proof only after native journal and active-install reconciliation",
     async (terminal) => {

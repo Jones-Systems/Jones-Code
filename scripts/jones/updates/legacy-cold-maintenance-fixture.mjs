@@ -1620,6 +1620,25 @@ export const coldPreparationCases = [
   "handoff-after-intent-restore",
   "handoff-same-boot",
   "handoff-later-boot",
+  "receiver-success",
+  "receiver-before-handoff",
+  "receiver-worker-unsettled",
+  "receiver-selection-changed",
+  "receiver-state-changed",
+  "receiver-handoff-changed",
+  "receiver-reserve-changed",
+  "receiver-directory-occupied",
+  "receiver-directory-changed",
+  "receiver-intent-changed",
+  "receiver-journal-changed",
+  "receiver-before-cursor",
+  "receiver-after-cursor",
+  "receiver-after-intent",
+  "receiver-after-journal",
+  "receiver-readback",
+  "receiver-completion-sync",
+  "receiver-same-boot",
+  "receiver-later-boot",
 ];
 
 // This framed child models query results, not SQLite or native observations. The
@@ -1757,11 +1776,18 @@ bundle = dict(bundle, schema=3, repository='Jones-Systems/Jones-Code', sourceSha
 if scenario == 'v2-held':
     bundle.pop('preparation')
     bundle['schema'] = 2
-if scenario.startswith('handoff-'):
+if scenario.startswith(('handoff-', 'receiver-')):
     original.update(protocol=1, home=str(root), environmentId='synthetic-cold-handoff', version='1.0.0-preview.20261010.1', appDigest='1' * 64)
     candidate = {'handle': '6' * 64, 'sourceSha': bundle['sourceSha'], 'sourceTree': bundle['sourceTree'],
                  'appDigest': '7' * 64, 'version': bundle['version'], 'appPath': str(root / 'Candidate.app'),
                  'executablePath': str(root / 'Candidate.app/Contents/MacOS/Jones')}
+    if scenario.startswith('receiver-'):
+        (root / 'runtime/jones-updates').mkdir(mode=0o700)
+        original['transactionId'] = 'bootstrap'
+        for app_name in ('Old.app', 'Candidate.app'):
+            app = root / app_name
+            (app / 'Contents/MacOS').mkdir(mode=0o700, parents=True)
+            write(app / 'Contents/MacOS/Jones', app_name.encode(), 0o400)
     selection_path = root / 'selection.json'
     selection_raw = encode({'app': candidate}) + b'\n'
     write(selection_path, selection_raw)
@@ -1788,6 +1814,14 @@ fault = {'fired': False}
 def durable(path, raw, mode, previous=None):
     is_intent = path == directory / 'state/journal.json' and json.loads(raw)['phase'] == 'preparation-intent'
     is_handoff = path == directory / 'journal.json' and 'desktopHandoff' in json.loads(raw)
+    receiver_cursor = path == directory / 'journal.json' and 'desktopReceiver' in json.loads(raw)
+    receiver_file = path.parent.parent == root / 'runtime/jones-updates/transactions'
+    if receiver_cursor and scenario == 'receiver-before-cursor':
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned failure before receiver cursor')
+    if receiver_file:
+        cursor = json.loads((directory / 'journal.json').read_bytes())['desktopReceiver']
+        assert cursor['phase'] == 'publication-intent' and raw == cursor[path.name[:-5]].encode()
     if is_handoff and scenario == 'handoff-before-publication':
         fault['fired'] = True
         raise OSError(errno.EIO, 'owned failure before handoff publication')
@@ -1795,6 +1829,11 @@ def durable(path, raw, mode, previous=None):
         fault['fired'] = True
         raise OSError(errno.EIO, 'owned envelope publication failure')
     real_durable(path, raw, mode, previous)
+    if ((receiver_cursor and scenario == 'receiver-after-cursor') or
+        (receiver_file and scenario == 'receiver-after-' + path.name[:-5]) or
+        (receiver_cursor and scenario == 'receiver-completion-sync' and json.loads(raw)['desktopReceiver']['phase'] == 'prepared')):
+        fault['fired'] = True
+        raise OSError(errno.EIO, 'owned receiver publication uncertainty')
     if is_handoff and scenario == 'handoff-after-publication':
         fault['fired'] = True
         raise OSError(errno.EIO, 'owned failure after handoff publication')
@@ -1808,6 +1847,9 @@ scope['durable_file'] = durable
 real_read_owned, real_sync_evidence = scope['read_owned'], Maintenance.sync_evidence
 def read_handoff(path, *args):
     raw = real_read_owned(path, *args)
+    if scenario == 'receiver-readback' and path.name == 'journal.json' and path.parent.parent == root / 'runtime/jones-updates/transactions' and not fault['fired']:
+        fault['fired'] = True
+        return raw + b' '
     if scenario == 'handoff-readback' and path == directory / 'journal.json' and 'desktopHandoff' in json.loads(raw) and not fault['fired']:
         fault['fired'] = True
         return raw + b' '
@@ -1979,11 +2021,115 @@ def handoff(session):
     assert reserve_path.stat().st_ino == reserve_inode and database.read_bytes() == prepared_database
     assert (gate.read_bytes(), stat.S_IMODE(gate.stat().st_mode)) == initial_gate
     assert manifest.read_bytes() == (initial_owner + b' ' if scenario == 'handoff-owner-bytes-changed' else initial_owner)
+def receiver(session):
+    initial_owner = manifest.read_bytes()
+    initial_gate = (gate.read_bytes(), stat.S_IMODE(gate.stat().st_mode))
+    if scenario == 'receiver-before-handoff':
+        refusal(session.prepare_receiver, Refused)
+        assert not commands and not (root / 'runtime/jones-updates/transactions').exists()
+        assert manifest.read_bytes() == initial_owner and (gate.read_bytes(), stat.S_IMODE(gate.stat().st_mode)) == initial_gate
+        return
+    prepare(session)
+    session.prepare_handoff('http://127.0.0.1:4888')
+    handoff_value = session.owner.journal['desktopHandoff']
+    transaction = root / 'runtime/jones-updates/transactions' / handoff_value['desktop']['transactionId']
+    snapshots = {path: path.read_bytes() for path in (directory / 'state/pair-descriptor.json', directory / 'state/journal.json',
+                 directory / 'state/previous-pair/database', database, profile / 'Preferences')}
+    reserve = directory / 'state/reserve.bin'
+    reserve_inode, reserve_bytes = reserve.stat().st_ino, reserve.stat().st_size
+    apps = {path: (path.read_bytes() if path.is_file() else None, stat.S_IMODE(path.stat().st_mode))
+            for name in ('Old.app', 'Candidate.app') for path in (root / name, *(root / name).rglob('*'))}
+    starts = len(commands)
+    real_popen = subprocess.Popen
+    def no_receiver_launch(*args, **kwargs): raise AssertionError('Receiver preparation launched a process')
+    subprocess.Popen = no_receiver_launch
+    try:
+        if scenario == 'receiver-worker-unsettled': session.worker.settled = False
+        if scenario == 'receiver-selection-changed': write(selection_path, selection_raw + b' ')
+        if scenario == 'receiver-state-changed': write(directory / 'state/journal.json', snapshots[directory / 'state/journal.json'] + b' ')
+        if scenario == 'receiver-handoff-changed': session.owner.journal['desktopHandoff']['desktop']['listener'] = 'http://127.0.0.1:4999'
+        if scenario == 'receiver-reserve-changed':
+            with reserve.open('r+b') as stream: stream.truncate(1)
+        if scenario == 'receiver-directory-occupied':
+            transaction.mkdir(parents=True, mode=0o700)
+            write(transaction / 'foreign', b'preserved')
+        succeeds = scenario in ('receiver-success', 'receiver-same-boot', 'receiver-later-boot',
+                               'receiver-directory-changed', 'receiver-intent-changed', 'receiver-journal-changed')
+        if succeeds:
+            result = session.prepare_receiver()
+            assert result == {'schema': 1, 'status': 'receiver-prepared-held', 'stateAdmissionAllowed': False, 'activationAllowed': False,
+                              'launchMembershipComplete': False, 'processCustody': 'unobserved', 'blocker': 'DESK-FIRST-01',
+                              'transactionId': transaction.name, 'handoffSha256': sha(encode(handoff_value))}
+            frozen = (directory / 'journal.json').read_bytes()
+            cursor = json.loads(frozen)['desktopReceiver']
+            assert cursor['phase'] == 'prepared' and cursor['handoffSha256'] == sha(encode(handoff_value))
+            final, trial = json.loads(handoff_value['receivingOwner']), json.loads(cursor['trialOwner'])
+            assert final['generation'] == final['transactionId'] == trial['transactionId'] == transaction.name
+            assert trial['generation'] != transaction.name and dict(trial, generation=transaction.name) == final
+            assert cursor['trialOwnerSha256'] == sha(cursor['trialOwner'].encode()) and cursor['finalOwnerSha256'] == sha(handoff_value['receivingOwner'].encode())
+            intent = json.loads(cursor['intent'])
+            assert intent == {'protocol': 1, 'kind': 'cold-first-transition', 'transactionId': transaction.name, 'staged': candidate,
+                              'expected': original, 'maintenanceGeneration': generation, 'handoffSha256': sha(encode(handoff_value)),
+                              'stateTransaction': session.owner.journal['stateTransaction']}
+            assert 'continuationReceipt' not in intent
+            assert json.loads(cursor['journal']) == {'intent': intent, 'phase': 'cold-receiver-prepared'}
+            for name in ('intent', 'journal'): assert (transaction / (name + '.json')).read_bytes() == cursor[name].encode()
+            assert set(path.name for path in transaction.iterdir()) == {'intent.json', 'journal.json'}
+            assert session.prepare_receiver() == result and session.owner.reconcile() == result
+            assert (directory / 'journal.json').read_bytes() == frozen
+            if scenario == 'receiver-directory-changed':
+                transaction.rename(transaction.with_name(transaction.name + '-retained'))
+                transaction.mkdir(mode=0o700)
+                for name in ('intent', 'journal'): write(transaction / (name + '.json'), cursor[name].encode())
+            if scenario in ('receiver-intent-changed', 'receiver-journal-changed'):
+                name = scenario.split('-')[1]
+                write(transaction / (name + '.json'), cursor[name].encode() + b' ')
+            if scenario.endswith('-changed'):
+                refusal(session.prepare_receiver, Refused)
+                assert (directory / 'journal.json').read_bytes() == frozen
+        else:
+            failure = refusal(session.prepare_receiver, (Refused, OSError))
+            assert session.failure is failure and session.held['failure'] is failure
+            frozen = (directory / 'journal.json').read_bytes()
+            refusal(session.prepare_receiver, Refused)
+            assert (directory / 'journal.json').read_bytes() == frozen
+            cursor = json.loads(frozen).get('desktopReceiver')
+            if scenario in ('receiver-after-cursor', 'receiver-after-intent', 'receiver-after-journal', 'receiver-readback', 'receiver-completion-sync'):
+                assert fault['fired'] and cursor is not None
+                expected_files = set() if scenario == 'receiver-after-cursor' else {'intent.json'} if scenario == 'receiver-after-intent' else {'intent.json', 'journal.json'}
+                assert set(path.name for path in transaction.iterdir()) == expected_files
+                for name in expected_files: assert (transaction / name).read_bytes() == cursor[name[:-5]].encode()
+            else:
+                assert cursor is None
+            if scenario == 'receiver-before-cursor': assert fault['fired'] and list(transaction.iterdir()) == []
+            if scenario == 'receiver-directory-occupied': assert (transaction / 'foreign').read_bytes() == b'preserved'
+        for path, raw in snapshots.items():
+            assert path.read_bytes() == (raw + b' ' if scenario == 'receiver-state-changed' and path == directory / 'state/journal.json' else raw)
+        assert reserve.stat().st_ino == reserve_inode and reserve.stat().st_size == (1 if scenario == 'receiver-reserve-changed' else reserve_bytes)
+        for path, (raw, mode) in apps.items():
+            assert path.exists() and stat.S_IMODE(path.stat().st_mode) == mode
+            if raw is not None: assert path.read_bytes() == raw
+        assert manifest.read_bytes() == initial_owner and (gate.read_bytes(), stat.S_IMODE(gate.stat().st_mode)) == initial_gate
+        assert len(commands) == starts
+    finally: subprocess.Popen = real_popen
 fixture_failure = None
 try:
     failures = {'plan-id-drift', 'plan-publication-failure', 'intent-sync-failure', 'worker-exit-failure',
                 'worker-close-failure', 'paused-cancel', 'work-replaced', 'cold-c-reconcile', 'v2-held', 'unretained-runtime'}
-    if scenario.startswith('handoff-'):
+    if scenario.startswith('receiver-'):
+        successful = {'receiver-success', 'receiver-same-boot', 'receiver-later-boot'}
+        if scenario in successful: enter(receiver)
+        else: refusal(lambda: enter(receiver), (Refused, OSError))
+        before = (directory / 'journal.json').read_bytes()
+        if scenario == 'receiver-later-boot': epoch['current'] = epoch_c
+        refusal(lambda: enter(prepare), Refused)
+        assert (directory / 'journal.json').read_bytes() == before
+        with scope['fixed_lock'](manifest) as current:
+            owner = Maintenance(manifest, current)
+            owner.load()
+            refusal(owner.cancel, Refused)
+        assert (directory / 'journal.json').read_bytes() == before
+    elif scenario.startswith('handoff-'):
         successful = {'handoff-success', 'handoff-same-boot', 'handoff-later-boot'}
         if scenario in successful: enter(handoff)
         else: refusal(lambda: enter(handoff), (Refused, OSError))

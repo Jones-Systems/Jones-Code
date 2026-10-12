@@ -286,6 +286,14 @@ export function holdJonesNativeWriterFence(input: {
       const intent = record(journal.intent);
       if (intent.transactionId !== entry.name || intent.protocol !== 1)
         throw new Error("Native journal binding is unknown; startup held.");
+      if (intent.kind === "cold-first-transition")
+        throw new Error("Cold receiver requires reconciliation; startup held.");
+      if (
+        ["kind", "maintenanceGeneration", "handoffSha256", "stateTransaction"].some(
+          (key) => key in intent,
+        )
+      )
+        throw new Error("Unknown or mixed activation intent; startup held.");
       if (journal.phase === "resumed" || journal.phase === "rolled-back") continue;
       if (
         input.descriptorPath === undefined ||

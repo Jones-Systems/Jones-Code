@@ -65,6 +65,47 @@ def _validate_cold_handoff_cursor(owner, proposed_intent=None):
     proposed['executablePath'] = str(absolute(owner.original['appPath']) / absolute(candidate['executablePath']).relative_to(absolute(candidate['appPath'])))
     require(sha(receiving_raw) == value['receivingOwnerSha256'] and receiving_raw == encoded(proposed) + b'\n')
 
+def _cold_receiver_value(owner, generation, parent_identity, directory_identity):
+    handoff = owner.journal['desktopHandoff']
+    desktop = handoff['desktop']
+    require(hex_value(generation, 64) and generation not in (desktop['transactionId'], owner.original['generation'],
+            owner.plan['maintenanceGeneration'], handoff['state']['transaction']['transactionId']))
+    trial = dict(decode(handoff['receivingOwner'].encode()), generation=generation)
+    intent = {'protocol': 1, 'kind': 'cold-first-transition', 'transactionId': desktop['transactionId'],
+              'staged': desktop['candidate'], 'expected': owner.original, 'maintenanceGeneration': owner.plan['maintenanceGeneration'],
+              'handoffSha256': sha(encoded(handoff)), 'stateTransaction': handoff['state']['transaction']}
+    return {'schema': 1, 'phase': 'publication-intent', 'handoffSha256': sha(encoded(handoff)),
+            'trialOwner': (encoded(trial) + b'\n').decode(), 'trialOwnerSha256': sha(encoded(trial) + b'\n'),
+            'finalOwnerSha256': handoff['receivingOwnerSha256'], 'parentIdentity': parent_identity, 'directoryIdentity': directory_identity,
+            'intent': (encoded(intent) + b'\n').decode(),
+            'journal': (encoded({'intent': intent, 'phase': 'cold-receiver-prepared'}) + b'\n').decode()}
+
+def _validate_cold_receiver_cursor(owner):
+    if 'desktopReceiver' not in owner.journal: return
+    require('desktopHandoff' in owner.journal)
+    value = owner.journal['desktopReceiver']
+    require(isinstance(value, dict) and type(value.get('schema')) is int and value['schema'] == 1 and value.get('phase') in ('publication-intent', 'prepared'))
+    for key in ('parentIdentity', 'directoryIdentity'):
+        require(isinstance(value.get(key), list) and len(value[key]) == 4 and all(type(part) is int and part >= 0 for part in value[key]))
+    trial = decode(value['trialOwner'].encode())
+    expected = _cold_receiver_value(owner, trial['generation'], value['parentIdentity'], value['directoryIdentity'])
+    require(value == dict(expected, phase=value['phase']))
+
+def _cold_receiver_files(owner):
+    value = owner.journal.get('desktopReceiver')
+    if value is None: return
+    _validate_cold_receiver_cursor(owner)
+    root = absolute(owner.original['home']) / 'runtime/jones-updates/transactions'
+    directory = root / owner.journal['desktopHandoff']['desktop']['transactionId']
+    observed = Observation()
+    for path, key in ((root, 'parentIdentity'), (directory, 'directoryIdentity')):
+        with observed.directory(path) as fd: require(list(identity(os.fstat(fd), True)) == value[key])
+    names = observed.names(directory)
+    require(set(names) <= {'intent.json', 'journal.json'} and ('journal.json' not in names or 'intent.json' in names))
+    if value['phase'] == 'prepared': require(set(names) == {'intent.json', 'journal.json'})
+    for name in names: require(observed.raw(directory / name, LIMITS['metadataBytes']) == value[name[:-5]].encode())
+    observed.current()
+
 def _cold_owner_bindings():
     # The issuer captures the real lock implementation, not a caller's assertion
     # of custody. No executable, callback, boot observation or receipt grants entry.
@@ -151,6 +192,7 @@ def _cold_owner_bindings():
                         {'schema': 1, 'generation': owner.plan['maintenanceGeneration'], 'planSha256': owner.journal['planSha256']})
                 require(sha(read_owned(self.directory / 'tools/maintenance.py')) == owner.bundle['maintenanceSha256'])
                 require(_cold_owner_boot(owner.verify()) == self.record['bootSessionUuid'])
+                _cold_receiver_files(owner)
                 self.check(owner)
             except BaseException as failure:
                 self.poison(failure)
@@ -256,6 +298,51 @@ def _cold_owner_bindings():
                 self.boundary()
                 require(self.owner.journal['desktopHandoff'] == self._handoff_value(listener, transaction_id))
                 return maintenance_report('desktop-handoff-intent-held', transactionId=transaction_id, intentSha256=sha(encoded(value)))
+            except BaseException as failure:
+                self.poison(failure)
+                raise
+            finally: self.operating = False
+
+        def prepare_receiver(self):
+            try:
+                require(self.accepting and not self.operating)
+                self.boundary()
+                self.operating = True
+                owner = self.owner
+                handoff = owner.journal.get('desktopHandoff')
+                require(handoff is not None)
+                desktop = handoff['desktop']
+                require(handoff == self._handoff_value(desktop['listener'], desktop['transactionId']))
+                value = owner.journal.get('desktopReceiver')
+                if value is None:
+                    root = absolute(owner.original['home']) / 'runtime/jones-updates/transactions'
+                    observed = Observation()
+                    with observed.directory(root.parent) as parent:
+                        try: os.mkdir(root.name, 0o700, dir_fd=parent)
+                        except FileExistsError: pass
+                        sync_fd(parent)
+                    with observed.directory(root) as parent:
+                        parent_identity = list(identity(os.fstat(parent), True))
+                        os.mkdir(desktop['transactionId'], 0o700, dir_fd=parent)
+                        sync_fd(parent)
+                    with observed.directory(root / desktop['transactionId']) as fd:
+                        directory_identity = list(identity(os.fstat(fd), True))
+                        sync_fd(fd)
+                    observed.current()
+                    value = _cold_receiver_value(owner, uuid.uuid4().hex + uuid.uuid4().hex, parent_identity, directory_identity)
+                    # The cursor precedes receiving files. An uncertain write consumes this live session.
+                    owner.save(desktopReceiver=value)
+                    self.boundary()
+                    for name in ('intent', 'journal'):
+                        durable_file(root / desktop['transactionId'] / (name + '.json'), value[name].encode(), 0o600)
+                        self.boundary()
+                    value = dict(value, phase='prepared')
+                    owner.save(desktopReceiver=value)
+                require(value['phase'] == 'prepared')
+                owner.sync_evidence()
+                self.boundary()
+                require(handoff == self._handoff_value(desktop['listener'], desktop['transactionId']))
+                return maintenance_report('receiver-prepared-held', transactionId=desktop['transactionId'], handoffSha256=value['handoffSha256'])
             except BaseException as failure:
                 self.poison(failure)
                 raise

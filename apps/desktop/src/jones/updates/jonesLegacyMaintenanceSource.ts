@@ -163,10 +163,11 @@ def app_digest(observed, root):
     entries, _ = maintenance_app_entries(observed, root)
     return sha(b''.join(encoded(record) + b'\n' for _, _, record in entries))
 
-def transactions(observed, root, home):
+def transactions(observed, root, home, receiver=None):
     names = observed.names(root, True)
     for name in names or ():
         require(hex_value(name, 64))
+        if name == receiver: continue
         directory = root / name
         observed.denied += (directory / 'previous-pair', directory / 'advanced-state')
         children = observed.names(directory)
@@ -174,8 +175,9 @@ def transactions(observed, root, home):
         intent, _ = observed.metadata(directory / 'intent.json')
         journal, _ = observed.metadata(directory / 'journal.json')
         require(intent.get('protocol') == 1 and type(intent.get('protocol')) is int and intent.get('transactionId') == name)
+        require(not {'kind', 'maintenanceGeneration', 'handoffSha256', 'stateTransaction'} & set(intent))
         require(intent.get('expected', {}).get('home') == home and journal.get('intent') == intent and journal.get('phase') in ('resumed', 'rolled-back'))
-    return names
+    return [name for name in names or () if name != receiver]
 
 def native_identity(native, digest, requests=()):
     observed = Observation()
@@ -226,13 +228,14 @@ def expected_shim(home, active):
             'exec "$app" ' + shell_word(active['appPath'] + '/Contents/Resources/app.asar/apps/server/dist/bin.mjs') + ' "$@"\n').encode()
 
 class StrictInventory:
-    def __init__(self, manifest, active, native, native_digest, candidate_helper, planned=None, modes=None):
+    def __init__(self, manifest, active, native, native_digest, candidate_helper, planned=None, modes=None, receiver=None):
         self.observed = maintenance_anchor(manifest, active)
         self.active, self.home = active, absolute(active['home'])
         self.updater = self.home / 'runtime/jones-updates'
         self.native, self.native_digest = native, native_digest
         self.candidate_helper = candidate_helper
         self.planned, self.modes = planned, modes or {}
+        self.receiver = receiver
         self.records, self.apps, self.objects, self.total = {}, {}, [], 0
         self.indexes = {}
         self.boot = None
@@ -376,7 +379,7 @@ class StrictInventory:
             require(hex_value(expected.get('appDigest'), 64))
             self.app(root, expected, 'staged')
             staged[str(root)] = expected
-        for name in transactions(observed, updater / 'transactions', str(self.home)) or ():
+        for name in transactions(observed, updater / 'transactions', str(self.home), self.receiver) or ():
             directory = updater / 'transactions' / name
             intent, journal = self.record(directory / 'intent.json'), self.record(directory / 'journal.json')
             prior, candidate = intent['expected'], intent['staged']
@@ -538,7 +541,7 @@ class Maintenance:
         self.journal_raw = read_owned(self.directory / 'journal.json')
         self.journal = decode(self.journal_raw)
         journal_keys = {'schema', 'maintenanceGeneration', 'planSha256', 'phase', 'done', 'intent', 'armedBootSessionUuid', 'cancel'}
-        require(journal_keys <= set(self.journal) <= journal_keys | {'stateTransaction', 'coldOwner', 'desktopHandoff'})
+        require(journal_keys <= set(self.journal) <= journal_keys | {'stateTransaction', 'coldOwner', 'desktopHandoff', 'desktopReceiver'})
         require(self.journal['schema'] == 1 and self.journal['maintenanceGeneration'] == pointer['generation'] and self.journal['planSha256'] == pointer['planSha256'] and self.journal['phase'] in PHASES)
         self.native = self.directory / 'tools/identity-native'
         self.bundle = self.plan['bundle']
@@ -569,6 +572,7 @@ class Maintenance:
             require(phase == 'armed' and isinstance(fence, dict) and set(fence) == {'schema', 'transactionId', 'intentSha256'})
             require(type(fence['schema']) is int and fence['schema'] == 1 and hex_value(fence['transactionId'], 64) and hex_value(fence['intentSha256'], 64))
         _validate_cold_handoff_cursor(self)
+        _validate_cold_receiver_cursor(self)
         paths = [item['path'] for item in self.gates]
         if phase in ('cancel-owner-published', 'cancel-restoring', 'cancelled'):
             paths = sorted((item['path'] for item in self.gates if item['app'] == self.original['appPath']),
@@ -634,8 +638,22 @@ class Maintenance:
             require(active_raw.decode() == self.journal['cancel']['manifest'] or (phase == 'cancel-owner-published' and active == self.owner()))
         else: require(active == self.owner())
         planned = {item['path']: item for item in self.plan['inventory']['objects']}
-        inventory = StrictInventory(self.manifest, self.original, self.native, self.bundle['identityNativeSha256'], self.bundle['executorSha256'], planned, self.modes())
-        require(inventory.run() == self.plan['inventory'] and inventory.boot == identity_batch['bootSessionUuid'])
+        _cold_receiver_files(self)
+        receiver = self.journal['desktopHandoff']['desktop']['transactionId'] if 'desktopReceiver' in self.journal else None
+        inventory = StrictInventory(self.manifest, self.original, self.native, self.bundle['identityNativeSha256'], self.bundle['executorSha256'], planned, self.modes(), receiver)
+        actual = inventory.run()
+        if receiver is not None:
+            # Only the cursor-bound receiving directory is additional to the sealed inventory.
+            root = str(absolute(self.original['home']) / 'runtime/jones-updates/transactions')
+            require(receiver in actual['listings'][root])
+            actual['listings'][root].remove(receiver)
+            if self.plan['inventory']['listings'][root] is None:
+                require(not actual['listings'][root])
+                actual['listings'][root] = None
+            updater = str(absolute(root).parent)
+            if 'transactions' not in self.plan['inventory']['listings'][updater]:
+                actual['listings'][updater].remove('transactions')
+        require(actual == self.plan['inventory'] and inventory.boot == identity_batch['bootSessionUuid'])
         require(read_owned(absolute(self.plan['selectionPath'])) and sha(read_owned(absolute(self.plan['selectionPath']))) == self.plan['selectionSha256'])
         self.current_lock()
         return inventory.boot
@@ -693,6 +711,10 @@ class Maintenance:
         require(self.journal['phase'] == 'armed' and isinstance(self.journal['armedBootSessionUuid'], str))
         boot = self.verify()
         self.sync_evidence()
+        if 'desktopReceiver' in self.journal:
+            receiver = self.journal['desktopReceiver']
+            return maintenance_report('receiver-prepared-held' if receiver['phase'] == 'prepared' else 'receiver-publication-held',
+                                      transactionId=self.journal['desktopHandoff']['desktop']['transactionId'], handoffSha256=receiver['handoffSha256'])
         if 'desktopHandoff' in self.journal:
             handoff = self.journal['desktopHandoff']
             return maintenance_report('desktop-handoff-intent-held', transactionId=handoff['desktop']['transactionId'],

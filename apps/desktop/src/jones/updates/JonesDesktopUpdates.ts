@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import {
   JonesActiveInstall,
   JonesInstallIntent,
+  requireWarmJonesInstallIntent,
   JonesStagedMacApp,
   type JonesActiveInstall as ActiveInstall,
   type JonesStagedMacApp as StagedMacApp,
@@ -96,7 +97,12 @@ const decodeNativeSelectionResult = Schema.decodeUnknownSync(
 const decodeBuildMetadata = Schema.decodeUnknownSync(BuildMetadata);
 const decodeActiveInstall = Schema.decodeUnknownSync(JonesActiveInstall);
 const decodeStagedApp = Schema.decodeUnknownSync(JonesStagedMacApp);
-const decodeActivationJournal = Schema.decodeUnknownSync(ActivationJournal);
+const decodeActivationJournal = (value: unknown) => {
+  requireWarmJonesInstallIntent(
+    typeof value === "object" && value !== null && "intent" in value ? value.intent : undefined,
+  );
+  return Schema.decodeUnknownSync(ActivationJournal)(value);
+};
 const decodeEnvironmentId = Schema.decodeUnknownSync(EnvironmentId);
 const decodeStageSelection = Schema.decodeUnknownSync(StageSelection);
 const decodeNativeStageReceipt = Schema.decodeUnknownSync(NativeStageReceipt);
