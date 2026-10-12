@@ -72,7 +72,7 @@ function integer(value: unknown, maximum = Number.MAX_SAFE_INTEGER): number {
   return value;
 }
 function canonical(value: unknown): string {
-  // @effect-diagnostics-next-line preferSchemaOverJson:off -- Protocol canonicalization recursively orders closed validated JSON records.
+  // Protocol canonicalization recursively orders closed validated JSON records.
   const encoded = JSON.stringify(value, (_key, item: unknown) =>
     item !== null && typeof item === "object" && !Array.isArray(item)
       ? Object.fromEntries(
@@ -87,7 +87,7 @@ function canonical(value: unknown): string {
 }
 function json(bytes: Uint8Array): unknown {
   const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  // @effect-diagnostics-next-line preferSchemaOverJson:off -- Every decoded native record is narrowed at its closed contract below.
+  // Every decoded native record is narrowed at its closed contract below.
   return JSON.parse(decoded) as unknown;
 }
 function canonicalRecord(bytes: Uint8Array) {
@@ -865,7 +865,7 @@ class WorkerChannel {
     if (this.failure !== undefined) throw this.failure;
   }
   close() {
-    // @effect-diagnostics-next-line globalTimers:off -- Release the exact timer acquired by this inherited pipe channel.
+    // Release the exact timer acquired by this inherited pipe channel.
     clearTimeout(this.deadline);
     process.stdin.pause();
     process.stdin.off("data", this.onData);

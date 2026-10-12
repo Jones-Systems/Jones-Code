@@ -10,7 +10,7 @@ export function offlinePreparationStatus() {
 
 /** Standalone invocation reports the held state without opening application state. */
 export function offlinePreparationEntryOutput(): string {
-  // @effect-diagnostics-next-line preferSchemaOverJson:off -- This fixed native entry serializes only its closed held-status literal, without loading the application or schema runtime.
+  // This fixed native entry serializes only its closed held-status literal, without loading the application or schema runtime.
   return `${JSON.stringify(offlinePreparationStatus())}\n`;
 }
 
