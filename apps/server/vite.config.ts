@@ -48,7 +48,9 @@ if (
     packExecutable ||
     process.env.T3CODE_PACK_EXE_TARGET)
 )
-  throw new Error("Producer candidate, SEA candidate, held and full CLI modes are mutually exclusive.");
+  throw new Error(
+    "Producer candidate, SEA candidate, held and full CLI modes are mutually exclusive.",
+  );
 if (
   packPreparationCandidate &&
   (packPreparation || packExecutable || process.env.T3CODE_PACK_EXE_TARGET)

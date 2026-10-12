@@ -26,6 +26,10 @@
         "smoke-cli-archive.ts",
         // Xvfb invokes this native Chromium qualifier through a wrapper command.
         "jones/updates/native-startup-chromium.mjs",
+        // Typed companion for the native fixture loaded through a computed file URL.
+        "jones/updates/legacy-preparation-native-fixture.d.mts",
+        // Bundled by computed path for graph observation; never imported or executed.
+        "jones/updates/offline-preparation-producer-entry.ts",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
         "jones/performance/prepare-sources.mjs",

@@ -583,7 +583,10 @@ async function withPreparationBuildScope<A>(
     for (const cause of await scope.drain()) if (!causes.includes(cause)) causes.push(cause);
     if (scope.controller.signal.aborted && !causes.includes(scope.controller.signal.reason))
       causes.push(scope.controller.signal.reason);
-    if (scope.root && (scope.unresolved.length !== 0 || causes.some((cause) => qualificationCustodyUnknown(cause)))) {
+    if (
+      scope.root &&
+      (scope.unresolved.length !== 0 || causes.some((cause) => qualificationCustodyUnknown(cause)))
+    ) {
       const evidence = {
         observation: "incomplete",
         classification: "unusable",
@@ -974,7 +977,10 @@ function preparationFailureCauses(
 }
 
 function readFile(file: string, limit: number): Buffer {
-  const fd = NodeFS.openSync(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK);
+  const fd = NodeFS.openSync(
+    file,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
   let primary: unknown, result: Buffer | undefined;
   try {
     const before = NodeFS.fstatSync(fd);
@@ -996,10 +1002,20 @@ function readFile(file: string, limit: number): Buffer {
     )
       throw new Error("Build member changed while hashing.");
     result = bytes;
-  } catch (cause) { primary = cause; }
-  try { NodeFS.closeSync(fd); }
-  catch (cause) {
-    throw Object.assign(new AggregateError(primary === undefined ? [cause] : [primary, cause], "Build input descriptor closure is unproved.", { cause: primary ?? cause }), { preserveScratch: true });
+  } catch (cause) {
+    primary = cause;
+  }
+  try {
+    NodeFS.closeSync(fd);
+  } catch (cause) {
+    throw Object.assign(
+      new AggregateError(
+        primary === undefined ? [cause] : [primary, cause],
+        "Build input descriptor closure is unproved.",
+        { cause: primary ?? cause },
+      ),
+      { preserveScratch: true },
+    );
   }
   if (primary !== undefined) throw primary;
   return result!;
@@ -1383,7 +1399,8 @@ async function buildPreparationNativeBytes(
   root: string,
   bundle: Buffer,
 ) {
-  const scratch = scope.root, command = scope.command;
+  const scratch = scope.root,
+    command = scope.command;
   if ((await command("/usr/bin/uname", ["-sm"], root)).toString("utf8").trim() !== "Darwin arm64")
     throw new Error("Preparation SEA production requires a native Darwin arm64 build host.");
   const checksums = await scope.download("SHASUMS256.txt", 128 * 1024);
@@ -1392,32 +1409,71 @@ async function buildPreparationNativeBytes(
   const archivePath = NodePath.join(scratch, archiveName);
   NodeFS.writeFileSync(archivePath, archive, { flag: "wx", mode: 0o600 });
   const member = `node-v${nodeVersion}-darwin-arm64/bin/node`;
-  if ((await command("/usr/bin/tar", ["-tzf", archivePath, member], scratch)).toString("utf8") !== `${member}\n`)
+  if (
+    (await command("/usr/bin/tar", ["-tzf", archivePath, member], scratch)).toString("utf8") !==
+    `${member}\n`
+  )
     throw new Error("Official Node archive runtime member is not unique.");
-  const runtime = await command("/usr/bin/tar", ["-xOzf", archivePath, member], scratch, maxRuntimeBytes);
+  const runtime = await command(
+    "/usr/bin/tar",
+    ["-xOzf", archivePath, member],
+    scratch,
+    maxRuntimeBytes,
+  );
   const runtimePath = NodePath.join(scratch, "node");
   NodeFS.writeFileSync(runtimePath, runtime, { flag: "wx", mode: 0o500 });
   const runtimeHash = digest(readFile(runtimePath, maxRuntimeBytes));
-  if (runtimeHash !== digest(runtime)) throw new Error("Extracted Node runtime changed before observation.");
-  if ((await command(runtimePath, ["--version"], scratch)).toString("utf8").trim() !== `v${nodeVersion}` ||
-      (await command("/usr/bin/lipo", ["-archs", runtimePath], scratch)).toString("utf8").trim() !== "arm64")
+  if (runtimeHash !== digest(runtime))
+    throw new Error("Extracted Node runtime changed before observation.");
+  if (
+    (await command(runtimePath, ["--version"], scratch)).toString("utf8").trim() !==
+      `v${nodeVersion}` ||
+    (await command("/usr/bin/lipo", ["-archs", runtimePath], scratch)).toString("utf8").trim() !==
+      "arm64"
+  )
     throw new Error("Observed Node runtime does not match the pinned version and architecture.");
-  const sqlite = verifyPreparationSQLiteObservation((await command(runtimePath,
-    ["--input-type=module", "--eval", sqliteProbeScript], scratch, 4096)).toString("utf8"));
+  const sqlite = verifyPreparationSQLiteObservation(
+    (
+      await command(
+        runtimePath,
+        ["--input-type=module", "--eval", sqliteProbeScript],
+        scratch,
+        4096,
+      )
+    ).toString("utf8"),
+  );
   if (digest(readFile(runtimePath, maxRuntimeBytes)) !== runtimeHash)
     throw new Error("Node runtime changed during SQLite observation.");
   NodeFS.writeFileSync(NodePath.join(scratch, bundleName), bundle, { flag: "wx", mode: 0o400 });
   const config = preparationSeaConfig();
   verifyPreparationSeaConfig(config);
   const configBytes = `${encode(config)}\n`;
-  NodeFS.writeFileSync(NodePath.join(scratch, "sea-config.json"), configBytes, { flag: "wx", mode: 0o400 });
+  NodeFS.writeFileSync(NodePath.join(scratch, "sea-config.json"), configBytes, {
+    flag: "wx",
+    mode: 0o400,
+  });
   // Node 26.8.2 direct SEA generation: https://nodejs.org/download/release/v26.8.2/docs/api/single-executable-applications.html
   await command(runtimePath, ["--build-sea", "sea-config.json"], scratch);
   const executable = NodePath.join(scratch, executableName);
-  await command("/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", executable], scratch);
+  await command(
+    "/usr/bin/codesign",
+    ["--force", "--sign", "-", "--timestamp=none", executable],
+    scratch,
+  );
   await command("/usr/bin/codesign", ["--verify", "--strict", executable], scratch);
   NodeFS.chmodSync(executable, 0o500);
-  return { checksums, archive, archiveHash, runtime, runtimePath, runtimeHash, sqlite, config, configBytes, executable };
+  return {
+    checksums,
+    archive,
+    archiveHash,
+    runtime,
+    runtimePath,
+    runtimeHash,
+    sqlite,
+    config,
+    configBytes,
+    executable,
+  };
 }
 
 /** Constructed only by the pack hook from its observed emitted graph. No caller-supplied provenance is admitted. */
@@ -1526,8 +1582,18 @@ export function offlinePreparationPack(
           const command = scope.command;
           if (encode(await observeSource(root, command)) !== encode(sourceSnapshot))
             throw new Error("Preparation source changed during bundling.");
-          const { checksums, archive, archiveHash, runtime, runtimePath, runtimeHash, sqlite, config, configBytes, executable } =
-            await buildPreparationNativeBytes(scope, root, bundle);
+          const {
+            checksums,
+            archive,
+            archiveHash,
+            runtime,
+            runtimePath,
+            runtimeHash,
+            sqlite,
+            config,
+            configBytes,
+            executable,
+          } = await buildPreparationNativeBytes(scope, root, bundle);
           verifyPreparationHeldOutput(
             (await command(executable, [], scratch, 4096)).toString("utf8"),
           );
@@ -2385,9 +2451,14 @@ const qualifierFiles = Object.freeze([
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs",
   "scripts/jones/updates/legacy-identity-native-fixture.mjs",
   ...[
-    "jonesLegacyBootstrapSource.ts", "jonesLegacyMaintenanceSource.ts", "jonesNativeHelperSource.ts",
-    "jonesPairedStateSource.ts", "jonesColdPairSource.ts", "jonesLegacyIdentityNative.c",
-    "jonesColdOwnerSource.ts", "jonesPreparationWorkerSource.ts",
+    "jonesLegacyBootstrapSource.ts",
+    "jonesLegacyMaintenanceSource.ts",
+    "jonesNativeHelperSource.ts",
+    "jonesPairedStateSource.ts",
+    "jonesColdPairSource.ts",
+    "jonesLegacyIdentityNative.c",
+    "jonesColdOwnerSource.ts",
+    "jonesPreparationWorkerSource.ts",
   ].map((name) => `apps/desktop/src/jones/updates/${name}`),
   "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
 ]);
@@ -2418,22 +2489,35 @@ function inspectPreparationProducerCandidateSources(root: string) {
     },
   };
 }
-const producerRoot = NodeFS.realpathSync(NodeURL.fileURLToPath(new URL("../../../", import.meta.url)));
+const producerRoot = NodeFS.realpathSync(
+  NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
+);
 const producerPolicyFile = "scripts/jones/updates/functional-policy.ts";
 
 function observeProducerFiles(root: string, files: readonly string[]) {
-  return Object.fromEntries(files.map((name) => [name, digest(readFile(NodePath.join(root, name), 8 * 1024 * 1024))]));
+  return Object.fromEntries(
+    files.map((name) => [name, digest(readFile(NodePath.join(root, name), 8 * 1024 * 1024))]),
+  );
 }
 
 // Imported code cannot be refreshed by hashing a newer checkout after it entered this process.
-const producerLoadedFiles = observeProducerFiles(producerRoot, [...qualifierFiles, producerPolicyFile, "scripts/jones/updates/legacy-bootstrap-bundle.ts"]);
+const producerLoadedFiles = observeProducerFiles(producerRoot, [
+  ...qualifierFiles,
+  producerPolicyFile,
+  "scripts/jones/updates/legacy-bootstrap-bundle.ts",
+]);
 
 function qualificationCustodyUnknown(cause: unknown, depth = 0): boolean {
   if (depth > 8 || typeof cause !== "object" || cause === null) return false;
-  return ("preserveScratch" in cause && cause.preserveScratch === true) ||
+  return (
+    ("preserveScratch" in cause && cause.preserveScratch === true) ||
     ("retainedRoot" in cause && typeof cause.retainedRoot === "string") ||
-    (cause instanceof AggregateError && cause.errors.slice(0, 32).some((inner: unknown) => qualificationCustodyUnknown(inner, depth + 1))) ||
-    ("cause" in cause && qualificationCustodyUnknown(cause.cause, depth + 1));
+    (cause instanceof AggregateError &&
+      cause.errors
+        .slice(0, 32)
+        .some((inner: unknown) => qualificationCustodyUnknown(inner, depth + 1))) ||
+    ("cause" in cause && qualificationCustodyUnknown(cause.cause, depth + 1))
+  );
 }
 
 function assertProducerFiles(root: string, expected: Readonly<Record<string, string>>) {
@@ -2443,21 +2527,36 @@ function assertProducerFiles(root: string, expected: Readonly<Record<string, str
 
 function capturedStage(directory: string) {
   const captured = candidateDirectoryChain(directory);
-  if (captured.missing !== undefined) throw new Error("Preparation stage root must already be owned.");
+  if (captured.missing !== undefined)
+    throw new Error("Preparation stage root must already be owned.");
   return () => {
     const current = candidateDirectoryChain(directory);
-    if (current.missing !== undefined || current.chain.length !== captured.chain.length ||
-        captured.chain.some(({ path, stat }, index) => {
-          const item = current.chain[index]!;
-          return path !== item.path || stat.dev !== item.stat.dev || stat.ino !== item.stat.ino ||
-            stat.uid !== item.stat.uid || stat.mode !== item.stat.mode;
-        })) throw new Error("Preparation stage identity changed.");
+    if (
+      current.missing !== undefined ||
+      current.chain.length !== captured.chain.length ||
+      captured.chain.some(({ path, stat }, index) => {
+        const item = current.chain[index]!;
+        return (
+          path !== item.path ||
+          stat.dev !== item.stat.dev ||
+          stat.ino !== item.stat.ino ||
+          stat.uid !== item.stat.uid ||
+          stat.mode !== item.stat.mode
+        );
+      })
+    )
+      throw new Error("Preparation stage identity changed.");
   };
 }
 
 function isWithin(parent: string, child: string) {
   const relative = NodePath.relative(parent, child);
-  return relative === "" || (!relative.startsWith(`..${NodePath.sep}`) && relative !== ".." && !NodePath.isAbsolute(relative));
+  return (
+    relative === "" ||
+    (!relative.startsWith(`..${NodePath.sep}`) &&
+      relative !== ".." &&
+      !NodePath.isAbsolute(relative))
+  );
 }
 
 declare const qualifiedPreparationBrand: unique symbol;
@@ -2500,167 +2599,404 @@ export async function buildQualifiedPreparation(input: {
 }): Promise<QualifiedPreparationHandle> {
   input.signal?.throwIfAborted();
   const root = NodeFS.realpathSync(input.repoRoot);
-  if (root !== producerRoot) throw new Error("Preparation producer must use its own bound checkout.");
+  if (root !== producerRoot)
+    throw new Error("Preparation producer must use its own bound checkout.");
   const stageRoot = input.stageRoot;
   const verifyStage = capturedStage(stageRoot);
   const scratchParent = NodeFS.realpathSync(NodeOS.tmpdir());
-  if (isWithin(stageRoot, scratchParent)) throw new Error("Producer scratch must remain outside the packaging stage.");
+  if (isWithin(stageRoot, scratchParent))
+    throw new Error("Producer scratch must remain outside the packaging stage.");
   assertProducerFiles(root, producerLoadedFiles);
   const candidate = NodePath.join(root, candidateRelative);
   const verifyCandidate = capturedStage(candidate);
-  if (encode(NodeFS.readdirSync(candidate).sort()) !== encode([bundleName, candidateReportName].sort()))
+  if (
+    encode(NodeFS.readdirSync(candidate).sort()) !==
+    encode([bundleName, candidateReportName].sort())
+  )
     throw new Error("Functional preparation requires the exact candidate graph and single entry.");
   const reportBytes = readFile(NodePath.join(candidate, candidateReportName), candidateReportLimit);
   const entryBytes = readFile(NodePath.join(candidate, bundleName), maxBundleBytes);
   const graph = verifyFunctionalPreparationGraph({ repoRoot: root, reportBytes, entryBytes });
   const sourceHashes = observeProducerFiles(root, qualifierFiles);
-  const completed = await withPreparationBuildScope(scratchParent, "jones-preparation-code-", input.signal, async (codeScope) => {
-    process.stderr.write(`${encode({ event: "preparation-code-root", root: codeScope.root })}\n`);
-    for (const name of qualifierFiles) {
-      const bytes = readFile(NodePath.join(root, name), 8 * 1024 * 1024);
-      if (digest(bytes) !== sourceHashes[name]) throw new Error("Qualifier source changed before snapshotting.");
-      const destination = NodePath.join(codeScope.root, name);
-      NodeFS.mkdirSync(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
-      NodeFS.writeFileSync(destination, bytes, { flag: "wx", mode: 0o400 });
-    }
-    assertProducerFiles(codeScope.root, sourceHashes); assertProducerFiles(root, sourceHashes);
-    // A unique captured tree prevents an older ESM cache entry from satisfying this execution.
-    const qualifier: typeof import("./legacy-preparation-native-fixture.mjs") = await import(NodeURL.pathToFileURL(NodePath.join(codeScope.root, "scripts/jones/updates/legacy-preparation-native-fixture.mjs")).href);
-    if (encode(qualifier.preparationNativeQualifierSourceInputs) !== encode(qualifierFiles))
-      throw new Error("Preparation qualifier dependency inventory differs.");
-    const materializer: { readColdMaintenanceSources(): Promise<{ bootstrap: string; executor: string; maintenance: string; nativeSourceSha256: string }> } =
-      await import(NodeURL.pathToFileURL(NodePath.join(codeScope.root, "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs")).href);
-    const capturedTools = await materializer.readColdMaintenanceSources();
-    if (capturedTools.maintenance !== jonesLegacyMaintenanceSource || capturedTools.nativeSourceSha256 !== sourceHashes["apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"])
-      throw new Error("Loaded maintenance composition differs from the captured qualifier source.");
-    assertProducerFiles(codeScope.root, sourceHashes);
-    try {
-      return await withPreparationBuildScope(scratchParent, "jones-functional-preparation-", codeScope.controller.signal, async (scope) => {
-    process.stderr.write(`${encode({ event: "preparation-build-root", root: scope.root })}\n`);
-    // Every native child uses this root or the qualifier's independently owned roots, never stageRoot.
-    const source = await observeSource(root, scope.command);
-    const observedGraphSource = Schema.decodeUnknownSync(Schema.Struct({
-      source: Schema.Unknown,
-    }))(decode(reportBytes.toString("utf8"))).source;
-    if (encode(observedGraphSource) !== encode(source)) throw new Error("Candidate graph source is stale.");
-    const native = await buildPreparationNativeBytes(scope, root, entryBytes);
-    verifyPreparationHeldOutput((await scope.command(native.executable, [], scope.root, 4096)).toString("utf8"));
-    await verifyArgumentRefusal(scope.command, native.executable, scope.root);
-    const cSourceName = "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c";
-    const cSource = readFile(NodePath.join(root, cSourceName), 4 * 1024 * 1024);
-    if (digest(cSource) !== sourceHashes[cSourceName]) throw new Error("Observer source changed before compilation.");
-    const cPath = NodePath.join(scope.root, "identity.c"), observerPath = NodePath.join(scope.root, "identity-native");
-    NodeFS.writeFileSync(cPath, cSource, { flag: "wx", mode: 0o400 });
-    await scope.command("/usr/bin/clang", ["-target", "arm64-apple-macos13.0", "-std=c11", "-Wall", "-Wextra", "-Werror", cPath, "-o", observerPath], scope.root);
-    await scope.command("/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", observerPath], scope.root);
-    await scope.command("/usr/bin/codesign", ["--verify", "--strict", observerPath], scope.root);
-    NodeFS.chmodSync(observerPath, 0o500);
-    const observerBytes = readFile(observerPath, 4 * 1024 * 1024);
-    verifyJonesLegacyIdentityMachO(observerBytes);
-    const runtime = readFile(native.executable, maxRuntimeBytes);
-    const record = (bytes: string | Uint8Array) => ({ sha256: digest(bytes), size: typeof bytes === "string" ? Buffer.byteLength(bytes) : bytes.length });
-    // This immutable input manifest precedes native qualification. Its digest has no cycle through the later report.
-    const artifactManifest = `${encode({
-      schema: 1, classification: "preparation-mechanical-artifact", source, graph,
-      qualifierSourceHashes: sourceHashes, entry: record(entryBytes), seaConfig: record(native.configBytes),
-      executable: record(runtime), identityNative: record(observerBytes), identityNativeSourceSha256: digest(cSource),
-      node: { version: nodeVersion, runtime: record(native.runtime), archive: record(native.archive), checksumsSha256: digest(native.checksums) },
-      sqlite: native.sqlite, signature: "ad-hoc-verified", nativeColdOwnerQualified: false,
-      stateAdmissionAllowed: false, activationAllowed: false,
-    })}\n`;
-    if (Buffer.byteLength(artifactManifest) > 65536) throw new Error("Preparation artifact manifest exceeds bound.");
-    const manifestPath = NodePath.join(scope.root, "artifact-manifest.json");
-    NodeFS.writeFileSync(manifestPath, artifactManifest, { flag: "wx", mode: 0o400 });
-    const identity: JonesLegacyBootstrapBundleInput = { repository: "Jones-Systems/Jones-Code", sourceSha: source.sha, sourceTree: source.tree, version: source.version };
-    const preparation = {
-      schema: 1, protocol: 1, provenanceSha256: digest(artifactManifest), sourceInputHashes: source.hashes,
-      entry: record(entryBytes), seaConfig: record(native.configBytes),
-      executable: { name: executableName, ...record(runtime) },
-      node: { version: "26.8.2", platform: "darwin", architecture: "arm64", archiveSha256: native.archiveHash,
-        archiveBytes: native.archive.length, checksumsSha256: digest(native.checksums),
-        runtimeSha256: native.runtimeHash, runtimeBytes: native.runtime.length },
-      sqlite: { version: native.sqlite.version, sourceId: native.sqlite.sourceId },
-    };
-    const artifactEvidence = readJonesPreparationArtifactEvidence(`${encode({ schema: 1, observation: "complete", classification: "cold-preparation-worker", source: identity, preparation })}\n`, identity);
-    const file = (path: string, bytes: string | Uint8Array) => ({ path, ...record(bytes) });
-    const fixtureInput = {
-      schema: 1, classification: "synthetic-preparation-native-input", sourceSha: source.sha, sourceTree: source.tree,
-      nativeSourceSha256: digest(cSource), preparation, qualifierSourceHashes: sourceHashes,
-      files: { executable: file(native.executable, runtime), node: file(native.runtimePath, native.runtime),
-        native: file(observerPath, observerBytes), entry: file(NodePath.join(scope.root, bundleName), entryBytes),
-        seaConfig: file(NodePath.join(scope.root, "sea-config.json"), native.configBytes), provenance: file(manifestPath, artifactManifest) },
-    };
-    // Ten individually captured cases have a separate total allowance; Git/codegen keep their short command deadlines.
-    // @effect-diagnostics-next-line globalTimers:off -- This qualifier-owned deadline aborts through the captured fixture signal and is cleared after its finalizers.
-    const qualifierDeadline = NodeTimers.setTimeout(() => scope.abort(new Error("Preparation native qualification timed out.")), 15 * 60_000);
-    let result: unknown;
-    try {
-      result = await qualifier.runLegacyPreparationNativeFixture({ input: fixtureInput, signal: scope.controller.signal, temporaryDirectory: scratchParent });
-    } catch (cause) {
-      if (qualificationCustodyUnknown(cause)) scope.unresolved.push({ kind: "qualification", id: 0, target: codeScope.root, closeObserved: false, failures: ["native qualifier custody remains unresolved"] });
-      throw cause;
-    } finally { NodeTimers.clearTimeout(qualifierDeadline); }
-    qualifier.validatePreparationNativeResult(result, fixtureInput);
-    const nativeQualification = encode(result);
-    if (Buffer.byteLength(nativeQualification) > 4 * 1024 * 1024) throw new Error("Preparation native evidence exceeds bound.");
-    for (const member of Object.values(fixtureInput.files)) {
-      const bytes = readFile(member.path, maxRuntimeBytes);
-      if (bytes.length !== member.size || digest(bytes) !== member.sha256) throw new Error("Qualified preparation input changed during use.");
-    }
-    await scope.command("/usr/bin/codesign", ["--verify", "--strict", native.executable], scope.root);
-    await scope.command("/usr/bin/codesign", ["--verify", "--strict", observerPath], scope.root);
-    assertProducerFiles(root, producerLoadedFiles);
-    assertProducerFiles(root, sourceHashes);
-    assertProducerFiles(codeScope.root, sourceHashes);
-    verifyCandidate(); verifyStage();
-    if (encode(NodeFS.readdirSync(candidate).sort()) !== encode([bundleName, candidateReportName].sort()) ||
-        !readFile(NodePath.join(candidate, candidateReportName), candidateReportLimit).equals(reportBytes) ||
-        !readFile(NodePath.join(candidate, bundleName), maxBundleBytes).equals(entryBytes) ||
-        encode(verifyFunctionalPreparationGraph({ repoRoot: root, reportBytes, entryBytes })) !== encode(graph) ||
-        encode(await observeSource(root, scope.command)) !== encode(source))
-      throw new Error("Preparation graph or source changed during qualification.");
-    const bundle = createJonesLegacyBootstrapPreparationBundle(identity, {
-      identityNative: observerBytes, identityNativeSourceSha256: digest(cSource), maintenanceSource: jonesLegacyMaintenanceSource,
-    }, artifactEvidence);
-    const tools = new Map(bundle.files.map((member) => [member.relativePath, member.content]));
-    if (encode([...tools.keys()].sort()) !== encode(["bootstrap.py", "executor.py", "BUNDLE.json", "maintenance.py", "identity-native"].map((name) => `jones-bootstrap/${name}`).sort()) ||
-        tools.get("jones-bootstrap/bootstrap.py") !== capturedTools.bootstrap ||
-        tools.get("jones-bootstrap/executor.py") !== capturedTools.executor ||
-        tools.get("jones-bootstrap/maintenance.py") !== capturedTools.maintenance)
-      throw new Error("Packaged maintenance tools differ from the actually qualified source snapshot.");
-    return { source, bundle, runtime, diagnosticEvidence: Object.freeze({ artifactManifest, nativeQualification,
-      nativeColdOwnerQualified: false as const, stateAdmissionAllowed: false as const, activationAllowed: false as const }) };
-      });
-    } catch (cause) {
-      if (qualificationCustodyUnknown(cause)) codeScope.unresolved.push({ kind: "qualification", id: 0, target: codeScope.root, closeObserved: false, failures: ["native build or qualifier custody remains unresolved"] });
-      throw cause;
-    }
-  });
+  const completed = await withPreparationBuildScope(
+    scratchParent,
+    "jones-preparation-code-",
+    input.signal,
+    async (codeScope) => {
+      process.stderr.write(`${encode({ event: "preparation-code-root", root: codeScope.root })}\n`);
+      for (const name of qualifierFiles) {
+        const bytes = readFile(NodePath.join(root, name), 8 * 1024 * 1024);
+        if (digest(bytes) !== sourceHashes[name])
+          throw new Error("Qualifier source changed before snapshotting.");
+        const destination = NodePath.join(codeScope.root, name);
+        NodeFS.mkdirSync(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
+        NodeFS.writeFileSync(destination, bytes, { flag: "wx", mode: 0o400 });
+      }
+      assertProducerFiles(codeScope.root, sourceHashes);
+      assertProducerFiles(root, sourceHashes);
+      // A unique captured tree prevents an older ESM cache entry from satisfying this execution.
+      const qualifier: typeof import("./legacy-preparation-native-fixture.mjs") = await import(
+        NodeURL.pathToFileURL(
+          NodePath.join(
+            codeScope.root,
+            "scripts/jones/updates/legacy-preparation-native-fixture.mjs",
+          ),
+        ).href
+      );
+      if (encode(qualifier.preparationNativeQualifierSourceInputs) !== encode(qualifierFiles))
+        throw new Error("Preparation qualifier dependency inventory differs.");
+      const materializer: {
+        readColdMaintenanceSources(): Promise<{
+          bootstrap: string;
+          executor: string;
+          maintenance: string;
+          nativeSourceSha256: string;
+        }>;
+      } = await import(
+        NodeURL.pathToFileURL(
+          NodePath.join(
+            codeScope.root,
+            "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs",
+          ),
+        ).href
+      );
+      const capturedTools = await materializer.readColdMaintenanceSources();
+      if (
+        capturedTools.maintenance !== jonesLegacyMaintenanceSource ||
+        capturedTools.nativeSourceSha256 !==
+          sourceHashes["apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"]
+      )
+        throw new Error(
+          "Loaded maintenance composition differs from the captured qualifier source.",
+        );
+      assertProducerFiles(codeScope.root, sourceHashes);
+      try {
+        return await withPreparationBuildScope(
+          scratchParent,
+          "jones-functional-preparation-",
+          codeScope.controller.signal,
+          async (scope) => {
+            process.stderr.write(
+              `${encode({ event: "preparation-build-root", root: scope.root })}\n`,
+            );
+            // Every native child uses this root or the qualifier's independently owned roots, never stageRoot.
+            const source = await observeSource(root, scope.command);
+            const observedGraphSource = Schema.decodeUnknownSync(
+              Schema.Struct({
+                source: Schema.Unknown,
+              }),
+            )(decode(reportBytes.toString("utf8"))).source;
+            if (encode(observedGraphSource) !== encode(source))
+              throw new Error("Candidate graph source is stale.");
+            const native = await buildPreparationNativeBytes(scope, root, entryBytes);
+            verifyPreparationHeldOutput(
+              (await scope.command(native.executable, [], scope.root, 4096)).toString("utf8"),
+            );
+            await verifyArgumentRefusal(scope.command, native.executable, scope.root);
+            const cSourceName = "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c";
+            const cSource = readFile(NodePath.join(root, cSourceName), 4 * 1024 * 1024);
+            if (digest(cSource) !== sourceHashes[cSourceName])
+              throw new Error("Observer source changed before compilation.");
+            const cPath = NodePath.join(scope.root, "identity.c"),
+              observerPath = NodePath.join(scope.root, "identity-native");
+            NodeFS.writeFileSync(cPath, cSource, { flag: "wx", mode: 0o400 });
+            await scope.command(
+              "/usr/bin/clang",
+              [
+                "-target",
+                "arm64-apple-macos13.0",
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                cPath,
+                "-o",
+                observerPath,
+              ],
+              scope.root,
+            );
+            await scope.command(
+              "/usr/bin/codesign",
+              ["--force", "--sign", "-", "--timestamp=none", observerPath],
+              scope.root,
+            );
+            await scope.command(
+              "/usr/bin/codesign",
+              ["--verify", "--strict", observerPath],
+              scope.root,
+            );
+            NodeFS.chmodSync(observerPath, 0o500);
+            const observerBytes = readFile(observerPath, 4 * 1024 * 1024);
+            verifyJonesLegacyIdentityMachO(observerBytes);
+            const runtime = readFile(native.executable, maxRuntimeBytes);
+            const record = (bytes: string | Uint8Array) => ({
+              sha256: digest(bytes),
+              size: typeof bytes === "string" ? Buffer.byteLength(bytes) : bytes.length,
+            });
+            // This immutable input manifest precedes native qualification. Its digest has no cycle through the later report.
+            const artifactManifest = `${encode({
+              schema: 1,
+              classification: "preparation-mechanical-artifact",
+              source,
+              graph,
+              qualifierSourceHashes: sourceHashes,
+              entry: record(entryBytes),
+              seaConfig: record(native.configBytes),
+              executable: record(runtime),
+              identityNative: record(observerBytes),
+              identityNativeSourceSha256: digest(cSource),
+              node: {
+                version: nodeVersion,
+                runtime: record(native.runtime),
+                archive: record(native.archive),
+                checksumsSha256: digest(native.checksums),
+              },
+              sqlite: native.sqlite,
+              signature: "ad-hoc-verified",
+              nativeColdOwnerQualified: false,
+              stateAdmissionAllowed: false,
+              activationAllowed: false,
+            })}\n`;
+            if (Buffer.byteLength(artifactManifest) > 65536)
+              throw new Error("Preparation artifact manifest exceeds bound.");
+            const manifestPath = NodePath.join(scope.root, "artifact-manifest.json");
+            NodeFS.writeFileSync(manifestPath, artifactManifest, { flag: "wx", mode: 0o400 });
+            const identity: JonesLegacyBootstrapBundleInput = {
+              repository: "Jones-Systems/Jones-Code",
+              sourceSha: source.sha,
+              sourceTree: source.tree,
+              version: source.version,
+            };
+            const preparation = {
+              schema: 1,
+              protocol: 1,
+              provenanceSha256: digest(artifactManifest),
+              sourceInputHashes: source.hashes,
+              entry: record(entryBytes),
+              seaConfig: record(native.configBytes),
+              executable: { name: executableName, ...record(runtime) },
+              node: {
+                version: "26.8.2",
+                platform: "darwin",
+                architecture: "arm64",
+                archiveSha256: native.archiveHash,
+                archiveBytes: native.archive.length,
+                checksumsSha256: digest(native.checksums),
+                runtimeSha256: native.runtimeHash,
+                runtimeBytes: native.runtime.length,
+              },
+              sqlite: { version: native.sqlite.version, sourceId: native.sqlite.sourceId },
+            };
+            const artifactEvidence = readJonesPreparationArtifactEvidence(
+              `${encode({ schema: 1, observation: "complete", classification: "cold-preparation-worker", source: identity, preparation })}\n`,
+              identity,
+            );
+            const file = (path: string, bytes: string | Uint8Array) => ({ path, ...record(bytes) });
+            const fixtureInput = {
+              schema: 1,
+              classification: "synthetic-preparation-native-input",
+              sourceSha: source.sha,
+              sourceTree: source.tree,
+              nativeSourceSha256: digest(cSource),
+              preparation,
+              qualifierSourceHashes: sourceHashes,
+              files: {
+                executable: file(native.executable, runtime),
+                node: file(native.runtimePath, native.runtime),
+                native: file(observerPath, observerBytes),
+                entry: file(NodePath.join(scope.root, bundleName), entryBytes),
+                seaConfig: file(NodePath.join(scope.root, "sea-config.json"), native.configBytes),
+                provenance: file(manifestPath, artifactManifest),
+              },
+            };
+            // Ten individually captured cases have a separate total allowance; Git/codegen keep their short command deadlines.
+            // @effect-diagnostics-next-line globalTimers:off -- This qualifier-owned deadline aborts through the captured fixture signal and is cleared after its finalizers.
+            const qualifierDeadline = NodeTimers.setTimeout(
+              () => scope.abort(new Error("Preparation native qualification timed out.")),
+              15 * 60_000,
+            );
+            let result: unknown;
+            try {
+              result = await qualifier.runLegacyPreparationNativeFixture({
+                input: fixtureInput,
+                signal: scope.controller.signal,
+                temporaryDirectory: scratchParent,
+              });
+            } catch (cause) {
+              if (qualificationCustodyUnknown(cause))
+                scope.unresolved.push({
+                  kind: "qualification",
+                  id: 0,
+                  target: codeScope.root,
+                  closeObserved: false,
+                  failures: ["native qualifier custody remains unresolved"],
+                });
+              throw cause;
+            } finally {
+              NodeTimers.clearTimeout(qualifierDeadline);
+            }
+            qualifier.validatePreparationNativeResult(result, fixtureInput);
+            const nativeQualification = encode(result);
+            if (Buffer.byteLength(nativeQualification) > 4 * 1024 * 1024)
+              throw new Error("Preparation native evidence exceeds bound.");
+            for (const member of Object.values(fixtureInput.files)) {
+              const bytes = readFile(member.path, maxRuntimeBytes);
+              if (bytes.length !== member.size || digest(bytes) !== member.sha256)
+                throw new Error("Qualified preparation input changed during use.");
+            }
+            await scope.command(
+              "/usr/bin/codesign",
+              ["--verify", "--strict", native.executable],
+              scope.root,
+            );
+            await scope.command(
+              "/usr/bin/codesign",
+              ["--verify", "--strict", observerPath],
+              scope.root,
+            );
+            assertProducerFiles(root, producerLoadedFiles);
+            assertProducerFiles(root, sourceHashes);
+            assertProducerFiles(codeScope.root, sourceHashes);
+            verifyCandidate();
+            verifyStage();
+            if (
+              encode(NodeFS.readdirSync(candidate).sort()) !==
+                encode([bundleName, candidateReportName].sort()) ||
+              !readFile(NodePath.join(candidate, candidateReportName), candidateReportLimit).equals(
+                reportBytes,
+              ) ||
+              !readFile(NodePath.join(candidate, bundleName), maxBundleBytes).equals(entryBytes) ||
+              encode(
+                verifyFunctionalPreparationGraph({ repoRoot: root, reportBytes, entryBytes }),
+              ) !== encode(graph) ||
+              encode(await observeSource(root, scope.command)) !== encode(source)
+            )
+              throw new Error("Preparation graph or source changed during qualification.");
+            const bundle = createJonesLegacyBootstrapPreparationBundle(
+              identity,
+              {
+                identityNative: observerBytes,
+                identityNativeSourceSha256: digest(cSource),
+                maintenanceSource: jonesLegacyMaintenanceSource,
+              },
+              artifactEvidence,
+            );
+            const tools = new Map(
+              bundle.files.map((member) => [member.relativePath, member.content]),
+            );
+            if (
+              encode([...tools.keys()].sort()) !==
+                encode(
+                  [
+                    "bootstrap.py",
+                    "executor.py",
+                    "BUNDLE.json",
+                    "maintenance.py",
+                    "identity-native",
+                  ]
+                    .map((name) => `jones-bootstrap/${name}`)
+                    .sort(),
+                ) ||
+              tools.get("jones-bootstrap/bootstrap.py") !== capturedTools.bootstrap ||
+              tools.get("jones-bootstrap/executor.py") !== capturedTools.executor ||
+              tools.get("jones-bootstrap/maintenance.py") !== capturedTools.maintenance
+            )
+              throw new Error(
+                "Packaged maintenance tools differ from the actually qualified source snapshot.",
+              );
+            return {
+              source,
+              bundle,
+              runtime,
+              diagnosticEvidence: Object.freeze({
+                artifactManifest,
+                nativeQualification,
+                nativeColdOwnerQualified: false as const,
+                stateAdmissionAllowed: false as const,
+                activationAllowed: false as const,
+              }),
+            };
+          },
+        );
+      } catch (cause) {
+        if (qualificationCustodyUnknown(cause))
+          codeScope.unresolved.push({
+            kind: "qualification",
+            id: 0,
+            target: codeScope.root,
+            closeObserved: false,
+            failures: ["native build or qualifier custody remains unresolved"],
+          });
+        throw cause;
+      }
+    },
+  );
   // withPreparationBuildScope returns only after every captured child and its scratch have finalized.
-  input.signal?.throwIfAborted(); verifyStage(); assertProducerFiles(root, producerLoadedFiles);
+  input.signal?.throwIfAborted();
+  verifyStage();
+  assertProducerFiles(root, producerLoadedFiles);
   const handle = Object.freeze(Object.create(null)) as QualifiedPreparationHandle;
-  const revoke = () => { qualifiedPreparationHandles.delete(handle); input.signal?.removeEventListener("abort", revoke); };
-  qualifiedPreparationHandles.set(handle, { ...completed, root, stageRoot, verifyStage, sourceHashes, reportBytes, entryBytes, graph, signal: input.signal, revoke });
+  const revoke = () => {
+    qualifiedPreparationHandles.delete(handle);
+    input.signal?.removeEventListener("abort", revoke);
+  };
+  qualifiedPreparationHandles.set(handle, {
+    ...completed,
+    root,
+    stageRoot,
+    verifyStage,
+    sourceHashes,
+    reportBytes,
+    entryBytes,
+    graph,
+    signal: input.signal,
+    revoke,
+  });
   input.signal?.addEventListener("abort", revoke, { once: true });
-  if (input.signal?.aborted) { revoke(); input.signal.throwIfAborted(); }
+  if (input.signal?.aborted) {
+    revoke();
+    input.signal.throwIfAborted();
+  }
   return handle;
 }
 
 function writeQualifiedMember(path: string, bytes: Uint8Array, mode: number) {
   let fd: number | undefined, primary: unknown;
   try {
-    fd = NodeFS.openSync(path, NodeFS.constants.O_WRONLY | NodeFS.constants.O_CREAT | NodeFS.constants.O_EXCL | NodeFS.constants.O_NOFOLLOW, 0o600);
+    fd = NodeFS.openSync(
+      path,
+      NodeFS.constants.O_WRONLY |
+        NodeFS.constants.O_CREAT |
+        NodeFS.constants.O_EXCL |
+        NodeFS.constants.O_NOFOLLOW,
+      0o600,
+    );
     let offset = 0;
     while (offset < bytes.length) {
-      const count = NodeFS.writeSync(fd, bytes, offset, Math.min(1024 * 1024, bytes.length - offset), offset);
+      const count = NodeFS.writeSync(
+        fd,
+        bytes,
+        offset,
+        Math.min(1024 * 1024, bytes.length - offset),
+        offset,
+      );
       if (count <= 0) throw new Error("Preparation resource write did not advance.");
       offset += count;
     }
-    NodeFS.fchmodSync(fd, mode); NodeFS.fsyncSync(fd);
-  } catch (cause) { primary = cause; }
+    NodeFS.fchmodSync(fd, mode);
+    NodeFS.fsyncSync(fd);
+  } catch (cause) {
+    primary = cause;
+  }
   if (fd !== undefined) {
-    try { NodeFS.closeSync(fd); }
-    catch (cause) { throw new AggregateError(primary === undefined ? [cause] : [primary, cause], "Preparation resource descriptor closure is unproved."); }
+    try {
+      NodeFS.closeSync(fd);
+    } catch (cause) {
+      throw new AggregateError(
+        primary === undefined ? [cause] : [primary, cause],
+        "Preparation resource descriptor closure is unproved.",
+      );
+    }
   }
   if (primary !== undefined) throw primary;
 }
@@ -2675,64 +3011,136 @@ export async function stageQualifiedPreparation(input: {
   const stored = qualifiedPreparationHandles.get(input.handle);
   if (stored === undefined) throw new Error("Preparation handle is absent, expired, or consumed.");
   stored.revoke();
-  input.signal?.throwIfAborted(); stored.signal?.throwIfAborted();
-  stored.verifyStage(); assertProducerFiles(stored.root, producerLoadedFiles);
+  input.signal?.throwIfAborted();
+  stored.signal?.throwIfAborted();
+  stored.verifyStage();
+  assertProducerFiles(stored.root, producerLoadedFiles);
   assertProducerFiles(stored.root, stored.sourceHashes);
-  if (input.expectedSource.repository !== stored.source.repository || input.expectedSource.sourceSha !== stored.source.sha ||
-      input.expectedSource.sourceTree !== stored.source.tree || input.expectedSource.version !== stored.source.version)
+  if (
+    input.expectedSource.repository !== stored.source.repository ||
+    input.expectedSource.sourceSha !== stored.source.sha ||
+    input.expectedSource.sourceTree !== stored.source.tree ||
+    input.expectedSource.version !== stored.source.version
+  )
     throw new Error("Preparation capability source identity differs from packaging.");
   const destination = input.stageResourcesDir;
   if (!isWithin(stored.stageRoot, destination) || destination === stored.stageRoot)
     throw new Error("Preparation resources must belong to the captured packaging stage.");
   const verifyDestination = capturedStage(destination);
   const candidate = NodePath.join(stored.root, candidateRelative);
-  if (encode(NodeFS.readdirSync(candidate).sort()) !== encode([bundleName, candidateReportName].sort()) ||
-      !readFile(NodePath.join(candidate, candidateReportName), candidateReportLimit).equals(stored.reportBytes) ||
-      !readFile(NodePath.join(candidate, bundleName), maxBundleBytes).equals(stored.entryBytes) ||
-      encode(verifyFunctionalPreparationGraph({ repoRoot: stored.root, reportBytes: stored.reportBytes, entryBytes: stored.entryBytes })) !== encode(stored.graph))
+  if (
+    encode(NodeFS.readdirSync(candidate).sort()) !==
+      encode([bundleName, candidateReportName].sort()) ||
+    !readFile(NodePath.join(candidate, candidateReportName), candidateReportLimit).equals(
+      stored.reportBytes,
+    ) ||
+    !readFile(NodePath.join(candidate, bundleName), maxBundleBytes).equals(stored.entryBytes) ||
+    encode(
+      verifyFunctionalPreparationGraph({
+        repoRoot: stored.root,
+        reportBytes: stored.reportBytes,
+        entryBytes: stored.entryBytes,
+      }),
+    ) !== encode(stored.graph)
+  )
     throw new Error("Preparation candidate changed before staging.");
-  await withPreparationBuildScope(NodeFS.realpathSync(NodeOS.tmpdir()), "jones-preparation-stage-check-", input.signal, async (scope) => {
-    if (encode(await observeSource(stored.root, scope.command)) !== encode(stored.source))
-      throw new Error("Preparation checkout identity changed before staging.");
-  });
-  input.signal?.throwIfAborted(); stored.signal?.throwIfAborted(); verifyDestination(); stored.verifyStage();
+  await withPreparationBuildScope(
+    NodeFS.realpathSync(NodeOS.tmpdir()),
+    "jones-preparation-stage-check-",
+    input.signal,
+    async (scope) => {
+      if (encode(await observeSource(stored.root, scope.command)) !== encode(stored.source))
+        throw new Error("Preparation checkout identity changed before staging.");
+    },
+  );
+  input.signal?.throwIfAborted();
+  stored.signal?.throwIfAborted();
+  verifyDestination();
+  stored.verifyStage();
   const directory = NodePath.join(destination, "jones-bootstrap");
   try {
     NodeFS.mkdirSync(directory, { mode: 0o700 });
     const verifyDirectory = capturedStage(directory);
     for (const member of stored.bundle.files) {
-      input.signal?.throwIfAborted(); stored.signal?.throwIfAborted(); verifyDirectory();
-      if (NodePath.dirname(member.relativePath) !== "jones-bootstrap") throw new Error("Preparation bundle resource escaped its fixed namespace.");
-      writeQualifiedMember(NodePath.join(destination, member.relativePath), typeof member.content === "string" ? Buffer.from(member.content) : member.content, member.mode);
+      input.signal?.throwIfAborted();
+      stored.signal?.throwIfAborted();
+      verifyDirectory();
+      if (NodePath.dirname(member.relativePath) !== "jones-bootstrap")
+        throw new Error("Preparation bundle resource escaped its fixed namespace.");
+      writeQualifiedMember(
+        NodePath.join(destination, member.relativePath),
+        typeof member.content === "string" ? Buffer.from(member.content) : member.content,
+        member.mode,
+      );
     }
     const runtime = stored.bundle.runtime;
     if (stored.runtime.length !== runtime.size || digest(stored.runtime) !== runtime.sha256)
       throw new Error("Qualified preparation runtime changed before staging.");
-    writeQualifiedMember(NodePath.join(destination, runtime.relativePath), stored.runtime, runtime.mode);
+    writeQualifiedMember(
+      NodePath.join(destination, runtime.relativePath),
+      stored.runtime,
+      runtime.mode,
+    );
     for (const member of stored.bundle.files) {
-      const expected = typeof member.content === "string" ? Buffer.from(member.content) : Buffer.from(member.content);
-      if (!readFile(NodePath.join(destination, member.relativePath), 4 * 1024 * 1024).equals(expected) ||
-          (NodeFS.lstatSync(NodePath.join(destination, member.relativePath)).mode & 0o777) !== member.mode)
+      const expected =
+        typeof member.content === "string"
+          ? Buffer.from(member.content)
+          : Buffer.from(member.content);
+      if (
+        !readFile(NodePath.join(destination, member.relativePath), 4 * 1024 * 1024).equals(
+          expected,
+        ) ||
+        (NodeFS.lstatSync(NodePath.join(destination, member.relativePath)).mode & 0o777) !==
+          member.mode
+      )
         throw new Error("Staged preparation bundle differs from qualified bytes.");
     }
     const staged = readFile(NodePath.join(destination, runtime.relativePath), runtime.maxBytes);
-    if (staged.length !== runtime.size || digest(staged) !== runtime.sha256 ||
-        (NodeFS.lstatSync(NodePath.join(destination, runtime.relativePath)).mode & 0o777) !== runtime.mode)
+    if (
+      staged.length !== runtime.size ||
+      digest(staged) !== runtime.sha256 ||
+      (NodeFS.lstatSync(NodePath.join(destination, runtime.relativePath)).mode & 0o777) !==
+        runtime.mode
+    )
       throw new Error("Staged preparation executable differs from qualified bytes.");
-    verifyDirectory(); verifyDestination(); stored.verifyStage();
-    input.signal?.throwIfAborted(); stored.signal?.throwIfAborted();
+    verifyDirectory();
+    verifyDestination();
+    stored.verifyStage();
+    input.signal?.throwIfAborted();
+    stored.signal?.throwIfAborted();
     for (const parent of [directory, destination]) {
       const fd = NodeFS.openSync(parent, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
       let primary: unknown;
-      try { NodeFS.fsyncSync(fd); } catch (cause) { primary = cause; }
-      try { NodeFS.closeSync(fd); } catch (cause) { throw new AggregateError(primary === undefined ? [cause] : [primary, cause], "Preparation directory closure is unproved."); }
+      try {
+        NodeFS.fsyncSync(fd);
+      } catch (cause) {
+        primary = cause;
+      }
+      try {
+        NodeFS.closeSync(fd);
+      } catch (cause) {
+        throw new AggregateError(
+          primary === undefined ? [cause] : [primary, cause],
+          "Preparation directory closure is unproved.",
+        );
+      }
       if (primary !== undefined) throw primary;
     }
   } catch (cause) {
     // The desktop stage allocator must preserve this exact tree; its coarse finalizer cannot establish native FD closure.
-    throw Object.assign(new AggregateError([cause], "Preparation staging failed; owning stage must be retained.", { cause }), {
-      preserveStageRoot: true, stageRoot: stored.stageRoot,
-    });
+    throw Object.assign(
+      new AggregateError([cause], "Preparation staging failed; owning stage must be retained.", {
+        cause,
+      }),
+      {
+        preserveStageRoot: true,
+        stageRoot: stored.stageRoot,
+      },
+    );
   }
-  return Object.freeze({ bootstrapBundle: stored.bundle.files, bootstrapRuntime: stored.bundle.runtime, diagnosticEvidence: stored.diagnosticEvidence });
+  return Object.freeze({
+    bootstrapBundle: stored.bundle.files,
+    bootstrapRuntime: stored.bundle.runtime,
+    diagnosticEvidence: stored.diagnosticEvidence,
+  });
 }

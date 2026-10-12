@@ -558,117 +558,241 @@ describe("closed preparation SEA build", () => {
 });
 
 describe("same-process preparation producer handles", () => {
-  const identity = { repository: "Jones-Systems/Jones-Code" as const, sourceSha: "a".repeat(40), sourceTree: "b".repeat(40), version: "1.0.0-preview.20261011.1" };
-  for (const [name, value] of [
+  const identity = {
+    repository: "Jones-Systems/Jones-Code" as const,
+    sourceSha: "a".repeat(40),
+    sourceTree: "b".repeat(40),
+    version: "1.0.0-preview.20261011.1",
+  };
+  it.each([
     ["caller boolean", true],
     ["frozen lookalike", Object.freeze({ qualified: true })],
-    ["serialized completion", JSON.parse('{"observation":"complete","preparationCapable":true}') as unknown],
+    [
+      "serialized completion",
+      JSON.parse('{"observation":"complete","preparationCapable":true}') as unknown,
+    ],
     ["verifier callback", () => true],
     ["empty clone", structuredClone(Object.freeze({}))],
-  ] as const) {
-    it(`refuses ${name} without opening the supplied destination`, async () => {
-      let destinationRead = false;
-      await expect(stageQualifiedPreparation({
+  ] as const)("refuses %s without opening the supplied destination", async (_name, value) => {
+    let destinationRead = false;
+    await expect(
+      stageQualifiedPreparation({
         handle: value as QualifiedPreparationHandle,
         expectedSource: identity,
-        get stageResourcesDir() { destinationRead = true; throw new Error("Destination must remain unopened"); },
-      })).rejects.toThrow(/absent, expired, or consumed/);
-      expect(destinationRead).toBe(false);
-    });
-  }
+        get stageResourcesDir(): string {
+          destinationRead = true;
+          throw new Error("Destination must remain unopened");
+        },
+      }),
+    ).rejects.toThrow(/absent, expired, or consumed/);
+    expect(destinationRead).toBe(false);
+  });
 
   it("pre-aborted build refuses before resolving paths or allocating native resources", async () => {
-    const abort = new AbortController(), reason = new Error("owned pre-build abort");
+    const abort = new AbortController(),
+      reason = new Error("owned pre-build abort");
     abort.abort(reason);
     let inspected = false;
-    await expect(buildQualifiedPreparation({
-      signal: abort.signal,
-      get repoRoot() { inspected = true; throw new Error("No source read after abort"); },
-      get stageRoot() { inspected = true; throw new Error("No stage read after abort"); },
-    })).rejects.toBe(reason);
+    await expect(
+      buildQualifiedPreparation({
+        signal: abort.signal,
+        get repoRoot(): string {
+          inspected = true;
+          throw new Error("No source read after abort");
+        },
+        get stageRoot(): string {
+          inspected = true;
+          throw new Error("No stage read after abort");
+        },
+      }),
+    ).rejects.toBe(reason);
     expect(inspected).toBe(false);
   });
 
   it("refuses a different checkout without creating any producer child or output", () =>
     withCandidateRoot(async (root) => {
-      await expect(buildQualifiedPreparation({ repoRoot: root, stageRoot: root })).rejects.toThrow(/own bound checkout/);
+      await expect(buildQualifiedPreparation({ repoRoot: root, stageRoot: root })).rejects.toThrow(
+        /own bound checkout/,
+      );
       expect(NodeFS.readdirSync(root)).toEqual([]);
     }));
 
   it("refuses an aliased stage before candidate reads or native work", () =>
     withCandidateRoot(async (root) => {
-      const actual = NodePath.join(root, "actual"), alias = NodePath.join(root, "alias");
-      NodeFS.mkdirSync(actual, { mode: 0o700 }); NodeFS.symlinkSync(actual, alias);
-      await expect(buildQualifiedPreparation({ repoRoot: NodeURL.fileURLToPath(new URL("../../../", import.meta.url)), stageRoot: alias })).rejects.toThrow(/aliased or unowned/);
+      const actual = NodePath.join(root, "actual"),
+        alias = NodePath.join(root, "alias");
+      NodeFS.mkdirSync(actual, { mode: 0o700 });
+      NodeFS.symlinkSync(actual, alias);
+      await expect(
+        buildQualifiedPreparation({
+          repoRoot: NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
+          stageRoot: alias,
+        }),
+      ).rejects.toThrow(/aliased or unowned/);
       expect(NodeFS.readdirSync(actual)).toEqual([]);
     }));
 });
 
-async function withQualifiedProducerStage(body: (input: { repoRoot: string; stageRoot: string; resources: string; source: { repository: "Jones-Systems/Jones-Code"; sourceSha: string; sourceTree: string; version: string } }) => Promise<void>) {
-  const outer = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-qualified-preparation-test-")));
-  process.stderr.write(`${JSON.stringify({ event: "qualified-preparation-test-root", root: outer })}\n`);
+async function withQualifiedProducerStage(
+  body: (input: {
+    repoRoot: string;
+    stageRoot: string;
+    resources: string;
+    source: {
+      repository: "Jones-Systems/Jones-Code";
+      sourceSha: string;
+      sourceTree: string;
+      version: string;
+    };
+  }) => Promise<void>,
+) {
+  const outer = NodeFS.realpathSync(
+    NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-qualified-preparation-test-")),
+  );
+  process.stderr.write(
+    `${JSON.stringify({ event: "qualified-preparation-test-root", root: outer })}\n`,
+  );
   const captured = NodeFS.lstatSync(outer);
   let primary: unknown;
   try {
-    const stageRoot = NodePath.join(outer, "stage"), resources = NodePath.join(stageRoot, "resources");
+    const stageRoot = NodePath.join(outer, "stage"),
+      resources = NodePath.join(stageRoot, "resources");
     NodeFS.mkdirSync(resources, { recursive: true, mode: 0o700 });
-    const repoRoot = NodeFS.realpathSync(NodeURL.fileURLToPath(new URL("../../../", import.meta.url)));
-    const graph = JSON.parse(NodeFS.readFileSync(NodePath.join(repoRoot, "apps/server/dist-exe/preparation-candidate/candidate-graph.json"), "utf8")) as { source: { sha: string; tree: string; version: string } };
-    await body({ repoRoot, stageRoot, resources, source: { repository: "Jones-Systems/Jones-Code", sourceSha: graph.source.sha, sourceTree: graph.source.tree, version: graph.source.version } });
-  } catch (cause) { primary = cause; }
+    const repoRoot = NodeFS.realpathSync(
+      NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
+    );
+    const graph = JSON.parse(
+      NodeFS.readFileSync(
+        NodePath.join(repoRoot, "apps/server/dist-exe/preparation-candidate/candidate-graph.json"),
+        "utf8",
+      ),
+    ) as { source: { sha: string; tree: string; version: string } };
+    await body({
+      repoRoot,
+      stageRoot,
+      resources,
+      source: {
+        repository: "Jones-Systems/Jones-Code",
+        sourceSha: graph.source.sha,
+        sourceTree: graph.source.tree,
+        version: graph.source.version,
+      },
+    });
+  } catch (cause) {
+    primary = cause;
+  }
   const stageMustRemain = (cause: unknown, depth = 0): boolean => {
     if (depth > 8 || typeof cause !== "object" || cause === null) return false;
-    return ("preserveStageRoot" in cause && cause.preserveStageRoot === true) ||
-      (cause instanceof AggregateError && cause.errors.slice(0, 32).some((inner: unknown) => stageMustRemain(inner, depth + 1))) ||
-      ("cause" in cause && stageMustRemain(cause.cause, depth + 1));
+    return (
+      ("preserveStageRoot" in cause && cause.preserveStageRoot === true) ||
+      (cause instanceof AggregateError &&
+        cause.errors.slice(0, 32).some((inner: unknown) => stageMustRemain(inner, depth + 1))) ||
+      ("cause" in cause && stageMustRemain(cause.cause, depth + 1))
+    );
   };
-  if (stageMustRemain(primary)) throw Object.assign(new AggregateError([primary], "Qualified producer test retains its owning stage."), { retainedRoot: outer });
+  if (stageMustRemain(primary))
+    throw Object.assign(
+      new AggregateError([primary], "Qualified producer test retains its owning stage."),
+      { retainedRoot: outer },
+    );
   try {
     const current = NodeFS.lstatSync(outer);
-    expect(current.isDirectory() && current.dev === captured.dev && current.ino === captured.ino).toBe(true);
+    expect(
+      current.isDirectory() && current.dev === captured.dev && current.ino === captured.ino,
+    ).toBe(true);
     NodeFS.rmSync(outer, { recursive: true, force: false });
     expect(NodeFS.existsSync(outer)).toBe(false);
-  } catch (cleanup) { throw new AggregateError(primary === undefined ? [cleanup] : [primary, cleanup], `Qualified producer test cleanup failed: ${outer}`); }
+  } catch (cleanup) {
+    throw new AggregateError(
+      primary === undefined ? [cleanup] : [primary, cleanup],
+      `Qualified producer test cleanup failed: ${outer}`,
+    );
+  }
   if (primary !== undefined) throw primary;
 }
 
 // These cases mint only through the actual native ten-case producer. A skipped case supplies no qualification evidence.
-const nativeProducerTest = process.env.JONES_PREPARATION_PRODUCER_NATIVE_TESTS === "1" ? it : it.skip;
-nativeProducerTest("native producer rejects copied handles, stages exact bytes once, then refuses replay", () =>
-  withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
-    const handle = await buildQualifiedPreparation({ repoRoot, stageRoot });
-    for (const copy of [Object.assign({}, handle), structuredClone(handle), JSON.parse(JSON.stringify(handle)) as unknown, Object.create(handle) as unknown])
-      await expect(stageQualifiedPreparation({ handle: copy as QualifiedPreparationHandle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/absent, expired, or consumed/);
-    expect(NodeFS.readdirSync(resources)).toEqual([]);
-    const result = await stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources });
-    const runtime = NodeFS.readFileSync(NodePath.join(resources, result.bootstrapRuntime.relativePath));
-    expect(NodeCrypto.createHash("sha256").update(runtime).digest("hex")).toBe(result.bootstrapRuntime.sha256);
-    expect(runtime.length).toBe(result.bootstrapRuntime.size);
-    expect(NodeFS.statSync(NodePath.join(resources, result.bootstrapRuntime.relativePath)).mode & 0o777).toBe(0o500);
-    expect(result.diagnosticEvidence.nativeColdOwnerQualified).toBe(false);
-    const before = NodeFS.readdirSync(NodePath.join(resources, "jones-bootstrap")).sort();
-    await expect(stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/absent, expired, or consumed/);
-    expect(NodeFS.readdirSync(NodePath.join(resources, "jones-bootstrap")).sort()).toEqual(before);
-  }), 30 * 60_000);
+const nativeProducerTest =
+  process.env.JONES_PREPARATION_PRODUCER_NATIVE_TESTS === "1" ? it : it.skip;
+nativeProducerTest(
+  "native producer rejects copied handles, stages exact bytes once, then refuses replay",
+  () =>
+    withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
+      const handle = await buildQualifiedPreparation({ repoRoot, stageRoot });
+      for (const copy of [
+        Object.assign({}, handle),
+        structuredClone(handle),
+        JSON.parse(JSON.stringify(handle)) as unknown,
+        Object.create(handle) as unknown,
+      ])
+        await expect(
+          stageQualifiedPreparation({
+            handle: copy as QualifiedPreparationHandle,
+            expectedSource: source,
+            stageResourcesDir: resources,
+          }),
+        ).rejects.toThrow(/absent, expired, or consumed/);
+      expect(NodeFS.readdirSync(resources)).toEqual([]);
+      const result = await stageQualifiedPreparation({
+        handle,
+        expectedSource: source,
+        stageResourcesDir: resources,
+      });
+      const runtime = NodeFS.readFileSync(
+        NodePath.join(resources, result.bootstrapRuntime.relativePath),
+      );
+      expect(NodeCrypto.createHash("sha256").update(runtime).digest("hex")).toBe(
+        result.bootstrapRuntime.sha256,
+      );
+      expect(runtime.length).toBe(result.bootstrapRuntime.size);
+      expect(
+        NodeFS.statSync(NodePath.join(resources, result.bootstrapRuntime.relativePath)).mode &
+          0o777,
+      ).toBe(0o500);
+      expect(result.diagnosticEvidence.nativeColdOwnerQualified).toBe(false);
+      const before = NodeFS.readdirSync(NodePath.join(resources, "jones-bootstrap")).sort();
+      await expect(
+        stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources }),
+      ).rejects.toThrow(/absent, expired, or consumed/);
+      expect(NodeFS.readdirSync(NodePath.join(resources, "jones-bootstrap")).sort()).toEqual(
+        before,
+      );
+    }),
+  30 * 60_000,
+);
 
-nativeProducerTest("native producer revokes an issued handle on cancellation before staging", () =>
-  withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
-    const abort = new AbortController();
-    const handle = await buildQualifiedPreparation({ repoRoot, stageRoot, signal: abort.signal });
-    abort.abort(new Error("owned cancellation after native qualification"));
-    await expect(stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/absent, expired, or consumed/);
-    expect(NodeFS.readdirSync(resources)).toEqual([]);
-  }), 30 * 60_000);
+nativeProducerTest(
+  "native producer revokes an issued handle on cancellation before staging",
+  () =>
+    withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
+      const abort = new AbortController();
+      const handle = await buildQualifiedPreparation({ repoRoot, stageRoot, signal: abort.signal });
+      abort.abort(new Error("owned cancellation after native qualification"));
+      await expect(
+        stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources }),
+      ).rejects.toThrow(/absent, expired, or consumed/);
+      expect(NodeFS.readdirSync(resources)).toEqual([]);
+    }),
+  30 * 60_000,
+);
 
-nativeProducerTest("native producer refuses a replaced stage incarnation and consumes the stale handle", () =>
-  withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
-    const handle = await buildQualifiedPreparation({ repoRoot, stageRoot });
-    NodeFS.renameSync(stageRoot, stageRoot + "-retained");
-    NodeFS.mkdirSync(resources, { recursive: true, mode: 0o700 });
-    await expect(stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/stage identity changed/);
-    expect(NodeFS.readdirSync(resources)).toEqual([]);
-    await expect(stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources })).rejects.toThrow(/absent, expired, or consumed/);
-  }), 30 * 60_000);
+nativeProducerTest(
+  "native producer refuses a replaced stage incarnation and consumes the stale handle",
+  () =>
+    withQualifiedProducerStage(async ({ repoRoot, stageRoot, resources, source }) => {
+      const handle = await buildQualifiedPreparation({ repoRoot, stageRoot });
+      NodeFS.renameSync(stageRoot, stageRoot + "-retained");
+      NodeFS.mkdirSync(resources, { recursive: true, mode: 0o700 });
+      await expect(
+        stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources }),
+      ).rejects.toThrow(/stage identity changed/);
+      expect(NodeFS.readdirSync(resources)).toEqual([]);
+      await expect(
+        stageQualifiedPreparation({ handle, expectedSource: source, stageResourcesDir: resources }),
+      ).rejects.toThrow(/absent, expired, or consumed/);
+    }),
+  30 * 60_000,
+);
 
 async function withCandidateRoot(run: (root: string) => Promise<void>) {
   const root = NodeFS.realpathSync(
@@ -693,7 +817,10 @@ async function withCandidateRoot(run: (root: string) => Promise<void>) {
     };
     if (custodyUnknown(failure))
       throw Object.assign(
-        new AggregateError([failure], "Candidate fixture retains its checkout after uncertain custody."),
+        new AggregateError(
+          [failure],
+          "Candidate fixture retains its checkout after uncertain custody.",
+        ),
         { retainedRoot: root },
       );
     try {
@@ -750,7 +877,10 @@ async function withProducerCandidateCheckout(
         { flag: "wx", mode: 0o600 },
       );
     }
-    NodeFS.writeFileSync(NodePath.join(root, ".gitignore"), "apps/server/dist-exe/\nnode_modules/\n");
+    NodeFS.writeFileSync(
+      NodePath.join(root, ".gitignore"),
+      "apps/server/dist-exe/\nnode_modules/\n",
+    );
     const git = (...args: string[]) =>
       NodeChildProcess.execFileSync("/usr/bin/git", args, {
         cwd: root,
@@ -864,10 +994,16 @@ describe("unqualified preparation producer graph", () => {
       async (root) => {
         const candidate = await startProducerCandidate(root);
         emitProducerCandidate(candidate, root, "export {};\n");
-        NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), "export {};\n");
+        NodeFS.writeFileSync(
+          NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"),
+          "export {};\n",
+        );
         await candidate.onSuccess();
         const report = JSON.parse(
-          NodeFS.readFileSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json"), "utf8"),
+          NodeFS.readFileSync(
+            NodePath.join(candidate.outDir, "producer-candidate-graph.json"),
+            "utf8",
+          ),
         ) as {
           source: { inputs: { path: string; content: { availability: string } }[] };
           lateQualifierSources: { files: { path: string; content: { availability: string } }[] };
@@ -902,7 +1038,10 @@ describe("unqualified preparation producer graph", () => {
       NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), code);
       await candidate.onSuccess();
       const report = JSON.parse(
-        NodeFS.readFileSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json"), "utf8"),
+        NodeFS.readFileSync(
+          NodePath.join(candidate.outDir, "producer-candidate-graph.json"),
+          "utf8",
+        ),
       ) as {
         source: unknown;
         lateQualifierSources: { files: unknown[] };
@@ -933,8 +1072,11 @@ describe("unqualified preparation producer graph", () => {
       expect(
         NodeFS.existsSync(NodePath.join(root, "apps/server/dist-exe/preparation-candidate")),
       ).toBe(false);
-      expect(NodeFS.existsSync(NodePath.join(candidate.outDir, "jones-offline-preparation"))).toBe(false);
-    }));
+      expect(NodeFS.existsSync(NodePath.join(candidate.outDir, "jones-offline-preparation"))).toBe(
+        false,
+      );
+    }),
+  );
 
   it("refuses SEA entry names and excessive module graphs without publishing a report", () =>
     withProducerCandidateCheckout(async (root) => {
@@ -971,7 +1113,9 @@ describe("unqualified preparation producer graph", () => {
       NodeFS.writeFileSync(output, "changed emitted bytes");
       await expect(candidate.onSuccess()).rejects.toThrow(/emitted bytes changed/);
       expect(NodeFS.readFileSync(output, "utf8")).toBe("changed emitted bytes");
-      expect(NodeFS.existsSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json"))).toBe(false);
+      expect(
+        NodeFS.existsSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json")),
+      ).toBe(false);
     }));
 
   it.each(["index.js", "package.json"])(
@@ -988,10 +1132,15 @@ describe("unqualified preparation producer graph", () => {
         );
         const candidate = await startProducerCandidate(root);
         emitProducerCandidate(candidate, root, "export {};\n", { moduleId });
-        NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), "export {};\n");
+        NodeFS.writeFileSync(
+          NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"),
+          "export {};\n",
+        );
         NodeFS.appendFileSync(NodePath.join(directory, changed), "\n ");
         await expect(candidate.onSuccess()).rejects.toThrow(/graph inputs changed/);
-        expect(NodeFS.existsSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json"))).toBe(false);
+        expect(
+          NodeFS.existsSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json")),
+        ).toBe(false);
       }),
   );
 
