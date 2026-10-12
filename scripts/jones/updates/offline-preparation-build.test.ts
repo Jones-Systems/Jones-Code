@@ -836,7 +836,11 @@ async function withCandidateRoot(run: (root: string) => Promise<void>) {
 
 async function withProducerCandidateCheckout(
   run: (root: string) => Promise<void>,
-  options: { readonly absent?: string; readonly oversized?: string } = {},
+  options: {
+    readonly absent?: string;
+    readonly oversized?: string;
+    readonly contents?: Readonly<Record<string, string>>;
+  } = {},
 ) {
   await withCandidateRoot(async (root) => {
     const files = new Set([
@@ -860,6 +864,7 @@ async function withProducerCandidateCheckout(
         "jonesPreparationWorkerSource.ts",
       ].map((name) => `apps/desktop/src/jones/updates/${name}`),
       "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+      ...Object.keys(options.contents ?? {}),
     ]);
     for (const path of files) {
       if (path === options.absent) continue;
@@ -873,7 +878,7 @@ async function withProducerCandidateCheckout(
             ? JSON.stringify({ name: "synthetic-producer-package", version: "1.0.0" })
             : path === "pnpm-workspace.yaml"
               ? "patchedDependencies:\n"
-              : "export {};\n",
+              : (options.contents?.[path] ?? "export {};\n"),
         { flag: "wx", mode: 0o600 },
       );
     }
@@ -1030,7 +1035,7 @@ describe("unqualified preparation producer graph", () => {
       name: "observed loader syntax",
       code: 'import "node:fs"; throw new Error("emitted producer must never execute");\n',
     },
-    { name: "bounded unavailable loader syntax", code: 'require("node:fs");\n'.repeat(2050) },
+    { name: "independent import and hazard counts", code: 'require("node:fs");\n'.repeat(2050) },
   ])("publishes exact unexecuted bytes with $name", ({ code, name }) =>
     withProducerCandidateCheckout(async (root) => {
       const candidate = await startProducerCandidate(root);
@@ -1060,10 +1065,12 @@ describe("unqualified preparation producer graph", () => {
       expect(report.source).not.toHaveProperty("hashes");
       expect(report.lateQualifierSources.files).toHaveLength(28);
       expect(report.modules[0]!.staticImports[0]).toMatchObject({ id: "node:fs", builtin: true });
-      if (name === "bounded unavailable loader syntax")
+      if (name === "independent import and hazard counts")
         expect(report.emitted.syntax).toMatchObject({
-          availability: "unavailable",
-          reason: "Candidate loader observations exceed bound.",
+          importsComplete: true,
+          importCount: 2050,
+          loaderHazardCount: 2050,
+          loaderHazardsTruncated: false,
         });
       else
         expect(report.emitted.syntax).toMatchObject({
@@ -1077,6 +1084,251 @@ describe("unqualified preparation producer graph", () => {
       );
     }),
   );
+
+  it("observes a later dynamic import after truncating producer reflection samples", () =>
+    withProducerCandidateCheckout(async (root) => {
+      const expression = 'import("./after-samples.mjs")';
+      const code =
+        'const label = "🙂";\n' + 'globalThis["sample"];\n'.repeat(4097) + expression + ";\n";
+      expect(() => inspectPreparationCandidateJavaScript(code)).toThrow(
+        /Candidate loader observations exceed bound/,
+      );
+      const candidate = await startProducerCandidate(root);
+      emitProducerCandidate(candidate, root, code);
+      NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), code);
+      await candidate.onSuccess();
+      const report = JSON.parse(
+        NodeFS.readFileSync(
+          NodePath.join(candidate.outDir, "producer-candidate-graph.json"),
+          "utf8",
+        ),
+      ) as {
+        emitted: {
+          syntax: {
+            imports: { location: { start: number; end: number } }[];
+            loaderHazards: unknown[];
+          };
+          importEvidence: unknown;
+        };
+      };
+      expect(report.emitted.syntax).toMatchObject({
+        importsComplete: true,
+        importCount: 1,
+        importLimit: 4096,
+        loaderHazardCount: 4097,
+        loaderHazardSampleLimit: 4096,
+        loaderHazardsTruncated: true,
+        imports: [
+          {
+            kind: "dynamic",
+            specifier: "./after-samples.mjs",
+            expressionSha256: sha(expression),
+            location: {
+              file: "offlinePreparationProducer.mjs",
+              unit: "utf16-code-units",
+              origin: 0,
+              start: code.indexOf(expression),
+              end: code.indexOf(expression) + expression.length,
+              endExclusive: true,
+            },
+          },
+        ],
+      });
+      expect(report.emitted.syntax.loaderHazards).toHaveLength(4096);
+      const { start, end } = report.emitted.syntax.imports[0]!.location;
+      expect(code.slice(start, end)).toBe(expression);
+      expect(report.emitted.importEvidence).toMatchObject({
+        dynamic: { emitted: ["./after-samples.mjs"], syntaxOnly: ["./after-samples.mjs"] },
+        qualification: "unqualified",
+      });
+    }));
+
+  it.each([
+    {
+      name: "import overflow",
+      code: 'import("node:fs");\n'.repeat(4097),
+      reason: "Producer candidate imports exceed bound.",
+    },
+    {
+      name: "parser failure",
+      code: "export const = ;",
+      reason: "Candidate entry is not valid JavaScript.",
+    },
+  ])("reports unavailable syntax without completion after $name", ({ code, reason }) =>
+    withProducerCandidateCheckout(async (root) => {
+      const candidate = await startProducerCandidate(root);
+      emitProducerCandidate(candidate, root, code);
+      NodeFS.writeFileSync(NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"), code);
+      await candidate.onSuccess();
+      const report = JSON.parse(
+        NodeFS.readFileSync(
+          NodePath.join(candidate.outDir, "producer-candidate-graph.json"),
+          "utf8",
+        ),
+      ) as { emitted: { syntax: unknown; importEvidence: unknown } };
+      expect(report.emitted.syntax).toEqual({ availability: "unavailable", reason });
+      expect(report.emitted.importEvidence).toEqual({ availability: "unavailable", reason });
+      expect(report.emitted.syntax).not.toHaveProperty("importsComplete");
+      expect(report).toMatchObject({
+        qualification: "unqualified",
+        completeDependencyClosure: false,
+      });
+    }),
+  );
+
+  it("records the three fixed late modules and separates observed, computed and unresolved edges", () => {
+    const preparation = "scripts/jones/updates/legacy-preparation-native-fixture.mjs";
+    const cold = "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs";
+    const identity = "scripts/jones/updates/legacy-identity-native-fixture.mjs";
+    const extra = "scripts/jones/updates/additional-fixture.mjs";
+    const coldSource = 'export { observation } from "./legacy-identity-native-fixture.mjs";\n';
+    return withProducerCandidateCheckout(
+      async (root) => {
+        const candidate = await startProducerCandidate(root);
+        emitProducerCandidate(candidate, root, "export {};\n");
+        NodeFS.writeFileSync(
+          NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"),
+          "export {};\n",
+        );
+        await candidate.onSuccess();
+        const report = JSON.parse(
+          NodeFS.readFileSync(
+            NodePath.join(candidate.outDir, "producer-candidate-graph.json"),
+            "utf8",
+          ),
+        ) as {
+          lateQualifierSources: {
+            modules: { path: string; syntax: unknown; importEdges: unknown }[];
+          };
+        };
+        expect(report.lateQualifierSources.modules.map((item) => item.path)).toEqual([
+          preparation,
+          cold,
+          identity,
+        ]);
+        const module = report.lateQualifierSources.modules[0]!;
+        expect(module.syntax).toMatchObject({
+          availability: "observed",
+          importsComplete: true,
+          imports: expect.arrayContaining([
+            expect.objectContaining({
+              specifier: "./legacy-cold-maintenance-fixture.mjs",
+              location: expect.objectContaining({ file: preparation, unit: "utf16-code-units" }),
+            }),
+          ]),
+        });
+        expect(module.importEdges).toMatchObject({
+          availability: "observed",
+          literalSiblingFiles: [
+            { target: cold, content: { availability: "observed", sha256: sha(coldSource) } },
+          ],
+          builtins: [{ specifier: "node:fs" }],
+          computedImports: [{ kind: "dynamic", specifier: null, computed: true }],
+          unresolvedEdges: [
+            {
+              target: extra,
+              reason: "literal-sibling-outside-fixed-inventory",
+              content: { availability: "observed" },
+            },
+            {
+              reason: "literal-import-not-a-fixed-sibling-or-builtin",
+              import: { specifier: "not-installed" },
+            },
+          ],
+          builtinIdentityObserved: false,
+          completeDependencyClosure: false,
+        });
+        expect(report.lateQualifierSources.modules[1]!.importEdges).toMatchObject({
+          literalSiblingFiles: [{ target: identity, content: { availability: "observed" } }],
+        });
+        expect(report).toMatchObject({
+          qualification: "unqualified",
+          loadedCollectorBytesAttested: false,
+        });
+      },
+      {
+        contents: {
+          [preparation]:
+            'import "./legacy-cold-maintenance-fixture.mjs"; import "node:fs"; import(selected); import "./additional-fixture.mjs"; import "not-installed";\n',
+          [cold]: coldSource,
+          [identity]: "export const observation = 1;\n",
+          [extra]: "export {};\n",
+        },
+      },
+    );
+  });
+
+  it("keeps missing late modules and their literal edges unavailable", () => {
+    const preparation = "scripts/jones/updates/legacy-preparation-native-fixture.mjs";
+    const identity = "scripts/jones/updates/legacy-identity-native-fixture.mjs";
+    return withProducerCandidateCheckout(
+      async (root) => {
+        const candidate = await startProducerCandidate(root);
+        emitProducerCandidate(candidate, root, "export {};\n");
+        NodeFS.writeFileSync(
+          NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"),
+          "export {};\n",
+        );
+        await candidate.onSuccess();
+        const report = JSON.parse(
+          NodeFS.readFileSync(
+            NodePath.join(candidate.outDir, "producer-candidate-graph.json"),
+            "utf8",
+          ),
+        ) as {
+          lateQualifierSources: {
+            modules: { path: string; syntax: unknown; importEdges: unknown }[];
+          };
+        };
+        expect(report.lateQualifierSources.modules[0]!.importEdges).toMatchObject({
+          literalSiblingFiles: [],
+          unresolvedEdges: [
+            {
+              target: identity,
+              reason: "literal-sibling-content-not-observed",
+              content: { availability: "unavailable" },
+            },
+          ],
+        });
+        expect(
+          report.lateQualifierSources.modules.find((item) => item.path === identity),
+        ).toMatchObject({
+          syntax: { availability: "unavailable" },
+          importEdges: { availability: "unavailable" },
+        });
+      },
+      {
+        absent: identity,
+        contents: { [preparation]: 'import "./legacy-identity-native-fixture.mjs";\n' },
+      },
+    );
+  });
+
+  it("rechecks observed additional late import bytes before reporting", () => {
+    const preparation = "scripts/jones/updates/legacy-preparation-native-fixture.mjs";
+    const extra = "node_modules/additional-late-fixture.mjs";
+    return withProducerCandidateCheckout(
+      async (root) => {
+        const candidate = await startProducerCandidate(root);
+        emitProducerCandidate(candidate, root, "export {};\n");
+        NodeFS.writeFileSync(
+          NodePath.join(candidate.outDir, "offlinePreparationProducer.mjs"),
+          "export {};\n",
+        );
+        NodeFS.appendFileSync(NodePath.join(root, extra), "\n// changed after observation\n");
+        await expect(candidate.onSuccess()).rejects.toThrow(/source inputs changed/);
+        expect(
+          NodeFS.existsSync(NodePath.join(candidate.outDir, "producer-candidate-graph.json")),
+        ).toBe(false);
+      },
+      {
+        contents: {
+          [preparation]: 'import "../../../node_modules/additional-late-fixture.mjs";\n',
+          [extra]: "export {};\n",
+        },
+      },
+    );
+  });
 
   it("refuses SEA entry names and excessive module graphs without publishing a report", () =>
     withProducerCandidateCheckout(async (root) => {
@@ -1092,18 +1344,21 @@ describe("unqualified preparation producer graph", () => {
       expect(NodeFS.readdirSync(candidate.outDir)).toEqual([]);
     }));
 
-  it("rejects a fixed source change before observing the graph", () =>
-    withProducerCandidateCheckout(async (root) => {
-      const candidate = await startProducerCandidate(root);
-      NodeFS.appendFileSync(
-        NodePath.join(root, "scripts/jones/updates/functional-policy.ts"),
-        "\n// changed\n",
-      );
-      expect(() => emitProducerCandidate(candidate, root, "export {};")).toThrow(
-        /source inputs changed/,
-      );
-      expect(NodeFS.readdirSync(candidate.outDir)).toEqual([]);
-    }));
+  it.each(["functional-policy.ts", "legacy-preparation-native-fixture.mjs"])(
+    "rejects a fixed %s source change before observing the graph",
+    (name) =>
+      withProducerCandidateCheckout(async (root) => {
+        const candidate = await startProducerCandidate(root);
+        NodeFS.appendFileSync(
+          NodePath.join(root, "scripts/jones/updates", name),
+          '\nimport("node:fs");\n',
+        );
+        expect(() => emitProducerCandidate(candidate, root, "export {};")).toThrow(
+          /source inputs changed/,
+        );
+        expect(NodeFS.readdirSync(candidate.outDir)).toEqual([]);
+      }),
+  );
 
   it("rejects changed emitted bytes before reporting and retains those bytes", () =>
     withProducerCandidateCheckout(async (root) => {

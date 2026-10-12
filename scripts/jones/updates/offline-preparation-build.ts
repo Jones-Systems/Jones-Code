@@ -1677,9 +1677,14 @@ const candidateReportLimit = 16 * 1024 * 1024;
 
 /** Candidate inspection describes syntax; it never approves or executes a loader. */
 export function inspectPreparationCandidateJavaScript(source: string) {
+  return inspectPreparationJavaScript(source);
+}
+
+function inspectPreparationJavaScript(source: string, producerFileName?: string) {
+  const producer = producerFileName !== undefined;
   if (Buffer.byteLength(source) > maxBundleBytes) throw new Error("Candidate entry exceeds bound.");
   const file = ts.createSourceFile(
-    bundleName,
+    producerFileName ?? bundleName,
     source,
     ts.ScriptTarget.Latest,
     true,
@@ -1688,14 +1693,24 @@ export function inspectPreparationCandidateJavaScript(source: string) {
   const diagnostics = (file as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] })
     .parseDiagnostics;
   if (diagnostics.length) throw new Error("Candidate entry is not valid JavaScript.");
+  const location = (expression: ts.Node) => ({
+    file: file.fileName,
+    unit: "utf16-code-units" as const,
+    origin: 0 as const,
+    start: expression.getStart(file),
+    end: expression.end,
+    endExclusive: true as const,
+  });
   const imports: {
     kind: "static" | "dynamic" | "require" | "process-builtin";
     specifier: string | null;
     computed: boolean;
     builtin: boolean;
     expressionSha256: string;
+    location?: ReturnType<typeof location>;
   }[] = [];
   const loaderHazards: { kind: string; expressionSha256: string }[] = [];
+  let loaderHazardCount = 0;
   const record = (
     kind: "static" | "dynamic" | "require" | "process-builtin",
     node: ts.Node | undefined,
@@ -1704,16 +1719,19 @@ export function inspectPreparationCandidateJavaScript(source: string) {
     const specifier = node && ts.isStringLiteralLike(node) ? node.text : null;
     if (specifier !== null && Buffer.byteLength(specifier) > 4096)
       throw new Error("Candidate import exceeds bound.");
+    if (producer && imports.length >= candidateModuleLimit)
+      throw new Error("Producer candidate imports exceed bound.");
     imports.push({
       kind,
       specifier,
       computed: specifier === null,
       builtin: specifier !== null && NodeModule.isBuiltin(specifier),
       expressionSha256: digest(expression.getText(file)),
+      ...(producer ? { location: location(expression) } : {}),
     });
   };
   const visit = (node: ts.Node): void => {
-    if (imports.length + loaderHazards.length > candidateModuleLimit)
+    if (!producer && imports.length + loaderHazards.length > candidateModuleLimit)
       throw new Error("Candidate loader observations exceed bound.");
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier)
       record("static", node.moduleSpecifier, node);
@@ -1740,15 +1758,35 @@ export function inspectPreparationCandidateJavaScript(source: string) {
     if (
       ts.isElementAccessExpression(node) ||
       (ts.isIdentifier(node) && forbiddenNames.has(node.text))
-    )
-      loaderHazards.push({
-        kind: ts.isElementAccessExpression(node) ? "computed-access" : "loader-or-reflection-name",
-        expressionSha256: digest(node.getText(file)),
-      });
+    ) {
+      loaderHazardCount += 1;
+      // Producer reflection samples may truncate; traversal must still reach every later import.
+      if (!producer || loaderHazards.length < candidateModuleLimit)
+        loaderHazards.push({
+          kind: ts.isElementAccessExpression(node)
+            ? "computed-access"
+            : "loader-or-reflection-name",
+          expressionSha256: digest(node.getText(file)),
+        });
+    }
     ts.forEachChild(node, visit);
   };
   visit(file);
-  return { imports, loaderHazards, scannerQualification: "syntax-observation-only" as const };
+  return {
+    imports,
+    loaderHazards,
+    scannerQualification: "syntax-observation-only" as const,
+    ...(producer
+      ? {
+          importsComplete: true,
+          importCount: imports.length,
+          importLimit: candidateModuleLimit,
+          loaderHazardCount,
+          loaderHazardSampleLimit: candidateModuleLimit,
+          loaderHazardsTruncated: loaderHazardCount > loaderHazards.length,
+        }
+      : {}),
+  };
 }
 
 /** Final syntax and bundler metadata are separate observations, never interchangeable loader approval. */
@@ -1756,7 +1794,15 @@ export function inspectPreparationCandidateImports(
   source: string,
   metadata: { readonly imports: readonly string[]; readonly dynamicImports: readonly string[] },
 ) {
-  const syntax = inspectPreparationCandidateJavaScript(source);
+  return inspectPreparationImports(source, metadata);
+}
+
+function inspectPreparationImports(
+  source: string,
+  metadata: { readonly imports: readonly string[]; readonly dynamicImports: readonly string[] },
+  producerFileName?: string,
+) {
+  const syntax = inspectPreparationJavaScript(source, producerFileName);
   const unique = (values: readonly string[]) => [...new Set(values)].sort();
   const reconcile = (kind: "static" | "dynamic", values: readonly string[]) => {
     const emitted = unique(
@@ -2223,7 +2269,11 @@ function preparationCandidatePack(
       let importEvidence: ReturnType<typeof inspectPreparationCandidateImports> | undefined;
       let unavailableSyntax: { availability: "unavailable"; reason: string } | undefined;
       try {
-        importEvidence = inspectPreparationCandidateImports(chunk.code, chunk);
+        importEvidence = inspectPreparationImports(
+          chunk.code,
+          chunk,
+          producer ? outputName : undefined,
+        );
       } catch (cause) {
         if (!producer) throw cause;
         unavailableSyntax = {
@@ -2463,10 +2513,108 @@ const qualifierFiles = Object.freeze([
   "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
 ]);
 
+function inspectLateQualifierModule(
+  root: string,
+  observed: { path: string; content: ReturnType<typeof candidateFile> },
+) {
+  const unavailable = (reason: string) => ({
+    ...observed,
+    syntax: { availability: "unavailable" as const, reason },
+    importEdges: { availability: "unavailable" as const, reason },
+  });
+  if (observed.content.availability !== "observed")
+    return unavailable("late-module-content-not-observed");
+  let syntax: ReturnType<typeof inspectPreparationJavaScript>;
+  try {
+    const bytes = readFile(NodePath.join(root, observed.path), 8 * 1024 * 1024);
+    if (bytes.length !== observed.content.size || digest(bytes) !== observed.content.sha256)
+      return unavailable("late-module-changed-before-syntax-observation");
+    syntax = inspectPreparationJavaScript(bytes.toString("utf8"), observed.path);
+  } catch (cause) {
+    if (qualificationCustodyUnknown(cause)) throw cause;
+    return unavailable(cause instanceof Error ? cause.message : "late-module-syntax-not-observed");
+  }
+  type ImportObservation = (typeof syntax.imports)[number];
+  const literalSiblingFiles: {
+    import: ImportObservation;
+    target: string;
+    content: ReturnType<typeof candidateFile>;
+  }[] = [];
+  const builtins: ImportObservation[] = [];
+  const computedImports: ImportObservation[] = [];
+  const unresolvedEdges: {
+    import: ImportObservation;
+    reason: string;
+    target?: string;
+    content?: ReturnType<typeof candidateFile>;
+  }[] = [];
+  for (const item of syntax.imports) {
+    if (item.specifier === null) {
+      computedImports.push(item);
+    } else if (item.builtin) {
+      builtins.push(item);
+    } else if (item.specifier.startsWith("./") || item.specifier.startsWith("../")) {
+      let target: string;
+      try {
+        const url = new URL(
+          item.specifier,
+          NodeURL.pathToFileURL(NodePath.join(root, observed.path)),
+        );
+        if (url.search || url.hash) {
+          unresolvedEdges.push({ import: item, reason: "literal-sibling-query-or-fragment" });
+          continue;
+        }
+        target = NodeURL.fileURLToPath(url);
+      } catch {
+        unresolvedEdges.push({ import: item, reason: "literal-sibling-url-not-resolved" });
+        continue;
+      }
+      const relative = candidateId(root, target);
+      const content = candidateFile(root, target);
+      if (!qualifierFiles.includes(relative)) {
+        unresolvedEdges.push({
+          import: item,
+          target: relative,
+          content,
+          reason: "literal-sibling-outside-fixed-inventory",
+        });
+      } else if (content.availability !== "observed") {
+        unresolvedEdges.push({
+          import: item,
+          target: relative,
+          content,
+          reason: "literal-sibling-content-not-observed",
+        });
+      } else {
+        literalSiblingFiles.push({ import: item, target: relative, content });
+      }
+    } else {
+      unresolvedEdges.push({
+        import: item,
+        reason: "literal-import-not-a-fixed-sibling-or-builtin",
+      });
+    }
+  }
+  return {
+    ...observed,
+    syntax: { availability: "observed" as const, ...syntax },
+    importEdges: {
+      availability: "observed" as const,
+      literalSiblingFiles,
+      builtins,
+      computedImports,
+      unresolvedEdges,
+      builtinIdentityObserved: false,
+      completeDependencyClosure: false,
+    },
+  };
+}
+
 /** Disk observations of fixed late imports are separate from the graph and never prove executed bytes. */
 function inspectPreparationProducerCandidateSources(root: string) {
   const observe = (files: readonly string[]) =>
     files.map((path) => ({ path, content: candidateFile(root, NodePath.join(root, path)) }));
+  const qualifierInputs = observe(qualifierFiles);
   return {
     producerInputs: observe([
       "pnpm-lock.yaml",
@@ -2485,7 +2633,10 @@ function inspectPreparationProducerCandidateSources(root: string) {
       basis: "fixed-late-qualifier-file-inputs",
       computedImportsResolved: false,
       completeDependencyClosure: false,
-      files: observe(qualifierFiles),
+      files: qualifierInputs,
+      modules: qualifierInputs
+        .filter(({ path }) => path.endsWith(".mjs"))
+        .map((observed) => inspectLateQualifierModule(root, observed)),
     },
   };
 }
