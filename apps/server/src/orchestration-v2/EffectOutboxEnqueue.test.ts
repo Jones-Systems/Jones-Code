@@ -37,7 +37,7 @@ const pending = (id: string): Enqueue.PendingOrchestrationEffectV2 => ({
 const enqueueWith = (
   path: "leaf" | "service",
   effects: ReadonlyArray<Enqueue.PendingOrchestrationEffectV2>,
-) =>
+): Effect.Effect<void, Enqueue.EffectOutboxError, SqlClient.SqlClient | EffectOutbox.EffectOutboxV2> =>
   path === "leaf"
     ? Enqueue.enqueue(effects)
     : Effect.flatMap(EffectOutbox.EffectOutboxV2, (outbox) => outbox.enqueue(effects));

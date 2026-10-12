@@ -932,7 +932,7 @@
     "scripts/jones/updates/legacy-bootstrap-after-pack.d.mts": "jones-owned",
     "scripts/jones/updates/legacy-preparation-native-fixture.mjs": "jones-owned",
     "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs": "jones-owned",
-    "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts": "hook",
     "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [

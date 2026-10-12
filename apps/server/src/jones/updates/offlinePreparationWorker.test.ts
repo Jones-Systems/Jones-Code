@@ -758,8 +758,9 @@ it.effect("does not turn a SQL finalizer failure into a settled query result", (
   }).pipe(Effect.scoped),
 );
 
-for (const scenario of ["short-read", "exact-limit", "growth", "read-failure"] as const) {
-  it.effect(`bounds metadata ${scenario} and closes the owned descriptor`, () =>
+it.effect.each(["short-read", "exact-limit", "growth", "read-failure"] as const)(
+  "bounds metadata %s and closes the owned descriptor",
+  (scenario) =>
     Effect.gen(function* () {
       const root = yield* scratch;
       yield* Effect.promise(async () => {
@@ -813,5 +814,4 @@ for (const scenario of ["short-read", "exact-limit", "growth", "read-failure"] a
         }
       });
     }).pipe(Effect.scoped),
-  );
-}
+);
