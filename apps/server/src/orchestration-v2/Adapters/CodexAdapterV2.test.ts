@@ -12609,6 +12609,95 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
 
+    it.effect("keeps retry UI settled after an autonomous goal successor", () =>
+      Effect.gen(function* () {
+        const handlers = new Map<string, (payload: unknown) => Effect.Effect<unknown>>();
+        let successorObserved = false;
+        let sends = 0;
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "goal-capacity-scheduler-race",
+            entries: [
+              ...capacityPreamble(nativeThreadId, "scheduler-race-first"),
+              notification("goal active", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "scheduler-race-first",
+                goal: codexGoal("active", 0),
+              }),
+              capacityCompletionEntry(nativeThreadId, "scheduler-race-first", "completed"),
+              notification("native followup", "turn/started", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: "scheduler-race-failed", status: "inProgress" }),
+              }),
+              capacityErrorEntry(nativeThreadId, "scheduler-race-failed"),
+              capacityCompletionEntry(nativeThreadId, "scheduler-race-failed"),
+            ],
+          }),
+          (event) =>
+            Effect.gen(function* () {
+              if (
+                event.type !== "provider_turn.updated" ||
+                event.providerTurn.status !== "failed" ||
+                event.providerTurn.nativeTurnRef?.nativeId !== "scheduler-race-failed" ||
+                successorObserved
+              )
+                return;
+              successorObserved = true;
+              yield* handlers.get("turn/started")!({
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({
+                  id: "scheduler-race-successor",
+                  status: "inProgress",
+                }),
+              });
+            }),
+          (method) =>
+            Effect.sync(() => {
+              if (method === "turn/start") sends++;
+            }),
+          undefined,
+          {
+            onNotification: (method, handler) => {
+              handlers.set(method, handler);
+            },
+          },
+        );
+        yield* harness.runtime.startTurn(yield* goalTurnInput(harness, "Work"));
+        yield* awaitUntil(
+          () => successorObserved,
+          "autonomous successor observed after capacity completion",
+        );
+        yield* handlers.get("thread/goal/updated")!({
+          threadId: nativeThreadId,
+          turnId: "scheduler-race-successor",
+          goal: codexGoal("complete", 1),
+        });
+        yield* handlers.get("turn/completed")!({
+          threadId: nativeThreadId,
+          turn: makeCodexReplayTurn({ id: "scheduler-race-successor", status: "completed" }),
+        });
+        yield* harness.firstTerminal;
+        yield* TestClock.adjust("1 minute");
+        assert.isTrue(successorObserved);
+        assert.equal(sends, 1);
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["completed"],
+        );
+        assert.isFalse(
+          harness.events
+            .slice(harness.events.findIndex((event) => event.type === "turn.terminal") + 1)
+            .some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.status === "running" &&
+                event.turnItem.retry?.maxAttempts === 12,
+            ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
     it.effect("adopts a native goal successor during retry admission before dispatch", () =>
       Effect.gen(function* () {
         const admissionEntered = yield* Deferred.make<void>();

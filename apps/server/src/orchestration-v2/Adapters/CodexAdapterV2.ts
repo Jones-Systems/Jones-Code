@@ -4866,9 +4866,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 nativeTurnId: payload.turn.id,
                 startDispatched: false,
               });
+              const adoptedState = request.state;
               if (
-                request.state.phase === "running" &&
-                request.state.nativeTurnId === payload.turn.id
+                adoptedState.phase === "running" &&
+                adoptedState.nativeTurnId === payload.turn.id
               ) {
                 if (request.timer !== undefined) yield* Fiber.interrupt(request.timer);
                 capacityByTurn.set(payload.turn.id, request);
@@ -6914,7 +6915,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           });
         const scheduleCapacityRetry = (request: CapacityRequest) =>
           Effect.gen(function* () {
-            if (request.timer !== undefined || !request.recoveryEnabled) return;
+            if (
+              request.timer !== undefined ||
+              !request.recoveryEnabled ||
+              request.state.phase !== "waiting_retry" ||
+              !currentCapacityBinding(request)
+            )
+              return;
             const retryOrdinal = request.state.retryOrdinal;
             const context = request.logicalContext!;
             const now = yield* DateTime.now;
@@ -6973,7 +6980,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               request.startDispatched = false;
               request.timer = undefined;
               const result = yield* sendCapacityTurn(request, retryOrdinal).pipe(Effect.exit);
-              if (result._tag === "Failure" && request.state.phase === "awaiting_start")
+              const stateAfterSend = request.state;
+              if (result._tag === "Failure" && stateAfterSend.phase === "awaiting_start")
                 yield* finishUnknownCapacityStart(request);
             }).pipe(
               Effect.ensuring(
