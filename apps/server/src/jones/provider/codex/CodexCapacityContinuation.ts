@@ -49,6 +49,11 @@ export type CodexCapacityContinuationSignal = {
       readonly status: CodexCapacityTerminalStatus;
       readonly error?: { readonly code: string | null; readonly message?: string };
     }
+  | {
+      readonly type: "nativeSuccessorAcknowledged";
+      readonly nativeTurnId: string;
+      readonly startDispatched: false;
+    }
   | { readonly type: "retryReady"; readonly retryOrdinal: number }
   | { readonly type: "cancel"; readonly reason: CodexCapacityCancellationReason }
   | { readonly type: "startUnknown"; readonly retryOrdinal: number }
@@ -215,6 +220,23 @@ export function reduceCodexCapacityContinuation(
       return state.phase === "awaiting_start" && signal.retryOrdinal === state.retryOrdinal
         ? terminal(state, "unknown", "start_unknown")
         : unchanged(state);
+    case "nativeSuccessorAcknowledged":
+      if (
+        (state.phase !== "waiting_retry" && state.phase !== "awaiting_start") ||
+        state.retryOrdinal === 0 ||
+        state.retiredNativeTurnIds.includes(signal.nativeTurnId)
+      )
+        return unchanged(state);
+      return {
+        state: Object.freeze<CodexCapacityContinuationState>({
+          ...state,
+          phase: "running",
+          nativeTurnId: signal.nativeTurnId,
+          nativeFacts: emptyFacts,
+          pendingNativeTurns: emptyPending,
+        }),
+        actions: noActions,
+      };
     case "retryReady":
       if (state.phase !== "waiting_retry" || signal.retryOrdinal !== state.retryOrdinal) {
         return unchanged(state);

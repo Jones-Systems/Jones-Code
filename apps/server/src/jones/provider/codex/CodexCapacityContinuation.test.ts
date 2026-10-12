@@ -286,6 +286,67 @@ describe("Codex capacity continuation", () => {
     ]);
   });
 
+  it.each(["waiting_retry", "awaiting_start"] as const)(
+    "adopts an acknowledged autonomous successor from undispatched %s without requesting a send",
+    (phase) => {
+      let state = waitingForRetry();
+      if (phase === "awaiting_start")
+        state = reduceCodexCapacityContinuation(state, {
+          type: "retryReady",
+          binding,
+          retryOrdinal: 1,
+        }).state;
+      const adopted = reduceCodexCapacityContinuation(state, {
+        type: "nativeSuccessorAcknowledged",
+        binding,
+        nativeTurnId: "autonomous-turn",
+        startDispatched: false,
+      });
+      expect(adopted.actions).toEqual([]);
+      expect(adopted.state.phase).toBe("running");
+      expect(adopted.state.retryOrdinal).toBe(1);
+      expect(adopted.state.nativeTurnId).toBe("autonomous-turn");
+      expect(
+        reduceCodexCapacityContinuation(adopted.state, {
+          type: "retryReady",
+          binding,
+          retryOrdinal: 1,
+        }).actions,
+      ).toEqual([]);
+      expect(complete(adopted.state, "turn-original").state).toBe(adopted.state);
+      expect(complete(adopted.state, "autonomous-turn", "completed").actions).toEqual([
+        { type: "terminal", status: "completed", nativeTurnId: "autonomous-turn" },
+      ]);
+    },
+  );
+
+  it("rejects autonomous successors after cancellation and stale runtime binding", () => {
+    const waiting = waitingForRetry();
+    const signal = {
+      type: "nativeSuccessorAcknowledged",
+      binding,
+      nativeTurnId: "autonomous-turn",
+      startDispatched: false,
+    } as const;
+    expect(
+      reduceCodexCapacityContinuation(waiting, {
+        ...signal,
+        binding: { ...binding, runtimeGeneration: "stale" },
+      }).state,
+    ).toBe(waiting);
+    const stopped = reduceCodexCapacityContinuation(waiting, {
+      type: "cancel",
+      binding,
+      reason: "stop",
+    }).state;
+    expect(reduceCodexCapacityContinuation(stopped, signal).state).toBe(stopped);
+    const initial = makeCodexCapacityContinuation(binding);
+    expect(reduceCodexCapacityContinuation(initial, signal).state).toBe(initial);
+    expect(
+      reduceCodexCapacityContinuation(waiting, { ...signal, nativeTurnId: "turn-original" }).state,
+    ).toBe(waiting);
+  });
+
   it("rejects obsolete native IDs and duplicate timer wakeups across a retry", () => {
     const waiting = waitingForRetry();
     const ready = reduceCodexCapacityContinuation(waiting, {
