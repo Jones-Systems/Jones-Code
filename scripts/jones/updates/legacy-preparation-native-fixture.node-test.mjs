@@ -1401,8 +1401,24 @@ NodeTest.test("controller cause validator refuses private, forged and unbounded 
     stage: "work-cleanup",
     frames: [{ source: "maintenance.py", function: "clean_work", line: 2 }],
     duplicateOf: null,
+    sqliteErrorCode: null,
   };
   for (const mutate of [
+    (record) => {
+      record.sqliteErrorCode = "private";
+    },
+    (record) => {
+      record.sqliteErrorCode = -1;
+    },
+    (record) => {
+      record.sqliteErrorCode = 2147483648;
+    },
+    (record) => {
+      record.sqliteErrorCode = 1;
+    },
+    (record) => {
+      delete record.sqliteErrorCode;
+    },
     (record) => {
       record.type = "PrivateExceptionName";
     },
@@ -1447,3 +1463,98 @@ NodeTest.test("controller cause validator refuses private, forged and unbounded 
   };
   NodeAssert.throws(() => validatePreparationNativeFailure(evidence));
 });
+
+NodeTest.test(
+  "reader diagnostics preserve SQLite failure and superseding cleanup context without private data",
+  async () => {
+    await withLegacyIdentityScratch(async (root) => {
+      const script = NodePath.join(root, "reader-diagnostic.py");
+      const writeSource = preparationNativeDriver
+        .split("def write(path, raw, mode=0o600):")[1]
+        .split("\ndef command(args):")[0];
+      const readerSource = preparationNativeDriver
+        .split("def readonly_rows(database):")[1]
+        .split("\ndef refusal(body):")[0];
+      await NodeFSP.writeFile(
+        script,
+        "import json, os, pathlib, sqlite3, stat, sys\n" +
+          preparationFailureCaptureSource +
+          "\ndef write(path, raw, mode=0o600):" +
+          writeSource +
+          "\ndef readonly_rows(database):" +
+          readerSource +
+          String.raw`
+root = pathlib.Path(sys.argv[1])
+database = root / 'owned.sqlite'
+target = root / 'assertion-copy.sqlite'
+payload = dict(tables={'private_table_name': None})
+with sqlite3.connect(database) as seed: seed.execute('CREATE TABLE actual_table(value TEXT)')
+seed.close()
+reports = []
+def failed(stage, operation):
+    try: operation()
+    except BaseException as failure:
+        report = capture_controller_failure([failure], failure)
+        assert report['records'][0]['stage'] == stage
+        reports.append(report)
+        return failure, report
+    raise AssertionError('Expected owned reader failure')
+query, report = failed('reader-query', lambda: readonly_rows(database))
+assert isinstance(query, sqlite3.OperationalError)
+assert report['records'][0]['sqliteErrorCode'] == getattr(query, 'sqlite_errorcode', None)
+assert any(frame['function'] == 'readonly_rows' for frame in report['records'][0]['frames'])
+if sys.version_info < (3, 12): assert any(frame['function'] == '<dictcomp>' for frame in report['records'][0]['frames'])
+assert not target.exists()
+opened, report = failed('reader-open', lambda: readonly_rows(root / 'absent.sqlite'))
+assert isinstance(opened, sqlite3.OperationalError)
+assert report['records'][0]['sqliteErrorCode'] == getattr(opened, 'sqlite_errorcode', None)
+source_directory = root / 'source-directory'; source_directory.mkdir()
+copied, report = failed('reader-copy', lambda: readonly_rows(source_directory))
+assert isinstance(copied, IsADirectoryError) and report['records'][0]['sqliteErrorCode'] is None
+private = 'Bearer private-secret /private/raw/path'
+real_connect = sqlite3.connect
+class Closing(sqlite3.Connection):
+    def close(self):
+        super().close()
+        raise OSError(private)
+sqlite3.connect = lambda *args, **kwargs: real_connect(*args, **kwargs, factory=Closing)
+try: closed, report = failed('reader-close', lambda: readonly_rows(database))
+finally: sqlite3.connect = real_connect
+assert isinstance(closed, OSError) and str(closed) == private
+assert isinstance(closed.__context__, sqlite3.OperationalError)
+assert report['records'][1]['relation'] == 'context' and report['records'][1]['stage'] == 'reader-query'
+assert target.exists()
+target.unlink()
+real_unlink = pathlib.Path.unlink
+def deny_unlink(self, *args, **kwargs): raise PermissionError(private)
+pathlib.Path.unlink = deny_unlink
+try: removed, report = failed('reader-removal', lambda: readonly_rows(database))
+finally: pathlib.Path.unlink = real_unlink
+assert isinstance(removed, PermissionError) and isinstance(removed.__context__, sqlite3.OperationalError)
+assert report['records'][1]['stage'] == 'reader-query' and target.exists()
+target.unlink()
+for value in (True, -1, 2147483648, private):
+    query.sqlite_errorcode = value
+    assert capture_controller_failure([query], query)['records'][0]['sqliteErrorCode'] is None
+forged = ValueError(private); forged.sqlite_errorcode = 1
+assert capture_controller_failure([forged], forged)['records'][0]['sqliteErrorCode'] is None
+encoded = json.dumps(reports)
+assert 'private' not in encoded and 'Bearer' not in encoded and str(root) not in encoded
+print(encoded)
+`,
+        { flag: "wx", mode: 0o400 },
+      );
+      const result = await runLegacyIdentityFixtureCommand(
+        "/usr/bin/python3",
+        ["-I", "-B", script, root],
+        root,
+      );
+      NodeAssert.equal(result.code, 0, result.stderr);
+      for (const report of JSON.parse(result.stdout)) {
+        const evidence = failedFixture();
+        evidence.controllerFailure = report;
+        NodeAssert.deepEqual(validatePreparationNativeFailure(evidence), evidence);
+      }
+    });
+  },
+);

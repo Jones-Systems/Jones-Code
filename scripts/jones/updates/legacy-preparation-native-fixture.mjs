@@ -584,6 +584,11 @@ const controllerFailureStages = [
   "intent-publication",
   "case-assertions",
   "fixture-cleanup",
+  "reader-copy",
+  "reader-open",
+  "reader-query",
+  "reader-close",
+  "reader-removal",
 ];
 const controllerFailureTypes = [
   "unknown",
@@ -600,12 +605,25 @@ const controllerFailureTypes = [
   "KeyError",
   "RuntimeError",
   "KeyboardInterrupt",
+  "Error",
+  "Warning",
+  "InterfaceError",
+  "DatabaseError",
+  "DataError",
+  "OperationalError",
+  "IntegrityError",
+  "InternalError",
+  "ProgrammingError",
+  "NotSupportedError",
 ];
 const controllerFailureFunctions = [
   "unknown",
   "<module>",
   "<lambda>",
   "run_case",
+  "readonly_rows",
+  "<dictcomp>",
+  "<listcomp>",
   "enter",
   "perform",
   "finish",
@@ -643,6 +661,7 @@ const controllerFailureFunctions = [
   "_cold_owner_session",
 ];
 export const preparationFailureCaptureSource = String.raw`
+import sqlite3
 _CONTROLLER_STAGES = ${JSON.stringify(controllerFailureStages)}
 _CONTROLLER_TYPES = ${JSON.stringify(controllerFailureTypes)}
 _CONTROLLER_FUNCTIONS = ${JSON.stringify(controllerFailureFunctions)}
@@ -676,9 +695,11 @@ def capture_controller_failure(failures, primary):
                 frames.append(dict(source=source, function=code.co_name, line=min(trace.tb_lineno, 1000000)))
             trace, steps = trace.tb_next, steps + 1
         if trace is not None or len(frames) > 8: truncated = True
+        sqlite_code = getattr(failure, 'sqlite_errorcode', None) if isinstance(failure, sqlite3.Error) else None
+        if type(sqlite_code) is not int or not 0 <= sqlite_code <= 2147483647: sqlite_code = None
         records.append(dict(parent=parent, relation=relation, type=name if name in _CONTROLLER_TYPES else 'unknown',
                             stage=saved[1] if saved is not None and saved[0] is failure else 'fixture-cleanup' if relation == 'cleanup' else 'unknown',
-                            frames=frames[-8:], duplicateOf=previous))
+                            frames=frames[-8:], duplicateOf=previous, sqliteErrorCode=sqlite_code))
         if previous is not None: return
         seen[id(failure)] = index
         if type(failure).__name__ == '_PreparationFailure':
@@ -901,19 +922,27 @@ def setup(base, bundle):
 
 def readonly_rows(database):
     # Observe a disposable copy only after the SEA is reaped; inspection cannot normalize live WAL.
-    target = database.parent / 'assertion-copy.sqlite'
-    for suffix in ('', '-wal', '-shm'):
-        source = pathlib.Path(str(database) + suffix)
-        if source.exists(): write(pathlib.Path(str(target) + suffix), source.read_bytes())
-    db = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)
-    db.row_factory = sqlite3.Row
+    # Early failures leave this owned copy in outer fixture scratch until failure evidence is published.
+    stage = 'reader-copy'
     try:
-        return {table: [dict(row) for row in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')] for table in payload['tables']}
-    finally:
-        db.close()
+        target = database.parent / 'assertion-copy.sqlite'
         for suffix in ('', '-wal', '-shm'):
-            path = pathlib.Path(str(target) + suffix)
-            if path.exists(): path.unlink()
+            source = pathlib.Path(str(database) + suffix)
+            if source.exists(): write(pathlib.Path(str(target) + suffix), source.read_bytes())
+        stage = 'reader-open'
+        db = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)
+        db.row_factory = sqlite3.Row
+        try:
+            return at_failure_stage('reader-query', lambda: {table: [dict(row) for row in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')] for table in payload['tables']})
+        finally:
+            at_failure_stage('reader-close', db.close)
+            stage = 'reader-removal'
+            for suffix in ('', '-wal', '-shm'):
+                path = pathlib.Path(str(target) + suffix)
+                if path.exists(): path.unlink()
+    except BaseException as failure:
+        remember_failure_stage(failure, stage)
+        raise
 
 def refusal(body):
     try: body()
@@ -1971,7 +2000,32 @@ export function validatePreparationNativeFailure(value) {
     Array.isArray(value.controllerFailure.records) && value.controllerFailure.records.length <= 16,
   );
   for (const [index, cause] of value.controllerFailure.records.entries()) {
-    exact(cause, ["parent", "relation", "type", "stage", "frames", "duplicateOf"]);
+    exact(cause, [
+      "parent",
+      "relation",
+      "type",
+      "stage",
+      "frames",
+      "duplicateOf",
+      "sqliteErrorCode",
+    ]);
+    NodeAssert.ok(
+      cause.sqliteErrorCode === null ||
+        (Number.isSafeInteger(cause.sqliteErrorCode) &&
+          cause.sqliteErrorCode >= 0 &&
+          cause.sqliteErrorCode <= 2147483647 &&
+          [
+            "Error",
+            "InterfaceError",
+            "DatabaseError",
+            "DataError",
+            "OperationalError",
+            "IntegrityError",
+            "InternalError",
+            "ProgrammingError",
+            "NotSupportedError",
+          ].includes(cause.type)),
+    );
     for (const key of ["parent", "duplicateOf"])
       NodeAssert.ok(
         cause[key] === null ||
