@@ -6,6 +6,7 @@ import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
+import * as NodeProcess from "node:process";
 
 const producerDirectory = "apps/server/dist-exe/preparation-producer-candidate";
 const producerFile = `${producerDirectory}/offlinePreparationProducer.mjs`;
@@ -789,8 +790,8 @@ export async function buildAndStagePreparationProducer(options) {
       await capture.verifyCurrent();
       requireProducerExecutionContract(capture);
       if (
-        process.platform !== "darwin" ||
-        process.arch !== "arm64" ||
+        NodeProcess.platform !== "darwin" ||
+        NodeProcess.arch !== "arm64" ||
         process.versions.node !== "24.13.1" ||
         process.execArgv.length !== 0 ||
         process.env.NODE_OPTIONS ||

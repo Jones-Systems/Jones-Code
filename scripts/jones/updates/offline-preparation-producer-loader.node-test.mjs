@@ -5,7 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import * as NodeChildProcess from "node:child_process";
-import { EventEmitter } from "node:events";
+import * as NodeEvents from "node:events";
 import { verifyPreparationSourceOverlay } from "./functional-policy.ts";
 import {
   buildAndStagePreparationProducer,
@@ -1114,9 +1114,9 @@ function mockedGit(t, response) {
     NodeAssert.equal(options.env.GIT_CONFIG_GLOBAL, "/dev/null");
     NodeAssert.equal(options.env.GIT_OPTIONAL_LOCKS, "0");
     NodeAssert.equal(options.env.NODE_OPTIONS, undefined);
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.stderr = new EventEmitter();
+    const child = new NodeEvents.EventEmitter();
+    child.stdout = new NodeEvents.EventEmitter();
+    child.stderr = new NodeEvents.EventEmitter();
     child.pid = 1234;
     child.signals = [];
     child.kill = (signal) => {
