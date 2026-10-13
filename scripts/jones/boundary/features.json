@@ -133,6 +133,7 @@
         "apps/server/src/jones/processPlacement/processPlacement.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
         "native/process-placement/build.test.mjs"
       ]
     },
