@@ -207,13 +207,13 @@ function uncertainCustody(cause, seen = new Set()) {
   return nested.some((error) => uncertainCustody(error, seen));
 }
 
-// Reviewed 02d2b7 producer: import initializes in-memory Effect schemas/caches/prototypes,
+// Reviewed c4358d producer: import initializes in-memory Effect schemas/caches/prototypes,
 // Error stack detection, scheduler closures and the optional literal async_hooks lookup.
 // Its only import-time filesystem work resolves this unique captured code root and hashes
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "02d2b7cdb89ab7bcebb6fbaeae541589bffc3dff9744e6b9ad440c5988c4bd37",
+  sha256: "c4358d0b8d522b2e64242f8bf2fc677e8a8503e5e9a60747f73f2fc817ccbe97",
   size: 772658,
 };
 const reviewedRawSources = {
@@ -244,15 +244,15 @@ const reviewedRawSources = {
   "apps/server/src/jones/updates/offlinePreparationPlan.ts":
     "3af9931a1136b162ee94d9d8b0f62c2b538824b0cfb917598c7e423b0deb884b",
   "apps/server/src/jones/updates/offlinePreparationWorker.test.ts":
-    "eae5f3d70d7ce14cb2784a7af9cbb71967ebcddedc101c054caa0cfac1cba97e",
+    "ef9e17332a72236db597c1f30110b6092e5aef9127e2b14e5ae571d77d8831f7",
   "apps/server/src/jones/updates/offlinePreparationWorker.ts":
-    "2b70b0d66b50dc8bca364be23622b9d820143c881211c824078353b99b7794e6",
+    "4f01c770a4fe2df67387c73c48465769f87d9df4317d65e987b72a9465c548c6",
   "apps/server/vite.config.ts": "6c78469c642831d33b17db7e592aae2ba5be5ebdc74e494035a3b668a87466c8",
   "package.json": "5756224c0a1921e5a04859a24a9b1b6284976e788089d38b979cde35b09c399a",
   "pnpm-lock.yaml": "18db8920c7cb73d300843ec6cefca9c902dfbd0fab7082467407fdd3870a5534",
   "pnpm-workspace.yaml": "a4fe4a6796ea7cca6d0f198efb45ef135af7802ae7ee41a58f059a9e371c4032",
   "scripts/jones/updates/functional-policy.ts":
-    "b3de1bd3e2d5442396e3cc9d515f69d349b33e0eecd0cc72f0ad7dbe03ec4d2e",
+    "74d0f9a2ca0bad377a84d407fba71b96b740f07caf9f9914c22be535f39368ba",
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
