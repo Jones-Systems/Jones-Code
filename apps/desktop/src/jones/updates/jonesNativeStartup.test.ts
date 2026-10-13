@@ -6,6 +6,29 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { expect, it } from "vite-plus/test";
 import desktopPackage from "../../../package.json" with { type: "json" };
+import { holdJonesDesktopNativeWriterFence } from "./jonesNativeStartup.ts";
+import { resolveJonesColdBackendPermit } from "./jonesColdBackendCustody.ts";
+
+it("keeps warm startup unchanged and refuses cold startup before profile access", () => {
+  const input = {
+    platform: "linux",
+    env: {},
+    homeDirectory: "/must-not-access/home",
+    appDataDirectory: "/must-not-access/profile",
+    version: "fixture",
+    metadata: { name: "t3code" },
+  };
+  holdJonesDesktopNativeWriterFence(input);
+  expect(resolveJonesColdBackendPermit()).toBeUndefined();
+  expect(() =>
+    holdJonesDesktopNativeWriterFence({
+      ...input,
+      env: { T3CODE_JONES_COLD_CHANNEL_FD: "8" },
+    }),
+  ).toThrow("Cold custody binding or lifetime requires reconciliation.");
+  expect(resolveJonesColdBackendPermit).toThrow();
+  expect(() => holdJonesDesktopNativeWriterFence(input)).toThrow();
+});
 
 it("the pinned Electron runtime supports the same SQLite reader/exclusive locking protocol as Python", async () => {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-electron-lease-"));

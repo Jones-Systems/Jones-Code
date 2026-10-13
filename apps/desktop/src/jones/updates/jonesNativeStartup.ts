@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { holdJonesNativeWriterFence } from "@t3tools/shared/jones/nativeWriterFence";
 import { isCompanionPackage } from "@t3tools/shared/jones/previewCompanionProduct";
+import { holdJonesColdStartup } from "./jonesColdBackendCustody.ts";
 import { resolveDesktopUserDataOverride } from "../../app/DesktopUserDataOverride.ts";
 
 export function holdJonesDesktopNativeWriterFence(input: {
@@ -13,6 +14,7 @@ export function holdJonesDesktopNativeWriterFence(input: {
   readonly version: string;
   readonly metadata: unknown;
 }): void {
+  holdJonesColdStartup(input.env);
   if (input.platform !== "darwin" || isCompanionPackage(input.metadata)) return;
   const explicitHome = input.env.T3CODE_HOME?.trim();
   const home = explicitHome || NodePath.join(input.homeDirectory, ".t3");

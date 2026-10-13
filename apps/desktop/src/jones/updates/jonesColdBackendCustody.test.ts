@@ -9,7 +9,8 @@ import * as NodeTimersPromises from "node:timers/promises";
 import { describe, expect, it } from "vite-plus/test";
 // @ts-expect-error -- The existing owned fixture has no declarations.
 import * as IdentityFixture from "../../../../../scripts/jones/updates/legacy-identity-native-fixture.mjs";
-import { jonesColdBackendCustodySource } from "./jonesColdBackendCustody.ts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Strip only the canonical typed source in the owned lexical fixture.
+import * as NodeModule from "node:module";
 
 // Only this lexical test harness reaches the private constructor. There is no
 // production permit issuer, exported test mint, supplied spawner, or PID adoption.
@@ -43,6 +44,15 @@ process.on('SIGTERM',() => { void cancel('SIGTERM'); });
 process.on('SIGINT',() => { void cancel('SIGINT'); });
 custody = new CapturedColdBackend({executable:scenario === 'unknown-spawn' ? root + '/absent' : process.execPath,
  args:[root + '/child.mjs'],cwd:root,env:{HOME:root,TMPDIR:root,BINDING:JSON.stringify(binding),SCENARIO:scenario}},binding,controller.signal);
+const capturedOutput = new Map();
+const drains = [1,2,5,7].map(async fd => {
+ const chunks = [];
+ for await (const chunk of custody.output(fd)) chunks.push(chunk);
+ capturedOutput.set(fd,Buffer.concat(chunks).toString());
+});
+// Attach rejection handlers immediately; the owner preserves stream failures independently.
+const draining = Promise.allSettled(drains);
+if (scenario === 'fd-roundtrip') for (const fd of [3,4,6]) custody.input(fd).end('owned-fd-' + fd + '\n');
 let rejected = false;
 try {
  await custody.ready();
@@ -51,6 +61,7 @@ try {
  if (scenario === 'cancel') controller.abort();
 } catch { rejected = true; }
 const result = scenario === 'cancel' ? await custody.stop() : await custody.wait();
+await draining;
 record(result);
 if (!cancelling) {
 assert.equal(result.held,true);
@@ -63,7 +74,8 @@ else {
  assert.equal(result.pipesClosed,true);
  assert.ok(result.events.indexOf('EXIT_OBSERVED') < result.events.indexOf('CLOSE_OBSERVED'));
 }
-assert.equal(result.lifecycleFailed,scenario !== 'success');
+assert.equal(result.lifecycleFailed,!['success','fd-roundtrip'].includes(scenario));
+if (scenario === 'fd-roundtrip') { assert.equal(capturedOutput.get(5),'owned-fd-3\nowned-fd-4\n'); assert.equal(capturedOutput.get(7),'owned-fd-6\n'); }
 if (scenario !== 'output-failure') assert.equal(result.abnormalExit,['exit-one','exit-signal','cancel','unknown-spawn'].includes(scenario));
 if (scenario === 'exit-one') assert.deepEqual(result.exitStatus,{code:1,signal:null});
 if (scenario === 'exit-signal') assert.deepEqual(result.exitStatus,{code:null,signal:'SIGTERM'});
@@ -78,6 +90,10 @@ import * as fs from 'node:fs';
 const scenario = process.env.SCENARIO;
 if (scenario === 'external-cancel-escalation') process.on('SIGTERM',() => {});
 const binding = JSON.parse(process.env.BINDING);
+if (scenario === 'fd-roundtrip') {
+ const read = fd => { let line = ''; const byte = Buffer.alloc(1); while (!line.endsWith('\n')) { if (!fs.readSync(fd,byte)) throw new Error('Missing owned input'); line += byte.toString(); } return line; };
+ fs.writeSync(5,read(3) + read(4)); fs.writeSync(7,read(6));
+}
 const identity = {pid:process.pid,parentPid:process.ppid,uniqueId:'1',parentUniqueId:'2',pidVersion:1,uid:process.getuid()};
 if (scenario === 'wrong-generation') binding.transferId = '9'.repeat(64);
 const frame = JSON.stringify({protocol:1,binding,sequence:1,type:'READY',identity}) + '\n';
@@ -154,13 +170,14 @@ async function runOwnedFixture(root: string, scenario: string, signal: AbortSign
     scenario,
     settled: scenario !== "unknown-spawn",
     held: true,
-    lifecycleFailed: scenario !== "success",
+    lifecycleFailed: scenario !== "success" && scenario !== "fd-roundtrip",
   });
 }
 
 describe("private captured cold backend", () => {
   it.for([
     "success",
+    "fd-roundtrip",
     "wrong-generation",
     "duplicate",
     "truncated",
@@ -179,7 +196,11 @@ describe("private captured cold backend", () => {
     async (scenario, { signal }) => {
       await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
         const entry = NodePath.join(root, "custody.mjs");
-        await NodeFSP.writeFile(entry, jonesColdBackendCustodySource + harness);
+        const source = await NodeFSP.readFile(
+          new URL("./jonesColdBackendCustody.ts", import.meta.url),
+          "utf8",
+        );
+        await NodeFSP.writeFile(entry, NodeModule.stripTypeScriptTypes(source + harness));
         await NodeFSP.writeFile(NodePath.join(root, "child.mjs"), child);
         await runOwnedFixture(root, scenario, signal);
       });

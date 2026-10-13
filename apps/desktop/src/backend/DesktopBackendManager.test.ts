@@ -23,6 +23,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
+import type { JonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
 import * as DesktopApp from "../app/DesktopApp.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -193,6 +194,41 @@ function makeTestInstance(input: MakeInstanceInput) {
 }
 
 describe("DesktopBackendManager", () => {
+  it.effect("refuses forged cold custody without spawning or scheduling a warm restart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const finalized = yield* Deferred.make<void>();
+        let starts = 0;
+        const instance = yield* makeTestInstance({
+          config: {
+            ...baseConfig,
+            bootstrap: { ...baseConfig.bootstrap, desktopBrowserFd: 6, desktopBrowserControlFd: 7 },
+            jonesColdBackendPermit: {} as JonesColdBackendPermit,
+          },
+          spawnerLayer: Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.sync(() => {
+                starts++;
+                return makeProcess();
+              }),
+            ),
+          ),
+          desktopTelemetryPublisher: {
+            removeControlSource: () => Deferred.succeed(finalized, undefined).pipe(Effect.asVoid),
+          },
+        });
+        yield* instance.start;
+        yield* Deferred.await(finalized);
+        yield* TestClock.adjust(Duration.seconds(1));
+        const snapshot = yield* instance.snapshot;
+        assert.equal(starts, 0);
+        assert.isFalse(snapshot.desiredRunning);
+        assert.isFalse(snapshot.restartScheduled);
+        assert.isFalse(snapshot.ready);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
   it.effect("spawns the backend with fd3 bootstrap and fd4 telemetry", () =>
     Effect.scoped(
       Effect.gen(function* () {

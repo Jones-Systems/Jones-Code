@@ -23,6 +23,8 @@
 //     pulls from `DesktopBackendOutputLogFactory.forInstance(spec.id)`,
 //     so each instance lands in its own rotating file.
 
+import * as NodeSink from "@effect/platform-node/NodeSink";
+import * as NodeStream from "@effect/platform-node/NodeStream";
 import * as Brand from "effect/Brand";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -49,6 +51,12 @@ import {
   type DesktopTelemetryControlMessage as DesktopTelemetryControlMessageValue,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
+
+import {
+  startJonesColdBackend,
+  type JonesColdBackendPermit,
+  type JonesColdBackendOwner,
+} from "../jones/updates/jonesColdBackendCustody.ts";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
@@ -88,6 +96,7 @@ export interface BackendProcessContext {
 export type DesktopBackendBootstrapDelivery = "fd3" | "stdin";
 
 export interface DesktopBackendStartConfig extends BackendProcessContext {
+  readonly jonesColdBackendPermit?: JonesColdBackendPermit;
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string | undefined>;
   // When true the spawner merges the desktop process.env on top of `env`;
@@ -508,18 +517,102 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     ...(options.bootstrapDelivery === "fd3" ? { additionalFds } : {}),
   });
 
-  const handle = yield* spawner.spawn(command).pipe(
-    Effect.mapError(
-      (cause) =>
-        new BackendProcessSpawnError({
-          executablePath: options.executablePath,
-          entryPath: options.entryPath,
-          cwd: options.cwd,
-          httpBaseUrl: options.httpBaseUrl,
-          cause,
+  const coldOwner: JonesColdBackendOwner | undefined =
+    options.jonesColdBackendPermit === undefined
+      ? undefined
+      : yield* Effect.acquireRelease(
+          Effect.try({
+            try: () => {
+              if (
+                options.bootstrapDelivery !== "fd3" ||
+                !options.captureOutput ||
+                options.bootstrap.desktopTelemetryFd !== 4 ||
+                options.bootstrap.desktopTelemetryControlFd !== 5 ||
+                options.bootstrap.desktopBrowserFd !== 6 ||
+                options.bootstrap.desktopBrowserControlFd !== 7
+              )
+                throw new Error("Cold backend requires the fixed primary descriptor layout.");
+              return startJonesColdBackend(options.jonesColdBackendPermit!);
+            },
+            catch: (cause) =>
+              new BackendProcessSpawnError({
+                executablePath: options.executablePath,
+                entryPath: options.entryPath,
+                cwd: options.cwd,
+                httpBaseUrl: options.httpBaseUrl,
+                cause,
+              }),
+          }),
+          (owner) => Effect.promise(() => owner.stop()).pipe(Effect.asVoid),
+        );
+  const coldStreamError = (cause: unknown) =>
+    PlatformError.systemError({
+      _tag: "Unknown",
+      module: "ChildProcessSpawner",
+      method: "cold-custody",
+      cause,
+    });
+  const handle =
+    coldOwner === undefined
+      ? yield* spawner.spawn(command).pipe(
+          Effect.mapError(
+            (cause) =>
+              new BackendProcessSpawnError({
+                executablePath: options.executablePath,
+                entryPath: options.entryPath,
+                cwd: options.cwd,
+                httpBaseUrl: options.httpBaseUrl,
+                cause,
+              }),
+          ),
+        )
+      : {
+          // This PID is informational. Only coldOwner retains and terminates the actual spawn object.
+          pid: coldOwner.pid,
+          stdout: NodeStream.fromReadable({
+            evaluate: () => coldOwner.output(1),
+            onError: coldStreamError,
+            closeOnDone: false,
+          }),
+          stderr: NodeStream.fromReadable({
+            evaluate: () => coldOwner.output(2),
+            onError: coldStreamError,
+            closeOnDone: false,
+          }),
+          getOutputFd: (fd: number) =>
+            NodeStream.fromReadable<Uint8Array, PlatformError.PlatformError>({
+              evaluate: () => coldOwner.output(fd),
+              onError: coldStreamError,
+              closeOnDone: false,
+            }),
+          exitCode: Effect.tryPromise({
+            try: async () => {
+              const status = await coldOwner.exit();
+              if (status.code === null) throw new Error("Captured cold backend exited by signal.");
+              return status.code;
+            },
+            catch: coldStreamError,
+          }),
+        };
+  if (coldOwner !== undefined) {
+    for (const [fd, input] of [
+      [3, bootstrapStream],
+      [4, options.desktopTelemetryStream],
+      [6, options.desktopBrowserStream ?? Stream.empty],
+    ] as const) {
+      yield* Stream.run(
+        input,
+        NodeSink.fromWritable({
+          evaluate: () => coldOwner.input(fd),
+          onError: coldStreamError,
+          endOnDone: true,
         }),
-    ),
-  );
+      ).pipe(
+        Effect.catchCause(() => Effect.promise(() => coldOwner.stop()).pipe(Effect.asVoid)),
+        Effect.forkScoped,
+      );
+    }
+  }
   const outputFibers: Array<Fiber.Fiber<void, never>> = [];
 
   yield* options.onStarted?.(handle.pid) ?? Effect.void;
@@ -606,6 +699,19 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       ).pipe(Effect.forkScoped),
     );
   }
+  if (coldOwner !== undefined) {
+    yield* Effect.tryPromise({
+      try: () => coldOwner.ready(),
+      catch: (cause) =>
+        new BackendProcessSpawnError({
+          executablePath: options.executablePath,
+          entryPath: options.entryPath,
+          cwd: options.cwd,
+          httpBaseUrl: options.httpBaseUrl,
+          cause,
+        }),
+    });
+  }
   // Probe readiness in a loop while the backend process is still alive
   // instead of giving up after the first budget. A slow cold boot (the
   // WSL bundle loading across /mnt/c, or a first launch right after an
@@ -655,6 +761,18 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     Effect.timeout(options.outputDrainTimeout ?? DEFAULT_BACKEND_OUTPUT_DRAIN_TIMEOUT),
     Effect.ignore,
   );
+  if (coldOwner !== undefined) {
+    const custody = yield* Effect.promise(() => coldOwner.wait());
+    if (custody.lifecycleFailed)
+      return yield* new BackendProcessExitStatusError({
+        executablePath: options.executablePath,
+        entryPath: options.entryPath,
+        cwd: options.cwd,
+        httpBaseUrl: options.httpBaseUrl,
+        pid: coldOwner.pid,
+        cause: new Error("Cold backend custody remains held."),
+      });
+  }
   if (Exit.isFailure(exit)) {
     return yield* Effect.failCause(exit.cause);
   }
@@ -906,6 +1024,9 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                       ...latest,
                       active: Option.none<ActiveBackendRun>(),
                       ready: false,
+                      // Consuming cold runs are terminal, including refusal and failed closure.
+                      desiredRunning:
+                        config.value.jonesColdBackendPermit === undefined && latest.desiredRunning,
                     };
                     return [
                       {

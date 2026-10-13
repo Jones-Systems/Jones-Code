@@ -16,6 +16,8 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import serverPackageJson from "../../../server/package.json" with { type: "json" };
 
+import { resolveJonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
+
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopCliShim from "../app/DesktopCliShim.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -580,7 +582,9 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       ...buildObservabilityFragment(input.observabilitySettings),
     };
 
+    const jonesColdBackendPermit = resolveJonesColdBackendPermit();
     return {
+      ...(jonesColdBackendPermit === undefined ? {} : { jonesColdBackendPermit }),
       executablePath: process.execPath,
       // Packaged builds only, so a dev instance never shares the cache with the
       // prod app it is often run from. `--require` rather than NODE_COMPILE_CACHE,

@@ -1,4 +1,5 @@
 import "vite-plus/test/config";
+import * as NodePath from "node:path";
 import { defineConfig } from "vite-plus";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
@@ -13,6 +14,26 @@ const repoEnv = loadRepoEnv();
 // bundle that already carries its own copy of the same libraries.
 const isMainProcessExternal = (id: string) =>
   id === "electron" || id.startsWith("electron/") || isDesktopRuntimeExternalDependency(id);
+// Both independently bundled entry points must use Node's one module cache entry.
+const coldCustodyExternal = {
+  name: "jones-cold-custody-single-instance",
+  resolveId(id: string, importer?: string) {
+    if (!importer || !id.startsWith(".")) return null;
+    const normalizedImporter = importer.replaceAll("\\", "/");
+    const offset = normalizedImporter.lastIndexOf("/src/");
+    if (offset < 0) return null;
+    const canonical = NodePath.posix.join(
+      normalizedImporter.slice(0, offset),
+      "src/jones/updates/jonesColdBackendCustody.ts",
+    );
+    return NodePath.posix.join(
+      NodePath.posix.dirname(normalizedImporter),
+      id.replaceAll("\\", "/"),
+    ) === canonical
+      ? { id: "./jones-cold-backend-custody.cjs", external: true }
+      : null;
+  },
+};
 const shouldLaunchElectronAfterPack = process.env.T3CODE_DESKTOP_DEV === "1";
 const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
@@ -57,6 +78,7 @@ export default defineConfig({
       define: publicConfigDefine,
       outputOptions: { codeSplitting: false },
       entry: ["src/main.ts"],
+      plugins: [coldCustodyExternal],
       clean: true,
       deps: {
         alwaysBundle: (id) => !id.startsWith("node:") && !isMainProcessExternal(id),
@@ -86,19 +108,27 @@ export default defineConfig({
       },
     },
     {
-      // boot.cjs requires the other two at runtime, so all three stay separate files.
+      // boot and main require the same custody artifact; its private permits must never be duplicated.
       format: "cjs",
       outDir: "dist-electron",
       dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
-      entry: ["src/boot.ts", "src/compileCache.ts"],
+      entry: {
+        boot: "src/boot.ts",
+        compileCache: "src/compileCache.ts",
+        "jones-cold-backend-custody": "src/jones/updates/jonesColdBackendCustody.ts",
+      },
+      plugins: [coldCustodyExternal],
       clean: false,
       deps: {
         alwaysBundle: (id) =>
           id === "@t3tools/shared/jones/previewCompanionProduct" ||
           id === "@t3tools/shared/jones/nativeWriterFence",
-        neverBundle: (id) => id === "./main.cjs" || id === "./compileCache.cjs",
+        neverBundle: (id) =>
+          id === "./main.cjs" ||
+          id === "./compileCache.cjs" ||
+          id === "./jones-cold-backend-custody.cjs",
       },
     },
     {
