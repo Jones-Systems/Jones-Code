@@ -207,13 +207,13 @@ function uncertainCustody(cause, seen = new Set()) {
   return nested.some((error) => uncertainCustody(error, seen));
 }
 
-// Reviewed 94e204 producer: import initializes in-memory Effect schemas/caches/prototypes,
+// Reviewed 02d2b7 producer: import initializes in-memory Effect schemas/caches/prototypes,
 // Error stack detection, scheduler closures and the optional literal async_hooks lookup.
 // Its only import-time filesystem work resolves this unique captured code root and hashes
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "94e20462558cc409a532abee28dbc513909c7ec18283d41b3ef8380896c21c0a",
+  sha256: "02d2b7cdb89ab7bcebb6fbaeae541589bffc3dff9744e6b9ad440c5988c4bd37",
   size: 772658,
 };
 const reviewedRawSources = {
@@ -240,19 +240,19 @@ const reviewedRawSources = {
   "apps/server/src/jones/updates/offlinePreparationCore.ts":
     "300fb22410e7573f9744978df0b54675f575bd99346d8971d01740f1b7ddf0de",
   "apps/server/src/jones/updates/offlinePreparationEntry.ts":
-    "6240191f3a042a17c3f0261c6420a5ecfa3c4055c3ec3f46e0f77f792e31a34e",
+    "0414cb886fbc7c6809f43abb246a100ff2a82d3032437b4fa6c8b445a89f5c89",
   "apps/server/src/jones/updates/offlinePreparationPlan.ts":
     "3af9931a1136b162ee94d9d8b0f62c2b538824b0cfb917598c7e423b0deb884b",
   "apps/server/src/jones/updates/offlinePreparationWorker.test.ts":
-    "dfc39d3dd6c48081c0c3b0316c1a79fd79b272ead6b64e525361e115b559e3a3",
+    "eae5f3d70d7ce14cb2784a7af9cbb71967ebcddedc101c054caa0cfac1cba97e",
   "apps/server/src/jones/updates/offlinePreparationWorker.ts":
-    "48014857c152aa2dbc0d58061bd76c570b4c09ff2a9926c3ba7986732393c62e",
+    "2b70b0d66b50dc8bca364be23622b9d820143c881211c824078353b99b7794e6",
   "apps/server/vite.config.ts": "6c78469c642831d33b17db7e592aae2ba5be5ebdc74e494035a3b668a87466c8",
   "package.json": "5756224c0a1921e5a04859a24a9b1b6284976e788089d38b979cde35b09c399a",
   "pnpm-lock.yaml": "18db8920c7cb73d300843ec6cefca9c902dfbd0fab7082467407fdd3870a5534",
   "pnpm-workspace.yaml": "a4fe4a6796ea7cca6d0f198efb45ef135af7802ae7ee41a58f059a9e371c4032",
   "scripts/jones/updates/functional-policy.ts":
-    "343e1fea32d126526696bb53f7d39eaf3d9a06278b0e9cf3897169dbb050c938",
+    "b3de1bd3e2d5442396e3cc9d515f69d349b33e0eecd0cc72f0ad7dbe03ec4d2e",
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
@@ -260,9 +260,9 @@ const reviewedRawSources = {
   "scripts/jones/updates/legacy-identity-native-fixture.mjs":
     "916901550d251c2b81893bb9e273997081b3a99f2d051b7298a2fe76bc611032",
   "scripts/jones/updates/legacy-preparation-native-fixture.d.mts":
-    "1d1071a6008cb223205e393a84cfbf246e58e71a3aa55922a4fd932bd73dd8e8",
+    "6d0d5a36bfa5ea815af8b13c8f432a6ec61d2ffb04c0d1579a5d5ca9cb852043",
   "scripts/jones/updates/legacy-preparation-native-fixture.mjs":
-    "9cf5d60bd0a07a7bfc5e9d33de64c172ad7d1d5da4374b89fb6d09202c6b799c",
+    "ffb24b12022c47485f8e3b5b56619f68f83f0f1cfe94b1feca61d9747fda44e0",
   "scripts/jones/updates/offline-preparation-build.ts":
     "59e1eec050703a29cb4b4637202f4868e84aafccf8aad80e0cde05702dc0de9e",
   "scripts/jones/updates/offline-preparation-producer-entry.ts":
@@ -468,7 +468,7 @@ const reviewedImports = [
   },
 ];
 const reviewedLateModulesSha256 =
-  "4f7a97c21b66c7847850237ca0e85f7b084d39f502ae3438e70b2b9db7d213e1";
+  "fb7e46076badee29eae36bf01f9ae335b026a6f08b73d06b0e148bd985cb4662";
 
 function requireProducerExecutionContract(capture) {
   const report = capture.report.document;

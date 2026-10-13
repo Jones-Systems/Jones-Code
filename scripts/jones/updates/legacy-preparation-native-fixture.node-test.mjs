@@ -5,6 +5,9 @@ import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import {
   PreparationNativeUnavailable,
+  preparationFailureCaptureSource,
+  publishPreparationNativeFailure,
+  validatePreparationNativeFailure,
   preparationFixtureLiteral,
   preparationNativeSourceInputs,
   preparationNativeQualifierSourceInputs,
@@ -894,3 +897,432 @@ NodeTest.test(
     NodeAssert.throws(() => validatePreparationNativeResult(result, input()));
   },
 );
+
+function failedFixture() {
+  const snapshot = {
+    stdoutBytes: 2,
+    stdoutEof: true,
+    stderrBytes: 100,
+    stderrEof: true,
+    returncode: 70,
+    signal: null,
+    stopRecords: 0,
+    stderr: "JONES_PREPARATION_FAILURE phase=owner-current kind=refused",
+  };
+  return {
+    schema: 1,
+    classification: "native-preparation-failure",
+    case: "apply",
+    completedCases: 0,
+    expectedFrames: ["PLAN_READY", "CLOSED_RESULT"],
+    lastPhase: "sent-CONTINUE",
+    processes: [
+      {
+        beforeCleanup: { ...snapshot, returncode: null, stderrEof: false },
+        beforeCleanupTiming: "receive-failure",
+        afterCleanup: snapshot,
+      },
+    ],
+    closure: closure(),
+  };
+}
+NodeTest.test(
+  "failure record validates fixed phase and actual closure without private payloads",
+  () => {
+    NodeAssert.equal(validatePreparationNativeFailure(failedFixture()).case, "apply");
+    for (const mutate of [
+      (value) => {
+        value.settings = "private";
+      },
+      (value) => {
+        value.processes[0].afterCleanup.stderr = "Bearer private";
+      },
+      (value) => {
+        value.processes[0].afterCleanup.stderr =
+          "JONES_PREPARATION_FAILURE phase=private kind=refused";
+      },
+      (value) => {
+        value.expectedFrames = ["private-frame"];
+      },
+      (value) => {
+        value.closure.processes[0].reaped = false;
+      },
+      (value) => {
+        value.processes[0].afterCleanup.stdoutBytes = -1;
+      },
+    ]) {
+      const value = failedFixture();
+      mutate(value);
+      NodeAssert.throws(() => validatePreparationNativeFailure(value));
+    }
+  },
+);
+NodeTest.test("durable failure sidecar survives exact inner scratch cleanup", async () => {
+  await withLegacyIdentityScratch(async (parent) => {
+    let inner, caught;
+    try {
+      await withLegacyIdentityScratch(
+        async (root) => {
+          inner = root;
+          await NodeFSP.writeFile(
+            NodePath.join(root, "fixture-failure.json"),
+            JSON.stringify(failedFixture()),
+          );
+          throw await publishPreparationNativeFailure(root, new Error("synthetic original"), 3);
+        },
+        { temporaryDirectory: parent },
+      );
+    } catch (cause) {
+      caught = cause;
+    }
+    NodeAssert.equal(caught.cause.message, "synthetic original");
+    await NodeAssert.rejects(NodeFSP.stat(inner), { code: "ENOENT" });
+    NodeAssert.deepEqual(JSON.parse(await NodeFSP.readFile(caught.failureEvidencePath, "utf8")), {
+      ...failedFixture(),
+      completedCases: 3,
+    });
+    NodeAssert.equal((await NodeFSP.stat(caught.failureEvidencePath)).mode & 0o777, 0o600);
+  });
+});
+NodeTest.test(
+  "failed exclusive publication retains exact scratch and existing evidence",
+  async () => {
+    await withLegacyIdentityScratch(async (parent) => {
+      let inner, caught;
+      try {
+        await withLegacyIdentityScratch(
+          async (root) => {
+            inner = root;
+            await NodeFSP.writeFile(
+              NodePath.join(root, "fixture-failure.json"),
+              JSON.stringify(failedFixture()),
+            );
+            await NodeFSP.writeFile(root + "-failure.json", "existing evidence");
+            throw await publishPreparationNativeFailure(root, new Error("synthetic original"));
+          },
+          { temporaryDirectory: parent },
+        );
+      } catch (cause) {
+        caught = cause;
+      }
+      NodeAssert.equal(caught.preserveScratch, true);
+      NodeAssert.equal(caught.scratchRoot, inner);
+      NodeAssert.equal(
+        await NodeFSP.readFile(inner + "-failure.json", "utf8"),
+        "existing evidence",
+      );
+      NodeAssert.ok((await NodeFSP.stat(inner)).isDirectory());
+      // No child or descriptor is uncertain in this synthetic conflict; the enclosing test owns cleanup.
+    });
+  },
+);
+NodeTest.test("failure capture drains bounded stderr and separates precleanup status", async () => {
+  await withLegacyIdentityScratch(async (root) => {
+    const script = NodePath.join(root, "failure-capture.py");
+    await NodeFSP.writeFile(
+      script,
+      "import json, time\n" +
+        preparationFailureCaptureSource +
+        String.raw`
+class Process:
+    def __init__(self):
+        self.child, self.output, self.error = self, bytearray(b'private-frame'), bytearray(b'Bearer private-secret\n')
+        self.eof, self.signals, self.closed, self.code = {'out'}, [], False, None
+    def poll(self): return self.code
+    def pump(self, deadline):
+        assert time.monotonic() < deadline
+        self.error.extend(b'JONES_PREPARATION_FAILURE phase=owner-current kind=refused\n')
+        self.eof.add('err'); self.code = 70
+process = Process()
+before = failure_process_snapshot(process)
+drain_failure_stderr(process)
+after = failure_process_snapshot(process)
+assert before['returncode'] is None and after['returncode'] == 70
+assert before['stdoutEof'] and not before['stderrEof'] and after['stderrEof']
+assert 'private' not in json.dumps([before, after])
+assert after['stderr'].endswith('phase=owner-current kind=refused')
+assert len(safe_worker_stderr(b'private\n' * 5000)) <= 2048
+for gate in _FAILURE_GATES:
+    marker = 'JONES_PREPARATION_GATE gate=' + gate + ' command=plan scope=succeeded'
+    assert safe_worker_stderr(marker.encode()) == marker
+for marker in ('JONES_PREPARATION_GATE gate=private command=plan scope=succeeded',
+               'JONES_PREPARATION_GATE gate=runtime command=private scope=succeeded',
+               'JONES_PREPARATION_GATE gate=runtime command=plan scope=private',
+               'JONES_PREPARATION_GATE gate=runtime command=plan scope=succeeded private'):
+    assert safe_worker_stderr(marker.encode()) == '[redacted]'
+
+print(json.dumps({'passed': True}))
+`,
+      { flag: "wx", mode: 0o400 },
+    );
+    const result = await runLegacyIdentityFixtureCommand(
+      "/usr/bin/python3",
+      ["-I", "-B", script],
+      root,
+    );
+    NodeAssert.equal(result.code, 0, result.stderr);
+    NodeAssert.deepEqual(JSON.parse(result.stdout), { passed: true });
+  });
+});
+
+NodeTest.test("incomplete captured closure keeps exact inner failure evidence", async () => {
+  await withLegacyIdentityScratch(async (parent) => {
+    let inner, caught;
+    try {
+      await withLegacyIdentityScratch(
+        async (root) => {
+          inner = root;
+          const value = failedFixture();
+          value.closure.processes[0].streamsClosed = false;
+          await NodeFSP.writeFile(
+            NodePath.join(root, "fixture-failure.json"),
+            JSON.stringify(value),
+          );
+          throw await publishPreparationNativeFailure(root, new Error("synthetic original"));
+        },
+        { temporaryDirectory: parent },
+      );
+    } catch (cause) {
+      caught = cause;
+    }
+    NodeAssert.equal(caught.preserveScratch, true);
+    NodeAssert.equal(caught.scratchRoot, inner);
+    NodeAssert.equal(
+      JSON.parse(await NodeFSP.readFile(NodePath.join(inner, "fixture-failure.json"), "utf8"))
+        .closure.processes[0].streamsClosed,
+      false,
+    );
+    await NodeAssert.rejects(NodeFSP.stat(inner + "-failure.json"), { code: "ENOENT" });
+    // This test models closure failure without launching a child; its outer scope owns recovery cleanup.
+  });
+});
+NodeTest.test(
+  "failure validation refuses hidden serializers and inconsistent signal claims",
+  () => {
+    const value = failedFixture();
+    value.processes.toJSON = () => ({ secret: "private serializer payload" });
+    NodeAssert.throws(() => validatePreparationNativeFailure(value));
+    const signalled = failedFixture();
+    signalled.processes[0].afterCleanup.returncode = -15;
+    NodeAssert.throws(() => validatePreparationNativeFailure(signalled));
+    signalled.processes[0].afterCleanup.signal = 15;
+    NodeAssert.equal(
+      validatePreparationNativeFailure(signalled).processes[0].afterCleanup.signal,
+      15,
+    );
+  },
+);
+
+NodeTest.test(
+  "stop records and unavailable timing distinguish natural exit, failed stop and observation refusal",
+  async () => {
+    await withLegacyIdentityScratch(async (root) => {
+      const source = await NodeFSP.readFile(
+        new URL(
+          "../../../apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      const marker = "String.raw`";
+      NodeAssert.equal(source.split(marker).length, 2);
+      const workerSource = source.slice(
+        source.indexOf(marker) + marker.length,
+        source.lastIndexOf("`;"),
+      );
+      const workerPath = NodePath.join(root, "worker.py");
+      const script = NodePath.join(root, "diagnostic-boundaries.py");
+      await NodeFSP.writeFile(workerPath, workerSource, { flag: "wx", mode: 0o400 });
+      await NodeFSP.writeFile(
+        script,
+        String.raw`
+import errno, json, pathlib, subprocess, sys, time, types
+class Refused(Exception): pass
+def require(value):
+    if not value: raise Refused('Synthetic controller refusal')
+scope = dict(__name__='owned_diagnostic_test', require=require, Refused=Refused, subprocess=subprocess,
+             hex_value=lambda value, length: value == 'a' * length)
+exec(compile(pathlib.Path(sys.argv[1]).read_text(), 'worker.py', 'exec'), scope)
+` +
+          preparationFailureCaptureSource +
+          String.raw`
+Process, Worker = scope['_PreparationProcess'], scope['_PreparationWorker']
+class Child:
+    def __init__(self, code=None, deny=False):
+        self.code, self.deny, self.calls = code, deny, 0
+        self.stdin = self.stdout = self.stderr = None
+    def poll(self): return self.code
+    def terminate(self):
+        self.calls += 1
+        if self.deny: raise PermissionError(errno.EPERM, 'synthetic denied stop')
+        self.code = -15
+    def kill(self): raise AssertionError('Unexpected escalation')
+    def wait(self, timeout):
+        if self.code is None: self.code = 70
+        return self.code
+
+def process(child):
+    value = object.__new__(Process)
+    value.child, value.spawn_unknown, value.reaped = child, False, False
+    value.closed, value.selector = False, types.SimpleNamespace(close=lambda: None)
+    value.output, value.error, value.eof, value.signals = bytearray(), bytearray(), set(), []
+    return value
+natural = process(Child(code=0)); natural.stop(); natural.close()
+assert natural.child.calls == 0 and len(natural.signals) == 1
+assert failure_process_snapshot(natural)['stopRecords'] == 1
+assert 'signalsSent' not in failure_process_snapshot(natural)
+denied = process(Child(deny=True)); denied.stop(); denied.close()
+assert denied.child.calls == 1 and denied.signals[0]['outcome'] == 'failed'
+assert failure_process_snapshot(denied)['stopRecords'] == 1
+worker = object.__new__(Worker)
+worker.process, worker.observers = process(Child()), []
+worker.session = types.SimpleNamespace(poison=lambda failure: None)
+worker.receipt, worker.receipt_path = {}, pathlib.Path('synthetic-receipt')
+worker.save_receipt = lambda phase: None
+sent = []
+worker.receive = lambda kinds: (dict(purpose='plan', access='read-write', scopeId='a'*64), b'')
+def observation_failure(*args, **kwargs): raise Refused('Synthetic observation failure while peer awaits CONTINUE')
+worker.observe, worker.send = observation_failure, lambda *args, **kwargs: sent.append(args)
+worker.perform = lambda recovery: worker.scope('plan', 'synthetic-database')
+assert worker.process.child.poll() is None
+try: worker.run(False)
+except scope['_PreparationFailure']: pass
+else: raise AssertionError('Expected observation refusal')
+assert sent == [] and worker.process.reaped and worker.process.closed
+record = failure_process_record(worker.process, None)
+assert record['beforeCleanup'] is None and record['beforeCleanupTiming'] == 'unavailable'
+assert record['afterCleanup']['returncode'] == -15
+print(json.dumps({'naturalExitCalls': 0, 'failedStopRecords': 1, 'observationTimingUnavailable': True}))
+`,
+        { flag: "wx", mode: 0o400 },
+      );
+      const result = await runLegacyIdentityFixtureCommand(
+        "/usr/bin/python3",
+        ["-I", "-B", script, workerPath],
+        root,
+      );
+      NodeAssert.equal(result.code, 0, result.stderr);
+      NodeAssert.deepEqual(JSON.parse(result.stdout), {
+        naturalExitCalls: 0,
+        failedStopRecords: 1,
+        observationTimingUnavailable: true,
+      });
+    });
+  },
+);
+
+NodeTest.test(
+  "failure schema refuses a fabricated precleanup snapshot for unavailable timing",
+  () => {
+    const value = failedFixture();
+    value.processes[0].beforeCleanupTiming = "unavailable";
+    NodeAssert.throws(() => validatePreparationNativeFailure(value));
+    value.processes[0].beforeCleanup = null;
+    NodeAssert.equal(
+      validatePreparationNativeFailure(value).processes[0].beforeCleanupTiming,
+      "unavailable",
+    );
+  },
+);
+
+for (const mode of ["deadline", "cancel"]) {
+  NodeTest.test(
+    "missing log callback retains primary and durable evidence on " + mode,
+    async (test) => {
+      await withLegacyIdentityScratch(async (parent) => {
+        let inner,
+          caught,
+          publicationWrites = 0;
+        const original = new Error("synthetic original");
+        const controller = new AbortController();
+        const write = process.stderr.write;
+        const mock = test.mock.method(process.stderr, "write", function (chunk, ...args) {
+          if (
+            typeof chunk === "string" &&
+            chunk.startsWith('{"event":"preparation-native-failure"')
+          ) {
+            publicationWrites += 1;
+            if (mode === "cancel") controller.abort();
+            return true;
+          }
+          return Reflect.apply(write, this, [chunk, ...args]);
+        });
+        try {
+          await withLegacyIdentityScratch(
+            async (root) => {
+              inner = root;
+              await NodeFSP.writeFile(
+                NodePath.join(root, "fixture-failure.json"),
+                JSON.stringify(failedFixture()),
+              );
+              throw await publishPreparationNativeFailure(root, original, 0, {
+                signal: controller.signal,
+                publicationTimeoutMs: 10,
+              });
+            },
+            { temporaryDirectory: parent },
+          );
+        } catch (cause) {
+          caught = cause;
+        } finally {
+          mock.mock.restore();
+        }
+        NodeAssert.equal(publicationWrites, 1);
+        NodeAssert.equal(caught.cause, original);
+        NodeAssert.equal(caught.preserveScratch, true);
+        NodeAssert.equal(caught.scratchRoot, inner);
+        NodeAssert.match(
+          caught.errors[1].message,
+          mode === "cancel" ? /cancelled/ : /deadline exceeded/,
+        );
+        NodeAssert.deepEqual(
+          JSON.parse(await NodeFSP.readFile(caught.failureEvidencePath, "utf8")),
+          failedFixture(),
+        );
+        NodeAssert.ok((await NodeFSP.stat(inner)).isDirectory());
+        // Both retained paths belong to this synthetic test; no child or unknown write remains after observation.
+      });
+    },
+  );
+}
+
+NodeTest.test("fixed currentness diagnostic schema rejects unknown and private fields", () => {
+  const gates = [
+    "parent",
+    "generation",
+    "state",
+    "database-parent",
+    "inherited-directory",
+    "lock-descriptor",
+    "lock-path",
+    "runtime",
+    "retained-plan",
+    "dispatch",
+    "intent",
+    "pair",
+    "cursor",
+    "owner-journal",
+    "manifest",
+    "pair-journal",
+    "sql-directory",
+    "scope-result",
+  ];
+  for (const gate of gates) {
+    const evidence = failedFixture();
+    evidence.processes[0].afterCleanup.stderr =
+      "JONES_PREPARATION_FAILURE phase=post-sql-current kind=refused\nJONES_PREPARATION_GATE gate=" +
+      gate +
+      " command=plan scope=succeeded";
+    NodeAssert.deepEqual(validatePreparationNativeFailure(evidence), evidence);
+  }
+  for (const line of [
+    "JONES_PREPARATION_GATE gate=private command=plan scope=succeeded",
+    "JONES_PREPARATION_GATE gate=runtime command=private scope=succeeded",
+    "JONES_PREPARATION_GATE gate=runtime command=plan scope=private",
+    "JONES_PREPARATION_GATE gate=runtime command=plan scope=succeeded private",
+  ]) {
+    const evidence = failedFixture();
+    evidence.processes[0].afterCleanup.stderr = line;
+    NodeAssert.throws(() => validatePreparationNativeFailure(evidence));
+  }
+});

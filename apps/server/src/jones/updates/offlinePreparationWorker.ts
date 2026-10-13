@@ -44,6 +44,92 @@ class WorkerRefused extends Schema.TaggedError<WorkerRefused>()("WorkerRefused",
     return "Closed preparation worker refused.";
   }
 }
+const isWorkerRefused = Schema.is(WorkerRefused);
+const failurePhases = [
+  "owner-namespace",
+  "ready",
+  "command-receive",
+  "command-validation",
+  "retained-basis",
+  "sql-open",
+  "scope-send",
+  "continue-receive",
+  "continue-validation",
+  "owner-current",
+  "sqlite-identity",
+  "sql-query",
+  "sql-close",
+  "post-sql-current",
+  "plan-encode",
+  "result-send",
+  "cleanup",
+] as const;
+type WorkerFailurePhase = (typeof failurePhases)[number];
+const currentnessGates = [
+  "parent",
+  "generation",
+  "state",
+  "database-parent",
+  "inherited-directory",
+  "lock-descriptor",
+  "lock-path",
+  "runtime",
+  "retained-plan",
+  "dispatch",
+  "intent",
+  "pair",
+  "cursor",
+  "owner-journal",
+  "manifest",
+  "pair-journal",
+  "sql-directory",
+  "scope-result",
+] as const;
+type CurrentnessGate = (typeof currentnessGates)[number];
+type DiagnosticCommand = "unknown" | "plan" | "apply" | "reconcile" | "exit" | "abort";
+type DiagnosticScope =
+  | "not-started"
+  | "pending"
+  | "aborted"
+  | "query-failed"
+  | "succeeded"
+  | "unknown";
+const failureGates = new WeakMap<object, CurrentnessGate>();
+const failureDiagnostics = new WeakMap<
+  object,
+  { phase: WorkerFailurePhase; kind: string; command?: DiagnosticCommand; scope?: DiagnosticScope }
+>();
+
+/** Attribute the first failed currentness gate without replacing its private cause. */
+async function withPreparationCurrentGate<T>(
+  gate: CurrentnessGate,
+  check: () => Promise<T>,
+): Promise<T> {
+  if (!currentnessGates.some((allowed) => allowed === gate)) throw new WorkerRefused();
+  try {
+    return await check();
+  } catch (error) {
+    if (error !== null && typeof error === "object" && !failureGates.has(error))
+      failureGates.set(error, gate);
+    throw error;
+  }
+}
+
+/** Fixed classifications only: errors can contain SQL, settings, paths or other private values. */
+export function preparationWorkerFailureDiagnostic(error: unknown): string {
+  const diagnostic =
+    error !== null && typeof error === "object" ? failureDiagnostics.get(error) : undefined;
+  const gate = error !== null && typeof error === "object" ? failureGates.get(error) : undefined;
+  const line =
+    diagnostic === undefined
+      ? "JONES_PREPARATION_FAILURE phase=entry kind=unexpected\n"
+      : `JONES_PREPARATION_FAILURE phase=${diagnostic.phase} kind=${diagnostic.kind}\n`;
+  return gate === undefined
+    ? line
+    : line +
+        `JONES_PREPARATION_GATE gate=${gate} command=${diagnostic?.command ?? "unknown"} scope=${diagnostic?.scope ?? "unknown"}\n`;
+}
+
 function requireValue(condition: unknown): asserts condition {
   if (!condition) throw new WorkerRefused();
 }
@@ -250,6 +336,14 @@ const sameObject = (left: NativeStat, right: NativeStat) =>
   left.uid === right.uid &&
   left.mode === right.mode &&
   left.nlink === right.nlink;
+// SQLite sidecar creation/removal can change directory link counts without replacing the directory.
+const sameSqlDirectory = (left: NativeStat, right: NativeStat) =>
+  left.isDirectory() &&
+  right.isDirectory() &&
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.uid === right.uid &&
+  left.mode === right.mode;
 const sameFile = (left: NativeStat, right: NativeStat) =>
   sameObject(left, right) &&
   left.size === right.size &&
@@ -603,60 +697,89 @@ async function ownerNamespace(roles: NonNullable<ReturnType<typeof preparationWo
       sha(pairRaw) === dispatch.pairSha256,
   );
   const current = async () => {
-    requireValue(
-      process.ppid === dispatch.parentPid &&
-        sameObject(generationInfo, await directory(generationPath)) &&
-        sameObject(stateInfo, await directory(state)) &&
-        sameObject(databaseParent, await directory(NodePath.dirname(database))) &&
-        sameObject(generationInfo, NodeFS.fstatSync(roles.directory, { bigint: true })),
+    await withPreparationCurrentGate("parent", async () =>
+      requireValue(process.ppid === dispatch.parentPid),
     );
-    requireValue(
-      sameFile(lockInfo, NodeFS.fstatSync(roles.lock, { bigint: true })) &&
-        sameFile(lockInfo, await NodeFSP.lstat(lockPath, { bigint: true })) &&
-        sameFile(runtime.info, await NodeFSP.lstat(executable, { bigint: true })),
+    await withPreparationCurrentGate("generation", async () =>
+      requireValue(sameObject(generationInfo, await directory(generationPath))),
     );
-    requireValue(
-      (await bytes(NodePath.join(generationPath, "plan.json"), 64 * 1024 * 1024)).equals(planRaw) &&
-        (await bytes(dispatchPath, 16384)).equals(dispatchRaw) &&
-        (await bytes(NodePath.join(state, "intent.json"))).equals(intentRaw) &&
-        (await bytes(NodePath.join(state, "pair-descriptor.json"))).equals(pairRaw),
+    await withPreparationCurrentGate("state", async () =>
+      requireValue(sameObject(stateInfo, await directory(state))),
     );
-    const cursor = exact(json(await bytes(NodePath.join(maintenance, "current.json"), 8192)), [
-      "schema",
-      "generation",
-      "planSha256",
-    ]);
-    requireValue(
-      cursor.schema === 1 && cursor.generation === generation && cursor.planSha256 === planSha256,
+    await withPreparationCurrentGate("database-parent", async () =>
+      requireValue(sameSqlDirectory(databaseParent, await directory(NodePath.dirname(database)))),
     );
-    const activeJournal = record(json(await bytes(journalPath))),
-      fence = record(activeJournal.stateTransaction);
-    requireValue(
-      activeJournal.schema === 1 &&
-        activeJournal.phase === "armed" &&
-        activeJournal.maintenanceGeneration === generation &&
-        activeJournal.planSha256 === planSha256 &&
-        canonical(activeJournal.coldOwner) === canonical(cold) &&
-        fence.transactionId === dispatch.transactionId &&
-        fence.intentSha256 === dispatch.intentSha256,
+    await withPreparationCurrentGate("inherited-directory", async () =>
+      requireValue(sameObject(generationInfo, NodeFS.fstatSync(roles.directory, { bigint: true }))),
     );
-    const active = record(json(await bytes(manifestPath)));
-    requireValue(
-      canonical(active) ===
-        canonical({
-          ...original,
-          owner: "maintenance",
-          generation,
-          maintenance: { schema: 1, planSha256 },
-        }),
+    await withPreparationCurrentGate("lock-descriptor", async () =>
+      requireValue(sameFile(lockInfo, NodeFS.fstatSync(roles.lock, { bigint: true }))),
     );
-    const paired = record(json(await bytes(NodePath.join(state, "journal.json"))));
-    requireValue(
-      paired.schema === 1 &&
-        paired.intentSha256 === dispatch.intentSha256 &&
-        paired.pairSha256 === dispatch.pairSha256 &&
-        ["paired", "preparation-intent", "prepared"].includes(text(paired.phase)),
+    await withPreparationCurrentGate("lock-path", async () =>
+      requireValue(sameFile(lockInfo, await NodeFSP.lstat(lockPath, { bigint: true }))),
     );
+    await withPreparationCurrentGate("runtime", async () =>
+      requireValue(sameFile(runtime.info, await NodeFSP.lstat(executable, { bigint: true }))),
+    );
+    await withPreparationCurrentGate("retained-plan", async () =>
+      requireValue(
+        (await bytes(NodePath.join(generationPath, "plan.json"), 64 * 1024 * 1024)).equals(planRaw),
+      ),
+    );
+    await withPreparationCurrentGate("dispatch", async () =>
+      requireValue((await bytes(dispatchPath, 16384)).equals(dispatchRaw)),
+    );
+    await withPreparationCurrentGate("intent", async () =>
+      requireValue((await bytes(NodePath.join(state, "intent.json"))).equals(intentRaw)),
+    );
+    await withPreparationCurrentGate("pair", async () =>
+      requireValue((await bytes(NodePath.join(state, "pair-descriptor.json"))).equals(pairRaw)),
+    );
+    await withPreparationCurrentGate("cursor", async () => {
+      const cursor = exact(json(await bytes(NodePath.join(maintenance, "current.json"), 8192)), [
+        "schema",
+        "generation",
+        "planSha256",
+      ]);
+      requireValue(
+        cursor.schema === 1 && cursor.generation === generation && cursor.planSha256 === planSha256,
+      );
+    });
+    await withPreparationCurrentGate("owner-journal", async () => {
+      const activeJournal = record(json(await bytes(journalPath))),
+        fence = record(activeJournal.stateTransaction);
+      requireValue(
+        activeJournal.schema === 1 &&
+          activeJournal.phase === "armed" &&
+          activeJournal.maintenanceGeneration === generation &&
+          activeJournal.planSha256 === planSha256 &&
+          canonical(activeJournal.coldOwner) === canonical(cold) &&
+          fence.transactionId === dispatch.transactionId &&
+          fence.intentSha256 === dispatch.intentSha256,
+      );
+    });
+    await withPreparationCurrentGate("manifest", async () => {
+      const active = record(json(await bytes(manifestPath)));
+      requireValue(
+        canonical(active) ===
+          canonical({
+            ...original,
+            owner: "maintenance",
+            generation,
+            maintenance: { schema: 1, planSha256 },
+          }),
+      );
+    });
+    const paired = await withPreparationCurrentGate("pair-journal", async () => {
+      const paired = record(json(await bytes(NodePath.join(state, "journal.json"))));
+      requireValue(
+        paired.schema === 1 &&
+          paired.intentSha256 === dispatch.intentSha256 &&
+          paired.pairSha256 === dispatch.pairSha256 &&
+          ["paired", "preparation-intent", "prepared"].includes(text(paired.phase)),
+      );
+      return paired;
+    });
     return paired;
   };
   await current();
@@ -885,6 +1008,9 @@ export async function runInheritedPreparationWorker(): Promise<void> {
   requireValue(roles !== null);
   const channel = new WorkerChannel();
   let primary: unknown;
+  let phase: WorkerFailurePhase = "owner-namespace";
+  let diagnosticCommand: DiagnosticCommand = "unknown";
+  let diagnosticScope: DiagnosticScope = "not-started";
   try {
     const owner = await ownerNamespace(roles);
     let sequence = 0,
@@ -899,6 +1025,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       payloadBytes,
       ...additional,
     });
+    phase = "ready";
     await channel.send(
       header("READY", {
         runtimeSha256: owner.preparation.runtimeSha256,
@@ -906,22 +1033,38 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       }),
     );
     while (true) {
+      diagnosticCommand = "unknown";
+      diagnosticScope = "not-started";
+      phase = "command-receive";
       const command = await channel.receive();
+      phase = "command-validation";
       sequence += 1;
       const type = text(command.header.type);
       requirePreparationCorrelation(command, owner.sessionId, sequence, type);
       requireValue(["PLAN", "APPLY", "RECONCILE", "EXIT", "ABORT"].includes(type));
+      diagnosticCommand =
+        type === "PLAN"
+          ? "plan"
+          : type === "APPLY"
+            ? "apply"
+            : type === "RECONCILE"
+              ? "reconcile"
+              : type === "EXIT"
+                ? "exit"
+                : "abort";
       await owner.current();
       if (type === "EXIT" || type === "ABORT") {
         await channel.send(header(type));
         return;
       }
       requireValue(!queryFailed);
+      phase = "retained-basis";
       const basis = await retainedBasis(owner);
       let database = owner.database,
         settings = basis.settings,
         plan: OfflinePreparationPlan | undefined,
         planSha256: string | null = null;
+      phase = "command-validation";
       if (type === "PLAN") {
         requireValue(
           owner.dispatch.purpose === "prepare" && !planned && !applied && sequence === 1,
@@ -978,10 +1121,13 @@ export async function runInheritedPreparationWorker(): Promise<void> {
         Layer.provideMerge(NodeSqliteClient.layer({ filename: uri.href, readonly })),
       );
       let abortSequence: number | undefined;
+      phase = "sql-open";
+      diagnosticScope = "pending";
       const settled = await Effect.runPromise(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* Effect.promise(async () => {
+            phase = "scope-send";
             await channel.send(
               header("SQL_SCOPE_OPENED", {
                 scopeId,
@@ -989,17 +1135,23 @@ export async function runInheritedPreparationWorker(): Promise<void> {
                 access: readonly ? "read-only" : "read-write",
               }),
             );
+            phase = "continue-receive";
             const response = await channel.receive();
+            phase = "continue-validation";
             if (response.header.type === "ABORT") {
               requirePreparationCorrelation(response, owner.sessionId, sequence + 1, "ABORT");
               abortSequence = sequence + 1;
               return;
             }
             requirePreparationCorrelation(response, owner.sessionId, sequence, "CONTINUE", scopeId);
+            phase = "owner-current";
             await owner.current();
-            requireValue(sameObject(sqlDirectoryInfo, await directory(sqlDirectory)));
+            await withPreparationCurrentGate("sql-directory", async () =>
+              requireValue(sameSqlDirectory(sqlDirectoryInfo, await directory(sqlDirectory))),
+            );
           });
           if (abortSequence !== undefined) return null;
+          phase = "sqlite-identity";
           const sqlite = yield* sql.unsafe<{ version: string; source_id: string }>(
             "SELECT sqlite_version() AS version, sqlite_source_id() AS source_id",
           );
@@ -1010,23 +1162,41 @@ export async function runInheritedPreparationWorker(): Promise<void> {
           )
             return yield* Effect.die(new WorkerRefused());
           // Query failure is captured inside the SQL scope. Close failures remain outside this Exit.
-          return yield* preparationWorkerSql(
+          phase = "sql-query";
+          const query = yield* preparationWorkerSql(
             plan === undefined
               ? { kind: "plan", settings }
               : { kind: readonly ? "reconcile" : "apply", settings, plan },
           ).pipe(Effect.exit);
+          phase = "sql-close";
+          return query;
         }).pipe(Effect.provide(sqlLayer)),
         { signal: channel.abort.signal },
       );
+      diagnosticScope =
+        abortSequence !== undefined
+          ? "aborted"
+          : settled === null
+            ? "unknown"
+            : Exit.isFailure(settled)
+              ? "query-failed"
+              : "succeeded";
+      phase = "post-sql-current";
       await owner.current();
-      requireValue(sameObject(sqlDirectoryInfo, await directory(sqlDirectory)));
+      await withPreparationCurrentGate("sql-directory", async () =>
+        requireValue(sameSqlDirectory(sqlDirectoryInfo, await directory(sqlDirectory))),
+      );
       if (abortSequence !== undefined) {
         sequence = abortSequence;
         await channel.send(header("ABORT"));
         return;
       }
-      requireValue(settled !== null);
-      if (Exit.isFailure(settled)) {
+      const scopeResult = await withPreparationCurrentGate("scope-result", async () => {
+        requireValue(settled !== null);
+        return settled;
+      });
+      if (Exit.isFailure(scopeResult)) {
+        phase = "result-send";
         queryFailed = true;
         await channel.send(
           header("CLOSED_RESULT", {
@@ -1038,33 +1208,48 @@ export async function runInheritedPreparationWorker(): Promise<void> {
         );
         continue;
       }
-      if (settled.value.kind === "plan") {
-        const result = createContinuationPlan(settled.value.basis, {
+      if (scopeResult.value.kind === "plan") {
+        phase = "plan-encode";
+        const result = createContinuationPlan(scopeResult.value.basis, {
           id: text(command.header.planId),
           timestamp: text(command.header.timestamp),
           snapshotSha256: basis.snapshotSha256,
           settingsSha256: basis.settingsSha256,
-          preparationIds: settled.value.basis.selections
+          preparationIds: scopeResult.value.basis.selections
             .filter((item) => item.existingId === null)
             .map(() => NodeCrypto.randomUUID()),
         });
         const payload = encodeOfflinePreparationPlan(result);
+        phase = "result-send";
         await channel.send(
           header("PLAN_READY", { planSha256: sha(payload) }, payload.length),
           payload,
         );
-      } else
+      } else {
+        phase = "result-send";
         await channel.send(
           header("CLOSED_RESULT", {
             scopeId,
             planSha256,
-            outcome: settled.value.outcome,
+            outcome: scopeResult.value.outcome,
             errorCode: null,
           }),
         );
+      }
     }
   } catch (error) {
     primary = error;
+    if (error !== null && typeof error === "object")
+      failureDiagnostics.set(error, {
+        phase,
+        command: diagnosticCommand,
+        scope: diagnosticScope,
+        kind: isWorkerRefused(error)
+          ? "refused"
+          : channel.abort.signal.aborted
+            ? "aborted"
+            : "unexpected",
+      });
     throw error;
   } finally {
     const failures: unknown[] = [];
@@ -1081,6 +1266,10 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       }
     }
     // The Python creator retains/removes its exact disposable family only after actual child reaping.
-    if (primary === undefined && failures.length > 0) throw new WorkerRefused();
+    if (primary === undefined && failures.length > 0) {
+      const error = new WorkerRefused();
+      failureDiagnostics.set(error, { phase: "cleanup", kind: "refused" });
+      throw error;
+    }
   }
 }

@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeProcess from "node:process";
 import * as NodeURL from "node:url";
+import { validatePreparationNativeFailure } from "./legacy-preparation-native-fixture.mjs";
 import { verifyFunctionalPreparationGraph } from "./functional-policy.ts";
 import { buildAndStagePreparationProducer } from "./offline-preparation-producer-loader.mjs";
 
@@ -297,7 +298,15 @@ export function qualificationFailureDiagnostic(cause: unknown): Record<string, u
       if (item === null || (typeof item === "number" && Number.isSafeInteger(item)))
         result[key] = item;
     }
-    for (const key of ["signal", "code", "stdout", "stderr", "retainedRoot", "stageRoot"]) {
+    for (const key of [
+      "signal",
+      "code",
+      "stdout",
+      "stderr",
+      "retainedRoot",
+      "stageRoot",
+      "failureEvidencePath",
+    ]) {
       const raw = field(value, key);
       const item = diagnosticText(raw);
       if (item !== undefined) result[key] = item;
@@ -320,6 +329,16 @@ export function qualificationFailureDiagnostic(cause: unknown): Record<string, u
           ? { root: diagnosticText(field(cleanup, "root")) }
           : {}),
       };
+    }
+    const evidence = field(value, "failureEvidence");
+    if (evidence !== undefined) {
+      try {
+        result.failureEvidence = JSON.parse(
+          JSON.stringify(validatePreparationNativeFailure(evidence)),
+        );
+      } catch {
+        result.failureEvidence = { omitted: "invalid native failure evidence" };
+      }
     }
     const nested = field(value, "cause");
     if (nested !== undefined) result.cause = visit(nested, depth + 1);

@@ -562,7 +562,44 @@ def require_repeat_rejection(evidence):
     assert evidence.get('outputBytes') == 0 and evidence.get('firstHeader') is None
     assert evidence.get('exitCode') == 70 and evidence.get('reapedBeforeCleanup') is True
     assert evidence.get('stdinStayedOpen') is True and evidence.get('signalsBeforeCleanup') == []
-    assert evidence.get('stderr') == 'Closed preparation worker refused.\n'
+    lines = evidence.get('stderr', '').splitlines()
+    assert lines and lines[0] == 'Closed preparation worker refused.' and len(lines) <= 2
+    if len(lines) == 2:
+        assert lines[1] == 'JONES_PREPARATION_FAILURE phase=command-validation kind=refused'
+`;
+
+export const preparationFailureCaptureSource = String.raw`
+_FAILURE_PHASES = {'entry', 'owner-namespace', 'ready', 'command-receive', 'command-validation', 'retained-basis', 'sql-open', 'scope-send', 'continue-receive', 'continue-validation', 'owner-current', 'sqlite-identity', 'sql-query', 'sql-close', 'post-sql-current', 'plan-encode', 'result-send', 'cleanup'}
+_FAILURE_GATES = {'pair-journal', 'scope-result', 'lock-path', 'parent', 'runtime', 'dispatch', 'database-parent', 'pair', 'sql-directory', 'generation', 'owner-journal', 'state', 'lock-descriptor', 'manifest', 'cursor', 'intent', 'retained-plan', 'inherited-directory'}
+_FAILURE_FRAMES = {'READY', 'PLAN', 'APPLY', 'RECONCILE', 'EXIT', 'ABORT', 'SQL_SCOPE_OPENED', 'CONTINUE', 'PLAN_READY', 'CLOSED_RESULT'}
+def safe_worker_stderr(raw):
+    lines = []
+    for line in bytes(raw[:8192]).decode('utf8', errors='replace').splitlines()[:32]:
+        words = line.split(' ')
+        if line == 'Closed preparation worker refused.': lines.append(line)
+        elif len(words) == 3 and words[0] == 'JONES_PREPARATION_FAILURE' and words[1].startswith('phase=') and words[1][6:] in _FAILURE_PHASES and words[2] in ('kind=refused', 'kind=aborted', 'kind=unexpected'):
+            lines.append(line)
+        elif len(words) == 4 and words[0] == 'JONES_PREPARATION_GATE' and words[1].startswith('gate=') and words[1][5:] in _FAILURE_GATES and words[2] in ('command=unknown', 'command=plan', 'command=apply', 'command=reconcile', 'command=exit', 'command=abort') and words[3] in ('scope=unknown', 'scope=not-started', 'scope=pending', 'scope=aborted', 'scope=query-failed', 'scope=succeeded'):
+            lines.append(line)
+        else: lines.append('[redacted]')
+    return '\n'.join(lines)[:2048]
+def failure_process_snapshot(process):
+    child = process.child
+    try: code = None if child is None else child.poll()
+    except BaseException: code = None
+    return dict(stdoutBytes=len(process.output), stdoutEof='out' in process.eof,
+                stderrBytes=len(process.error), stderrEof='err' in process.eof,
+                returncode=code, signal=-code if code is not None and code < 0 else None, stopRecords=len(process.signals),
+                stderr=safe_worker_stderr(process.error))
+def failure_process_record(process, before):
+    # Only receive-failure snapshots precede controller cleanup; other timing is unavailable.
+    return dict(beforeCleanup=before, beforeCleanupTiming='receive-failure' if before is not None else 'unavailable',
+                afterCleanup=failure_process_snapshot(process))
+def drain_failure_stderr(process):
+    deadline = time.monotonic() + 0.25
+    while not process.closed and 'err' not in process.eof and time.monotonic() < deadline:
+        try: process.pump(deadline)
+        except BaseException: break
 `;
 
 export const preparationNativeDriver =
@@ -578,8 +615,10 @@ encode, sha, Refused = scope['encoded'], scope['sha'], scope['Refused']
 Process, Worker, Maintenance = scope['_PreparationProcess'], scope['_PreparationWorker'], scope['Maintenance']
 ` +
   preparationRepeatOracleSource +
+  preparationFailureCaptureSource +
   String.raw`
 commands, children, constructor_unknown, results = [], [], [], []
+failure_state = dict(case=None, expectedFrames=[], lastPhase='setup', before={})
 real_popen, real_start, real_close, real_stop = subprocess.Popen, Process.start, Process.close, Process.stop
 
 # The fixture owns every actual handle, including a Popen interrupted after initialization.
@@ -632,7 +671,7 @@ def closure():
     value = {'schema': 1, 'complete': complete, 'processes': [item.evidence() for item in commands],
              'capturedChildren': len(children), 'constructorUnknown': bool(constructor_unknown), 'pidSignalAuthority': False}
     write(root / 'fixture-closure.json', encode(value))
-    return complete
+    return value
 
 def make_bundle():
     artifact = payload['artifact']
@@ -760,6 +799,7 @@ def refusal(body):
     raise AssertionError('Expected fixture refusal')
 
 def run_case(case, bundle):
+    failure_state.update(case=case, expectedFrames=[], lastPhase='setup')
     base = root / case; base.mkdir(mode=0o700)
     manifest, directory, database, actual_boot = setup(base, bundle)
     baseline = readonly_rows(database)
@@ -789,7 +829,13 @@ def run_case(case, bundle):
                 faults.append('cancel'); raise KeyboardInterrupt('Owned cancellation while SEA awaits CONTINUE')
     Worker.observe = observe
     def receive(self, kinds):
-        result, raw = original_receive(self, kinds)
+        failure_state['expectedFrames'] = sorted(kind for kind in kinds if kind in _FAILURE_FRAMES)
+        try: result, raw = original_receive(self, kinds)
+        except BaseException:
+            failure_state['before'][id(self.process)] = failure_process_snapshot(self.process)
+            drain_failure_stderr(self.process)
+            raise
+        failure_state['lastPhase'] = 'received-' + result['type'] if result['type'] in _FAILURE_FRAMES else 'unknown'
         if result['type'] == 'SQL_SCOPE_OPENED': scope_frames[self.session_id] = result.copy()
         if result['type'] in ('PLAN_READY', 'CLOSED_RESULT'):
             target = self.work / 'state.sqlite' if result['type'] == 'PLAN_READY' or result.get('planSha256') is None else database
@@ -816,7 +862,9 @@ def run_case(case, bundle):
                 faults.append('plan-drift')
                 plan_path = directory / 'state/preparation-plan.json'
                 write(plan_path, plan_path.read_bytes() + b'\n', 0o400)
-        return original_send(self, kind, **fields)
+        result = original_send(self, kind, **fields)
+        failure_state['lastPhase'] = 'sent-' + kind if kind in _FAILURE_FRAMES else 'unknown'
+        return result
     Worker.send = send
     def finish(self):
         if case == 'repeat-apply' and not faults:
@@ -960,6 +1008,8 @@ try:
 except BaseException as cause: failure = cause
 finally:
     failures = [] if failure is None else [failure]
+    before = [failure_state['before'].get(id(item)) for item in commands]
+    for item in commands: drain_failure_stderr(item)
     # Only captured handles are signalled; an uncertain constructor is retained, never adopted by PID.
     for process in commands:
         try: real_stop(process)
@@ -974,7 +1024,15 @@ finally:
                 except subprocess.TimeoutExpired: child.kill(); child.wait(timeout=5)
         except BaseException as cause: failures.append(cause)
     try:
-        if not closure(): failures.append(AssertionError('Captured fixture closure remains unproved'))
+        closed = closure()
+        if not closed['complete']: failures.append(AssertionError('Captured fixture closure remains unproved'))
+        if failures:
+            assert len(commands) <= 64
+            diagnostic = dict(schema=1, classification='native-preparation-failure', case=failure_state['case'],
+                              completedCases=len(results), expectedFrames=failure_state['expectedFrames'], lastPhase=failure_state['lastPhase'],
+                              processes=[failure_process_record(item, prior) for prior, item in zip(before, commands)], closure=closed)
+            raw = encode(diagnostic); assert len(raw) <= 262144
+            write(root / 'fixture-failure.json', raw)
     except BaseException as cause: failures.append(cause)
     if failures: raise scope['_PreparationFailure'](failures, str(root / 'fixture-closure.json'))
 print(json.dumps(dict(schema=1, qualification='synthetic-native-preparation', producerQualified=False,
@@ -1602,7 +1660,12 @@ export function validatePreparationNativeResult(result, input) {
       NodeAssert.equal(rejection.firstHeader, null);
       NodeAssert.equal(rejection.exitCode, 70);
       NodeAssert.deepEqual(rejection.signalsBeforeCleanup, []);
-      NodeAssert.equal(rejection.stderr, "Closed preparation worker refused.\n");
+      NodeAssert.ok(
+        [
+          "Closed preparation worker refused.\n",
+          "Closed preparation worker refused.\nJONES_PREPARATION_FAILURE phase=command-validation kind=refused\n",
+        ].includes(rejection.stderr),
+      );
     }
   });
 }
@@ -1657,6 +1720,253 @@ export function validatePreparationNativeClosure(value) {
     NodeAssert.equal(item.pidSignalAuthority, false);
   }
   return value;
+}
+
+const failurePhases = new Set([
+  "entry",
+  "owner-namespace",
+  "ready",
+  "command-receive",
+  "command-validation",
+  "retained-basis",
+  "sql-open",
+  "scope-send",
+  "continue-receive",
+  "continue-validation",
+  "owner-current",
+  "sqlite-identity",
+  "sql-query",
+  "sql-close",
+  "post-sql-current",
+  "plan-encode",
+  "result-send",
+  "cleanup",
+]);
+const failureFrames = new Set([
+  "READY",
+  "PLAN",
+  "APPLY",
+  "RECONCILE",
+  "EXIT",
+  "ABORT",
+  "SQL_SCOPE_OPENED",
+  "CONTINUE",
+  "PLAN_READY",
+  "CLOSED_RESULT",
+]);
+const failureGates = new Set([
+  "parent",
+  "generation",
+  "state",
+  "database-parent",
+  "inherited-directory",
+  "lock-descriptor",
+  "lock-path",
+  "runtime",
+  "retained-plan",
+  "dispatch",
+  "intent",
+  "pair",
+  "cursor",
+  "owner-journal",
+  "manifest",
+  "pair-journal",
+  "sql-directory",
+  "scope-result",
+]);
+function safeFailureStderr(value) {
+  NodeAssert.equal(typeof value, "string");
+  NodeAssert.ok(value.length <= 2048);
+  for (const line of value.split("\n")) {
+    if (["", "[redacted]", "Closed preparation worker refused."].includes(line)) continue;
+    const match =
+      /^JONES_PREPARATION_FAILURE phase=([a-z-]+) kind=(refused|aborted|unexpected)$/.exec(line);
+    if (match && failurePhases.has(match[1])) continue;
+    const gate =
+      /^JONES_PREPARATION_GATE gate=([a-z-]+) command=(unknown|plan|apply|reconcile|exit|abort) scope=(unknown|not-started|pending|aborted|query-failed|succeeded)$/.exec(
+        line,
+      );
+    NodeAssert.ok(gate && failureGates.has(gate[1]));
+  }
+}
+export function validatePreparationNativeFailure(value) {
+  exact(value, [
+    "schema",
+    "classification",
+    "case",
+    "completedCases",
+    "expectedFrames",
+    "lastPhase",
+    "processes",
+    "closure",
+  ]);
+  NodeAssert.equal(value.schema, 1);
+  NodeAssert.equal(value.classification, "native-preparation-failure");
+  NodeAssert.ok(value.case === null || preparationNativeCases.includes(value.case));
+  NodeAssert.ok(
+    Number.isSafeInteger(value.completedCases) &&
+      value.completedCases >= 0 &&
+      value.completedCases <= 10,
+  );
+  NodeAssert.ok(
+    Array.isArray(value.expectedFrames) &&
+      value.expectedFrames.length <= 10 &&
+      value.expectedFrames.every((kind) => failureFrames.has(kind)),
+  );
+  NodeAssert.equal(typeof value.lastPhase, "string");
+  NodeAssert.equal(new Set(value.expectedFrames).size, value.expectedFrames.length);
+  NodeAssert.ok(
+    ["setup", "unknown"].includes(value.lastPhase) ||
+      (/^(?:sent|received)-/.test(value.lastPhase) &&
+        failureFrames.has(value.lastPhase.replace(/^(?:sent|received)-/, ""))),
+  );
+  validatePreparationNativeClosure(value.closure);
+  NodeAssert.ok(
+    Array.isArray(value.processes) &&
+      value.processes.length <= 64 &&
+      value.processes.length === value.closure.processes.length,
+  );
+  for (const item of value.processes) {
+    exact(item, ["beforeCleanup", "beforeCleanupTiming", "afterCleanup"]);
+    NodeAssert.equal(
+      item.beforeCleanupTiming,
+      item.beforeCleanup === null ? "unavailable" : "receive-failure",
+    );
+    for (const snapshot of item.beforeCleanup === null
+      ? [item.afterCleanup]
+      : [item.beforeCleanup, item.afterCleanup]) {
+      exact(snapshot, [
+        "stdoutBytes",
+        "stdoutEof",
+        "stderrBytes",
+        "stderrEof",
+        "returncode",
+        "signal",
+        "stopRecords",
+        "stderr",
+      ]);
+      for (const key of ["stdoutBytes", "stderrBytes", "stopRecords"])
+        NodeAssert.ok(
+          Number.isSafeInteger(snapshot[key]) &&
+            snapshot[key] >= 0 &&
+            snapshot[key] <= 16 * 1024 * 1024,
+        );
+      for (const key of ["stdoutEof", "stderrEof"])
+        NodeAssert.equal(typeof snapshot[key], "boolean");
+      NodeAssert.ok(
+        snapshot.returncode === null ||
+          (Number.isSafeInteger(snapshot.returncode) &&
+            Math.abs(snapshot.returncode) <= 2147483647),
+      );
+      NodeAssert.equal(
+        snapshot.signal,
+        snapshot.returncode !== null && snapshot.returncode < 0 ? -snapshot.returncode : null,
+      );
+      safeFailureStderr(snapshot.stderr);
+    }
+    NodeAssert.ok(Number.isSafeInteger(item.afterCleanup.returncode));
+  }
+  const safe = structuredClone(value);
+  NodeAssert.ok(Buffer.byteLength(JSON.stringify(safe)) <= 262144);
+  return safe;
+}
+
+/** The sibling is deliverable failure evidence; inner scratch can disappear only after durable publication. */
+export async function publishPreparationNativeFailure(
+  root,
+  primary,
+  completedCases = 0,
+  { signal, publicationTimeoutMs = 2000 } = {},
+) {
+  const path = root + "-failure.json";
+  let handle,
+    closeAttempted = false;
+  try {
+    NodeAssert.ok(
+      Number.isSafeInteger(publicationTimeoutMs) &&
+        publicationTimeoutMs >= 1 &&
+        publicationTimeoutMs <= 2000,
+    );
+    const raw = await readPreparationNativeInputFile(NodePath.join(root, "fixture-failure.json"));
+    NodeAssert.ok(raw.length <= 262144);
+    const failureEvidence = validatePreparationNativeFailure({
+      ...JSON.parse(raw),
+      completedCases,
+    });
+    handle = await NodeFSP.open(path, "wx", 0o600);
+    await handle.writeFile(JSON.stringify(failureEvidence) + "\n");
+    await handle.sync();
+    closeAttempted = true;
+    await handle.close();
+    handle = undefined;
+    const parent = await NodeFSP.open(NodePath.dirname(root), "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+    const readback = await readPreparationNativeInputFile(path);
+    NodeAssert.deepEqual(JSON.parse(readback), failureEvidence);
+    const failure = Object.assign(
+      new Error("Native preparation failed; bounded diagnostics persisted.", { cause: primary }),
+      { failureEvidencePath: path, failureEvidence },
+    );
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        signal?.removeEventListener("abort", cancelled);
+        if (error) reject(error);
+        else resolve();
+      };
+      const cancelled = () => finish(new Error("Native failure log publication cancelled."));
+      // Stream completion must be observed; backpressure or a missing callback is not publication.
+      const deadline = setTimeout(
+        () => finish(new Error("Native failure log publication deadline exceeded.")),
+        publicationTimeoutMs,
+      );
+      signal?.addEventListener("abort", cancelled, { once: true });
+      if (signal?.aborted) {
+        cancelled();
+        return;
+      }
+      try {
+        process.stderr.write(
+          JSON.stringify({
+            event: "preparation-native-failure",
+            failureEvidencePath: path,
+            failureEvidence,
+          }) + "\n",
+          finish,
+        );
+      } catch (error) {
+        finish(error);
+      }
+    });
+    return failure;
+  } catch (publication) {
+    const failures = [primary, publication];
+    if (handle && !closeAttempted)
+      try {
+        await handle.close();
+      } catch (close) {
+        failures.push(close);
+      }
+    throw Object.assign(
+      new AggregateError(
+        failures,
+        "Native failure evidence publication is unproved; exact scratch retained.",
+        { cause: primary },
+      ),
+      {
+        preserveScratch: true,
+        evidencePath: NodePath.join(root, "fixture-failure.json"),
+        failureEvidencePath: path,
+      },
+    );
+  }
 }
 
 export async function runLegacyPreparationNativeFixture({
@@ -1794,6 +2104,10 @@ export async function runLegacyPreparationNativeFixture({
           failure.evidencePath = evidence;
           throw failure;
         }
+        if (primary)
+          primary = await publishPreparationNativeFailure(root, primary, records.length, {
+            signal,
+          });
         try {
           NodeAssert.deepEqual(
             await readPreparationNativeQualifierSourceHashes(repository),
@@ -1887,6 +2201,7 @@ if (
         message: error.message,
         scratchRoot: error.scratchRoot,
         evidencePath: error.evidencePath,
+        failureEvidencePath: error.failureEvidencePath,
         stateAdmissionAllowed: false,
       }) + "\n",
     );

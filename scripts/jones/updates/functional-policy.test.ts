@@ -12,7 +12,7 @@ const source = { repository: "Jones-Systems/Jones-Code", ...identity };
 describe("reviewed functional worker policy", () => {
   it.each([
     ["synthetic module", new TextEncoder().encode("export const qualified = true;")],
-    ["same-sized substituted bytes", new Uint8Array(1883613)],
+    ["same-sized substituted bytes", new Uint8Array(1888446)],
   ] as const)("refuses %s before reading source or trusting graph claims", (_name, entryBytes) => {
     let sourceRead = false;
     expect(() =>
