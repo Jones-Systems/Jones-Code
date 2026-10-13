@@ -63,7 +63,10 @@ export const make = <Key>(): Effect.Effect<KeyedLock<Key>> =>
           (semaphore) => semaphore.withPermit(effect),
           () => release(key),
         ),
-      tryWithLock: (key, effect) =>
+      tryWithLock: <A, E, R>(
+        key: Key,
+        effect: Effect.Effect<A, E, R>,
+      ): Effect.Effect<Option.Option<A>, E, R> =>
         Effect.acquireUseRelease(
           Effect.flatMap(Semaphore.make(1), (semaphore) =>
             Ref.modify(locks, (current) => {
@@ -74,10 +77,10 @@ export const make = <Key>(): Effect.Effect<KeyedLock<Key>> =>
               return [Option.some(semaphore), next] as const;
             }),
           ),
-          (reserved) =>
+          (reserved): Effect.Effect<Option.Option<A>, E, R> =>
             Option.isSome(reserved)
               ? reserved.value.withPermitsIfAvailable(1)(effect)
-              : Effect.succeed(Option.none()),
+              : Effect.succeed(Option.none<A>()),
           (reserved) => (Option.isSome(reserved) ? release(key) : Effect.void),
         ),
       activeKeys: Effect.map(Ref.get(locks), (current) => Array.from(current.keys())),
