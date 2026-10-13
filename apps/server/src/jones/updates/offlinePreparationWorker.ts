@@ -336,6 +336,14 @@ const sameObject = (left: NativeStat, right: NativeStat) =>
   left.uid === right.uid &&
   left.mode === right.mode &&
   left.nlink === right.nlink;
+// SQLite sidecar creation/removal can change directory link counts without replacing the directory.
+const sameSqlDirectory = (left: NativeStat, right: NativeStat) =>
+  left.isDirectory() &&
+  right.isDirectory() &&
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.uid === right.uid &&
+  left.mode === right.mode;
 const sameFile = (left: NativeStat, right: NativeStat) =>
   sameObject(left, right) &&
   left.size === right.size &&
@@ -699,7 +707,7 @@ async function ownerNamespace(roles: NonNullable<ReturnType<typeof preparationWo
       requireValue(sameObject(stateInfo, await directory(state))),
     );
     await withPreparationCurrentGate("database-parent", async () =>
-      requireValue(sameObject(databaseParent, await directory(NodePath.dirname(database)))),
+      requireValue(sameSqlDirectory(databaseParent, await directory(NodePath.dirname(database)))),
     );
     await withPreparationCurrentGate("inherited-directory", async () =>
       requireValue(sameObject(generationInfo, NodeFS.fstatSync(roles.directory, { bigint: true }))),
@@ -1139,7 +1147,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
             phase = "owner-current";
             await owner.current();
             await withPreparationCurrentGate("sql-directory", async () =>
-              requireValue(sameObject(sqlDirectoryInfo, await directory(sqlDirectory))),
+              requireValue(sameSqlDirectory(sqlDirectoryInfo, await directory(sqlDirectory))),
             );
           });
           if (abortSequence !== undefined) return null;
@@ -1176,7 +1184,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       phase = "post-sql-current";
       await owner.current();
       await withPreparationCurrentGate("sql-directory", async () =>
-        requireValue(sameObject(sqlDirectoryInfo, await directory(sqlDirectory))),
+        requireValue(sameSqlDirectory(sqlDirectoryInfo, await directory(sqlDirectory))),
       );
       if (abortSequence !== undefined) {
         sequence = abortSequence;

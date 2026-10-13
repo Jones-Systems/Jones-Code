@@ -8,7 +8,7 @@ import * as NodeOS from "node:os";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- All paths remain within the test's captured temporary root.
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Isolated tests execute only the private diagnostic fragment, without exporting a production seam.
+// Isolated tests execute only the private diagnostic fragment, without exporting a production seam.
 import * as NodeVM from "node:vm";
 import * as NodeModule from "node:module";
 import * as NodeSqlite from "node:sqlite";
@@ -922,3 +922,142 @@ it("invalid runtime currentness labels never run checks or enter diagnostics", a
     "JONES_PREPARATION_FAILURE phase=entry kind=unexpected\n",
   );
 });
+
+function sqlDirectoryIdentityFixture() {
+  const source = NodeFS.readFileSync(
+    new URL("./offlinePreparationWorker.ts", import.meta.url),
+    "utf8",
+  );
+  const fragment = (start: string, end: string) => {
+    const begin = source.indexOf(start),
+      finish = source.indexOf(end, begin);
+    assert.isAtLeast(begin, 0);
+    assert.isAbove(finish, begin);
+    return source.slice(begin, finish);
+  };
+  const code = NodeModule.stripTypeScriptTypes(
+    fragment("function requireValue(", "function record(") +
+      fragment("type NativeStat = ", "/** Bounded descriptor reads") +
+      fragment("async function directory(", "async function absent("),
+  );
+  return NodeVM.runInNewContext(
+    code + "\n({sameObject, sameFile, sameSqlDirectory, ownedFile, directory});",
+    {
+      NodeFSP,
+      NodePath,
+      process,
+      WorkerRefused: Error,
+    },
+  ) as {
+    sameObject(left: NodeFS.BigIntStats, right: NodeFS.BigIntStats): boolean;
+    sameFile(left: NodeFS.BigIntStats, right: NodeFS.BigIntStats): boolean;
+    sameSqlDirectory(left: NodeFS.BigIntStats, right: NodeFS.BigIntStats): boolean;
+    ownedFile(info: NodeFS.BigIntStats, maximum: number): void;
+    directory(path: string): Promise<NodeFS.BigIntStats>;
+  };
+}
+
+it.effect("SQL directory identity survives actual copied WAL sidecar removal", () =>
+  Effect.gen(function* () {
+    const root = yield* scratch;
+    yield* Effect.promise(async () => {
+      const realRoot = await NodeFSP.realpath(root);
+      const sourceDirectory = NodePath.join(realRoot, "source"),
+        copiedDirectory = NodePath.join(realRoot, "copy");
+      await NodeFSP.mkdir(sourceDirectory, { mode: 0o700 });
+      await NodeFSP.mkdir(copiedDirectory, { mode: 0o700 });
+      const sourcePath = NodePath.join(sourceDirectory, "state.sqlite"),
+        copiedPath = NodePath.join(copiedDirectory, "state.sqlite");
+      const source = new NodeSqlite.DatabaseSync(sourcePath);
+      try {
+        source.exec(
+          "PRAGMA journal_mode=WAL; CREATE TABLE sample(value INTEGER); INSERT INTO sample VALUES(7)",
+        );
+        for (const suffix of ["", "-wal", "-shm"])
+          await NodeFSP.copyFile(sourcePath + suffix, copiedPath + suffix);
+        const { directory, sameObject, sameSqlDirectory } = sqlDirectoryIdentityFixture();
+        const before = await directory(copiedDirectory);
+        const copied = new NodeSqlite.DatabaseSync(copiedPath);
+        try {
+          assert.equal(copied.prepare("SELECT value FROM sample").get()?.value, 7);
+        } finally {
+          copied.close();
+        }
+        const after = await directory(copiedDirectory);
+        assert.deepEqual(await NodeFSP.readdir(copiedDirectory), ["state.sqlite"]);
+        for (const key of ["dev", "ino", "uid", "mode"] as const)
+          assert.equal(after[key], before[key]);
+        assert.isTrue(before.isDirectory() && after.isDirectory());
+        assert.isTrue(sameSqlDirectory(before, after));
+        assert.equal(sameObject(before, after), before.nlink === after.nlink);
+        // APFS counts these file entries in nlink; other supported filesystems may leave nlink unchanged.
+        assert.isTrue(after.nlink === before.nlink || after.nlink === before.nlink - 2n);
+      } finally {
+        source.close();
+      }
+    });
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "SQL directory checks refuse changed identity, symlinks and unsafe paths while file hardlinks stay forbidden",
+  () =>
+    Effect.gen(function* () {
+      const root = yield* scratch;
+      yield* Effect.promise(async () => {
+        const realRoot = await NodeFSP.realpath(root),
+          path = NodePath.join(realRoot, "database");
+        await NodeFSP.mkdir(path, { mode: 0o700 });
+        const { directory, sameObject, sameFile, sameSqlDirectory, ownedFile } =
+          sqlDirectoryIdentityFixture();
+        const before = await directory(path);
+        const altered = (fields: Partial<NodeFS.BigIntStats>) =>
+          Object.assign(
+            Object.create(Object.getPrototypeOf(before)),
+            before,
+            fields,
+          ) as NodeFS.BigIntStats;
+        const relinked = altered({ nlink: before.nlink + 2n });
+        assert.isTrue(sameSqlDirectory(before, relinked));
+        assert.isFalse(sameObject(before, relinked));
+        for (const key of ["dev", "ino", "uid", "mode"] as const) {
+          const changed = altered({ [key]: before[key] + 1n });
+          assert.isFalse(sameSqlDirectory(before, changed));
+          assert.isFalse(sameSqlDirectory(changed, before));
+        }
+        const fileType = altered({ isDirectory: () => false });
+        assert.isFalse(sameSqlDirectory(before, fileType));
+        assert.isFalse(sameSqlDirectory(fileType, before));
+        await NodeFSP.rename(path, path + "-retained");
+        await NodeFSP.mkdir(path, { mode: 0o700 });
+        assert.isFalse(sameSqlDirectory(before, await directory(path)));
+        await NodeFSP.symlink(path, path + "-symlink");
+        for (const invalid of [path + "-symlink", "relative", path + "/../database"]) {
+          let refused = false;
+          try {
+            await directory(invalid);
+          } catch {
+            refused = true;
+          }
+          assert.isTrue(refused);
+        }
+        await NodeFSP.chmod(path, 0o777);
+        let unsafeRefused = false;
+        try {
+          await directory(path);
+        } catch {
+          unsafeRefused = true;
+        }
+        assert.isTrue(unsafeRefused);
+        const file = NodePath.join(realRoot, "member");
+        await NodeFSP.writeFile(file, "fixed", { flag: "wx", mode: 0o600 });
+        const original = await NodeFSP.lstat(file, { bigint: true });
+        ownedFile(original, 5);
+        await NodeFSP.link(file, file + "-alias");
+        const linked = await NodeFSP.lstat(file, { bigint: true });
+        assert.equal(linked.nlink, 2n);
+        assert.isFalse(sameFile(original, linked));
+        assert.throws(() => ownedFile(linked, 5));
+      });
+    }).pipe(Effect.scoped),
+);
