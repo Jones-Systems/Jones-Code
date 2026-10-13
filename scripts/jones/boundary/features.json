@@ -108,6 +108,7 @@
     {
       "id": "provider-runtime-identity",
       "tests": [
+        "apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
         "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
         "packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
