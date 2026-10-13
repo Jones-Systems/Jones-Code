@@ -330,7 +330,7 @@ it("copies strict native failure evidence into the receipt and rejects private e
       stderrEof: true,
       returncode: 70,
       signal: null,
-      signalsSent: 0,
+      stopRecords: 0,
       stderr: "",
     };
     const failureEvidence = {
@@ -340,7 +340,13 @@ it("copies strict native failure evidence into the receipt and rejects private e
       completedCases: 0,
       expectedFrames: ["PLAN_READY", "CLOSED_RESULT"],
       lastPhase: "sent-CONTINUE",
-      processes: [{ beforeCleanup: { ...snapshot, returncode: null }, afterCleanup: snapshot }],
+      processes: [
+        {
+          beforeCleanup: { ...snapshot, returncode: null },
+          beforeCleanupTiming: "receive-failure",
+          afterCleanup: snapshot,
+        },
+      ],
       closure: {
         schema: 1,
         complete: true,

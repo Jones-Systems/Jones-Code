@@ -58,6 +58,7 @@ export function publishPreparationNativeFailure(
   root: string,
   primary: unknown,
   completedCases?: number,
+  options?: { readonly signal?: AbortSignal; readonly publicationTimeoutMs?: number },
 ): Promise<
   Error & {
     readonly failureEvidencePath: string;

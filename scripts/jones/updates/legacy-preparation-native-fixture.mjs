@@ -586,8 +586,12 @@ def failure_process_snapshot(process):
     except BaseException: code = None
     return dict(stdoutBytes=len(process.output), stdoutEof='out' in process.eof,
                 stderrBytes=len(process.error), stderrEof='err' in process.eof,
-                returncode=code, signal=-code if code is not None and code < 0 else None, signalsSent=len(process.signals),
+                returncode=code, signal=-code if code is not None and code < 0 else None, stopRecords=len(process.signals),
                 stderr=safe_worker_stderr(process.error))
+def failure_process_record(process, before):
+    # Only receive-failure snapshots precede controller cleanup; other timing is unavailable.
+    return dict(beforeCleanup=before, beforeCleanupTiming='receive-failure' if before is not None else 'unavailable',
+                afterCleanup=failure_process_snapshot(process))
 def drain_failure_stderr(process):
     deadline = time.monotonic() + 0.25
     while not process.closed and 'err' not in process.eof and time.monotonic() < deadline:
@@ -1001,7 +1005,7 @@ try:
 except BaseException as cause: failure = cause
 finally:
     failures = [] if failure is None else [failure]
-    before = [failure_state['before'].get(id(item), failure_process_snapshot(item)) for item in commands]
+    before = [failure_state['before'].get(id(item)) for item in commands]
     for item in commands: drain_failure_stderr(item)
     # Only captured handles are signalled; an uncertain constructor is retained, never adopted by PID.
     for process in commands:
@@ -1023,7 +1027,7 @@ finally:
             assert len(commands) <= 64
             diagnostic = dict(schema=1, classification='native-preparation-failure', case=failure_state['case'],
                               completedCases=len(results), expectedFrames=failure_state['expectedFrames'], lastPhase=failure_state['lastPhase'],
-                              processes=[dict(beforeCleanup=prior, afterCleanup=failure_process_snapshot(item)) for prior, item in zip(before, commands)], closure=closed)
+                              processes=[failure_process_record(item, prior) for prior, item in zip(before, commands)], closure=closed)
             raw = encode(diagnostic); assert len(raw) <= 262144
             write(root / 'fixture-failure.json', raw)
     except BaseException as cause: failures.append(cause)
@@ -1795,8 +1799,14 @@ export function validatePreparationNativeFailure(value) {
       value.processes.length === value.closure.processes.length,
   );
   for (const item of value.processes) {
-    exact(item, ["beforeCleanup", "afterCleanup"]);
-    for (const snapshot of [item.beforeCleanup, item.afterCleanup]) {
+    exact(item, ["beforeCleanup", "beforeCleanupTiming", "afterCleanup"]);
+    NodeAssert.equal(
+      item.beforeCleanupTiming,
+      item.beforeCleanup === null ? "unavailable" : "receive-failure",
+    );
+    for (const snapshot of item.beforeCleanup === null
+      ? [item.afterCleanup]
+      : [item.beforeCleanup, item.afterCleanup]) {
       exact(snapshot, [
         "stdoutBytes",
         "stdoutEof",
@@ -1804,10 +1814,10 @@ export function validatePreparationNativeFailure(value) {
         "stderrEof",
         "returncode",
         "signal",
-        "signalsSent",
+        "stopRecords",
         "stderr",
       ]);
-      for (const key of ["stdoutBytes", "stderrBytes", "signalsSent"])
+      for (const key of ["stdoutBytes", "stderrBytes", "stopRecords"])
         NodeAssert.ok(
           Number.isSafeInteger(snapshot[key]) &&
             snapshot[key] >= 0 &&
@@ -1834,11 +1844,21 @@ export function validatePreparationNativeFailure(value) {
 }
 
 /** The sibling is deliverable failure evidence; inner scratch can disappear only after durable publication. */
-export async function publishPreparationNativeFailure(root, primary, completedCases = 0) {
+export async function publishPreparationNativeFailure(
+  root,
+  primary,
+  completedCases = 0,
+  { signal, publicationTimeoutMs = 2000 } = {},
+) {
   const path = root + "-failure.json";
   let handle,
     closeAttempted = false;
   try {
+    NodeAssert.ok(
+      Number.isSafeInteger(publicationTimeoutMs) &&
+        publicationTimeoutMs >= 1 &&
+        publicationTimeoutMs <= 2000,
+    );
     const raw = await readPreparationNativeInputFile(NodePath.join(root, "fixture-failure.json"));
     NodeAssert.ok(raw.length <= 262144);
     const failureEvidence = validatePreparationNativeFailure({
@@ -1863,16 +1883,40 @@ export async function publishPreparationNativeFailure(root, primary, completedCa
       new Error("Native preparation failed; bounded diagnostics persisted.", { cause: primary }),
       { failureEvidencePath: path, failureEvidence },
     );
-    await new Promise((resolve, reject) =>
-      process.stderr.write(
-        JSON.stringify({
-          event: "preparation-native-failure",
-          failureEvidencePath: path,
-          failureEvidence,
-        }) + "\n",
-        (error) => (error ? reject(error) : resolve()),
-      ),
-    );
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        signal?.removeEventListener("abort", cancelled);
+        if (error) reject(error);
+        else resolve();
+      };
+      const cancelled = () => finish(new Error("Native failure log publication cancelled."));
+      // Stream completion must be observed; backpressure or a missing callback is not publication.
+      const deadline = setTimeout(
+        () => finish(new Error("Native failure log publication deadline exceeded.")),
+        publicationTimeoutMs,
+      );
+      signal?.addEventListener("abort", cancelled, { once: true });
+      if (signal?.aborted) {
+        cancelled();
+        return;
+      }
+      try {
+        process.stderr.write(
+          JSON.stringify({
+            event: "preparation-native-failure",
+            failureEvidencePath: path,
+            failureEvidence,
+          }) + "\n",
+          finish,
+        );
+      } catch (error) {
+        finish(error);
+      }
+    });
     return failure;
   } catch (publication) {
     const failures = [primary, publication];
@@ -2032,7 +2076,10 @@ export async function runLegacyPreparationNativeFixture({
           failure.evidencePath = evidence;
           throw failure;
         }
-        if (primary) primary = await publishPreparationNativeFailure(root, primary, records.length);
+        if (primary)
+          primary = await publishPreparationNativeFailure(root, primary, records.length, {
+            signal,
+          });
         try {
           NodeAssert.deepEqual(
             await readPreparationNativeQualifierSourceHashes(repository),
