@@ -570,6 +570,7 @@ def require_repeat_rejection(evidence):
 
 export const preparationFailureCaptureSource = String.raw`
 _FAILURE_PHASES = {'entry', 'owner-namespace', 'ready', 'command-receive', 'command-validation', 'retained-basis', 'sql-open', 'scope-send', 'continue-receive', 'continue-validation', 'owner-current', 'sqlite-identity', 'sql-query', 'sql-close', 'post-sql-current', 'plan-encode', 'result-send', 'cleanup'}
+_FAILURE_GATES = {'pair-journal', 'scope-result', 'lock-path', 'parent', 'runtime', 'dispatch', 'database-parent', 'pair', 'sql-directory', 'generation', 'owner-journal', 'state', 'lock-descriptor', 'manifest', 'cursor', 'intent', 'retained-plan', 'inherited-directory'}
 _FAILURE_FRAMES = {'READY', 'PLAN', 'APPLY', 'RECONCILE', 'EXIT', 'ABORT', 'SQL_SCOPE_OPENED', 'CONTINUE', 'PLAN_READY', 'CLOSED_RESULT'}
 def safe_worker_stderr(raw):
     lines = []
@@ -577,6 +578,8 @@ def safe_worker_stderr(raw):
         words = line.split(' ')
         if line == 'Closed preparation worker refused.': lines.append(line)
         elif len(words) == 3 and words[0] == 'JONES_PREPARATION_FAILURE' and words[1].startswith('phase=') and words[1][6:] in _FAILURE_PHASES and words[2] in ('kind=refused', 'kind=aborted', 'kind=unexpected'):
+            lines.append(line)
+        elif len(words) == 4 and words[0] == 'JONES_PREPARATION_GATE' and words[1].startswith('gate=') and words[1][5:] in _FAILURE_GATES and words[2] in ('command=unknown', 'command=plan', 'command=apply', 'command=reconcile', 'command=exit', 'command=abort') and words[3] in ('scope=unknown', 'scope=not-started', 'scope=pending', 'scope=aborted', 'scope=query-failed', 'scope=succeeded'):
             lines.append(line)
         else: lines.append('[redacted]')
     return '\n'.join(lines)[:2048]
@@ -1751,6 +1754,26 @@ const failureFrames = new Set([
   "PLAN_READY",
   "CLOSED_RESULT",
 ]);
+const failureGates = new Set([
+  "parent",
+  "generation",
+  "state",
+  "database-parent",
+  "inherited-directory",
+  "lock-descriptor",
+  "lock-path",
+  "runtime",
+  "retained-plan",
+  "dispatch",
+  "intent",
+  "pair",
+  "cursor",
+  "owner-journal",
+  "manifest",
+  "pair-journal",
+  "sql-directory",
+  "scope-result",
+]);
 function safeFailureStderr(value) {
   NodeAssert.equal(typeof value, "string");
   NodeAssert.ok(value.length <= 2048);
@@ -1758,7 +1781,12 @@ function safeFailureStderr(value) {
     if (["", "[redacted]", "Closed preparation worker refused."].includes(line)) continue;
     const match =
       /^JONES_PREPARATION_FAILURE phase=([a-z-]+) kind=(refused|aborted|unexpected)$/.exec(line);
-    NodeAssert.ok(match && failurePhases.has(match[1]));
+    if (match && failurePhases.has(match[1])) continue;
+    const gate =
+      /^JONES_PREPARATION_GATE gate=([a-z-]+) command=(unknown|plan|apply|reconcile|exit|abort) scope=(unknown|not-started|pending|aborted|query-failed|succeeded)$/.exec(
+        line,
+      );
+    NodeAssert.ok(gate && failureGates.has(gate[1]));
   }
 }
 export function validatePreparationNativeFailure(value) {

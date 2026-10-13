@@ -8,6 +8,9 @@ import * as NodeOS from "node:os";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- All paths remain within the test's captured temporary root.
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Isolated tests execute only the private diagnostic fragment, without exporting a production seam.
+import * as NodeVM from "node:vm";
+import * as NodeModule from "node:module";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type { OrchestrationV2ProviderCapabilities } from "@t3tools/contracts";
@@ -545,6 +548,8 @@ it.effect(
           try {
             await runInheritedPreparationWorker();
           } catch (error) {
+            assert.instanceOf(error, Error);
+            assert.equal((error as { readonly _tag?: string })._tag, "WorkerRefused");
             diagnostic = preparationWorkerFailureDiagnostic(error);
             throw error;
           }
@@ -826,11 +831,94 @@ it.effect.each(["short-read", "exact-limit", "growth", "read-failure"] as const)
 
 it("failure fallback never serializes private error fields", () => {
   const failure = Object.assign(new Error("Bearer private-error"), {
+    _tag: "UnrelatedError",
     phase: "private-phase",
     sql: "private-sql",
   });
   assert.equal(
     preparationWorkerFailureDiagnostic(failure),
+    "JONES_PREPARATION_FAILURE phase=entry kind=unexpected\n",
+  );
+});
+
+function currentnessDiagnosticFixture() {
+  const source = NodeFS.readFileSync(
+    new URL("./offlinePreparationWorker.ts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const currentnessGates = ");
+  const end = source.indexOf("\nfunction requireValue(", start);
+  assert.isAtLeast(start, 0);
+  assert.isAbove(end, start);
+  const code = NodeModule.stripTypeScriptTypes(
+    source.slice(start, end).replace("export function ", "function "),
+  );
+  return NodeVM.runInNewContext(
+    code + "\n({withPreparationCurrentGate, preparationWorkerFailureDiagnostic});",
+    { WorkerRefused: Error },
+  ) as {
+    withPreparationCurrentGate<T>(gate: string, check: () => Promise<T>): Promise<T>;
+    preparationWorkerFailureDiagnostic(error: unknown): string;
+  };
+}
+
+it("currentness diagnostics preserve the first cause and stop later checks", async () => {
+  const { withPreparationCurrentGate, preparationWorkerFailureDiagnostic } =
+    currentnessDiagnosticFixture();
+  const cause = Object.assign(new Error("Bearer private-path"), { privateValue: "private-sql" });
+  const visited: string[] = [];
+  let caught: unknown;
+  try {
+    await withPreparationCurrentGate("generation", async () => {
+      visited.push("generation");
+      return "unchanged";
+    });
+    await withPreparationCurrentGate("state", async () => {
+      visited.push("state");
+      throw cause;
+    });
+    visited.push("database-parent");
+  } catch (error) {
+    caught = error;
+  }
+  assert.strictEqual(caught, cause);
+  assert.deepEqual(visited, ["generation", "state"]);
+  await withPreparationCurrentGate("runtime", async () => {
+    throw cause;
+  }).catch((error) => assert.strictEqual(error, cause));
+  assert.equal(
+    preparationWorkerFailureDiagnostic(cause),
+    "JONES_PREPARATION_FAILURE phase=entry kind=unexpected\nJONES_PREPARATION_GATE gate=state command=unknown scope=unknown\n",
+  );
+});
+
+it("successful currentness checks return their result without publishing a failure", async () => {
+  const { withPreparationCurrentGate, preparationWorkerFailureDiagnostic } =
+    currentnessDiagnosticFixture();
+  const result = {};
+  assert.strictEqual(await withPreparationCurrentGate("scope-result", async () => result), result);
+  assert.equal(
+    preparationWorkerFailureDiagnostic(result),
+    "JONES_PREPARATION_FAILURE phase=entry kind=unexpected\n",
+  );
+});
+
+it("invalid runtime currentness labels never run checks or enter diagnostics", async () => {
+  const { withPreparationCurrentGate, preparationWorkerFailureDiagnostic } =
+    currentnessDiagnosticFixture();
+  let called = false;
+  let caught: unknown;
+  try {
+    await withPreparationCurrentGate("private-path", async () => {
+      called = true;
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.isFalse(called);
+  assert.instanceOf(caught, Error);
+  assert.equal(
+    preparationWorkerFailureDiagnostic(caught),
     "JONES_PREPARATION_FAILURE phase=entry kind=unexpected\n",
   );
 });

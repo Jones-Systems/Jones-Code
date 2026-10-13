@@ -1042,6 +1042,15 @@ assert before['stdoutEof'] and not before['stderrEof'] and after['stderrEof']
 assert 'private' not in json.dumps([before, after])
 assert after['stderr'].endswith('phase=owner-current kind=refused')
 assert len(safe_worker_stderr(b'private\n' * 5000)) <= 2048
+for gate in _FAILURE_GATES:
+    marker = 'JONES_PREPARATION_GATE gate=' + gate + ' command=plan scope=succeeded'
+    assert safe_worker_stderr(marker.encode()) == marker
+for marker in ('JONES_PREPARATION_GATE gate=private command=plan scope=succeeded',
+               'JONES_PREPARATION_GATE gate=runtime command=private scope=succeeded',
+               'JONES_PREPARATION_GATE gate=runtime command=plan scope=private',
+               'JONES_PREPARATION_GATE gate=runtime command=plan scope=succeeded private'):
+    assert safe_worker_stderr(marker.encode()) == '[redacted]'
+
 print(json.dumps({'passed': True}))
 `,
       { flag: "wx", mode: 0o400 },
@@ -1276,3 +1285,44 @@ for (const mode of ["deadline", "cancel"]) {
     },
   );
 }
+
+NodeTest.test("fixed currentness diagnostic schema rejects unknown and private fields", () => {
+  const gates = [
+    "parent",
+    "generation",
+    "state",
+    "database-parent",
+    "inherited-directory",
+    "lock-descriptor",
+    "lock-path",
+    "runtime",
+    "retained-plan",
+    "dispatch",
+    "intent",
+    "pair",
+    "cursor",
+    "owner-journal",
+    "manifest",
+    "pair-journal",
+    "sql-directory",
+    "scope-result",
+  ];
+  for (const gate of gates) {
+    const evidence = failedFixture();
+    evidence.processes[0].afterCleanup.stderr =
+      "JONES_PREPARATION_FAILURE phase=post-sql-current kind=refused\nJONES_PREPARATION_GATE gate=" +
+      gate +
+      " command=plan scope=succeeded";
+    NodeAssert.deepEqual(validatePreparationNativeFailure(evidence), evidence);
+  }
+  for (const line of [
+    "JONES_PREPARATION_GATE gate=private command=plan scope=succeeded",
+    "JONES_PREPARATION_GATE gate=runtime command=private scope=succeeded",
+    "JONES_PREPARATION_GATE gate=runtime command=plan scope=private",
+    "JONES_PREPARATION_GATE gate=runtime command=plan scope=succeeded private",
+  ]) {
+    const evidence = failedFixture();
+    evidence.processes[0].afterCleanup.stderr = line;
+    NodeAssert.throws(() => validatePreparationNativeFailure(evidence));
+  }
+});
