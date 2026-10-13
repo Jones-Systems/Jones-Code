@@ -1,3 +1,5 @@
+import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
+import { useSidebarEnvironmentFilter } from "../jones/environmentFilters/useSidebarEnvironmentFilter";
 import { installLocalDesktopUpdate } from "../jones/updates/localDesktopUpdate";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
@@ -1301,14 +1303,18 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   // thread-list change).
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
+  const { excludedEnvironmentIds } = useSidebarEnvironmentFilter();
   const projectThreads = useMemo(
     () =>
       filterSidebarOperatingThreads(
-        filterSidebarV2VisibleThreads(sidebarThreads, null),
+        filterSidebarV2VisibleThreads(
+          filterSidebarEnvironmentThreads(sidebarThreads, excludedEnvironmentIds),
+          null,
+        ),
         props.activeOnly,
         isSidebarThreadOperating,
       ),
-    [sidebarThreads, props.activeOnly],
+    [sidebarThreads, props.activeOnly, excludedEnvironmentIds],
   );
   const projectPreferenceKeys = useMemo(() => projectExpansionPreferenceKeys(project), [project]);
   const projectExpanded = useUiStateStore((state) =>
@@ -3247,9 +3253,14 @@ export default function LegacySidebar() {
   const allSidebarThreads = useThreadShells();
   const [activeOnly, setActiveOnly] = useState(false);
   const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
+  const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
   const visibleThreads = useMemo(
-    () => filterSidebarV2VisibleThreads(allSidebarThreads, null),
-    [allSidebarThreads],
+    () =>
+      filterSidebarV2VisibleThreads(
+        filterSidebarEnvironmentThreads(allSidebarThreads, excludedEnvironmentIds),
+        null,
+      ),
+    [allSidebarThreads, excludedEnvironmentIds],
   );
   const activeThreadCount = useMemo(
     () => visibleThreads.filter(isSidebarThreadOperating).length,
@@ -3305,7 +3316,7 @@ export default function LegacySidebar() {
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   useEffect(() => {
     clearSelection();
-  }, [activeOnly, clearSelection]);
+  }, [activeOnly, clearSelection, excludedEnvironmentKey]);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const platform = navigator.platform;
   const shortcutModifiers = useShortcutModifierState();
