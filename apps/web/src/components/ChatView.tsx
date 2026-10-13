@@ -1,4 +1,8 @@
 import {
+  withShortcutEffort,
+  type ComposerModelSelectOptions,
+} from "../jones/composer/composerModelEffortShortcuts";
+import {
   ContinuationChoiceBanner,
   importedHistoryCommands,
   type PreparedImportedHistoryChoice,
@@ -10780,7 +10784,7 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   const onProviderModelSelect = useCallback(
-    (instanceId: ProviderInstanceId, model: string, options?: { focusComposer?: boolean }) => {
+    (instanceId: ProviderInstanceId, model: string, options?: ComposerModelSelectOptions) => {
       if (
         !activeThread ||
         isEnvironmentChanging ||
@@ -10831,19 +10835,23 @@ export default function ChatView(props: ChatViewProps) {
         if (options?.focusComposer !== false) scheduleComposerFocus();
         return;
       }
-      // Remember other traits, but a model switch inherits current effort instead
-      // of reviving a historical choice from the model's sticky snapshot.
+      // Resolve remembered traits first; a shortcut supplies its explicit effort
+      // before the complete model selection is persisted.
       const store = useComposerDraftStore.getState();
       const draft = store.getComposerDraft(composerDraftTarget);
       const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
       const currentSelection =
         draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
-      const nextModelSelection = resolveComposerPickerModelSelection({
+      const pickerSelection = resolveComposerPickerModelSelection({
         instanceId,
         model: resolvedModel,
         currentSelection,
         rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
       });
+      const nextModelSelection = options?.effort
+        ? withShortcutEffort(pickerSelection, model, entry.models, options.effort)
+        : pickerSelection;
+      if (!nextModelSelection) return;
       const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
         hasStartedSession: activeRuntime !== null,
@@ -11968,7 +11976,7 @@ export default function ChatView(props: ChatViewProps) {
                   data-chat-composer-shortcut-host="true"
                   className="relative w-full"
                 />
-                <div aria-hidden className="bg-background pb-safe">
+                <div aria-hidden className="pb-safe">
                   <div className="h-4 sm:h-5" />
                 </div>
               </div>

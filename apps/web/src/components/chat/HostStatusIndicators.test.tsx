@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { HostStatusSnapshot } from "@t3tools/contracts";
+import { EnvironmentId, type HostStatusSnapshot } from "@t3tools/contracts";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
@@ -62,7 +62,7 @@ beforeEach(async () => {
   await act(async () => {
     root.render(
       <TooltipProvider>
-        <HostStatusIndicators />
+        <HostStatusIndicators environmentId={EnvironmentId.make("remote-a")} />
       </TooltipProvider>,
     );
   });
@@ -222,4 +222,42 @@ it("recalculates fitting bubbles when live metric text changes width without a v
     resize();
   });
   expect(names()).toEqual(["VPS", "Test", "Mini"]);
+});
+
+it("clears the previous environment immediately and ignores its late sample after switching", async () => {
+  const sample: HostStatusSnapshot = {
+    hosts: [
+      {
+        id: "vps",
+        status: "available",
+        cpuUsagePercent: 23,
+        logicalCpuCount: 4,
+        occupiedMemoryBytes: 12 * 1024 ** 3,
+        totalMemoryBytes: 16 * 1024 ** 3,
+        availableMemoryBytes: 4 * 1024 ** 3,
+        sampledAt: new Date().toISOString(),
+      },
+    ],
+  };
+  const oldReceive = receive;
+  await act(async () => oldReceive(sample));
+  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · 23% · 4");
+  await act(async () =>
+    root.render(
+      <TooltipProvider>
+        <HostStatusIndicators environmentId={EnvironmentId.make("remote-b")} />
+      </TooltipProvider>,
+    ),
+  );
+  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · — · —");
+  await act(async () => oldReceive(sample));
+  expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · — · —");
+  await act(async () =>
+    receive({
+      hosts: [{ ...sample.hosts[0]!, id: "vps", status: "unavailable", reason: "not_configured" }],
+    }),
+  );
+  expect(container.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain(
+    "Not configured",
+  );
 });

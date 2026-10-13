@@ -1,0 +1,11 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "remote-host-status",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/hostStatus/",
+    "packages/client-runtime/src/jones/hostStatus/"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

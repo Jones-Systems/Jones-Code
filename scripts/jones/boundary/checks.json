@@ -2,6 +2,22 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-environment-sidebar-filters",
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]
+    },
+    {
+      "id": "jones-remote-host-status",
+      "tests": [
+        "apps/web/src/hostStatus.test.ts",
+        "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
+        "packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/hostStatus.test.ts apps/web/src/components/chat/HostStatusIndicators.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+      ]
+    },
+    {
       "id": "jones-update-continuity",
       "tests": [
         "apps/server/src/jones/updates/continuationPrompt.test.ts",
@@ -134,12 +150,14 @@
     {
       "id": "jones-provider-runtime-identity",
       "tests": [
+        "apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
         "packages/contracts/src/resourceTelemetry.test.ts",
         "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
         "packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "vp test run apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
       ]
     },
@@ -180,10 +198,11 @@
         "apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts",
         "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
+        "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
         "apps/web/src/jones/composer/composerShortcutRails.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx apps/web/src/jones/composer/composerShortcutRails.test.ts"
+        "vp test run apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts apps/web/src/jones/composer/composerShortcutRails.test.ts"
       ]
     },
     {
@@ -971,6 +990,16 @@
         "vp test run apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts -t \"refreshes ACP prompt instructions\"",
         "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts",
         "vp test run apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts"
+      ]
+    },
+    {
+      "id": "jones-codex-capacity-continuation",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
       ]
     },
     {

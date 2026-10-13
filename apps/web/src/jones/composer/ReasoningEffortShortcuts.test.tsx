@@ -45,7 +45,7 @@ function render(
   withMenu = false,
 ) {
   const props = {
-    provider: ProviderDriverKind.make("codex"),
+    provider: ProviderDriverKind.make("opencode"),
     instanceId,
     draftId,
     model: "test-model",
@@ -207,34 +207,31 @@ describe("reasoning effort shortcuts", () => {
     }
   });
 
-  it("inherits the same configured default as the menu without persisting it until selected", () => {
-    const models = [
-      {
-        slug: "test-model",
-        name: "Test",
-        isCustom: false,
-        capabilities: { optionDescriptors: [effort] },
-      },
-    ];
+  it("inherits the same configured Codex default as the menu without persisting it until selected", () => {
     const resolved = getComposerEffectiveTraitsOptions({
       provider: ProviderDriverKind.make("codex"),
       instanceId,
-      model: "test-model",
-      models,
+      model: "gpt-6.1-sol",
+      models: familyModels,
       modelOptions: undefined,
       defaultModelSelection: {
         instanceId,
-        model: "test-model",
-        options: [{ id: "reasoningEffort", value: "low" }],
+        model: "gpt-6.1-sol",
+        options: [{ id: "reasoningEffort", value: "medium" }],
       },
       defaultDriverKind: ProviderDriverKind.make("codex"),
       planModeEnabled: true,
     });
-    render({ ...resolved, models }, [effort]);
-    expect(selectedLabel()).toBe("Low");
+    render({
+      ...resolved,
+      provider: ProviderDriverKind.make("codex"),
+      model: "gpt-6.1-sol",
+      models: familyModels,
+    });
+    expect(selectedLabel()).toBe("Medium");
     expect(currentOptions()).toBeUndefined();
-    click("High");
-    expect(currentOptions()).toEqual([{ id: "reasoningEffort", value: "high" }]);
+    act(() => familyButton("GPT-6.1 Sol, High reasoning").click());
+    expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "high" });
   });
 
   it("follows the selected instance and model catalog without offering prior model choices", () => {
@@ -284,8 +281,8 @@ describe("reasoning effort shortcuts", () => {
     expect(currentOptions()).toBeUndefined();
   });
 
-  it("inserts and removes the Claude prefix without persisting prompt-injected values", () => {
-    render({ provider: ProviderDriverKind.make("claudeAgent"), prompt: "Explain" }, [claude]);
+  it("inserts and removes the prompt-injected prefix in the descriptor fallback without persisting prompt-injected values", () => {
+    render({ prompt: "Explain" }, [claude]);
     click("Ultra");
     expect(onPromptChange).toHaveBeenLastCalledWith("Ultrathink:\nExplain");
     expect(currentOptions()).toBeUndefined();
@@ -386,4 +383,130 @@ describe("reasoning effort shortcuts", () => {
     );
     expect(selectedItem).toBeDefined();
   });
+});
+
+const familyEffort = {
+  ...effort,
+  options: [
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High", isDefault: true },
+    { id: "xhigh", label: "Extra High" },
+  ],
+};
+const familyModels = [
+  {
+    slug: "gpt-6.1-sol",
+    name: "GPT-6.1 Sol",
+    isCustom: false,
+    capabilities: { optionDescriptors: [familyEffort, fast] },
+  },
+  {
+    slug: "gpt-6-astra",
+    name: "GPT-6 Astra",
+    isCustom: false,
+    capabilities: { optionDescriptors: [familyEffort, fast] },
+  },
+];
+
+function familyButton(name: string) {
+  const button = buttons().find((candidate) => candidate.getAttribute("aria-label") === name);
+  expect(button).toBeDefined();
+  return button!;
+}
+
+it("selects a model and effort together on the current account, retaining same-model traits", () => {
+  const onProviderModelSelect = vi.fn();
+  const props = {
+    provider: ProviderDriverKind.make("codex"),
+    models: familyModels,
+    model: "gpt-6.1-sol",
+    onProviderModelSelect,
+  };
+  render(props);
+  expect(buttons().map((button) => button.textContent)).toEqual([
+    "Medium",
+    "High",
+    "Extra High",
+    "Medium",
+    "High",
+    "Extra High",
+  ]);
+  expect(familyButton("GPT-6.1 Sol, High reasoning").getAttribute("aria-pressed")).toBe("true");
+  expect(familyButton("GPT-6 Astra, High reasoning").getAttribute("aria-pressed")).toBe("false");
+  act(() => familyButton("GPT-6.1 Sol, Medium reasoning").click());
+  expect(currentOptions()).toEqual([
+    { id: "reasoningEffort", value: "medium" },
+    { id: "fastMode", value: true },
+  ]);
+  expect(onProviderModelSelect).not.toHaveBeenCalled();
+  act(() => familyButton("GPT-6 Astra, Extra High reasoning").click());
+  expect(onProviderModelSelect).toHaveBeenCalledExactlyOnceWith(instanceId, "gpt-6-astra", {
+    effort: { id: "reasoningEffort", value: "xhigh" },
+  });
+  expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "medium" });
+  render({
+    ...props,
+    model: "gpt-6-astra",
+    modelOptions: [{ id: "reasoningEffort", value: "xhigh" }],
+  });
+  expect(familyButton("GPT-6 Astra, Extra High reasoning").getAttribute("aria-pressed")).toBe(
+    "true",
+  );
+  expect(familyButton("GPT-6.1 Sol, Extra High reasoning").getAttribute("aria-pressed")).toBe(
+    "false",
+  );
+});
+
+it("keeps missing families and unsupported efforts disabled, and enforces model locks and rail hiding", () => {
+  const onProviderModelSelect = vi.fn();
+  const props = {
+    provider: ProviderDriverKind.make("codex"),
+    model: "missing",
+    models: [familyModels[0]!],
+    onProviderModelSelect,
+  };
+  render(props);
+  expect(familyButton("GPT-6 Astra, Medium reasoning").disabled).toBe(true);
+  expect(familyButton("GPT-6 Astra, Medium reasoning").title).toContain("isn't available");
+  expect(familyButton("GPT-6.1 Sol, Medium reasoning").disabled).toBe(false);
+  render({ ...props, getModelDisabledReason: () => "Session model is locked" });
+  expect(buttons().every((button) => button.disabled)).toBe(true);
+  act(() => familyButton("GPT-6.1 Sol, Medium reasoning").click());
+  expect(onProviderModelSelect).not.toHaveBeenCalled();
+  render({ ...props, visible: false });
+  const button = familyButton("GPT-6.1 Sol, Medium reasoning");
+  button.disabled = false;
+  act(() => button.click());
+  expect(onProviderModelSelect).not.toHaveBeenCalled();
+});
+
+it("preserves Claude body locks and strips the prefix on same- and cross-model effort choices", () => {
+  const descriptor = { ...familyEffort, id: "effort", promptInjectedValues: ["ultrathink"] };
+  const models = ["opus", "sonnet"].map((family) => ({
+    slug: `claude-${family}-5-5`,
+    name: `Claude ${family}`,
+    isCustom: false,
+    capabilities: { optionDescriptors: [descriptor] },
+  }));
+  const onProviderModelSelect = vi.fn();
+  const props = {
+    provider: ProviderDriverKind.make("claudeAgent"),
+    model: "claude-opus-5-5",
+    models,
+    onProviderModelSelect,
+  };
+  render({ ...props, prompt: "Ultrathink:\nExplain" });
+  expect(selectedLabel()).toBeUndefined();
+  act(() => familyButton("Claude opus, Medium reasoning").click());
+  expect(onPromptChange).toHaveBeenLastCalledWith("Explain");
+  expect(currentOptions()).toContainEqual({ id: "effort", value: "medium" });
+  act(() => familyButton("Claude sonnet, Extra High reasoning").click());
+  expect(onProviderModelSelect).toHaveBeenCalledExactlyOnceWith(instanceId, "claude-sonnet-5-5", {
+    effort: { id: "effort", value: "xhigh" },
+  });
+  expect(onPromptChange).toHaveBeenLastCalledWith("Explain");
+  render({ ...props, prompt: "Ultrathink:\nPlease ultrathink further" });
+  expect(buttons().every((button) => button.disabled)).toBe(true);
+  act(() => familyButton("Claude sonnet, High reasoning").click());
+  expect(onProviderModelSelect).toHaveBeenCalledTimes(1);
 });

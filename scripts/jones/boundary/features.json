@@ -4,6 +4,19 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "environment-sidebar-filters",
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "scope": "Session-only environment inclusion filters cover configured labels, disconnected and duplicate identities, unknown labels, and sidebar remounts. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
+    },
+    {
+      "id": "remote-host-status",
+      "tests": [
+        "apps/web/src/hostStatus.test.ts",
+        "apps/web/src/components/chat/HostStatusIndicators.test.tsx"
+      ],
+      "scope": "Host status badges use the active thread environment and its shared HTTP authentication; environment switches cancel old polling and clear old samples."
+    },
+    {
       "id": "qualified-updates",
       "tests": [
         "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
@@ -108,6 +121,7 @@
     {
       "id": "provider-runtime-identity",
       "tests": [
+        "apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
         "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
         "packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
@@ -128,6 +142,7 @@
         "apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx",
         "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
+        "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
         "apps/web/src/jones/composer/composerShortcutRails.test.ts"
       ]
     },
@@ -468,7 +483,7 @@
     {
       "id": "composer-thread-query",
       "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
-      "scope": "Web/desktop and shared mobile one-space @ query; preserves matcher identities and legacy file chip delimiters."
+      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; preserves matcher identities and legacy file chip delimiters."
     },
     {
       "id": "design-requests",
@@ -515,6 +530,14 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
       ]
+    },
+    {
+      "id": "codex-capacity-continuation",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+      ],
+      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded."
     },
     {
       "id": "connection-diagnostics",
