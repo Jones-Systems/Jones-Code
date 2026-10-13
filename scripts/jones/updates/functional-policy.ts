@@ -43,7 +43,8 @@ const decode = (bytes: Uint8Array): unknown =>
   JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 const same = NodeUtil.isDeepStrictEqual;
 
-// Reviewed receiver contract for the exact 150a782 worker, equal on hosted Ubuntu and Darwin.
+// Reviewed receiver contract for the exact worker bytes pinned below, equal on hosted Ubuntu and Darwin.
+// Fixed failure phases use a private local registry and never serialize raw exceptions.
 // The lazy __esmMin initializer caches its result/error; __exportAll installs local getters.
 // Effect allocates local schemas/caches, inspects Error stacks and uses optional async_hooks.
 // Its scheduler/fiber effects are deferred to invocation. No external dynamic loader remains.
@@ -53,8 +54,8 @@ const same = NodeUtil.isDeepStrictEqual;
 const workerPolicy = {
   schema: "jones.preparation-worker-policy/v1",
   entry: {
-    sha256: "58ac4f47514154eca8f25ca5b6e6df6b9bd81b552f43f7e659452a10899cb07b",
-    size: 1883613,
+    sha256: "daaf57b2dfcb3a863557b80ac722aa2342431768bc536d1771efaa210850184a",
+    size: 1885170,
   },
   staticImports: [
     "node:fs",
