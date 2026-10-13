@@ -104,7 +104,11 @@
     "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts",
     "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
     "apps/server/src/jones/updates/offlinePreparationWorker.ts",
-    "apps/server/src/jones/updates/offlinePreparationWorker.test.ts"
+    "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts",
+    "apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.ts",
+    "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -151,7 +155,8 @@
     "apps/web/src/components/LegacySidebar.tsx",
     "apps/web/src/components/desktopUpdate.toast.tsx",
     "scripts/tsconfig.json",
-    "apps/desktop/tsconfig.json"
+    "apps/desktop/tsconfig.json",
+    "apps/desktop/src/backend/DesktopBackendConfiguration.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -366,6 +371,22 @@
     {
       "from": "scripts/build-desktop-artifact.ts",
       "to": "scripts/jones/updates/legacy-bootstrap-after-pack.mjs"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
+      "to": "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+      "to": "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+      "to": "scripts/jones/updates/legacy-identity-native-fixture.mjs"
     }
   ]
 }
