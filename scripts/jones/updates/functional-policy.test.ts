@@ -17,7 +17,7 @@ describe("reviewed functional worker policy", () => {
     let sourceRead = false;
     expect(() =>
       verifyFunctionalPreparationGraph({
-        get repoRoot() {
+        get repoRoot(): string {
           sourceRead = true;
           throw new Error("source must remain unopened");
         },
