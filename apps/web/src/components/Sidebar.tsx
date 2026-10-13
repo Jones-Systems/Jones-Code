@@ -1,3 +1,5 @@
+import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
+import { useSidebarEnvironmentFilter } from "../jones/environmentFilters/useSidebarEnvironmentFilter";
 import { type EnvironmentId } from "@t3tools/contracts";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
@@ -974,6 +976,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectByKey: ReadonlyMap<string, EnvironmentProject>;
   projectDisplayNameByKey: ReadonlyMap<string, string>;
   scopedProjectKeys: ReadonlySet<string> | null;
+  excludedEnvironmentIds: ReadonlySet<string>;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
   onDraftContextMenu: (draftId: DraftId, position: { x: number; y: number }) => void;
@@ -981,7 +984,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
   const draftsByThreadKey = useComposerDraftStore((store) => store.draftsByThreadKey);
   // The open draft's row is FROZEN at the moment the draft became the route:
-  // it stays visible (like a thread row) but never repaints while the user
+  // it stays eligible for display under the current filters but never repaints while the user
   // types. A draft that was never navigated away from has no snapshot to
   // freeze, so a fresh typing session shows no row at all. Captured
   // synchronously on route change (setState-during-render derived state) so
@@ -1006,11 +1009,11 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   }
   const drafts = useMemo(() => {
     const rows: SidebarDraftRowData[] = [];
-    // Every non-promoted session with content gets a row, mapped or not:
+    // Every included non-promoted session with content gets a row, mapped or not:
     // new-thread surfaces mint fresh drafts and leave invested ones behind
     // unmapped, so the mapping only knows about the latest per project.
     for (const [draftKey, session] of Object.entries(draftThreadsByThreadKey)) {
-      if (session.promotedTo != null) {
+      if (session.promotedTo != null || props.excludedEnvironmentIds.has(session.environmentId)) {
         continue;
       }
       if (
@@ -1042,6 +1045,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     frozenActive,
     props.routeDraftId,
     props.scopedProjectKeys,
+    props.excludedEnvironmentIds,
   ]);
   if (drafts.length === 0) {
     return null;
@@ -2661,9 +2665,14 @@ export default function Sidebar() {
   );
   const [activeOnly, setActiveOnly] = useState(false);
   const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
+  const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
+  const environmentThreads = useMemo(
+    () => filterSidebarEnvironmentThreads(threads, excludedEnvironmentIds),
+    [threads, excludedEnvironmentIds],
+  );
   const scopedThreads = useMemo(
-    () => filterSidebarV2VisibleThreads(threads, scopedProjectKeys),
-    [threads, scopedProjectKeys],
+    () => filterSidebarV2VisibleThreads(environmentThreads, scopedProjectKeys),
+    [environmentThreads, scopedProjectKeys],
   );
   const activeThreadCount = useMemo(
     () => scopedThreads.filter(isSidebarThreadOperating).length,
@@ -2686,14 +2695,14 @@ export default function Sidebar() {
   // empty state, while SidebarDraftBlock owns the per-keystroke content
   // subscription. Selecting a number keeps typing in a draft composer from
   // re-rendering the whole sidebar. Approximates the block's row filter
-  // (every non-promoted session with content); it can overcount by one for
+  // (included non-promoted sessions with content); it can overcount by one for
   // an open never-left draft, which only softens the empty state.
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
     if (activeOnly) return 0;
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
-      if (session.promotedTo != null) {
+      if (session.promotedTo != null || excludedEnvironmentIds.has(session.environmentId)) {
         continue;
       }
       if (!composerDraftHasUserContent(store.draftsByThreadKey[draftKey])) {
@@ -2709,11 +2718,12 @@ export default function Sidebar() {
     }
     return count;
   });
-  // Scope or activity filter flips drop the selection: previously selected
-  // rows may be hidden, and bulk actions must never touch invisible rows.
+  // Scope, environment, or activity filter flips drop the selection:
+  // previously selected rows may be hidden, and bulk actions must never
+  // touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [activeOnly, clearSelection, projectScopeKey]);
+  }, [activeOnly, clearSelection, projectScopeKey, excludedEnvironmentKey]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2918,7 +2928,7 @@ export default function Sidebar() {
       groupNativeThreadsByWorkstream({
         workstreams: workstreamController.data?.items ?? [],
         placements: workstreamController.placements?.items ?? [],
-        threads,
+        threads: environmentThreads,
         trustedNow: snoozeNow,
         trustedEnvironments: new Map(
           (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
@@ -2927,7 +2937,12 @@ export default function Sidebar() {
           ]),
         ),
       }),
-    [threads, snoozeNow, workstreamController.data?.items, workstreamController.placements],
+    [
+      environmentThreads,
+      snoozeNow,
+      workstreamController.data?.items,
+      workstreamController.placements,
+    ],
   );
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
@@ -2944,7 +2959,11 @@ export default function Sidebar() {
     ],
     [activeThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads],
   );
-  const searchEnvironmentIds = useConnectedEnvironmentIds();
+  const connectedEnvironmentIds = useConnectedEnvironmentIds();
+  const searchEnvironmentIds = useMemo(
+    () => connectedEnvironmentIds.filter((id) => !excludedEnvironmentIds.has(id)),
+    [connectedEnvironmentIds, excludedEnvironmentIds],
+  );
   // useThreadSearch owns the debounce and the two-character floor.
   const threadSearch = useThreadSearch(searchEnvironmentIds, threadSearchQuery);
   const threadSearchMatchByKey = useMemo(
@@ -2996,10 +3015,10 @@ export default function Sidebar() {
 
   // The settled tail renders in pages: history shouldn't dominate the
   // sidebar, and the common lookups are recent. Expansion resets when the
-  // filter context changes so a scope/search flip never inherits a deep
+  // filter context changes so a scope/environment flip never inherits a deep
   // page state.
   const [settledVisibleCount, setSettledVisibleCount] = useState(SETTLED_TAIL_INITIAL_COUNT);
-  const settledResetKey = projectScopeKey ?? "all";
+  const settledResetKey = JSON.stringify([projectScopeKey, excludedEnvironmentKey]);
   const lastSettledResetKeyRef = useRef(settledResetKey);
   if (lastSettledResetKeyRef.current !== settledResetKey) {
     lastSettledResetKeyRef.current = settledResetKey;
@@ -5523,6 +5542,7 @@ export default function Sidebar() {
                             projectByKey={projectByKey}
                             projectDisplayNameByKey={projectDisplayNameByKey}
                             scopedProjectKeys={scopedProjectKeys}
+                            excludedEnvironmentIds={excludedEnvironmentIds}
                             routeDraftId={routeDraftIdForRows}
                             onNavigateToDraft={navigateToDraft}
                             onDraftContextMenu={handleDraftContextMenu}

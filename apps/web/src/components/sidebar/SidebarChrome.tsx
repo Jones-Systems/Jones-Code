@@ -1,3 +1,4 @@
+import { SidebarEnvironmentFilters } from "../../jones/environmentFilters/SidebarEnvironmentFilters";
 import { memo, useCallback } from "react";
 import { Link } from "@tanstack/react-router";
 
@@ -151,6 +152,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
       <SidebarThreadUndoNotice />
       <SidebarProviderUpdatePill />
       <SidebarUpdateArchitectureWarning />
+      <SidebarEnvironmentFilters />
       <SidebarUtilityMenu />
     </SidebarFooter>
   );

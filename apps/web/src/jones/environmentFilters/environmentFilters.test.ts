@@ -1,0 +1,109 @@
+import { AtomRegistry } from "effect/reactivity";
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS,
+  SIDEBAR_ENVIRONMENT_FILTERS,
+  excludedSidebarEnvironmentIds,
+  filterSidebarEnvironmentThreads,
+  sidebarEnvironmentExclusionKey,
+  toggleSidebarEnvironmentFilter,
+} from "./model";
+import { sidebarEnvironmentFiltersAtom } from "./state";
+
+const identities = [
+  { environmentId: "vps-one", label: "VPS" },
+  { environmentId: "test-one", label: "Test" },
+  { environmentId: "mini-one", label: "Mini" },
+  { environmentId: "home-one", label: "Home" },
+];
+const threads = identities.map(({ environmentId }) => ({ environmentId, title: environmentId }));
+
+describe("sidebar environment filters", () => {
+  it("includes all four environments by default without copying the thread inventory", () => {
+    expect(SIDEBAR_ENVIRONMENT_FILTERS).toEqual(["VPS", "Test", "Mini", "Home"]);
+    const excluded = excludedSidebarEnvironmentIds(identities, DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS);
+    expect([...excluded]).toEqual([]);
+    expect(filterSidebarEnvironmentThreads(threads, excluded)).toBe(threads);
+  });
+
+  it.each(SIDEBAR_ENVIRONMENT_FILTERS)("toggles %s off and back on independently", (label) => {
+    const off = toggleSidebarEnvironmentFilter(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, label);
+    const excluded = excludedSidebarEnvironmentIds(identities, off);
+    expect(
+      filterSidebarEnvironmentThreads(threads, excluded).map((thread) => thread.title),
+    ).toEqual(
+      identities
+        .filter((identity) => identity.label !== label)
+        .map((identity) => identity.environmentId),
+    );
+    expect(toggleSidebarEnvironmentFilter(off, label)).toEqual(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS);
+    expect(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS[label]).toBe(true);
+  });
+
+  it("allows all four off while leaving unknown and missing labels visible", () => {
+    const allOff = SIDEBAR_ENVIRONMENT_FILTERS.reduce(
+      toggleSidebarEnvironmentFilter,
+      DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS,
+    );
+    const catalog = [
+      ...identities,
+      { environmentId: "other", label: "My VPS" },
+      { environmentId: "blank", label: "  " },
+      { environmentId: "missing" },
+      { environmentId: "null", label: null },
+    ];
+    const inventory = [...catalog, { environmentId: "not-in-catalog" }];
+    const excluded = excludedSidebarEnvironmentIds(catalog, allOff);
+    expect(
+      filterSidebarEnvironmentThreads(inventory, excluded).map((row) => row.environmentId),
+    ).toEqual(["other", "blank", "missing", "null", "not-in-catalog"]);
+  });
+
+  it("groups duplicate normalized labels by stable ID even when disconnected", () => {
+    const catalog = [
+      { environmentId: "first", label: " vPs ", connection: { phase: "disconnected" } },
+      { environmentId: "second", label: "VPS", connection: { phase: "connected" } },
+      { environmentId: "third", label: "VPS test", connection: { phase: "disconnected" } },
+    ];
+    const filters = toggleSidebarEnvironmentFilter(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, "VPS");
+    const excluded = excludedSidebarEnvironmentIds(catalog, filters);
+    expect([...excluded]).toEqual(["first", "second"]);
+    expect(filterSidebarEnvironmentThreads(catalog, excluded)).toEqual([catalog[2]]);
+  });
+
+  it("changes the reset key on label reassignment but not catalog reordering", () => {
+    const filters = toggleSidebarEnvironmentFilter(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, "VPS");
+    const key = (catalog: typeof identities) =>
+      sidebarEnvironmentExclusionKey(excludedSidebarEnvironmentIds(catalog, filters));
+    expect(key(identities.toReversed())).toBe(key(identities));
+    expect(key(identities.map((identity) => ({ ...identity, label: "Home" })))).not.toBe(
+      key(identities),
+    );
+  });
+
+  it("retains filters across sidebar unmounts and resets in a fresh renderer registry", async () => {
+    vi.useFakeTimers();
+    const registry = AtomRegistry.make({ defaultIdleTTL: 0 });
+    const freshRegistry = AtomRegistry.make();
+    try {
+      const unmount = registry.mount(sidebarEnvironmentFiltersAtom);
+      const filters = toggleSidebarEnvironmentFilter(
+        registry.get(sidebarEnvironmentFiltersAtom),
+        "Mini",
+      );
+      registry.set(sidebarEnvironmentFiltersAtom, filters);
+      unmount();
+      await vi.runAllTimersAsync();
+      const remount = registry.mount(sidebarEnvironmentFiltersAtom);
+      expect(registry.get(sidebarEnvironmentFiltersAtom).Mini).toBe(false);
+      expect(freshRegistry.get(sidebarEnvironmentFiltersAtom)).toEqual(
+        DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS,
+      );
+      remount();
+    } finally {
+      registry.dispose();
+      freshRegistry.dispose();
+      vi.useRealTimers();
+    }
+  });
+});
