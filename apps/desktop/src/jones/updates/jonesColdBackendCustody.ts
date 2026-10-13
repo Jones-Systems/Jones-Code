@@ -81,6 +81,7 @@ export interface JonesColdBackendOwner {
   readonly exit: () => Promise<ColdExitStatus>;
   readonly stop: () => Promise<JonesColdBackendResult>;
   readonly wait: () => Promise<JonesColdBackendResult>;
+  readonly observe: () => JonesColdBackendResult;
 }
 let coldStartupHeld = false;
 
@@ -515,6 +516,9 @@ class CapturedColdBackend implements JonesColdBackendOwner {
       while (!this.#closed && NodePerfHooks.performance.now() < drain)
         await new Promise<void>((resolve) => NodeTimers.setTimeout(resolve, 5));
     }
+    return this.observe();
+  }
+  observe(): JonesColdBackendResult {
     const pipesClosed = this.#streams.length === 8 && this.#streams.every((item) => item.closed);
     const exitStatus = this.#exit === undefined ? null : Object.freeze({ ...this.#exit });
     const abnormalExit = exitStatus === null || exitStatus.code !== 0 || exitStatus.signal !== null;
@@ -524,7 +528,8 @@ class CapturedColdBackend implements JonesColdBackendOwner {
       this.#exit !== undefined &&
       this.#closed &&
       pipesClosed;
-    if (settled) this.#events.push("BACKEND_SETTLED", "TERMINAL_CLOSED");
+    if (settled && !this.#events.includes("BACKEND_SETTLED"))
+      this.#events.push("BACKEND_SETTLED", "TERMINAL_CLOSED");
     return Object.freeze({
       dispatchId: this.dispatchId,
       spawned: this.#spawned,
