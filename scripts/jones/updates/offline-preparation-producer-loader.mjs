@@ -163,7 +163,7 @@ function validateReport(report) {
   };
   inventory(source.inputs, producerInputs);
   inventory(late.files, qualifierInputs);
-  if (bindings.size !== 32)
+  if (bindings.size !== sourceInputs.length)
     throw new Error("Producer source union differs from the fixed contract.");
   const emitted = report.emitted;
   if (
@@ -207,32 +207,34 @@ function uncertainCustody(cause, seen = new Set()) {
   return nested.some((error) => uncertainCustody(error, seen));
 }
 
-// Reviewed dfb0e7 producer: import initializes in-memory Effect schemas/caches/prototypes,
+// Reviewed 94e204 producer: import initializes in-memory Effect schemas/caches/prototypes,
 // Error stack detection, scheduler closures and the optional literal async_hooks lookup.
 // Its only import-time filesystem work resolves this unique captured code root and hashes
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "dfb0e7f532b9ad9bb20a14d35d4fcc982a18aaefe9e8a308367862541a73b52f",
-  size: 764250,
+  sha256: "94e20462558cc409a532abee28dbc513909c7ec18283d41b3ef8380896c21c0a",
+  size: 772658,
 };
 const reviewedRawSources = {
   "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts":
-    "2e3031ccd3140df52d371e62a5809a44912f112dc64e3394281484d55ec06763",
+    "ec8d87587f7e5c0684e10ea46aa58c6b429f32cb3fb8e78d6dfac2b230431c44",
   "apps/desktop/src/jones/updates/jonesColdPairSource.ts":
     "d89981bb526e6b7c774c8dff57e55b5b90361e5eec5deef16a1c70fa44b8f4a0",
+  "apps/desktop/src/jones/updates/jonesColdReceiverSource.ts":
+    "32f5b684fb78f691556cd68a498ac980e4dc48ffd073c2a85fa2b7a00925e763",
   "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts":
     "41b5162af49abb44c16ec483670bb84051fff5411ccbba601b814f786c30360c",
   "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c":
     "7a1f37ca8853c798a156be5af1e9dd45de1551fc52f11d59eb0d10f903de33e3",
   "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts":
-    "c1387e9c5e4809499f86b98d5624e0297b1b957a70443e5e7de7e21d242598c9",
+    "c9a0997fd74cd6b53e574ad0bffe6a7c075f6ed713902851f66222cfb55bebc4",
   "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts":
     "bc6613ce7d2f58bedd29698edd3a15d87944c26a68ebcebcb8d4721aa98ae843",
   "apps/desktop/src/jones/updates/jonesPairedStateSource.ts":
     "e70354b5dcbc141c1facf2e2fa3b09032ce095c1bb79fdf21ec87f43020c9810",
   "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts":
-    "8a4988b3df8a5ff9a94fead3bf068eaf5a5311211fda83528c6bec06aaa4423d",
+    "5c2f2da19235042dd924121f68d33ec5e1b762eb56ae94cc52d9687f203e3fa7",
   "apps/server/src/jones/updates/offlinePreparation.ts":
     "03d4626f3f1760dab4a6b2a5129c87af6ea8289ed651339ca5e795f449509326",
   "apps/server/src/jones/updates/offlinePreparationCore.ts":
@@ -254,15 +256,15 @@ const reviewedRawSources = {
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
-    "fb9fbff54d8764daea34863ac45ff6fdc165509a02a6dcca192142282ef0fd5b",
+    "e37c784548022692f1dbe30f9cb0a45c9c612ce0ee051d25d4b54f750157fabe",
   "scripts/jones/updates/legacy-identity-native-fixture.mjs":
     "916901550d251c2b81893bb9e273997081b3a99f2d051b7298a2fe76bc611032",
   "scripts/jones/updates/legacy-preparation-native-fixture.d.mts":
     "1d1071a6008cb223205e393a84cfbf246e58e71a3aa55922a4fd932bd73dd8e8",
   "scripts/jones/updates/legacy-preparation-native-fixture.mjs":
-    "5c56c0dab7fc700f88c10fcd219f50c4165ac6d109cdea99e3920ba74e861ed0",
+    "9cf5d60bd0a07a7bfc5e9d33de64c172ad7d1d5da4374b89fb6d09202c6b799c",
   "scripts/jones/updates/offline-preparation-build.ts":
-    "290e4b8426e5575f0519e834a04bbf921962bf6e64b861016369d10298c2f3c1",
+    "59e1eec050703a29cb4b4637202f4868e84aafccf8aad80e0cde05702dc0de9e",
   "scripts/jones/updates/offline-preparation-producer-entry.ts":
     "779e2bb0d298a04b17debed2de6088fec1aefcb52b57e47e0664e027b5bbd247",
   "scripts/package.json": "efa7e9d6b0f39d23d5d6cf21391a13bab214ee12a498e754cba1544fb2b6d438",
@@ -444,8 +446,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 747492,
-      end: 747620,
+      start: 755900,
+      end: 756028,
       endExclusive: true,
     },
   },
@@ -459,14 +461,14 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 747822,
-      end: 747948,
+      start: 756230,
+      end: 756356,
       endExclusive: true,
     },
   },
 ];
 const reviewedLateModulesSha256 =
-  "869879c46b88ade6d75efa8f56aacdb117592e4e55b9c648592978388d2cda9f";
+  "4f7a97c21b66c7847850237ca0e85f7b084d39f502ae3438e70b2b9db7d213e1";
 
 function requireProducerExecutionContract(capture) {
   const report = capture.report.document;

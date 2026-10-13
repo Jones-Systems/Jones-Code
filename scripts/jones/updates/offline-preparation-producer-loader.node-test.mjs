@@ -58,6 +58,7 @@ const qualifierPaths = [
     "jonesPairedStateSource.ts",
     "jonesColdPairSource.ts",
     "jonesLegacyIdentityNative.c",
+    "jonesColdReceiverSource.ts",
     "jonesColdOwnerSource.ts",
     "jonesPreparationWorkerSource.ts",
   ].map((name) => `apps/desktop/src/jones/updates/${name}`),
@@ -423,7 +424,7 @@ NodeTest.test(
       NodeAssert.equal(result.stageRoot, stageRoot);
       NodeAssert.equal(new Set([sourceRoot, stageRoot, result.codeRoot]).size, 3);
       NodeAssert.notDeepEqual(result.sourceIdentity, result.codeIdentity);
-      NodeAssert.equal(result.files.length, 34);
+      NodeAssert.equal(result.files.length, 35);
       NodeAssert.deepEqual(result.cleanup, { disposition: "removed", root: result.codeRoot });
       await NodeAssert.rejects(NodeFSP.default.lstat(result.codeRoot), { code: "ENOENT" });
       for (const file of result.files) {
