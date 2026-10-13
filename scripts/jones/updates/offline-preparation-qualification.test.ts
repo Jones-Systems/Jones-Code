@@ -320,3 +320,65 @@ describe(
       }));
   },
 );
+
+it("copies strict native failure evidence into the receipt and rejects private extensions", async () => {
+  await fixture(async (source, root) => {
+    const snapshot = {
+      stdoutBytes: 0,
+      stdoutEof: true,
+      stderrBytes: 0,
+      stderrEof: true,
+      returncode: 70,
+      signal: null,
+      signalsSent: 0,
+      stderr: "",
+    };
+    const failureEvidence = {
+      schema: 1,
+      classification: "native-preparation-failure",
+      case: "apply",
+      completedCases: 0,
+      expectedFrames: ["PLAN_READY", "CLOSED_RESULT"],
+      lastPhase: "sent-CONTINUE",
+      processes: [{ beforeCleanup: { ...snapshot, returncode: null }, afterCleanup: snapshot }],
+      closure: {
+        schema: 1,
+        complete: true,
+        capturedChildren: 1,
+        constructorUnknown: false,
+        pidSignalAuthority: false,
+        processes: [
+          {
+            pid: 123,
+            spawnAttempted: true,
+            spawnUnknown: false,
+            reaped: true,
+            streamsClosed: true,
+            signals: [],
+            pidSignalAuthority: false,
+          },
+        ],
+      },
+    };
+    const error = Object.assign(new Error("native failed"), {
+      failureEvidencePath: "/synthetic/case-failure.json",
+      failureEvidence,
+    });
+    build.mockRejectedValueOnce(error);
+    await expect(runHostedNativePreparation(source, root)).rejects.toBe(error);
+    const receipt = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(root, "evidence/result.json"), "utf8"),
+    );
+    expect(receipt.failureDiagnostic).toMatchObject({
+      failureEvidencePath: error.failureEvidencePath,
+      failureEvidence,
+    });
+    expect(
+      qualificationFailureDiagnostic(
+        Object.assign(new Error("invalid evidence"), {
+          failureEvidence: { ...failureEvidence, settings: "private-settings" },
+        }),
+      ),
+    ).toMatchObject({ failureEvidence: { omitted: "invalid native failure evidence" } });
+  });
+});

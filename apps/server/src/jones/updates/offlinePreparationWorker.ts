@@ -44,6 +44,37 @@ class WorkerRefused extends Schema.TaggedError<WorkerRefused>()("WorkerRefused",
     return "Closed preparation worker refused.";
   }
 }
+const failurePhases = [
+  "owner-namespace",
+  "ready",
+  "command-receive",
+  "command-validation",
+  "retained-basis",
+  "sql-open",
+  "scope-send",
+  "continue-receive",
+  "continue-validation",
+  "owner-current",
+  "sqlite-identity",
+  "sql-query",
+  "sql-close",
+  "post-sql-current",
+  "plan-encode",
+  "result-send",
+  "cleanup",
+] as const;
+type WorkerFailurePhase = (typeof failurePhases)[number];
+const failureDiagnostics = new WeakMap<object, { phase: WorkerFailurePhase; kind: string }>();
+
+/** Fixed classifications only: errors can contain SQL, settings, paths or other private values. */
+export function preparationWorkerFailureDiagnostic(error: unknown): string {
+  const diagnostic =
+    error !== null && typeof error === "object" ? failureDiagnostics.get(error) : undefined;
+  return diagnostic === undefined
+    ? "JONES_PREPARATION_FAILURE phase=entry kind=unexpected\n"
+    : `JONES_PREPARATION_FAILURE phase=${diagnostic.phase} kind=${diagnostic.kind}\n`;
+}
+
 function requireValue(condition: unknown): asserts condition {
   if (!condition) throw new WorkerRefused();
 }
@@ -885,6 +916,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
   requireValue(roles !== null);
   const channel = new WorkerChannel();
   let primary: unknown;
+  let phase: WorkerFailurePhase = "owner-namespace";
   try {
     const owner = await ownerNamespace(roles);
     let sequence = 0,
@@ -899,6 +931,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       payloadBytes,
       ...additional,
     });
+    phase = "ready";
     await channel.send(
       header("READY", {
         runtimeSha256: owner.preparation.runtimeSha256,
@@ -906,7 +939,9 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       }),
     );
     while (true) {
+      phase = "command-receive";
       const command = await channel.receive();
+      phase = "command-validation";
       sequence += 1;
       const type = text(command.header.type);
       requirePreparationCorrelation(command, owner.sessionId, sequence, type);
@@ -917,11 +952,13 @@ export async function runInheritedPreparationWorker(): Promise<void> {
         return;
       }
       requireValue(!queryFailed);
+      phase = "retained-basis";
       const basis = await retainedBasis(owner);
       let database = owner.database,
         settings = basis.settings,
         plan: OfflinePreparationPlan | undefined,
         planSha256: string | null = null;
+      phase = "command-validation";
       if (type === "PLAN") {
         requireValue(
           owner.dispatch.purpose === "prepare" && !planned && !applied && sequence === 1,
@@ -978,10 +1015,12 @@ export async function runInheritedPreparationWorker(): Promise<void> {
         Layer.provideMerge(NodeSqliteClient.layer({ filename: uri.href, readonly })),
       );
       let abortSequence: number | undefined;
+      phase = "sql-open";
       const settled = await Effect.runPromise(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* Effect.promise(async () => {
+            phase = "scope-send";
             await channel.send(
               header("SQL_SCOPE_OPENED", {
                 scopeId,
@@ -989,17 +1028,21 @@ export async function runInheritedPreparationWorker(): Promise<void> {
                 access: readonly ? "read-only" : "read-write",
               }),
             );
+            phase = "continue-receive";
             const response = await channel.receive();
+            phase = "continue-validation";
             if (response.header.type === "ABORT") {
               requirePreparationCorrelation(response, owner.sessionId, sequence + 1, "ABORT");
               abortSequence = sequence + 1;
               return;
             }
             requirePreparationCorrelation(response, owner.sessionId, sequence, "CONTINUE", scopeId);
+            phase = "owner-current";
             await owner.current();
             requireValue(sameObject(sqlDirectoryInfo, await directory(sqlDirectory)));
           });
           if (abortSequence !== undefined) return null;
+          phase = "sqlite-identity";
           const sqlite = yield* sql.unsafe<{ version: string; source_id: string }>(
             "SELECT sqlite_version() AS version, sqlite_source_id() AS source_id",
           );
@@ -1010,14 +1053,18 @@ export async function runInheritedPreparationWorker(): Promise<void> {
           )
             return yield* Effect.die(new WorkerRefused());
           // Query failure is captured inside the SQL scope. Close failures remain outside this Exit.
-          return yield* preparationWorkerSql(
+          phase = "sql-query";
+          const query = yield* preparationWorkerSql(
             plan === undefined
               ? { kind: "plan", settings }
               : { kind: readonly ? "reconcile" : "apply", settings, plan },
           ).pipe(Effect.exit);
+          phase = "sql-close";
+          return query;
         }).pipe(Effect.provide(sqlLayer)),
         { signal: channel.abort.signal },
       );
+      phase = "post-sql-current";
       await owner.current();
       requireValue(sameObject(sqlDirectoryInfo, await directory(sqlDirectory)));
       if (abortSequence !== undefined) {
@@ -1027,6 +1074,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       }
       requireValue(settled !== null);
       if (Exit.isFailure(settled)) {
+        phase = "result-send";
         queryFailed = true;
         await channel.send(
           header("CLOSED_RESULT", {
@@ -1039,6 +1087,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
         continue;
       }
       if (settled.value.kind === "plan") {
+        phase = "plan-encode";
         const result = createContinuationPlan(settled.value.basis, {
           id: text(command.header.planId),
           timestamp: text(command.header.timestamp),
@@ -1049,11 +1098,13 @@ export async function runInheritedPreparationWorker(): Promise<void> {
             .map(() => NodeCrypto.randomUUID()),
         });
         const payload = encodeOfflinePreparationPlan(result);
+        phase = "result-send";
         await channel.send(
           header("PLAN_READY", { planSha256: sha(payload) }, payload.length),
           payload,
         );
-      } else
+      } else {
+        phase = "result-send";
         await channel.send(
           header("CLOSED_RESULT", {
             scopeId,
@@ -1062,9 +1113,20 @@ export async function runInheritedPreparationWorker(): Promise<void> {
             errorCode: null,
           }),
         );
+      }
     }
   } catch (error) {
     primary = error;
+    if (error !== null && typeof error === "object")
+      failureDiagnostics.set(error, {
+        phase,
+        kind:
+          error instanceof WorkerRefused
+            ? "refused"
+            : channel.abort.signal.aborted
+              ? "aborted"
+              : "unexpected",
+      });
     throw error;
   } finally {
     const failures: unknown[] = [];
@@ -1081,6 +1143,10 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       }
     }
     // The Python creator retains/removes its exact disposable family only after actual child reaping.
-    if (primary === undefined && failures.length > 0) throw new WorkerRefused();
+    if (primary === undefined && failures.length > 0) {
+      const error = new WorkerRefused();
+      failureDiagnostics.set(error, { phase: "cleanup", kind: "refused" });
+      throw error;
+    }
   }
 }

@@ -62,3 +62,34 @@ describe("closed preparation invocation", () => {
     }
   });
 });
+
+it("emits only fixed failure diagnostics and retains exit 70", async () => {
+  const worker = await import("./offlinePreparationWorker.ts");
+  const run = vi
+    .spyOn(worker, "runInheritedPreparationWorker")
+    .mockRejectedValueOnce(new Error("Bearer private-sql"));
+  const write = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  const argv = process.argv,
+    exitCode = process.exitCode;
+  try {
+    process.argv = [
+      argv[0]!,
+      "jones-offline-preparation",
+      "--jones-preparation-worker-v1",
+      "--lock-fd",
+      "3",
+      "--owner-directory-fd",
+      "4",
+    ];
+    await offlinePreparationMain();
+    expect(process.exitCode).toBe(70);
+    expect(write).toHaveBeenCalledExactlyOnceWith(
+      "Closed preparation worker refused.\nJONES_PREPARATION_FAILURE phase=entry kind=unexpected\n",
+    );
+  } finally {
+    process.argv = argv;
+    process.exitCode = exitCode;
+    run.mockRestore();
+    write.mockRestore();
+  }
+});

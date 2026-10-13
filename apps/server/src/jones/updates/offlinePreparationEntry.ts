@@ -28,9 +28,11 @@ export async function offlinePreparationMain(): Promise<void> {
   }
   try {
     await worker.runInheritedPreparationWorker();
-  } catch {
+  } catch (error) {
     process.exitCode = 70;
-    process.stderr.write("Closed preparation worker refused.\n");
+    process.stderr.write(
+      "Closed preparation worker refused.\n" + worker.preparationWorkerFailureDiagnostic(error),
+    );
   }
 }
 

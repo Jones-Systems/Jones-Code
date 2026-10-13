@@ -52,3 +52,15 @@ export class PreparationNativeUnavailable extends Error {
   constructor(reason: string);
   readonly code: "JONES_PREPARATION_QUALIFICATION_UNAVAILABLE";
 }
+
+export function validatePreparationNativeFailure(value: unknown): Readonly<Record<string, unknown>>;
+export function publishPreparationNativeFailure(
+  root: string,
+  primary: unknown,
+  completedCases?: number,
+): Promise<
+  Error & {
+    readonly failureEvidencePath: string;
+    readonly failureEvidence: Readonly<Record<string, unknown>>;
+  }
+>;

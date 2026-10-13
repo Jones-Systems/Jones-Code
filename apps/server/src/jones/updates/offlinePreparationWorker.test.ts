@@ -32,6 +32,7 @@ import {
   decodePreparationFrame,
   encodePreparationFrame,
   preparationWorkerArguments,
+  preparationWorkerFailureDiagnostic,
   preparationWorkerSql,
   requirePreparationCorrelation,
   runInheritedPreparationWorker,
@@ -539,10 +540,17 @@ it.effect(
           "--owner-directory-fd",
           String(descriptors[0]),
         ];
-        const outcome = yield* Effect.tryPromise(() => runInheritedPreparationWorker()).pipe(
-          Effect.exit,
-        );
+        let diagnostic: string | undefined;
+        const outcome = yield* Effect.tryPromise(async () => {
+          try {
+            await runInheritedPreparationWorker();
+          } catch (error) {
+            diagnostic = preparationWorkerFailureDiagnostic(error);
+            throw error;
+          }
+        }).pipe(Effect.exit);
         assert.isTrue(Exit.isFailure(outcome));
+        assert.equal(diagnostic, "JONES_PREPARATION_FAILURE phase=owner-namespace kind=refused\n");
         for (const fd of descriptors) {
           let failure: unknown;
           try {
@@ -815,3 +823,14 @@ it.effect.each(["short-read", "exact-limit", "growth", "read-failure"] as const)
       });
     }).pipe(Effect.scoped),
 );
+
+it("failure fallback never serializes private error fields", () => {
+  const failure = Object.assign(new Error("Bearer private-error"), {
+    phase: "private-phase",
+    sql: "private-sql",
+  });
+  assert.equal(
+    preparationWorkerFailureDiagnostic(failure),
+    "JONES_PREPARATION_FAILURE phase=entry kind=unexpected\n",
+  );
+});
