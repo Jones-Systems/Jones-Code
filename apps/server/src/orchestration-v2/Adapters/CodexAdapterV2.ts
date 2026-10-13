@@ -7,6 +7,7 @@ import type { ServerProviderModel } from "@t3tools/contracts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import {
+  codexCapacityRetryPolicy,
   makeCodexCapacityContinuation,
   reduceCodexCapacityContinuation,
   type CodexCapacityContinuationState,
@@ -1212,6 +1213,11 @@ type CodexRootTerminalEvent = Extract<ProviderAdapterV2Event, { readonly type: "
 /** A completed root turn whose run stays open for the goal turn Codex starts next. */
 interface CodexGoalHold {
   readonly context: ActiveCodexTurnContext;
+  /** Continue with the same accepted settings and producer, without rebuilding input. */
+  readonly capacityContinuation?: {
+    readonly params: CodexTurnStartParamsWithCollaborationMode;
+    readonly runtimeGeneration: string;
+  };
   readonly event: Extract<CodexRootTerminalEvent, { readonly failure: null }>;
   /** Sent when the hold resolves, so until then Stop and steering still target this turn. */
   readonly completedTurn: OrchestrationV2ProviderTurn;
@@ -2089,6 +2095,29 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           logicalTerminalEmitted: boolean;
           capacityRetry?: ActiveCodexProviderRetry;
         };
+        const makeCapacityRequest = (
+          turnInput: ProviderAdapterV2TurnInput,
+          params: CodexTurnStartParamsWithCollaborationMode,
+          nativeThreadId: string,
+          runtimeGeneration: string,
+        ): CapacityRequest => ({
+          state: makeCodexCapacityContinuation({
+            runId: turnInput.runId,
+            attemptId: turnInput.attemptId,
+            providerThreadId: turnInput.providerThread.id,
+            nativeThreadId,
+            runtimeGeneration,
+          }),
+          input: turnInput,
+          params,
+          earlyErrors: new Map(),
+          earlyCompletions: new Map(),
+          earlyStarts: new Map(),
+          recoveryEnabled: turnInput.nativeCreationGuard === undefined,
+          logicalTerminalEmitted: false,
+          nativeContexts: [],
+          startDispatched: false,
+        });
         const capacityByThread = new Map<string, CapacityRequest>();
         const capacityByTurn = new Map<string, CapacityRequest>();
         let capacityScopeClosed = false;
@@ -4822,6 +4851,46 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               return;
             }
             const request = capacityByThread.get(payload.threadId);
+            if (
+              request !== undefined &&
+              request.recoveryEnabled &&
+              request.state.retryOrdinal > 0 &&
+              (request.state.phase === "waiting_retry" ||
+                (request.state.phase === "awaiting_start" && !request.startDispatched)) &&
+              currentCapacityBinding(request) &&
+              goalsByNativeThread.get(payload.threadId)?.status === "active" &&
+              !goalStops.has(payload.threadId)
+            ) {
+              reduceCapacity(request, {
+                type: "nativeSuccessorAcknowledged",
+                nativeTurnId: payload.turn.id,
+                startDispatched: false,
+              });
+              const adoptedState = request.state;
+              if (
+                adoptedState.phase === "running" &&
+                adoptedState.nativeTurnId === payload.turn.id
+              ) {
+                if (request.timer !== undefined) yield* Fiber.interrupt(request.timer);
+                capacityByTurn.set(payload.turn.id, request);
+                const next = yield* registerRootTurn({
+                  turnInput: {
+                    ...request.input,
+                    providerTurnOrdinal:
+                      request.input.providerTurnOrdinal + request.state.retryOrdinal,
+                  },
+                  nativeTurnId: payload.turn.id,
+                  startedAt: codexTimestamp(payload.turn.startedAt),
+                });
+                request.nativeContexts.push(next);
+                const logicalContext = request.logicalContext!;
+                const goalRun = goalRuns.get(logicalContext.providerTurnId) ?? [logicalContext];
+                goalRun.push(next);
+                goalRuns.set(logicalContext.providerTurnId, goalRun);
+                goalRuns.set(next.providerTurnId, goalRun);
+                return;
+              }
+            }
             if (request !== undefined && request.state.phase === "awaiting_start") {
               if (
                 request.earlyStarts.size +
@@ -4853,7 +4922,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             // Codex continues an active goal on its own. The next turn joins the
             // run its previous turn belongs to.
             const goalHold = goalHolds.get(payload.threadId);
-            if (goalHold !== undefined) {
+            if (
+              goalHold !== undefined &&
+              (goalHold.capacityContinuation === undefined ||
+                goalHold.capacityContinuation.runtimeGeneration === currentProducer.generation) &&
+              !capacityScopeClosed &&
+              !nativeStartUnknown &&
+              !goalStops.has(payload.threadId)
+            ) {
               goalHolds.delete(payload.threadId);
               yield* emitProviderEvent({
                 type: "provider_turn.updated",
@@ -4864,11 +4940,28 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               const next = yield* registerRootTurn({
                 turnInput: {
                   ...goalHold.context.input,
-                  providerTurnOrdinal: goalHold.context.providerTurnOrdinal + 1,
+                  providerTurnOrdinal: goalHold.completedTurn.ordinal + 1,
                 },
                 nativeTurnId: payload.turn.id,
                 startedAt: codexTimestamp(payload.turn.startedAt),
               });
+              if (goalHold.capacityContinuation !== undefined) {
+                const continuation = makeCapacityRequest(
+                  next.input,
+                  goalHold.capacityContinuation.params,
+                  payload.threadId,
+                  goalHold.capacityContinuation.runtimeGeneration,
+                );
+                continuation.logicalContext = next;
+                continuation.nativeContexts.push(next);
+                capacityByThread.set(payload.threadId, continuation);
+                capacityByTurn.set(payload.turn.id, continuation);
+                reduceCapacity(continuation, {
+                  type: "startAcknowledged",
+                  retryOrdinal: 0,
+                  nativeTurnId: payload.turn.id,
+                });
+              }
               const goalRun = goalRuns.get(goalHold.context.providerTurnId) ?? [goalHold.context];
               goalRun.push(next);
               goalRuns.set(goalHold.context.providerTurnId, goalRun);
@@ -4953,6 +5046,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     type: "nativeError",
                     nativeTurnId: payload.turnId,
                     code: codexErrorInfoCode(payload.error.codexErrorInfo),
+                    message: payload.error.message,
                     willRetry: payload.willRetry,
                   });
                 }
@@ -4962,6 +5056,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 type: "nativeError",
                 nativeTurnId: payload.turnId,
                 code: codexErrorInfoCode(payload.error.codexErrorInfo),
+                message: payload.error.message,
                 willRetry: payload.willRetry,
               });
             }
@@ -6166,8 +6261,23 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               event.status === "completed" &&
               nativeThreadId != null
             ) {
+              if (request !== undefined) {
+                const goalRun = goalRuns.get(logicalContext.providerTurnId) ?? [logicalContext];
+                for (const context of request.nativeContexts) {
+                  if (!goalRun.includes(context)) goalRun.push(context);
+                  goalRuns.set(context.providerTurnId, goalRun);
+                }
+              }
               goalHolds.set(nativeThreadId, {
                 context: logicalContext,
+                ...(request === undefined
+                  ? {}
+                  : {
+                      capacityContinuation: {
+                        params: request.params,
+                        runtimeGeneration: request.state.binding.runtimeGeneration,
+                      },
+                    }),
                 event,
                 completedTurn: input.goalHoldTurn,
                 next: yield* Deferred.make<ActiveCodexTurnContext | undefined>(),
@@ -6531,6 +6641,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     type: "nativeCompleted",
                     nativeTurnId: payload.turn.id,
                     status,
+                    ...(payload.turn.error == null
+                      ? {}
+                      : {
+                          error: {
+                            code: codexErrorInfoCode(payload.turn.error.codexErrorInfo),
+                            message: payload.turn.error.message,
+                          },
+                        }),
                   });
                 }
               }
@@ -6551,19 +6669,18 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               request.state.nativeTurnId === payload.turn.id &&
               (status === "completed" || status === "failed" || status === "interrupted")
             ) {
-              const completionCode = codexErrorInfoCode(payload.turn.error?.codexErrorInfo);
-              if (status === "failed" && completionCode !== "serverOverloaded") {
-                reduceCapacity(request, {
-                  type: "nativeError",
-                  nativeTurnId: payload.turn.id,
-                  code: completionCode,
-                  willRetry: false,
-                });
-              }
               reduceCapacity(request, {
                 type: "nativeCompleted",
                 nativeTurnId: payload.turn.id,
                 status,
+                ...(payload.turn.error == null
+                  ? {}
+                  : {
+                      error: {
+                        code: codexErrorInfoCode(payload.turn.error.codexErrorInfo),
+                        message: payload.turn.error.message,
+                      },
+                    }),
               });
             }
             const continuingCapacity =
@@ -6718,6 +6835,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               runtimeGeneration: currentProducer.generation,
             });
             yield* request.input.revalidateStartAdmission ?? Effect.void;
+            if (
+              request.state.phase !== "awaiting_start" ||
+              request.state.retryOrdinal !== retryOrdinal
+            )
+              return;
             if (!currentCapacityBinding(request))
               return yield* toProtocolError("Native physical binding changed before send.");
             request.startDispatched = true;
@@ -6768,18 +6890,6 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             request.logicalContext ??= context;
             request.nativeContexts.push(context);
             capacityByTurn.set(started.turn.id, request);
-            const earlyFailure = request.earlyCompletions.get(started.turn.id)?.turn;
-            if (
-              earlyFailure?.status === "failed" &&
-              codexErrorInfoCode(earlyFailure.error?.codexErrorInfo) !== "serverOverloaded"
-            ) {
-              reduceCapacity(request, {
-                type: "nativeError",
-                nativeTurnId: started.turn.id,
-                code: codexErrorInfoCode(earlyFailure.error?.codexErrorInfo),
-                willRetry: false,
-              });
-            }
             reduceCapacity(request, {
               type: "startAcknowledged",
               retryOrdinal,
@@ -6805,7 +6915,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           });
         const scheduleCapacityRetry = (request: CapacityRequest) =>
           Effect.gen(function* () {
-            if (request.timer !== undefined || !request.recoveryEnabled) return;
+            if (
+              request.timer !== undefined ||
+              !request.recoveryEnabled ||
+              request.state.phase !== "waiting_retry" ||
+              !currentCapacityBinding(request)
+            )
+              return;
             const retryOrdinal = request.state.retryOrdinal;
             const context = request.logicalContext!;
             const now = yield* DateTime.now;
@@ -6820,7 +6936,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   context.latestProviderFailure?.nativeMessage ??
                   "Codex is at capacity; retrying without resending the prompt.",
               }),
-              retry: { attempt: retryOrdinal, maxAttempts: 5, retryDelayMs: 10000 },
+              retry: {
+                attempt: retryOrdinal,
+                maxAttempts: codexCapacityRetryPolicy.maxRetries,
+                retryDelayMs: codexCapacityRetryPolicy.delayMs,
+              },
               startedAt: request.capacityRetry?.startedAt ?? now,
               itemOrdinal:
                 request.capacityRetry?.itemOrdinal ??
@@ -6828,7 +6948,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             };
             let timer: Fiber.Fiber<void> | undefined;
             timer = yield* Effect.gen(function* () {
-              yield* Effect.sleep("10 seconds");
+              yield* Effect.sleep(codexCapacityRetryPolicy.delayMs);
               if (
                 !request.recoveryEnabled ||
                 request.state.phase !== "waiting_retry" ||
@@ -6857,9 +6977,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               }
               const actions = reduceCapacity(request, { type: "retryReady", retryOrdinal });
               if (!actions.some((action) => action.type === "retry")) return;
+              request.startDispatched = false;
               request.timer = undefined;
               const result = yield* sendCapacityTurn(request, retryOrdinal).pipe(Effect.exit);
-              if (result._tag === "Failure") yield* finishUnknownCapacityStart(request);
+              const stateAfterSend = request.state;
+              if (result._tag === "Failure" && stateAfterSend.phase === "awaiting_start")
+                yield* finishUnknownCapacityStart(request);
             }).pipe(
               Effect.ensuring(
                 Effect.sync(() => {
@@ -7057,24 +7180,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 else next.delete(threadId);
                 return next;
               });
-              request = {
-                state: makeCodexCapacityContinuation({
-                  runId: turnInput.runId,
-                  attemptId: turnInput.attemptId,
-                  providerThreadId: turnInput.providerThread.id,
-                  nativeThreadId: threadId,
-                  runtimeGeneration: currentProducer.generation,
-                }),
-                input: turnInput,
-                params: turnStartParams,
-                earlyErrors: new Map(),
-                earlyCompletions: new Map(),
-                earlyStarts: new Map(),
-                recoveryEnabled: turnInput.nativeCreationGuard === undefined,
-                logicalTerminalEmitted: false,
-                nativeContexts: [],
-                startDispatched: false,
-              };
+              request = makeCapacityRequest(
+                turnInput,
+                turnStartParams,
+                threadId,
+                currentProducer.generation,
+              );
               capacityByThread.set(threadId, request);
               yield* sendCapacityTurn(request, 0);
               yield* Ref.update(pendingRootTurns, (current) => {

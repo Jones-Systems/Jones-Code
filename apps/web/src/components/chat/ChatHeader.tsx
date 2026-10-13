@@ -356,7 +356,7 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      <HostStatusIndicators />
+      <HostStatusIndicators environmentId={activeThreadEnvironmentId} />
     </div>
   );
 });

@@ -3684,7 +3684,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     );
 
   it.effect(
-    "keeps five promptless capacity retries frozen and completes the original logical turn once",
+    "keeps twelve promptless capacity retries frozen and completes the original logical turn once",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -3713,7 +3713,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             capacityErrorEntry(threadId, "capacity-0"),
             capacityCompletionEntry(threadId, "capacity-0"),
           );
-          for (let retry = 1; retry <= 5; retry++) {
+          for (let retry = 1; retry <= 12; retry++) {
             entries.push(
               ...capacityPreamble(threadId, `capacity-${retry}`)
                 .slice(5, 7)
@@ -3747,7 +3747,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           }
           let sends = 0;
           const harness = yield* makeCodexReplayHarness(
-            makeCodexReplayTranscript({ scenario: "capacity-five-frozen", entries }),
+            makeCodexReplayTranscript({ scenario: "capacity-twelve-frozen", entries }),
             undefined,
             (method) =>
               Effect.sync(() => {
@@ -3771,7 +3771,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             }),
             modelSelection,
           });
-          for (let retry = 1; retry <= 5; retry++) {
+          for (let retry = 1; retry <= 12; retry++) {
             yield* awaitUntil(
               () =>
                 harness.terminalEvents().length > 0 ||
@@ -3793,7 +3793,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               { id: "reasoningEffort", value: "high" },
               { id: "serviceTier", value: "flex" },
             ];
-            yield* TestClock.adjust("9 seconds");
+            yield* TestClock.adjust("4 seconds");
             assert.equal(sends, retry);
             yield* TestClock.adjust("1 second");
             yield* awaitUntil(() => sends === retry + 1, "promptless capacity send");
@@ -3819,10 +3819,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           assert.deepEqual(
             [...nativeAttempts],
-            ["capacity-0", "capacity-1", "capacity-2", "capacity-3", "capacity-4", "capacity-5"],
+            Array.from({ length: 13 }, (_, index) => `capacity-${index}`),
           );
           yield* TestClock.adjust("1 minute");
-          assert.equal(sends, 6);
+          assert.equal(sends, 13);
         }),
       ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
@@ -4341,7 +4341,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.isTrue(
             yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
           );
-          yield* TestClock.adjust("9 seconds");
+          yield* TestClock.adjust("4 seconds");
           assert.equal(checks, 2);
           assert.equal(sends, 1);
           yield* TestClock.adjust("1 second");
@@ -4458,7 +4458,107 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
-  it.effect.each(["native-retry", "noncapacity", "completion-only"] as const)(
+  it.effect.each([
+    "notification",
+    "completion",
+    "early-completion",
+    "overload-completion",
+  ] as const)(
+    "recovers capacity reported by %s with a five-second promptless continuation",
+    (surface) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const threadId = `native-model-capacity-${surface}`;
+          const failure = capacityCompletionEntry(threadId, "model-capacity-original");
+          const notification = capacityErrorEntry(threadId, "model-capacity-original", "other");
+          const withModelCapacity = (entry: CodexReplay.CodexAppServerReplayEntry) => {
+            if (entry.type !== "emit_inbound" || !Predicate.isObject(entry.frame)) return entry;
+            const params = entry.frame.params as Record<string, unknown>;
+            const error = {
+              message: "Selected model is at capacity. Please try a different model.",
+              codexErrorInfo: "other",
+              additionalDetails: null,
+            };
+            return {
+              ...entry,
+              frame: {
+                ...entry.frame,
+                params: {
+                  ...params,
+                  ...(entry.frame.method === "error"
+                    ? { error }
+                    : {
+                        turn: {
+                          ...(params.turn as Record<string, unknown>),
+                          error,
+                        },
+                      }),
+                },
+              },
+            };
+          };
+          const completion =
+            surface === "overload-completion" ? failure : withModelCapacity(failure);
+          const entries = [...capacityPreamble(threadId, "model-capacity-original")];
+          if (surface === "early-completion") entries.splice(entries.length - 1, 0, completion);
+          else {
+            if (surface === "notification") entries.push(withModelCapacity(notification));
+            entries.push(completion);
+          }
+          entries.push(
+            ...capacityTurnExchange(threadId, "model-capacity-success", 4, { input: [] }),
+            capacityCompletionEntry(threadId, "model-capacity-success", "completed"),
+          );
+          let sends = 0;
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({ scenario: `model-capacity-${surface}`, entries }),
+            undefined,
+            (method) =>
+              Effect.sync(() => {
+                if (method === "turn/start") sends++;
+              }),
+          );
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`capacity-${surface}`),
+              text: "Work",
+            }),
+          );
+          yield* awaitCapacityDelay(harness);
+          const retry = harness.events.find(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "error" &&
+              event.turnItem.status === "running",
+          );
+          assert.equal(
+            retry?.type === "turn_item.updated" &&
+              retry.turnItem.type === "error" &&
+              retry.turnItem.retry?.retryDelayMs,
+            5000,
+          );
+          assert.equal(
+            retry?.type === "turn_item.updated" &&
+              retry.turnItem.type === "error" &&
+              retry.turnItem.retry?.maxAttempts,
+            12,
+          );
+          yield* TestClock.adjust("4 seconds");
+          assert.equal(sends, 1);
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* TestClock.adjust("1 second");
+          yield* harness.firstTerminal;
+          assert.equal(sends, 2);
+          assert.lengthOf(harness.terminalEvents(), 1);
+          assert.equal(harness.terminalEvents()[0]!.status, "completed");
+        }),
+      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect.each(["native-retry", "noncapacity"] as const)(
     "leaves unconfirmed or native-owned capacity recovery alone: %s",
     (outcome) =>
       Effect.scoped(
@@ -4471,23 +4571,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           let sends = 0;
           const entries = [...capacityPreamble(threadId, "native-owned")];
-          if (outcome !== "completion-only")
-            entries.push(
-              outcome === "native-retry" &&
-                error.type === "emit_inbound" &&
-                Predicate.isObject(error.frame)
-                ? {
-                    ...error,
-                    frame: {
-                      ...error.frame,
-                      params: {
-                        ...(error.frame.params as Record<string, unknown>),
-                        willRetry: true,
-                      },
+          entries.push(
+            outcome === "native-retry" &&
+              error.type === "emit_inbound" &&
+              Predicate.isObject(error.frame)
+              ? {
+                  ...error,
+                  frame: {
+                    ...error.frame,
+                    params: {
+                      ...(error.frame.params as Record<string, unknown>),
+                      willRetry: true,
                     },
-                  }
-                : error,
-            );
+                  },
+                }
+              : error,
+          );
           entries.push(capacityCompletionEntry(threadId, "native-owned"));
           const harness = yield* makeCodexReplayHarness(
             makeCodexReplayTranscript({ scenario: `capacity-owned-${outcome}`, entries }),
@@ -12369,6 +12468,312 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.isNull(CodexAdapterV2.parseCodexGoalCommand("/goals"));
       assert.isNull(CodexAdapterV2.parseCodexGoalCommand("set a /goal"));
     });
+
+    it.effect.each(["retry", "stop", "native-successor", "retry-then-goal"] as const)(
+      "recovers capacity in an acknowledged native goal followup: %s",
+      (outcome) =>
+        Effect.gen(function* () {
+          const entries: Array<CodexReplay.CodexAppServerReplayEntry> = [
+            ...capacityPreamble(nativeThreadId, "goal-capacity-first"),
+            notification("goal active", "thread/goal/updated", {
+              threadId: nativeThreadId,
+              turnId: "goal-capacity-first",
+              goal: codexGoal("active", 0),
+            }),
+            capacityCompletionEntry(nativeThreadId, "goal-capacity-first", "completed"),
+            notification("native followup", "turn/started", {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: "goal-capacity-followup", status: "inProgress" }),
+            }),
+            capacityErrorEntry(nativeThreadId, "goal-capacity-followup"),
+            capacityCompletionEntry(nativeThreadId, "goal-capacity-followup"),
+          ];
+          if (outcome === "stop")
+            entries.push(
+              ...request(
+                4,
+                "thread/goal/set",
+                { threadId: nativeThreadId, status: "paused" },
+                { goal: codexGoal("paused", 0) },
+              ),
+            );
+          else {
+            if (outcome === "retry" || outcome === "retry-then-goal")
+              entries.push(
+                ...capacityTurnExchange(nativeThreadId, "goal-capacity-successor", 4, {
+                  input: [],
+                }),
+              );
+            else
+              entries.push(
+                notification("autonomous successor", "turn/started", {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({
+                    id: "goal-capacity-successor",
+                    status: "inProgress",
+                  }),
+                }),
+              );
+            if (outcome === "retry-then-goal")
+              entries.push(
+                capacityCompletionEntry(nativeThreadId, "goal-capacity-successor", "completed"),
+                notification("next autonomous goal turn", "turn/started", {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: "goal-after-capacity", status: "inProgress" }),
+                }),
+              );
+            const finalTurnId =
+              outcome === "retry-then-goal" ? "goal-after-capacity" : "goal-capacity-successor";
+            entries.push(
+              notification("goal complete", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: finalTurnId,
+                goal: codexGoal("complete", 1),
+              }),
+              capacityCompletionEntry(nativeThreadId, finalTurnId, "completed"),
+            );
+          }
+          let sends = 0;
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({ scenario: `goal-capacity-${outcome}`, entries }),
+            undefined,
+            (method) =>
+              Effect.sync(() => {
+                if (method === "turn/start") sends++;
+              }),
+          );
+          const turnInput = yield* goalTurnInput(harness, "Work");
+          const modelSelection = { ...turnInput.modelSelection };
+          yield* harness.runtime.startTurn({ ...turnInput, modelSelection });
+          if (outcome !== "native-successor") {
+            yield* awaitUntil(
+              () =>
+                harness.terminalEvents().length > 0 ||
+                harness.events.some(
+                  (event) =>
+                    event.type === "turn_item.updated" &&
+                    event.turnItem.type === "error" &&
+                    event.turnItem.status === "running" &&
+                    event.turnItem.retry?.attempt === 1,
+                ),
+              "native goal capacity retry or terminal",
+            );
+            assert.lengthOf(
+              harness.terminalEvents(),
+              0,
+              "The attributed goal followup must retain its run while retrying capacity",
+            );
+            modelSelection.model = "gpt-6.1-sol";
+            if (outcome === "stop") {
+              const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                nativeTurnId: "goal-capacity-followup",
+              });
+              yield* harness.runtime.interruptTurn({
+                providerThread: harness.providerThread,
+                providerTurnId,
+                requestRuntimeRestart: true,
+              });
+            } else {
+              yield* TestClock.adjust("4 seconds");
+              assert.equal(sends, 1);
+              yield* TestClock.adjust("1 second");
+            }
+          }
+          yield* harness.firstTerminal;
+          assert.lengthOf(harness.terminalEvents(), 1);
+          assert.equal(
+            harness.terminalEvents()[0]!.status,
+            outcome === "stop" ? "interrupted" : "completed",
+          );
+          assert.equal(
+            harness.terminalEvents()[0]!.providerTurnId,
+            (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+              nativeTurnId:
+                outcome === "retry-then-goal" ? "goal-after-capacity" : "goal-capacity-followup",
+            }),
+          );
+          yield* TestClock.adjust("1 minute");
+          assert.equal(sends, outcome === "retry" || outcome === "retry-then-goal" ? 2 : 1);
+          if (outcome === "retry-then-goal")
+            assert.deepEqual(
+              harness.events.flatMap((event) =>
+                event.type === "provider_turn.updated" && event.providerTurn.status === "running"
+                  ? [event.providerTurn.ordinal]
+                  : [],
+              ),
+              [1, 2, 3, 4],
+            );
+          assert.lengthOf(harness.terminalEvents(), 1);
+        }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("keeps retry UI settled after an autonomous goal successor", () =>
+      Effect.gen(function* () {
+        const handlers = new Map<string, (payload: unknown) => Effect.Effect<unknown>>();
+        let successorObserved = false;
+        let sends = 0;
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "goal-capacity-scheduler-race",
+            entries: [
+              ...capacityPreamble(nativeThreadId, "scheduler-race-first"),
+              notification("goal active", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "scheduler-race-first",
+                goal: codexGoal("active", 0),
+              }),
+              capacityCompletionEntry(nativeThreadId, "scheduler-race-first", "completed"),
+              notification("native followup", "turn/started", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: "scheduler-race-failed", status: "inProgress" }),
+              }),
+              capacityErrorEntry(nativeThreadId, "scheduler-race-failed"),
+              capacityCompletionEntry(nativeThreadId, "scheduler-race-failed"),
+            ],
+          }),
+          (event) =>
+            Effect.gen(function* () {
+              if (
+                event.type !== "provider_turn.updated" ||
+                event.providerTurn.status !== "failed" ||
+                event.providerTurn.nativeTurnRef?.nativeId !== "scheduler-race-failed" ||
+                successorObserved
+              )
+                return;
+              successorObserved = true;
+              yield* handlers.get("turn/started")!({
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({
+                  id: "scheduler-race-successor",
+                  status: "inProgress",
+                }),
+              });
+            }),
+          (method) =>
+            Effect.sync(() => {
+              if (method === "turn/start") sends++;
+            }),
+          undefined,
+          {
+            onNotification: (method, handler) => {
+              handlers.set(method, handler);
+            },
+          },
+        );
+        yield* harness.runtime.startTurn(yield* goalTurnInput(harness, "Work"));
+        yield* awaitUntil(
+          () => successorObserved,
+          "autonomous successor observed after capacity completion",
+        );
+        yield* handlers.get("thread/goal/updated")!({
+          threadId: nativeThreadId,
+          turnId: "scheduler-race-successor",
+          goal: codexGoal("complete", 1),
+        });
+        yield* handlers.get("turn/completed")!({
+          threadId: nativeThreadId,
+          turn: makeCodexReplayTurn({ id: "scheduler-race-successor", status: "completed" }),
+        });
+        yield* harness.firstTerminal;
+        yield* TestClock.adjust("1 minute");
+        assert.isTrue(successorObserved);
+        assert.equal(sends, 1);
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["completed"],
+        );
+        assert.isFalse(
+          harness.events
+            .slice(harness.events.findIndex((event) => event.type === "turn.terminal") + 1)
+            .some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.status === "running" &&
+                event.turnItem.retry?.maxAttempts === 12,
+            ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("adopts a native goal successor during retry admission before dispatch", () =>
+      Effect.gen(function* () {
+        const admissionEntered = yield* Deferred.make<void>();
+        const releaseAdmission = yield* Deferred.make<void>();
+        let blockRetryAdmission = false;
+        let sends = 0;
+        const handlers = new Map<string, (payload: unknown) => Effect.Effect<unknown>>();
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "goal-capacity-before-dispatch",
+            entries: [
+              ...capacityPreamble(nativeThreadId, "goal-before-dispatch-first"),
+              notification("goal active", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "goal-before-dispatch-first",
+                goal: codexGoal("active", 0),
+              }),
+              capacityCompletionEntry(nativeThreadId, "goal-before-dispatch-first", "completed"),
+              notification("native followup", "turn/started", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({
+                  id: "goal-before-dispatch-failed",
+                  status: "inProgress",
+                }),
+              }),
+              capacityErrorEntry(nativeThreadId, "goal-before-dispatch-failed"),
+              capacityCompletionEntry(nativeThreadId, "goal-before-dispatch-failed"),
+            ],
+          }),
+          undefined,
+          (method) =>
+            Effect.sync(() => {
+              if (method === "turn/start") sends++;
+            }),
+          undefined,
+          {
+            onNotification: (method, handler) => {
+              handlers.set(method, handler);
+            },
+          },
+        );
+        yield* harness.runtime.startTurn({
+          ...(yield* goalTurnInput(harness, "Work")),
+          revalidateStartAdmission: Effect.gen(function* () {
+            if (blockRetryAdmission) {
+              yield* Deferred.succeed(admissionEntered, undefined);
+              yield* Deferred.await(releaseAdmission);
+            }
+          }),
+        });
+        yield* awaitCapacityDelay(harness);
+        blockRetryAdmission = true;
+        yield* TestClock.adjust("5 seconds");
+        yield* Deferred.await(admissionEntered);
+        assert.equal(sends, 1);
+        yield* handlers.get("turn/started")!({
+          threadId: nativeThreadId,
+          turn: makeCodexReplayTurn({ id: "goal-before-dispatch-successor", status: "inProgress" }),
+        });
+        yield* Deferred.succeed(releaseAdmission, undefined);
+        yield* handlers.get("thread/goal/updated")!({
+          threadId: nativeThreadId,
+          turnId: "goal-before-dispatch-successor",
+          goal: codexGoal("complete", 1),
+        });
+        yield* handlers.get("turn/completed")!({
+          threadId: nativeThreadId,
+          turn: makeCodexReplayTurn({ id: "goal-before-dispatch-successor", status: "completed" }),
+        });
+        yield* harness.firstTerminal;
+        yield* TestClock.adjust("1 minute");
+        assert.equal(sends, 1);
+        assert.lengthOf(harness.terminalEvents(), 1);
+        assert.equal(harness.terminalEvents()[0]!.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
 
     it.effect("keeps a /goal run open across the turns Codex continues on its own", () =>
       Effect.gen(function* () {
