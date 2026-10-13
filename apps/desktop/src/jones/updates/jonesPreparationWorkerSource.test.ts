@@ -1,21 +1,23 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Run only the embedded controller against captured synthetic Python children.
 import * as NodeChildProcess from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
+import { jonesColdOwnerSource } from "./jonesColdOwnerSource.ts";
 import { jonesPreparationWorkerSource } from "./jonesPreparationWorkerSource.ts";
 
 const controllerFixture = String.raw`
-import contextlib, copy, datetime, errno, fcntl, hashlib, json, os, pathlib, re, shutil, signal, stat, struct, subprocess, sys, tempfile, time, types
+import contextlib, copy, datetime, errno, fcntl, hashlib, json, os, pathlib, re, shutil, signal, stat, struct, subprocess, sys, tempfile, time, types, uuid
 payload = json.load(sys.stdin)
 class Refused(Exception): pass
 def require(value):
     if not value: raise Refused('Owned controller refusal')
 scope = {'__name__': 'owned_preparation_controller', 'Refused': Refused, 'require': require,
          'json': json, 'os': os, 'subprocess': subprocess, 'struct': struct, 'datetime': datetime, 're': re,
-         'contextlib': contextlib, 'pathlib': pathlib, 'decode': json.loads, '_COLD_PAIR_BOUNDS': {'bytes': 4096},
+         'uuid': uuid, 'contextlib': contextlib, 'pathlib': pathlib, 'decode': json.loads, '_COLD_PAIR_BOUNDS': {'bytes': 4096},
          'sha': lambda raw: hashlib.sha256(raw).hexdigest(),
          'hex_value': lambda value, length: isinstance(value, str) and re.fullmatch('[a-f0-9]{' + str(length) + '}', value) is not None,
          'integer': lambda value: type(value) is int and 1 <= value <= 9007199254740991,
          'BUNDLE_V2_KEYS': {'schema', 'repository', 'sourceSha', 'sourceTree', 'version', 'bootstrapSha256', 'executorSha256', 'maintenanceSha256', 'identityNativeSha256', 'identityNativeSourceSha256', 'nativeArchitecture'}}
+exec(compile(payload['coldSource'], 'cold-owner.py', 'exec'), scope)
 exec(compile(payload['source'], 'preparation-controller.py', 'exec'), scope)
 Process = scope['_PreparationProcess']
 scope['_PREPARATION_LIMITS']['drainSeconds'] = 0.1
@@ -112,6 +114,55 @@ with owned_root() as root:
                         if stream is not None: stream.close()
                 # Test-owned recovery is deliberately not implementation reaping evidence.
                 assert command.child is None and not command.reaped and not command.closed
+        elif case.startswith('boot-'):
+            worker = worker_unit()
+            canonical = '12345678-abcd-1234-abcd-123456789abc'
+            worker.session.record['bootSessionUuid'] = canonical
+            variants = {'boot-lowercase': canonical, 'boot-uppercase': canonical.upper(),
+                        'boot-mixed-case': '12345678-AbCd-1234-aBcD-123456789aBc',
+                        'boot-different': '12345678-abcd-1234-abcd-123456789abd',
+                        'boot-malformed': 'not-a-uuid', 'boot-braced': '{' + canonical + '}',
+                        'boot-no-hyphens': canonical.replace('-', ''), 'boot-non-string': None,
+                        'boot-trailing-newline': canonical + '\n'}
+            raw_boot = variants[case]
+            database = root / 'state.sqlite'
+            database.write_bytes(b'owned-placeholder')
+            worker.process = types.SimpleNamespace(child=types.SimpleNamespace(pid=123))
+            worker.save_receipt = lambda phase: saved.append(phase)
+            saved = []
+            report = dict(schema=1, status='observed', operation='capture-worker', bootSessionUuid=raw_boot,
+                          observationOnly=True, suppliedFamilyOnly=True, processCustody='unobserved',
+                          processes=[dict(role='owner', pid=os.getpid(), uniqueId='1', uid=os.getuid()),
+                                     dict(role='worker', pid=123, parentPid=os.getpid(), parentUniqueId='1', uid=os.getuid())],
+                          excludedWorkerFds=[], family=[dict(role='database', object=dict(path=str(database)))], matches=[])
+            for key in ('sqliteOpenProved', 'databaseSyncCloseProved', 'workerReaped', 'stateAdmissionAllowed', 'launchMembershipComplete', 'activationAllowed', 'familyMembershipComplete'):
+                report[key] = False
+            class OwnedObserver:
+                def __init__(self, *args):
+                    self.output, self.error = json.dumps(report).encode(), None
+                def start(self): pass
+                def finish(self, deadline): return 0
+                def stop(self): pass
+                def close(self): pass
+            class OwnedObservation:
+                def digest(self, path, limit): return 'a' * 64
+                @contextlib.contextmanager
+                def directory(self, path):
+                    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+                    try: yield fd
+                    finally: os.close(fd)
+                @contextlib.contextmanager
+                def file(self, path, limit):
+                    with path.open('rb') as stream: yield stream
+                def current(self): pass
+            scope['_PreparationProcess'], scope['Observation'] = OwnedObserver, OwnedObservation
+            accepted = case in ('boot-lowercase', 'boot-uppercase', 'boot-mixed-case')
+            try: worker.observe(database, capture=True)
+            except Refused:
+                assert not accepted and saved == []
+            else:
+                assert accepted and saved == ['captured']
+            assert json.loads(worker.observers[0].output)['bootSessionUuid'] == raw_boot
         elif case == 'worker-observer-double-failure':
             worker = worker_unit()
             command = launch('import os; os.write(1,b"r"); os.read(0,1)')
@@ -328,6 +379,15 @@ describe("captured preparation controller", () => {
   it.each([
     "partial-spawn-error",
     "partial-spawn-interruption",
+    "boot-lowercase",
+    "boot-uppercase",
+    "boot-mixed-case",
+    "boot-different",
+    "boot-malformed",
+    "boot-braced",
+    "boot-no-hyphens",
+    "boot-non-string",
+    "boot-trailing-newline",
     "worker-observer-double-failure",
     "worker-run-cleanup-publication-failure",
     "bundle-valid",
@@ -359,7 +419,11 @@ describe("captured preparation controller", () => {
     "unbound-constructor",
   ])("preserves captured custody for %s", (scenario) => {
     const result = NodeChildProcess.spawnSync("python3", ["-I", "-B", "-c", controllerFixture], {
-      input: JSON.stringify({ source: jonesPreparationWorkerSource, case: scenario }),
+      input: JSON.stringify({
+        source: jonesPreparationWorkerSource,
+        coldSource: jonesColdOwnerSource,
+        case: scenario,
+      }),
       encoding: "utf8",
       timeout: 15000,
       maxBuffer: 1024 * 1024,

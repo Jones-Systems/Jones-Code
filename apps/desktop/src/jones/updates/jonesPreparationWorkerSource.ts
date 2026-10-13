@@ -276,7 +276,7 @@ class _PreparationWorker:
             if failures: raise _PreparationFailure(failures, str(self.receipt_path))
             observed.current()
         require(result.get('schema') == 1 and result.get('status') == 'observed' and result.get('operation') == args[1])
-        require(result.get('bootSessionUuid') == self.session.record['bootSessionUuid'])
+        require(_cold_owner_boot(result.get('bootSessionUuid')) == _cold_owner_boot(self.session.record['bootSessionUuid']))
         for key in ('sqliteOpenProved', 'databaseSyncCloseProved', 'workerReaped', 'stateAdmissionAllowed', 'launchMembershipComplete', 'activationAllowed', 'familyMembershipComplete'):
             require(result.get(key) is False)
         require(result.get('observationOnly') is True and result.get('suppliedFamilyOnly') is True and result.get('processCustody') == 'unobserved')

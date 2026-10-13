@@ -773,7 +773,7 @@ def run_case(case, bundle):
     def observe(self, path, capture=False, access=None):
         original_observe(self, path, capture, access)
         report = json.loads(bytes(self.observers[-1].output))
-        assert report['bootSessionUuid'] == actual_boot and report['sqliteOpenProved'] is False
+        assert scope['_cold_owner_boot'](report['bootSessionUuid']) == scope['_cold_owner_boot'](actual_boot) and report['sqliteOpenProved'] is False
         observations.append(report)
         events.append('ready' if capture else 'closed-supplement' if access is None else ('plan-open' if path != database else 'reconcile-open' if access == 'read-only' else 'apply-open'))
         contexts.append(dict(eventIndex=len(events)-1, sessionId=self.session_id, workerPid=self.process.child.pid,
@@ -1497,6 +1497,7 @@ export function validatePreparationNativeResult(result, input) {
       item.currentBootObserved,
       /^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$/,
     );
+    NodeAssert.equal(item.currentBootObserved.length, 36);
     NodeAssert.ok(
       Array.isArray(item.events) &&
         item.events.length <= 128 &&
@@ -1532,7 +1533,15 @@ export function validatePreparationNativeResult(result, input) {
       NodeAssert.equal(observation.schema, 1);
       NodeAssert.ok(["capture-worker", "observe-worker"].includes(observation.operation));
       NodeAssert.equal(observation.status, "observed");
-      NodeAssert.equal(observation.bootSessionUuid, item.currentBootObserved);
+      NodeAssert.match(
+        observation.bootSessionUuid,
+        /^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$/,
+      );
+      NodeAssert.equal(observation.bootSessionUuid.length, 36);
+      NodeAssert.equal(
+        observation.bootSessionUuid.toLowerCase(),
+        item.currentBootObserved.toLowerCase(),
+      );
       for (const key of ["suppliedFamilyOnly", "observationOnly"])
         NodeAssert.equal(observation[key], true);
       for (const key of [

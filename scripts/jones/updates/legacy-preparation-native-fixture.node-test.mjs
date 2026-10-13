@@ -621,6 +621,34 @@ function aggregate(value = input()) {
 NodeTest.test("result structure binds all ten cases without minting native authority", () => {
   validatePreparationNativeResult(aggregate(), input());
 });
+NodeTest.test(
+  "result boot identity accepts case variants without rewriting raw observations",
+  () => {
+    const result = aggregate();
+    for (const qualified of result.cases) {
+      const item = qualified.cases[0];
+      for (const observation of item.nativeObservations)
+        observation.bootSessionUuid = observation.bootSessionUuid.toUpperCase();
+    }
+    const before = JSON.stringify(result);
+    validatePreparationNativeResult(result, input());
+    NodeAssert.equal(JSON.stringify(result), before);
+  },
+);
+for (const [name, boot] of [
+  ["different", "12345678-1234-1234-1234-123456789abd"],
+  ["malformed", "not-a-uuid"],
+  ["non-string", null],
+  ["braced", "{12345678-1234-1234-1234-123456789abc}"],
+  ["no-hyphens", "12345678123412341234123456789abc"],
+  ["trailing-newline", "12345678-1234-1234-1234-123456789abc\n"],
+]) {
+  NodeTest.test("result boot identity refuses " + name, () => {
+    const result = aggregate();
+    result.cases[0].cases[0].nativeObservations[0].bootSessionUuid = boot;
+    NodeAssert.throws(() => validatePreparationNativeResult(result, input()));
+  });
+}
 for (const [name, mutate] of [
   [
     "unknown field",
