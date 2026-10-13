@@ -390,7 +390,9 @@
         "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts",
         "apps/desktop/src/backend/DesktopBackendManager.test.ts",
         "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
-        "apps/desktop/scripts/main-process-bundle.test.mjs"
+        "apps/desktop/scripts/main-process-bundle.test.mjs",
+        "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
+        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs"
       ],
       "commands": [
         "vp test run apps/server/src/ServerSettingsPersistence.test.ts apps/server/src/serverSettings.test.ts",
@@ -418,7 +420,9 @@
         "vp test run apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
         "node --test --test-concurrency=1 scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs scripts/jones/updates/offline-preparation-producer-loader.node-test.mjs",
         "vp test run apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
-        "vp test run apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/backend/DesktopBackendConfiguration.test.ts apps/desktop/scripts/main-process-bundle.test.mjs apps/desktop/src/jones/updates/jonesNativeStartup.test.ts --maxWorkers=1"
+        "vp test run apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/backend/DesktopBackendConfiguration.test.ts apps/desktop/scripts/main-process-bundle.test.mjs apps/desktop/src/jones/updates/jonesNativeStartup.test.ts --maxWorkers=1",
+        "vp test run apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
+        "node --test scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs"
       ]
     },
     {

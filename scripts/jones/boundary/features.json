@@ -586,7 +586,9 @@
         "apps/desktop/src/backend/DesktopBackendManager.test.ts",
         "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
         "apps/desktop/scripts/main-process-bundle.test.mjs",
-        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts"
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
+        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs"
       ],
       "scope": "Qualified update writer-observer sudo and socket transports retain one shared protocol parser, exact endpoint trust, bounded response lifecycle, and fail-closed incomplete observations. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held."
     }

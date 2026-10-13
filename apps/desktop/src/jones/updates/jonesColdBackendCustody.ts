@@ -5,6 +5,239 @@ import * as NodeProcess from "node:process";
 import * as NodeStream from "node:stream";
 import * as NodeTimers from "node:timers";
 import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeOS from "node:os";
+import {
+  coldDarwinLayout,
+  coldDarwinTarget,
+  coldDarwinReciprocal,
+  decodeColdDarwinBsd,
+  decodeColdDarwinSocket,
+  decodeColdDarwinVnode,
+  decodeColdDarwinFds,
+} from "./jonesColdDarwinLayout.ts";
+
+let coldObservationRunning = false;
+const coldNative = Object.freeze({ held: true, observe: observeColdDarwinCorrelation });
+
+function coldHardenFixedDescriptors(
+  readFlags: (fd: number) => number,
+  setCloseOnExec: (fd: number) => number,
+): () => void {
+  const descriptors = [3, 4, 5] as const;
+  const valid = (value: number) => Number.isInteger(value) && value >= 0 && value <= 0x7fffffff;
+  const original = descriptors.map(readFlags);
+  coldRequire(original.every(valid));
+  for (const fd of descriptors) coldRequire(setCloseOnExec(fd) === 0);
+  return () => {
+    for (const [index, fd] of descriptors.entries()) {
+      const observed = readFlags(fd);
+      coldRequire(
+        valid(observed) && observed === (original[index]! | coldDarwinLayout.closeOnExec),
+      );
+    }
+  };
+}
+
+/** Fixed experimental lock (3) and paired endpoints (4, 5); no production caller exists. */
+async function observeColdDarwinCorrelation() {
+  const unsupported = { supported: false, held: true, privateIdentityQualified: false } as const;
+  if (
+    !coldDarwinTarget(NodeProcess.platform, NodeProcess.arch, NodeOS.release()) ||
+    coldObservationRunning
+  ) {
+    return unsupported;
+  }
+  coldObservationRunning = true;
+  let closeLibraries: (() => void) | undefined;
+  try {
+    // Loading the native addon is confined to this held, unissued observer path.
+    const ffi = await import("ffi-rs");
+    const T = ffi.DataType;
+    ffi.open({ library: "jones-cold-system", path: "/usr/lib/libSystem.B.dylib" });
+    closeLibraries = () => ffi.close("jones-cold-system");
+    ffi.open({ library: "jones-cold-proc", path: "/usr/lib/libproc.dylib" });
+    closeLibraries = () => {
+      try {
+        ffi.close("jones-cold-proc");
+      } finally {
+        ffi.close("jones-cold-system");
+      }
+    };
+    const guarded = <A>(size: number, operation: (buffer: Buffer) => A): A => {
+      coldRequire(Number.isInteger(size) && size > 0 && size <= 8192);
+      const storage = Buffer.alloc(size + 32, 0xa5);
+      const body = storage.subarray(16, size + 16);
+      body.fill(0);
+      try {
+        const result = operation(body);
+        coldRequire(storage.subarray(0, 16).every((byte) => byte === 0xa5));
+        coldRequire(storage.subarray(size + 16).every((byte) => byte === 0xa5));
+        return result;
+      } finally {
+        storage.fill(0);
+      }
+    };
+    const pid = NodeProcess.pid;
+    const parentPid = NodeProcess.ppid;
+    const bsd = (parent: boolean) =>
+      guarded(coldDarwinLayout.bsd, (buffer) =>
+        decodeColdDarwinBsd(
+          buffer,
+          ffi.load({
+            library: "jones-cold-proc",
+            funcName: "proc_pidinfo",
+            retType: T.I32,
+            paramsType: [T.I32, T.I32, T.BigInt, T.U8Array, T.I32],
+            paramsValue: [
+              parent ? parentPid : pid,
+              coldDarwinLayout.bsdFlavor,
+              0n,
+              buffer,
+              buffer.length,
+            ],
+            runInNewThread: false,
+            freeResultMemory: false,
+          }),
+        ),
+      );
+    const socket = (fd: number) =>
+      guarded(coldDarwinLayout.socket, (buffer) =>
+        decodeColdDarwinSocket(
+          buffer,
+          ffi.load({
+            library: "jones-cold-proc",
+            funcName: "proc_pidfdinfo",
+            retType: T.I32,
+            paramsType: [T.I32, T.I32, T.I32, T.U8Array, T.I32],
+            paramsValue: [pid, fd, coldDarwinLayout.socketFlavor, buffer, buffer.length],
+            runInNewThread: false,
+            freeResultMemory: false,
+          }),
+        ),
+      );
+    const lock = () =>
+      guarded(coldDarwinLayout.vnode, (buffer) =>
+        decodeColdDarwinVnode(
+          buffer,
+          ffi.load({
+            library: "jones-cold-proc",
+            funcName: "proc_pidfdinfo",
+            retType: T.I32,
+            paramsType: [T.I32, T.I32, T.I32, T.U8Array, T.I32],
+            paramsValue: [pid, 3, coldDarwinLayout.vnodeFlavor, buffer, buffer.length],
+            runInNewThread: false,
+            freeResultMemory: false,
+          }),
+        ),
+      );
+    const flags = (fd: number) =>
+      ffi.load({
+        library: "jones-cold-system",
+        funcName: "fcntl",
+        retType: T.I32,
+        paramsType: [T.I32, T.I32],
+        paramsValue: [fd, coldDarwinLayout.getFd],
+        runInNewThread: false,
+      });
+    const before = {
+      self: bsd(false),
+      parent: bsd(true),
+      lock: lock(),
+      left: socket(4),
+      right: socket(5),
+    };
+    coldRequire(before.lock.regular && before.lock.inode !== 0n);
+    coldRequire(coldDarwinReciprocal(before.left, before.right));
+    coldRequire(
+      before.self.pid === pid &&
+        before.self.parentPid === parentPid &&
+        before.parent.pid === parentPid,
+    );
+    coldRequire(
+      before.self.uid === before.parent.uid && before.self.uid === NodeProcess.getuid?.(),
+    );
+    // Only the original fixed descriptors may be hardened. No variadic F_SETFD call is used.
+    const verifyHardening = coldHardenFixedDescriptors(flags, (fd) =>
+      ffi.load({
+        library: "jones-cold-system",
+        funcName: "ioctl",
+        retType: T.I32,
+        paramsType: [T.I32, T.U64],
+        paramsValue: [fd, coldDarwinLayout.ioctlCloseOnExec],
+        runInNewThread: false,
+      }),
+    );
+    const descriptors = guarded(8192, (buffer) =>
+      decodeColdDarwinFds(
+        buffer,
+        ffi.load({
+          library: "jones-cold-proc",
+          funcName: "proc_pidinfo",
+          retType: T.I32,
+          paramsType: [T.I32, T.I32, T.BigInt, T.U8Array, T.I32],
+          paramsValue: [pid, coldDarwinLayout.listFlavor, 0n, buffer, buffer.length],
+          runInNewThread: false,
+          freeResultMemory: false,
+        }),
+      ),
+    );
+    let endpointCopies = 0;
+    for (const descriptor of descriptors)
+      if (descriptor.socket) {
+        const value = socket(descriptor.fd);
+        if (value.endpoint === before.left.endpoint || value.endpoint === before.right.endpoint)
+          endpointCopies++;
+      }
+    const after = {
+      self: bsd(false),
+      parent: bsd(true),
+      lock: lock(),
+      left: socket(4),
+      right: socket(5),
+    };
+    const stable = (left: ReturnType<typeof bsd>, right: ReturnType<typeof bsd>) =>
+      left.pid === right.pid &&
+      left.parentPid === right.parentPid &&
+      left.uid === right.uid &&
+      left.startSeconds === right.startSeconds &&
+      left.startMicroseconds === right.startMicroseconds;
+    coldRequire(stable(before.self, after.self) && stable(before.parent, after.parent));
+    coldRequire(
+      after.lock.regular &&
+        before.lock.device === after.lock.device &&
+        before.lock.inode === after.lock.inode,
+    );
+    coldRequire(
+      coldDarwinReciprocal(after.left, after.right) &&
+        before.left.endpoint === after.left.endpoint &&
+        before.right.endpoint === after.right.endpoint,
+    );
+    verifyHardening();
+    coldRequire(after.left.closeOnExec && after.right.closeOnExec);
+    return {
+      supported: true,
+      held: true,
+      privateIdentityQualified: false,
+      bsdCurrentnessCorrelated: true,
+      originalLockCorrelated: true,
+      reciprocal: true,
+      scanComplete: true,
+      endpointCopies,
+      unexpectedAliases: endpointCopies !== 2,
+      closeOnExec: true,
+      bootQualified: false,
+      preJsAliasesQualified: false,
+    } as const;
+  } catch {
+    return unsupported;
+  } finally {
+    try {
+      closeLibraries?.();
+    } finally {
+      coldObservationRunning = false;
+    }
+  }
+}
 
 const coldPermitBrand: unique symbol = Symbol("JonesColdBackendPermit");
 export interface JonesColdBackendPermit {
@@ -95,6 +328,7 @@ export function holdJonesColdStartup(env: Readonly<Record<string, string | undef
 
 export function resolveJonesColdBackendPermit(): JonesColdBackendPermit | undefined {
   coldRequire(!coldStartupHeld);
+  coldRequire(coldNative.held);
   // Unit2B must issue the source-bound permit inside this single packaged module.
   return undefined;
 }

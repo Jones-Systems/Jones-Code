@@ -175,6 +175,60 @@ async function runOwnedFixture(root: string, scenario: string, signal: AbortSign
 }
 
 describe("private captured cold backend", () => {
+  it("rejects failed or altered readback across the whole fixed hardening operation", async () => {
+    const controls = String.raw`
+import * as assert from 'node:assert/strict';
+const original = [0,2,4];
+const expected = [1,3,5];
+for (const slot of [0,1,2]) {
+ for (const invalid of [-1,NaN,1.5,0x80000000,expected[slot]^2]) {
+  let reads=0; const writes=[];
+  const verify = coldHardenFixedDescriptors(fd => {
+   const index=fd-3; return reads++<3 ? original[index] : index===slot ? invalid : expected[index];
+  },fd=>{writes.push(fd);return 0;});
+  assert.deepEqual(writes,[3,4,5]);
+  assert.throws(verify);
+ }
+}
+for (const invalid of [-1,NaN,1.5,0x80000000]) {
+ let writes=0;
+ assert.throws(()=>coldHardenFixedDescriptors(()=>invalid,()=>{writes++;return 0;}));
+ assert.equal(writes,0);
+}
+let reads=0;
+coldHardenFixedDescriptors(fd=>reads++<3?original[fd-3]:expected[fd-3],()=>0)();
+assert.throws(()=>coldHardenFixedDescriptors(()=>0,()=>-1));
+`;
+    await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
+      const source = await NodeFSP.readFile(
+        new URL("./jonesColdBackendCustody.ts", import.meta.url),
+        "utf8",
+      );
+      const layout = await NodeFSP.readFile(
+        new URL("./jonesColdDarwinLayout.ts", import.meta.url),
+        "utf8",
+      );
+      const entry = NodePath.join(root, "hardening.mjs");
+      await NodeFSP.writeFile(
+        NodePath.join(root, "jonesColdDarwinLayout.mjs"),
+        NodeModule.stripTypeScriptTypes(layout),
+      );
+      await NodeFSP.writeFile(
+        entry,
+        NodeModule.stripTypeScriptTypes(
+          source.replace('"./jonesColdDarwinLayout.ts"', '"./jonesColdDarwinLayout.mjs"') +
+            controls,
+        ),
+      );
+      const result = await IdentityFixture.runLegacyIdentityFixtureCommand(
+        NodeProcess.execPath,
+        [entry],
+        root,
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("");
+    });
+  });
   it.for([
     "success",
     "fd-roundtrip",
@@ -200,7 +254,21 @@ describe("private captured cold backend", () => {
           new URL("./jonesColdBackendCustody.ts", import.meta.url),
           "utf8",
         );
-        await NodeFSP.writeFile(entry, NodeModule.stripTypeScriptTypes(source + harness));
+        const layout = await NodeFSP.readFile(
+          new URL("./jonesColdDarwinLayout.ts", import.meta.url),
+          "utf8",
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(root, "jonesColdDarwinLayout.mjs"),
+          NodeModule.stripTypeScriptTypes(layout),
+        );
+        await NodeFSP.writeFile(
+          entry,
+          NodeModule.stripTypeScriptTypes(
+            source.replace('"./jonesColdDarwinLayout.ts"', '"./jonesColdDarwinLayout.mjs"') +
+              harness,
+          ),
+        );
         await NodeFSP.writeFile(NodePath.join(root, "child.mjs"), child);
         await runOwnedFixture(root, scenario, signal);
       });

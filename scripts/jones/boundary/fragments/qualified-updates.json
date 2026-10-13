@@ -108,7 +108,9 @@
     "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts",
     "apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts",
     "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.ts",
-    "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts"
+    "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdDarwinLayout.ts",
+    "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

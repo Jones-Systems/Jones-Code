@@ -128,6 +128,7 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       "src/app/DesktopUserDataOverride.ts",
       "src/jones/previewCompanion/CompanionProduct.ts",
       "src/jones/updates/jonesNativeStartup.ts",
+      "src/jones/updates/jonesColdDarwinLayout.ts",
     ];
     const sharedPackageDirectory = NodePath.join(directory, "node_modules/@t3tools/shared");
     const electronPackageDirectory = NodePath.join(directory, "node_modules/electron");
@@ -233,6 +234,8 @@ export const startBackend = startJonesColdBackend;
       ["boot.cjs", "compileCache.cjs", "jones-cold-backend-custody.cjs", "main.cjs"],
     );
     const custodyArtifact = emittedSources.get("jones-cold-backend-custody.cjs");
+    assert.match(custodyArtifact, /["']ffi-rs["']/);
+    assert.notMatch(custodyArtifact, /ffi-rs\.darwin-arm64\.node/);
     const custodyDigest = NodeCrypto.createHash("sha256").update(custodyArtifact).digest("hex");
     assert.deepEqual(
       [...emittedSources]
@@ -336,6 +339,7 @@ export const startBackend = startJonesColdBackend;
                 "node:stream",
                 "node:timers",
                 "node:perf_hooks",
+                "node:os",
               ].includes(specifier)
             )
               return NodeModule.createRequire(import.meta.url)(specifier);

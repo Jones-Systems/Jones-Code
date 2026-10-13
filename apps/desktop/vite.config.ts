@@ -127,6 +127,8 @@ export default defineConfig({
           id === "@t3tools/shared/jones/previewCompanionProduct" ||
           id === "@t3tools/shared/jones/nativeWriterFence",
         neverBundle: (id) =>
+          id === "ffi-rs" ||
+          id.startsWith("@yuuang/ffi-rs-") ||
           id === "./main.cjs" ||
           id === "./compileCache.cjs" ||
           id === "./jones-cold-backend-custody.cjs",
