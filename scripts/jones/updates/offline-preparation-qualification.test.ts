@@ -336,6 +336,19 @@ it("copies strict native failure evidence into the receipt and rejects private e
     const failureEvidence = {
       schema: 1,
       classification: "native-preparation-failure",
+      controllerFailure: {
+        records: [
+          {
+            parent: null,
+            relation: "primary",
+            type: "Refused",
+            stage: "work-cleanup",
+            frames: [{ source: "maintenance.py", function: "clean_work", line: 321 }],
+            duplicateOf: null,
+          },
+        ],
+        truncated: false,
+      },
       case: "apply",
       completedCases: 0,
       expectedFrames: ["PLAN_READY", "CLOSED_RESULT"],

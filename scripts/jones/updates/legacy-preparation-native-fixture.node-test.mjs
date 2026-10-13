@@ -6,6 +6,7 @@ import * as NodeTest from "node:test";
 import {
   PreparationNativeUnavailable,
   preparationFailureCaptureSource,
+  preparationNativeDriver,
   publishPreparationNativeFailure,
   validatePreparationNativeFailure,
   preparationFixtureLiteral,
@@ -912,6 +913,7 @@ function failedFixture() {
   return {
     schema: 1,
     classification: "native-preparation-failure",
+    controllerFailure: { records: [], truncated: false },
     case: "apply",
     completedCases: 0,
     expectedFrames: ["PLAN_READY", "CLOSED_RESULT"],
@@ -1325,4 +1327,123 @@ NodeTest.test("fixed currentness diagnostic schema rejects unknown and private f
     evidence.processes[0].afterCleanup.stderr = line;
     NodeAssert.throws(() => validatePreparationNativeFailure(evidence));
   }
+});
+
+NodeTest.test(
+  "controller cause capture preserves originals, cleanup ordering and bounded static evidence",
+  async () => {
+    await withLegacyIdentityScratch(async (root) => {
+      const script = NodePath.join(root, "controller-cause.py");
+      const driver = NodePath.join(root, "native-driver-syntax.py");
+      await NodeFSP.writeFile(driver, preparationNativeDriver, { flag: "wx", mode: 0o400 });
+      await NodeFSP.writeFile(
+        script,
+        "import json\n" +
+          preparationFailureCaptureSource +
+          String.raw`
+import pathlib, sys
+compile(pathlib.Path(sys.argv[1]).read_text(), 'fixture.py', 'exec')
+class Refused(Exception): pass
+class _PreparationFailure(Refused):
+    def __init__(self, errors):
+        self.errors = tuple(errors)
+        self.__cause__ = self.errors[0]
+private = 'Bearer private-secret /private/raw/path'
+scope = dict(Refused=Refused, private=private)
+exec(compile('def clean_work():\n    raise Refused(private)\n', 'maintenance.py', 'exec'), scope)
+original = None
+try: at_failure_stage('work-cleanup', scope['clean_work'])
+except Refused as cause: original = cause
+assert original is not None and str(original) == private
+cleanup = OSError(private)
+aggregate = _PreparationFailure([original, cleanup])
+try: at_failure_stage('worker-perform', lambda: (_ for _ in ()).throw(aggregate))
+except _PreparationFailure as caught: assert caught is aggregate and caught.__cause__ is original
+report = capture_controller_failure([aggregate, cleanup], aggregate)
+assert report['records'][0]['relation'] == 'primary'
+assert report['records'][1]['type'] == 'Refused' and report['records'][1]['stage'] == 'work-cleanup'
+assert report['records'][1]['frames'][-1] == dict(source='maintenance.py', function='clean_work', line=2)
+assert report['records'][2]['type'] == 'OSError' and report['records'][2]['relation'] == 'aggregate'
+assert report['records'][-1]['relation'] == 'cleanup' and report['records'][-1]['duplicateOf'] == 2
+assert aggregate.errors == (original, cleanup) and str(original) == private
+original.__cause__ = aggregate
+cycle = capture_controller_failure([aggregate, cleanup], aggregate)
+assert any(item['duplicateOf'] is not None for item in cycle['records'])
+large = capture_controller_failure([_PreparationFailure(tuple(ValueError(private) for _ in range(100)))], None)
+assert len(large['records']) <= 16 and large['truncated']
+class PrivateExceptionName(Exception): pass
+unknown = capture_controller_failure([PrivateExceptionName(private)], None)
+assert unknown['records'][0]['type'] == 'unknown'
+encoded = json.dumps([report, cycle, large, unknown])
+assert 'private' not in encoded and 'Bearer' not in encoded and 'PrivateExceptionName' not in encoded
+print(json.dumps(report))
+`,
+        { flag: "wx", mode: 0o400 },
+      );
+      const result = await runLegacyIdentityFixtureCommand(
+        "/usr/bin/python3",
+        ["-I", "-B", script, driver],
+        root,
+      );
+      NodeAssert.equal(result.code, 0, result.stderr);
+      const evidence = failedFixture();
+      evidence.controllerFailure = JSON.parse(result.stdout);
+      NodeAssert.deepEqual(validatePreparationNativeFailure(evidence), evidence);
+    });
+  },
+);
+
+NodeTest.test("controller cause validator refuses private, forged and unbounded metadata", () => {
+  const cause = {
+    parent: null,
+    relation: "primary",
+    type: "Refused",
+    stage: "work-cleanup",
+    frames: [{ source: "maintenance.py", function: "clean_work", line: 2 }],
+    duplicateOf: null,
+  };
+  for (const mutate of [
+    (record) => {
+      record.type = "PrivateExceptionName";
+    },
+    (record) => {
+      record.stage = "private-stage";
+    },
+    (record) => {
+      record.frames[0].source = "/private/maintenance.py";
+    },
+    (record) => {
+      record.frames[0].function = "privateFunction";
+    },
+    (record) => {
+      record.frames[0].line = 0;
+    },
+    (record) => {
+      record.frames = Array.from({ length: 9 }, () => structuredClone(record.frames[0]));
+    },
+    (record) => {
+      record.message = "Bearer private-secret";
+    },
+    (record) => {
+      record.parent = 0;
+    },
+    (record) => {
+      record.duplicateOf = 0;
+    },
+    (record) => {
+      record.relation = "unknown";
+    },
+  ]) {
+    const evidence = failedFixture();
+    const record = structuredClone(cause);
+    mutate(record);
+    evidence.controllerFailure = { records: [record], truncated: false };
+    NodeAssert.throws(() => validatePreparationNativeFailure(evidence));
+  }
+  const evidence = failedFixture();
+  evidence.controllerFailure = {
+    records: Array.from({ length: 17 }, () => structuredClone(cause)),
+    truncated: true,
+  };
+  NodeAssert.throws(() => validatePreparationNativeFailure(evidence));
 });
