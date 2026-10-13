@@ -1,4 +1,10 @@
-import { BookOpenIcon, ChartNoAxesColumnIcon, MicIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  BookOpenIcon,
+  ChartNoAxesColumnIcon,
+  MicIcon,
+  SettingsIcon,
+} from "lucide-react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { memo } from "react";
 import { usePullRequestsSupported } from "../../state/environments";
@@ -69,8 +75,7 @@ export const JonesSidebarUtilityMenu = memo(function JonesSidebarUtilityMenu() {
               <TooltipTrigger
                 render={
                   <SidebarMenuButton
-                    aria-label={label}
-                    aria-current={active ? "page" : undefined}
+                    aria-label={active ? `Back to conversation from ${label}` : label}
                     isActive={active}
                     size="icon"
                     onClick={() => {
@@ -86,14 +91,12 @@ export const JonesSidebarUtilityMenu = memo(function JonesSidebarUtilityMenu() {
                       }
                     }}
                   >
-                    <Icon />
+                    {active ? <ArrowLeftIcon /> : <Icon />}
                   </SidebarMenuButton>
                 }
               />
               <TooltipPopup side="top">
-                {active
-                  ? `${label} · Click again to return to your conversation`
-                  : `${label} · ${description}`}
+                {active ? `${label} · Back to conversation` : `${label} · ${description}`}
               </TooltipPopup>
             </Tooltip>
           </SidebarMenuItem>
