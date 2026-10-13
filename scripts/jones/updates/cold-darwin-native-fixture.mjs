@@ -388,7 +388,7 @@ async function runColdDarwinFixtureBody({ root, runtime = "current-node", signal
     let executable;
     if (
       runtime === "current-node" &&
-      ["24.13.1", "24.19.0"].includes(process.versions.node) &&
+      ["24.13.1", "24.19.0", "26.8.2"].includes(process.versions.node) &&
       !process.versions.electron
     ) {
       executable = process.execPath;
