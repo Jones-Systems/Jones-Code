@@ -8,7 +8,12 @@ import {
   CommandId,
   EventId,
   MessageId,
+  NodeId,
+  ProviderThreadId,
   ProviderTurnId,
+  RunAttemptId,
+  RunId,
+  ThreadId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
@@ -19,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
@@ -159,63 +165,65 @@ const capturePlannedUpdate = Effect.gen(function* () {
   return continuity;
 });
 
-const seed = Effect.gen(function* () {
-  const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const now = yield* DateTime.now;
-  const at = (value: OrchestrationV2ThreadProjection) => ({
-    ...value,
-    thread: { ...value.thread, createdAt: now, updatedAt: now },
-    runs: value.runs.map((run) => ({ ...run, requestedAt: now, startedAt: now, completedAt: now })),
-    messages: value.messages.map((message) => ({ ...message, createdAt: now, updatedAt: now })),
+const seedProjection = (source: OrchestrationV2ThreadProjection, prefix: string) =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const at = (value: OrchestrationV2ThreadProjection) => ({
+      ...value,
+      thread: { ...value.thread, createdAt: now, updatedAt: now },
+      runs: value.runs.map((run) => ({ ...run, requestedAt: now, startedAt: now, completedAt: now })),
+      messages: value.messages.map((message) => ({ ...message, createdAt: now, updatedAt: now })),
+    });
+    const value = at(source);
+    const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
+      {
+        id: EventId.make(`${prefix}:thread`),
+        type: "thread.created",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.thread,
+      },
+      {
+        id: EventId.make(`${prefix}:run`),
+        type: "run.created",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.runs[0]!,
+      },
+      {
+        id: EventId.make(`${prefix}:message`),
+        type: "message.updated",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.messages[0]!,
+      },
+      {
+        id: EventId.make(`${prefix}:session`),
+        type: "provider-session.attached",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.providerSessions[0]!,
+      },
+      {
+        id: EventId.make(`${prefix}:context`),
+        type: "provider-thread.updated",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.providerThreads[0]!,
+      },
+      {
+        id: EventId.make(`${prefix}:turn`),
+        type: "provider-turn.updated",
+        threadId: value.thread.id,
+        occurredAt: now,
+        payload: value.providerTurns[0]!,
+      },
+    ];
+    for (const event of events) yield* projections.apply(event);
+    return value.thread.id;
   });
-  const value = at(workModeFixture());
-  const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
-    {
-      id: EventId.make("seed:thread"),
-      type: "thread.created",
-      threadId: value.thread.id,
-      occurredAt: now,
-      payload: value.thread,
-    },
-    {
-      id: EventId.make("seed:run"),
-      type: "run.created",
-      threadId: value.thread.id,
-      occurredAt: now,
-      payload: value.runs[0]!,
-    },
-    {
-      id: EventId.make("seed:message"),
-      type: "message.updated",
-      threadId: value.thread.id,
-      occurredAt: now,
-      payload: value.messages[0]!,
-    },
-    {
-      id: EventId.make("seed:session"),
-      type: "provider-session.attached",
-      threadId: value.thread.id,
-      occurredAt: now,
-      payload: value.providerSessions[0]!,
-    },
-    {
-      id: EventId.make("seed:context"),
-      type: "provider-thread.updated",
-      threadId: value.thread.id,
-      occurredAt: now,
-      payload: value.providerThreads[0]!,
-    },
-    {
-      id: EventId.make("seed:turn"),
-      type: "provider-turn.updated",
-      threadId: value.thread.id,
-      occurredAt: now,
-      payload: value.providerTurns[0]!,
-    },
-  ];
-  for (const event of events) yield* projections.apply(event);
-  return value.thread.id;
-});
+const seed = seedProjection(workModeFixture(), "seed");
 
 function completeLatestRun<E = never, R = never>(
   checkpoint = false,
@@ -446,6 +454,157 @@ it.effect("a concurrent ordinary start wins the lock and keepwarm skips without 
     assert.lengthOf(projection.runs, 2);
     assert.isFalse(projection.runs.some((run) => run.status === "queued"));
     assert.isFalse(projection.messages.some((message) => message.text === WORK_MODE_SENTINEL));
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a busy thread does not hold up another due Work thread and is reconsidered later", () =>
+  Effect.gen(function* () {
+    const threadA = yield* seed;
+    const threadB = ThreadId.make("thread-work-mode-b");
+    const runB = RunId.make("run-work-mode-b");
+    const messageB = MessageId.make("message-work-mode-b");
+    const nodeB = NodeId.make("node-work-mode-b");
+    const attemptB = RunAttemptId.make("attempt-work-mode-b");
+    const ownerB = ProviderThreadId.make("provider-thread-work-mode-b");
+    yield* seedProjection(
+      {
+        ...fixture,
+        thread: {
+          ...fixture.thread,
+          id: threadB,
+          activeProviderThreadId: ownerB,
+          lineage: { ...fixture.thread.lineage, rootThreadId: threadB },
+        },
+        runs: [
+          {
+            ...fixture.runs[0]!,
+            id: runB,
+            threadId: threadB,
+            providerThreadId: ownerB,
+            userMessageId: messageB,
+            rootNodeId: nodeB,
+            activeAttemptId: attemptB,
+          },
+        ],
+        messages: [
+          { ...fixture.messages[0]!, id: messageB, threadId: threadB, runId: runB, nodeId: nodeB },
+        ],
+        providerThreads: [
+          {
+            ...fixture.providerThreads[0]!,
+            id: ownerB,
+            appThreadId: threadB,
+            nativeThreadRef: { driver: "codex", nativeId: "native-work-mode-b", strength: "strong" },
+          },
+        ],
+        providerTurns: [
+          {
+            ...fixture.providerTurns[0]!,
+            id: ProviderTurnId.make("turn-work-mode-b"),
+            providerThreadId: ownerB,
+            nodeId: nodeB,
+            runAttemptId: attemptB,
+          },
+        ],
+      },
+      "seed-b",
+    );
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const checkpoint = yield* CheckpointService.CheckpointServiceV2;
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const orderedProjections = Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+      ...projections,
+      // Ensure the held thread is visited first, independently of sidebar sorting.
+      getShellSnapshot: (input) =>
+        projections.getShellSnapshot(input).pipe(
+          Effect.map((snapshot) => ({
+            ...snapshot,
+            threads: snapshot.threads.toSorted((a, b) =>
+              a.id === threadA ? -1 : b.id === threadA ? 1 : 0,
+            ),
+          })),
+        ),
+    });
+    const guardedCheckpoint = Layer.succeed(CheckpointService.CheckpointServiceV2, {
+      ...checkpoint,
+      prepareRootRunScope: (input) =>
+        (input.threadId === threadA
+          ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void).pipe(Effect.andThen(checkpoint.prepareRootRunScope(input))),
+    });
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const admissionEntered = yield* Deferred.make<void>();
+      const admissionTimedOut = yield* Ref.make(false);
+      const observedOrchestrator = Layer.succeed(Orchestrator.OrchestratorV2, {
+        ...orchestrator,
+        requestWorkMode: (candidate) =>
+          candidate.threadId === threadA
+            ? Deferred.succeed(admissionEntered, undefined).pipe(
+                // A is held before dispatch can begin; cancellation cannot hide an accepted command.
+                Effect.andThen(
+                  orchestrator.requestWorkMode(candidate).pipe(Effect.timeoutOption("1 second")),
+                ),
+                Effect.flatMap((result) =>
+                  Option.isSome(result)
+                    ? Effect.succeed(result.value)
+                    : Ref.set(admissionTimedOut, true).pipe(Effect.as("skipped" as const)),
+                ),
+              )
+            : orchestrator.requestWorkMode(candidate),
+      });
+      const workMode = yield* WorkMode.WorkMode.pipe(
+        Effect.provide(
+          WorkMode.layer.pipe(Layer.provide(observedOrchestrator), Layer.provide(orderedProjections)),
+        ),
+      );
+      const ordinary = yield* orchestrator
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("ordinary:held-a"),
+          messageId: MessageId.make("ordinary:held-a"),
+          threadId: threadA,
+          text: "Ordinary work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Fiber.join(ordinary).pipe(
+          Effect.andThen(Effect.die("Ordinary command missed its checkpoint barrier.")),
+        ),
+      );
+      const sweep = yield* workMode.sweep.pipe(Effect.forkChild);
+      yield* Deferred.await(admissionEntered);
+      yield* TestClock.adjust("1 second");
+      yield* Fiber.join(sweep);
+      assert.isFalse(yield* Ref.get(admissionTimedOut), "Work admission waited behind busy thread A");
+      const busy = yield* projections.getThreadProjection(threadA);
+      const ready = yield* projections.getThreadProjection(threadB);
+      assert.isFalse(busy.messages.some((message) => message.text === WORK_MODE_SENTINEL));
+      assert.isFalse(busy.runs.some((run) => run.status === "queued"));
+      assert.lengthOf(ready.runs, 2);
+      assert.isTrue(ready.messages.some((message) => message.text === WORK_MODE_SENTINEL));
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(ordinary);
+      yield* completeLatestRun();
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+      yield* WorkMode.WorkMode.pipe(Effect.flatMap((service) => service.sweep));
+      const retried = yield* projections.getThreadProjection(threadA);
+      assert.lengthOf(retried.runs, 3);
+      assert.lengthOf(retried.messages.filter((message) => message.text === WORK_MODE_SENTINEL), 1);
+    }).pipe(
+      Effect.provide(
+        WorkMode.layer.pipe(
+          Layer.provideMerge(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(guardedCheckpoint))),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(testLayer)),
 );
 
