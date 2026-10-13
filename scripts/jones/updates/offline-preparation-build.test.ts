@@ -937,7 +937,7 @@ async function withBoundProducerSource(
       NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
     );
     const files = producerCandidateSourceFiles();
-    expect(files.size).toBe(32);
+    expect(files.size).toBe(33);
     for (const name of files) {
       const destination = NodePath.join(sourceRoot, name);
       NodeFS.mkdirSync(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
@@ -1077,7 +1077,7 @@ function emitProducerCandidate(
 }
 
 describe("unqualified preparation producer graph", () => {
-  it("feeds the actual collector's fixed 14/28 bindings to a held capture without executing its output", () =>
+  it("feeds the actual collector's fixed 14/29 bindings to a held capture without executing its output", () =>
     withProducerCandidateCheckout(async (root) => {
       const candidate = await startProducerCandidate(root);
       const code = 'throw new Error("collector output must remain unexecuted");\n';
@@ -1089,7 +1089,7 @@ describe("unqualified preparation producer graph", () => {
       const captured = await capturePreparationProducer({ sourceRoot: root, stageRoot });
       expect(captured.status).toBe("held");
       expect(captured.imported).toBe(false);
-      expect(captured.files).toHaveLength(34);
+      expect(captured.files).toHaveLength(35);
       expect(
         captured.files.find((file) => file.capturedPath.endsWith("offlinePreparationProducer.mjs"))
           ?.sha256,
@@ -1144,7 +1144,7 @@ describe("unqualified preparation producer graph", () => {
           lateQualifierSources: { files: { path: string; content: { availability: string } }[] };
         };
         expect(report.source.inputs).toHaveLength(14);
-        expect(report.lateQualifierSources.files).toHaveLength(28);
+        expect(report.lateQualifierSources.files).toHaveLength(29);
         expect(
           report.source.inputs.find((item) => item.path.endsWith("functional-policy.ts"))!.content
             .availability,
@@ -1193,7 +1193,7 @@ describe("unqualified preparation producer graph", () => {
         emitted: { sha256: sha(code), size: Buffer.byteLength(code) },
       });
       expect(report.source).not.toHaveProperty("hashes");
-      expect(report.lateQualifierSources.files).toHaveLength(28);
+      expect(report.lateQualifierSources.files).toHaveLength(29);
       expect(report.modules[0]!.staticImports[0]).toMatchObject({ id: "node:fs", builtin: true });
       if (name === "independent import and hazard counts")
         expect(report.emitted.syntax).toMatchObject({
