@@ -145,12 +145,14 @@
     {
       "id": "jones-provider-runtime-identity",
       "tests": [
+        "apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
         "packages/contracts/src/resourceTelemetry.test.ts",
         "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
         "packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "vp test run apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
       ]
     },
