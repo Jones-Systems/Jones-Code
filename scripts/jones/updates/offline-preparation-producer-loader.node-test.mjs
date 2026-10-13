@@ -172,10 +172,13 @@ async function withFixture(t, run) {
     // Escaped custody uncertainty covers this fixture's source and captured roots.
     // Teardown has no descriptor-closure evidence that could override the creator.
     if (failed && fixtureCustodyUncertain(primary))
-      throw Object.assign(new Error("Capture fixture custody remains unresolved.", { cause: primary }), {
-        preserveScratch: true,
-        retainedRoots: [...allocated.keys()],
-      });
+      throw Object.assign(
+        new Error("Capture fixture custody remains unresolved.", { cause: primary }),
+        {
+          preserveScratch: true,
+          retainedRoots: [...allocated.keys()],
+        },
+      );
     const failures = [];
     for (const [name, original] of [...allocated].reverse()) {
       try {
@@ -302,7 +305,10 @@ NodeTest.test(
       const realpath = NodeFSP.default.realpath;
       t.mock.method(NodeFSP.default, "realpath", async (name, ...args) => {
         if (name === input.stageResourcesDir)
-          await NodeFSP.default.writeFile(NodePath.join(input.sourceRoot, "package.json"), "changed");
+          await NodeFSP.default.writeFile(
+            NodePath.join(input.sourceRoot, "package.json"),
+            "changed",
+          );
         return realpath(name, ...args);
       });
       await NodeAssert.rejects(buildAndStagePreparationProducer(input), (error) => {
@@ -341,7 +347,10 @@ for (const mismatch of ["source", "resources"]) {
       if (mismatch === "source") input.expectedSource.sourceSha = "c".repeat(40);
       else input.stageResourcesDir = fixture.sourceRoot;
       await NodeAssert.rejects(buildAndStagePreparationProducer(input), (error) => {
-        NodeAssert.match(error.message, /requested source identity|inside the captured packaging stage/);
+        NodeAssert.match(
+          error.message,
+          /requested source identity|inside the captured packaging stage/,
+        );
         NodeAssert.equal(error.cleanup.disposition, "removed");
         return true;
       });
@@ -375,7 +384,9 @@ NodeTest.test(
         NodeAssert.equal(error.preserveStageRoot, undefined);
         return true;
       });
-      const capturedRoot = [...fixture.allocated.keys()].find((root) => root !== fixture.fixtureRoot);
+      const capturedRoot = [...fixture.allocated.keys()].find(
+        (root) => root !== fixture.fixtureRoot,
+      );
       NodeAssert.deepEqual(
         await NodeFSP.default.readFile(NodePath.join(capturedRoot, emittedPath)),
         fixture.bytes.get(producerPath),
