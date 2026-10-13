@@ -112,6 +112,10 @@ export function materializeColdMaintenance(
     NodePath.join(updateSources, "jonesPreparationWorkerSource.ts"),
     "utf8",
   ),
+  receiverText = NodeFS.readFileSync(
+    NodePath.join(updateSources, "jonesColdReceiverSource.ts"),
+    "utf8",
+  ),
 ) {
   NodeAssert.ok(
     maintenanceText.includes('import { jonesColdPairSource } from "./jonesColdPairSource.ts";'),
@@ -129,7 +133,27 @@ export function materializeColdMaintenance(
   NodeAssert.equal(maintenanceText.split("  jonesPreparationWorkerSource +").length, 2);
   NodeAssert.match(
     maintenanceText,
-    /jonesColdPairSource \+\s+jonesColdOwnerSource \+\s+jonesPreparationWorkerSource \+\s+String\.raw`/,
+    /jonesColdPairSource \+\s+jonesColdReceiverSource \+\s+jonesColdOwnerSource \+\s+jonesPreparationWorkerSource \+\s+String\.raw`/,
+  );
+  NodeAssert.ok(
+    maintenanceText.includes(
+      'import { jonesColdReceiverSource } from "./jonesColdReceiverSource.ts";',
+    ),
+  );
+  NodeAssert.equal(maintenanceText.split("  jonesColdReceiverSource +").length, 2);
+  const receiverDeclaration = "export const jonesColdReceiverSource = String.raw`";
+  NodeAssert.equal(receiverText.split(receiverDeclaration).length, 2);
+  NodeAssert.equal(
+    receiverText
+      .slice(0, receiverText.indexOf(receiverDeclaration))
+      .replace(/\/\*[^]*?\*\//g, "")
+      .trim(),
+    "",
+  );
+  const receiver = literal(receiverText);
+  NodeAssert.ok(
+    !receiver.includes("${") && !receiver.includes("`"),
+    "Receiver source must be one literal.",
   );
   const ownerDeclaration = "export const jonesColdOwnerSource = String.raw`";
   NodeAssert.equal(ownerText.split(ownerDeclaration).length, 2);
@@ -175,7 +199,12 @@ export function materializeColdMaintenance(
   const suffix = "if __name__ == '__main__':\n    sys.exit(main())\n";
   NodeAssert.ok(bootstrap.endsWith(suffix));
   const result =
-    bootstrap.slice(0, -suffix.length) + cold + owner + worker + literal(maintenanceText);
+    bootstrap.slice(0, -suffix.length) +
+    cold +
+    receiver +
+    owner +
+    worker +
+    literal(maintenanceText);
   NodeAssert.ok(
     !result.includes("${") && !result.includes("`"),
     "Unresolved maintenance substitution.",
@@ -193,6 +222,7 @@ export async function readColdMaintenanceSources() {
     nativeSource,
     ownerText,
     workerText,
+    receiverText,
   ] = await Promise.all([
     NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyBootstrapSource.ts"), "utf8"),
     NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyMaintenanceSource.ts"), "utf8"),
@@ -202,6 +232,7 @@ export async function readColdMaintenanceSources() {
     NodeFSP.readFile(NodePath.join(updateSources, "jonesLegacyIdentityNative.c")),
     NodeFSP.readFile(NodePath.join(updateSources, "jonesColdOwnerSource.ts"), "utf8"),
     NodeFSP.readFile(NodePath.join(updateSources, "jonesPreparationWorkerSource.ts"), "utf8"),
+    NodeFSP.readFile(NodePath.join(updateSources, "jonesColdReceiverSource.ts"), "utf8"),
   ]);
   const bootstrap = literal(bootstrapText);
   const suffix = "if __name__ == '__main__':\n    sys.exit(main())\n";
@@ -215,6 +246,7 @@ export async function readColdMaintenanceSources() {
       pairedText,
       ownerText,
       workerText,
+      receiverText,
     ),
     executor: materializePairedExecutor(executorText, pairedText),
     nativeSourceSha256: digest(nativeSource),

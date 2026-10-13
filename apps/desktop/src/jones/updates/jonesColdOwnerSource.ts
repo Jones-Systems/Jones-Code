@@ -89,7 +89,10 @@ def _validate_cold_receiver_cursor(owner):
         require(isinstance(value.get(key), list) and len(value[key]) == 4 and all(type(part) is int and part >= 0 for part in value[key]))
     trial = decode(value['trialOwner'].encode())
     expected = _cold_receiver_value(owner, trial['generation'], value['parentIdentity'], value['directoryIdentity'])
-    require(value == dict(expected, phase=value['phase']))
+    require({key: item for key, item in value.items() if key != 'transfer'} == dict(expected, phase=value['phase']))
+    if 'transfer' in value:
+        require(value['phase'] == 'prepared')
+        _validate_cold_receiver_transfer(owner)
 
 def _cold_receiver_files(owner):
     value = owner.journal.get('desktopReceiver')
@@ -111,7 +114,7 @@ def _cold_owner_bindings():
     # of custody. No executable, callback, boot observation or receipt grants entry.
     underlying_lock = _maintenance_fixed_lock
     maintenance_type = Maintenance
-    active_lock = active_session = None
+    active_lock = active_session = active_receiver = None
 
     @contextlib.contextmanager
     def fixed_lock(manifest):
@@ -140,6 +143,7 @@ def _cold_owner_bindings():
             finally:
                 # Expire capabilities before the last parent close; never explicitly unlock a child's shared flock.
                 if active_session is not None: active_session.live = False
+                if active_receiver is not None: active_receiver.live = False
                 held['live'] = False
                 active_lock = None
 
@@ -148,6 +152,7 @@ def _cold_owner_bindings():
             self.owner, self.held, self.record = owner, held, record
             self.live, self.failure, self.operating, self.pair = True, None, False, None
             self.accepting, self.worker = True, None
+            self.receiver = None
             self.directory, self.native = owner.directory, owner.native
             self.plan_raw = read_owned(owner.directory / 'plan.json')
             self.owner_raw = read_owned(owner.manifest)
@@ -348,6 +353,30 @@ def _cold_owner_bindings():
                 raise
             finally: self.operating = False
 
+        def transfer_receiver(self):
+            nonlocal active_receiver
+            try:
+                require(self.accepting and not self.operating and self.receiver is None and active_receiver is None)
+                self.boundary()
+                self.require_worker_settled()
+                handoff = self.owner.journal['desktopHandoff']
+                require(handoff == self._handoff_value(handoff['desktop']['listener'], handoff['desktop']['transactionId']))
+                receiver = self.owner.journal['desktopReceiver']
+                require(receiver['phase'] == 'prepared' and 'transfer' not in receiver)
+                value = _cold_receiver_transfer_value(self.owner, uuid.uuid4().hex + uuid.uuid4().hex, 'transfer-intent')
+                # Consumption precedes the first durable transfer write. A lost write response cannot reopen cold operations.
+                self.accepting = False
+                self.receiver = Receiver(self, value['transferId'])
+                active_receiver = self.receiver
+                self.owner.save(desktopReceiver=dict(receiver, transfer=value))
+                self.owner.sync_evidence()
+                self.receiver.boundary()
+                return self.receiver
+            except BaseException as failure:
+                self.accepting = False
+                self.poison(failure)
+                raise
+
         def require_worker_settled(self):
             if self.worker is None: return
             if self.failure is not None:
@@ -356,9 +385,65 @@ def _cold_owner_bindings():
             require(all(not process.spawn_unknown and process.reaped and process.closed for process in
                         self.worker.observers + [self.worker.process]))
 
+    class Receiver:
+        def __init__(self, session, transfer_id):
+            self.session, self.transfer_id, self.live = session, transfer_id, True
+
+        def boundary(self):
+            session = self.session
+            try:
+                require(self.live and active_receiver is self and session.receiver is self and not session.accepting)
+                session.boundary()
+                session.require_worker_settled()
+                _validate_cold_receiver_transfer(session.owner)
+                require(session.owner.journal['desktopReceiver']['transfer']['transferId'] == self.transfer_id)
+            except BaseException as failure:
+                session.poison(failure)
+                raise
+
+        def advance(self):
+            # Only the ownership cursor advances. Executable release, app swap, launch and restore have no implementation here.
+            try:
+                self.boundary()
+                owner = self.session.owner
+                previous = owner.journal['desktopReceiver']
+                value = _cold_receiver_advance_value(owner)
+                if previous['transfer'] != value:
+                    owner.save(desktopReceiver=dict(previous, transfer=value))
+                    owner.sync_evidence()
+                self.boundary()
+                return _cold_receiver_reconcile_report(owner)
+            except BaseException as failure:
+                self.session.poison(failure)
+                raise
+
+        def reconcile(self):
+            self.boundary()
+            return _cold_receiver_reconcile_report(self.session.owner)
+
+    def reconcile_receiver():
+        # Observation of a retained transfer never reacquires a cold session or adopts a saved process identifier.
+        held = active_lock
+        require(held is not None and active_session is None and active_receiver is None)
+        try:
+            held['current']()
+            owner = maintenance_type(held['manifest'], held['current'])
+            owner.load()
+            require(owner.journal['phase'] == 'armed' and 'desktopHandoff' in owner.journal and 'desktopReceiver' in owner.journal)
+            owner.verify()
+            _cold_receiver_files(owner)
+            require(read_owned(owner.directory / 'journal.json') == owner.journal_raw)
+            require(decode(read_owned(owner.manifest)) == owner.owner())
+            result = _cold_receiver_reconcile_report(owner)
+            held['current']()
+            return result
+        except BaseException as failure:
+            if held['failure'] is None: held['failure'] = failure
+            raise
+
     @contextlib.contextmanager
     def enter():
-        nonlocal active_session
+        nonlocal active_session, active_receiver
         held, session = active_lock, None
         require(held is not None and active_session is None)
         owner = maintenance_type(held['manifest'], held['current'])
@@ -408,6 +493,8 @@ def _cold_owner_bindings():
             raise
         finally:
             if session is not None: session.accepting, session.live = False, False
+            if active_receiver is not None: active_receiver.live = False
+            active_receiver = None
             active_session = None
 
     class PairRuntime:
@@ -426,5 +513,5 @@ def _cold_owner_bindings():
         active_session.check(active_session.owner)
         return active_session
 
-    return fixed_lock, enter, paired_runtime, preparation_runtime
+    return fixed_lock, enter, paired_runtime, preparation_runtime, reconcile_receiver
 `;

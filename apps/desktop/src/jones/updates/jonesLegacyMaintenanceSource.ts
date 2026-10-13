@@ -1,4 +1,5 @@
 import { jonesColdPairSource } from "./jonesColdPairSource.ts";
+import { jonesColdReceiverSource } from "./jonesColdReceiverSource.ts";
 import { jonesColdOwnerSource } from "./jonesColdOwnerSource.ts";
 import { jonesPreparationWorkerSource } from "./jonesPreparationWorkerSource.ts";
 import { jonesLegacyBootstrapSource } from "./jonesLegacyBootstrapSource.ts";
@@ -12,6 +13,7 @@ if (!jonesLegacyBootstrapSource.endsWith(bootstrapEntry)) {
 export const jonesLegacyMaintenanceSource =
   jonesLegacyBootstrapSource.slice(0, -bootstrapEntry.length) +
   jonesColdPairSource +
+  jonesColdReceiverSource +
   jonesColdOwnerSource +
   jonesPreparationWorkerSource +
   String.raw`
@@ -870,7 +872,7 @@ class Maintenance:
         self.sync_evidence()
         return self.reconcile()
 
-fixed_lock, _cold_owner_session, _cold_pair_runtime, _preparation_worker_runtime = _cold_owner_bindings()
+fixed_lock, _cold_owner_session, _cold_pair_runtime, _preparation_worker_runtime, _cold_receiver_reconcile = _cold_owner_bindings()
 del _cold_owner_bindings
 
 def maintenance_main(argv=None):

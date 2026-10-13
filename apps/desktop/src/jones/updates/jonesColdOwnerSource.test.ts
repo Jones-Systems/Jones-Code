@@ -15,6 +15,7 @@ const sourceTexts = () =>
       "jonesPairedStateSource.ts",
       "jonesColdOwnerSource.ts",
       "jonesPreparationWorkerSource.ts",
+      "jonesColdReceiverSource.ts",
     ].map((name) => NodeFSP.readFile(new URL(name, import.meta.url), "utf8")),
   );
 
@@ -57,6 +58,48 @@ describe("continuous cold-owner source", () => {
           pair,
           paired,
           owner,
+          changed,
+        ),
+      ).toThrow();
+    }
+  });
+
+  it("refuses missing, duplicate and nonliteral receiver composition", async () => {
+    const [bootstrap, maintenance, pair, paired, owner, worker, receiver] = await sourceTexts();
+    for (const changed of [
+      maintenance!.replace("  jonesColdReceiverSource +", ""),
+      maintenance!.replace(
+        "  jonesColdReceiverSource +",
+        "  jonesColdReceiverSource +\n  jonesColdReceiverSource +",
+      ),
+      maintenance!.replace("  jonesColdReceiverSource +", "  unboundReceiver +"),
+    ]) {
+      expect(() =>
+        ColdFixture.materializeColdMaintenance(
+          bootstrap,
+          changed,
+          pair,
+          paired,
+          owner,
+          worker,
+          receiver,
+        ),
+      ).toThrow();
+    }
+    for (const changed of [
+      receiver! + "\nunbound();",
+      receiver! + receiver!,
+      receiver!.replace("String.raw`", "String.raw`${unbound}"),
+      "unbound();\n" + receiver!,
+    ]) {
+      expect(() =>
+        ColdFixture.materializeColdMaintenance(
+          bootstrap,
+          maintenance,
+          pair,
+          paired,
+          owner,
+          worker,
           changed,
         ),
       ).toThrow();

@@ -903,6 +903,8 @@
     "apps/web/src/jones/workQueue/classifySentPrompts.test.ts": "jones-owned",
     "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts": "jones-owned",
     "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts": "jones-owned",
+    "apps/desktop/src/jones/updates/jonesColdReceiverSource.ts": "jones-owned",
+    "apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts": "jones-owned",
     "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts": "jones-owned",
     "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts": "jones-owned",
     "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs": "jones-owned",

@@ -120,6 +120,7 @@ jobs:
           apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
           apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
           apps/desktop/src/jones/updates/jonesColdPairSource.test.ts
+          apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts
           apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts
           apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts
           apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts

@@ -916,6 +916,7 @@ function producerCandidateSourceFiles() {
       "jonesPairedStateSource.ts",
       "jonesColdPairSource.ts",
       "jonesLegacyIdentityNative.c",
+      "jonesColdReceiverSource.ts",
       "jonesColdOwnerSource.ts",
       "jonesPreparationWorkerSource.ts",
     ].map((name) => `apps/desktop/src/jones/updates/${name}`),

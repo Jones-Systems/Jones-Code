@@ -91,6 +91,8 @@
     "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
     "apps/desktop/src/jones/updates/jonesColdPairSource.ts",
     "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdReceiverSource.ts",
+    "apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts",
     "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
     "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
     "apps/server/src/jones/updates/offlinePreparationEntry.ts",

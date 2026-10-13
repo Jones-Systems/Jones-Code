@@ -1012,6 +1012,7 @@ export const preparationNativeQualifierSourceInputs = Object.freeze([
   "apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
   "apps/desktop/src/jones/updates/jonesColdPairSource.ts",
   "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
+  "apps/desktop/src/jones/updates/jonesColdReceiverSource.ts",
   "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
   "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts",
   "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
@@ -1679,6 +1680,7 @@ export async function runLegacyPreparationNativeFixture({
       source("jonesPairedStateSource.ts"),
       source("jonesColdOwnerSource.ts"),
       source("jonesPreparationWorkerSource.ts"),
+      source("jonesColdReceiverSource.ts"),
     ),
     executor: materializePairedExecutor(
       source("jonesNativeHelperSource.ts"),

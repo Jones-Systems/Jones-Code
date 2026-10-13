@@ -569,6 +569,7 @@
         "apps/server/src/jones/updates/offlinePreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
         "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts",
         "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
         "apps/server/src/jones/updates/offlinePreparationEntry.test.ts",
         "scripts/jones/updates/offline-preparation-build.test.ts",
