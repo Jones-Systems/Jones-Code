@@ -4,7 +4,10 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
-import { capturePreparationProducer } from "./offline-preparation-producer-loader.mjs";
+import {
+  buildAndStagePreparationProducer,
+  capturePreparationProducer,
+} from "./offline-preparation-producer-loader.mjs";
 
 const artifactDirectory = "apps/server/dist-exe/preparation-producer-candidate";
 const producerPath = `${artifactDirectory}/offlinePreparationProducer.mjs`;
@@ -60,6 +63,21 @@ const sha256 = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("
 const content = (bytes) => ({ sha256: sha256(bytes), size: bytes.length });
 const sameIdentity = (left, right) =>
   left.dev === right.dev && left.ino === right.ino && left.uid === right.uid;
+
+function fixtureCustodyUncertain(cause, seen = new Set()) {
+  if (typeof cause !== "object" || cause === null) return false;
+  if (seen.has(cause)) return false;
+  if (seen.size >= 64) return true;
+  seen.add(cause);
+  if (
+    cause.preserveScratch === true ||
+    cause.preserveStageRoot === true ||
+    typeof cause.retainedRoot === "string"
+  )
+    return true;
+  const nested = [cause.cause, ...(cause instanceof AggregateError ? cause.errors : [])];
+  return nested.some((error) => fixtureCustodyUncertain(error, seen));
+}
 
 async function withFixture(t, run) {
   const parent = await NodeFSP.default.realpath(NodeOS.tmpdir());
@@ -151,6 +169,13 @@ async function withFixture(t, run) {
     primary = cause;
   } finally {
     t.mock.restoreAll();
+    // Escaped custody uncertainty covers this fixture's source and captured roots.
+    // Teardown has no descriptor-closure evidence that could override the creator.
+    if (failed && fixtureCustodyUncertain(primary))
+      throw Object.assign(new Error("Capture fixture custody remains unresolved.", { cause: primary }), {
+        preserveScratch: true,
+        retainedRoots: [...allocated.keys()],
+      });
     const failures = [];
     for (const [name, original] of [...allocated].reverse()) {
       try {
@@ -178,6 +203,185 @@ async function withFixture(t, run) {
     if (failed) throw primary;
   }
 }
+
+async function stagingInput({ sourceRoot, stageRoot, report }) {
+  const stageResourcesDir = NodePath.join(stageRoot, "resources");
+  await NodeFSP.default.mkdir(stageResourcesDir, { mode: 0o700 });
+  return {
+    sourceRoot,
+    stageRoot,
+    stageResourcesDir,
+    expectedSource: {
+      repository: report.source.repository,
+      sourceSha: report.source.sha,
+      sourceTree: report.source.tree,
+      version: "0.0.45-preview.20261012.1.1",
+    },
+  };
+}
+
+NodeTest.test(
+  "build-and-stage retains the complete capture during its consumer and refuses before import",
+  (t) =>
+    withFixture(t, async (fixture) => {
+      const input = await stagingInput(fixture);
+      const realpath = NodeFSP.default.realpath;
+      let capturedRoot;
+      t.mock.method(NodeFSP.default, "realpath", async (name, ...args) => {
+        if (name === input.stageResourcesDir) {
+          capturedRoot = [...fixture.allocated.keys()].find((root) => root !== fixture.fixtureRoot);
+          NodeAssert.ok(capturedRoot);
+          for (const [relative, bytes] of fixture.bytes) {
+            const captured = relative === producerPath ? emittedPath : relative;
+            NodeAssert.deepEqual(
+              await NodeFSP.default.readFile(NodePath.join(capturedRoot, captured)),
+              bytes,
+            );
+          }
+        }
+        return realpath(name, ...args);
+      });
+      await NodeAssert.rejects(buildAndStagePreparationProducer(input), (error) => {
+        NodeAssert.match(error.message, /producer execution contract is unqualified/);
+        NodeAssert.equal(error.cleanup.disposition, "removed");
+        NodeAssert.equal(error.cleanup.root, capturedRoot);
+        NodeAssert.equal(error.preserveStageRoot, undefined);
+        return true;
+      });
+      await NodeAssert.rejects(NodeFSP.default.lstat(capturedRoot), { code: "ENOENT" });
+      NodeAssert.deepEqual(await NodeFSP.default.readdir(input.stageResourcesDir), []);
+    }),
+);
+
+NodeTest.test(
+  "cancellation waits for the captured consumer before closing and removing its tree",
+  (t) =>
+    withFixture(t, async (fixture) => {
+      const input = await stagingInput(fixture);
+      const realpath = NodeFSP.default.realpath;
+      const entered = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      const controller = new AbortController();
+      const reason = Object.freeze(new Error("cancel retained capture"));
+      let capturedRoot;
+      t.mock.method(NodeFSP.default, "realpath", async (name, ...args) => {
+        if (name === input.stageResourcesDir) {
+          capturedRoot = [...fixture.allocated.keys()].find((root) => root !== fixture.fixtureRoot);
+          entered.resolve();
+          await release.promise;
+        }
+        return realpath(name, ...args);
+      });
+      const pending = buildAndStagePreparationProducer({ ...input, signal: controller.signal });
+      const rejected = NodeAssert.rejects(pending, (error) => {
+        NodeAssert.equal(error.cause, reason);
+        NodeAssert.equal(error.cleanup.disposition, "removed");
+        return true;
+      });
+      try {
+        await Promise.race([entered.promise, pending]);
+        controller.abort(reason);
+        NodeAssert.ok((await NodeFSP.default.lstat(capturedRoot)).isDirectory());
+        NodeAssert.deepEqual(
+          await NodeFSP.default.readFile(NodePath.join(capturedRoot, emittedPath)),
+          fixture.bytes.get(producerPath),
+        );
+      } finally {
+        release.resolve();
+        await rejected;
+      }
+      await NodeAssert.rejects(NodeFSP.default.lstat(capturedRoot), { code: "ENOENT" });
+    }),
+);
+
+NodeTest.test(
+  "build-and-stage rechecks original sources after capture and before its execution gate",
+  (t) =>
+    withFixture(t, async (fixture) => {
+      const input = await stagingInput(fixture);
+      const realpath = NodeFSP.default.realpath;
+      t.mock.method(NodeFSP.default, "realpath", async (name, ...args) => {
+        if (name === input.stageResourcesDir)
+          await NodeFSP.default.writeFile(NodePath.join(input.sourceRoot, "package.json"), "changed");
+        return realpath(name, ...args);
+      });
+      await NodeAssert.rejects(buildAndStagePreparationProducer(input), (error) => {
+        NodeAssert.match(error.message, /input identity or bytes changed/);
+        NodeAssert.equal(error.cleanup.disposition, "removed");
+        return true;
+      });
+      NodeAssert.deepEqual(await NodeFSP.default.readdir(input.stageResourcesDir), []);
+    }),
+);
+
+NodeTest.test(
+  "build-and-stage cannot accept a caller module, handle, callback or admission flag",
+  (t) =>
+    withFixture(t, async (fixture) => {
+      const input = await stagingInput(fixture);
+      for (const extra of [
+        { module: {} },
+        { handle: {} },
+        { importURL: "file:///outside" },
+        { callback: () => NodeAssert.fail("caller callback executed") },
+        { admitted: true },
+      ])
+        await NodeAssert.rejects(
+          buildAndStagePreparationProducer({ ...input, ...extra }),
+          /accepts only fixed source/,
+        );
+      NodeAssert.equal(fixture.allocated.size, 1);
+    }),
+);
+
+for (const mismatch of ["source", "resources"]) {
+  NodeTest.test(`build-and-stage refuses mismatched ${mismatch} before its execution gate`, (t) =>
+    withFixture(t, async (fixture) => {
+      const input = await stagingInput(fixture);
+      if (mismatch === "source") input.expectedSource.sourceSha = "c".repeat(40);
+      else input.stageResourcesDir = fixture.sourceRoot;
+      await NodeAssert.rejects(buildAndStagePreparationProducer(input), (error) => {
+        NodeAssert.match(error.message, /requested source identity|inside the captured packaging stage/);
+        NodeAssert.equal(error.cleanup.disposition, "removed");
+        return true;
+      });
+    }),
+  );
+}
+
+NodeTest.test(
+  "consumer refusal survives descriptor cleanup uncertainty without discarding captured code",
+  (t) =>
+    withFixture(t, async (fixture) => {
+      const input = await stagingInput(fixture);
+      const open = NodeFSP.default.open;
+      t.mock.method(NodeFSP.default, "open", async (name, ...args) => {
+        const handle = await open(name, ...args);
+        if (name === NodePath.join(input.sourceRoot, reportPath)) {
+          const close = handle.close.bind(handle);
+          t.mock.method(handle, "close", async () => {
+            await close();
+            throw new Error("synthetic close observation lost");
+          });
+        }
+        return handle;
+      });
+      await NodeAssert.rejects(buildAndStagePreparationProducer(input), (error) => {
+        NodeAssert.ok(error instanceof AggregateError);
+        NodeAssert.match(error.cause.message, /producer execution contract is unqualified/);
+        NodeAssert.equal(error.errors[0], error.cause);
+        NodeAssert.equal(error.cleanup.disposition, "retained-uncertain");
+        NodeAssert.equal(error.preserveScratch, true);
+        NodeAssert.equal(error.preserveStageRoot, undefined);
+        return true;
+      });
+      const capturedRoot = [...fixture.allocated.keys()].find((root) => root !== fixture.fixtureRoot);
+      NodeAssert.deepEqual(
+        await NodeFSP.default.readFile(NodePath.join(capturedRoot, emittedPath)),
+        fixture.bytes.get(producerPath),
+      );
+    }),
+);
 
 NodeTest.test(
   "capture copies exact bytes into distinct roots, returns held and never executes the sentinel",
@@ -416,6 +620,72 @@ NodeTest.test("capture refuses stage and scratch overlap before allocating a roo
     );
     NodeAssert.equal(allocated.size, 1);
   }),
+);
+
+for (const alias of [false, true]) {
+  NodeTest.test(
+    `capture rejects ${alias ? "aliased" : "identical"} source and stage roots before allocation`,
+    (t) =>
+      withFixture(t, async ({ sourceRoot, fixtureRoot, allocated }) => {
+        const stageRoot = alias ? NodePath.join(fixtureRoot, "source-alias") : sourceRoot;
+        if (alias) await NodeFSP.default.symlink(sourceRoot, stageRoot);
+        await NodeAssert.rejects(
+          capturePreparationProducer({ sourceRoot, stageRoot }),
+          /source and stage roots must be distinct/,
+        );
+        NodeAssert.equal(allocated.size, 1);
+      }),
+  );
+}
+
+NodeTest.test(
+  "escaped descriptor uncertainty retains fixture roots until the owning test closes the descriptor",
+  async (t) => {
+    let retained;
+    let closeDescriptor;
+    const allocated = new Map();
+    try {
+      await NodeAssert.rejects(
+        withFixture(t, async ({ sourceRoot, stageRoot, allocated: roots }) => {
+          const open = NodeFSP.default.open;
+          t.mock.method(NodeFSP.default, "open", async (name, ...args) => {
+            const handle = await open(name, ...args);
+            if (name === NodePath.join(sourceRoot, reportPath)) {
+              closeDescriptor = handle.close.bind(handle);
+              t.mock.method(handle, "close", async () => {
+                throw new Error("descriptor remains open");
+              });
+            }
+            return handle;
+          });
+          try {
+            await capturePreparationProducer({ sourceRoot, stageRoot });
+          } finally {
+            for (const [name, stat] of roots) allocated.set(name, stat);
+          }
+        }),
+        (error) => {
+          retained = error;
+          NodeAssert.equal(error.preserveScratch, true);
+          NodeAssert.equal(error.cause.preserveScratch, true);
+          NodeAssert.equal(error.cause.cleanup.disposition, "retained-uncertain");
+          NodeAssert.deepEqual(error.retainedRoots, [...allocated.keys()]);
+          return true;
+        },
+      );
+      NodeAssert.equal(allocated.size, 2);
+      for (const [name, stat] of allocated)
+        NodeAssert.ok(sameIdentity(stat, await NodeFSP.default.lstat(name, { bigint: true })));
+    } finally {
+      // This test owns the injected failure and the captured descriptor, unlike fixture teardown.
+      if (closeDescriptor) await closeDescriptor();
+      for (const [name, stat] of [...allocated].reverse()) {
+        NodeAssert.ok(sameIdentity(stat, await NodeFSP.default.lstat(name, { bigint: true })));
+        await NodeFSP.default.rm(name, { recursive: true });
+      }
+    }
+    NodeAssert.ok(retained);
+  },
 );
 
 for (const [name, relative, limit] of [

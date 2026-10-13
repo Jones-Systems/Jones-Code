@@ -1,3 +1,6 @@
+import type { QualifiedPreparationStageResult } from "./offline-preparation-build.ts";
+import type { JonesLegacyBootstrapBundleInput } from "./legacy-bootstrap-bundle.ts";
+
 interface CaptureFileIdentity {
   readonly device: string;
   readonly inode: string;
@@ -40,3 +43,16 @@ export function capturePreparationProducer(options: {
   readonly stageRoot: string;
   readonly signal?: AbortSignal;
 }): Promise<HeldPreparationProducerCapture>;
+
+/** The execution-contract gate currently refuses before import; this is not a qualification capability. */
+export function buildAndStagePreparationProducer(options: {
+  readonly sourceRoot: string;
+  readonly stageRoot: string;
+  readonly expectedSource: JonesLegacyBootstrapBundleInput;
+  readonly stageResourcesDir: string;
+  readonly signal?: AbortSignal;
+}): Promise<
+  QualifiedPreparationStageResult & {
+    readonly cleanup: { readonly disposition: "removed"; readonly root: string };
+  }
+>;
