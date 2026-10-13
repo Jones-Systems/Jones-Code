@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
+import * as NodeURL from "node:url";
 
 const producerDirectory = "apps/server/dist-exe/preparation-producer-candidate";
 const producerFile = `${producerDirectory}/offlinePreparationProducer.mjs`;
@@ -185,8 +186,129 @@ function validateReport(report) {
   };
 }
 
-/** Captures diagnostic bytes only. No report, copied module or caller option can authorize execution. */
+function uncertainCustody(cause, seen = new Set()) {
+  if (typeof cause !== "object" || cause === null) return false;
+  if (seen.has(cause)) return false;
+  if (seen.size >= 64) return true;
+  seen.add(cause);
+  if (
+    cause.preserveScratch === true ||
+    cause.preserveStageRoot === true ||
+    typeof cause.retainedRoot === "string"
+  )
+    return true;
+  const nested = [cause.cause, ...(cause instanceof AggregateError ? cause.errors : [])];
+  return nested.some((error) => uncertainCustody(error, seen));
+}
+
+// A complete observed import list does not approve initializers or runtime builtin semantics.
+// This gate has no caller-controlled admission input and remains closed until that contract exists.
+function requireProducerExecutionContract() {
+  throw new Error("The preparation producer execution contract is unqualified.");
+}
+
+/** Diagnostic capture only; successful return follows complete cleanup without importing producer bytes. */
 export async function capturePreparationProducer(options) {
+  return withCapturedPreparationProducer(options, async (capture) => capture.observation);
+}
+
+/** Own one captured module through build and one-shot staging; no capability or namespace escapes. */
+export async function buildAndStagePreparationProducer(options) {
+  if (
+    !isObject(options) ||
+    Object.keys(options).some(
+      (key) =>
+        !["sourceRoot", "stageRoot", "signal", "expectedSource", "stageResourcesDir"].includes(key),
+    )
+  )
+    throw new Error("Producer staging accepts only fixed source, stage and cancellation inputs.");
+  const expected = options.expectedSource;
+  if (
+    !isObject(expected) ||
+    Object.keys(expected).sort().join(",") !== "repository,sourceSha,sourceTree,version" ||
+    expected.repository !== "Jones-Systems/Jones-Code" ||
+    typeof expected.sourceSha !== "string" ||
+    !/^[a-f0-9]{40}$/.test(expected.sourceSha) ||
+    typeof expected.sourceTree !== "string" ||
+    !/^[a-f0-9]{40}$/.test(expected.sourceTree) ||
+    typeof expected.version !== "string" ||
+    expected.version.length > 128 ||
+    !/^\d+\.\d+\.\d+-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(expected.version) ||
+    typeof options.stageResourcesDir !== "string" ||
+    !NodePath.isAbsolute(options.stageResourcesDir)
+  )
+    throw new Error(
+      "Producer staging requires exact source identity and an absolute resource directory.",
+    );
+  const expectedSource = Object.freeze({ ...expected });
+  const stageResourcesDir = options.stageResourcesDir;
+  const signal = options.signal;
+  return withCapturedPreparationProducer(
+    { sourceRoot: options.sourceRoot, stageRoot: options.stageRoot, signal },
+    async (capture) => {
+      const resources = await NodeFSP.default.realpath(stageResourcesDir);
+      if (resources === capture.stageRoot || !contains(capture.stageRoot, resources))
+        throw new Error("Preparation resources must be inside the captured packaging stage.");
+      if (
+        expectedSource.sourceSha !== capture.observation.reportedGitIdentity.sha ||
+        expectedSource.sourceTree !== capture.observation.reportedGitIdentity.tree
+      )
+        throw new Error("Producer capture differs from the requested source identity.");
+      await capture.verifyCurrent();
+      requireProducerExecutionContract();
+
+      const controller = new AbortController();
+      const cancel = () => controller.abort(signal.reason);
+      signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        signal?.throwIfAborted();
+        capture.beginExecution();
+        let producer;
+        try {
+          // The path is unique per capture. Keep this exact namespace for both calls.
+          producer = await import(
+            NodeURL.pathToFileURL(NodePath.join(capture.codeRoot, capturedProducerFile)).href
+          );
+        } catch (cause) {
+          throw Object.assign(new Error("Producer import effects are uncertain.", { cause }), {
+            preserveScratch: true,
+          });
+        }
+        await capture.verifyCurrent();
+        if (
+          Object.keys(producer).sort().join(",") !==
+            "buildQualifiedPreparation,stageQualifiedPreparation" ||
+          typeof producer.buildQualifiedPreparation !== "function" ||
+          typeof producer.stageQualifiedPreparation !== "function"
+        )
+          throw Object.assign(new Error("Captured producer has an unexpected module interface."), {
+            preserveScratch: true,
+          });
+        const handle = await producer.buildQualifiedPreparation({
+          repoRoot: capture.sourceRoot,
+          stageRoot: capture.stageRoot,
+          signal: controller.signal,
+        });
+        await capture.verifyCurrent();
+        const staged = await producer.stageQualifiedPreparation({
+          handle,
+          expectedSource,
+          stageResourcesDir: resources,
+          signal: controller.signal,
+        });
+        await capture.verifyCurrent();
+        return staged;
+      } finally {
+        signal?.removeEventListener("abort", cancel);
+        // Revokes any issued but unconsumed module-private handle before code cleanup.
+        controller.abort(new Error("Captured producer lifetime ended."));
+      }
+    },
+  );
+}
+
+// Only the fixed operations above choose a consumer; callers cannot inject code into this lifetime.
+async function withCapturedPreparationProducer(options, consume) {
   if (
     !isObject(options) ||
     Object.keys(options).some((key) => !["sourceRoot", "stageRoot", "signal"].includes(key))
@@ -219,6 +341,8 @@ export async function capturePreparationProducer(options) {
   };
   const source = await root(options.sourceRoot);
   const stage = await root(options.stageRoot);
+  if (source.path === stage.path)
+    throw new Error("Producer source and stage roots must be distinct.");
   const temporary = await NodeFSP.default.realpath(NodeOS.tmpdir());
   const prefix = NodePath.join(temporary, "jones-preparation-producer-");
   if (overlaps(source.path, prefix) || overlaps(stage.path, prefix))
@@ -228,6 +352,7 @@ export async function capturePreparationProducer(options) {
   let scratchRoot;
   let scratchStat;
   let custodyUnknown = false;
+  let executionAttempted = false;
   let primary;
   let failed = false;
   let result;
@@ -399,6 +524,21 @@ export async function capturePreparationProducer(options) {
       throw custodyError("Producer scratch observation has uncertain custody.", cause);
     }
   };
+  const verifyCurrent = async () => {
+    checkAbort();
+    for (const input of inputs) {
+      await checkInput(input, true);
+      await checkInput(input);
+    }
+    await checkDirectory(stage.path, stage.stat);
+    await checkScratch();
+    for (const output of captured) {
+      if (hash(await readBytes(output.handle, output.input.size)) !== output.input.sha256)
+        throw custodyError("Captured producer bytes changed during its lifetime.");
+    }
+    await checkScratch();
+    checkAbort();
+  };
 
   // Cleanup custody begins immediately after allocation, before any artifact or source is read.
   try {
@@ -422,19 +562,8 @@ export async function capturePreparationProducer(options) {
       const observed = await readInput(relative, sourceLimit, report.bindings.get(relative));
       await copy(observed, relative);
     }
-    for (const input of inputs) {
-      await checkInput(input, true);
-      await checkInput(input);
-    }
-    await checkDirectory(stage.path, stage.stat);
-    await checkScratch();
-    for (const output of captured) {
-      if (hash(await readBytes(output.handle, output.input.size)) !== output.input.sha256)
-        throw custodyError("Captured producer bytes changed before completion.");
-    }
-    await checkScratch();
-    checkAbort();
-    result = {
+    await verifyCurrent();
+    const observation = {
       status: "held",
       reason: "producer-execution-closure-unqualified",
       imported: false,
@@ -457,9 +586,20 @@ export async function capturePreparationProducer(options) {
         capturedIdentity: identity(output.stat),
       })),
     };
+    result = await consume({
+      observation,
+      sourceRoot: source.path,
+      codeRoot: scratchRoot,
+      stageRoot: stage.path,
+      verifyCurrent,
+      beginExecution: () => {
+        executionAttempted = true;
+      },
+    });
   } catch (cause) {
     failed = true;
     primary = cause;
+    if (uncertainCustody(cause)) custodyUnknown = true;
   }
   const cleanupFailures = [];
   for (const handle of handles.reverse()) {
@@ -517,6 +657,7 @@ export async function capturePreparationProducer(options) {
     Object.assign(diagnostic, {
       cleanup,
       ...(custodyUnknown ? { preserveScratch: true, retainedRoot: scratchRoot } : {}),
+      ...(executionAttempted ? { preserveStageRoot: true, stageRoot: stage.path } : {}),
     });
     throw diagnostic;
   }
