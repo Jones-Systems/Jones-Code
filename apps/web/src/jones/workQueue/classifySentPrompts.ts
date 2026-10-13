@@ -49,7 +49,9 @@ export function classifySentPrompts(
           : snapshot.schema !== "codex.t3-work-queue-metadata/v3" ||
             proof.correlation_status !== "pending" ||
             proof.turn_id !== null ||
-            proof.turn_state !== "pending") ||
+            (proof.turn_state !== "pending" &&
+              proof.turn_state !== "error" &&
+              proof.turn_state !== "interrupted")) ||
         !proof.command_id ||
         !proof.message_id ||
         !Number.isSafeInteger(proof.receipt_sequence) ||

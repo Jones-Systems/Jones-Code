@@ -278,6 +278,55 @@ describe("recorded pre-start handoffs", () => {
     expect([...result.confirmedRequests]).toEqual(["request"]);
     expect(result.remainingVoice).toEqual([]);
   });
+  it.each(["error", "interrupted"] as const)(
+    "keeps the same recorded pre-start handoff Sent after %s",
+    (terminalState) => {
+      const sample = preStartSnapshot();
+      if (sample.schema !== "codex.t3-work-queue-metadata/v3") throw new Error("fixture");
+      for (const turn_state of ["pending", terminalState] as const) {
+        const observed = {
+          ...sample,
+          items: sample.items.map((item) => ({
+            ...item,
+            native_handoff: { ...item.native_handoff!, turn_state },
+          })),
+        };
+        const result = classifySentPrompts(observed, [voice()], "native-env");
+        expect(result.sent).toHaveLength(1);
+        expect(result.sent[0]).toMatchObject({
+          id: "request",
+          text: "Authorized retained prompt",
+          providerState: turn_state,
+          sentAt: 1500,
+          confirmation: { receiptId: "native-command" },
+        });
+        expect([...result.confirmedRequests]).toEqual(["request"]);
+        expect(result.remainingVoice).toEqual([]);
+      }
+    },
+  );
+  it("keeps missing turn evidence and contradictory null-turn states queued", () => {
+    const sample = preStartSnapshot();
+    if (sample.schema !== "codex.t3-work-queue-metadata/v3") throw new Error("fixture");
+    const item = sample.items[0]!;
+    const { turn_id: _turnId, ...missingTurn } = item.native_handoff!;
+    for (const native_handoff of [
+      null,
+      missingTurn,
+      { ...item.native_handoff, turn_state: "running" },
+      { ...item.native_handoff, turn_state: "completed" },
+      { ...item.native_handoff, turn_state: null },
+    ]) {
+      const unconfirmed = {
+        ...sample,
+        items: [{ ...item, native_handoff }],
+      } as unknown as WorkQueueMetadata;
+      const result = classifySentPrompts(unconfirmed, [voice()], "native-env");
+      expect(result.sent).toEqual([]);
+      expect(result.confirmedRequests.size).toBe(0);
+      expect(result.remainingVoice).toEqual([voice()]);
+    }
+  });
   it("keeps pending commands without recorded proof queued", () => {
     const sample = preStartSnapshot();
     const unconfirmed = {

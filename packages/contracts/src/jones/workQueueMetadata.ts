@@ -109,7 +109,10 @@ const NativeHandoffV3 = closed({
   Schema.makeFilter((proof) =>
     proof.correlation_status === "exact"
       ? proof.turn_id !== null
-      : proof.turn_id === null && proof.turn_state === "pending",
+      : proof.turn_id === null &&
+        (proof.turn_state === "pending" ||
+          proof.turn_state === "error" ||
+          proof.turn_state === "interrupted"),
   ),
 );
 const ItemV3 = closed({
