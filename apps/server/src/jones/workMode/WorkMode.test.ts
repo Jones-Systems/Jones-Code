@@ -172,7 +172,12 @@ const seedProjection = (source: OrchestrationV2ThreadProjection, prefix: string)
     const at = (value: OrchestrationV2ThreadProjection) => ({
       ...value,
       thread: { ...value.thread, createdAt: now, updatedAt: now },
-      runs: value.runs.map((run) => ({ ...run, requestedAt: now, startedAt: now, completedAt: now })),
+      runs: value.runs.map((run) => ({
+        ...run,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+      })),
       messages: value.messages.map((message) => ({ ...message, createdAt: now, updatedAt: now })),
     });
     const value = at(source);
@@ -494,7 +499,10 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
             ...fixture.providerThreads[0]!,
             id: ownerB,
             appThreadId: threadB,
-            nativeThreadRef: { driver: "codex", nativeId: "native-work-mode-b", strength: "strong" },
+            nativeThreadRef: {
+              ...fixture.providerThreads[0]!.nativeThreadRef!,
+              nativeId: "native-work-mode-b",
+            },
           },
         ],
         providerTurns: [
@@ -531,7 +539,8 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
       prepareRootRunScope: (input) =>
         (input.threadId === threadA
           ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
-          : Effect.void).pipe(Effect.andThen(checkpoint.prepareRootRunScope(input))),
+          : Effect.void
+        ).pipe(Effect.andThen(checkpoint.prepareRootRunScope(input))),
     });
     yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
     yield* Effect.gen(function* () {
@@ -542,22 +551,38 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
         ...orchestrator,
         requestWorkMode: (candidate) =>
           candidate.threadId === threadA
-            ? Deferred.succeed(admissionEntered, undefined).pipe(
+            ? Effect.gen(function* () {
+                // Start admission and register its deadline before the test can advance the clock.
+                const admission = yield* orchestrator
+                  .requestWorkMode(candidate)
+                  .pipe(Effect.forkChild({ startImmediately: true }));
+                const deadline = yield* Effect.sleep("1 second").pipe(
+                  Effect.as("timed-out" as const),
+                  Effect.forkChild({ startImmediately: true }),
+                );
+                yield* Deferred.succeed(admissionEntered, undefined);
                 // A is held before dispatch can begin; cancellation cannot hide an accepted command.
-                Effect.andThen(
-                  orchestrator.requestWorkMode(candidate).pipe(Effect.timeoutOption("1 second")),
-                ),
-                Effect.flatMap((result) =>
-                  Option.isSome(result)
-                    ? Effect.succeed(result.value)
-                    : Ref.set(admissionTimedOut, true).pipe(Effect.as("skipped" as const)),
-                ),
-              )
+                const result = yield* Effect.raceFirst(
+                  Fiber.join(admission),
+                  Fiber.join(deadline),
+                ).pipe(
+                  Effect.ensuring(Fiber.interrupt(admission)),
+                  Effect.ensuring(Fiber.interrupt(deadline)),
+                );
+                if (result === "timed-out") {
+                  yield* Ref.set(admissionTimedOut, true);
+                  return "skipped" as const;
+                }
+                return result;
+              })
             : orchestrator.requestWorkMode(candidate),
       });
       const workMode = yield* WorkMode.WorkMode.pipe(
         Effect.provide(
-          WorkMode.layer.pipe(Layer.provide(observedOrchestrator), Layer.provide(orderedProjections)),
+          WorkMode.layer.pipe(
+            Layer.provide(observedOrchestrator),
+            Layer.provide(orderedProjections),
+          ),
         ),
       );
       const ordinary = yield* orchestrator
@@ -580,28 +605,41 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
         ),
       );
       const sweep = yield* workMode.sweep.pipe(Effect.forkChild);
-      yield* Deferred.await(admissionEntered);
+      yield* Effect.raceFirst(
+        Deferred.await(admissionEntered),
+        Fiber.join(sweep).pipe(
+          Effect.andThen(Effect.die("Work sweep did not visit due thread A.")),
+        ),
+      );
       yield* TestClock.adjust("1 second");
       yield* Fiber.join(sweep);
-      assert.isFalse(yield* Ref.get(admissionTimedOut), "Work admission waited behind busy thread A");
+      const timedOut = yield* Ref.get(admissionTimedOut);
       const busy = yield* projections.getThreadProjection(threadA);
       const ready = yield* projections.getThreadProjection(threadB);
+      // Capture contention outcomes while A is held, then release it before any assertion can fail.
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(ordinary);
+      assert.isFalse(timedOut, "Work admission waited behind busy thread A");
       assert.isFalse(busy.messages.some((message) => message.text === WORK_MODE_SENTINEL));
       assert.isFalse(busy.runs.some((run) => run.status === "queued"));
       assert.lengthOf(ready.runs, 2);
       assert.isTrue(ready.messages.some((message) => message.text === WORK_MODE_SENTINEL));
-      yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(ordinary);
       yield* completeLatestRun();
       yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
       yield* WorkMode.WorkMode.pipe(Effect.flatMap((service) => service.sweep));
       const retried = yield* projections.getThreadProjection(threadA);
       assert.lengthOf(retried.runs, 3);
-      assert.lengthOf(retried.messages.filter((message) => message.text === WORK_MODE_SENTINEL), 1);
+      assert.lengthOf(
+        retried.messages.filter((message) => message.text === WORK_MODE_SENTINEL),
+        1,
+      );
     }).pipe(
+      Effect.ensuring(Deferred.succeed(release, undefined)),
       Effect.provide(
         WorkMode.layer.pipe(
-          Layer.provideMerge(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(guardedCheckpoint))),
+          Layer.provideMerge(
+            Layer.fresh(Orchestrator.layer).pipe(Layer.provide(guardedCheckpoint)),
+          ),
         ),
       ),
     );
