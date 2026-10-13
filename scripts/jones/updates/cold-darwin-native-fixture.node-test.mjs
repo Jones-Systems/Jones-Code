@@ -26,12 +26,19 @@ NodeTest.test("fixture rejects an unowned root before creating resources", async
 NodeTest.test(
   "child environment is a fixed private configuration without ambient injection",
   () => {
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone fixture checks the actual host before creating resources, without loading the application runtime.
+    if (process.platform !== "darwin" || typeof process.getuid !== "function") {
+      NodeAssert.throws(() => coldFixtureEnvironment("/owned-fixture"), /Darwin real UID/);
+      return;
+    }
     const environment = coldFixtureEnvironment("/owned-fixture");
     NodeAssert.deepEqual(environment, {
       PATH: "/usr/bin:/bin",
       LANG: "C",
       LC_ALL: "C",
       HOME: "/owned-fixture/home",
+      __CF_USER_TEXT_ENCODING: `0x${process.getuid().toString(16).toUpperCase()}:0:0`,
+      CFFIXED_USER_HOME: "/owned-fixture/home",
       XDG_CONFIG_HOME: "/owned-fixture/config",
       XDG_CACHE_HOME: "/owned-fixture/cache",
       TMPDIR: "/owned-fixture",

@@ -21,11 +21,21 @@ export function coldFixtureFailure(stderr, limit = 4096) {
 const retainedOwners = new Set();
 
 export function coldFixtureEnvironment(root) {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone fixture checks the actual host before creating resources, without loading the application runtime.
+  if (process.platform !== "darwin" || typeof process.getuid !== "function")
+    throw new Error("Fixture requires a Darwin real UID.");
+  const uid = process.getuid();
+  if (!Number.isInteger(uid) || uid < 0 || uid > 0xffffffff)
+    throw new Error("Invalid fixture real UID.");
+  const home = NodePath.join(root, "home");
   return Object.freeze({
     PATH: "/usr/bin:/bin",
     LANG: "C",
     LC_ALL: "C",
-    HOME: NodePath.join(root, "home"),
+    HOME: home,
+    // Bound historical CF fallback inputs; this does not prove installed profile-read behavior.
+    __CF_USER_TEXT_ENCODING: `0x${uid.toString(16).toUpperCase()}:0:0`,
+    CFFIXED_USER_HOME: home,
     XDG_CONFIG_HOME: NodePath.join(root, "config"),
     XDG_CACHE_HOME: NodePath.join(root, "cache"),
     TMPDIR: root,
@@ -222,7 +232,11 @@ try:
   fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
   left, right = socket.socketpair()
   assert (lock.fileno(), left.fileno(), right.fileno()) == (3,4,5)
-  environment = {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C',
+  uid = os.getuid()
+  if sys.platform != 'darwin' or not isinstance(uid, int) or not 0 <= uid <= 0xffffffff:
+    raise RuntimeError('unsupported-real-uid')
+  environment = {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','__CF_USER_TEXT_ENCODING':f'0x{uid:X}:0:0',
+    'CFFIXED_USER_HOME':os.path.join(root,'home'),
     'HOME':os.path.join(root,'home'),'XDG_CONFIG_HOME':os.path.join(root,'config'),
     'XDG_CACHE_HOME':os.path.join(root,'cache'),'TMPDIR':root,
     'ELECTRON_RUN_AS_NODE':'1','BREAKPAD_DUMP_LOCATION':root}
@@ -353,8 +367,9 @@ async function runColdDarwinFixtureBody({ root, runtime = "current-node", signal
     !/^cold-darwin-observer-[a-z0-9-]+$/.test(NodePath.basename(root))
   )
     throw new Error("Invalid owned fixture root.");
-  await NodeFSP.mkdir(root, { mode: 0o700 });
   const scratch = NodePath.join(root, "scratch");
+  const environment = coldFixtureEnvironment(scratch);
+  await NodeFSP.mkdir(root, { mode: 0o700 });
   await NodeFSP.mkdir(scratch, { mode: 0o700 });
   const receipt = {
     schema: 1,
@@ -364,7 +379,6 @@ async function runColdDarwinFixtureBody({ root, runtime = "current-node", signal
     cleanup: false,
     actors: [],
   };
-  const environment = coldFixtureEnvironment(scratch);
   for (const name of ["home", "config", "cache"]) {
     await NodeFSP.mkdir(NodePath.join(scratch, name), { mode: 0o700 });
   }
