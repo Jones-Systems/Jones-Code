@@ -518,7 +518,8 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
       "seed-b",
     );
     const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const checkpoint = yield* CheckpointService.CheckpointServiceV2;
+    const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+    const ordinaryCommandId = CommandId.make("ordinary:held-a");
     const entered = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     const orderedProjections = Layer.succeed(ProjectionStore.ProjectionStoreV2, {
@@ -534,13 +535,14 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
           })),
         ),
     });
-    const guardedCheckpoint = Layer.succeed(CheckpointService.CheckpointServiceV2, {
-      ...checkpoint,
-      prepareRootRunScope: (input) =>
-        (input.threadId === threadA
+    const guardedReceipts = Layer.succeed(CommandReceipts.CommandReceiptStoreV2, {
+      ...receipts,
+      // Ordinary dispatch owns the thread lock before this lookup and has not planned any events.
+      getByCommandId: (commandId) =>
+        (commandId === ordinaryCommandId
           ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
           : Effect.void
-        ).pipe(Effect.andThen(checkpoint.prepareRootRunScope(input))),
+        ).pipe(Effect.andThen(receipts.getByCommandId(commandId))),
     });
     yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
     yield* Effect.gen(function* () {
@@ -577,9 +579,10 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
               })
             : orchestrator.requestWorkMode(candidate),
       });
+      // Bind the sweep to this observer even when the outer test layer is already memoized.
       const workMode = yield* WorkMode.WorkMode.pipe(
         Effect.provide(
-          WorkMode.layer.pipe(
+          Layer.fresh(WorkMode.layer).pipe(
             Layer.provide(observedOrchestrator),
             Layer.provide(orderedProjections),
           ),
@@ -588,7 +591,7 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
       const ordinary = yield* orchestrator
         .dispatch({
           type: "message.dispatch",
-          commandId: CommandId.make("ordinary:held-a"),
+          commandId: ordinaryCommandId,
           messageId: MessageId.make("ordinary:held-a"),
           threadId: threadA,
           text: "Ordinary work",
@@ -601,9 +604,22 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
       yield* Effect.raceFirst(
         Deferred.await(entered),
         Fiber.join(ordinary).pipe(
-          Effect.andThen(Effect.die("Ordinary command missed its checkpoint barrier.")),
+          Effect.andThen(Effect.die("Ordinary command missed its receipt lookup barrier.")),
         ),
       );
+      const heldSnapshot = yield* projections.getShellSnapshot({
+        location: "active",
+        unsettledOnly: true,
+      });
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      for (const threadId of [threadA, threadB]) {
+        const shell = heldSnapshot.threads.find((thread) => thread.id === threadId);
+        assert.isDefined(shell, `Due thread ${threadId} is absent from the Work snapshot`);
+        assert.isNotNull(
+          workModeCandidate(shell!, nowMs),
+          `Thread ${threadId} must remain due while the ordinary command holds A's lock`,
+        );
+      }
       const sweep = yield* workMode.sweep.pipe(Effect.forkChild);
       yield* Effect.raceFirst(
         Deferred.await(admissionEntered),
@@ -636,10 +652,8 @@ it.effect("a busy thread does not hold up another due Work thread and is reconsi
     }).pipe(
       Effect.ensuring(Deferred.succeed(release, undefined)),
       Effect.provide(
-        WorkMode.layer.pipe(
-          Layer.provideMerge(
-            Layer.fresh(Orchestrator.layer).pipe(Layer.provide(guardedCheckpoint)),
-          ),
+        Layer.fresh(WorkMode.layer).pipe(
+          Layer.provideMerge(Layer.fresh(Orchestrator.layer).pipe(Layer.provide(guardedReceipts))),
         ),
       ),
     );
