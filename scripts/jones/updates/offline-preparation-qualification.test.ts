@@ -346,6 +346,7 @@ it("copies strict native failure evidence into the receipt and rejects private e
             frames: [{ source: "fixture.py", function: "readonly_rows", line: 321 }],
             duplicateOf: null,
             sqliteErrorCode: 1,
+            sqliteErrorCategory: "missing-table",
           },
         ],
         truncated: false,

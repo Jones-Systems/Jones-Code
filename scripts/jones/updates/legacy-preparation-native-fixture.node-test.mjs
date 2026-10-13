@@ -1402,8 +1402,18 @@ NodeTest.test("controller cause validator refuses private, forged and unbounded 
     frames: [{ source: "maintenance.py", function: "clean_work", line: 2 }],
     duplicateOf: null,
     sqliteErrorCode: null,
+    sqliteErrorCategory: null,
   };
   for (const mutate of [
+    (record) => {
+      record.sqliteErrorCategory = "private";
+    },
+    (record) => {
+      record.sqliteErrorCategory = "missing-table";
+    },
+    (record) => {
+      delete record.sqliteErrorCategory;
+    },
     (record) => {
       record.sqliteErrorCode = "private";
     },
@@ -1551,6 +1561,85 @@ print(encoded)
       );
       NodeAssert.equal(result.code, 0, result.stderr);
       for (const report of JSON.parse(result.stdout)) {
+        const evidence = failedFixture();
+        evidence.controllerFailure = report;
+        NodeAssert.deepEqual(validatePreparationNativeFailure(evidence), evidence);
+      }
+    });
+  },
+);
+
+NodeTest.test(
+  "SQLite categories identify owned failures without error-code support or private messages",
+  async () => {
+    await withLegacyIdentityScratch(async (root) => {
+      const script = NodePath.join(root, "sqlite-category.py");
+      await NodeFSP.writeFile(
+        script,
+        "import json, pathlib, sqlite3, sys\n" +
+          preparationFailureCaptureSource +
+          String.raw`
+root = pathlib.Path(sys.argv[1])
+database = root / 'owned.sqlite'
+reports = []
+def expect(category, operation):
+    try: at_failure_stage('reader-query', operation)
+    except sqlite3.Error as failure:
+        original_args = failure.args
+        report = capture_controller_failure([failure], failure)
+        assert report['records'][0]['sqliteErrorCategory'] == category
+        if hasattr(failure, 'sqlite_errorcode'): del failure.sqlite_errorcode
+        without_code = capture_controller_failure([failure], failure)
+        assert without_code['records'][0]['sqliteErrorCode'] is None
+        assert without_code['records'][0]['sqliteErrorCategory'] == category
+        assert failure.args == original_args and without_code['records'][0]['stage'] == 'reader-query'
+        reports.append(without_code)
+        return
+    raise AssertionError('Expected owned SQLite failure')
+db = sqlite3.connect(database, timeout=0)
+try:
+    db.execute('CREATE TABLE actual_table(value INTEGER UNIQUE)')
+    db.execute('INSERT INTO actual_table VALUES (1)'); db.commit()
+    expect('missing-table', lambda: db.execute('SELECT * FROM private_table_name'))
+    expect('missing-column', lambda: db.execute('SELECT private_column_name FROM actual_table'))
+    expect('syntax', lambda: db.execute('SELECT FROM private_table_name'))
+    expect('other', lambda: db.execute('INSERT INTO actual_table VALUES (1)'))
+    db.rollback()
+    readonly = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=0)
+    try: expect('readonly', lambda: readonly.execute('INSERT INTO actual_table VALUES (2)'))
+    finally: readonly.close()
+    db.execute('BEGIN EXCLUSIVE')
+    peer = sqlite3.connect(database, timeout=0)
+    try: expect('locked', lambda: peer.execute('SELECT * FROM actual_table'))
+    finally: peer.close(); db.rollback()
+finally: db.close()
+expect('cannot-open', lambda: sqlite3.connect((root / 'absent' / 'private.sqlite').as_uri() + '?mode=ro', uri=True))
+bad = root / 'invalid.sqlite'; bad.write_bytes(b'private-invalid-database' * 100)
+malformed = sqlite3.connect(bad)
+try: expect('malformed', lambda: malformed.execute('SELECT * FROM sqlite_master'))
+finally: malformed.close()
+private = 'Bearer private-secret /private/raw/path'
+class OperationalError(sqlite3.OperationalError):
+    def __str__(self): raise AssertionError('Must not render arbitrary exceptions')
+for failure in (ValueError('no such table: ' + private), OperationalError('no such table: ' + private)):
+    assert capture_controller_failure([failure], failure)['records'][0]['sqliteErrorCategory'] is None
+for message in (private, 'x' * 2000 + ': syntax error'):
+    assert sqlite_failure_category(sqlite3.OperationalError(message)) == 'other'
+encoded = json.dumps(reports)
+assert 'private' not in encoded and 'Bearer' not in encoded and str(root) not in encoded
+print(encoded)
+`,
+        { flag: "wx", mode: 0o400 },
+      );
+      const result = await runLegacyIdentityFixtureCommand(
+        "/usr/bin/python3",
+        ["-I", "-B", script, root],
+        root,
+      );
+      NodeAssert.equal(result.code, 0, result.stderr);
+      const reports = JSON.parse(result.stdout);
+      NodeAssert.equal(reports.length, 8);
+      for (const report of reports) {
         const evidence = failedFixture();
         evidence.controllerFailure = report;
         NodeAssert.deepEqual(validatePreparationNativeFailure(evidence), evidence);

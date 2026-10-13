@@ -674,6 +674,21 @@ def at_failure_stage(stage, operation):
     except BaseException as failure:
         remember_failure_stage(failure, stage)
         raise
+def sqlite_failure_category(failure):
+    if type(failure) not in (sqlite3.Error, sqlite3.InterfaceError, sqlite3.DatabaseError, sqlite3.DataError,
+                             sqlite3.OperationalError, sqlite3.IntegrityError, sqlite3.InternalError,
+                             sqlite3.ProgrammingError, sqlite3.NotSupportedError): return None
+    args = failure.args
+    if len(args) != 1 or type(args[0]) is not str: return 'other'
+    message = args[0][:1024]
+    if message.startswith('no such table: '): return 'missing-table'
+    if message.startswith('no such column: '): return 'missing-column'
+    if message.startswith('attempt to write a readonly database'): return 'readonly'
+    if message.startswith(('database is locked', 'database table is locked', 'database schema is locked')): return 'locked'
+    if message.startswith(('database disk image is malformed', 'malformed database schema', 'file is not a database')): return 'malformed'
+    if message.startswith('unable to open database file'): return 'cannot-open'
+    if len(args[0]) <= 1024 and message.startswith('near ') and message.endswith(': syntax error'): return 'syntax'
+    return 'other'
 def capture_controller_failure(failures, primary):
     records, seen = [], {}
     truncated = False
@@ -699,7 +714,8 @@ def capture_controller_failure(failures, primary):
         if type(sqlite_code) is not int or not 0 <= sqlite_code <= 2147483647: sqlite_code = None
         records.append(dict(parent=parent, relation=relation, type=name if name in _CONTROLLER_TYPES else 'unknown',
                             stage=saved[1] if saved is not None and saved[0] is failure else 'fixture-cleanup' if relation == 'cleanup' else 'unknown',
-                            frames=frames[-8:], duplicateOf=previous, sqliteErrorCode=sqlite_code))
+                            frames=frames[-8:], duplicateOf=previous, sqliteErrorCode=sqlite_code,
+                            sqliteErrorCategory=sqlite_failure_category(failure)))
         if previous is not None: return
         seen[id(failure)] = index
         if type(failure).__name__ == '_PreparationFailure':
@@ -2008,7 +2024,32 @@ export function validatePreparationNativeFailure(value) {
       "frames",
       "duplicateOf",
       "sqliteErrorCode",
+      "sqliteErrorCategory",
     ]);
+    NodeAssert.ok(
+      cause.sqliteErrorCategory === null ||
+        ([
+          "missing-table",
+          "missing-column",
+          "readonly",
+          "locked",
+          "malformed",
+          "cannot-open",
+          "syntax",
+          "other",
+        ].includes(cause.sqliteErrorCategory) &&
+          [
+            "Error",
+            "InterfaceError",
+            "DatabaseError",
+            "DataError",
+            "OperationalError",
+            "IntegrityError",
+            "InternalError",
+            "ProgrammingError",
+            "NotSupportedError",
+          ].includes(cause.type)),
+    );
     NodeAssert.ok(
       cause.sqliteErrorCode === null ||
         (Number.isSafeInteger(cause.sqliteErrorCode) &&
