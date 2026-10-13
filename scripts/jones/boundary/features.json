@@ -182,6 +182,7 @@
     {
       "id": "work-queue-metadata",
       "tests": [
+        "apps/server/src/voiceReview/bridge.test.ts",
         "apps/web/src/jones/workQueue/PromptsSettings.test.tsx",
         "apps/web/src/components/settings/settingsSearch.test.ts",
         "packages/contracts/src/settings.test.ts",
@@ -196,7 +197,7 @@
         "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx",
         "apps/web/src/jones/workQueue/classifySentPrompts.test.ts"
       ],
-      "scope": "Validated v1/v2 metadata reads preserve configured source and native receipt identity. Prompts joins existing source-scoped broker delivery links to exact queue request, payload digest and authenticated native environment/target evidence. Confirmed handoffs appear under Sent while unmatched sibling deliveries remain Queued. V1, denied receipt reads, mismatches and missing proof remain unconfirmed; stale/partial samples carry explicit coverage and observation time. Provider completion is separate from Sent. Existing editing, routes and device-local opening preference remain covered."
+      "scope": "Validated v1/v2/v3 metadata reads preserve configured source and native receipt identity. Prompts joins existing source-scoped broker delivery links to exact queue request, payload digest and authenticated native environment/target evidence. V3 recorded pre-start handoffs and V2 exact handoffs appear under Sent while unmatched sibling deliveries remain Queued. Voice linkage requires the explicit submitted queue digest, never the broker envelope hash; missing legacy digests remain unlinked. V1, denied receipt reads, mismatches and missing proof remain unconfirmed; stale/partial samples carry explicit coverage and observation time. Provider completion is separate from Sent. Existing editing, routes and device-local opening preference remain covered."
     },
     {
       "id": "direct-desktop-media",

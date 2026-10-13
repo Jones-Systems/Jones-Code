@@ -96,6 +96,32 @@ const ItemV2 = closed({
       item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
   ),
 );
+const NativeHandoffV3 = closed({
+  command_id: NativeId,
+  message_id: NativeId,
+  command_status: Schema.Literal("accepted"),
+  correlation_status: Schema.Literals(["pending", "exact"]),
+  receipt_sequence: Integer,
+  turn_id: Schema.NullOr(NativeId),
+  turn_state: Schema.Literals(["pending", "running", "completed", "interrupted", "error"]),
+  observed_at_ms: Integer,
+}).check(
+  Schema.makeFilter((proof) =>
+    proof.correlation_status === "exact"
+      ? proof.turn_id !== null
+      : proof.turn_id === null && proof.turn_state === "pending",
+  ),
+);
+const ItemV3 = closed({
+  ...itemFields,
+  payload_sha256: Schema.NullOr(Digest),
+  native_handoff: Schema.NullOr(NativeHandoffV3),
+}).check(
+  Schema.makeFilter(
+    (item) =>
+      item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
+  ),
+);
 const snapshotFields = {
   source: WorkQueueMetadataSource,
   observed_at_ms: Integer,
@@ -127,7 +153,17 @@ export const WorkQueueMetadataV2 = closed({
   items: Schema.Array(ItemV2).check(Schema.isMaxLength(1000)),
   authority_effect: Schema.Literal("none"),
 }).check(Schema.makeFilter(validSnapshot));
-export const WorkQueueMetadata = Schema.Union([WorkQueueMetadataV1, WorkQueueMetadataV2]);
+export const WorkQueueMetadataV3 = closed({
+  schema: Schema.Literal("codex.t3-work-queue-metadata/v3"),
+  ...snapshotFields,
+  items: Schema.Array(ItemV3).check(Schema.isMaxLength(1000)),
+  authority_effect: Schema.Literal("none"),
+}).check(Schema.makeFilter(validSnapshot));
+export const WorkQueueMetadata = Schema.Union([
+  WorkQueueMetadataV1,
+  WorkQueueMetadataV2,
+  WorkQueueMetadataV3,
+]);
 export type WorkQueueMetadata = typeof WorkQueueMetadata.Type;
 export const WorkQueueMetadataResult = Schema.Union([
   closed({

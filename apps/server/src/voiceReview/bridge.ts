@@ -76,6 +76,9 @@ const CommandDelivery = Schema.Struct({
   id: Schema.String,
   queue_request_id: Schema.NullOr(Schema.String),
   payload_hash: Schema.String,
+  queue_payload_sha256: Schema.optional(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+  ),
   destination: Schema.Struct({
     backend: Schema.String,
     instance: Schema.String,
@@ -304,15 +307,16 @@ export const makeVoiceReviewBridge = (
               links.set(id, unavailableLinks("invalid_receipt"));
               continue;
             }
-            // Only explicit queue relations can match; count unlinked siblings without exposing broker text or results.
+            // Only explicit queue relations and submitted-byte digests can match; envelope hashes are not queue digests.
+            // Count unlinked siblings without exposing broker text or results.
             const deliveries = command.deliveries.flatMap((delivery) =>
-              delivery.queue_request_id === null
+              delivery.queue_request_id === null || delivery.queue_payload_sha256 == null
                 ? []
                 : [
                     {
                       delivery_id: delivery.id,
                       queue_request_id: delivery.queue_request_id,
-                      payload_sha256: delivery.payload_hash,
+                      payload_sha256: delivery.queue_payload_sha256,
                       destination: delivery.destination,
                     },
                   ],
