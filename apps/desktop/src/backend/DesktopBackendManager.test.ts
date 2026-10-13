@@ -131,6 +131,7 @@ function decodeBootstrap(raw: string) {
 }
 
 interface MakeInstanceInput {
+  readonly id?: DesktopBackendManager.BackendInstanceId;
   readonly spawnerLayer: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>;
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   readonly backendOutputLog?: Partial<DesktopObservability.DesktopBackendOutputLogShape>;
@@ -193,7 +194,7 @@ function makeTestInstance(input: MakeInstanceInput) {
   );
 
   const instance = DesktopBackendManager.makeBackendInstance({
-    id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
+    id: input.id ?? DesktopBackendManager.PRIMARY_INSTANCE_ID,
     label: Effect.succeed("Windows"),
     configResolve: input.configResolve ?? Effect.succeed(input.config ?? baseConfig),
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
@@ -260,6 +261,7 @@ import * as FixtureProcess from 'node:child_process';
 import * as FixtureFS from 'node:fs';
 import * as FixtureTimers from 'node:timers/promises';
 import * as FixtureLayer from 'effect/Layer';
+import * as FixtureDeferred from 'effect/Deferred';
 import {fixturePermit} from '../jones/updates/jonesColdBackendCustody.ts';
 const root=process.argv[3], scenario=process.argv[2];
 const keeper=FixtureProcess.spawn('python3',[root+'/keeper.py',root],{stdio:['pipe','pipe','pipe']});
@@ -295,10 +297,21 @@ try {
   FixtureLayer.succeed(DesktopTelemetryPublisher.DesktopTelemetryPublisher,{latest:Effect.succeedNone,changes:Stream.empty,encoded:Stream.empty,handleControlForSource:()=>Effect.void,removeControlSource:()=>Effect.void,publishUpdateReport:()=>Effect.void,updateRequests:Stream.empty,updateCommits:Stream.empty,updateCancellations:Stream.empty}),
   DesktopBrowserHost.layer,DesktopWslEnvironment.layerTest({}));
  program=Effect.runFork(Effect.scoped(Effect.gen(function*(){
+  const racing=scenario==='race-cold' || scenario==='race-warm';
+  const entered=yield* FixtureDeferred.make(), resume=yield* FixtureDeferred.make();
+  let contenderStart;
+  if(racing){
+   const contender=yield* makeBackendInstance({...spec,configResolve:Effect.gen(function*(){
+    resolves++;yield* FixtureDeferred.succeed(entered,undefined);yield* FixtureDeferred.await(resume);
+    return scenario==='race-warm' ? {...config,jonesColdBackendPermit:undefined} : config;
+   })});
+   contenderStart=yield* contender.start.pipe(Effect.forkChild);
+   yield* FixtureDeferred.await(entered);
+  }
   instance=yield* makeBackendInstance(spec);yield* instance.start;
   yield* Effect.promise(()=>until(()=>keeperOutput.includes('held')));
   retained=retainedColdRuns.get(PRIMARY_INSTANCE_ID);FixtureAssert.ok(retained?.owner);
-  if(scenario==='cancel')yield* instance.stop();
+  if(scenario!=='early-failure')yield* instance.stop();
   yield* Effect.promise(()=>until(()=>retained.scopeFinalized));
   const snapshot=yield* instance.snapshot;
   FixtureAssert.equal(snapshot.coldCustody.result.settled,false);
@@ -306,9 +319,16 @@ try {
   FixtureAssert.equal(snapshot.coldCustody.result.pipesClosed,false);
   FixtureAssert.equal(snapshot.coldCustody.scopeFinalized,true);
   FixtureAssert.equal(retainedColdRuns.get(PRIMARY_INSTANCE_ID),retained);
+  if(racing){
+   const owner=retained.owner;
+   yield* FixtureDeferred.succeed(resume,undefined);yield* Fiber.join(contenderStart);
+   FixtureAssert.equal(retainedColdRuns.get(PRIMARY_INSTANCE_ID),retained);
+   FixtureAssert.equal(backendRunAdmissions.get(PRIMARY_INSTANCE_ID),retained);
+   FixtureAssert.equal(retained.owner,owner);FixtureAssert.equal(retained.result.settled,false);
+  }
   yield* instance.start;
   const replacement=yield* makeBackendInstance(spec);yield* replacement.start;
-  FixtureAssert.equal(resolves,1);FixtureAssert.equal(warmSpawns,0);
+  FixtureAssert.equal(resolves,racing ? 2 : 1);FixtureAssert.equal(warmSpawns,0);
   yield* instance.stop();
   FixtureAssert.equal(retainedColdRuns.get(PRIMARY_INSTANCE_ID),retained);
   const stops=retained.result.events.filter(e=>e==='STOP_REQUEST').length;
@@ -316,6 +336,7 @@ try {
   yield* instance.stop();
   FixtureAssert.equal(retained.result.events.filter(e=>e==='STOP_REQUEST').length,stops+1);
   FixtureAssert.equal(retainedColdRuns.has(PRIMARY_INSTANCE_ID),false);
+  FixtureAssert.equal(backendRunAdmissions.has(PRIMARY_INSTANCE_ID),false);
   FixtureAssert.equal(retained.result.settled,true);
   FixtureAssert.equal(retained.result.activationAllowed,false);
   FixtureAssert.equal(Option.isNone((yield* instance.snapshot).activePid),true);
@@ -325,7 +346,7 @@ try {
 `;
 
 describe("DesktopBackendManager", () => {
-  it.for(["early-failure", "cancel"] as const)(
+  it.for(["early-failure", "cancel", "race-cold", "race-warm"] as const)(
     "retains actual cold custody after %s while captured pipes remain open",
     async (scenario, { signal }) => {
       await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
@@ -1751,6 +1772,7 @@ describe("DesktopBackendManager", () => {
 
         const makeInstance = (name: string) =>
           makeTestInstance({
+            id: DesktopBackendManager.BackendInstanceId(name),
             spawnerLayer: Layer.succeed(
               ChildProcessSpawner.ChildProcessSpawner,
               ChildProcessSpawner.make(() =>

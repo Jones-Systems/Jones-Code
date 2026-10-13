@@ -257,6 +257,9 @@ interface RunBackendProcessOptions extends DesktopBackendStartConfig {
 // Retain captured owners across run scopes and replacement instance construction.
 // This is process-local custody, never a serialized permit or a PID adoption registry.
 const retainedColdRuns = new Map<BackendInstanceId, ColdRunCustody>();
+// Warm and cold runs reserve the same identity before publishing a run. The
+// reservation survives yields between publication and actual child acquisition.
+const backendRunAdmissions = new Map<BackendInstanceId, object>();
 
 class ColdRunCustody {
   owner: JonesColdBackendOwner | undefined;
@@ -270,12 +273,12 @@ class ColdRunCustody {
   acquire(permit: JonesColdBackendPermit): JonesColdBackendOwner {
     if (
       this.owner !== undefined ||
-      (retainedColdRuns.has(this.instanceId) && retainedColdRuns.get(this.instanceId) !== this)
+      retainedColdRuns.get(this.instanceId) !== this ||
+      backendRunAdmissions.get(this.instanceId) !== this
     )
       throw new Error("Cold backend custody requires reconciliation before replacement.");
     const owner = startJonesColdBackend(permit);
     this.owner = owner;
-    retainedColdRuns.set(this.instanceId, this);
     return owner;
   }
 
@@ -295,8 +298,11 @@ class ColdRunCustody {
       this.scopeFinalized &&
       (this.owner === undefined || this.result?.settled === true) &&
       retainedColdRuns.get(this.instanceId) === this
-    )
+    ) {
       retainedColdRuns.delete(this.instanceId);
+      if (backendRunAdmissions.get(this.instanceId) === this)
+        backendRunAdmissions.delete(this.instanceId);
+    }
   }
 
   get incomplete(): boolean {
@@ -1036,215 +1042,245 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           return;
         }
 
-        const runScope = yield* Scope.make("sequential");
-        const coldCustody =
-          config.value.jonesColdBackendPermit === undefined
-            ? undefined
-            : new ColdRunCustody(spec.id);
-        if (coldCustody !== undefined) retainedColdRuns.set(spec.id, coldCustody);
-        const runId = yield* Ref.modify(state, (latest) => [
-          latest.nextRunId,
-          {
-            ...latest,
-            active: Option.some({
-              id: latest.nextRunId,
-              scope: runScope,
-              fiber: Option.none(),
-              pid: Option.none(),
-              exitObserved: false,
-              stopRequested: false,
-              ...(coldCustody === undefined ? {} : { coldCustody }),
-            } satisfies ActiveBackendRun),
-            nextRunId: latest.nextRunId + 1,
-          },
-        ]);
+        // Publish the scoped reservation and run fiber together; the child program
+        // remains interruptible, while setup cannot strand an unpublished reservation.
+        yield* Effect.gen(function* () {
+          const runScope = yield* Scope.fork(parentScope, "sequential");
+          const coldCustody =
+            config.value.jonesColdBackendPermit === undefined
+              ? undefined
+              : new ColdRunCustody(spec.id);
+          const admission = coldCustody ?? {};
+          const admitted = yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              // One synchronous check-and-reserve follows every asynchronous preflight.
+              if (backendRunAdmissions.has(spec.id) || retainedColdRuns.has(spec.id)) return false;
+              backendRunAdmissions.set(spec.id, admission);
+              if (coldCustody !== undefined) retainedColdRuns.set(spec.id, coldCustody);
+              return true;
+            }),
+            (acquired) =>
+              Effect.sync(() => {
+                if (!acquired) return;
+                if (coldCustody !== undefined) {
+                  // Registered before child acquisition: later child finalizers run first.
+                  coldCustody.scopeFinalized = true;
+                  coldCustody.reconcile();
+                } else if (backendRunAdmissions.get(spec.id) === admission) {
+                  backendRunAdmissions.delete(spec.id);
+                }
+              }),
+          ).pipe(Scope.provide(runScope));
+          if (!admitted) {
+            yield* Scope.close(runScope, Exit.void);
+            yield* Ref.update(state, (latest) => ({ ...latest, desiredRunning: false }));
+            return;
+          }
+          const runId = yield* Ref.modify(state, (latest) => [
+            latest.nextRunId,
+            {
+              ...latest,
+              active: Option.some({
+                id: latest.nextRunId,
+                scope: runScope,
+                fiber: Option.none(),
+                pid: Option.none(),
+                exitObserved: false,
+                stopRequested: false,
+                ...(coldCustody === undefined ? {} : { coldCustody }),
+              } satisfies ActiveBackendRun),
+              nextRunId: latest.nextRunId + 1,
+            },
+          ]);
 
-        const finalizeRun = Effect.fn("desktop.backendInstance.finalizeRun")(function* (
-          reason: string,
-        ) {
-          yield* mutex.withPermits(1)(
-            Effect.gen(function* () {
-              const { isCurrentRun, nextState, pid, exitObserved, stopRequested, wasReady } =
-                yield* Ref.modify(
-                  state,
-                  (
-                    latest,
-                  ): readonly [
-                    {
-                      readonly isCurrentRun: boolean;
-                      readonly nextState: BackendManagerState;
-                      readonly pid: Option.Option<number>;
-                      readonly exitObserved: boolean;
-                      readonly stopRequested: boolean;
-                      readonly wasReady: boolean;
-                    },
-                    BackendManagerState,
-                  ] => {
-                    const currentRun = Option.getOrUndefined(latest.active);
-                    if (currentRun?.id !== runId) {
+          const finalizeRun = Effect.fn("desktop.backendInstance.finalizeRun")(function* (
+            reason: string,
+          ) {
+            yield* mutex.withPermits(1)(
+              Effect.gen(function* () {
+                const { isCurrentRun, nextState, pid, exitObserved, stopRequested, wasReady } =
+                  yield* Ref.modify(
+                    state,
+                    (
+                      latest,
+                    ): readonly [
+                      {
+                        readonly isCurrentRun: boolean;
+                        readonly nextState: BackendManagerState;
+                        readonly pid: Option.Option<number>;
+                        readonly exitObserved: boolean;
+                        readonly stopRequested: boolean;
+                        readonly wasReady: boolean;
+                      },
+                      BackendManagerState,
+                    ] => {
+                      const currentRun = Option.getOrUndefined(latest.active);
+                      if (currentRun?.id !== runId) {
+                        return [
+                          {
+                            isCurrentRun: false,
+                            nextState: latest,
+                            pid: Option.none<number>(),
+                            exitObserved: false,
+                            stopRequested: false,
+                            wasReady: false,
+                          },
+                          latest,
+                        ] as const;
+                      }
+
+                      const next = {
+                        ...latest,
+                        active: currentRun.coldCustody?.incomplete
+                          ? latest.active
+                          : Option.none<ActiveBackendRun>(),
+                        ready: false,
+                        // Consuming cold runs are terminal, including refusal and failed closure.
+                        desiredRunning:
+                          config.value.jonesColdBackendPermit === undefined &&
+                          latest.desiredRunning,
+                      };
                       return [
                         {
-                          isCurrentRun: false,
-                          nextState: latest,
-                          pid: Option.none<number>(),
-                          exitObserved: false,
-                          stopRequested: false,
-                          wasReady: false,
+                          isCurrentRun: true,
+                          nextState: next,
+                          pid: currentRun.pid,
+                          exitObserved: currentRun.exitObserved,
+                          stopRequested: currentRun.stopRequested,
+                          wasReady: latest.ready,
                         },
-                        latest,
+                        next,
                       ] as const;
+                    },
+                  );
+
+                if (isCurrentRun) {
+                  yield* desktopTelemetryPublisher.removeControlSource(spec.id);
+                  if (Option.isSome(pid)) {
+                    if (exitObserved && !stopRequested) {
+                      yield* backendOutputLog.persistFailure({
+                        details: `pid=${pid.value} ${reason}`,
+                      });
+                    } else {
+                      yield* backendOutputLog.discardSession;
                     }
-
-                    const next = {
-                      ...latest,
-                      active: currentRun.coldCustody?.incomplete
-                        ? latest.active
-                        : Option.none<ActiveBackendRun>(),
-                      ready: false,
-                      // Consuming cold runs are terminal, including refusal and failed closure.
-                      desiredRunning:
-                        config.value.jonesColdBackendPermit === undefined && latest.desiredRunning,
-                    };
-                    return [
-                      {
-                        isCurrentRun: true,
-                        nextState: next,
-                        pid: currentRun.pid,
-                        exitObserved: currentRun.exitObserved,
-                        stopRequested: currentRun.stopRequested,
-                        wasReady: latest.ready,
-                      },
-                      next,
-                    ] as const;
-                  },
-                );
-
-              if (isCurrentRun) {
-                yield* desktopTelemetryPublisher.removeControlSource(spec.id);
-                if (Option.isSome(pid)) {
-                  if (exitObserved && !stopRequested) {
-                    yield* backendOutputLog.persistFailure({
-                      details: `pid=${pid.value} ${reason}`,
-                    });
-                  } else {
-                    yield* backendOutputLog.discardSession;
+                  }
+                  if (wasReady) {
+                    yield* spec.onShutdown?.() ?? Effect.void;
                   }
                 }
-                if (wasReady) {
-                  yield* spec.onShutdown?.() ?? Effect.void;
+
+                if (isCurrentRun && nextState.desiredRunning) {
+                  yield* scheduleRestart(reason);
                 }
-              }
+              }),
+            );
+          });
 
-              if (isCurrentRun && nextState.desiredRunning) {
-                yield* scheduleRestart(reason);
-              }
-            }),
-          );
-        });
+          const program = runBackendProcess(
+            {
+              ...config.value,
+              desktopTelemetryStream: desktopTelemetryPublisher.encoded,
+              // Only a bootstrap that names the browser fds (the local primary) gets them.
+              ...localBrowserChannel(desktopBrowserHost),
+              onDesktopTelemetryControl: (message) =>
+                desktopTelemetryPublisher.handleControlForSource(spec.id, message),
+              onStarted: Effect.fn("desktop.backendInstance.onStarted")(function* (pid) {
+                yield* updateActiveRun(runId, (run) => ({
+                  ...run,
+                  pid: Option.some(pid),
+                }));
+                yield* backendOutputLog.beginSession({
+                  details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,
+                });
+              }),
+              onExitObserved: () =>
+                updateActiveRun(runId, (run) => ({
+                  ...run,
+                  exitObserved: true,
+                })),
+              onReady: Effect.fn("desktop.backendInstance.onReady")(function* () {
+                const isCurrentRun = yield* Ref.modify(state, (latest) => {
+                  const activeRun = Option.getOrUndefined(latest.active);
+                  if (activeRun?.id !== runId) {
+                    return [false, latest] as const;
+                  }
 
-        const program = runBackendProcess(
-          {
-            ...config.value,
-            desktopTelemetryStream: desktopTelemetryPublisher.encoded,
-            // Only a bootstrap that names the browser fds (the local primary) gets them.
-            ...localBrowserChannel(desktopBrowserHost),
-            onDesktopTelemetryControl: (message) =>
-              desktopTelemetryPublisher.handleControlForSource(spec.id, message),
-            onStarted: Effect.fn("desktop.backendInstance.onStarted")(function* (pid) {
-              yield* updateActiveRun(runId, (run) => ({
-                ...run,
-                pid: Option.some(pid),
-              }));
-              yield* backendOutputLog.beginSession({
-                details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,
-              });
-            }),
-            onExitObserved: () =>
-              updateActiveRun(runId, (run) => ({
-                ...run,
-                exitObserved: true,
-              })),
-            onReady: Effect.fn("desktop.backendInstance.onReady")(function* () {
-              const isCurrentRun = yield* Ref.modify(state, (latest) => {
-                const activeRun = Option.getOrUndefined(latest.active);
-                if (activeRun?.id !== runId) {
-                  return [false, latest] as const;
+                  return [
+                    true,
+                    {
+                      ...latest,
+                      restartAttempt: 0,
+                      ready: true,
+                    },
+                  ] as const;
+                });
+                if (!isCurrentRun) {
+                  return;
                 }
 
-                return [
-                  true,
-                  {
-                    ...latest,
-                    restartAttempt: 0,
-                    ready: true,
-                  },
-                ] as const;
-              });
-              if (!isCurrentRun) {
-                return;
-              }
-
-              yield* spec.onReady?.(config.value.httpBaseUrl) ?? Effect.void;
-              if (
-                config.value.runningDistro !== undefined &&
-                config.value.wslRuntimeId !== undefined
-              ) {
-                yield* wslEnvironment.pruneRuntimes(
-                  config.value.runningDistro,
-                  config.value.wslRuntimeId,
-                );
-              }
-            }),
-            onReadinessFailure: Effect.fn("desktop.backendInstance.onReadinessFailure")(
-              function* (error) {
-                yield* logInstanceWarning("backend readiness check failed during bootstrap", {
-                  error: error.message,
-                });
-                yield* backendOutputLog.persistFailureSnapshot({
-                  details: error.message,
-                });
-              },
-            ),
-            onOutput: (streamName, chunk) => backendOutputLog.writeOutputChunk(streamName, chunk),
-          },
-          coldCustody,
-        ).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.provideService(HttpClient.HttpClient, httpClient),
-          Scope.provide(runScope),
-          // Cold scope completion must publish retained closure observations before run cleanup.
-          Effect.ensuring(
-            coldCustody === undefined
-              ? Effect.void
-              : Scope.close(runScope, Exit.void).pipe(
-                  Effect.ensuring(
-                    Effect.sync(() => {
-                      coldCustody.scopeFinalized = true;
-                      coldCustody.reconcile();
-                    }).pipe(
-                      Effect.andThen(
-                        Ref.update(state, (latest) =>
-                          Option.getOrUndefined(latest.active)?.id === runId
-                            ? { ...latest, desiredRunning: false }
-                            : latest,
+                yield* spec.onReady?.(config.value.httpBaseUrl) ?? Effect.void;
+                if (
+                  config.value.runningDistro !== undefined &&
+                  config.value.wslRuntimeId !== undefined
+                ) {
+                  yield* wslEnvironment.pruneRuntimes(
+                    config.value.runningDistro,
+                    config.value.wslRuntimeId,
+                  );
+                }
+              }),
+              onReadinessFailure: Effect.fn("desktop.backendInstance.onReadinessFailure")(
+                function* (error) {
+                  yield* logInstanceWarning("backend readiness check failed during bootstrap", {
+                    error: error.message,
+                  });
+                  yield* backendOutputLog.persistFailureSnapshot({
+                    details: error.message,
+                  });
+                },
+              ),
+              onOutput: (streamName, chunk) => backendOutputLog.writeOutputChunk(streamName, chunk),
+            },
+            coldCustody,
+          ).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Scope.provide(runScope),
+            // Cold scope completion must publish retained closure observations before run cleanup.
+            Effect.ensuring(
+              coldCustody === undefined
+                ? Effect.void
+                : Scope.close(runScope, Exit.void).pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        coldCustody.scopeFinalized = true;
+                        coldCustody.reconcile();
+                      }).pipe(
+                        Effect.andThen(
+                          Ref.update(state, (latest) =>
+                            Option.getOrUndefined(latest.active)?.id === runId
+                              ? { ...latest, desiredRunning: false }
+                              : latest,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-          ),
-          Effect.matchEffect({
-            onFailure: (error) => finalizeRun(error.message),
-            onSuccess: (exit) => finalizeRun(exit.reason),
-          }),
-          Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
-        );
+            ),
+            Effect.matchEffect({
+              onFailure: (error) => finalizeRun(error.message),
+              onSuccess: (exit) => finalizeRun(exit.reason),
+            }),
+            Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
+          );
 
-        const fiber = yield* Effect.forkIn(program, parentScope);
-        yield* updateActiveRun(runId, (run) => ({
-          ...run,
-          fiber: Option.some(fiber),
-        }));
+          const fiber = yield* Effect.forkIn(Effect.interruptible(program), parentScope);
+          yield* updateActiveRun(runId, (run) => ({
+            ...run,
+            fiber: Option.some(fiber),
+          }));
+        }).pipe(Effect.uninterruptible);
       }),
     ),
   ).pipe(Effect.withSpan("desktop.backendInstance.start", { attributes: { id: spec.id } }));
