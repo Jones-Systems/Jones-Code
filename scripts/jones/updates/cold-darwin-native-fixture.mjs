@@ -471,6 +471,8 @@ async function runColdDarwinFixtureBody({ root, runtime = "current-node", signal
           "-Wall",
           "-Wextra",
           "-Werror",
+          "-isysroot",
+          "/Library/Developer/CommandLineTools/SDKs/MacOSX15.2.sdk",
           "-dynamiclib",
           "-o",
           "oracle.dylib",
