@@ -336,8 +336,8 @@ const sameObject = (left: NativeStat, right: NativeStat) =>
   left.uid === right.uid &&
   left.mode === right.mode &&
   left.nlink === right.nlink;
-// SQLite sidecar creation/removal can change directory link counts without replacing the directory.
-const sameSqlDirectory = (left: NativeStat, right: NativeStat) =>
+// SQLite sidecars and retained preparation records change entry counts without replacing their directories.
+const sameDirectoryIdentity = (left: NativeStat, right: NativeStat) =>
   left.isDirectory() &&
   right.isDirectory() &&
   left.dev === right.dev &&
@@ -704,10 +704,12 @@ async function ownerNamespace(roles: NonNullable<ReturnType<typeof preparationWo
       requireValue(sameObject(generationInfo, await directory(generationPath))),
     );
     await withPreparationCurrentGate("state", async () =>
-      requireValue(sameObject(stateInfo, await directory(state))),
+      requireValue(sameDirectoryIdentity(stateInfo, await directory(state))),
     );
     await withPreparationCurrentGate("database-parent", async () =>
-      requireValue(sameSqlDirectory(databaseParent, await directory(NodePath.dirname(database)))),
+      requireValue(
+        sameDirectoryIdentity(databaseParent, await directory(NodePath.dirname(database))),
+      ),
     );
     await withPreparationCurrentGate("inherited-directory", async () =>
       requireValue(sameObject(generationInfo, NodeFS.fstatSync(roles.directory, { bigint: true }))),
@@ -1147,7 +1149,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
             phase = "owner-current";
             await owner.current();
             await withPreparationCurrentGate("sql-directory", async () =>
-              requireValue(sameSqlDirectory(sqlDirectoryInfo, await directory(sqlDirectory))),
+              requireValue(sameDirectoryIdentity(sqlDirectoryInfo, await directory(sqlDirectory))),
             );
           });
           if (abortSequence !== undefined) return null;
@@ -1184,7 +1186,7 @@ export async function runInheritedPreparationWorker(): Promise<void> {
       phase = "post-sql-current";
       await owner.current();
       await withPreparationCurrentGate("sql-directory", async () =>
-        requireValue(sameSqlDirectory(sqlDirectoryInfo, await directory(sqlDirectory))),
+        requireValue(sameDirectoryIdentity(sqlDirectoryInfo, await directory(sqlDirectory))),
       );
       if (abortSequence !== undefined) {
         sequence = abortSequence;

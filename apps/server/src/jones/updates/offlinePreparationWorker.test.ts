@@ -923,7 +923,7 @@ it("invalid runtime currentness labels never run checks or enter diagnostics", a
   );
 });
 
-function sqlDirectoryIdentityFixture() {
+function directoryIdentityFixture() {
   const source = NodeFS.readFileSync(
     new URL("./offlinePreparationWorker.ts", import.meta.url),
     "utf8",
@@ -941,7 +941,7 @@ function sqlDirectoryIdentityFixture() {
       fragment("async function directory(", "async function absent("),
   );
   return NodeVM.runInNewContext(
-    code + "\n({sameObject, sameFile, sameSqlDirectory, ownedFile, directory});",
+    code + "\n({sameObject, sameFile, sameDirectoryIdentity, ownedFile, directory});",
     {
       NodeFSP,
       NodePath,
@@ -951,7 +951,7 @@ function sqlDirectoryIdentityFixture() {
   ) as {
     sameObject(left: NodeFS.BigIntStats, right: NodeFS.BigIntStats): boolean;
     sameFile(left: NodeFS.BigIntStats, right: NodeFS.BigIntStats): boolean;
-    sameSqlDirectory(left: NodeFS.BigIntStats, right: NodeFS.BigIntStats): boolean;
+    sameDirectoryIdentity(left: NodeFS.BigIntStats, right: NodeFS.BigIntStats): boolean;
     ownedFile(info: NodeFS.BigIntStats, maximum: number): void;
     directory(path: string): Promise<NodeFS.BigIntStats>;
   };
@@ -975,7 +975,7 @@ it.effect("SQL directory identity survives actual copied WAL sidecar removal", (
         );
         for (const suffix of ["", "-wal", "-shm"])
           await NodeFSP.copyFile(sourcePath + suffix, copiedPath + suffix);
-        const { directory, sameObject, sameSqlDirectory } = sqlDirectoryIdentityFixture();
+        const { directory, sameObject, sameDirectoryIdentity } = directoryIdentityFixture();
         const before = await directory(copiedDirectory);
         const copied = new NodeSqlite.DatabaseSync(copiedPath);
         try {
@@ -988,7 +988,7 @@ it.effect("SQL directory identity survives actual copied WAL sidecar removal", (
         for (const key of ["dev", "ino", "uid", "mode"] as const)
           assert.equal(after[key], before[key]);
         assert.isTrue(before.isDirectory() && after.isDirectory());
-        assert.isTrue(sameSqlDirectory(before, after));
+        assert.isTrue(sameDirectoryIdentity(before, after));
         assert.equal(sameObject(before, after), before.nlink === after.nlink);
         // APFS counts these file entries in nlink; other supported filesystems may leave nlink unchanged.
         assert.isTrue(after.nlink === before.nlink || after.nlink === before.nlink - 2n);
@@ -1008,8 +1008,8 @@ it.effect(
         const realRoot = await NodeFSP.realpath(root),
           path = NodePath.join(realRoot, "database");
         await NodeFSP.mkdir(path, { mode: 0o700 });
-        const { directory, sameObject, sameFile, sameSqlDirectory, ownedFile } =
-          sqlDirectoryIdentityFixture();
+        const { directory, sameObject, sameFile, sameDirectoryIdentity, ownedFile } =
+          directoryIdentityFixture();
         const before = await directory(path);
         const altered = (fields: Partial<NodeFS.BigIntStats>) =>
           Object.assign(
@@ -1018,19 +1018,19 @@ it.effect(
             fields,
           ) as NodeFS.BigIntStats;
         const relinked = altered({ nlink: before.nlink + 2n });
-        assert.isTrue(sameSqlDirectory(before, relinked));
+        assert.isTrue(sameDirectoryIdentity(before, relinked));
         assert.isFalse(sameObject(before, relinked));
         for (const key of ["dev", "ino", "uid", "mode"] as const) {
           const changed = altered({ [key]: before[key] + 1n });
-          assert.isFalse(sameSqlDirectory(before, changed));
-          assert.isFalse(sameSqlDirectory(changed, before));
+          assert.isFalse(sameDirectoryIdentity(before, changed));
+          assert.isFalse(sameDirectoryIdentity(changed, before));
         }
         const fileType = altered({ isDirectory: () => false });
-        assert.isFalse(sameSqlDirectory(before, fileType));
-        assert.isFalse(sameSqlDirectory(fileType, before));
+        assert.isFalse(sameDirectoryIdentity(before, fileType));
+        assert.isFalse(sameDirectoryIdentity(fileType, before));
         await NodeFSP.rename(path, path + "-retained");
         await NodeFSP.mkdir(path, { mode: 0o700 });
-        assert.isFalse(sameSqlDirectory(before, await directory(path)));
+        assert.isFalse(sameDirectoryIdentity(before, await directory(path)));
         await NodeFSP.symlink(path, path + "-symlink");
         for (const invalid of [path + "-symlink", "relative", path + "/../database"]) {
           let refused = false;
@@ -1060,4 +1060,66 @@ it.effect(
         assert.throws(() => ownedFile(linked, 5));
       });
     }).pipe(Effect.scoped),
+);
+
+it.effect("state directory identity survives durable PLAN-to-APPLY record publication", () =>
+  Effect.gen(function* () {
+    const root = yield* scratch;
+    yield* Effect.promise(async () => {
+      const state = NodePath.join(await NodeFSP.realpath(root), "state");
+      await NodeFSP.mkdir(state, { mode: 0o700 });
+      const publish = async (name: string, content: string) => {
+        const handle = await NodeFSP.open(NodePath.join(state, name), "wx", 0o600);
+        try {
+          await handle.writeFile(content);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      };
+      await publish("journal.json", "paired");
+      const { directory, sameObject, sameDirectoryIdentity } = directoryIdentityFixture();
+      const before = await directory(state);
+      await publish("preparation-plan.json", "fixed-plan");
+      await publish("preparation-envelope.json", "fixed-envelope");
+      await publish(".journal-next", "preparation-intent");
+      await NodeFSP.rename(
+        NodePath.join(state, ".journal-next"),
+        NodePath.join(state, "journal.json"),
+      );
+      const handle = await NodeFSP.open(state, "r");
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const after = await directory(state);
+      assert.deepEqual((await NodeFSP.readdir(state)).sort(), [
+        "journal.json",
+        "preparation-envelope.json",
+        "preparation-plan.json",
+      ]);
+      assert.equal(
+        await NodeFSP.readFile(NodePath.join(state, "journal.json"), "utf8"),
+        "preparation-intent",
+      );
+      for (const key of ["dev", "ino", "uid", "mode"] as const)
+        assert.equal(after[key], before[key]);
+      assert.isTrue(before.isDirectory() && after.isDirectory());
+      assert.isTrue(sameDirectoryIdentity(before, after));
+      assert.equal(sameObject(before, after), before.nlink === after.nlink);
+      assert.isTrue(after.nlink === before.nlink || after.nlink === before.nlink + 2n);
+      let exclusiveRefused = false;
+      try {
+        await publish("preparation-plan.json", "replacement");
+      } catch (error) {
+        exclusiveRefused = (error as NodeJS.ErrnoException).code === "EEXIST";
+      }
+      assert.isTrue(exclusiveRefused);
+      assert.equal(
+        await NodeFSP.readFile(NodePath.join(state, "preparation-plan.json"), "utf8"),
+        "fixed-plan",
+      );
+    });
+  }).pipe(Effect.scoped),
 );
