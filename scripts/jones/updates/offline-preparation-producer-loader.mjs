@@ -262,7 +262,7 @@ const reviewedRawSources = {
   "scripts/jones/updates/offline-preparation-build.ts":
     "290e4b8426e5575f0519e834a04bbf921962bf6e64b861016369d10298c2f3c1",
   "scripts/jones/updates/offline-preparation-producer-entry.ts":
-    "6c0f4aa9e0b2dbe94d84d41b022d7206e9ff94f1f1d2c5f54f50606a0b3a3180",
+    "779e2bb0d298a04b17debed2de6088fec1aefcb52b57e47e0664e027b5bbd247",
   "scripts/package.json": "efa7e9d6b0f39d23d5d6cf21391a13bab214ee12a498e754cba1544fb2b6d438",
   "vite.config.ts": "3a2b338d9d847e9e4faf83d80608cf21f888318f0cceb97d040170ae23ada25c",
 };

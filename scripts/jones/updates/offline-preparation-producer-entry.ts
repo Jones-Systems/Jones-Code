@@ -1,4 +1,4 @@
-// This entry is bundled for graph observation only; the emitted producer is never imported or run.
+// Hosted native qualification imports this producer only after exact-byte and source admission.
 export {
   buildQualifiedPreparation,
   stageQualifiedPreparation,

@@ -1,10 +1,22 @@
 // @effect-diagnostics nodeBuiltinImport:off -- These synthetic lifecycle tests own their small roots and never execute emitted code.
-import NodeFS from "node:fs";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeProcess from "node:process";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { runHostedNativePreparation } from "./offline-preparation-qualification.ts";
+import {
+  qualificationFailureDiagnostic,
+  runHostedNativePreparation,
+} from "./offline-preparation-qualification.ts";
 import { buildAndStagePreparationProducer } from "./offline-preparation-producer-loader.mjs";
+
+vi.mock("node:process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:process")>()),
+}));
+
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+}));
 
 vi.mock("./offline-preparation-producer-loader.mjs", () => ({
   buildAndStagePreparationProducer: vi.fn(),
@@ -38,14 +50,12 @@ async function fixture(body: (source: string, root: string) => Promise<void>) {
   const source = NodePath.join(outer, "source"),
     root = NodePath.join(outer, "run");
   const saved = [
-    Object.getOwnPropertyDescriptor(process, "platform")!,
-    Object.getOwnPropertyDescriptor(process, "arch")!,
     Object.getOwnPropertyDescriptor(process.versions, "node")!,
     Object.getOwnPropertyDescriptor(process, "execArgv")!,
   ];
   try {
-    Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
-    Object.defineProperty(process, "arch", { configurable: true, value: "arm64" });
+    vi.spyOn(NodeProcess, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(NodeProcess, "arch", "get").mockReturnValue("arm64");
     Object.defineProperty(process.versions, "node", { configurable: true, value: "24.13.1" });
     Object.defineProperty(process, "execArgv", { configurable: true, value: [] });
     NodeFS.mkdirSync(root, { mode: 0o700 });
@@ -69,10 +79,8 @@ async function fixture(body: (source: string, root: string) => Promise<void>) {
     } as NodeFS.BigIntStatsFs);
     await body(source, root);
   } finally {
-    Object.defineProperty(process, "platform", saved[0]!);
-    Object.defineProperty(process, "arch", saved[1]!);
-    Object.defineProperty(process.versions, "node", saved[2]!);
-    Object.defineProperty(process, "execArgv", saved[3]!);
+    Object.defineProperty(process.versions, "node", saved[0]!);
+    Object.defineProperty(process, "execArgv", saved[1]!);
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     // The mocked producer starts no child and holds no descriptor. After retention assertions,
@@ -107,89 +115,208 @@ function syntheticResult(): Awaited<ReturnType<typeof buildAndStagePreparationPr
   };
 }
 
-describe.sequential("fixed hosted driver lifecycle (mocked producer; no native evidence)", () => {
-  it("moves the checked stage into evidence and removes only its disposable roots", () =>
-    fixture(async (source, root) => {
-      build.mockImplementationOnce(async (input) => {
-        NodeFS.writeFileSync(
-          NodePath.join(input.stageResourcesDir, "synthetic.txt"),
-          "test fixture",
+describe(
+  "fixed hosted driver lifecycle (mocked producer; no native evidence)",
+  { concurrent: false },
+  () => {
+    it("moves the checked stage into evidence and removes only its disposable roots", () =>
+      fixture(async (source, root) => {
+        build.mockImplementationOnce(async (input) => {
+          NodeFS.writeFileSync(
+            NodePath.join(input.stageResourcesDir, "synthetic.txt"),
+            "test fixture",
+          );
+          return syntheticResult();
+        });
+        await runHostedNativePreparation(source, root);
+        expect(NodeFS.existsSync(NodePath.join(root, "home"))).toBe(false);
+        expect(NodeFS.existsSync(NodePath.join(root, "tmp"))).toBe(false);
+        expect(NodeFS.existsSync(NodePath.join(root, "stage"))).toBe(false);
+        expect(
+          NodeFS.readFileSync(
+            NodePath.join(root, "evidence/stage/resources/synthetic.txt"),
+            "utf8",
+          ),
+        ).toBe("test fixture");
+        expect(NodeFS.existsSync(source)).toBe(true);
+        expect(
+          JSON.parse(NodeFS.readFileSync(NodePath.join(root, "evidence/result.json"), "utf8")),
+        ).toMatchObject({
+          status: "passed",
+          nativeColdOwnerQualified: false,
+          stateAdmissionAllowed: false,
+          activationAllowed: false,
+        });
+      }));
+
+    it("preserves ordinary failure while cleaning disposable roots", () =>
+      fixture(async (source, root) => {
+        const original = new Error("synthetic known-closed failure");
+        build.mockRejectedValueOnce(original);
+        await expect(runHostedNativePreparation(source, root)).rejects.toBe(original);
+        expect(NodeFS.readdirSync(root)).toEqual(["evidence"]);
+        expect(
+          JSON.parse(NodeFS.readFileSync(NodePath.join(root, "evidence/result.json"), "utf8")),
+        ).toMatchObject({ status: "failed", error: original.message });
+      }));
+
+    it("persists frozen nested native failure evidence after closed scratch cleanup", () =>
+      fixture(async (source, root) => {
+        const native = Object.freeze(
+          Object.assign(new Error("Native helper exited."), {
+            status: 7,
+            signal: null,
+            stdout: Buffer.from("native case apply failed"),
+            stderr: "dlopen: missing native library\nAuthorization: Bearer synthetic-private-value",
+            payload: "synthetic private payload",
+          }),
         );
-        return syntheticResult();
-      });
-      await runHostedNativePreparation(source, root);
-      expect(NodeFS.existsSync(NodePath.join(root, "home"))).toBe(false);
-      expect(NodeFS.existsSync(NodePath.join(root, "tmp"))).toBe(false);
-      expect(NodeFS.existsSync(NodePath.join(root, "stage"))).toBe(false);
-      expect(
-        NodeFS.readFileSync(NodePath.join(root, "evidence/stage/resources/synthetic.txt"), "utf8"),
-      ).toBe("test fixture");
-      expect(NodeFS.existsSync(source)).toBe(true);
-      expect(
-        JSON.parse(NodeFS.readFileSync(NodePath.join(root, "evidence/result.json"), "utf8")),
-      ).toMatchObject({
-        status: "passed",
-        nativeColdOwnerQualified: false,
-        stateAdmissionAllowed: false,
-        activationAllowed: false,
-      });
-    }));
+        const original = Object.assign(new Error("Producer capture failed.", { cause: native }), {
+          cleanup: { disposition: "removed", root: NodePath.join(root, "tmp/capture") },
+        });
+        build.mockRejectedValueOnce(original);
+        await expect(runHostedNativePreparation(source, root)).rejects.toBe(original);
+        expect(NodeFS.readdirSync(root)).toEqual(["evidence"]);
+        const bytes = NodeFS.readFileSync(NodePath.join(root, "evidence/result.json"), "utf8");
+        expect(JSON.parse(bytes)).toMatchObject({
+          status: "failed",
+          nativeColdOwnerQualified: false,
+          stateAdmissionAllowed: false,
+          activationAllowed: false,
+          failureDiagnostic: {
+            cleanup: { disposition: "removed", root: NodePath.join(root, "tmp/capture") },
+            cause: {
+              status: 7,
+              signal: null,
+              stdout: "native case apply failed",
+              stderr: "dlopen: missing native library\n[redacted diagnostic line]",
+            },
+          },
+        });
+        expect(bytes).not.toContain("synthetic-private-value");
+        expect(bytes).not.toContain("synthetic private payload");
+      }));
 
-  it("preserves ordinary failure while cleaning disposable roots", () =>
-    fixture(async (source, root) => {
-      const original = new Error("synthetic known-closed failure");
-      build.mockRejectedValueOnce(original);
-      await expect(runHostedNativePreparation(source, root)).rejects.toBe(original);
-      expect(NodeFS.readdirSync(root)).toEqual(["evidence"]);
-      expect(
-        JSON.parse(NodeFS.readFileSync(NodePath.join(root, "evidence/result.json"), "utf8")),
-      ).toMatchObject({ status: "failed", error: original.message });
-    }));
-
-  it("retains all affected roots for nested uncertain custody", () =>
-    fixture(async (source, root) => {
-      const original = new Error("wrapped uncertainty", {
-        cause: Object.assign(new Error("synthetic unproved close"), { preserveScratch: true }),
-      });
-      build.mockRejectedValueOnce(original);
-      await expect(runHostedNativePreparation(source, root)).rejects.toBe(original);
-      expect(NodeFS.readdirSync(root).sort()).toEqual(["evidence", "home", "stage", "tmp"]);
-      expect(
-        JSON.parse(NodeFS.readFileSync(NodePath.join(root, "evidence/result.json"), "utf8")),
-      ).toMatchObject({ status: "failed", retainedRoots: root });
-    }));
-
-  it("cleanup failure cannot hide the original producer failure", () =>
-    fixture(async (source, root) => {
-      const original = new Error("synthetic producer failure");
-      build.mockRejectedValueOnce(original);
-      const remove = NodeFS.rmSync;
-      vi.spyOn(NodeFS, "rmSync").mockImplementation((path, options) => {
-        if (path === NodePath.join(root, "stage")) throw new Error("synthetic cleanup failure");
-        return remove(path, options);
-      });
-      await expect(runHostedNativePreparation(source, root)).rejects.toMatchObject({
-        cause: original,
+    it("retains aggregate cleanup children, custody and bounded cycle-safe diagnostics", () => {
+      const native = Object.assign(new Error("Native exit"), { status: null, signal: "SIGTERM" });
+      const cleanup = Object.assign(new Error("Unproved close"), {
         preserveScratch: true,
+        preserveStageRoot: true,
+        childPid: 123,
+        retainedRoot: "/synthetic/capture",
+        stageRoot: "/synthetic/stage",
       });
-      expect(NodeFS.existsSync(NodePath.join(root, "tmp"))).toBe(true);
-    }));
-
-  it("normal cancellation reaches the fixed producer and leaves no disposable roots", () =>
-    fixture(async (source, root) => {
-      build.mockImplementationOnce(async (input) => {
-        process.emit("SIGTERM");
-        input.signal!.throwIfAborted();
-        throw new Error("Unreachable synthetic producer");
+      const aggregate = new AggregateError([native, cleanup], "Capture and cleanup failed");
+      Object.defineProperty(cleanup, "cause", { value: aggregate });
+      const result = qualificationFailureDiagnostic(aggregate);
+      expect(result).toMatchObject({
+        errors: [
+          { status: null, signal: "SIGTERM" },
+          {
+            preserveScratch: true,
+            preserveStageRoot: true,
+            childPid: 123,
+            retainedRoot: "/synthetic/capture",
+            stageRoot: "/synthetic/stage",
+            cause: { omitted: "repeated error reference" },
+          },
+        ],
       });
-      await expect(runHostedNativePreparation(source, root)).rejects.toThrow("cancelled");
-      expect(NodeFS.readdirSync(root)).toEqual(["evidence"]);
-    }));
+      const wide = new AggregateError(
+        Array.from({ length: 100 }, () =>
+          Object.assign(new Error("synthetic failure"), {
+            stdout: "line with diagnostic detail\n".repeat(2000),
+          }),
+        ),
+        "bounded errors",
+      );
+      const bounded = qualificationFailureDiagnostic(wide);
+      expect(bounded.omittedErrors).toBe(92);
+      expect(JSON.stringify(bounded).length).toBeLessThan(20000);
+      expect(JSON.stringify(bounded)).toContain("[truncated]");
+      let deep: Error = new Error("deepest omitted");
+      for (let index = 0; index < 30; index++) deep = new Error("wrapper", { cause: deep });
+      expect(JSON.stringify(qualificationFailureDiagnostic(deep))).toContain("diagnostic limit");
+      expect(JSON.stringify(qualificationFailureDiagnostic(deep))).not.toContain("deepest omitted");
+    });
 
-  it("refuses wrong architecture before calling the producer", () =>
-    fixture(async (source, root) => {
-      Object.defineProperty(process, "arch", { configurable: true, value: "x64" });
-      await expect(runHostedNativePreparation(source, root)).rejects.toThrow("Darwin arm64");
-      expect(build).not.toHaveBeenCalled();
-    }));
-});
+    it("redacts sensitive messages and output lines without evaluating arbitrary properties", () => {
+      const failure = Object.assign(new Error("password=synthetic-password"), {
+        stderr:
+          'safe native error\ntoken=synthetic-token\n{"private":"synthetic-data"}\nhttps://user:pass@example.invalid/path\nghp_syntheticcredential',
+        stdout: "private payload: synthetic-data",
+      });
+      Object.defineProperty(failure, "cleanup", {
+        get: () => {
+          throw new Error("must not execute");
+        },
+      });
+      const serialized = JSON.stringify(qualificationFailureDiagnostic(failure));
+      expect(serialized).toContain("safe native error");
+      const multiline = qualificationFailureDiagnostic(
+        Object.assign(new Error("native failure"), {
+          stdout: '{\n  "data": "synthetic-multiline-private"\n}',
+          stderr: "-----BEGIN PRIVATE KEY-----\nsynthetic-key-material\n-----END PRIVATE KEY-----",
+        }),
+      );
+      expect(JSON.stringify(multiline)).not.toContain("synthetic-multiline-private");
+      expect(JSON.stringify(multiline)).not.toContain("synthetic-key-material");
+      expect(serialized).toContain("[redacted diagnostic line]");
+      for (const sensitive of [
+        "synthetic-password",
+        "synthetic-token",
+        "synthetic-data",
+        "user:pass",
+        "ghp_syntheticcredential",
+      ])
+        expect(serialized).not.toContain(sensitive);
+    });
+
+    it("retains all affected roots for nested uncertain custody", () =>
+      fixture(async (source, root) => {
+        const original = new Error("wrapped uncertainty", {
+          cause: Object.assign(new Error("synthetic unproved close"), { preserveScratch: true }),
+        });
+        build.mockRejectedValueOnce(original);
+        await expect(runHostedNativePreparation(source, root)).rejects.toBe(original);
+        expect(NodeFS.readdirSync(root).sort()).toEqual(["evidence", "home", "stage", "tmp"]);
+        expect(
+          JSON.parse(NodeFS.readFileSync(NodePath.join(root, "evidence/result.json"), "utf8")),
+        ).toMatchObject({ status: "failed", retainedRoots: root });
+      }));
+
+    it("cleanup failure cannot hide the original producer failure", () =>
+      fixture(async (source, root) => {
+        const original = new Error("synthetic producer failure");
+        build.mockRejectedValueOnce(original);
+        const remove = NodeFS.rmSync;
+        vi.spyOn(NodeFS, "rmSync").mockImplementation((path, options) => {
+          if (path === NodePath.join(root, "stage")) throw new Error("synthetic cleanup failure");
+          return remove(path, options);
+        });
+        await expect(runHostedNativePreparation(source, root)).rejects.toMatchObject({
+          cause: original,
+          preserveScratch: true,
+        });
+        expect(NodeFS.existsSync(NodePath.join(root, "tmp"))).toBe(true);
+      }));
+
+    it("normal cancellation reaches the fixed producer and leaves no disposable roots", () =>
+      fixture(async (source, root) => {
+        build.mockImplementationOnce(async (input) => {
+          process.emit("SIGTERM");
+          input.signal!.throwIfAborted();
+          throw new Error("Unreachable synthetic producer");
+        });
+        await expect(runHostedNativePreparation(source, root)).rejects.toThrow("cancelled");
+        expect(NodeFS.readdirSync(root)).toEqual(["evidence"]);
+      }));
+
+    it("refuses wrong architecture before calling the producer", () =>
+      fixture(async (source, root) => {
+        vi.spyOn(NodeProcess, "arch", "get").mockReturnValue("x64");
+        await expect(runHostedNativePreparation(source, root)).rejects.toThrow("Darwin arm64");
+        expect(build).not.toHaveBeenCalled();
+      }));
+  },
+);

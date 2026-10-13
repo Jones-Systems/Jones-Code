@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- This fixed hosted adapter owns synthetic qualification roots and bounded artifact evidence.
-import NodeFS from "node:fs";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeProcess from "node:process";
 import * as NodeURL from "node:url";
 import { verifyFunctionalPreparationGraph } from "./functional-policy.ts";
 import { buildAndStagePreparationProducer } from "./offline-preparation-producer-loader.mjs";
@@ -250,6 +251,88 @@ const nativeCaseNames = [
   "custody-uncertainty",
 ];
 
+// Diagnostic fields are allowlisted; never serialize stacks, environments, handles or payload objects.
+function diagnosticText(value: unknown): string | undefined {
+  if (typeof value !== "string" && !Buffer.isBuffer(value)) return undefined;
+  const length = value.length;
+  const prefix =
+    typeof value === "string" ? value.slice(0, 16384) : value.subarray(0, 16384).toString("utf8");
+  // Drop an incomplete input tail before redaction so truncation cannot hide a secret marker.
+  const bounded = length > 16384 ? prefix.slice(0, Math.max(0, prefix.lastIndexOf("\n"))) : prefix;
+  const text = bounded
+    .replace(/-----BEGIN[\s\S]*/g, "[redacted key material]")
+    .replace(/[[{][\s\S]*/g, "[redacted structured payload]")
+    .split(/\r?\n/)
+    .map((line) =>
+      /bearer|authorization|cookie|token|secret|password|credential|private[ _-]?(?:key|payload)|payload|-----BEGIN|(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+|[A-Za-z0-9_-]{48,}|https?:\/\/|[{}]/i.test(
+        line,
+      )
+        ? "[redacted diagnostic line]"
+        : line.replace(/[^\x20-\x7e\t\u0080-\uffff]/g, "?"),
+    )
+    .join("\n");
+  return text.slice(0, 2048) + (length > 16384 || text.length > 2048 ? "[truncated]" : "");
+}
+
+/** Bounded failure evidence survives helper cleanup without copying arbitrary error properties. */
+export function qualificationFailureDiagnostic(cause: unknown): Record<string, unknown> {
+  const seen = new Set<object>();
+  let count = 0;
+  const field = (value: object, key: string): unknown => {
+    const property = Object.getOwnPropertyDescriptor(value, key);
+    return property && "value" in property ? property.value : undefined;
+  };
+  const visit = (value: unknown, depth: number): Record<string, unknown> => {
+    if (depth >= 8 || count >= 16) return { omitted: "diagnostic limit" };
+    count += 1;
+    if (value === null || typeof value !== "object")
+      return { message: diagnosticText(value) ?? "Non-error failure." };
+    if (seen.has(value)) return { omitted: "repeated error reference" };
+    seen.add(value);
+    const result: Record<string, unknown> = {
+      message: diagnosticText(field(value, "message")) ?? "Qualification failed.",
+    };
+    for (const key of ["status", "exitCode", "childPid"]) {
+      const item = field(value, key);
+      if (item === null || (typeof item === "number" && Number.isSafeInteger(item)))
+        result[key] = item;
+    }
+    for (const key of ["signal", "code", "stdout", "stderr", "retainedRoot", "stageRoot"]) {
+      const raw = field(value, key);
+      const item = diagnosticText(raw);
+      if (item !== undefined) result[key] = item;
+      else if (key === "signal" && raw === null) result[key] = null;
+    }
+    for (const key of ["preserveScratch", "preserveStageRoot"]) {
+      const item = field(value, key);
+      if (typeof item === "boolean") result[key] = item;
+    }
+    const cleanup = field(value, "cleanup");
+    if (cleanup !== null && typeof cleanup === "object") {
+      const disposition = field(cleanup, "disposition");
+      result.cleanup = {
+        disposition:
+          typeof disposition === "string" &&
+          ["removed", "not-created", "retained-uncertain"].includes(disposition)
+            ? disposition
+            : "unknown",
+        ...(typeof field(cleanup, "root") === "string"
+          ? { root: diagnosticText(field(cleanup, "root")) }
+          : {}),
+      };
+    }
+    const nested = field(value, "cause");
+    if (nested !== undefined) result.cause = visit(nested, depth + 1);
+    const children = field(value, "errors");
+    if (Array.isArray(children)) {
+      result.errors = children.slice(0, 8).map((child) => visit(child, depth + 1));
+      if (children.length > 8) result.omittedErrors = children.length - 8;
+    }
+    return result;
+  };
+  return visit(cause, 0);
+}
+
 function retainRoots(cause: unknown, seen = new Set<unknown>()): boolean {
   if (typeof cause !== "object" || cause === null || seen.has(cause)) return false;
   if (seen.size >= 64) return true;
@@ -270,8 +353,8 @@ export async function runHostedNativePreparation(
   qualificationRoot: string,
 ): Promise<void> {
   if (
-    process.platform !== "darwin" ||
-    process.arch !== "arm64" ||
+    NodeProcess.platform !== "darwin" ||
+    NodeProcess.arch !== "arm64" ||
     process.versions.node !== "24.13.1" ||
     process.execArgv.length !== 0 ||
     process.env.NODE_OPTIONS ||
@@ -421,7 +504,7 @@ export async function runHostedNativePreparation(
     controller.abort(new Error("Hosted qualification lifetime ended."));
   }
   if (!retainRoots(primary)) {
-    for (const [path, original] of [...owned].reverse()) {
+    for (const [path, original] of [...owned].toReversed()) {
       try {
         const current = NodeFS.lstatSync(path, { bigint: true });
         if (
@@ -466,8 +549,8 @@ export async function runHostedNativePreparation(
     ...(primary === undefined
       ? {}
       : {
-          error:
-            primary instanceof Error ? primary.message.slice(0, 2048) : "Qualification failed.",
+          error: qualificationFailureDiagnostic(primary).message,
+          failureDiagnostic: qualificationFailureDiagnostic(primary),
         }),
   };
   const bytes = Buffer.from(JSON.stringify(receipt) + "\n");
@@ -511,8 +594,8 @@ if (import.meta.main) {
         JSON.stringify({
           status: "failed",
           retainedRoot: retainRoots(cause) ? root : null,
-          error:
-            cause instanceof Error ? cause.message.slice(0, 2048) : "Native qualification failed.",
+          error: qualificationFailureDiagnostic(cause).message,
+          failureDiagnostic: qualificationFailureDiagnostic(cause),
         }) + "\n",
       );
       process.exitCode = 1;
