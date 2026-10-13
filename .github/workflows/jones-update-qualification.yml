@@ -145,6 +145,7 @@ jobs:
           apps/server/src/jones/updates/offlinePreparationCore.test.ts
           apps/server/src/jones/updates/offlinePreparationWorker.test.ts
           scripts/jones/updates/offline-preparation-build.test.ts
+          scripts/jones/updates/functional-policy.test.ts
           apps/server/src/ServerSettingsPersistence.test.ts
           apps/server/src/serverSettings.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
@@ -242,6 +243,16 @@ jobs:
           path: apps/server/dist-exe/preparation-producer-candidate/
           if-no-files-found: error
           retention-days: 7
+
+      - name: Verify reviewed worker bytes and policy rejection cases without execution
+        env:
+          NODE_OPTIONS: ""
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$JONES_EXPECTED_SOURCE_SHA"
+          export JONES_EXPECTED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          node scripts/jones/updates/offline-preparation-qualification.ts --verify-worker-graph
 
   preview:
     name: Jones native Preview evidence

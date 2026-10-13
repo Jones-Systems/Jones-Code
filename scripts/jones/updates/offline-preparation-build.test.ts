@@ -618,13 +618,13 @@ describe("same-process preparation producer handles", () => {
       expect(NodeFS.readdirSync(root)).toEqual([]);
     }));
 
-  it("accepts matching raw bytes in a distinct source root only as far as policy refusal", () =>
+  it("refuses unreviewed entry bytes after matching raw bytes in a distinct source root", () =>
     withBoundProducerSource(async ({ sourceRoot, stageRoot, candidate }) => {
       expect(sourceRoot).not.toBe(
         NodeFS.realpathSync(NodeURL.fileURLToPath(new URL("../../../", import.meta.url))),
       );
       await expect(buildQualifiedPreparation({ repoRoot: sourceRoot, stageRoot })).rejects.toThrow(
-        "The functional preparation graph policy is unqualified.",
+        "Functional preparation entry is outside the reviewed worker policy.",
       );
       expect(NodeFS.readdirSync(stageRoot)).toEqual([]);
       expect(NodeFS.readdirSync(candidate).sort()).toEqual([
@@ -653,7 +653,7 @@ describe("same-process preparation producer handles", () => {
     withBoundProducerSource(async ({ sourceRoot, stageRoot }) => {
       const build = () => buildQualifiedPreparation({ repoRoot: sourceRoot, stageRoot });
       await expect(build()).rejects.toThrow(
-        "The functional preparation graph policy is unqualified.",
+        "Functional preparation entry is outside the reviewed worker policy.",
       );
       const path = NodePath.join(sourceRoot, "scripts/jones/updates/offline-preparation-build.ts");
       const original = NodeFS.readFileSync(path);
@@ -665,7 +665,7 @@ describe("same-process preparation producer handles", () => {
       );
       NodeFS.writeFileSync(path, original);
       await expect(build()).rejects.toThrow(
-        "The functional preparation graph policy is unqualified.",
+        "Functional preparation entry is outside the reviewed worker policy.",
       );
       expect(NodeFS.readdirSync(stageRoot)).toEqual([]);
     }));

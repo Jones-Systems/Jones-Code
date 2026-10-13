@@ -207,6 +207,41 @@ function requireProducerExecutionContract() {
   throw new Error("The preparation producer execution contract is unqualified.");
 }
 
+async function requireHandleRejection(producer, candidate) {
+  let inspected = false;
+  const forbidden = () => {
+    inspected = true;
+    throw new Error("Rejected handle reached staging inputs.");
+  };
+  try {
+    await producer.stageQualifiedPreparation({
+      handle: candidate,
+      get expectedSource() {
+        return forbidden();
+      },
+      get stageResourcesDir() {
+        return forbidden();
+      },
+      get signal() {
+        return forbidden();
+      },
+    });
+  } catch (cause) {
+    if (
+      !inspected &&
+      cause instanceof Error &&
+      cause.message === "Preparation handle is absent, expired, or consumed."
+    )
+      return;
+    throw Object.assign(new Error("Preparation handle rejection was not proved.", { cause }), {
+      preserveScratch: true,
+    });
+  }
+  throw Object.assign(new Error("Preparation rejected-handle call unexpectedly succeeded."), {
+    preserveScratch: true,
+  });
+}
+
 /** Diagnostic capture only; successful return follows complete cleanup without importing producer bytes. */
 export async function capturePreparationProducer(options) {
   return withCapturedPreparationProducer(options, async (capture) => capture.observation);
@@ -290,14 +325,25 @@ export async function buildAndStagePreparationProducer(options) {
           signal: controller.signal,
         });
         await capture.verifyCurrent();
+        // These are derived from the real issued object inside its one module lifetime.
+        // A lookalike must be rejected before inspecting any destination or source arguments.
+        for (const recreated of [
+          Object.assign({}, handle),
+          structuredClone(handle),
+          JSON.parse(JSON.stringify(handle)),
+          Object.create(handle),
+        ])
+          await requireHandleRejection(producer, recreated);
+        await capture.verifyCurrent();
         const staged = await producer.stageQualifiedPreparation({
           handle,
           expectedSource,
           stageResourcesDir: resources,
           signal: controller.signal,
         });
+        await requireHandleRejection(producer, handle);
         await capture.verifyCurrent();
-        return staged;
+        return { ...staged, handleConsumption: { recreatedRejected: 4, consumedRejected: true } };
       } finally {
         signal?.removeEventListener("abort", cancel);
         // Revokes any issued but unconsumed module-private handle before code cleanup.

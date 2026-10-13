@@ -12,7 +12,6 @@ import * as NodeOS from "node:os";
 import * as NodeTimers from "node:timers";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Only the closed lifecycle fixture opens an owned loopback HTTP server.
 import * as NodeHttp from "node:http";
-import * as NodeUtil from "node:util";
 import * as NodeURL from "node:url";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The sole download origin is the pinned official Node release over verified TLS.
 import * as NodeHttps from "node:https";
@@ -27,7 +26,11 @@ import {
   verifyJonesLegacyIdentityMachO,
 } from "./legacy-bootstrap-bundle.ts";
 import { jonesLegacyMaintenanceSource } from "../../../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts";
-import { verifyFunctionalPreparationGraph } from "./functional-policy.ts";
+import {
+  verifyFunctionalPreparationGraph,
+  verifyPreparationSourceOverlay,
+} from "./functional-policy.ts";
+export { verifyPreparationSourceOverlay } from "./functional-policy.ts";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decode = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -1029,41 +1032,6 @@ function readFile(file: string, limit: number): Buffer {
   }
   if (primary !== undefined) throw primary;
   return result!;
-}
-
-/** Only the existing release-stamp fields may differ from the committed source. */
-export function verifyPreparationSourceOverlay(
-  file: string,
-  original: unknown,
-  actual: unknown,
-  identity: { sha: string; tree: string },
-): string {
-  if (!releaseManifests.includes(file)) throw new Error("Unadmitted source overlay.");
-  const record = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown));
-  const before = { ...record(original) };
-  const after = { ...record(actual) };
-  const version = Schema.decodeUnknownSync(Schema.NonEmptyString)(after.version);
-  if (["apps/server/package.json", "apps/desktop/package.json"].includes(file)) {
-    if (
-      after.jonesSource !== undefined &&
-      !NodeUtil.isDeepStrictEqual(after.jonesSource, {
-        repository: "Jones-Systems/Jones-Code",
-        ...identity,
-      })
-    )
-      throw new Error("Stamped source identity differs from observed Git source.");
-    if (after.startupGateProtocol !== undefined && after.startupGateProtocol !== 1)
-      throw new Error("Unadmitted startup metadata.");
-    delete before.jonesSource;
-    delete after.jonesSource;
-    delete before.startupGateProtocol;
-    delete after.startupGateProtocol;
-  }
-  delete before.version;
-  delete after.version;
-  if (!NodeUtil.isDeepStrictEqual(before, after))
-    throw new Error("Preparation source has changes beyond release stamping.");
-  return version;
 }
 
 async function observeSource(root: string, command: PreparationBuildScope["command"]) {
@@ -2850,6 +2818,11 @@ export async function buildQualifiedPreparation(input: {
             );
             // Every native child uses this root or the qualifier's independently owned roots, never stageRoot.
             const source = await observeSource(sourceRoot, scope.command);
+            if (
+              source.version.length > 128 ||
+              !/^\d+\.\d+\.\d+-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(source.version)
+            )
+              throw new Error("Functional preparation requires an exact preview version.");
             const observedGraphSource = Schema.decodeUnknownSync(
               Schema.Struct({
                 source: Schema.Unknown,

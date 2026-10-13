@@ -572,6 +572,7 @@
         "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
         "apps/server/src/jones/updates/offlinePreparationEntry.test.ts",
         "scripts/jones/updates/offline-preparation-build.test.ts",
+        "scripts/jones/updates/functional-policy.test.ts",
         "apps/server/src/jones/updates/offlinePreparationPlan.test.ts",
         "apps/server/src/jones/updates/offlinePreparationCore.test.ts",
         "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",

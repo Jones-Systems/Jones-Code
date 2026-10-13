@@ -936,6 +936,8 @@
     "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs": "jones-owned",
     "scripts/jones/updates/legacy-preparation-native-fixture.d.mts": "jones-owned",
     "scripts/jones/updates/functional-policy.ts": "jones-owned",
+    "scripts/jones/updates/functional-policy.test.ts": "jones-owned",
+    "scripts/jones/updates/offline-preparation-qualification.ts": "jones-owned",
     "scripts/jones/updates/offline-preparation-producer-entry.ts": "jones-owned",
     "scripts/jones/updates/offline-preparation-producer-loader.mjs": "jones-owned",
     "scripts/jones/updates/offline-preparation-producer-loader.d.mts": "jones-owned",

@@ -937,3 +937,103 @@ NodeTest.test(
         NodeAssert.equal((await NodeFSP.default.lstat(name)).isDirectory(), true);
     }),
 );
+
+// This test-only namespace exposes the private rejection assertion without opening the producer
+// gate. Synthetic registries prove assertion behavior; only the actual native build can issue
+// the production handle tested by the fixed captured build/stage consumer.
+let rejectionAssertion;
+async function privateRejectionAssertion() {
+  if (rejectionAssertion === undefined) {
+    const source = await NodeFSP.default.readFile(
+      new URL("./offline-preparation-producer-loader.mjs", import.meta.url),
+      "utf8",
+    );
+    const testSource = `${source}\nexport { requireHandleRejection };\n`;
+    const testModule = await import(
+      `data:text/javascript;base64,${Buffer.from(testSource).toString("base64")}`
+    );
+    rejectionAssertion = testModule.requireHandleRejection;
+  }
+  return rejectionAssertion;
+}
+
+NodeTest.test(
+  "private handle assertion rejects a still-valid synthetic handle and accepts clone/replay refusal",
+  async () => {
+    const requireRejected = await privateRejectionAssertion();
+    const issued = Object.freeze(Object.create(null));
+    const registry = new WeakSet([issued]);
+    let consumed = 0;
+    const fixture = {
+      async stageQualifiedPreparation({ handle }) {
+        if (!registry.delete(handle))
+          throw new Error("Preparation handle is absent, expired, or consumed.");
+        consumed += 1;
+      },
+    };
+    for (const recreated of [
+      Object.assign({}, issued),
+      structuredClone(issued),
+      JSON.parse(JSON.stringify(issued)),
+      Object.create(issued),
+    ])
+      await requireRejected(fixture, recreated);
+    NodeAssert.equal(consumed, 0);
+    await NodeAssert.rejects(requireRejected(fixture, issued), (error) => {
+      NodeAssert.match(error.message, /unexpectedly succeeded/);
+      NodeAssert.equal(error.preserveScratch, true);
+      return true;
+    });
+    NodeAssert.equal(consumed, 1);
+    await requireRejected(fixture, issued);
+    NodeAssert.equal(consumed, 1);
+  },
+);
+
+for (const input of ["expectedSource", "stageResourcesDir", "signal"])
+  NodeTest.test(`private handle assertion refuses rejection after reading ${input}`, async () => {
+    const requireRejected = await privateRejectionAssertion();
+    await NodeAssert.rejects(
+      requireRejected(
+        {
+          async stageQualifiedPreparation(options) {
+            try {
+              void options[input];
+            } catch {
+              /* Preserve the attempted read in the private assertion. */
+            }
+            throw new Error("Preparation handle is absent, expired, or consumed.");
+          },
+        },
+        {},
+      ),
+      (error) => {
+        NodeAssert.match(error.message, /rejection was not proved/);
+        NodeAssert.equal(error.preserveScratch, true);
+        return true;
+      },
+    );
+  });
+
+NodeTest.test(
+  "private handle assertion preserves an unrelated rejection as a failed proof",
+  async () => {
+    const requireRejected = await privateRejectionAssertion();
+    const original = new Error("synthetic unrelated fixture failure");
+    await NodeAssert.rejects(
+      requireRejected(
+        {
+          async stageQualifiedPreparation() {
+            throw original;
+          },
+        },
+        {},
+      ),
+      (error) => {
+        NodeAssert.equal(error.cause, original);
+        NodeAssert.equal(error.preserveScratch, true);
+        return true;
+      },
+    );
+  },
+);

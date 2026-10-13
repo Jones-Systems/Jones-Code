@@ -53,6 +53,7 @@ export function buildAndStagePreparationProducer(options: {
   readonly signal?: AbortSignal;
 }): Promise<
   QualifiedPreparationStageResult & {
+    readonly handleConsumption: { readonly recreatedRejected: 4; readonly consumedRejected: true };
     readonly cleanup: { readonly disposition: "removed"; readonly root: string };
   }
 >;
