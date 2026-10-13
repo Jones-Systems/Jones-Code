@@ -47,6 +47,10 @@
       "to": "apps/server/src/jones/orchestration/ProviderEventOrigin.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/ProviderAdapter.ts",
+      "to": "apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
       "to": "apps/server/src/jones/orchestration/ProviderEventOrigin.ts"
     },

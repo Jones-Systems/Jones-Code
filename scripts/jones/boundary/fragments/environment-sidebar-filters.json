@@ -1,0 +1,39 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "environment-sidebar-filters",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.tsx",
+    "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+    "apps/web/src/jones/environmentFilters/model.ts",
+    "apps/web/src/jones/environmentFilters/state.ts",
+    "apps/web/src/jones/environmentFilters/useSidebarEnvironmentFilter.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/environmentFilters/model.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/environmentFilters/useSidebarEnvironmentFilter.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/environmentFilters/model.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/environmentFilters/useSidebarEnvironmentFilter.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/SettingsSidebarNav.tsx",
+      "to": "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.tsx"
+    }
+  ]
+}

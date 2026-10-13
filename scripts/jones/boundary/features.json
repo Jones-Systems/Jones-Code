@@ -4,6 +4,11 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "environment-sidebar-filters",
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "scope": "Session-only environment inclusion filters cover configured labels, disconnected and duplicate identities, unknown labels, and sidebar remounts. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
+    },
+    {
       "id": "remote-host-status",
       "tests": [
         "apps/web/src/hostStatus.test.ts",
@@ -116,6 +121,7 @@
     {
       "id": "provider-runtime-identity",
       "tests": [
+        "apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
         "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
         "packages/contracts/src/jones/providerRuntimeIdentity.test.ts"

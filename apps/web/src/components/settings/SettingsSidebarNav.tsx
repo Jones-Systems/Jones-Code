@@ -1,3 +1,4 @@
+import { SidebarEnvironmentFilters } from "../../jones/environmentFilters/SidebarEnvironmentFilters";
 import {
   lazy,
   Suspense,
@@ -354,6 +355,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
         <Suspense fallback={null}>
           <T3ConnectSidebarSignIn />
         </Suspense>
+        <SidebarEnvironmentFilters />
         <div className="flex items-center gap-1">
           <div className="min-w-0 flex-1">
             <SidebarUtilityMenu />

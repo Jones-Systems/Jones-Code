@@ -2,6 +2,11 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-environment-sidebar-filters",
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]
+    },
+    {
       "id": "jones-remote-host-status",
       "tests": [
         "apps/web/src/hostStatus.test.ts",
@@ -145,12 +150,14 @@
     {
       "id": "jones-provider-runtime-identity",
       "tests": [
+        "apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
         "packages/contracts/src/resourceTelemetry.test.ts",
         "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
         "packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "vp test run apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
       ]
     },

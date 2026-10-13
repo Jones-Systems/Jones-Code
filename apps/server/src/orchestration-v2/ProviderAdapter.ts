@@ -52,6 +52,7 @@ import type {
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
 import type { ProviderEventProducerOrigin } from "../jones/orchestration/ProviderEventOrigin.ts";
+import { classifyProviderRuntimeBindingFailure } from "../jones/orchestration/ProviderRuntimeBindingDiagnostics.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
@@ -393,7 +394,11 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
 export class ProviderRuntimeBindingError extends Schema.TaggedError<ProviderRuntimeBindingError>()(
   "ProviderRuntimeBindingError",
   { driver: ProviderDriverKind, detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
-) {}
+) {
+  override get message(): string {
+    return `Provider runtime binding failed [${classifyProviderRuntimeBindingFailure(this)}].`;
+  }
+}
 
 export function hasUnknownRuntimeBinding(error: unknown): boolean {
   let current = error;
