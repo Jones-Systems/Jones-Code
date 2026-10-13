@@ -207,13 +207,13 @@ function uncertainCustody(cause, seen = new Set()) {
   return nested.some((error) => uncertainCustody(error, seen));
 }
 
-// Reviewed 26d085 producer: import initializes in-memory Effect schemas/caches/prototypes,
+// Reviewed bb3dba producer: import initializes in-memory Effect schemas/caches/prototypes,
 // Error stack detection, scheduler closures and the optional literal async_hooks lookup.
 // Its only import-time filesystem work resolves this unique captured code root and hashes
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "26d085a723fc94b8204c259114e3295bd34017b1cb9e3c088afe034929a683fc",
+  sha256: "bb3dba575c7bbdf9522486c6630489b6fddb381378f82cfcf4977e906ecae3ae",
   size: 772658,
 };
 const reviewedRawSources = {
@@ -244,15 +244,15 @@ const reviewedRawSources = {
   "apps/server/src/jones/updates/offlinePreparationPlan.ts":
     "3af9931a1136b162ee94d9d8b0f62c2b538824b0cfb917598c7e423b0deb884b",
   "apps/server/src/jones/updates/offlinePreparationWorker.test.ts":
-    "757875f95a4237b8b2b6c8bf7c29eabaa39bcd0e1822c16a3543f020990ee371",
+    "3158eaff693d3e25cdf511d9788a436a8bd281d5a3d5048ea94f8654f02db32f",
   "apps/server/src/jones/updates/offlinePreparationWorker.ts":
-    "e4640a85b89649cbb89a376356b0b68266ac5f07286d3c22e26069a011a7d97b",
+    "72631ba96006df386805c0427028812967ae0a6e9ed1aa073d491e1a67f1ce5a",
   "apps/server/vite.config.ts": "6c78469c642831d33b17db7e592aae2ba5be5ebdc74e494035a3b668a87466c8",
   "package.json": "5756224c0a1921e5a04859a24a9b1b6284976e788089d38b979cde35b09c399a",
   "pnpm-lock.yaml": "18db8920c7cb73d300843ec6cefca9c902dfbd0fab7082467407fdd3870a5534",
   "pnpm-workspace.yaml": "a4fe4a6796ea7cca6d0f198efb45ef135af7802ae7ee41a58f059a9e371c4032",
   "scripts/jones/updates/functional-policy.ts":
-    "b00cece0db83f86fcc7cefe391e51e213f761dc264172b13234006d07663b8fd",
+    "7b3986128c43e54cbdd91f20a894e2a068e730e7881735ed132468fdb16911ca",
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
@@ -262,7 +262,7 @@ const reviewedRawSources = {
   "scripts/jones/updates/legacy-preparation-native-fixture.d.mts":
     "6d0d5a36bfa5ea815af8b13c8f432a6ec61d2ffb04c0d1579a5d5ca9cb852043",
   "scripts/jones/updates/legacy-preparation-native-fixture.mjs":
-    "950478ebd35d42d9c1155c2aedc57330fd7828b851fea2d7acf54e518309a4d0",
+    "ffb24b12022c47485f8e3b5b56619f68f83f0f1cfe94b1feca61d9747fda44e0",
   "scripts/jones/updates/offline-preparation-build.ts":
     "59e1eec050703a29cb4b4637202f4868e84aafccf8aad80e0cde05702dc0de9e",
   "scripts/jones/updates/offline-preparation-producer-entry.ts":
@@ -468,7 +468,7 @@ const reviewedImports = [
   },
 ];
 const reviewedLateModulesSha256 =
-  "71231cf0d4eca24f0a8de735cd636ab221824f08db462308320214af474488c4";
+  "fb7e46076badee29eae36bf01f9ae335b026a6f08b73d06b0e148bd985cb4662";
 
 function requireProducerExecutionContract(capture) {
   const report = capture.report.document;
