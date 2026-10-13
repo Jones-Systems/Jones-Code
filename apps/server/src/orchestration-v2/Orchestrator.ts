@@ -12440,7 +12440,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const requestWorkMode: OrchestratorV2Shape["requestWorkMode"] = (candidate) => {
     const command = workModeCommand(candidate);
-    return threadDispatch.withLock(
+    const admission = threadDispatch.tryWithLock(
       candidate.threadId,
       admitWorkMode(candidate, {
         hasReceipt: commandReceipts
@@ -12495,6 +12495,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         dispatch: dispatchWithReceiptEffect,
       }),
     );
+    return admission.pipe(Effect.map(Option.getOrElse(() => "skipped" as const)));
   };
 
   const requestSelfSettlement: OrchestratorV2Shape["requestSelfSettlement"] = (input) =>
