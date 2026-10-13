@@ -54,8 +54,8 @@ const same = NodeUtil.isDeepStrictEqual;
 const workerPolicy = {
   schema: "jones.preparation-worker-policy/v1",
   entry: {
-    sha256: "7582c14901fda82b21e121f6a42f67bf485860dad47738b5dbbfa8e3ed52cc0d",
-    size: 1888224,
+    sha256: "a2a5eef1583f60889caf40f69fe3e28812fa43dce3512d0b60328906e4b22432",
+    size: 1888446,
   },
   staticImports: [
     "node:fs",
