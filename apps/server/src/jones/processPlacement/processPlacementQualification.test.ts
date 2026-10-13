@@ -225,7 +225,7 @@ const cancelPipeline = (candidate: ProcessPlacementBinding | undefined) =>
       expect(receipt.pid).toBe(Number(handle.pid));
       if (candidate !== undefined) assertPlaced(receipt, candidate.workload);
       yield* Deferred.succeed(ready, receipt);
-      yield* Effect.never;
+      return yield* Effect.never;
     }).pipe(
       Effect.scoped,
       Effect.provide(placedServices(candidate)),
