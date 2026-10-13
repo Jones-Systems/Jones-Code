@@ -532,6 +532,22 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
       ],
       "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded."
+    },
+    {
+      "id": "queue-hold-isolation",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/orchestration-v2/RunCompletionReads.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/orchestration-v2/QueuedRunOrder.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/orchestration/Orchestrator.control-reads.jones.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
+      ],
+      "scope": "Historical queue holds remain entry-local across later active runs. Same-cohort holds, reviewed full-head delivery, eligible completion priority/FIFO, failure attribution and tool-boundary guards remain intact. Small direct Orchestrator.ts and ProjectionStore.ts shared edits keep one lifecycle decision; extracting predicates would duplicate SQL and orchestration machinery. RunCompletionReads.test.ts retains its SQL/memory parity harness as an explicit test-in-upstream exception; Jones runtime tests import existing services and harnesses."
     }
   ]
 }
