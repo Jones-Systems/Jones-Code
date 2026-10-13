@@ -1403,8 +1403,15 @@ NodeTest.test("controller cause validator refuses private, forged and unbounded 
     duplicateOf: null,
     sqliteErrorCode: null,
     sqliteErrorCategory: null,
+    readerContext: null,
   };
   for (const mutate of [
+    (record) => {
+      record.readerContext = {};
+    },
+    (record) => {
+      delete record.readerContext;
+    },
     (record) => {
       record.sqliteErrorCategory = "private";
     },
@@ -1497,7 +1504,7 @@ NodeTest.test(
 root = pathlib.Path(sys.argv[1])
 database = root / 'owned.sqlite'
 target = root / 'assertion-copy.sqlite'
-payload = dict(tables={'private_table_name': None})
+payload = dict(tables={'actual_table': None, 'private_table_name': None})
 with sqlite3.connect(database) as seed: seed.execute('CREATE TABLE actual_table(value TEXT)')
 seed.close()
 reports = []
@@ -1513,10 +1520,36 @@ query, report = failed('reader-query', lambda: readonly_rows(database))
 assert isinstance(query, sqlite3.OperationalError)
 assert report['records'][0]['sqliteErrorCode'] == getattr(query, 'sqlite_errorcode', None)
 assert any(frame['function'] == 'readonly_rows' for frame in report['records'][0]['frames'])
-if sys.version_info < (3, 12): assert any(frame['function'] == '<dictcomp>' for frame in report['records'][0]['frames'])
+assert any(frame['function'] == 'read_tables' for frame in report['records'][0]['frames'])
+context = report['records'][0]['readerContext']
+assert context['timing'] == 'before-query' and context['tableIndex'] == 1
+assert context['pythonVersion'] == list(sys.version_info[:3]) and context['sqliteVersion'] == sqlite3.sqlite_version
+assert context['parent']['mode'] == stat.S_IMODE(root.lstat().st_mode)
+assert context['parent']['directory'] and context['parent']['owned'] and not context['parent']['symlink']
+assert context['files']['database']['mode'] == 0o600 and context['files']['database']['regular']
+assert context['files']['database']['readable'] and context['files']['database']['writable']
+assert not context['files']['wal']['exists'] and not context['files']['shm']['exists']
 assert not target.exists()
+real_lstat = pathlib.Path.lstat
+def unavailable_parent(self, *args, **kwargs):
+    if self == root: raise OSError('private-metadata-failure')
+    return real_lstat(self, *args, **kwargs)
+pathlib.Path.lstat = unavailable_parent
+try: metadata_failure, partial = failed('reader-query', lambda: readonly_rows(database))
+finally: pathlib.Path.lstat = real_lstat
+assert isinstance(metadata_failure, sqlite3.OperationalError) and metadata_failure.__context__ is None
+assert partial['records'][0]['readerContext']['parent'] is None
+assert all(value is None for value in partial['records'][0]['readerContext']['files'].values())
+real_version = sqlite3.sqlite_version
+sqlite3.sqlite_version = object()
+try: null_failure, absent = failed('reader-query', lambda: readonly_rows(database))
+finally: sqlite3.sqlite_version = real_version
+assert isinstance(null_failure, sqlite3.OperationalError) and null_failure is not query
+assert absent['records'][0]['readerContext'] is None and null_failure.__context__ is None
+assert report['records'][0]['readerContext'] == context
 opened, report = failed('reader-open', lambda: readonly_rows(root / 'absent.sqlite'))
 assert isinstance(opened, sqlite3.OperationalError)
+assert report['records'][0]['readerContext'] is None
 assert report['records'][0]['sqliteErrorCode'] == getattr(opened, 'sqlite_errorcode', None)
 source_directory = root / 'source-directory'; source_directory.mkdir()
 copied, report = failed('reader-copy', lambda: readonly_rows(source_directory))
@@ -1533,6 +1566,7 @@ finally: sqlite3.connect = real_connect
 assert isinstance(closed, OSError) and str(closed) == private
 assert isinstance(closed.__context__, sqlite3.OperationalError)
 assert report['records'][1]['relation'] == 'context' and report['records'][1]['stage'] == 'reader-query'
+assert report['records'][0]['readerContext'] is None and report['records'][1]['readerContext']['tableIndex'] == 1
 assert target.exists()
 target.unlink()
 real_unlink = pathlib.Path.unlink
@@ -1566,6 +1600,92 @@ print(encoded)
         NodeAssert.deepEqual(validatePreparationNativeFailure(evidence), evidence);
       }
     });
+  },
+);
+
+NodeTest.test(
+  "reader context schema permits unknown metadata and refuses private or forged fields",
+  () => {
+    const metadata = {
+      exists: true,
+      mode: 0o600,
+      owned: true,
+      regular: true,
+      directory: false,
+      symlink: false,
+      readable: true,
+      writable: true,
+      searchable: null,
+    };
+    const cause = {
+      parent: null,
+      relation: "primary",
+      type: "OperationalError",
+      stage: "reader-query",
+      frames: [],
+      duplicateOf: null,
+      sqliteErrorCode: null,
+      sqliteErrorCategory: "cannot-open",
+      readerContext: {
+        timing: "before-query",
+        pythonVersion: [3, 9, 6],
+        sqliteVersion: "3.51.0",
+        parent: null,
+        files: { database: metadata, wal: null, shm: null },
+        tableIndex: 1,
+      },
+    };
+    const evidence = failedFixture();
+    evidence.controllerFailure = { records: [cause], truncated: false };
+    NodeAssert.deepEqual(validatePreparationNativeFailure(evidence), evidence);
+    for (const mutate of [
+      (record) => {
+        record.stage = "reader-close";
+      },
+      (record) => {
+        record.readerContext.tableIndex = 1024;
+      },
+      (record) => {
+        record.readerContext.tableIndex = "private-table";
+      },
+      (record) => {
+        record.readerContext.pythonVersion = [3, 9, "private"];
+      },
+      (record) => {
+        record.readerContext.sqliteVersion = "private";
+      },
+      (record) => {
+        record.readerContext.sqliteVersion = "1.2.3.4";
+      },
+      (record) => {
+        record.readerContext.timing = "after-query";
+      },
+      (record) => {
+        record.readerContext.path = "/private/path";
+      },
+      (record) => {
+        record.readerContext.files.extra = null;
+      },
+      (record) => {
+        record.readerContext.files.database.mode = 0o10000;
+      },
+      (record) => {
+        record.readerContext.files.database.readable = 1;
+      },
+      (record) => {
+        record.readerContext.files.database.uid = 501;
+      },
+      (record) => {
+        record.readerContext.files.database.exists = false;
+      },
+      (record) => {
+        delete record.readerContext.files.shm;
+      },
+    ]) {
+      const candidate = structuredClone(evidence);
+      mutate(candidate.controllerFailure.records[0]);
+      NodeAssert.throws(() => validatePreparationNativeFailure(candidate));
+    }
   },
 );
 

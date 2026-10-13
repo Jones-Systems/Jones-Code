@@ -622,6 +622,7 @@ const controllerFailureFunctions = [
   "<lambda>",
   "run_case",
   "readonly_rows",
+  "read_tables",
   "<dictcomp>",
   "<listcomp>",
   "enter",
@@ -661,11 +662,43 @@ const controllerFailureFunctions = [
   "_cold_owner_session",
 ];
 export const preparationFailureCaptureSource = String.raw`
-import sqlite3
+import os, pathlib, sqlite3, stat, sys
 _CONTROLLER_STAGES = ${JSON.stringify(controllerFailureStages)}
 _CONTROLLER_TYPES = ${JSON.stringify(controllerFailureTypes)}
 _CONTROLLER_FUNCTIONS = ${JSON.stringify(controllerFailureFunctions)}
 _failure_stages = {}
+_reader_contexts = {}
+def capture_reader_context(target):
+    # lstat and real-ID access observations are diagnostics, never permission or currentness gates.
+    def metadata(path):
+        try:
+            info = path.lstat()
+            symlink = stat.S_ISLNK(info.st_mode)
+            directory = stat.S_ISDIR(info.st_mode)
+            return dict(exists=True, mode=stat.S_IMODE(info.st_mode), owned=info.st_uid == os.getuid(),
+                        regular=stat.S_ISREG(info.st_mode), directory=directory, symlink=symlink,
+                        readable=None if symlink else os.access(path, os.R_OK),
+                        writable=None if symlink else os.access(path, os.W_OK),
+                        searchable=os.access(path, os.X_OK) if directory and not symlink else None)
+        except FileNotFoundError:
+            return dict(exists=False, mode=None, owned=None, regular=None, directory=None,
+                        symlink=None, readable=None, writable=None, searchable=None)
+        except Exception: return None
+    try:
+        parent = metadata(target.parent)
+        files = {label: metadata(pathlib.Path(str(target) + suffix)) if parent is not None and parent['directory'] is True and parent['symlink'] is False else None
+                 for label, suffix in (('database', ''), ('wal', '-wal'), ('shm', '-shm'))}
+        version = sqlite3.sqlite_version
+        if len(version) > 32 or len(version.split('.')) != 3 or any(not 1 <= len(part) <= 8 or any(char not in '0123456789' for char in part) for part in version.split('.')): version = None
+        return dict(timing='before-query', pythonVersion=list(sys.version_info[:3]), sqliteVersion=version,
+                    parent=parent, files=files, tableIndex=None)
+    except Exception: return None
+def remember_reader_context(failure, context, table_index):
+    try:
+        if context is not None and id(failure) not in _reader_contexts and len(_reader_contexts) < 64:
+            index = table_index if type(table_index) is int and 0 <= table_index <= 1023 else None
+            _reader_contexts[id(failure)] = (failure, dict(context, tableIndex=index))
+    except Exception: pass
 def remember_failure_stage(failure, stage):
     if stage in _CONTROLLER_STAGES and id(failure) not in _failure_stages and len(_failure_stages) < 64:
         _failure_stages[id(failure)] = (failure, stage)
@@ -701,6 +734,8 @@ def capture_controller_failure(failures, primary):
         index = len(records)
         previous = seen.get(id(failure))
         saved = _failure_stages.get(id(failure))
+        reader = _reader_contexts.get(id(failure))
+        reader_context = reader[1] if reader is not None and reader[0] is failure and saved is not None and saved[0] is failure and saved[1] == 'reader-query' else None
         name = type(failure).__name__
         frames, trace, steps = [], failure.__traceback__, 0
         while trace is not None and steps < 64:
@@ -715,7 +750,7 @@ def capture_controller_failure(failures, primary):
         records.append(dict(parent=parent, relation=relation, type=name if name in _CONTROLLER_TYPES else 'unknown',
                             stage=saved[1] if saved is not None and saved[0] is failure else 'fixture-cleanup' if relation == 'cleanup' else 'unknown',
                             frames=frames[-8:], duplicateOf=previous, sqliteErrorCode=sqlite_code,
-                            sqliteErrorCategory=sqlite_failure_category(failure)))
+                            sqliteErrorCategory=sqlite_failure_category(failure), readerContext=reader_context))
         if previous is not None: return
         seen[id(failure)] = index
         if type(failure).__name__ == '_PreparationFailure':
@@ -949,7 +984,19 @@ def readonly_rows(database):
         db = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)
         db.row_factory = sqlite3.Row
         try:
-            return at_failure_stage('reader-query', lambda: {table: [dict(row) for row in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')] for table in payload['tables']})
+            context = capture_reader_context(target)
+            table_index = None
+            def read_tables():
+                nonlocal table_index
+                rows = {}
+                for table_index, table in enumerate(payload['tables']):
+                    rows[table] = [dict(row) for row in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')]
+                return rows
+            try:
+                return at_failure_stage('reader-query', read_tables)
+            except BaseException as failure:
+                remember_reader_context(failure, context, table_index)
+                raise
         finally:
             at_failure_stage('reader-close', db.close)
             stage = 'reader-removal'
@@ -2025,7 +2072,66 @@ export function validatePreparationNativeFailure(value) {
       "duplicateOf",
       "sqliteErrorCode",
       "sqliteErrorCategory",
+      "readerContext",
     ]);
+    if (cause.readerContext !== null) {
+      NodeAssert.equal(cause.stage, "reader-query");
+      const context = cause.readerContext;
+      exact(context, ["timing", "pythonVersion", "sqliteVersion", "parent", "files", "tableIndex"]);
+      NodeAssert.equal(context.timing, "before-query");
+      NodeAssert.ok(
+        Array.isArray(context.pythonVersion) &&
+          context.pythonVersion.length === 3 &&
+          context.pythonVersion.every(
+            (part) => Number.isSafeInteger(part) && part >= 0 && part <= 65535,
+          ),
+      );
+      NodeAssert.ok(
+        context.sqliteVersion === null ||
+          (typeof context.sqliteVersion === "string" &&
+            /^[0-9]{1,8}\.[0-9]{1,8}\.[0-9]{1,8}$/.test(context.sqliteVersion)),
+      );
+      NodeAssert.ok(
+        context.tableIndex === null ||
+          (Number.isSafeInteger(context.tableIndex) &&
+            context.tableIndex >= 0 &&
+            context.tableIndex <= 1023),
+      );
+      exact(context.files, ["database", "wal", "shm"]);
+      for (const item of [context.parent, ...Object.values(context.files)]) {
+        if (item === null) continue;
+        exact(item, [
+          "exists",
+          "mode",
+          "owned",
+          "regular",
+          "directory",
+          "symlink",
+          "readable",
+          "writable",
+          "searchable",
+        ]);
+        NodeAssert.equal(typeof item.exists, "boolean");
+        NodeAssert.ok(
+          item.mode === null ||
+            (Number.isSafeInteger(item.mode) && item.mode >= 0 && item.mode <= 0o7777),
+        );
+        for (const key of [
+          "owned",
+          "regular",
+          "directory",
+          "symlink",
+          "readable",
+          "writable",
+          "searchable",
+        ])
+          NodeAssert.ok(item[key] === null || typeof item[key] === "boolean");
+        if (!item.exists)
+          NodeAssert.ok(
+            Object.entries(item).every(([key, value]) => key === "exists" || value === null),
+          );
+      }
+    }
     NodeAssert.ok(
       cause.sqliteErrorCategory === null ||
         ([
