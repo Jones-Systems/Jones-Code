@@ -270,6 +270,7 @@ class ColdChannel {
         const remaining = deadline - NodePerfHooks.performance.now();
         coldRequire(remaining > 0);
         await new Promise<void>((resolve) => {
+          // @effect-diagnostics-next-line globalTimers:off -- Bound this captured pipe read in the native owner without an Effect runtime.
           const timer = NodeTimers.setTimeout(() => {
             this.#waiter = undefined;
             resolve();
@@ -309,6 +310,7 @@ class ColdChannel {
       );
       coldRequire(bytes.length <= coldLimit);
       await new Promise<void>((resolve, reject) => {
+        // @effect-diagnostics-next-line globalTimers:off -- Bound the owned stream's native write callback; no timer result proves closure.
         const timer = NodeTimers.setTimeout(
           () => reject(new Error("Cold channel write deadline expired.")),
           5000,
@@ -503,6 +505,7 @@ class CapturedColdBackend implements JonesColdBackendOwner {
       (this.#stopRequestedAt === undefined ||
         NodePerfHooks.performance.now() < this.#stopRequestedAt + 100)
     )
+      // @effect-diagnostics-next-line globalTimers:off -- Poll actual captured child close events against this native owner's monotonic deadline.
       await new Promise<void>((resolve) => NodeTimers.setTimeout(resolve, 5));
     if (!this.#closed && this.#child) {
       this.#failure ??= new Error("Cold child closure was not observed.");
@@ -510,10 +513,12 @@ class CapturedColdBackend implements JonesColdBackendOwner {
       this.#signal();
       const grace = NodePerfHooks.performance.now() + 100;
       while (!this.#closed && NodePerfHooks.performance.now() < grace)
+        // @effect-diagnostics-next-line globalTimers:off -- The captured child receives a bounded native stop grace before escalation.
         await new Promise<void>((resolve) => NodeTimers.setTimeout(resolve, 5));
       if (!this.#closed) this.#signal("SIGKILL");
       const drain = NodePerfHooks.performance.now() + 1000;
       while (!this.#closed && NodePerfHooks.performance.now() < drain)
+        // @effect-diagnostics-next-line globalTimers:off -- Observe actual child and pipe closure during the bounded native drain interval.
         await new Promise<void>((resolve) => NodeTimers.setTimeout(resolve, 5));
     }
     return this.observe();

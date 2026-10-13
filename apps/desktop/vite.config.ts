@@ -1,4 +1,5 @@
 import "vite-plus/test/config";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite resolves the fixed custody artifact synchronously outside an Effect runtime.
 import * as NodePath from "node:path";
 import { defineConfig } from "vite-plus";
 

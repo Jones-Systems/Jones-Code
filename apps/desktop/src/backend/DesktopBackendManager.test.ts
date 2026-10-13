@@ -25,9 +25,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeFSP from "node:fs/promises";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Fixture source and output paths are fixed beneath its owned root.
 import * as NodePath from "node:path";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- The fixture uses the selected supported test interpreter.
+// The fixture uses the selected supported test interpreter.
 import * as NodeProcess from "node:process";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Resolves only the two canonical modules compiled by this fixture.
+// Resolves only the two canonical modules compiled by this fixture.
 import * as NodeURL from "node:url";
 import { build } from "vite-plus/pack";
 // @ts-expect-error -- Existing owned native fixture helper has no declarations.

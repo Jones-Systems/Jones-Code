@@ -45,7 +45,12 @@ try {
   const profile = NodePath.join(root, "profile");
   const bundle = NodePath.join(app, "dist-electron");
   await NodeFSP.mkdir(bundle, { recursive: true });
-  const pack = desktopConfig.pack.find((entry) => entry.entry.includes("src/boot.ts"));
+  const pack = desktopConfig.pack.find((entry) => {
+    const entries = Array.isArray(entry.entry)
+      ? entry.entry
+      : Object.values(entry.entry ?? {}).flat();
+    return entries.includes("src/boot.ts");
+  });
   NodeAssert.ok(pack);
   await build({
     ...pack,

@@ -2,14 +2,13 @@
 import * as NodeFSP from "node:fs/promises";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Fixture paths are bounded by the creating layer.
 import * as NodePath from "node:path";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- The fixture uses the current qualified test interpreter.
 import * as NodeProcess from "node:process";
+import * as NodePerfHooks from "node:perf_hooks";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Bounded polling observes only this fixture's readiness marker.
 import * as NodeTimersPromises from "node:timers/promises";
 import { describe, expect, it } from "vite-plus/test";
 // @ts-expect-error -- The existing owned fixture has no declarations.
 import * as IdentityFixture from "../../../../../scripts/jones/updates/legacy-identity-native-fixture.mjs";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Strip only the canonical typed source in the owned lexical fixture.
 import * as NodeModule from "node:module";
 
 // Only this lexical test harness reaches the private constructor. There is no
@@ -127,9 +126,10 @@ async function runOwnedFixture(root: string, scenario: string, signal: AbortSign
     );
     try {
       if (scenario.startsWith("external-cancel")) {
-        const deadline = Date.now() + 5000;
+        const deadline = NodePerfHooks.performance.now() + 5000;
         while (JSON.parse(await NodeFSP.readFile(marker, "utf8")).state !== "ready") {
-          if (Date.now() >= deadline) throw new Error("Captured fixture did not reach READY.");
+          if (NodePerfHooks.performance.now() >= deadline)
+            throw new Error("Captured fixture did not reach READY.");
           await NodeTimersPromises.setTimeout(5);
         }
         cancel.abort(new Error("Owned external cancellation after READY."));
