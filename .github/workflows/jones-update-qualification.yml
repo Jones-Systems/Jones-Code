@@ -146,6 +146,7 @@ jobs:
           apps/server/src/jones/updates/offlinePreparationWorker.test.ts
           scripts/jones/updates/offline-preparation-build.test.ts
           scripts/jones/updates/functional-policy.test.ts
+          scripts/jones/updates/offline-preparation-qualification.test.ts
           apps/server/src/ServerSettingsPersistence.test.ts
           apps/server/src/serverSettings.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
@@ -173,9 +174,9 @@ jobs:
         run: node scripts/jones/check-boundary.ts --strict --json
 
   preparation-candidate:
-    name: Nonexecuted preparation graph (${{ matrix.os }})
+    name: Preparation graph and hosted qualification (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -213,6 +214,17 @@ jobs:
           git rev-parse HEAD
           git rev-parse 'HEAD^{tree}'
           git -c core.quotePath=true ls-files --others --exclude-standard
+
+      - name: Stamp the exact preview source before either graph is collected
+        env:
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          source_date=$(git show -s --format=%cs HEAD | tr -d '-')
+          version="${base}-preview.${source_date}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          node scripts/stamp-jones-build.ts
 
       - name: Collect the actual preparation bundle graph without executing it
         working-directory: apps/server
@@ -253,6 +265,57 @@ jobs:
           test "$(git rev-parse HEAD)" = "$JONES_EXPECTED_SOURCE_SHA"
           export JONES_EXPECTED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
           node scripts/jones/updates/offline-preparation-qualification.ts --verify-worker-graph
+
+      - name: Select the pinned native qualification driver
+        if: matrix.os == 'macos-15'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.13.1"
+          architecture: arm64
+          check-latest: false
+
+      - name: Qualify the exact captured producer and staged native bytes
+        if: matrix.os == 'macos-15'
+        env:
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(/usr/bin/uname -sm)" = "Darwin arm64"
+          test "$(git rev-parse HEAD)" = "$JONES_EXPECTED_SOURCE_SHA"
+          driver_node=$(command -v node)
+          test "$("$driver_node" --version)" = "v24.13.1"
+          umask 077
+          qualification_root=$(mktemp -d "$RUNNER_TEMP/jones-native-qualification.XXXXXX")
+          qualification_root=$(cd "$qualification_root" && pwd -P)
+          mkdir "$qualification_root/home" "$qualification_root/tmp"
+          echo "JONES_QUALIFICATION_ROOT=$qualification_root" >> "$GITHUB_ENV"
+          df -Pk "$RUNNER_TEMP" > "$qualification_root/storage.txt"
+          # The driver owns these exact roots and retains them when custody is uncertain.
+          # Before the driver starts, only still-empty setup directories can be removed.
+          # Once started, its retention decision also covers empty directories with uncertain users.
+          driver_started=0
+          trap 'if [ "$driver_started" = 0 ]; then rmdir "$qualification_root/home" "$qualification_root/tmp" 2>/dev/null || true; fi' EXIT
+          driver_started=1
+          env -i PATH="$(dirname "$driver_node"):/usr/bin:/bin:/usr/sbin:/sbin" \
+            HOME="$qualification_root/home" TMPDIR="$qualification_root/tmp" \
+            JONES_QUALIFICATION_ROOT="$qualification_root" \
+            JONES_EXPECTED_SOURCE_SHA="$JONES_EXPECTED_SOURCE_SHA" \
+            JONES_EXPECTED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')" \
+            "$driver_node" scripts/jones/updates/offline-preparation-qualification.ts --native-preparation \
+            > "$qualification_root/driver.stdout" 2> "$qualification_root/driver.stderr"
+
+      - name: Preserve native qualification result and exact staged bytes
+        if: always() && matrix.os == 'macos-15' && env.JONES_QUALIFICATION_ROOT != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preparation-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.JONES_QUALIFICATION_ROOT }}/evidence/
+            ${{ env.JONES_QUALIFICATION_ROOT }}/driver.stdout
+            ${{ env.JONES_QUALIFICATION_ROOT }}/driver.stderr
+            ${{ env.JONES_QUALIFICATION_ROOT }}/storage.txt
+          if-no-files-found: error
+          retention-days: 7
 
   preview:
     name: Jones native Preview evidence

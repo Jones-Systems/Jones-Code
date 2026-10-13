@@ -4,6 +4,8 @@ import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeUtil from "node:util";
 
 const producerDirectory = "apps/server/dist-exe/preparation-producer-candidate";
 const producerFile = `${producerDirectory}/offlinePreparationProducer.mjs`;
@@ -128,7 +130,8 @@ function validateReport(report) {
     typeof source.tree !== "string" ||
     !/^[a-f0-9]{40}$/.test(source.tree) ||
     !Array.isArray(source.buildOnlyOverlays) ||
-    source.buildOnlyOverlays.length !== 0 ||
+    new Set(source.buildOnlyOverlays).size !== source.buildOnlyOverlays.length ||
+    source.buildOnlyOverlays.some((file) => !releaseManifests.includes(file)) ||
     !isObject(late) ||
     late.basis !== "fixed-late-qualifier-file-inputs" ||
     late.computedImportsResolved !== false ||
@@ -177,6 +180,7 @@ function validateReport(report) {
   return {
     bindings,
     producer,
+    document: report,
     reportedGitIdentity: {
       repository: source.repository,
       sha: source.sha,
@@ -201,10 +205,503 @@ function uncertainCustody(cause, seen = new Set()) {
   return nested.some((error) => uncertainCustody(error, seen));
 }
 
-// A complete observed import list does not approve initializers or runtime builtin semantics.
-// This gate has no caller-controlled admission input and remains closed until that contract exists.
-function requireProducerExecutionContract() {
-  throw new Error("The preparation producer execution contract is unqualified.");
+// Reviewed dfb0e7 producer: import initializes in-memory Effect schemas/caches/prototypes,
+// Error stack detection, scheduler closures and the optional literal async_hooks lookup.
+// Its only import-time filesystem work resolves this unique captured code root and hashes
+// the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
+// to the fixed build methods. These producer permissions never extend the worker policy.
+const reviewedProducer = {
+  sha256: "dfb0e7f532b9ad9bb20a14d35d4fcc982a18aaefe9e8a308367862541a73b52f",
+  size: 764250,
+};
+const reviewedRawSources = {
+  "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts":
+    "2e3031ccd3140df52d371e62a5809a44912f112dc64e3394281484d55ec06763",
+  "apps/desktop/src/jones/updates/jonesColdPairSource.ts":
+    "d89981bb526e6b7c774c8dff57e55b5b90361e5eec5deef16a1c70fa44b8f4a0",
+  "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts":
+    "41b5162af49abb44c16ec483670bb84051fff5411ccbba601b814f786c30360c",
+  "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c":
+    "7a1f37ca8853c798a156be5af1e9dd45de1551fc52f11d59eb0d10f903de33e3",
+  "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts":
+    "c1387e9c5e4809499f86b98d5624e0297b1b957a70443e5e7de7e21d242598c9",
+  "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts":
+    "bc6613ce7d2f58bedd29698edd3a15d87944c26a68ebcebcb8d4721aa98ae843",
+  "apps/desktop/src/jones/updates/jonesPairedStateSource.ts":
+    "e70354b5dcbc141c1facf2e2fa3b09032ce095c1bb79fdf21ec87f43020c9810",
+  "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts":
+    "8a4988b3df8a5ff9a94fead3bf068eaf5a5311211fda83528c6bec06aaa4423d",
+  "apps/server/src/jones/updates/offlinePreparation.ts":
+    "03d4626f3f1760dab4a6b2a5129c87af6ea8289ed651339ca5e795f449509326",
+  "apps/server/src/jones/updates/offlinePreparationCore.ts":
+    "300fb22410e7573f9744978df0b54675f575bd99346d8971d01740f1b7ddf0de",
+  "apps/server/src/jones/updates/offlinePreparationEntry.ts":
+    "6240191f3a042a17c3f0261c6420a5ecfa3c4055c3ec3f46e0f77f792e31a34e",
+  "apps/server/src/jones/updates/offlinePreparationPlan.ts":
+    "3af9931a1136b162ee94d9d8b0f62c2b538824b0cfb917598c7e423b0deb884b",
+  "apps/server/src/jones/updates/offlinePreparationWorker.test.ts":
+    "dfc39d3dd6c48081c0c3b0316c1a79fd79b272ead6b64e525361e115b559e3a3",
+  "apps/server/src/jones/updates/offlinePreparationWorker.ts":
+    "48014857c152aa2dbc0d58061bd76c570b4c09ff2a9926c3ba7986732393c62e",
+  "apps/server/vite.config.ts": "6c78469c642831d33b17db7e592aae2ba5be5ebdc74e494035a3b668a87466c8",
+  "package.json": "5756224c0a1921e5a04859a24a9b1b6284976e788089d38b979cde35b09c399a",
+  "pnpm-lock.yaml": "18db8920c7cb73d300843ec6cefca9c902dfbd0fab7082467407fdd3870a5534",
+  "pnpm-workspace.yaml": "a4fe4a6796ea7cca6d0f198efb45ef135af7802ae7ee41a58f059a9e371c4032",
+  "scripts/jones/updates/functional-policy.ts":
+    "343e1fea32d126526696bb53f7d39eaf3d9a06278b0e9cf3897169dbb050c938",
+  "scripts/jones/updates/legacy-bootstrap-bundle.ts":
+    "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
+  "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
+    "fb9fbff54d8764daea34863ac45ff6fdc165509a02a6dcca192142282ef0fd5b",
+  "scripts/jones/updates/legacy-identity-native-fixture.mjs":
+    "916901550d251c2b81893bb9e273997081b3a99f2d051b7298a2fe76bc611032",
+  "scripts/jones/updates/legacy-preparation-native-fixture.d.mts":
+    "1d1071a6008cb223205e393a84cfbf246e58e71a3aa55922a4fd932bd73dd8e8",
+  "scripts/jones/updates/legacy-preparation-native-fixture.mjs":
+    "5c56c0dab7fc700f88c10fcd219f50c4165ac6d109cdea99e3920ba74e861ed0",
+  "scripts/jones/updates/offline-preparation-build.ts":
+    "290e4b8426e5575f0519e834a04bbf921962bf6e64b861016369d10298c2f3c1",
+  "scripts/jones/updates/offline-preparation-producer-entry.ts":
+    "6c0f4aa9e0b2dbe94d84d41b022d7206e9ff94f1f1d2c5f54f50606a0b3a3180",
+  "scripts/package.json": "efa7e9d6b0f39d23d5d6cf21391a13bab214ee12a498e754cba1544fb2b6d438",
+  "vite.config.ts": "3a2b338d9d847e9e4faf83d80608cf21f888318f0cceb97d040170ae23ada25c",
+};
+const reviewedImports = [
+  {
+    kind: "static",
+    specifier: "node:fs",
+    computed: false,
+    builtin: true,
+    expressionSha256: "b6471bb6742ff95f8b90244d773ca1c10cc1db5944b113871b5a68c8cbb7d5f7",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 0,
+      end: 34,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:child_process",
+    computed: false,
+    builtin: true,
+    expressionSha256: "8f9b1ef7c3883923fb3b83b8fa8d82d89136e42f21c609af33657c291bfe4160",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 35,
+      end: 90,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:crypto",
+    computed: false,
+    builtin: true,
+    expressionSha256: "68ea541bde6e48ae4d48e87096319c19cb79eff795f410e570728487674bfc30",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 91,
+      end: 133,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:path",
+    computed: false,
+    builtin: true,
+    expressionSha256: "9bdcd607570c70a7543e1c3e6960556cc1cd881e04f742ba1df616cdd1af45a5",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 134,
+      end: 172,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:os",
+    computed: false,
+    builtin: true,
+    expressionSha256: "8f7e813debf01e244983cbf3c211f442317ea2a6a00ef6380bb85bd6ef13a1fa",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 173,
+      end: 207,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:timers",
+    computed: false,
+    builtin: true,
+    expressionSha256: "8f4ae7b420f8928b9452e0cc4720c899ffdfff3a2e112edfdd1570414a87fe0a",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 208,
+      end: 250,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:http",
+    computed: false,
+    builtin: true,
+    expressionSha256: "e6b3de84783c7483a046ef20eb753a1ab2f09b3e55ee603fc9f433dd24f5e5f9",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 251,
+      end: 289,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:url",
+    computed: false,
+    builtin: true,
+    expressionSha256: "945f2c2f0419c74ddaefb5d7910178df8de728174d3b31c98a1b5dedb5f05efb",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 290,
+      end: 326,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:https",
+    computed: false,
+    builtin: true,
+    expressionSha256: "e8067f7a1a1da4e9ce4d24897dbc3cd21d39b80e5aeeed387fdfa7974592163e",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 327,
+      end: 367,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "static",
+    specifier: "node:util",
+    computed: false,
+    builtin: true,
+    expressionSha256: "a138b11f80981629c94d05920e4c2e87f7d8c56dc577c4daaf6301e1ab935ee9",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 368,
+      end: 406,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "process-builtin",
+    specifier: "node:async_hooks",
+    computed: false,
+    builtin: true,
+    expressionSha256: "d64bd1adb71bdcc572de3468d66276ee84b3df3e7df69858acd26bde23a60ddb",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 152209,
+      end: 152267,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "dynamic",
+    specifier: null,
+    computed: true,
+    builtin: false,
+    expressionSha256: "416696edd01b5442c66e01cc2ad20fd95530a586d89267d76cb1486471830294",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 747492,
+      end: 747620,
+      endExclusive: true,
+    },
+  },
+  {
+    kind: "dynamic",
+    specifier: null,
+    computed: true,
+    builtin: false,
+    expressionSha256: "1983888e443a0d38c12ad7306647753e2c85ebdc83a59a8714571fafa4bfa928",
+    location: {
+      file: "offlinePreparationProducer.mjs",
+      unit: "utf16-code-units",
+      origin: 0,
+      start: 747822,
+      end: 747948,
+      endExclusive: true,
+    },
+  },
+];
+const reviewedLateModulesSha256 =
+  "869879c46b88ade6d75efa8f56aacdb117592e4e55b9c648592978388d2cda9f";
+
+function requireProducerExecutionContract(capture) {
+  const report = capture.report.document;
+  const emitted = report.emitted;
+  if (
+    !NodeUtil.isDeepStrictEqual(capture.report.producer, reviewedProducer) ||
+    !capture.producerBytes
+      .toString("utf8")
+      .endsWith("export { buildQualifiedPreparation, stageQualifiedPreparation };") ||
+    !NodeUtil.isDeepStrictEqual(emitted.syntax?.imports, reviewedImports) ||
+    emitted.syntax?.importsComplete !== true ||
+    emitted.syntax?.importCount !== 13 ||
+    emitted.mapPresent !== false ||
+    !NodeUtil.isDeepStrictEqual(emitted.assets, []) ||
+    !NodeUtil.isDeepStrictEqual(emitted.generatedRuntime, {
+      availability: "unavailable",
+      reason: "generated-region-not-observed",
+    }) ||
+    hash(Buffer.from(JSON.stringify(report.lateQualifierSources.modules))) !==
+      reviewedLateModulesSha256
+  )
+    throw new Error("The preparation producer differs from the reviewed execution contract.");
+  for (const [file, sha256] of Object.entries(reviewedRawSources))
+    if (capture.report.bindings.get(file)?.sha256 !== sha256)
+      throw new Error(`Producer raw source differs from the reviewed execution contract: ${file}`);
+  // Exact emitted bytes bind the two exports and both computed imports to captured fixed
+  // qualifier paths. The report remains an unqualified toolchain observation, not authority.
+}
+
+function verifyExecutionOverlay(file, original, actual, identity) {
+  if (!releaseManifests.includes(file) || !isObject(original) || !isObject(actual))
+    throw new Error("Unadmitted producer source overlay.");
+  const before = { ...original },
+    after = { ...actual };
+  const version = after.version;
+  if (
+    typeof version !== "string" ||
+    version.length > 128 ||
+    !/^\d+\.\d+\.\d+-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(version)
+  )
+    throw new Error("Producer source requires a bounded preview version.");
+  if (file === "apps/server/package.json" || file === "apps/desktop/package.json") {
+    if (
+      !NodeUtil.isDeepStrictEqual(after.jonesSource, {
+        repository: "Jones-Systems/Jones-Code",
+        ...identity,
+      }) ||
+      after.startupGateProtocol !== 1
+    )
+      throw new Error("Producer source stamp differs from the observed Git identity.");
+    delete before.jonesSource;
+    delete after.jonesSource;
+    delete before.startupGateProtocol;
+    delete after.startupGateProtocol;
+  }
+  delete before.version;
+  delete after.version;
+  if (!NodeUtil.isDeepStrictEqual(before, after))
+    throw new Error("Producer source has changes beyond release stamping.");
+  return version;
+}
+
+// A lost close leaves the actual child retained; no PID receipt becomes signalling authority.
+const retainedGitChildren = new Set();
+async function readGit(root, args, signal) {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const child = NodeChildProcess.default.spawn(
+      "/usr/bin/git",
+      [
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-C",
+        root,
+        ...args,
+      ],
+      {
+        cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+          LC_ALL: "C",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_NO_REPLACE_OBJECTS: "1",
+          GIT_OPTIONAL_LOCKS: "0",
+        },
+      },
+    );
+    retainedGitChildren.add(child);
+    let failure,
+      failed = false,
+      exited = false,
+      finished = false,
+      bytes = 0,
+      killTimer,
+      custodyTimer;
+    const output = [];
+    const finish = (cause, value, uncertain = false, rejected = cause !== undefined) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(deadline);
+      clearTimeout(killTimer);
+      clearTimeout(custodyTimer);
+      signal?.removeEventListener("abort", cancelled);
+      if (!uncertain) retainedGitChildren.delete(child);
+      if (rejected) reject(cause);
+      else resolve(value);
+    };
+    const stop = (cause) => {
+      if (!failed) {
+        failure = cause;
+        failed = true;
+      }
+      if (killTimer !== undefined || finished) return;
+      try {
+        child.kill("SIGTERM");
+      } catch (error) {
+        failure ??= error;
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch (error) {
+          failure ??= error;
+        }
+      }, 1000);
+      custodyTimer = setTimeout(
+        () =>
+          finish(
+            Object.assign(
+              new Error("Producer Git child closure is unproved.", { cause: failure }),
+              { preserveScratch: true, childPid: child.pid },
+            ),
+            undefined,
+            true,
+          ),
+        5000,
+      );
+    };
+    const cancelled = () => stop(signal.reason);
+    const deadline = setTimeout(
+      () => stop(new Error("Producer Git observation timed out.")),
+      20000,
+    );
+    child.once("error", (cause) => {
+      if (!failed) {
+        failure = cause;
+        failed = true;
+      }
+    });
+    child.once("exit", () => {
+      exited = true;
+    });
+    const receive = (chunk, stdout) => {
+      bytes += chunk.length;
+      if (bytes > 2 * 1024 * 1024) stop(new Error("Producer Git output exceeds its bound."));
+      else if (stdout) output.push(chunk);
+    };
+    child.stdout.on("data", (chunk) => receive(chunk, true));
+    child.stderr.on("data", (chunk) => receive(chunk, false));
+    child.stdout.once("error", stop);
+    child.stderr.once("error", stop);
+    child.once("close", (code) => {
+      if (!exited && child.pid !== undefined) {
+        finish(
+          Object.assign(new Error("Producer Git exit custody is unproved.", { cause: failure }), {
+            preserveScratch: true,
+            childPid: child.pid,
+          }),
+          undefined,
+          true,
+        );
+      } else if (failed) finish(failure, undefined, false, true);
+      else
+        finish(
+          code === 0 ? undefined : new Error("Producer Git observation failed."),
+          Buffer.concat(output),
+        );
+    });
+    signal?.addEventListener("abort", cancelled, { once: true });
+    if (signal?.aborted) cancelled();
+  });
+}
+
+async function verifyExecutionSource(capture, expected, signal) {
+  const git = async (...args) =>
+    new TextDecoder("utf-8", { fatal: true }).decode(
+      await readGit(capture.sourceRoot, args, signal),
+    );
+  const root = (await git("rev-parse", "--show-toplevel")).trim();
+  const sha = (await git("rev-parse", "HEAD")).trim();
+  const tree = (await git("rev-parse", "HEAD^{tree}")).trim();
+  if (
+    (await NodeFSP.default.realpath(root)) !== capture.sourceRoot ||
+    sha !== expected.sourceSha ||
+    tree !== expected.sourceTree
+  )
+    throw new Error("Producer checkout identity differs from the captured request.");
+  if ((await git("ls-files", "--others", "--exclude-standard", "-z")) !== "")
+    throw new Error("Producer checkout has untracked source.");
+  const changed = (
+    await git(
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      "HEAD",
+      "--",
+    )
+  )
+    .split("\0")
+    .filter(Boolean)
+    .sort();
+  if (
+    !NodeUtil.isDeepStrictEqual(changed, [...releaseManifests].sort()) ||
+    !NodeUtil.isDeepStrictEqual(
+      [...capture.report.document.source.buildOnlyOverlays].sort(),
+      changed,
+    )
+  )
+    throw new Error("Producer checkout must contain exactly the four recorded release overlays.");
+  if (capture.report.document.source.version !== expected.version)
+    throw new Error("Producer graph preview version differs from the requested version.");
+  for (const file of releaseManifests) {
+    const original = JSON.parse(await git("show", `HEAD:${file}`));
+    const actual = JSON.parse(capture.manifests.get(file).toString("utf8"));
+    if (verifyExecutionOverlay(file, original, actual, { sha, tree }) !== expected.version)
+      throw new Error("Producer release manifest versions differ.");
+  }
+  await capture.verifyCurrent();
 }
 
 async function requireHandleRejection(producer, candidate) {
@@ -290,7 +787,19 @@ export async function buildAndStagePreparationProducer(options) {
       )
         throw new Error("Producer capture differs from the requested source identity.");
       await capture.verifyCurrent();
-      requireProducerExecutionContract();
+      requireProducerExecutionContract(capture);
+      if (
+        process.platform !== "darwin" ||
+        process.arch !== "arm64" ||
+        process.versions.node !== "24.13.1" ||
+        process.execArgv.length !== 0 ||
+        process.env.NODE_OPTIONS ||
+        process.env.NODE_PATH
+      )
+        throw new Error(
+          "Producer execution requires fresh pinned Node 24.13.1 on Darwin arm64 without preload options.",
+        );
+      await verifyExecutionSource(capture, expectedSource, signal);
 
       const controller = new AbortController();
       const cancel = () => controller.abort(signal.reason);
@@ -309,7 +818,7 @@ export async function buildAndStagePreparationProducer(options) {
             preserveScratch: true,
           });
         }
-        await capture.verifyCurrent();
+        await verifyExecutionSource(capture, expectedSource, signal);
         if (
           Object.keys(producer).sort().join(",") !==
             "buildQualifiedPreparation,stageQualifiedPreparation" ||
@@ -324,7 +833,7 @@ export async function buildAndStagePreparationProducer(options) {
           stageRoot: capture.stageRoot,
           signal: controller.signal,
         });
-        await capture.verifyCurrent();
+        await verifyExecutionSource(capture, expectedSource, signal);
         // These are derived from the real issued object inside its one module lifetime.
         // A lookalike must be rejected before inspecting any destination or source arguments.
         for (const recreated of [
@@ -334,7 +843,7 @@ export async function buildAndStagePreparationProducer(options) {
           Object.create(handle),
         ])
           await requireHandleRejection(producer, recreated);
-        await capture.verifyCurrent();
+        await verifyExecutionSource(capture, expectedSource, signal);
         const staged = await producer.stageQualifiedPreparation({
           handle,
           expectedSource,
@@ -342,7 +851,7 @@ export async function buildAndStagePreparationProducer(options) {
           signal: controller.signal,
         });
         await requireHandleRejection(producer, handle);
-        await capture.verifyCurrent();
+        await verifyExecutionSource(capture, expectedSource, signal);
         return { ...staged, handleConsumption: { recreatedRejected: 4, consumedRejected: true } };
       } finally {
         signal?.removeEventListener("abort", cancel);
@@ -604,8 +1113,10 @@ async function withCapturedPreparationProducer(options, consume) {
     await copy(reportInput, reportFile);
     const producer = await readInput(producerFile, producerLimit, report.producer);
     await copy(producer, capturedProducerFile);
+    const manifests = new Map();
     for (const relative of sourceInputs) {
       const observed = await readInput(relative, sourceLimit, report.bindings.get(relative));
+      if (releaseManifests.includes(relative)) manifests.set(relative, observed.bytes);
       await copy(observed, relative);
     }
     await verifyCurrent();
@@ -634,6 +1145,9 @@ async function withCapturedPreparationProducer(options, consume) {
     };
     result = await consume({
       observation,
+      report,
+      producerBytes: producer.bytes,
+      manifests,
       sourceRoot: source.path,
       codeRoot: scratchRoot,
       stageRoot: stage.path,

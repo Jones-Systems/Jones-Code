@@ -4,6 +4,9 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
+import * as NodeChildProcess from "node:child_process";
+import { EventEmitter } from "node:events";
+import { verifyPreparationSourceOverlay } from "./functional-policy.ts";
 import {
   buildAndStagePreparationProducer,
   capturePreparationProducer,
@@ -245,7 +248,7 @@ NodeTest.test(
         return realpath(name, ...args);
       });
       await NodeAssert.rejects(buildAndStagePreparationProducer(input), (error) => {
-        NodeAssert.match(error.message, /producer execution contract is unqualified/);
+        NodeAssert.match(error.message, /producer differs from the reviewed execution contract/);
         NodeAssert.equal(error.cleanup.disposition, "removed");
         NodeAssert.equal(error.cleanup.root, capturedRoot);
         NodeAssert.equal(error.preserveStageRoot, undefined);
@@ -377,7 +380,10 @@ NodeTest.test(
       });
       await NodeAssert.rejects(buildAndStagePreparationProducer(input), (error) => {
         NodeAssert.ok(error instanceof AggregateError);
-        NodeAssert.match(error.cause.message, /producer execution contract is unqualified/);
+        NodeAssert.match(
+          error.cause.message,
+          /producer differs from the reviewed execution contract/,
+        );
         NodeAssert.equal(error.errors[0], error.cause);
         NodeAssert.equal(error.cleanup.disposition, "retained-uncertain");
         NodeAssert.equal(error.preserveScratch, true);
@@ -938,20 +944,22 @@ NodeTest.test(
     }),
 );
 
-// This test-only namespace exposes the private rejection assertion without opening the producer
-// gate. Synthetic registries prove assertion behavior; only the actual native build can issue
+// This test-only namespace exposes private validators and custody helpers without importing
+// emitted producer bytes. Synthetic registries prove assertion behavior; only the native build can issue
 // the production handle tested by the fixed captured build/stage consumer.
 let rejectionAssertion;
+let privateLoaderModule;
 async function privateRejectionAssertion() {
   if (rejectionAssertion === undefined) {
     const source = await NodeFSP.default.readFile(
       new URL("./offline-preparation-producer-loader.mjs", import.meta.url),
       "utf8",
     );
-    const testSource = `${source}\nexport { requireHandleRejection };\n`;
+    const testSource = `${source}\nexport { requireHandleRejection, verifyExecutionOverlay, verifyExecutionSource, readGit };\n`;
     const testModule = await import(
       `data:text/javascript;base64,${Buffer.from(testSource).toString("base64")}`
     );
+    privateLoaderModule = testModule;
     rejectionAssertion = testModule.requireHandleRejection;
   }
   return rejectionAssertion;
@@ -1035,5 +1043,242 @@ NodeTest.test(
         return true;
       },
     );
+  },
+);
+
+NodeTest.test(
+  "private builtin overlay validator agrees with shared semantics and requires the complete preview stamp",
+  async () => {
+    await privateRejectionAssertion();
+    const identity = { sha: "a".repeat(40), tree: "b".repeat(40) };
+    const original = { name: "fixture", version: "0.0.45", dependencies: { fixed: "1" } };
+    const preview = "0.0.45-preview.20261013.1.1";
+    const stamp = { repository: "Jones-Systems/Jones-Code", ...identity };
+    for (const file of sharedPaths.filter((file) =>
+      /^(apps|packages)\/.+\/package.json$/.test(file),
+    )) {
+      const executable = ["apps/server/package.json", "apps/desktop/package.json"].includes(file);
+      const actual = {
+        ...original,
+        version: preview,
+        ...(executable ? { jonesSource: stamp, startupGateProtocol: 1 } : {}),
+      };
+      NodeAssert.equal(
+        privateLoaderModule.verifyExecutionOverlay(file, original, actual, identity),
+        verifyPreparationSourceOverlay(file, original, actual, identity),
+      );
+      for (const change of [
+        { dependencies: { fixed: "2" } },
+        { extra: true },
+        { jonesSource: { ...stamp, tree: "c".repeat(40) } },
+        { startupGateProtocol: 2 },
+      ]) {
+        NodeAssert.throws(() =>
+          verifyPreparationSourceOverlay(file, original, { ...actual, ...change }, identity),
+        );
+        NodeAssert.throws(() =>
+          privateLoaderModule.verifyExecutionOverlay(
+            file,
+            original,
+            { ...actual, ...change },
+            identity,
+          ),
+        );
+      }
+      NodeAssert.throws(
+        () =>
+          privateLoaderModule.verifyExecutionOverlay(
+            file,
+            original,
+            { ...actual, version: "0.0.45" },
+            identity,
+          ),
+        /preview version/,
+      );
+      if (executable) {
+        const missing = { ...actual };
+        delete missing.jonesSource;
+        NodeAssert.throws(
+          () => privateLoaderModule.verifyExecutionOverlay(file, original, missing, identity),
+          /source stamp/,
+        );
+      }
+    }
+  },
+);
+
+function mockedGit(t, response) {
+  const children = [];
+  t.mock.method(NodeChildProcess.default, "spawn", (file, args, options) => {
+    NodeAssert.equal(file, "/usr/bin/git");
+    NodeAssert.equal(options.env.GIT_CONFIG_GLOBAL, "/dev/null");
+    NodeAssert.equal(options.env.GIT_OPTIONAL_LOCKS, "0");
+    NodeAssert.equal(options.env.NODE_OPTIONS, undefined);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.pid = 1234;
+    child.signals = [];
+    child.kill = (signal) => {
+      child.signals.push(signal);
+      return true;
+    };
+    children.push(child);
+    queueMicrotask(() => response(child, args.slice(args.indexOf("-C") + 2)));
+    return child;
+  });
+  return children;
+}
+
+NodeTest.test("Git observation waits for actual captured exit and close", async (t) => {
+  await privateRejectionAssertion();
+  const children = mockedGit(t, (child) => {
+    child.stdout.emit("data", Buffer.from("bound output"));
+    child.emit("exit", 0);
+  });
+  let settled = false;
+  const reading = privateLoaderModule.readGit("/synthetic", ["rev-parse", "HEAD"]).then((bytes) => {
+    settled = true;
+    return bytes;
+  });
+  await new Promise((resolve) => queueMicrotask(resolve));
+  NodeAssert.equal(settled, false);
+  children[0].emit("close", 0);
+  NodeAssert.equal((await reading).toString(), "bound output");
+});
+
+NodeTest.test("Git cancellation signals only its captured child and waits for close", async (t) => {
+  await privateRejectionAssertion();
+  const children = mockedGit(t, () => {}),
+    abort = new AbortController(),
+    reason = new Error("cancel synthetic Git");
+  const reading = privateLoaderModule.readGit("/synthetic", ["rev-parse", "HEAD"], abort.signal);
+  const rejected = NodeAssert.rejects(reading, (error) => error === reason);
+  abort.abort(reason);
+  NodeAssert.deepEqual(children[0].signals, ["SIGTERM"]);
+  children[0].emit("exit", null);
+  children[0].emit("close", null);
+  await rejected;
+});
+
+NodeTest.test("Git close without exit retains uncertain custody", async (t) => {
+  await privateRejectionAssertion();
+  mockedGit(t, (child) => child.emit("close", 0));
+  await NodeAssert.rejects(
+    privateLoaderModule.readGit("/synthetic", ["rev-parse", "HEAD"]),
+    (error) => {
+      NodeAssert.equal(error.preserveScratch, true);
+      NodeAssert.match(error.message, /exit custody/);
+      return true;
+    },
+  );
+});
+
+NodeTest.test(
+  "exact Git identity and four committed manifest overlays precede execution",
+  async (t) => {
+    await privateRejectionAssertion();
+    const files = [
+      "apps/server/package.json",
+      "apps/desktop/package.json",
+      "apps/web/package.json",
+      "packages/contracts/package.json",
+    ];
+    const expected = {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: "a".repeat(40),
+      sourceTree: "b".repeat(40),
+      version: "0.0.45-preview.20261013.1",
+    };
+    const original = { name: "fixture", version: "0.0.45" };
+    const manifests = new Map(
+      files.map((file) => [
+        file,
+        Buffer.from(
+          JSON.stringify({
+            ...original,
+            version: expected.version,
+            ...(["apps/server/package.json", "apps/desktop/package.json"].includes(file)
+              ? {
+                  jonesSource: {
+                    repository: expected.repository,
+                    sha: expected.sourceSha,
+                    tree: expected.sourceTree,
+                  },
+                  startupGateProtocol: 1,
+                }
+              : {}),
+          }),
+        ),
+      ]),
+    );
+    let mode = "valid",
+      current = 0;
+    mockedGit(t, (child, args) => {
+      let output;
+      if (args[0] === "rev-parse")
+        output =
+          args[1] === "--show-toplevel"
+            ? "/synthetic"
+            : args[1] === "HEAD"
+              ? mode === "stale-head"
+                ? "c".repeat(40)
+                : expected.sourceSha
+              : expected.sourceTree;
+      else if (args[0] === "ls-files") output = mode === "untracked" ? "untracked.ts\0" : "";
+      else if (args[0] === "diff")
+        output = (mode === "other-edit" ? [...files, "other.ts"] : files).join("\0") + "\0";
+      else if (args[0] === "show")
+        output = JSON.stringify(
+          mode === "dependency-edit" ? { ...original, dependencies: { x: "1" } } : original,
+        );
+      else NodeAssert.fail("Unexpected Git command");
+      child.stdout.emit("data", Buffer.from(output));
+      child.emit("exit", 0);
+      child.emit("close", 0);
+    });
+    t.mock.method(NodeFSP.default, "realpath", async (path) => path);
+    const capture = {
+      sourceRoot: "/synthetic",
+      manifests,
+      report: { document: { source: { version: expected.version, buildOnlyOverlays: files } } },
+      verifyCurrent: async () => {
+        current += 1;
+      },
+    };
+    await privateLoaderModule.verifyExecutionSource(capture, expected);
+    NodeAssert.equal(current, 1);
+    for (mode of ["stale-head", "untracked", "other-edit", "dependency-edit"])
+      await NodeAssert.rejects(privateLoaderModule.verifyExecutionSource(capture, expected));
+    mode = "valid";
+    for (const overlays of [files.slice(1), [...files, files[0]]]) {
+      capture.report.document.source.buildOnlyOverlays = overlays;
+      await NodeAssert.rejects(
+        privateLoaderModule.verifyExecutionSource(capture, expected),
+        /four recorded/,
+      );
+    }
+    NodeAssert.equal(current, 1);
+  },
+);
+
+NodeTest.test(
+  "Git deadline escalates only its captured child and retains an unproved close",
+  async (t) => {
+    await privateRejectionAssertion();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const children = mockedGit(t, () => {});
+    const reading = privateLoaderModule.readGit("/synthetic", ["rev-parse", "HEAD"]);
+    const rejected = NodeAssert.rejects(reading, (error) => {
+      NodeAssert.equal(error.preserveScratch, true);
+      NodeAssert.match(error.message, /child closure is unproved/);
+      return true;
+    });
+    t.mock.timers.tick(20000);
+    NodeAssert.deepEqual(children[0].signals, ["SIGTERM"]);
+    t.mock.timers.tick(1000);
+    NodeAssert.deepEqual(children[0].signals, ["SIGTERM", "SIGKILL"]);
+    t.mock.timers.tick(4000);
+    await rejected;
   },
 );

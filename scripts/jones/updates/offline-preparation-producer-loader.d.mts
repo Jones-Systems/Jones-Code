@@ -44,7 +44,7 @@ export function capturePreparationProducer(options: {
   readonly signal?: AbortSignal;
 }): Promise<HeldPreparationProducerCapture>;
 
-/** The execution-contract gate currently refuses before import; this is not a qualification capability. */
+/** Fixed reviewed capture/build/stage operation; returns evidence, never a reusable capability. */
 export function buildAndStagePreparationProducer(options: {
   readonly sourceRoot: string;
   readonly stageRoot: string;

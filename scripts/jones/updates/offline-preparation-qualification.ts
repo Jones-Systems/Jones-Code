@@ -1,8 +1,9 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Hosted graph verification reads fixed artifacts without importing emitted code.
-import * as NodeFS from "node:fs";
+// @effect-diagnostics nodeBuiltinImport:off -- This fixed hosted adapter owns synthetic qualification roots and bounded artifact evidence.
+import NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { verifyFunctionalPreparationGraph } from "./functional-policy.ts";
+import { buildAndStagePreparationProducer } from "./offline-preparation-producer-loader.mjs";
 
 function readArtifact(path: string, limit: number): Buffer {
   const fd = NodeFS.openSync(
@@ -236,51 +237,326 @@ function verifyMutationRejections(
   return rejected;
 }
 
-// No producer import or native-build mode is admitted until the changed emitted producer is reviewed.
-if (import.meta.main) {
-  if (process.argv.length !== 3 || process.argv[2] !== "--verify-worker-graph")
-    throw new Error("Only --verify-worker-graph is available; producer execution remains held.");
-  const repoRoot = NodeFS.realpathSync(
-    NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
+const nativeCaseNames = [
+  "apply",
+  "reconcile",
+  "repeat-plan",
+  "repeat-apply",
+  "durable-plan-drift",
+  "wrong-scope",
+  "paused-cancel",
+  "closed-query-failure",
+  "close-uncertainty",
+  "custody-uncertainty",
+];
+
+function retainRoots(cause: unknown, seen = new Set<unknown>()): boolean {
+  if (typeof cause !== "object" || cause === null || seen.has(cause)) return false;
+  if (seen.size >= 64) return true;
+  seen.add(cause);
+  const value = cause as Record<string, unknown>;
+  return (
+    value.preserveScratch === true ||
+    value.preserveStageRoot === true ||
+    typeof value.retainedRoot === "string" ||
+    retainRoots(value.cause, seen) ||
+    (cause instanceof AggregateError && cause.errors.some((item) => retainRoots(item, seen)))
   );
-  const candidate = NodePath.join(repoRoot, "apps/server/dist-exe/preparation-candidate");
-  if (process.execArgv.length !== 0 || process.env.NODE_OPTIONS)
-    throw new Error(
-      "Hosted worker verification requires a fresh Node process without preload options.",
-    );
-  const reportBytes = readArtifact(
-    NodePath.join(candidate, "candidate-graph.json"),
-    16 * 1024 * 1024,
-  );
-  const entryBytes = readArtifact(
-    NodePath.join(candidate, "offlinePreparationEntry.mjs"),
-    32 * 1024 * 1024,
-  );
-  const source = record(record(JSON.parse(reportBytes.toString("utf8")) as unknown).source);
-  const expectedSha = process.env.JONES_EXPECTED_SOURCE_SHA;
-  const expectedTree = process.env.JONES_EXPECTED_SOURCE_TREE;
+}
+
+/** The fixed hosted mode has no caller-supplied producer, callback, namespace or handle. */
+export async function runHostedNativePreparation(
+  repoRoot: string,
+  qualificationRoot: string,
+): Promise<void> {
   if (
-    expectedSha === undefined ||
-    !/^[a-f0-9]{40}$/.test(expectedSha) ||
-    expectedTree === undefined ||
-    !/^[a-f0-9]{40}$/.test(expectedTree) ||
-    source.sha !== expectedSha ||
-    source.tree !== expectedTree
+    process.platform !== "darwin" ||
+    process.arch !== "arm64" ||
+    process.versions.node !== "24.13.1" ||
+    process.execArgv.length !== 0 ||
+    process.env.NODE_OPTIONS ||
+    process.env.NODE_PATH
   )
-    throw new Error("Hosted graph differs from the independently observed checkout identity.");
-  const binding = verifyFunctionalPreparationGraph({ repoRoot, reportBytes, entryBytes });
-  const mutationRejections = verifyMutationRejections(repoRoot, reportBytes, entryBytes);
-  verifyFunctionalPreparationGraph({ repoRoot, reportBytes, entryBytes });
+    throw new Error(
+      "Native qualification requires fresh Node 24.13.1 on Darwin arm64 without preload options.",
+    );
+  const source = NodeFS.realpathSync(repoRoot),
+    root = NodeFS.realpathSync(qualificationRoot);
+  const rootInfo = NodeFS.lstatSync(root, { bigint: true });
+  if (
+    root !== qualificationRoot ||
+    !rootInfo.isDirectory() ||
+    rootInfo.uid !== BigInt(process.getuid!()) ||
+    (rootInfo.mode & 0o077n) !== 0n ||
+    NodeFS.readdirSync(root).some(
+      (name) => !["home", "tmp", "driver.stdout", "driver.stderr", "storage.txt"].includes(name),
+    ) ||
+    process.env.HOME !== NodePath.join(root, "home") ||
+    process.env.TMPDIR !== NodePath.join(root, "tmp") ||
+    source === root ||
+    source.startsWith(root + NodePath.sep) ||
+    root.startsWith(source + NodePath.sep)
+  )
+    throw new Error("Native qualification roots must be private, fresh and separate from source.");
+  const disk = NodeFS.statfsSync(root, { bigint: true });
+  if (disk.bavail * disk.bsize < 4n * 1024n * 1024n * 1024n)
+    throw new Error("Native qualification requires at least 4 GiB of available runner storage.");
+  const owned = new Map<string, { dev: bigint; ino: bigint; uid: bigint }>();
+  for (const name of ["home", "tmp"]) {
+    const path = NodePath.join(root, name),
+      info = NodeFS.lstatSync(path, { bigint: true });
+    if (
+      !info.isDirectory() ||
+      info.uid !== rootInfo.uid ||
+      (info.mode & 0o077n) !== 0n ||
+      NodeFS.readdirSync(path).length !== 0
+    )
+      throw new Error("Native qualification HOME and TMPDIR must be empty owned directories.");
+    owned.set(path, info);
+  }
+  const evidence = NodePath.join(root, "evidence");
+  NodeFS.mkdirSync(evidence, { mode: 0o700 });
+  const evidenceInfo = NodeFS.lstatSync(evidence, { bigint: true });
+  const verifyEvidenceCustody = () => {
+    for (const [path, original] of [
+      [root, rootInfo],
+      [evidence, evidenceInfo],
+    ] as const) {
+      const current = NodeFS.lstatSync(path, { bigint: true });
+      if (
+        current.dev !== original.dev ||
+        current.ino !== original.ino ||
+        current.uid !== original.uid ||
+        !current.isDirectory()
+      )
+        throw Object.assign(new Error("Hosted evidence directory custody changed."), {
+          preserveScratch: true,
+        });
+    }
+  };
+  const stage = NodePath.join(root, "stage"),
+    resources = NodePath.join(stage, "resources");
+  const controller = new AbortController();
+  const cancelled = () => controller.abort(new Error("Hosted native qualification cancelled."));
+  process.once("SIGINT", cancelled);
+  process.once("SIGTERM", cancelled);
+  let primary: unknown;
+  let completed: Awaited<ReturnType<typeof buildAndStagePreparationProducer>> | undefined;
+  try {
+    NodeFS.mkdirSync(stage, { mode: 0o700 });
+    owned.set(stage, NodeFS.lstatSync(stage, { bigint: true }));
+    NodeFS.mkdirSync(resources, { mode: 0o700 });
+    const graph = record(
+      JSON.parse(
+        readArtifact(
+          NodePath.join(source, "apps/server/dist-exe/preparation-candidate/candidate-graph.json"),
+          16 * 1024 * 1024,
+        ).toString("utf8"),
+      ) as unknown,
+    );
+    const identity = record(graph.source);
+    const sourceSha = process.env.JONES_EXPECTED_SOURCE_SHA,
+      sourceTree = process.env.JONES_EXPECTED_SOURCE_TREE;
+    if (
+      sourceSha === undefined ||
+      sourceTree === undefined ||
+      !/^[a-f0-9]{40}$/.test(sourceSha) ||
+      !/^[a-f0-9]{40}$/.test(sourceTree) ||
+      identity.sha !== sourceSha ||
+      identity.tree !== sourceTree ||
+      typeof identity.version !== "string"
+    )
+      throw new Error("Native qualification graph differs from its checkout identity.");
+    completed = await buildAndStagePreparationProducer({
+      sourceRoot: source,
+      stageRoot: stage,
+      stageResourcesDir: resources,
+      expectedSource: {
+        repository: "Jones-Systems/Jones-Code",
+        sourceSha,
+        sourceTree,
+        version: identity.version,
+      },
+      signal: controller.signal,
+    });
+    controller.signal.throwIfAborted();
+    if (
+      completed.cleanup.disposition !== "removed" ||
+      completed.handleConsumption.recreatedRejected !== 4 ||
+      completed.handleConsumption.consumedRejected !== true ||
+      completed.diagnosticEvidence.nativeColdOwnerQualified !== false ||
+      completed.diagnosticEvidence.stateAdmissionAllowed !== false ||
+      completed.diagnosticEvidence.activationAllowed !== false
+    )
+      throw Object.assign(
+        new Error("Native qualification returned an incomplete fixed lifecycle."),
+        { preserveScratch: true },
+      );
+    const native = record(JSON.parse(completed.diagnosticEvidence.nativeQualification) as unknown);
+    if (
+      native.qualification !== "synthetic-native-preparation" ||
+      !Array.isArray(native.cases) ||
+      native.cases.length !== nativeCaseNames.length ||
+      native.cases.some((value, index) => {
+        const cases = record(value).cases;
+        return (
+          !Array.isArray(cases) ||
+          cases.length !== 1 ||
+          record(cases[0]).case !== nativeCaseNames[index]
+        );
+      })
+    )
+      throw Object.assign(new Error("Native qualification did not return all ten cases."), {
+        preserveScratch: true,
+      });
+    // Move the exact checked stage into deliverable custody; no duplicate runtime copy is made.
+    verifyEvidenceCustody();
+    NodeFS.renameSync(stage, NodePath.join(evidence, "stage"));
+    owned.delete(stage);
+  } catch (cause) {
+    primary = cause;
+  } finally {
+    process.removeListener("SIGINT", cancelled);
+    process.removeListener("SIGTERM", cancelled);
+    controller.abort(new Error("Hosted qualification lifetime ended."));
+  }
+  if (!retainRoots(primary)) {
+    for (const [path, original] of [...owned].reverse()) {
+      try {
+        const current = NodeFS.lstatSync(path, { bigint: true });
+        if (
+          current.dev !== original.dev ||
+          current.ino !== original.ino ||
+          current.uid !== original.uid ||
+          !current.isDirectory()
+        )
+          throw new Error("Hosted qualification root identity changed before cleanup.");
+        NodeFS.rmSync(path, { recursive: true });
+        if (NodeFS.existsSync(path))
+          throw new Error("Hosted qualification cleanup was not observed.");
+      } catch (cause) {
+        primary = Object.assign(
+          new AggregateError(
+            primary === undefined ? [cause] : [primary, cause],
+            "Hosted qualification cleanup remains uncertain.",
+            { cause: primary ?? cause },
+          ),
+          { preserveScratch: true },
+        );
+        break;
+      }
+    }
+  }
+  const receipt = {
+    schema: 1,
+    classification: "hosted-synthetic-preparation-qualification",
+    status: primary === undefined ? "passed" : "failed",
+    retainedRoots: retainRoots(primary) ? root : null,
+    nativeColdOwnerQualified: false,
+    stateAdmissionAllowed: false,
+    activationAllowed: false,
+    ...(completed === undefined
+      ? {}
+      : {
+          runtime: completed.bootstrapRuntime,
+          diagnosticEvidence: completed.diagnosticEvidence,
+          handleConsumption: completed.handleConsumption,
+          captureCleanup: completed.cleanup,
+        }),
+    ...(primary === undefined
+      ? {}
+      : {
+          error:
+            primary instanceof Error ? primary.message.slice(0, 2048) : "Qualification failed.",
+        }),
+  };
+  const bytes = Buffer.from(JSON.stringify(receipt) + "\n");
+  if (bytes.length > 8 * 1024 * 1024)
+    throw Object.assign(new Error("Hosted qualification evidence exceeds its bound."), {
+      preserveScratch: true,
+    });
+  verifyEvidenceCustody();
+  NodeFS.writeFileSync(NodePath.join(evidence, "result.json"), bytes, { flag: "wx", mode: 0o600 });
+  if (primary !== undefined) throw primary;
   process.stdout.write(
-    `${JSON.stringify({
-      classification: "worker-byte-policy-only",
-      binding,
-      mutationRejections,
-      emittedCodeExecuted: false,
-      nativeQualification: false,
+    JSON.stringify({
+      status: "passed",
+      qualification: "synthetic-native-preparation",
+      cases: nativeCaseNames,
+      evidence,
       nativeColdOwnerQualified: false,
       stateAdmissionAllowed: false,
       activationAllowed: false,
-    })}\n`,
+    }) + "\n",
   );
+}
+
+if (import.meta.main) {
+  if (
+    process.argv.length !== 3 ||
+    !["--verify-worker-graph", "--native-preparation"].includes(process.argv[2]!)
+  )
+    throw new Error("Expected one fixed hosted qualification mode.");
+  const repoRoot = NodeFS.realpathSync(
+    NodeURL.fileURLToPath(new URL("../../../", import.meta.url)),
+  );
+  if (process.argv[2] === "--native-preparation") {
+    const root = process.env.JONES_QUALIFICATION_ROOT;
+    if (root === undefined || !NodePath.isAbsolute(root))
+      throw new Error("Hosted qualification root is missing.");
+    try {
+      await runHostedNativePreparation(repoRoot, root);
+    } catch (cause) {
+      process.stderr.write(
+        JSON.stringify({
+          status: "failed",
+          retainedRoot: retainRoots(cause) ? root : null,
+          error:
+            cause instanceof Error ? cause.message.slice(0, 2048) : "Native qualification failed.",
+        }) + "\n",
+      );
+      process.exitCode = 1;
+    }
+  } else {
+    const candidate = NodePath.join(repoRoot, "apps/server/dist-exe/preparation-candidate");
+    if (process.execArgv.length !== 0 || process.env.NODE_OPTIONS)
+      throw new Error(
+        "Hosted worker verification requires a fresh Node process without preload options.",
+      );
+    const reportBytes = readArtifact(
+      NodePath.join(candidate, "candidate-graph.json"),
+      16 * 1024 * 1024,
+    );
+    const entryBytes = readArtifact(
+      NodePath.join(candidate, "offlinePreparationEntry.mjs"),
+      32 * 1024 * 1024,
+    );
+    const source = record(record(JSON.parse(reportBytes.toString("utf8")) as unknown).source);
+    const expectedSha = process.env.JONES_EXPECTED_SOURCE_SHA;
+    const expectedTree = process.env.JONES_EXPECTED_SOURCE_TREE;
+    if (
+      expectedSha === undefined ||
+      !/^[a-f0-9]{40}$/.test(expectedSha) ||
+      expectedTree === undefined ||
+      !/^[a-f0-9]{40}$/.test(expectedTree) ||
+      source.sha !== expectedSha ||
+      source.tree !== expectedTree
+    )
+      throw new Error("Hosted graph differs from the independently observed checkout identity.");
+    const binding = verifyFunctionalPreparationGraph({ repoRoot, reportBytes, entryBytes });
+    const mutationRejections = verifyMutationRejections(repoRoot, reportBytes, entryBytes);
+    verifyFunctionalPreparationGraph({ repoRoot, reportBytes, entryBytes });
+    process.stdout.write(
+      `${JSON.stringify({
+        classification: "worker-byte-policy-only",
+        binding,
+        mutationRejections,
+        emittedCodeExecuted: false,
+        nativeQualification: false,
+        nativeColdOwnerQualified: false,
+        stateAdmissionAllowed: false,
+        activationAllowed: false,
+      })}\n`,
+    );
+  }
 }
