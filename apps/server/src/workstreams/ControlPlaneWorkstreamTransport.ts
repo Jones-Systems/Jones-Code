@@ -33,7 +33,11 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
-import { WorkstreamTransportError, type WorkstreamTransport } from "./WorkstreamGateway.ts";
+import {
+  WORKSTREAM_ACTIVATION_DISABLED_DETAIL,
+  WorkstreamTransportError,
+  type WorkstreamTransport,
+} from "./WorkstreamGateway.ts";
 
 import {
   WORKSTREAM_APPEARANCE_CONTRACT,
@@ -163,7 +167,7 @@ const disabled = (): WorkstreamTransport => {
       new WorkstreamTransportError({
         operation,
         effect: "no-effect",
-        detail: "Workstream control-plane activation is disabled.",
+        detail: WORKSTREAM_ACTIVATION_DISABLED_DETAIL,
       }),
     );
   return {
@@ -416,7 +420,7 @@ export function makeControlPlaneWorkstreamTransport(
           new WorkstreamTransportError({
             operation: "registration_context",
             effect: "no-effect",
-            detail: "Workstream control-plane activation is disabled.",
+            detail: WORKSTREAM_ACTIVATION_DISABLED_DETAIL,
           }),
         ),
       },
