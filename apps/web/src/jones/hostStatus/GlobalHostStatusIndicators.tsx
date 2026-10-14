@@ -18,8 +18,7 @@ export function GlobalHostStatusIndicators() {
   const connectedEnvironmentIds = useConnectedEnvironmentIds();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const [selection, setSelection] = useState(() => retainedEnvironmentId);
-  const environmentId =
-    selection !== null && environmentIds.includes(selection) ? selection : null;
+  const environmentId = selection !== null && environmentIds.includes(selection) ? selection : null;
 
   useEffect(() => {
     if (selection !== null && environmentId === null) {
@@ -32,20 +31,24 @@ export function GlobalHostStatusIndicators() {
     if (environmentId !== null) return;
     let active = true;
     let stop = () => {};
-    stop = observeHostStatus(document, () => {}, async (signal) => {
-      const source = await discoverGlobalHostStatusSource(
-        { environmentIds, connectedEnvironmentIds, primaryEnvironmentId },
-        signal,
-        fetchHostStatus,
-      );
-      if (active && source !== null) {
-        active = false;
-        stop();
-        retainedEnvironmentId = source;
-        setSelection(source);
-      }
-      return { hosts: [] };
-    });
+    stop = observeHostStatus(
+      document,
+      () => {},
+      async (signal) => {
+        const source = await discoverGlobalHostStatusSource(
+          { environmentIds, connectedEnvironmentIds, primaryEnvironmentId },
+          signal,
+          fetchHostStatus,
+        );
+        if (active && source !== null) {
+          active = false;
+          stop();
+          retainedEnvironmentId = source;
+          setSelection(source);
+        }
+        return { hosts: [] };
+      },
+    );
     return () => {
       active = false;
       stop();

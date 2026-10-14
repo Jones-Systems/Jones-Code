@@ -25,8 +25,7 @@ export async function discoverGlobalHostStatusSource(
       if (
         snapshot.hosts.some(
           (host) =>
-            host.id === "vps" &&
-            (host.status === "available" || host.reason !== "not_configured"),
+            host.id === "vps" && (host.status === "available" || host.reason !== "not_configured"),
         )
       ) {
         return environmentId;

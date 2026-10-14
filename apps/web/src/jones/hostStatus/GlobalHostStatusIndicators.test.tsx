@@ -57,10 +57,13 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   visibility = "visible";
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-  vi.stubGlobal("ResizeObserver", class {
-    observe() {}
-    disconnect() {}
-  });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement,
   ) {
@@ -70,7 +73,7 @@ beforeEach(async () => {
   connections.connectedEnvironmentIds = [local, remote];
   connections.primaryEnvironmentId = local;
   fetchStatus.mockReset();
-  fetchStatus.mockImplementation(async (id) => id === local ? unconfigured : available());
+  fetchStatus.mockImplementation(async (id) => (id === local ? unconfigured : available()));
   ({ GlobalHostStatusIndicators } = await import("./GlobalHostStatusIndicators"));
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -132,11 +135,17 @@ it("uses the primary first, then stable registered ready IDs, and skips denied o
     if (id === other) throw new Error("403 orchestration:read denied");
     return id === local ? unconfigured : available();
   });
-  expect(await discoverGlobalHostStatusSource({
-    environmentIds: [other, remote, local],
-    connectedEnvironmentIds: [remote, other, local, EnvironmentId.make("unregistered")],
-    primaryEnvironmentId: other,
-  }, new AbortController().signal, request)).toBe(remote);
+  expect(
+    await discoverGlobalHostStatusSource(
+      {
+        environmentIds: [other, remote, local],
+        connectedEnvironmentIds: [remote, other, local, EnvironmentId.make("unregistered")],
+        primaryEnvironmentId: other,
+      },
+      new AbortController().signal,
+      request,
+    ),
+  ).toBe(remote);
   expect(request.mock.calls.map(([id]) => id)).toEqual([other, local, remote]);
 });
 
@@ -175,9 +184,13 @@ it("retains a disconnected source on failure and recovers its values without pro
 it("drops a removed source, aborts its poll, and never leaks a late sample into its replacement", async () => {
   await render();
   let resolve!: (snapshot: HostStatusSnapshot) => void;
-  fetchStatus.mockImplementation((id) => id === remote
-    ? new Promise((done) => { resolve = done; })
-    : Promise.resolve(id === local ? unconfigured : available(61)));
+  fetchStatus.mockImplementation((id) =>
+    id === remote
+      ? new Promise((done) => {
+          resolve = done;
+        })
+      : Promise.resolve(id === local ? unconfigured : available(61)),
+  );
   await advance(10_000);
   const oldSignal = requests(remote).at(-1)?.[1];
   connections.environmentIds = [local, other];
@@ -193,9 +206,13 @@ it("drops a removed source, aborts its poll, and never leaks a late sample into 
 
 it("aborts discovery on removal and ignores a configured late completion", async () => {
   let resolve!: (snapshot: HostStatusSnapshot) => void;
-  fetchStatus.mockImplementation((id) => id === remote
-    ? new Promise((done) => { resolve = done; })
-    : Promise.resolve(id === local ? unconfigured : available(61)));
+  fetchStatus.mockImplementation((id) =>
+    id === remote
+      ? new Promise((done) => {
+          resolve = done;
+        })
+      : Promise.resolve(id === local ? unconfigured : available(61)),
+  );
   await render();
   const oldSignal = requests(remote)[0]?.[1];
   connections.environmentIds = [local, other];
@@ -244,11 +261,13 @@ it("waits for ready gateways and retries unconfigured or denied discovery only w
 
 it("requires the VPS slot and does not continue discovery after cancellation", async () => {
   const abort = new AbortController();
-  const request = vi.fn(async () => ({ hosts: [] } as HostStatusSnapshot));
+  const request = vi.fn(async () => ({ hosts: [] }) as HostStatusSnapshot);
   expect(await discoverGlobalHostStatusSource(connections, abort.signal, request)).toBeNull();
   expect(request).toHaveBeenCalledTimes(2);
   request.mockClear();
   abort.abort();
-  await expect(discoverGlobalHostStatusSource(connections, abort.signal, request)).rejects.toThrow();
+  await expect(
+    discoverGlobalHostStatusSource(connections, abort.signal, request),
+  ).rejects.toThrow();
   expect(request).not.toHaveBeenCalled();
 });
