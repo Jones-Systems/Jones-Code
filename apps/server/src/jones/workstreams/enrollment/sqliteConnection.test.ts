@@ -123,11 +123,12 @@ const fixture = Effect.acquireRelease(
   (f) => Effect.sync(() => NodeFS.rmSync(f.root, { recursive: true, force: true })),
 );
 
-it("accepts only the three source-qualified exact Node/SQLite pairs", () => {
+it("accepts only source-qualified exact Node/SQLite pairs", () => {
   for (const [node, sqlite] of [
     ["24.13.1", "3.51.2"],
     ["24.19.0", "3.53.3"],
     ["24.21.0", "3.53.4"],
+    ["24.22.0", "3.53.4"],
   ])
     assert.strictEqual(isQualifiedNativeEnrollmentSqliteRuntime(node, sqlite), true);
   for (const [node, sqlite] of [
@@ -140,6 +141,8 @@ it("accepts only the three source-qualified exact Node/SQLite pairs", () => {
     ["24.21.0", "3.53.3"],
     ["24.21.1", "3.53.4"],
     ["24.21.0", "3.53.5"],
+    ["24.22.0", "3.53.3"],
+    ["24.22.1", "3.53.4"],
     ["24.19.0", undefined],
     [undefined, "3.53.3"],
   ])

@@ -61,7 +61,11 @@ sidecars. Approval for these commands must cover those effects.
 
 The store is opened through a fixed `file:` URI with extensions disabled, and
 only on these source-qualified runtime pairs: Node 24.13.1 with SQLite 3.51.2,
-24.19.0 with 3.53.3, and 24.21.0 with 3.53.4.
+24.19.0 with 3.53.3, and 24.21.0 or 24.22.0 with 3.53.4. A newer Node release
+needs the same check before it is added: the bundled SQLite version, and
+`DatabaseSync` opening with `SQLITE_OPEN_URI`, read-only versus read-write
+flags and extension loading disabled. Until then, enrollment and its tests
+refuse that runtime.
 
 ## Control-plane configuration
 
