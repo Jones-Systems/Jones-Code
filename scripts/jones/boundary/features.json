@@ -12,9 +12,10 @@
       "id": "remote-host-status",
       "tests": [
         "apps/web/src/hostStatus.test.ts",
-        "apps/web/src/components/chat/HostStatusIndicators.test.tsx"
+        "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
+        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx"
       ],
-      "scope": "Host status badges use the active thread environment and its shared HTTP authentication; environment switches cancel old polling and clear old samples."
+      "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples."
     },
     {
       "id": "qualified-updates",

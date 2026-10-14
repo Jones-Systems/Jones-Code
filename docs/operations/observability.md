@@ -692,10 +692,14 @@ Before you take one:
 
 Configure Netdata API v3 connections in the **Jones Code server process environment**
 to expose host CPU and RAM through authenticated `GET /api/host-status`. The fixed
-slots are `vps`, `test`, `mini`, and `home`. The browser requests the primary
-serving environment's gateway; it does not inspect the client machine or receive
-collector URLs or tokens. Desktop uses its primary environment's bearer route;
-when its local environment is disabled, no local-machine fallback is used.
+slots are `vps`, `test`, `mini`, and `home`. The web and desktop header discovers
+a gateway with a configured VPS slot among ready registered connections, trying
+the primary environment first and then stable environment IDs. It retains that
+gateway for the app session until its registration is removed, independently of
+the active thread. Disconnects and request failures leave its values unavailable
+without selecting another gateway. Requests use the selected environment's
+existing HTTP authorization; the client does not receive collector URLs or
+tokens or substitute its own machine's resources.
 
 A shared parent collector can serve all mapped nodes. Each shared slot requires
 an explicit machine GUID from `/api/v3/nodes`; unmapped slots stay unavailable.

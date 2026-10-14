@@ -37,7 +37,7 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { cn } from "~/lib/utils";
-import { HostStatusIndicators } from "./HostStatusIndicators";
+import { GlobalHostStatusIndicators } from "../../jones/hostStatus/GlobalHostStatusIndicators";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -356,7 +356,7 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      <HostStatusIndicators environmentId={activeThreadEnvironmentId} />
+      <GlobalHostStatusIndicators />
     </div>
   );
 });
