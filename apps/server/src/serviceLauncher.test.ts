@@ -275,6 +275,71 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
     }),
   );
 
+  it.effect("passes service environment to the server child with its own launcher context", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-env-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const observedPath = path.join(root, "child-environment.json");
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.0.0"),
+        `require("node:fs").writeFileSync(${JSON.stringify(observedPath)}, JSON.stringify({
+  workstreamUrl: process.env.T3_WORKSTREAM_CONTROL_PLANE_URL,
+  context: process.env.T3_SERVICE_LAUNCHER_CONTEXT,
+}));
+process.exit(0);
+`,
+      );
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+        }),
+      );
+
+      // systemd EnvironmentFile values reach the launcher as process
+      // environment; a stale inherited launcher context must not.
+      const names = ["T3_WORKSTREAM_CONTROL_PLANE_URL", "T3_SERVICE_LAUNCHER_CONTEXT"] as const;
+      const previous = names.map((name) => [name, process.env[name]] as const);
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          process.env.T3_WORKSTREAM_CONTROL_PLANE_URL = "http://127.0.0.1:8787/";
+          process.env.T3_SERVICE_LAUNCHER_CONTEXT = "stale-inherited-context";
+        }),
+        () =>
+          Effect.sync(() => {
+            for (const [name, value] of previous) {
+              if (value === undefined) delete process.env[name];
+              else process.env[name] = value;
+            }
+          }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      // The fixture child exits after recording, so the active child exit
+      // ends the launcher with an error.
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const observed = JSON.parse(yield* fs.readFileString(observedPath)) as {
+        readonly workstreamUrl?: string;
+        readonly context?: string;
+      };
+      assert.equal(observed.workstreamUrl, "http://127.0.0.1:8787/");
+      assert.notEqual(observed.context, "stale-inherited-context");
+      const context = decodeServiceLauncherContext(observed.context ?? "");
+      assert.equal(context?.protocol, SERVICE_LAUNCHER_PROTOCOL);
+      assert.equal(context?.childVersion, "1.0.0");
+    }),
+  );
+
   it.effect("commits only after the trial reports prepared", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
