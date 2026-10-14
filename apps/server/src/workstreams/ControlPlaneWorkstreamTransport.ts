@@ -95,10 +95,24 @@ export type WorkstreamFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+// Plain HTTP is accepted only for an IP-literal loopback control plane on the
+// same host. Reaching it through the tailnet HTTPS route would pass Tailscale
+// Serve, which adds Tailscale identity headers to requests from untagged nodes;
+// the control plane refuses those alongside signed requests. HMAC request
+// signing is identical on both origins. `localhost` and other hostnames stay
+// HTTPS-only because name resolution could leave the host.
+function hasCanonicalOrigin(baseUrl: URL): boolean {
+  return (
+    baseUrl.protocol === "https:" ||
+    (baseUrl.protocol === "http:" &&
+      (baseUrl.hostname === "127.0.0.1" || baseUrl.hostname === "[::1]"))
+  );
+}
+
 function hasCanonicalActivation(config: ControlPlaneWorkstreamActivation): boolean {
   const headerValues = [config.ownerId, config.principalId, config.keyId, config.signingSecret];
   return (
-    config.baseUrl.protocol === "https:" &&
+    hasCanonicalOrigin(config.baseUrl) &&
     !config.baseUrl.username &&
     !config.baseUrl.password &&
     !config.baseUrl.hash &&
