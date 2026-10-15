@@ -255,82 +255,8 @@ export function ZoomableImage({
         </div>
       )}
       <div
-        ref={viewportRef}
-        role="region"
-        aria-label={`${name}, zoomable image`}
-        aria-description="Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit."
-        tabIndex={0}
-        className="max-w-[var(--media-width)] overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring"
-        style={{
-          width: width || undefined,
-          height: height || undefined,
-          maxHeight,
-          cursor: zoom > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
-        }}
-        onClick={(event) => {
-          // Pointer capture also produces a click after dragging; leave the image zoomed.
-          if (suppressClickRef.current || event.detail > 1) return;
-          changeZoom(zoomRef.current > 1 ? 1 : 2, { x: event.clientX, y: event.clientY });
-        }}
-        onKeyDown={(event) => {
-          if (event.ctrlKey || event.metaKey || event.altKey) return;
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            if (!event.repeat) changeZoom(zoomRef.current > 1 ? 1 : 2);
-          } else if (event.key === "+" || event.key === "=") {
-            event.preventDefault();
-            changeZoom(zoomRef.current * 1.5);
-          } else if (event.key === "-") {
-            event.preventDefault();
-            changeZoom(zoomRef.current / 1.5);
-          } else if (event.key === "0") {
-            event.preventDefault();
-            changeZoom(1);
-          }
-        }}
-        onPointerDown={(event) => {
-          if (dragRef.current) return;
-          suppressClickRef.current = false;
-          if (event.pointerType !== "mouse" || event.button !== 0 || zoomRef.current <= 1) return;
-          const viewport = event.currentTarget;
-          const bounds = viewport.getBoundingClientRect();
-          if (
-            event.clientX - bounds.left >= viewport.clientWidth ||
-            event.clientY - bounds.top >= viewport.clientHeight
-          )
-            return;
-          dragRef.current = {
-            pointerId: event.pointerId,
-            x: event.clientX,
-            y: event.clientY,
-            left: viewport.scrollLeft,
-            top: viewport.scrollTop,
-          };
-          viewport.setPointerCapture(event.pointerId);
-          setDragging(true);
-        }}
-        onPointerMove={(event) => {
-          const drag = dragRef.current;
-          if (!drag || drag.pointerId !== event.pointerId) return;
-          if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 4) {
-            suppressClickRef.current = true;
-          }
-          event.currentTarget.scrollLeft = drag.left - (event.clientX - drag.x);
-          event.currentTarget.scrollTop = drag.top - (event.clientY - drag.y);
-        }}
-        onPointerUp={(event) => {
-          if (dragRef.current?.pointerId !== event.pointerId) return;
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-          dragRef.current = null;
-          setDragging(false);
-        }}
-        onLostPointerCapture={(event) => {
-          if (dragRef.current?.pointerId !== event.pointerId) return;
-          dragRef.current = null;
-          setDragging(false);
-        }}
+        ref={sizingRef}
+        className={layout === "panel" ? "relative min-h-0 min-w-0 flex-1" : undefined}
       >
         <div
           ref={viewportRef}
@@ -338,7 +264,7 @@ export function ZoomableImage({
           aria-label={`${name}, zoomable image`}
           aria-description="Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to cycle zoom, plus or minus to zoom, and 0 to fit."
           tabIndex={0}
-          className={`${layout === "panel" ? "absolute inset-0 min-h-0 min-w-0" : "max-w-[var(--media-width)]"} overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+          className={`${layout === "panel" ? "absolute inset-0 min-h-0 min-w-0" : "max-w-[var(--media-width)]"} overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring`}
           style={{
             width: layout === "panel" ? undefined : width || undefined,
             height: layout === "panel" ? undefined : height || undefined,
@@ -347,7 +273,7 @@ export function ZoomableImage({
           }}
           onClick={(event) => {
             // Pointer capture also produces a click after dragging; leave the image zoomed.
-            if (suppressClickRef.current) return;
+            if (suppressClickRef.current || event.detail > 1) return;
             cycleZoom({ x: event.clientX, y: event.clientY });
           }}
           onKeyDown={(event) => {

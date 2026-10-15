@@ -551,13 +551,15 @@ export function BranchToolbarBranchSelector({
   // detach the agent that just started.
   const threadStarted = serverSession !== null;
   useEffect(() => {
-    if (
-      threadStarted ||
-      effectiveEnvMode !== "worktree" ||
-      activeWorktreePath ||
-      activeThreadBranch ||
-      !worktreeBaseBranchCandidate
-    ) {
+    if (threadStarted) return;
+    const branch = resolveAutomaticWorktreeBaseBranch({
+      effectiveEnvMode,
+      envLocked,
+      activeWorktreePath,
+      activeThreadBranch,
+      worktreeBaseBranchCandidate,
+    });
+    if (branch === null) {
       return;
     }
     setThreadBranch(branch, null, true);

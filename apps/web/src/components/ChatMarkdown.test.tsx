@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
 import { EnvironmentId, type AuthEnvironmentScope } from "@t3tools/contracts";
-import { createRoot } from "react-dom/client";
 import { useThreadFindHighlights } from "./chat/threadFindHighlights";
 import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
 import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";

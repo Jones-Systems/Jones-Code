@@ -1,3 +1,5 @@
+import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
+import { useSidebarEnvironmentFilter } from "../jones/environmentFilters/useSidebarEnvironmentFilter";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
@@ -2707,6 +2709,25 @@ export default function Sidebar() {
             ),
           ),
     [scopedProjectGroup],
+  );
+  const [activeOnly, setActiveOnly] = useState(false);
+  const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
+  const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
+  const environmentThreads = useMemo(
+    () => filterSidebarEnvironmentThreads(threads, excludedEnvironmentIds),
+    [threads, excludedEnvironmentIds],
+  );
+  const scopedThreads = useMemo(
+    () => filterSidebarV2VisibleThreads(environmentThreads, scopedProjectKeys),
+    [environmentThreads, scopedProjectKeys],
+  );
+  const activeThreadCount = useMemo(
+    () => scopedThreads.filter(isSidebarThreadOperating).length,
+    [scopedThreads],
+  );
+  const filteredThreads = useMemo(
+    () => filterSidebarOperatingThreads(scopedThreads, activeOnly, isSidebarThreadOperating),
+    [scopedThreads, activeOnly],
   );
   // Configs identify scratch projects, so both they and live project snapshots
   // must arrive before a persisted scope can be considered missing.

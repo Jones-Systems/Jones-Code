@@ -1132,7 +1132,7 @@ export function useThreadOutboxDrain(): void {
         environmentId: queuedMessage.environmentId,
         input: buildQueuedThreadCreationStartTurnInput({
           message: queuedMessage,
-          creation,
+          creation: workspace,
           projectCwd,
           attachments: prepared.attachments,
           settings: sendSettings,
@@ -1140,16 +1140,6 @@ export function useThreadOutboxDrain(): void {
             currentConfig.environment.capabilities.worktreeDefaultBase === true,
           inlineMessageContext:
             currentConfig.environment.capabilities.inlineMessageContext === true,
-          ),
-          uploadedAttachments: prepared.attachments,
-          modelSelection: sendSettings.modelSelection,
-          runtimeMode: sendSettings.runtimeMode,
-          interactionMode: sendSettings.interactionMode,
-          workspaceMode: workspace.workspaceMode,
-          branch: workspace.branch,
-          worktreePath: workspace.worktreePath,
-          startFromOrigin: workspace.startFromOrigin ?? false,
-          worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
         }),
       });
       if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;

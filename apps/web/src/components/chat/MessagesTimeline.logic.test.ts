@@ -38,7 +38,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import * as Option from "effect/Option";
 import type { TurnDiffSummary } from "../../types";
 import { describe, expect, it } from "vite-plus/test";
-import { EnvironmentId, MessageId, RunId } from "@t3tools/contracts";
+import { MessageId, RunId } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import {
   computeStableMessagesTimelineRows,

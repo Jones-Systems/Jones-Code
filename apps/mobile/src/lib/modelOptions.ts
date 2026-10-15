@@ -32,6 +32,33 @@ export type ModelOption = {
   readonly providerUpdateRequired?: ProviderUpdateRequired;
 };
 
+export function resolveModelDisplayCapabilities(input: {
+  readonly config: T3ServerConfig | null | undefined;
+  readonly capabilities: ModelCapabilities | null | undefined;
+  readonly modelSelection: ModelSelection;
+  readonly defaultModelSelection: ModelSelection | null | undefined;
+}): ModelCapabilities | undefined {
+  const { config, modelSelection, defaultModelSelection } = input;
+  const driverKind =
+    config?.providers.find((provider) => provider.instanceId === modelSelection.instanceId)
+      ?.driver ?? config?.settings?.providerInstances[modelSelection.instanceId]?.driver;
+  if (!driverKind) {
+    return input.capabilities ?? undefined;
+  }
+  const defaultDriverKind = defaultModelSelection
+    ? (config?.providers.find(
+        (provider) => provider.instanceId === defaultModelSelection.instanceId,
+      )?.driver ?? config?.settings?.providerInstances[defaultModelSelection.instanceId]?.driver)
+    : undefined;
+  return applyConfiguredReasoningEffortDefault({
+    modelSelection,
+    driverKind,
+    capabilities: input.capabilities ?? undefined,
+    defaultModelSelection: defaultModelSelection ?? undefined,
+    defaultDriverKind,
+  });
+}
+
 type ProviderUpdateRequired = Pick<
   T3ServerConfig["providers"][number],
   "driver" | "updateRequiredModels"
@@ -275,6 +302,7 @@ export function buildModelOptions(
   providerInstanceId: ModelSelection["instanceId"] | undefined,
   projectId: ProjectId | null,
   includeHidden = false,
+  defaultModelSelection?: ModelSelection | null | undefined,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
 

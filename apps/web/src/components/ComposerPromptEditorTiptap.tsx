@@ -1454,7 +1454,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
               ? importPastedComposerText(clipboardData, importFragment)
               : pastedText;
           // Complete chips at paste boundaries just as autocomplete does.
-          const tokens = literalText ? [] : collectComposerPromptInlineTokens(`${text}\n`);
+          const tokens = literalText ? [] : collectComposerPromptInlineTokens(`${text}\n`, text.length);
           const lastToken = tokens.at(-1);
           if (
             (lastToken?.type === "mention" || lastToken?.type === "skill") &&

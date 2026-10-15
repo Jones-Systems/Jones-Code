@@ -7,6 +7,14 @@ import {
   type DesktopUpdateCheckResult,
   type DesktopUpdateState,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  JonesDesktopUpdateController,
+  type JonesDesktopDownloadSelection,
+  type JonesDesktopDownloadResult,
+} from "../jones/updates/JonesDesktopUpdates.ts";
+import { prepareJonesNativeInstall } from "../jones/updates/jonesNativePreparation.ts";
+import { runNativeCommand } from "../jones/updates/jonesMacStaging.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -416,8 +424,8 @@ export const make = Effect.gen(function* () {
     /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(environment.appVersion)
   ) {
     const context = yield* Effect.context<never>();
-    const processEnv = yield* HostProcessEnvironment;
-    const executablePath = yield* HostProcessExecutablePath;
+    const processEnv = yield* HostProcess.Environment;
+    const executablePath = yield* HostProcess.ExecutablePath;
     const controller = new JonesDesktopUpdateController({
       home: environment.baseDir,
       appRoot: environment.appRoot,

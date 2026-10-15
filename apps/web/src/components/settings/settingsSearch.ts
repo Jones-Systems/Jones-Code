@@ -167,6 +167,12 @@ const SOURCE_CONTROL_HOST_SEARCH_ITEMS = sourceControlClients.definitions.flatMa
  */
 export const SETTINGS_SEARCH_ITEMS = [
   {
+    id: "prompts-default-stage",
+    title: "Default prompt view",
+    to: "/settings/jones-code",
+    searchTerms: ["prompts pending queued sent preferred stage opening view"],
+  },
+  {
     id: "storage-worktree-keep-when",
     targetId: "storage-worktrees",
     title: "Keep worktrees with local changes",

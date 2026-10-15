@@ -260,7 +260,7 @@ export function MobileWorkstreamControls({
                   createCommandId={() =>
                     runtime.runPromise(
                       Crypto.Crypto.pipe(
-                        Effect.flatMap((crypto) => crypto.randomUUIDv4),
+                        Effect.flatMap((crypto) => crypto.randomUUIDv4()),
                         Effect.map((id) => `t3-color-${id}`),
                       ),
                     )

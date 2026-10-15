@@ -314,11 +314,15 @@ export const make = Effect.gen(function* BrowserSessionMake() {
                 );
                 return;
               }
-              callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
+              callback(
+                ALLOWED_PREVIEW_PERMISSIONS.has(permission) &&
+                  !(permission === "clipboard-read" && isCompanionGuest(webContents)),
+              );
             },
           );
-          browserSession.setPermissionCheckHandler((_webContents, permission) =>
-            ALLOWED_PREVIEW_PERMISSIONS.has(permission),
+          browserSession.setPermissionCheckHandler((webContents, permission) =>
+            ALLOWED_PREVIEW_PERMISSIONS.has(permission) &&
+            !(permission === "clipboard-read" && isCompanionGuest(webContents)),
           );
           const next = new Map(sessions);
           next.set(partition, browserSession);

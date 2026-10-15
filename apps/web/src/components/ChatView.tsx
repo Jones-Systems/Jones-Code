@@ -1,3 +1,13 @@
+import {
+  withShortcutEffort,
+  type ComposerModelSelectOptions,
+} from "../jones/composer/composerModelEffortShortcuts";
+import {
+  ContinuationChoiceBanner,
+  importedHistoryCommands,
+  type PreparedImportedHistoryChoice,
+} from "../jones/importedHistory/ContinuationChoiceBanner";
+import { resolveImportedHistoryReview } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
@@ -1980,6 +1990,10 @@ export default function ChatView(props: ChatViewProps) {
   const [restingComposerControlsHost, setRestingComposerControlsHost] =
     useState<HTMLDivElement | null>(null);
   const [restingComposerControlsVisible, setRestingComposerControlsVisible] = useState(false);
+  const [shortcutControlsHost, setShortcutControlsHost] = useState<HTMLDivElement | null>(null);
+  const [shortcutWorkspaceElement, setShortcutWorkspaceElement] = useState<HTMLDivElement | null>(
+    null,
+  );
   const citeAssistantText = (
     citation: AssistantCitation,
     sourceAnchor: AssistantCitationSourceAnchor,
@@ -9130,21 +9144,41 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const threadIdForSend = activeThread.id;
-    const isFirstMessage = !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0);
-    const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
-        ? activeThreadBranch
-        : null;
-
-    // In worktree mode, require an explicit base branch so we don't silently
-    // fall back to local execution when branch selection is missing.
-    const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
-    if (shouldCreateWorktree && !activeThreadBranch) {
-      setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
-      return;
+    if (serverProjection?.thread.historyOrigin === "v1_import") {
+      if (multipleModelSelections !== null) {
+        setImportedChoice({
+          environmentId,
+          threadId: threadIdForSend,
+          prepared: null,
+          reason: "Choose one model before reviewing imported history.",
+        });
+        return;
+      }
+      try {
+        if (
+          importedHistoryCorrelationStorage(
+            scopeThreadRef(environmentId, threadIdForSend),
+          ).read() !== null
+        ) {
+          setImportedChoice({
+            environmentId,
+            threadId: threadIdForSend,
+            prepared: null,
+            reason: "Observe the saved choice before another submission.",
+          });
+          return;
+        }
+      } catch {
+        setImportedChoice({
+          environmentId,
+          threadId: threadIdForSend,
+          prepared: null,
+          reason: "Imported history correlation storage is unavailable.",
+        });
+        return;
+      }
     }
-    const isFirstMessage = !isServerThread || activeMessageCount === 0;
+    const isFirstMessage = !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0);
     const worktreePreparation = resolveFirstSendWorktreePreparation({
       isFirstMessage,
       sendEnvMode,
@@ -9153,7 +9187,7 @@ export default function ChatView(props: ChatViewProps) {
       baseBranch: activeThreadBranch,
       startFromOrigin,
     });
-    const shouldCreateWorktree = worktreePreparation !== undefined;
+    const shouldCreateWorktree = !sendQueuesBehindSetup && worktreePreparation !== undefined;
 
     const submittedComposerDraft = useComposerDraftStore
       .getState()
@@ -9372,7 +9406,7 @@ export default function ChatView(props: ChatViewProps) {
       setSetupQueueSendThreadKey(activeThreadKey);
     } else {
       beginLocalDispatch({
-        preparingWorktree: multipleModelSelections !== null || Boolean(baseBranchForWorktree),
+        preparingWorktree: multipleModelSelections !== null || shouldCreateWorktree,
         // Only a draft has a background submission to hide behind its hero.
         submissionIntent:
           submissionIntent === "background" && !isLocalDraftThread
@@ -9380,7 +9414,7 @@ export default function ChatView(props: ChatViewProps) {
             : submissionIntent,
       });
       setWorktreeSetupRef(
-        multipleModelSelections === null && baseBranchForWorktree
+        multipleModelSelections === null && shouldCreateWorktree
           ? {
               environmentId: activeThread.environmentId,
               threadId: threadIdForSend,
@@ -10683,88 +10717,120 @@ export default function ChatView(props: ChatViewProps) {
     [activeRuntime, activeThread, providerStatuses, supportsProviderSwitchingViaHandoff],
   );
 
-  const onProviderModelSelect = (
-    instanceId: ProviderInstanceId,
-    model: string,
-    options?: { focusComposer?: boolean },
-  ) => {
-    if (!activeThread) return;
-    // Look up the configured instance so model normalization and custom
-    // model lookup stay scoped to that exact instance. Unknown instance ids
-    // are rejected by returning early; the server remains authoritative too.
-    const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-    const resolvedDriverKind = entry?.driver ?? null;
-    if (
-      !supportsProviderSwitchingViaHandoff &&
-      lockedProvider !== null &&
-      resolvedDriverKind !== null &&
-      resolvedDriverKind !== lockedProvider
-    ) {
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    if (
-      !supportsProviderSwitchingViaHandoff &&
-      lockedProvider !== null &&
-      activeRuntime?.providerInstanceId
-    ) {
-      const currentEntry = providerStatuses.find(
-        (snapshot) => snapshot.instanceId === activeRuntime.providerInstanceId,
-      );
+  const onProviderModelSelect = useCallback(
+    (instanceId: ProviderInstanceId, model: string, options?: ComposerModelSelectOptions) => {
       if (
-        currentEntry?.continuation?.groupKey &&
-        entry?.continuation?.groupKey &&
-        currentEntry.continuation.groupKey !== entry.continuation.groupKey
+        !activeThread ||
+        isEnvironmentChanging ||
+        activeEnvironmentUnavailable ||
+        isRevertingCheckpoint
+      )
+        return;
+      // Look up the configured instance so model normalization and custom
+      // model lookup stay scoped to that exact instance. Unknown instance ids
+      // are rejected by returning early; the server remains authoritative too.
+      const configuredEntry = providerInstanceEntries.find(
+        (entry) => entry.instanceId === instanceId,
+      );
+      if (!configuredEntry || !isProviderInstancePickerReady(configuredEntry)) {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
+      const entry = configuredEntry.snapshot;
+      const resolvedDriverKind = entry.driver;
+      if (
+        !supportsProviderSwitchingViaHandoff &&
+        lockedProvider !== null &&
+        resolvedDriverKind !== null &&
+        resolvedDriverKind !== lockedProvider
       ) {
         if (options?.focusComposer !== false) scheduleComposerFocus();
         return;
       }
-    }
-    const resolvedModel = resolveAppModelSelectionForInstance(
-      instanceId,
-      settings,
-      providerStatuses,
-      model,
-    );
-    if (!resolvedModel) {
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    // Restore this model's own remembered options; without any, start it
-    // from its default rather than carrying the previous model's over.
-    const rememberedOptions =
-      useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
-    const nextModelSelection: ModelSelection =
-      rememberedOptions !== undefined && rememberedOptions.length > 0
-        ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
-        : { instanceId, model: resolvedModel };
-    const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
-      providers: providerStatuses,
-      hasStartedSession: activeRuntime !== null,
-      supportsProviderSwitchingViaHandoff,
-      currentModelSelection: activeThread.modelSelection,
-      currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
-      nextModelSelection,
-    });
-    if (modelChangeBlockReason) {
-      toastManager.add({
-        type: "warning",
-        title: modelChangeBlockReason.title,
-        description: modelChangeBlockReason.description,
+      if (
+        !supportsProviderSwitchingViaHandoff &&
+        !matchesProviderModelLock(
+          configuredEntry,
+          lockedProvider,
+          lockedContinuationGroupKey,
+          activeRuntime?.providerInstanceId ?? activeThread.modelSelection.instanceId,
+        )
+      ) {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
+      const resolvedModel = resolveAppModelSelectionForInstance(
+        instanceId,
+        settings,
+        providerStatuses,
+        model,
+      );
+      if (!resolvedModel) {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
+      // Resolve remembered traits first; a shortcut supplies its explicit effort
+      // before the complete model selection is persisted.
+      const store = useComposerDraftStore.getState();
+      const draft = store.getComposerDraft(composerDraftTarget);
+      const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
+      const currentSelection =
+        draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
+      const pickerSelection = resolveComposerPickerModelSelection({
+        instanceId,
+        model: resolvedModel,
+        currentSelection,
+        rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
       });
+      const nextModelSelection = options?.effort
+        ? withShortcutEffort(pickerSelection, model, entry.models, options.effort)
+        : pickerSelection;
+      if (!nextModelSelection) return;
+      const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
+        providers: providerStatuses,
+        hasStartedSession: activeRuntime !== null,
+        supportsProviderSwitchingViaHandoff,
+        currentModelSelection: activeThread.modelSelection,
+        currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
+        nextModelSelection,
+      });
+      if (modelChangeBlockReason) {
+        toastManager.add({
+          type: "warning",
+          title: modelChangeBlockReason.title,
+          description: modelChangeBlockReason.description,
+        });
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
+      setComposerDraftModelSelection(
+        scopeThreadRef(activeThread.environmentId, activeThread.id),
+        nextModelSelection,
+        // A complete snapshot: an absent options field means "start from the
+        // model default", not "keep the previous model's options".
+        { explicit: true, replaceOptions: true },
+      );
+      setStickyComposerModelSelection(nextModelSelection);
       if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    setComposerDraftModelSelection(
-      scopeThreadRef(activeThread.environmentId, activeThread.id),
-      nextModelSelection,
-      // A complete snapshot: an absent options field means "start from the
-      // model default", not "keep the previous model's options".
-      { explicit: true, replaceOptions: true },
-    );
-    setStickyComposerModelSelection(nextModelSelection);
-    if (options?.focusComposer !== false) scheduleComposerFocus();
-  };
+    },
+    [
+      activeThread,
+      activeRuntime,
+      lockedProvider,
+      supportsProviderSwitchingViaHandoff,
+      lockedContinuationGroupKey,
+      providerInstanceEntries,
+      composerDraftTarget,
+      isEnvironmentChanging,
+      activeEnvironmentUnavailable,
+      isRevertingCheckpoint,
+      scheduleComposerFocus,
+      setComposerDraftModelSelection,
+      setStickyComposerModelSelection,
+      providerStatuses,
+      settings,
+    ],
+  );
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
     if (multipleModelSelections !== null) return;
@@ -11787,6 +11853,7 @@ export default function ChatView(props: ChatViewProps) {
                               onPageScrollKeyUp={onComposerPageScrollKeyUpStable}
                               onPageScrollRelease={onComposerPageScrollReleaseStable}
                               onCompactContext={onComposerCompactContextStable}
+                              onSteerNextQueuedMessage={onSteerNextQueuedMessage}
                               onSend={onComposerSendStable}
                               onResume={onComposerResumeStable}
                               onInterrupt={onInterruptStable}
@@ -11864,7 +11931,7 @@ export default function ChatView(props: ChatViewProps) {
                                         setPendingServerThreadBranch,
                                     }
                                   : {})}
-                                envLocked={envLocked}
+                                envLocked={envLocked || isSendBusy}
                                 onComposerFocusRequest={scheduleComposerFocusStable}
                                 {...(canCheckoutPullRequestIntoThread
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialogStable }

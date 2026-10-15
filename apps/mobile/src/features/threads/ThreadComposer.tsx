@@ -683,12 +683,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         currentModelSelection,
         lockedProviderInstanceId,
         props.selectedThread.projectId,
+        false,
+        configuredDefaultModelSelection,
       ),
     [
       props.serverConfig,
       currentModelSelection,
       lockedProviderInstanceId,
       props.selectedThread.projectId,
+      configuredDefaultModelSelection,
     ],
   );
   const threadProviderGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);

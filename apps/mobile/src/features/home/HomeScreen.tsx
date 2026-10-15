@@ -1,3 +1,8 @@
+import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
+import {
+  projectMobileWorkstreamList,
+  mobileWorkstreamMoveDestination,
+} from "../workstreams/listProjection";
 import { AppActivityIndicator } from "../../components/AppActivityIndicator";
 import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
@@ -1034,6 +1039,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2ListHeader = (
     <>
       {listHeader}
+      {workstreams.controls}
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           environments={props.environments}

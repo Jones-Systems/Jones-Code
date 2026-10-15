@@ -6,7 +6,6 @@ import {
   readBindingResult,
 } from "../jones/previewCompanion/state";
 import { nativeCompanionRendering } from "../jones/previewCompanion/inventory";
-import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, PreviewRuntime, PreviewSessionSnapshot } from "@t3tools/contracts";
 

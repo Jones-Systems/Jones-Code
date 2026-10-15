@@ -21,7 +21,7 @@ import {
   matchesKeybindingShortcut,
   normalizeEventKey,
 } from "@t3tools/shared/keybindings";
-import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useOpenLink } from "~/browser/useOpenLink";
 import { useHtmlRenderTheme } from "~/hooks/useHtmlRenderTheme";
@@ -73,6 +73,7 @@ export function BrowserDocumentFrame(props: {
   readonly title: string;
   readonly pdf: boolean;
   readonly htmlRender?: boolean;
+  readonly onRetry?: () => void | Promise<void>;
   /** The thread an HTML render's links open beside. */
   readonly threadRef?: ScopedThreadRef | undefined;
 }) {
@@ -101,7 +102,7 @@ export function BrowserDocumentFrame(props: {
       src={props.src}
       title={props.title}
       className={className}
-      sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+      sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
     />
   );
 }

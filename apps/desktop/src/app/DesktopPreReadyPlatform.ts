@@ -59,39 +59,45 @@ export const make = Effect.gen(function* () {
       platform === "linux"
         ? readCommandLineSwitchValue(Electron.app.commandLine, "password-store")
         : null;
-    const linux =
-      platform === "linux" ? resolveEarlyLinuxElectronOptionsFromProcess(homeDirectory) : null;
+    const companion = process.env.JONES_PREVIEW_COMPANION_PRODUCT === "true";
+    const linux = companionLinuxIdentity(
+      platform === "linux" ? resolveEarlyLinuxElectronOptionsFromProcess(homeDirectory) : null,
+      companion,
+    );
 
     if (linux !== null) {
       // The portal also requires a valid desktop entry. An AppImage update may
       // have removed the executable referenced by the previous launch's entry.
-      try {
-        const applicationsDir = NodePath.posix.join(
-          process.env.XDG_DATA_HOME?.trim() ||
-            NodePath.posix.join(homeDirectory, ".local", "share"),
-          "applications",
-        );
-        NodeFS.mkdirSync(applicationsDir, { recursive: true });
-        const iconPath = Electron.app.isPackaged
-          ? NodePath.posix.join(
-              applicationsDir,
-              "..",
-              "icons",
-              `${linux.linuxDesktopEntryName}.png`,
-            )
-          : undefined;
-        if (iconPath !== undefined) {
-          try {
-            NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
-            NodeFS.copyFileSync(
-              NodePath.posix.join(
-                Electron.app.getAppPath(),
-                "apps/desktop/prod-resources/icon.png",
-              ),
-              iconPath,
-            );
-          } catch {
-            // Icon installation is optional; registration retries after readiness.
+      // Companion ships its own launcher and never installs an OS URL handler.
+      if (!companion) {
+        try {
+          const applicationsDir = NodePath.posix.join(
+            process.env.XDG_DATA_HOME?.trim() ||
+              NodePath.posix.join(homeDirectory, ".local", "share"),
+            "applications",
+          );
+          NodeFS.mkdirSync(applicationsDir, { recursive: true });
+          const iconPath = Electron.app.isPackaged
+            ? NodePath.posix.join(
+                applicationsDir,
+                "..",
+                "icons",
+                `${linux.linuxDesktopEntryName}.png`,
+              )
+            : undefined;
+          if (iconPath !== undefined) {
+            try {
+              NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
+              NodeFS.copyFileSync(
+                NodePath.posix.join(
+                  Electron.app.getAppPath(),
+                  "apps/desktop/prod-resources/icon.png",
+                ),
+                iconPath,
+              );
+            } catch {
+              // Icon installation is optional; registration retries after readiness.
+            }
           }
           NodeFS.writeFileSync(
             NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName),

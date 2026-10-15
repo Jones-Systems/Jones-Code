@@ -318,7 +318,29 @@ function SidebarUpdateControl() {
         setIsActionPending(false);
         return;
       }
-      void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
+      void installLocalDesktopUpdate(bridge, state)
+        .then((result) => {
+          if (!shouldToastDesktopUpdateActionResult(result)) return;
+          const actionError = getDesktopUpdateActionError(result);
+          if (!actionError) return;
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not install update",
+              description: actionError,
+            }),
+          );
+        })
+        .catch((error) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not install update",
+              description: error instanceof Error ? error.message : "An unexpected error occurred.",
+            }),
+          );
+        })
+        .finally(() => setIsActionPending(false));
       return;
     }
 

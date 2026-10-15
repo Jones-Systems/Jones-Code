@@ -1670,6 +1670,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.ipc.on(MOUSE_NAVIGATE_CHANNEL, mouseNavigate);
         detachPasskeys = passkeys.attachGuest(wc);
         wc.setWindowOpenHandler((details) => {
+          if (browserHost.isCompanionGuest(wc)) {
+            notifyCompanionPopupBlocked(details.url);
+            return { action: "deny" };
+          }
           const action = previewWindowOpenAction(details);
           if (action === "popup") {
             return { action: "allow", overrideBrowserWindowOptions: POPUP_WINDOW_OPTIONS };

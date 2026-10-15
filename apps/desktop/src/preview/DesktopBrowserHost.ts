@@ -110,7 +110,7 @@ export class DesktopBrowserHost extends Context.Service<
      * the server sent the page no input just before it started.
      */
     readonly humanStartedDownload: (source: Electron.WebContents) => boolean;
-    /** Points a server tab's download at the server; false for any other download. */
+    /** Cancels companion downloads or places local server downloads on the shared disk. */
     readonly placeDownload: (source: Electron.WebContents, item: Electron.DownloadItem) => boolean;
     /** The agent's cursor positions for attached tabs, keyed by their server tab. */
     readonly pointers: Stream.Stream<{

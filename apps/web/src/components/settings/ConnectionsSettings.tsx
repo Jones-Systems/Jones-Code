@@ -1,3 +1,4 @@
+import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
 import { SessionPermissions } from "./SessionPermissions";
 import { AUTH_SCOPE_OPTIONS as PAIRING_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import {

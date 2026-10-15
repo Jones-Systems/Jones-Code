@@ -81,6 +81,11 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
 }
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
+  const blocked = getJonesDesktopUpdateBlockedMessage(
+    state,
+    resolveDesktopUpdateButtonAction(state),
+  );
+  if (blocked) return blocked;
   if (
     state.notAppliedVersion !== undefined &&
     (state.status === "available" || state.status === "downloaded") &&

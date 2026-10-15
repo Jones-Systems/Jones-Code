@@ -15,7 +15,6 @@ import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
-import { environmentEndpointUrl } from "../../environment/endpoint.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
 import {
   createEnvironmentCommand,
@@ -40,14 +39,16 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
   if (Option.isNone(prepared)) return yield* new JonesUpdateDisconnectedError({});
   const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
   const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
-  const suffix = input.action === "state" ? "" : `/${input.action}`;
   return yield* executeAuthenticatedEnvironmentHttpRequest({
     prepared: prepared.value,
     signer,
     remoteAuthorization,
     group: "jonesUpdates",
     method: input.action === "state" ? "GET" : "POST",
-    url: (base) => environmentEndpointUrl(base, `/api/jones-updates${suffix}`),
+    url: (urls) =>
+      input.action === "state"
+        ? urls.state({ query: input.after === undefined ? {} : { after: input.after } })
+        : urls[input.action](),
     timeoutMs: input.action === "state" ? 35_000 : 20 * 60_000,
     request: ({ client, headers }) => {
       switch (input.action) {

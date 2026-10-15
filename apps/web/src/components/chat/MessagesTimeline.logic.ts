@@ -1375,8 +1375,14 @@ function settleSupersededReasoning(entries: ReadonlyArray<TimelineEntry>) {
   });
 }
 
+const isSentinelEntry = (entry: TimelineEntry) =>
+  entry.kind === "message" &&
+  isWorkModeSentinelMessage({ ...entry.message, status: entry.projectedItem?.item.status });
+
 function timelineRowEntries(entries: ReadonlyArray<TimelineEntry>) {
-  return withoutSubagentDelegationRows(settleSupersededReasoning(entries));
+  return withoutSubagentDelegationRows(
+    settleSupersededReasoning(entries.filter((entry) => !isSentinelEntry(entry))),
+  );
 }
 
 /** The turn folds the timeline would draw, before applying expansion state. */
@@ -1405,7 +1411,7 @@ function deriveTimelineTurnFolds(
   });
 }
 
-export function deriveMessagesTimelineRows(input: {
+export function deriveMessagesTimelineRows(originalInput: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestRun?: TimelineLatestRun | null;
   runningRunId?: RunId | null;
@@ -1426,6 +1432,12 @@ export function deriveMessagesTimelineRows(input: {
   /** Live bootstrap progress. Renders a stage card under the first user message. */
   worktreeSetup?: WorktreeSetupSnapshot | null;
 }): MessagesTimelineRow[] {
+  const lastUserIndex = originalInput.timelineEntries.findLastIndex(
+    (entry) => entry.kind === "message" && entry.message.role === "user",
+  );
+  const quietTurn =
+    lastUserIndex >= 0 && originalInput.timelineEntries.slice(lastUserIndex).every(isSentinelEntry);
+  const input = quietTurn ? { ...originalInput, isWorking: false } : originalInput;
   const timelineEntries = timelineRowEntries(input.timelineEntries);
   const turnDiffSummaryByAssistantMessageId = new Map<MessageId, TurnDiffSummary>();
   for (const summary of input.turnDiffSummaries) {

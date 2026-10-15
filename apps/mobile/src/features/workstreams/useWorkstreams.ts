@@ -453,7 +453,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     try {
       for (const action of actions) {
         const command_id = await runtime.runPromise(
-          Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4)),
+          Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
         );
         assertCurrent(snapshot);
         const command: WorkstreamCommand = {

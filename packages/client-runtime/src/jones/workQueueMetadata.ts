@@ -3,7 +3,6 @@ import type * as Option from "effect/Option";
 import { RemoteEnvironmentAuthorization } from "../authorization/service.ts";
 import type { PreparedConnection } from "../connection/model.ts";
 import type { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
-import { makeEnvironmentHttpApiUrlBuilder } from "../rpc/http.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../state/environmentHttpAuth.ts";
 
 export const fetchWorkQueueMetadata = Effect.fn("clientRuntime.environment.workQueueMetadata")(
@@ -20,7 +19,7 @@ export const fetchWorkQueueMetadata = Effect.fn("clientRuntime.environment.workQ
       group: "workQueueMetadata",
       method: "GET",
       timeoutMs: input.timeoutMs ?? 10_000,
-      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).workQueueMetadata.snapshot(),
+      url: (urls) => urls.snapshot(),
       request: ({ client, headers }) => client.snapshot({ headers }),
     });
   },

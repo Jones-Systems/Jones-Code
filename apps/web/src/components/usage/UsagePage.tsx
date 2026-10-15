@@ -9,8 +9,14 @@ import {
   type EnvironmentId,
   type UsageProviderKind,
 } from "@t3tools/contracts";
-import { CircleAlertIcon, ChevronDownIcon, InfoIcon, SlidersHorizontalIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import {
+  CircleAlertIcon,
+  ChevronDownIcon,
+  CircleDashedIcon,
+  InfoIcon,
+  SlidersHorizontalIcon,
+} from "lucide-react";
+import { Fragment, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   cursorKeychainAccessEnvironments,
   refreshUsageLimits,
@@ -99,7 +105,7 @@ import {
   type UsageMetric,
 } from "./usageShortcuts";
 import { useEscapeToGoBack } from "../../hooks/useNavigateBack";
-import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
+import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import { UsageRangePicker } from "../../jones/usage/UsageRangePicker";
 import { useUsageProviderDetails } from "../../jones/usage/useUsageProviderDetails";
 import { useUsageWindow } from "../../jones/usage/useUsageWindow";
@@ -108,14 +114,10 @@ function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
 }
 
-function isUsageWindowDays(value: number): value is UsagePagePreferences["windowDays"] {
-  return WINDOW_OPTIONS.some((option) => option.days === value);
-}
-
-const providerLabel = (provider: UsageProviderKind) => PROVIDER_PRESENTATION[provider].label;
-
 export function UsagePage() {
   const {
+    preferences,
+    updatePreferences,
     metric,
     windowDays,
     window,
@@ -143,7 +145,6 @@ export function UsagePage() {
     return shortcut ? `${option.label} (${shortcut})` : option.label;
   };
   const showingLimits = metric === "limits";
-  const isHourly = window.resolution === "hour";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
@@ -157,7 +158,6 @@ export function UsagePage() {
     () => new Set(preferences.hiddenProviders),
     [preferences.hiddenProviders],
   );
-  const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
   const {
     merged: answeredUsage,
@@ -232,16 +232,15 @@ export function UsagePage() {
   const {
     detailBreakdown,
     focusedProvider,
-    activeProviders,
     expandedModelKey,
     setExpandedModelKey,
     selectProvider,
-  } = useUsageProviderDetails(merged, isPending);
+  } = useUsageProviderDetails(merged, loading.partial);
   // Newest first: the window can run 90 days, so the interesting end
   // belongs at the top of the table.
   const breakdownPeriods = useMemo<readonly (DailyTotals | HourlyTotals)[]>(
-    () => (shownHourly ? merged.hourly : merged.daily).toReversed(),
-    [shownHourly, merged.daily, merged.hourly],
+    () => (shownHourly ? detailBreakdown.hourly : detailBreakdown.daily).toReversed(),
+    [shownHourly, detailBreakdown.daily, detailBreakdown.hourly],
   );
   const breakdownModels = useMemo(
     () =>
@@ -287,24 +286,12 @@ export function UsagePage() {
     0,
     ...cursorAccessEnvironments.map((environment) => ({ kind: "enable" as const, environment })),
   );
+  const breakdownProviders = focusedProvider === null ? activeProviders : [focusedProvider];
   const timeValueColumnWidth = `${60 / (breakdownProviders.length + 2)}%`;
 
-  const updatePreferences = (patch: Partial<UsagePagePreferences>) => {
-    const nextPreferences = { ...preferences, ...patch };
-    setPreferences(nextPreferences);
-    saveUsagePagePreferences(nextPreferences);
-  };
-  const selectWindow = (days: number) => {
-    if (!isUsageWindowDays(days)) return;
-    updatePreferences({ windowDays: days });
-    setWindowSelection({
-      days,
-      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
-    });
-  };
   const selectMetric = (nextMetric: UsageMetric) => {
     if (nextMetric === "limits") setLimitsNow(Date.now());
-    updatePreferences({ metric: nextMetric });
+    selectWindowMetric(nextMetric);
   };
   const refreshLimits = async (automatic = false, afterPending = false) => {
     try {
@@ -393,6 +380,26 @@ export function UsagePage() {
     shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
       ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone)}`
       : `${formatDayShort(shownWindow.sinceDay)} to ${formatDayShort(shownWindow.untilDay)}`;
+  const desktopWindowLabel =
+    windowSelection.kind === "hours"
+      ? `Past ${windowSelection.hours}h · ${windowLabel}`
+      : windowSelection.kind === "custom"
+        ? `Custom range · ${windowLabel}`
+        : windowLabel;
+  const windowPeriodValue = windowSelection.kind === "day" ? String(windowDays) : "";
+  const rangePickerProps = {
+    selection: windowSelection,
+    timeZone: window.timeZone,
+    sinceValue: customSinceValue,
+    untilValue: customUntilValue,
+    validation: customWindowValidation,
+    disabled: showingLimits,
+    onSinceValueChange: setCustomSinceValue,
+    onUntilValueChange: setCustomUntilValue,
+    onSelectHours: selectHourWindow,
+    onApplyCustom: applyCustomWindow,
+    onClear: clearCustomWindow,
+  };
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 xl:flex">
       <WorkspaceBreadcrumb ariaLabel="Usage breadcrumb" className="min-w-0">
@@ -736,7 +743,7 @@ export function UsagePage() {
                                   ? formatUsd(totals?.costUsd ?? 0)
                                   : formatTokens(totals?.totalTokens ?? 0)}
                             </span>
-                          </div>
+                          </span>
                           {/* Kept while awaiting data so the row does not grow when it lands. */}
                           <span
                             className={cn(
@@ -774,36 +781,35 @@ export function UsagePage() {
                   </div>
                 </section>
 
-                <section className="flex flex-col gap-2">
-                  <h2 className="text-sm font-medium text-foreground">Totals</h2>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
-                    <Metric
-                      loading={loading.partial}
-                      label="Processed tokens"
-                      value={formatTokens(merged.totalTokens)}
-                    />
-                    <Metric
-                      loading={loading.partial}
-                      label="Cached input"
-                      value={formatTokens(merged.cachedInputTokens)}
-                    />
-                    <Metric
-                      loading={loading.partial}
-                      label="Uncached input"
-                      value={formatTokens(merged.uncachedInputTokens)}
-                    />
-                    <Metric
-                      loading={loading.partial}
-                      label="Output"
-                      value={formatTokens(merged.outputTokens)}
-                    />
-                    <Metric
-                      loading={loading.partial}
-                      label="Cache savings"
-                      value={formatUsd(merged.costQuality.cacheSavingsUsd)}
-                    />
-                  </div>
-                </section>
+                {detailBreakdown.providerTotals !== null ? (
+                  <UsageProviderDetails
+                    provider={detailBreakdown.providerTotals}
+                    onClose={() => {
+                      selectProvider(null);
+                      if (focusedProvider !== null)
+                        providerTriggers.current.get(focusedProvider)?.focus();
+                    }}
+                  />
+                ) : (
+                  <section className="flex flex-col gap-2">
+                    <h2 className="text-sm font-medium text-foreground">Totals</h2>
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
+                      <Metric loading={loading.partial} label="Processed tokens" value={formatTokens(merged.totalTokens)} />
+                      <Metric loading={loading.partial} label="Cached input" value={formatTokens(merged.cachedInputTokens)} />
+                      <Metric
+                        loading={loading.partial}
+                        label="Uncached input"
+                        value={formatTokens(merged.uncachedInputTokens)}
+                      />
+                      <Metric loading={loading.partial} label="Output" value={formatTokens(merged.outputTokens)} />
+                      <Metric
+                        loading={loading.partial}
+                        label="Cache savings"
+                        value={formatUsd(merged.costQuality.cacheSavingsUsd)}
+                      />
+                    </div>
+                  </section>
+                )}
 
                 {merged.totalTokens > 0 ? (
                   <section
@@ -917,46 +923,76 @@ export function UsagePage() {
                                   <td className="py-2.5 text-left whitespace-normal">
                                     {/* The overlay opens the model except at the token-details toggle.
                                       Focus shows as the row's hover fill, not a ring. */}
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedModelKey(key)}
-                                    className="flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0"
-                                  >
-                                    <ProviderMark provider={model.provider} className="size-3.5" />
-                                    {model.model}
-                                  </button>
-                                  <div
-                                    aria-hidden
-                                    className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}
-                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedModelKey(key)}
+                                      className="flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0"
+                                    >
+                                      <ProviderMark
+                                        provider={model.provider}
+                                        className="size-3.5"
+                                      />
+                                      {model.model}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label={`${model.model} token details`}
+                                      aria-expanded={expanded}
+                                      aria-controls={expanded ? detailId : undefined}
+                                      onClick={() => setExpandedModelKey(expanded ? null : key)}
+                                      className="relative z-10 ml-2 rounded-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                      <ChevronDownIcon
+                                        className={cn("size-3", expanded && "rotate-180")}
+                                        aria-hidden
+                                      />
+                                    </button>
                                     <div
-                                      className="h-full rounded-full"
-                                      style={{
-                                        // A short minimum keeps tiny shares a dash, not a dot.
-                                        width:
-                                          value > 0 && breakdownPeak > 0
-                                            ? `max(0.5rem, ${(value / breakdownPeak) * 100}%)`
-                                            : 0,
-                                        backgroundColor:
-                                          PROVIDER_PRESENTATION[model.provider].color,
-                                      }}
-                                    />
-                                  </div>
-                                </td>
-                                <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
-                                  {isModelCostUnknown(model) ? (
-                                    <span className="text-muted-foreground">Unpriced</span>
-                                  ) : (
-                                    formatUsd(model.costUsd)
-                                  )}
-                                </td>
-                                <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
-                                  {share === null ? "" : formatPercent(share)}
-                                </td>
-                                <td className={cn("py-2.5 pl-6", rowFigures)}>
-                                  {formatTokens(model.totalTokens)}
-                                </td>
-                              </tr>
+                                      aria-hidden
+                                      className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}
+                                    >
+                                      <div
+                                        className="h-full rounded-full"
+                                        style={{
+                                          // A short minimum keeps tiny shares a dash, not a dot.
+                                          width:
+                                            value > 0 && breakdownPeak > 0
+                                              ? `max(0.5rem, ${(value / breakdownPeak) * 100}%)`
+                                              : 0,
+                                          backgroundColor:
+                                            PROVIDER_PRESENTATION[model.provider].color,
+                                        }}
+                                      />
+                                    </div>
+                                  </td>
+                                  <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
+                                    {isModelCostUnknown(model) ? (
+                                      <span className="text-muted-foreground">Unpriced</span>
+                                    ) : (
+                                      formatUsd(model.costUsd)
+                                    )}
+                                  </td>
+                                  <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
+                                    {share === null ? "" : formatPercent(share)}
+                                  </td>
+                                  <td className={cn("py-2.5 pl-6", rowFigures)}>
+                                    {formatTokens(model.totalTokens)}
+                                  </td>
+                                </tr>
+                                {expanded ? (
+                                  <tr>
+                                    <td colSpan={5} className="border-b border-border/50 py-4">
+                                      <div
+                                        id={detailId}
+                                        role="region"
+                                        aria-label={`${model.model} token details`}
+                                      >
+                                        <UsageTokenDetails detail={model} />
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ) : null}
+                              </Fragment>
                             );
                           })
                         )}
@@ -975,7 +1011,7 @@ export function UsagePage() {
                       <thead>
                         <tr className="border-b border-border text-left text-xs text-muted-foreground">
                           <th className="py-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
-                          {activeProviders.map((provider) => (
+                          {breakdownProviders.map((provider) => (
                             <th key={provider} className="py-2 text-right font-normal">
                               {PROVIDER_PRESENTATION[provider].label}
                             </th>

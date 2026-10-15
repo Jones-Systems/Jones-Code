@@ -1,3 +1,6 @@
+import { ComposerShortcutPlate } from "../../jones/composer/ComposerShortcutPlate";
+import type { ComposerModelSelectOptions } from "../../jones/composer/composerModelEffortShortcuts";
+import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";

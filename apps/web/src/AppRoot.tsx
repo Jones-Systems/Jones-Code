@@ -1,5 +1,6 @@
 import { RouterProvider } from "@tanstack/react-router";
 
+import { CompanionController } from "./jones/previewCompanion/CompanionController";
 import { BrowserProfileReporter } from "./browser/BrowserProfileReporter";
 import { ElectronBrowserHost } from "./browser/ElectronBrowserHost";
 import { QuitHoldOverlay } from "./components/QuitHoldOverlay";

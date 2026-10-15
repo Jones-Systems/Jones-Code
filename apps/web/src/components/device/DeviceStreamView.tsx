@@ -615,18 +615,8 @@ export function DeviceStreamView(props: {
               }
               error={status === "error" || route?.phase === "denied"}
             >
-              {status === "error" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    // An expired ticket surfaces as unauthorized on restart and
-                    // refreshes access through the effect; no need to mint one here.
-                    clientRef.current?.stop();
-                    setPhoneUnavailable(false);
-                    clientRef.current?.start();
-                  }}
-                >
+              {status === "error" || route?.phase === "denied" ? (
+                <Button size="sm" variant="outline" onClick={retryAccess}>
                   Reconnect
                 </Button>
               ) : null}

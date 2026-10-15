@@ -47,7 +47,7 @@ import {
 export const workstreamCommandId = () =>
   runtime.runPromise(
     Crypto.Crypto.pipe(
-      Effect.flatMap((crypto) => crypto.randomUUIDv4),
+      Effect.flatMap((crypto) => crypto.randomUUIDv4()),
       Effect.map((uuid) => `t3-workstream-${uuid}`),
     ),
   );
