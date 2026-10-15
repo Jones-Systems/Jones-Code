@@ -73,6 +73,7 @@
     "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/scenarios/example.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/scenarios/sidebar-rename.mjs": "jones-owned",
+    "apps/desktop/src/window/DesktopApplicationMenu.test.ts": "jones-tests-in-upstream",
     "apps/desktop/src/app/DesktopAppIdentity.test.ts": "jones-tests-in-upstream",
     "apps/desktop/src/app/DesktopAppIdentity.ts": "accepted-shared",
     "apps/desktop/src/app/DesktopClerk.test.ts": "jones-tests-in-upstream",
