@@ -6923,7 +6923,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }
           prompt.push({
             type: "text",
-            text: buildRuntimeInstructions({ appIdentity: host.appIdentity,
+            text: buildRuntimeInstructions({
+              ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
               harness: flavor.runtimeHarness ?? driver,
               model: turnInput.modelSelection.model,
             }),
