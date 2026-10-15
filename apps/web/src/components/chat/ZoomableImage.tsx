@@ -1,5 +1,6 @@
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { observeResize } from "~/lib/observeResize";
 import {
   useCallback,
   useEffect,
@@ -144,13 +145,11 @@ export function ZoomableImage({
     if (!viewport) return;
     const sizing = sizingRef.current;
     if (!sizing) return;
-    const observer = new ResizeObserver(([entry]) => {
+    return observeResize(sizing, ([entry]) => {
       if (!entry) return;
       setPanelSize({ width: entry.contentRect.width, height: entry.contentRect.height });
       changeZoom(1);
     });
-    observer.observe(sizing);
-    return () => observer.disconnect();
   }, [layout, changeZoom]);
 
   const stepZoom = (direction: number) =>

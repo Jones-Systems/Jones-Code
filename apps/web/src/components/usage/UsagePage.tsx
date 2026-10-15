@@ -702,7 +702,7 @@ export function UsagePage() {
                             selectProvider(focusedProvider === provider ? null : provider)
                           }
                           className={cn(
-                            "flex flex-col gap-1 rounded-md text-left outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring",
+                            "flex flex-col gap-1 rounded-md text-left outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                             focusedProvider === provider && "bg-muted/50",
                           )}
                         >
@@ -952,7 +952,7 @@ export function UsagePage() {
                                       aria-expanded={expanded}
                                       aria-controls={expanded ? detailId : undefined}
                                       onClick={() => setExpandedModelKey(expanded ? null : key)}
-                                      className="relative z-10 ml-2 rounded-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                      className="relative z-10 ml-2 rounded-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                                     >
                                       <ChevronDownIcon
                                         className={cn("size-3", expanded && "rotate-180")}
