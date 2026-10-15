@@ -70,10 +70,7 @@ it("recorded event codecs preserve upstream pull request link payloads", () => {
   const publicEvent = Schema.decodeSync(OrchestrationV2DomainEventJson)(input);
   const recordedEvent = Schema.decodeSync(RecordedLifecycleEventJson)(input);
   assert.deepStrictEqual(recordedEvent, publicEvent);
-  assert.deepStrictEqual(
-    Schema.decodeSync(RecordedLifecycleEvent)(publicEvent),
-    publicEvent,
-  );
+  assert.deepStrictEqual(Schema.decodeSync(RecordedLifecycleEvent)(publicEvent), publicEvent);
   assert.deepStrictEqual(Schema.encodeSync(RecordedLifecycleEventJson)(recordedEvent), input);
   assert.throws(() =>
     Schema.decodeUnknownSync(RecordedLifecycleEventJson)({
@@ -630,7 +627,10 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
       assert.deepStrictEqual(event, input);
       const encoded = yield* Schema.encodeEffect(RecordedLifecycleEventJson)(event);
       assert.deepStrictEqual(encoded.payload, yield* Schema.encodeEffect(RecordedRunJson)(run));
-      assert.deepStrictEqual(yield* Schema.decodeEffect(RecordedLifecycleEventJson)(encoded), input);
+      assert.deepStrictEqual(
+        yield* Schema.decodeEffect(RecordedLifecycleEventJson)(encoded),
+        input,
+      );
     }
     const threadEventTypes: ReadonlyArray<"thread.created" | "thread.archived"> = [
       "thread.created",
@@ -651,7 +651,10 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
         encoded.payload,
         yield* Schema.encodeEffect(RecordedAppThreadJson)(thread),
       );
-      assert.deepStrictEqual(yield* Schema.decodeEffect(RecordedLifecycleEventJson)(encoded), input);
+      assert.deepStrictEqual(
+        yield* Schema.decodeEffect(RecordedLifecycleEventJson)(encoded),
+        input,
+      );
     }
     yield* Effect.scoped(
       Effect.gen(function* () {

@@ -477,7 +477,10 @@ describe("orchestration V2 thread fork", () => {
           finalSourceIdentity?.requested,
           sourceObservation.providerThread.runtimeIdentity?.requested,
         );
-        assert.deepEqual(finalSourceIdentity?.observed, ProviderAdapter.unobservedRuntimeIdentity());
+        assert.deepEqual(
+          finalSourceIdentity?.observed,
+          ProviderAdapter.unobservedRuntimeIdentity(),
+        );
         const targetObservedModel =
           targetProjection.providerThreads[0]?.runtimeIdentity?.observed.model;
         assert.equal(targetObservedModel?.status, "observed");
