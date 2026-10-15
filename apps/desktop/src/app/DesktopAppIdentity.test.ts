@@ -297,7 +297,7 @@ describe("DesktopAppIdentity", () => {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         yield* identity.configure;
 
-        assert.deepEqual(calls.setName, ["Jones Code"]);
+        assert.deepEqual(calls.setName, ["Jones Code Alpha"]);
         assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "Jones Code");
         assert.equal(calls.setAboutPanelOptions[0]?.applicationVersion, "1.2.3");
         assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
@@ -318,16 +318,19 @@ describe("DesktopAppIdentity", () => {
   });
 
   it.effect.each([
-    { stage: "Alpha", environment: {} },
+    { stage: "Alpha", applicationName: "Jones Code", environment: {} },
     {
       stage: "Nightly",
+      applicationName: "Jones Code",
       environment: { appVersion: "0.0.43-nightly.20260929.2428" },
     },
     {
       stage: "Dev",
+      applicationName: "Jones Code (Dev)",
       environment: { env: { VITE_DEV_SERVER_URL: "http://localhost:5173" } },
     },
-  ])("uses a valid native User-Agent product name for $stage", ({ stage, environment }) => {
+  ])("uses a valid native User-Agent product name for $stage", (testCase) => {
+    const { stage, applicationName, environment } = testCase;
     const calls: ElectronAppCalls = {
       setAboutPanelOptions: [],
       setDockIcon: [],
@@ -341,10 +344,10 @@ describe("DesktopAppIdentity", () => {
 
         const runtimeName = calls.setName[0];
         assert.isDefined(runtimeName);
-        assert.equal(runtimeName, `T3 Code ${stage}`);
+        assert.equal(runtimeName, `Jones Code ${stage}`);
         // RFC 9110's token grammar, after Electron removes ASCII spaces.
         assert.match(runtimeName.replaceAll(" ", ""), /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, `T3 Code (${stage})`);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, applicationName);
       }),
       { calls, environment },
     );
