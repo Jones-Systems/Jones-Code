@@ -491,6 +491,7 @@ setInterval(() => {}, 1_000);
               targetVersion: "1.1.0",
               dbPath: databasePath,
               status: "pending",
+              phase: "accepted",
             },
           }),
         );

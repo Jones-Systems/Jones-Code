@@ -83,7 +83,7 @@ it("reports target loss after a real Runtime.evaluate dispatch boundary as unkno
   let dispatched = false;
   let cause: unknown;
   try {
-    await ServerBrowserPage.evaluate(cdp, { expression: "click()" }, () => {
+    await ServerBrowserPage.evaluate(cdp, { expression: "click()" }, 2_000, () => {
       events.push("dispatch");
       dispatched = true;
     });

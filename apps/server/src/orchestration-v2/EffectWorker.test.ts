@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ServerConfig from "../config.ts";
+import * as PreviewManager from "../preview/Manager.ts";
 import { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
 import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
 import * as Schema from "effect/Schema";
@@ -25,6 +26,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
@@ -220,10 +222,25 @@ it.effect(
             calls.push({ input, binding: options?.legacyOwnedControl });
           }),
       });
+      const unexpectedPreview = () =>
+        Effect.die("unexpected preview operation during terminal cleanup");
       const cleanup = ResourceCleanupService.layer.pipe(
         Layer.provideMerge(
           Layer.mergeAll(
             terminals,
+            Layer.succeed(PreviewManager.PreviewManager, {
+              open: unexpectedPreview,
+              navigate: unexpectedPreview,
+              reportStatus: unexpectedPreview,
+              requestReveal: unexpectedPreview,
+              resize: unexpectedPreview,
+              adjust: unexpectedPreview,
+              refresh: unexpectedPreview,
+              close: unexpectedPreview,
+              list: unexpectedPreview,
+              events: Stream.die("unexpected preview events during terminal cleanup"),
+              subscribeEvents: unexpectedPreview(),
+            }),
             ServerConfig.layerTest(process.cwd(), { prefix: "legacy-owned-cleanup-route-" }),
           ),
         ),

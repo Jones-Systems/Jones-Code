@@ -11,6 +11,7 @@ import {
   LOCAL_DEVICE_HOST_ID,
 } from "@t3tools/contracts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { DeviceDirectGrants } from "../jones/device/DeviceDirectGrants.ts";
 import * as DeviceService from "./DeviceService.ts";
 import * as DeviceHubProxy from "./DeviceHubProxy.ts";
 
@@ -38,6 +39,12 @@ it.effect("preserves binary input and admission frames through the real socket p
     const services = yield* Layer.build(
       HttpRouter.serve(DeviceHubProxy.layer, { disableListenLog: true }).pipe(
         Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provide(
+          Layer.succeed(DeviceDirectGrants, {
+            issue: () => Effect.die("unexpected direct grant issuance for proxied stream"),
+            admit: () => Effect.die("unexpected direct grant admission for proxied stream"),
+          }),
+        ),
         Layer.provide(
           Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
             authenticateWebSocketUpgrade: () =>
