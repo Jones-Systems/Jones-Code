@@ -129,11 +129,117 @@ export interface CurrentProductionResult<A> {
   closeKnown: boolean;
   value?: A;
   error?: Error;
+  diagnostic?: CurrentFixtureDiagnostic;
   retainReason?: string;
   receipt?: CurrentFixtureReceipt;
   receiptSha256?: string;
   capture?: CurrentFixtureCapture;
   captureSha256?: string;
+}
+interface CurrentFixtureDiagnostic {
+  readonly stage:
+    | "initialize"
+    | "seed"
+    | "replay"
+    | "receipt-check"
+    | "callback"
+    | "ledger"
+    | "integrity"
+    | "maintenance"
+    | "close"
+    | "seal";
+  readonly errorTags: readonly string[];
+  readonly reasonCode: string;
+}
+const diagnosticTags = new Set([
+  "V2DatabaseImportError",
+  "EventSinkWriteError",
+  "EventStoreAppendEventsError",
+  "EventStoreReadEventsError",
+  "ProjectionStoreApplyEventError",
+  "ProjectionStoreSetupError",
+  "ProjectionStoreReadError",
+  "ProjectionStoreThreadNotFoundError",
+  "UnsupportedNodeSqliteVersionError",
+  "UnsupportedNodeSqliteOperationError",
+  "SchemaError",
+  "MigrationError",
+  "SqlError",
+  "ConnectionError",
+  "SqlSyntaxError",
+  "ConstraintError",
+  "UniqueViolation",
+  "LockTimeoutError",
+  "UnknownError",
+  "SystemError",
+]);
+const diagnosticCodes = new Set([
+  "ERR_SQLITE_ERROR",
+  "SQLITE_ERROR",
+  "SQLITE_BUSY",
+  "SQLITE_LOCKED",
+  "SQLITE_CONSTRAINT",
+  "EACCES",
+  "ENOENT",
+  "ENOSPC",
+  "EIO",
+  "EROFS",
+  "invalid_close",
+  "invalid_close_proof",
+  "changed_identity",
+  "changed_layout",
+  "manifest_limit",
+]);
+const invariantCodes = new Set([
+  "missing_pragma",
+  "durability_pragmas_changed",
+  "project_receipt_replay_mismatch",
+  "thread_receipt_replay_mismatch",
+  "projection_history_mismatch",
+  "receipt_links_mismatch",
+  "integrity_failed",
+  "delete_maintenance_failed",
+  "closed_delete_layout_mismatch",
+]);
+const fixtureInvariant = (reasonCode: string, message: string) =>
+  Object.assign(new Error(message), { fixtureReasonCode: reasonCode });
+
+// Only fixed classifications leave the producer; causes may contain SQL and private paths.
+function failureDiagnostic(
+  stage: CurrentFixtureDiagnostic["stage"],
+  error: unknown,
+): CurrentFixtureDiagnostic {
+  const errorTags: string[] = [];
+  let reasonCode = "unclassified";
+  const seen = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < 12 && current !== null && typeof current === "object"; depth++) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (
+      "_tag" in current &&
+      typeof current._tag === "string" &&
+      diagnosticTags.has(current._tag) &&
+      !errorTags.includes(current._tag) &&
+      errorTags.length < 8
+    )
+      errorTags.push(current._tag);
+    if (
+      "fixtureReasonCode" in current &&
+      typeof current.fixtureReasonCode === "string" &&
+      invariantCodes.has(current.fixtureReasonCode)
+    )
+      reasonCode = current.fixtureReasonCode;
+    else if (
+      reasonCode === "unclassified" &&
+      "code" in current &&
+      typeof current.code === "string" &&
+      diagnosticCodes.has(current.code)
+    )
+      reasonCode = current.code;
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return { stage, errorTags, reasonCode };
 }
 const hash = (value: unknown) =>
   NodeCrypto.createHash("sha256")
@@ -268,7 +374,7 @@ export async function produceCurrentFixture<A>(
     for (const name of pragmaNames) {
       const value = Object.values((await query(`PRAGMA ${name}`))[0] ?? {})[0];
       if (typeof value !== "string" && typeof value !== "number")
-        throw new Error(`missing pragma ${name}`);
+        throw fixtureInvariant("missing_pragma", `missing pragma ${name}`);
       values[name] = value;
     }
     return values;
@@ -280,16 +386,21 @@ export async function produceCurrentFixture<A>(
       observed.journal_mode !== "wal" ||
       (observations[0] && JSON.stringify(observed) !== JSON.stringify(observations[0].pragmas))
     )
-      throw new Error("receiving production durability pragmas changed");
+      throw fixtureInvariant(
+        "durability_pragmas_changed",
+        "receiving production durability pragmas changed",
+      );
     observations.push({ phase, pragmas: observed });
   };
   let capture: Omit<CurrentFixtureCapture, "profile"> | undefined;
   let replayedCommands = 0;
+  let stage: CurrentFixtureDiagnostic["stage"] = "initialize";
   try {
     await Effect.runPromise(
       initializeV2Database(paths.dbPath).pipe(Effect.provide(NodeServices.layer)),
     );
     await observe("before-seed");
+    stage = "seed";
     await run(
       Effect.gen(function* () {
         const sink = yield* EventSink.EventSinkV2;
@@ -325,26 +436,37 @@ export async function produceCurrentFixture<A>(
           },
         };
         const projectCommit = yield* sink.commitProjectCommand(projectInput);
+        stage = "replay";
         const projectReplay = yield* sink.commitProjectCommand(projectInput);
+        stage = "receipt-check";
         if (
           !projectCommit.committed ||
           projectReplay.committed ||
           !NodeUtil.isDeepStrictEqual(projectCommit.receipt, projectReplay.receipt)
         )
-          throw new Error("project fixture command receipt or idempotent replay differs");
+          throw fixtureInvariant(
+            "project_receipt_replay_mismatch",
+            "project fixture command receipt or idempotent replay differs",
+          );
         replayedCommands++;
         const commitThread = Effect.fn("currentFixtures.commitThread")(function* (
           input: Parameters<typeof sink.commitCommand>[0],
         ) {
+          stage = "seed";
           const committed = yield* sink.commitCommand(input);
+          stage = "replay";
           const replay = yield* sink.commitCommand(input);
+          stage = "receipt-check";
           if (
             !committed.committed ||
             replay.committed ||
             !NodeUtil.isDeepStrictEqual(committed.receipt, replay.receipt) ||
             !NodeUtil.isDeepStrictEqual(committed.storedEvents, replay.storedEvents)
           )
-            throw new Error("thread fixture command receipt or idempotent replay differs");
+            throw fixtureInvariant(
+              "thread_receipt_replay_mismatch",
+              "thread fixture command receipt or idempotent replay differs",
+            );
           replayedCommands++;
         });
         for (let thread = 0; thread < recipe.threads; thread++) {
@@ -458,15 +580,20 @@ export async function produceCurrentFixture<A>(
             (yield* projections.getThread(threadId)).id !== threadId ||
             (yield* projections.getMessageCount(threadId)) !== recipe.historyTurns * 2
           )
-            throw new Error("V2 fixture projection differs from seeded history");
+            throw fixtureInvariant(
+              "projection_history_mismatch",
+              "V2 fixture projection differs from seeded history",
+            );
         }
       }),
     );
     await observe("after-seed");
     await observe("before-callback");
+    stage = "callback";
     result.value = await use(Object.freeze({ owner, paths, databaseSource: source, recipe, run }));
     signal.throwIfAborted();
     await observe("after-callback");
+    stage = "receipt-check";
     const tables: Record<string, { status: "present"; count: number }> = {};
     for (const table of tableNames)
       tables[table] = {
@@ -509,18 +636,26 @@ export async function produceCurrentFixture<A>(
       replayedCommands !== expectedThreadReceipts + 1 ||
       invalidEventLinks !== 0
     )
-      throw new Error("shared fixture command receipts, replay count or event links differ");
+      throw fixtureInvariant(
+        "receipt_links_mismatch",
+        "shared fixture command receipts, replay count or event links differ",
+      );
+    stage = "ledger";
     const ledgers: Record<string, { id: number; name: string }[]> = {};
     for (const table of ["effect_sql_migrations", "jones_sql_migrations"])
       ledgers[table] = (
         await query(`SELECT migration_id AS id, name FROM ${table} ORDER BY migration_id`)
       ).map((row) => ({ id: Number(row.id), name: String(row.name) }));
+    stage = "integrity";
     const integrity = (await query("PRAGMA integrity_check")).map((row) =>
       String(Object.values(row)[0]),
     );
     const foreignKeys = await query("PRAGMA foreign_key_check");
     if (integrity.length !== 1 || integrity[0] !== "ok" || foreignKeys.length)
-      throw new Error("synthetic fixture integrity or foreign keys failed");
+      throw fixtureInvariant(
+        "integrity_failed",
+        "synthetic fixture integrity or foreign keys failed",
+      );
     const runtimeObservation = {
       nodeVersion: process.versions.node,
       versions: { ...process.versions },
@@ -540,17 +675,20 @@ export async function produceCurrentFixture<A>(
       foreignKeys: { violations: 0, sha256: hash(foreignKeys) },
     };
     await observe("before-production-close");
+    stage = "maintenance";
     if (profile === "health-offline-delete") {
       const checkpoint = (await query("PRAGMA wal_checkpoint(TRUNCATE)"))[0];
       if (
         Number(checkpoint?.busy) !== 0 ||
         Object.values((await query("PRAGMA journal_mode=DELETE"))[0] ?? {})[0] !== "delete"
       )
-        throw new Error("DELETE fixture maintenance failed");
+        throw fixtureInvariant("delete_maintenance_failed", "DELETE fixture maintenance failed");
     }
   } catch (error) {
+    result.diagnostic = failureDiagnostic(stage, error);
     result.error = error instanceof Error ? error : new Error(String(error));
   } finally {
+    stage = "close";
     open = false;
     cancellation.abort();
     await Promise.allSettled([...pending]);
@@ -563,6 +701,7 @@ export async function produceCurrentFixture<A>(
       });
       result.closeKnown = true;
       if (!result.error && capture) {
+        stage = "maintenance";
         let maintenance: CurrentFixtureCapture["profile"]["maintenance"];
         if (profile === "health-offline-delete") {
           const header = Buffer.alloc(100);
@@ -585,12 +724,16 @@ export async function produceCurrentFixture<A>(
             header[19] !== 1 ||
             Object.values(sidecars).some(Boolean)
           )
-            throw new Error("closed DELETE header or sidecars differ");
+            throw fixtureInvariant(
+              "closed_delete_layout_mismatch",
+              "closed DELETE header or sidecars differ",
+            );
           maintenance = {
             header: { bytesRead, writeVersion: header[18], readVersion: header[19] },
             sidecars,
           };
         }
+        stage = "seal";
         options.signal?.throwIfAborted();
         assertCurrentDatabaseSource(source);
         const custody = await sealSyntheticFixture(owner, {
@@ -619,6 +762,7 @@ export async function produceCurrentFixture<A>(
         result.captureSha256 = hash(result.capture);
       }
     } catch (error) {
+      if (!result.error) result.diagnostic = failureDiagnostic(stage, error);
       result.error ??= error instanceof Error ? error : new Error(String(error));
       result.retainReason = result.closeKnown ? "fixture_seal_failed" : "unknown_resource_close";
     }
