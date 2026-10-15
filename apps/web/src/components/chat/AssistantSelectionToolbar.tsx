@@ -69,12 +69,16 @@ export function AssistantSelectionToolbar({
         clear();
         return;
       }
-      const rects = Array.from(captured.range.getClientRects(), (selectedRect) => ({
-        left: Math.max(selectedRect.left, viewportRect.left),
-        right: Math.min(selectedRect.right, viewportRect.right),
-        top: Math.max(selectedRect.top, viewportRect.top),
-        bottom: Math.min(selectedRect.bottom, viewportRect.bottom),
-      }));
+      const rects = captured.range.getClientRects();
+      const pointerOnText =
+        pointer !== null &&
+        Array.from(rects).some(
+          (line) =>
+            pointer.x >= line.left - 8 &&
+            pointer.x <= line.right + 8 &&
+            pointer.y >= line.top - 8 &&
+            pointer.y <= line.bottom + 8,
+        );
       setSelection({
         sourceAnchor: { source: captured.source, range: captured.range, viewport },
         citation: {
@@ -83,8 +87,12 @@ export function AssistantSelectionToolbar({
           messageId: MessageId.make(messageId),
           ...captured.selector,
         },
-        rects,
-        pointer,
+        position: resolveSelectionActionPosition({
+          bounds: viewportRect,
+          selectionRect: rects.item(rects.length - 1) ?? rect,
+          pointer: pointerOnText ? pointer : null,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+        }),
       });
     };
     const actions = observeSelectionActions({

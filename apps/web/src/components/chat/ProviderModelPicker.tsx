@@ -1,6 +1,7 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
+  type EnvironmentId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
@@ -27,6 +28,7 @@ import { useComposerMenuProps } from "./composerEventScope";
 import { shortcutLabelForCommand } from "../../keybindings";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
+  environmentId: EnvironmentId | null;
   /**
    * The instance currently selected in the composer. Drives the trigger
    * icon, label and the default-highlighted combobox row.
@@ -290,36 +292,31 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         className="before:hidden"
         padding="none"
       >
-        {isMenuOpen && (
-          <ModelPickerContent
-            activeInstanceId={activeInstanceId}
-            model={props.model}
-            {...(props.selectedModels !== undefined
-              ? { selectedModels: props.selectedModels }
-              : {})}
-            {...(props.onToggleModel
-              ? {
-                  onToggleModel: (instanceId: ProviderInstanceId, model: string) => {
-                    if (!props.disabled) props.onToggleModel?.(instanceId, model);
-                  },
-                }
-              : {})}
-            lockedProvider={props.lockedProvider}
-            lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
-            instanceEntries={props.instanceEntries}
-            {...(props.keybindings ? { keybindings: props.keybindings } : {})}
-            modelOptionsByInstance={props.modelOptionsByInstance}
-            terminalOpen={props.terminalOpen ?? false}
-            onRequestClose={() => setIsMenuOpen(false)}
-            {...(props.onOpenProviderSetup
-              ? { onOpenProviderSetup: props.onOpenProviderSetup }
-              : {})}
-            {...(props.getModelDisabledReason
-              ? { getModelDisabledReason: props.getModelDisabledReason }
-              : {})}
-            onInstanceModelChange={handleInstanceModelChange}
-          />
-        )}
+        <ModelPickerContent
+          environmentId={props.environmentId}
+          activeInstanceId={activeInstanceId}
+          model={props.model}
+          {...(props.selectedModels !== undefined ? { selectedModels: props.selectedModels } : {})}
+          {...(props.onToggleModel
+            ? {
+                onToggleModel: (instanceId: ProviderInstanceId, model: string) => {
+                  if (!props.disabled) props.onToggleModel?.(instanceId, model);
+                },
+              }
+            : {})}
+          lockedProvider={props.lockedProvider}
+          lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
+          instanceEntries={props.instanceEntries}
+          {...(props.keybindings ? { keybindings: props.keybindings } : {})}
+          modelOptionsByInstance={props.modelOptionsByInstance}
+          terminalOpen={props.terminalOpen ?? false}
+          onRequestClose={() => setIsMenuOpen(false)}
+          {...(props.onOpenProviderSetup ? { onOpenProviderSetup: props.onOpenProviderSetup } : {})}
+          {...(props.getModelDisabledReason
+            ? { getModelDisabledReason: props.getModelDisabledReason }
+            : {})}
+          onInstanceModelChange={handleInstanceModelChange}
+        />
         {props.selectedModels === undefined ? (
           <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
         ) : null}

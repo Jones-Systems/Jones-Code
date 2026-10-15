@@ -5,6 +5,7 @@ import type { PullRequestSpeedActionResult } from "~/components/pullRequest/Pull
 import { usePullRequestCloseBatch } from "~/components/pullRequest/usePullRequestActions";
 import { SidebarPointerSensor } from "~/components/Sidebar.pointer";
 import { resolveSidebarSweepKeys } from "~/components/Sidebar.logic";
+import { sortProjectsByGroupOrder } from "@t3tools/client-runtime/state/project-grouping";
 import { pullRequestHostOf, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import type {
   EnvironmentId,
@@ -45,6 +46,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -88,6 +90,8 @@ import {
   pullRequestOverrideAfterAction,
   reusePullRequestEntries,
   settlePullRequestOverrides,
+  pullRequestHostActions,
+  largestPullRequestReadCount,
 } from "../components/pullRequest/pullRequestList.logic";
 import {
   pullRequestListPreferences,
@@ -129,7 +133,10 @@ import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { isElectron } from "../env";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { isTerminalFocused } from "../lib/terminalFocus";
-import { PanelLayoutControls } from "../components/chat/PanelLayoutControls";
+import {
+  PanelLayoutControls,
+  RightPanelMaximizeControl,
+} from "../components/chat/PanelLayoutControls";
 import { Button } from "../components/ui/button";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -151,6 +158,7 @@ import {
 } from "../rightPanelStore";
 import { useDebouncedValue } from "../state/queries";
 import { useAllEnvironmentShellsBootstrapped, useProjects } from "../state/entities";
+import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { useEnvironments } from "../state/environments";
 import {
   pullRequestEnvironment,
@@ -329,7 +337,9 @@ export const Route = createFileRoute("/_chat/pull-requests")({
     ...(typeof raw.selectedEnvironmentId === "string" && raw.selectedEnvironmentId
       ? { selectedEnvironmentId: raw.selectedEnvironmentId as EnvironmentId }
       : {}),
-    ...(typeof raw.q === "string" && raw.q ? { q: raw.q.slice(0, 200) } : {}),
+    // Always an own key: the router lays this result over the parent route's unvalidated
+    // search, so leaving out a `q` the URL parser made a number would let the number through.
+    q: typeof raw.q === "string" && raw.q ? raw.q.slice(0, 200) : undefined,
     ...(raw.draft === "only" || raw.draft === "hide" ? { draft: raw.draft } : {}),
     ...(raw.review === "approved" ||
     raw.review === "changes-requested" ||
@@ -406,9 +416,12 @@ function PullRequestsRouteView() {
   // the one wrong answer the empty state can give.
   const projectsKnown = useAllEnvironmentShellsBootstrapped();
   // Only the projects the page can actually read: one on an environment that cannot list pull
-  // requests could neither be listed nor acted on.
+  // requests could neither be listed nor acted on, and the Scratch folder is never a repository.
   const projects = useMemo(
-    () => allProjects.filter((project) => environmentIds.includes(project.environmentId)),
+    () =>
+      allProjects.filter(
+        (project) => !project.isScratch && environmentIds.includes(project.environmentId),
+      ),
     [allProjects, environmentIds],
   );
   const environmentLabels = useMemo(
@@ -1227,7 +1240,8 @@ function PullRequestsRouteView() {
       return;
     }
     if (related.length > 0) listQuery.refresh(related);
-    const loadedCount = ordered?.key === filterKey ? ordered.entries.length : pageSize;
+    const loadedCount =
+      ordered?.key === filterKey ? largestPullRequestReadCount(ordered.entries) : pageSize;
     setPage({
       key: filterKey,
       regrown: [],
@@ -1593,6 +1607,22 @@ function PullRequestsRouteView() {
   ]);
   /** What is actually on screen once the reader's pending answers are on the rows. */
   const shownCount = displayGroups.reduce((count, group) => count + group.entries.length, 0);
+  // The provider list is the workspace's hosts, not the filtered ones, so switching to a host
+  // cannot make the switcher that got you there disappear.
+  const [hosts, setHosts] = useState<PullRequestListResult["providers"]>([]);
+  useEffect(() => {
+    // Only from an answer to these filters. Rows carried over from the previous ones bring the
+    // host summaries of the question they answered, and coming back from one host to all of them
+    // would take the switcher's other hosts out of it on the strength of the narrowed answer.
+    if (answered === null) return;
+    // An unfiltered response is the full set of hosts. A filtered one only seeds the switcher
+    // when there is nothing to seed it with, which is a link that arrived already scoped.
+    setHosts((previous) =>
+      search.host === undefined || previous.length === 0 ? answered.providers : previous,
+    );
+  }, [answered, search.host]);
+  const showProvider = hosts.length > 1;
+  const hostActionsOf = useMemo(() => pullRequestHostActions(hosts), [hosts]);
   const [closeSweepKeys, setCloseSweepKeys] = useState<ReadonlySet<string>>(() => new Set());
   const closeSensorRef = useRef<SidebarPointerSensor | null>(null);
   const closeSweepRows = useMemo(
@@ -1606,8 +1636,14 @@ function PullRequestsRouteView() {
       ),
     [displayGroups],
   );
-  const closeSweepRef = useRef({ displayGroups, closeSweepRows, closingKeys, closeBatch });
-  closeSweepRef.current = { displayGroups, closeSweepRows, closingKeys, closeBatch };
+  const closeSweepRef = useRef({
+    displayGroups,
+    closeSweepRows,
+    closingKeys,
+    closeBatch,
+    hostActionsOf,
+  });
+  closeSweepRef.current = { displayGroups, closeSweepRows, closingKeys, closeBatch, hostActionsOf };
   useEffect(() => () => closeSensorRef.current?.cancel(), [filterKey, search.q, sort]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1633,7 +1669,7 @@ function PullRequestsRouteView() {
       return (
         row?.groupKey === group.key &&
         row.entry.state === "open" &&
-        row.entry.provider === "github" &&
+        closeSweepRef.current.hostActionsOf(row.entry).has("close") &&
         !closeSweepRef.current.closingKeys.has(key) &&
         !scrollRef.current?.querySelector(
           `[data-pull-request-key="${CSS.escape(key)}"] [data-pull-request-action-pending="true"]`,
@@ -1717,6 +1753,17 @@ function PullRequestsRouteView() {
     [search.number, search.repository, selectedProject, selectedHost],
   );
   const rightPanelAvailable = selectedPullRequestSurface !== null;
+  // Maximized like the thread view's panel, with the list collapsing out of the way. Opening a
+  // guide maximizes the panel for its wider layout; only the reader's own toggle restores it, so
+  // switching tabs never resizes the page under them.
+  const [maximized, setMaximized] = useState(false);
+  const rightPanelMaximized = rightPanelState.isOpen && maximized;
+  // A closed panel reopens at its own size, as the thread view's does.
+  if (!rightPanelState.isOpen && maximized) setMaximized(false);
+  const toggleRightPanelMaximized = () => {
+    if (rightPanelState.isOpen) setMaximized((value) => !value);
+  };
+  const onGuideShown = useCallback(() => setMaximized(true), []);
   useEffect(() => {
     if (!pullRequestsSupported || rightPanelRef === null || linkedSelection === null) return;
     useRightPanelStore.getState().openPullRequest(rightPanelRef, linkedSelection);
@@ -1767,21 +1814,6 @@ function PullRequestsRouteView() {
     selectSurfaceInUrl(selectedPullRequestSurface);
   };
 
-  // The provider list is the workspace's hosts, not the filtered ones, so switching to a host
-  // cannot make the switcher that got you there disappear.
-  const [hosts, setHosts] = useState<PullRequestListResult["providers"]>([]);
-  useEffect(() => {
-    // Only from an answer to these filters. Rows carried over from the previous ones bring the
-    // host summaries of the question they answered, and coming back from one host to all of them
-    // would take the switcher's other hosts out of it on the strength of the narrowed answer.
-    if (answered === null) return;
-    // An unfiltered response is the full set of hosts. A filtered one only seeds the switcher
-    // when there is nothing to seed it with, which is a link that arrived already scoped.
-    setHosts((previous) =>
-      search.host === undefined || previous.length === 0 ? answered.providers : previous,
-    );
-  }, [answered, search.host]);
-  const showProvider = hosts.length > 1;
   // The workspace's own projects already name their hosts, so the row's shape is known before
   // the list is. Only its shape: which hosts can actually be read still comes from the server.
   const expectedHosts = useMemo(() => {
@@ -1862,10 +1894,12 @@ function PullRequestsRouteView() {
       className="absolute top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
       data-workspace-titlebar-controls
     >
-      <PullRequestCiStatusPopover
-        environments={capableEnvironments}
-        scopedEnvironmentId={scopedEnvironmentId}
-      />
+      {rightPanelState.isOpen ? (
+        <RightPanelMaximizeControl
+          maximized={rightPanelMaximized}
+          onToggle={toggleRightPanelMaximized}
+        />
+      ) : null}
       {panelToggleControls}
     </div>
   );
@@ -1947,6 +1981,7 @@ function PullRequestsRouteView() {
                     }
                     onSelect={selectEntry}
                     speedMode={speedMode}
+                    hostActions={hostActionsOf(entry)}
                     onActed={onSpeedAction}
                     closing={closingKeys.has(entryKey)}
                     sweeping={closeSweepKeys.has(entryKey)}
@@ -2032,7 +2067,7 @@ function PullRequestsRouteView() {
     />
   );
   const filtersMenu = (
-    <PullRequestFiltersMenu
+    <PullRequestFiltersMenuInSidebarOrder
       onOpenChange={setFiltersOpen}
       state={search.state}
       stateOptions={STATE_TABS}
@@ -2123,6 +2158,7 @@ function PullRequestsRouteView() {
         )
       ) : null,
     rightPanelOpen: rightPanelState.isOpen,
+    maximizedAway: rightPanelMaximized,
     listBody,
     scrollRef,
   };
@@ -2194,6 +2230,12 @@ function PullRequestsRouteView() {
     event.stopPropagation();
     if (!event.repeat) toggleRightPanel();
   });
+  const toggleRightPanelMaximizedFromShortcut = useEffectEvent((event: KeyboardEvent) => {
+    if (!rightPanelState.isOpen) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) toggleRightPanelMaximized();
+  });
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isCommandPaletteOpen()) return;
@@ -2202,6 +2244,7 @@ function PullRequestsRouteView() {
       });
       if (command === "rightPanel.close") closeActiveSurfaceFromShortcut(event);
       if (command === "rightPanel.toggle") toggleRightPanelFromShortcut(event);
+      if (command === "rightPanel.toggleMaximized") toggleRightPanelMaximizedFromShortcut(event);
       if (command === "thread.copyReference") copyPullRequestFromShortcut(event);
     };
     // Let panel shortcuts consume Escape before page navigation at window.
@@ -2219,6 +2262,7 @@ function PullRequestsRouteView() {
           <RightPanelTabs
             mode="inline"
             open={rightPanelState.isOpen}
+            maximized={rightPanelMaximized}
             keybindings={keybindings}
             getShortcutContext={getShortcutContext}
             widthStorageKey="t3code:pull-request-panel-width"
@@ -2246,6 +2290,10 @@ function PullRequestsRouteView() {
               if (surface.kind === "pull-request") closeSurfacesToRight(surface);
             }}
             onCloseAllSurfaces={closeAllSurfaces}
+            onMoveSurface={(surfaceId, toIndex) => {
+              if (rightPanelRef !== null)
+                useRightPanelStore.getState().moveSurface(rightPanelRef, surfaceId, toIndex);
+            }}
             onCopyFilePath={() => undefined}
             onAddBrowser={() => undefined}
             onAddBrowserInProfile={() => undefined}
@@ -2269,6 +2317,7 @@ function PullRequestsRouteView() {
               shortcutsEnabled={activePullRequestSurface?.id === renderedPullRequestSurface.id}
               key={renderedPullRequestSurface.id}
               environmentId={panelEnvironmentId}
+              onGuideShown={onGuideShown}
               onSelectPullRequest={(reference) => {
                 if (rightPanelRef === null) return;
                 useRightPanelStore.getState().openPullRequest(rightPanelRef, {
@@ -2346,6 +2395,18 @@ function PullRequestsRouteView() {
 }
 
 /** A compact stand-in for one pill group when the header is narrow. */
+/** Lists the projects in the sidebar's order; it re-renders with thread activity, so the page does not. */
+function PullRequestFiltersMenuInSidebarOrder(
+  props: ComponentProps<typeof PullRequestFiltersMenu>,
+) {
+  const sidebarProjectGroups = useSidebarProjectGroups();
+  const projects = useMemo(
+    () => sortProjectsByGroupOrder(props.projects, sidebarProjectGroups),
+    [props.projects, sidebarProjectGroups],
+  );
+  return <PullRequestFiltersMenu {...props} projects={projects} />;
+}
+
 function CompactFilterMenu<Value extends string>({
   label,
   triggerIcon,
@@ -2519,6 +2580,7 @@ function PullRequestsColumn({
   rightPanelControl,
   titlebarControls,
   rightPanelOpen,
+  maximizedAway,
   listBody,
   scrollRef,
 }: {
@@ -2538,6 +2600,8 @@ function PullRequestsColumn({
   rightPanelControl: ReactNode;
   titlebarControls: ReactNode;
   rightPanelOpen: boolean;
+  /** The panel beside the list is maximized, so the list gives up its width. */
+  maximizedAway: boolean;
   listBody: ReactNode;
   scrollRef: RefObject<HTMLDivElement | null>;
 }) {
@@ -2599,7 +2663,12 @@ function PullRequestsColumn({
   return (
     // Painted flat like the chat column: the inset underneath carries the chrome grain, and a
     // content surface that lets it show reads as a different background than every thread.
-    <div className="@container/pr-list flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+    <div
+      className={cn(
+        "@container/pr-list flex min-h-0 min-w-0 flex-col overflow-x-hidden bg-background",
+        maximizedAway ? "w-0 flex-none" : "flex-1",
+      )}
+    >
       {/* A closed right panel leaves this column full-width, so the shared header
           reserves native window controls and hosts the controls strip itself: on
           desktop the header is a drag-region, and only a no-drag descendant wins

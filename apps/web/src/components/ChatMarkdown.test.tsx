@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
 import { EnvironmentId, type AuthEnvironmentScope } from "@t3tools/contracts";
+import { createRoot } from "react-dom/client";
+import { useThreadFindHighlights } from "./chat/threadFindHighlights";
+import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
+import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
+
+import { MarkdownFindContext } from "./chat/markdownFindContext";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -13,41 +19,12 @@ import { GitHubIcon } from "./Icons";
 import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
 
-const originalGetAnimations = Object.getOwnPropertyDescriptor(Element.prototype, "getAnimations");
-
-beforeEach(() => {
-  // jsdom does not implement the Web Animations API used by the real scroll area.
-  Object.defineProperty(Element.prototype, "getAnimations", {
-    configurable: true,
-    value: () => [],
-  });
-  vi.stubGlobal("matchMedia", () => ({
-    matches: false,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-  }));
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
-  );
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-  if (originalGetAnimations) {
-    Object.defineProperty(Element.prototype, "getAnimations", originalGetAnimations);
-  } else {
-    Reflect.deleteProperty(Element.prototype, "getAnimations");
-  }
-});
-
+vi.mock("../hooks/useFileMetadata", () => ({ useFileMetadata: () => null }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
+vi.mock("./chat/MermaidDiagram", () => ({
+  // Real Mermaid needs layout APIs jsdom lacks; a rendered diagram is an SVG.
+  MermaidDiagram: () => <svg aria-label="Diagram" />,
+}));
 vi.mock("../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
 vi.mock("../hooks/useSettings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../hooks/useSettings")>();
@@ -816,6 +793,36 @@ describe("ChatMarkdown file option chips", () => {
   });
 });
 
+describe("ChatMarkdown Codex follow-up suggestions", () => {
+  it.each([true, false])("renders the label with parseRawHtml=%s", (parseRawHtml) => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text={
+          'Done.\n\n- :codex-followup[Prepare print version]{prompt="Prepare the document for printing."}'
+        }
+        lineBreaks={!parseRawHtml}
+        parseRawHtml={parseRawHtml}
+      />,
+    );
+
+    expect(html).toContain("Prepare print version");
+    expect(html).not.toContain("codex-followup");
+    expect(html).not.toContain("Prepare the document for printing.");
+  });
+
+  it("keeps the label of a malformed follow-up created by over-indented list recovery", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text="-       Next :codex-followup[Prepare print version]"
+      />,
+    );
+
+    expect(html).toContain("<li>Next :codex-followup[Prepare print version]</li>");
+  });
+});
+
 const ARTIFACT_TEMPLATE_DIRECTIVE =
   '::artifact-template{skill_name="artifact-template-hello-world" skill_directory="/Users/test/.codex/skills/artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}';
 
@@ -897,15 +904,15 @@ describe("ChatMarkdown heading levels", () => {
       />,
     );
 
-    expect(html).toContain('<h1 aria-level="4">Top</h1>');
-    expect(html).toContain('<h2 aria-level="5">Section</h2>');
-    expect(html).toContain('<h6 aria-level="6">Fine print</h6>');
+    expect(html).toContain('<h1 id="user-content-top" aria-level="4">Top</h1>');
+    expect(html).toContain('<h2 id="user-content-section" aria-level="5">Section</h2>');
+    expect(html).toContain('<h6 id="user-content-fine-print" aria-level="6">Fine print</h6>');
   });
 
   it("leaves heading levels alone when the markdown is not nested", () => {
     const html = renderToStaticMarkup(<ChatMarkdown cwd="/tmp/project" text="# Top" />);
 
-    expect(html).toContain("<h1>Top</h1>");
+    expect(html).toContain('<h1 id="user-content-top">Top</h1>');
   });
 });
 
@@ -1071,152 +1078,304 @@ describe("ChatMarkdown Windows file links", () => {
   });
 });
 
-// DOM actions prove the controls and serialized contents; jsdom does not prove
-// pane widths, container query units, or actual scrollbar geometry.
-describe("ChatMarkdown table controls", () => {
-  const tableText = [
-    "Before the table.",
-    "",
-    "| Name | Notes |",
-    "| --- | --- |",
-    "| Item | literal, comma and **bold** |",
-    "| next | `code` |",
-    "",
-    "After the table.",
-  ].join("\n");
-
-  async function mountedTable(wordWrap: boolean, text = tableText) {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    const settings = clientSettings.getClientSettings();
-    vi.spyOn(clientSettings, "getClientSettings").mockReturnValue({ ...settings, wordWrap });
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    try {
-      await act(async () => root.render(<ChatMarkdown cwd={undefined} text={text} />));
-    } catch (error) {
-      await act(async () => root.unmount());
-      container.remove();
-      vi.restoreAllMocks();
-      vi.unstubAllGlobals();
-      throw error;
-    }
-    return { root, container };
-  }
-
-  async function unmountTable(root: Root | undefined, container: HTMLDivElement | undefined) {
-    await act(async () => root?.unmount());
-    container?.remove();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  }
-
-  function clickButton(container: Element, label: string) {
-    const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
-    if (!button) throw new Error(`Missing table button: ${label}`);
-    button.click();
-  }
-
-  it("expands and collapses one table without changing its text or another table", async () => {
-    let mounted: Awaited<ReturnType<typeof mountedTable>> | undefined;
-    const text = tableText + "\n\n> | Nested | Value |\n> | --- | --- |\n> | N | V |";
-    try {
-      mounted = await mountedTable(false, text);
-      const containers = mounted.container.querySelectorAll<HTMLElement>(
-        ".chat-markdown-table-container",
-      );
-      const first = containers[0]!;
-      const nested = containers[1]!;
-      const contents = [...first.querySelectorAll("th, td")].map((cell) => cell.textContent);
-      expect(nested.closest("blockquote")).not.toBeNull();
-      expect(first.parentElement?.classList.contains("chat-markdown")).toBe(true);
-      expect(nested.parentElement?.classList.contains("chat-markdown")).toBe(false);
-      expect(first.dataset.expanded).toBe("false");
-      expect(first.querySelector("[data-markdown-table-scroll]")).not.toBeNull();
-      await act(async () => clickButton(first, "Expand table"));
-      expect(first.dataset.expanded).toBe("true");
-      expect(
-        first.querySelector('button[aria-label="Collapse table"]')?.getAttribute("aria-pressed"),
-      ).toBe("true");
-      expect(nested.dataset.expanded).toBe("false");
-      expect([...first.querySelectorAll("th, td")].map((cell) => cell.textContent)).toEqual(
-        contents,
-      );
-      expect(first.querySelector("td strong")?.textContent).toBe("bold");
-      expect(first.querySelector("td code")?.textContent).toBe("code");
-      await act(async () => clickButton(first, "Collapse table"));
-      expect(first.dataset.expanded).toBe("false");
-      expect(mounted.container.querySelector(".chat-markdown > p")?.textContent).toBe(
-        "Before the table.",
-      );
-      expect(mounted.container.textContent).toContain("After the table.");
-      expect([...first.querySelectorAll("th, td")].map((cell) => cell.textContent)).toEqual(
-        contents,
-      );
-    } finally {
-      await unmountTable(mounted?.root, mounted?.container);
-    }
-  });
-
-  it.each([true, false])(
-    "uses word wrap preference %s only as the initial state",
-    async (wordWrap) => {
-      let mounted: Awaited<ReturnType<typeof mountedTable>> | undefined;
-      try {
-        mounted = await mountedTable(wordWrap);
-        const table = mounted.container.querySelector<HTMLElement>(
-          ".chat-markdown-table-container",
-        )!;
-        expect(table.dataset.expanded).toBe(String(wordWrap));
-        await act(async () => clickButton(table, wordWrap ? "Collapse table" : "Expand table"));
-        expect(table.dataset.expanded).toBe(String(!wordWrap));
-        await act(async () =>
-          mounted!.root.render(
-            <ChatMarkdown cwd={undefined} text={tableText + "\n\nStreaming continuation."} />,
-          ),
-        );
-        expect(mounted.container.querySelector(".chat-markdown-table-container")).toBe(table);
-        expect(table.dataset.expanded).toBe(String(!wordWrap));
-        expect(mounted.container.textContent).toContain("Streaming continuation.");
-      } finally {
-        await unmountTable(mounted?.root, mounted?.container);
+it("opens a disclosure only when find selects a match inside it", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal(
+    "Highlight",
+    class extends Set<Range> {
+      constructor(...ranges: Range[]) {
+        super(ranges);
       }
     },
   );
+  const highlights = new Map<string, Set<Range>>();
+  vi.stubGlobal("CSS", { highlights, escape: (value: string) => value });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const openStates = () =>
+    [...container.querySelectorAll("[data-markdown-details-open]")].map((node) =>
+      node.getAttribute("data-markdown-details-open"),
+    );
+  function Probe({
+    activeOccurrence,
+    searching = true,
+  }: {
+    activeOccurrence: number;
+    searching?: boolean;
+  }) {
+    useThreadFindHighlights({
+      container,
+      query: searching ? "needle" : "",
+      activeRowId: "row",
+      activeOccurrence,
+      onActiveRange: () => {},
+    });
+    return (
+      <div data-timeline-row-id="row">
+        <div data-thread-find-text>
+          <MarkdownFindContext value={searching}>
+            <ChatMarkdown
+              cwd={undefined}
+              text={[
+                "Visible needle.",
+                "<details><summary>Unrelated</summary><p>nothing here</p></details>",
+                "<details><summary>Outer</summary><details><summary>Inner</summary><p>needle</p></details></details>",
+              ].join("\n\n")}
+            />
+          </MarkdownFindContext>
+        </div>
+      </div>
+    );
+  }
+  const frame = () =>
+    act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  try {
+    // Closed panels are unmounted until find starts, as in the app.
+    await act(() => root.render(<Probe activeOccurrence={0} searching={false} />));
+    expect(container.textContent).not.toContain("nothing here");
+    await act(() => root.render(<Probe activeOccurrence={0} />));
+    await frame();
+    // Selecting the visible match opens nothing; the folded one is counted but not painted.
+    expect(openStates()).toEqual(["false", "false", "false"]);
+    expect(container.textContent).toContain("nothing here");
+    expect(
+      [...(highlights.get("t3-thread-find-active") ?? [])].map((range) => range.toString()),
+    ).toEqual(["needle"]);
+    expect(highlights.get("t3-thread-find")?.size).toBe(0);
 
-  it.each([
-    [
-      "Copy as Markdown",
-      "| Name | Notes |\n| --- | --- |\n| Item | literal, comma and **bold** |\n| next | `code` |",
-    ],
-    ["Copy as CSV", 'Name,Notes\nItem,"literal, comma and bold"\nnext,code'],
-  ])("%s serializes the real table after expansion and collapse", async (action, expected) => {
-    let mounted: Awaited<ReturnType<typeof mountedTable>> | undefined;
-    const writeText = vi.fn(async (_text: string) => {});
-    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-    try {
-      mounted = await mountedTable(false);
-      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-      const table = mounted.container.querySelector<HTMLElement>(".chat-markdown-table-container")!;
-      for (const expanded of [true, false]) {
-        await act(async () => clickButton(table, expanded ? "Expand table" : "Collapse table"));
-        await act(async () =>
-          clickButton(table, writeText.mock.calls.length === 0 ? "Copy table" : "Copied"),
-        );
-        const menuItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-          (item) => item.textContent === action,
-        );
-        expect(menuItem).toBeDefined();
-        await act(async () => menuItem!.click());
-        expect(writeText).toHaveBeenLastCalledWith(expected);
-        expect(table.dataset.expanded).toBe(String(expanded));
-        expect(table.querySelector('button[aria-label="Copied"]')).not.toBeNull();
+    await act(() => root.render(<Probe activeOccurrence={1} />));
+    await frame();
+    await frame();
+    // Stepping to the folded match opens its two ancestors, not the unrelated one.
+    expect(openStates()).toEqual(["false", "true", "true"]);
+    expect(highlights.get("t3-thread-find-active")?.size).toBe(1);
+  } finally {
+    await act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("keeps Mermaid diagrams rendered until find selects a match in their source", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal(
+    "Highlight",
+    class extends Set<Range> {
+      constructor(...ranges: Range[]) {
+        super(ranges);
       }
-      expect(writeText).toHaveBeenCalledTimes(2);
-    } finally {
-      await unmountTable(mounted?.root, mounted?.container);
-      if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
-      else Reflect.deleteProperty(navigator, "clipboard");
+    },
+  );
+  const highlights = new Map<string, Set<Range>>();
+  vi.stubGlobal("CSS", { highlights, escape: (value: string) => value });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const diagram = "```mermaid\ngraph TD; Alpha-->Beta\n```";
+  function Probe({ query }: { query: string }) {
+    useThreadFindHighlights({
+      container,
+      query,
+      activeRowId: "row",
+      activeOccurrence: 0,
+      onActiveRange: () => {},
+    });
+    return (
+      <div data-timeline-row-id="row">
+        <div data-thread-find-text>
+          <MarkdownFindContext value={true}>
+            <ChatMarkdown cwd={undefined} text={`Needle first.\n\n${diagram}\n\n${diagram}`} />
+          </MarkdownFindContext>
+        </div>
+      </div>
+    );
+  }
+  const frame = () =>
+    act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  const diagrams = () => container.querySelectorAll('svg[aria-label="Diagram"]').length;
+  try {
+    await act(() => root.render(<Probe query="Needle" />));
+    await frame();
+    expect(diagrams()).toBe(2);
+    await act(() => root.render(<Probe query="Alpha" />));
+    await frame();
+    await frame();
+    // Only the diagram holding the selected match switches to source.
+    expect(diagrams()).toBe(1);
+    expect(
+      [...(highlights.get("t3-thread-find-active") ?? [])].map((range) => range.toString()),
+    ).toEqual(["Alpha"]);
+  } finally {
+    await act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  }
+});
+
+it.each([
+  {
+    text: "```mermaid\ngraph TD; SearchSourceAlpha-->B\n```",
+    query: "SearchSourceAlpha",
+    count: 1,
+  },
+  {
+    text: "★ Insight ─────\nfirst line\nsecond line",
+    query: "first line second",
+    count: 0,
+    lineBreaks: true,
+  },
+  { text: '```ts title="src/needle.ts"\nconst a = 1;\n```', query: "needle", count: 0 },
+  { text: "```weirdlang\nconst a = 1;\n```", query: "weirdlang", count: 0 },
+  { text: "Use $test-t3-app now", query: "T3 App Testing", count: 1 },
+  { text: "`/tmp/file.ts:42`", query: "file.ts · L42", count: 1, user: true, lineBreaks: true },
+  { text: "> [!NOTE]\n> Searchable alert", query: "Searchable alert", count: 1 },
+  {
+    text: "<details><summary>Folded</summary><p>Hidden needle</p></details>",
+    query: "Hidden needle",
+    count: 1,
+  },
+  { text: ARTIFACT_TEMPLATE_DIRECTIVE, query: "Hello World", count: 1, useTemplate: true },
+  { text: ARTIFACT_TEMPLATE_DIRECTIVE, query: "Document template", count: 1, useTemplate: true },
+  { text: ARTIFACT_TEMPLATE_DIRECTIVE, query: "World Document", count: 0, useTemplate: true },
+  { text: ARTIFACT_TEMPLATE_DIRECTIVE, query: "Use template", count: 0, useTemplate: true },
+])(
+  "highlights the indexed occurrences of $query in $text",
+  async ({ text, query, count, lineBreaks, user, useTemplate }) => {
+    const skills = [{ name: "test-t3-app", displayName: "T3 App Testing" }];
+    const highlights = new Map<string, Set<Range>>();
+    vi.stubGlobal(
+      "Highlight",
+      class extends Set<Range> {
+        constructor(...ranges: Range[]) {
+          super(ranges);
+        }
+      },
+    );
+    vi.stubGlobal("CSS", { highlights, escape: (value: string) => value });
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    function Probe() {
+      useThreadFindHighlights({
+        container,
+        query,
+        activeRowId: "row",
+        activeOccurrence: 0,
+        onActiveRange: () => {},
+      });
+      return (
+        <div data-timeline-row-id="row">
+          <div data-thread-find-text>
+            <MarkdownFindContext value={true}>
+              <ChatMarkdown
+                text={text}
+                cwd={undefined}
+                skills={skills}
+                lineBreaks={lineBreaks ?? false}
+                parseRawHtml={!user}
+                onUseArtifactTemplate={useTemplate ? () => undefined : undefined}
+              />
+            </MarkdownFindContext>
+          </div>
+        </div>
+      );
     }
+    try {
+      await act(() => root.render(<Probe />));
+      await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+      const ranges = [...highlights.values()].flatMap((value) => [...value]);
+      expect(ranges.map((range) => range.toString())).toEqual(
+        Array.from({ length: count }, () => query),
+      );
+      const segments =
+        searchableMessageSegments(
+          { role: user ? "user" : "assistant", text, streaming: false },
+          undefined,
+          skills,
+        ) ?? [];
+      expect(
+        segments.reduce((sum, segment) => sum + countThreadSearchOccurrences(segment, query), 0),
+      ).toBe(count);
+    } finally {
+      await act(() => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
+describe("ChatMarkdown heading ids", () => {
+  it("never gives two headings the same id, even when a suffix matches another heading", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        parseRawHtml
+        text={
+          '## Setup\n\n## Setup\n\n## Setup-1\n\n<h2 id="install-1">Pinned</h2>\n\n## Install\n\n## Install'
+        }
+      />,
+    );
+    const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
+    expect(ids).toEqual([
+      "user-content-setup",
+      "user-content-setup-1",
+      "user-content-setup-1-1",
+      "user-content-install-1",
+      "user-content-install",
+      "user-content-install-2",
+    ]);
+    expect(new Set(ids).size).toBe(ids.length);
   });
+});
+
+describe("ChatMarkdown in-page links", () => {
+  it.each([true, false])(
+    "scrolls a table-of-contents link to its heading without touching the URL (parseRawHtml=%s)",
+    async (parseRawHtml) => {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      const { createRoot } = await import("react-dom/client");
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      window.history.replaceState(null, "", "/#/env/thread");
+      const scrollIntoView = vi.fn();
+      HTMLElement.prototype.scrollIntoView = scrollIntoView;
+      try {
+        await act(async () => {
+          root.render(
+            <ChatMarkdown
+              cwd="/tmp/project"
+              parseRawHtml={parseRawHtml}
+              text={
+                "- [Operating model](#1-operating-model)\n- [Missing](#nowhere)\n\n## 1. Operating model\n\n## 1. Operating model"
+              }
+            />,
+          );
+        });
+        const headings = [...container.querySelectorAll("h2")];
+        expect(headings.map((heading) => heading.id)).toEqual([
+          "user-content-1-operating-model",
+          "user-content-1-operating-model-1",
+        ]);
+
+        const [tocLink, missingLink] = [...container.querySelectorAll("a")];
+        const click = () => new MouseEvent("click", { bubbles: true, cancelable: true });
+        const tocClick = click();
+        tocLink!.dispatchEvent(tocClick);
+        expect(tocClick.defaultPrevented).toBe(true);
+        expect(scrollIntoView.mock.contexts).toEqual([headings[0]]);
+
+        const missingClick = click();
+        missingLink!.dispatchEvent(missingClick);
+        expect(missingClick.defaultPrevented).toBe(true);
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        expect(window.location.hash).toBe("#/env/thread");
+      } finally {
+        await act(async () => root.unmount());
+        container.remove();
+      }
+    },
+  );
 });

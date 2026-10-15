@@ -1,5 +1,5 @@
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { readFilePreviewResponse } from "@t3tools/client-runtime/file-preview";
 import { filePreviewKind, FILE_TEXT_PREVIEW_MAX_BYTES } from "@t3tools/shared/filePreview";
@@ -62,6 +62,8 @@ export function AttachmentFilePreview(props: {
   asset?: { environmentId: EnvironmentId; attachmentId: string };
   /** An agent's HTML render, shown in the app theme. */
   htmlRender?: boolean;
+  /** The thread an HTML render's links open beside. */
+  threadRef?: ScopedThreadRef;
   /** First crumb: where the file comes from. */
   origin?: string;
   onRemove?: () => void;
@@ -253,6 +255,7 @@ export function AttachmentFilePreview(props: {
       pdf={kind === "pdf"}
       onRetry={() => setRevision((value) => value + 1)}
       htmlRender={props.htmlRender === true}
+      threadRef={props.threadRef}
     />
   ) : kind === "audio" ? (
     <AudioPreview src={url} name={props.name} onError={() => setError("Unable to load audio.")} />
@@ -268,10 +271,9 @@ export function AttachmentFilePreview(props: {
       />
     </div>
   ) : kind === "image" ? (
-    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden p-4">
-      <ZoomableImage
-        key={url}
-        layout="panel"
+    // oxlint-disable-next-line t3code/require-centered-scroll-gutter -- The image is capped at max-h-full max-w-full, so this never scrolls.
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+      <img
         src={url}
         name={props.name}
         onError={() => setError("Unable to load image.")}

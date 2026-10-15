@@ -2,8 +2,14 @@
 // Screencasts ignore emulated device scale; real 2x keeps captures sharp.
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
 import {
+  BUILT_IN_BROWSER_PROFILES,
+  DEFAULT_BROWSER_PROFILE_ID,
   FILL_PREVIEW_VIEWPORT,
+  findBrowserProfile,
   INCOGNITO_BROWSER_PROFILE_ID,
+  resolveBrowserProfiles,
+  type BrowserProfile,
+  type PreviewReportProfilesInput,
   PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   PreviewViewportSetting as PreviewViewportSettingSchema,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
@@ -36,7 +42,7 @@ import {
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   type PreviewAppearancePreference,
 } from "@t3tools/contracts";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
 import * as NodeCrypto from "node:crypto";
@@ -60,6 +66,7 @@ import type {
   Dialog,
   Download,
   FileChooser,
+  Frame,
   Page,
 } from "playwright-core";
 
@@ -83,14 +90,8 @@ import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
-import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
-import {
-  BrowserRequestDeadline,
-  BrowserActionNotStarted,
-  assertBrowserActionDeadline,
-  BrowserControlInterrupted,
-  SessionControl,
-} from "./SessionControl.ts";
+import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
+import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
 const RENDER_SCALE = 2;
@@ -201,6 +202,8 @@ export type ServerBrowserViewerOutput =
       readonly accept: string;
     }
   | { readonly _tag: "fileChooserClosed"; readonly id: string }
+  /** The page this viewer controls opened a new tab; the viewer shows it, as a browser would. */
+  | { readonly _tag: "popup"; readonly tabId: string }
   | {
       readonly _tag: "download";
       readonly id: string;
@@ -253,6 +256,11 @@ export class ServerBrowser extends Context.Service<
     }) => Effect.Effect<Option.Option<{ readonly path: string; readonly fileName: string }>>;
     /** Deletes a human profile's server-side storage, closing its open tabs first. */
     readonly clearProfile: (profileId: string) => Effect.Effect<void, PreviewClearProfileError>;
+    /**
+     * Records a client's browser profiles for agents' preview_open. In memory:
+     * clients report again on connect and whenever the list changes.
+     */
+    readonly reportProfiles: (input: PreviewReportProfilesInput) => Effect.Effect<void>;
   }
 >()("t3/preview/ServerBrowser") {}
 
@@ -265,8 +273,6 @@ interface ViewerState {
   readonly pause: () => Promise<void>;
   readonly resume: () => Promise<void>;
   scrolledAt: number;
-  /** Last input from this viewer; page copies reach its clipboard only right after. */
-  inputAt: number;
   /** Panel bounds, retained in fixed mode; passive viewers never request a size. */
   requestedSize: { width: number; height: number; order: number } | null;
 }
@@ -293,6 +299,8 @@ interface ServerTab {
   readonly tabId: string;
   readonly page: Page;
   readonly cdp: CDPSession;
+  /** Sessions of the page's frames that run in their own process. */
+  readonly frameSessions: Map<Frame, CDPSession>;
   readonly createdAt: number;
   /** The agent's latest request on this tab; idle agent tabs close. */
   usedAt: number;
@@ -317,11 +325,15 @@ interface ServerTab {
   readonly openerTabId: string | undefined;
   /** Finished downloads, newest last; files live until the tab closes. */
   readonly downloads: Array<ServerDownload>;
-  /** A page's open file picker, waiting for the controlling viewer's files. */
+  /**
+   * A page's open file picker, waiting for the controlling viewer's files. Its
+   * id is reissued for each viewer it is offered to, so only that viewer can answer.
+   */
   fileChooser: {
     readonly id: string;
     readonly chooser: FileChooser;
     readonly accept: string;
+    readonly offeredTo: string | null;
   } | null;
   dialog: Dialog | null;
   setting: PreviewViewportSetting;
@@ -331,6 +343,17 @@ interface ServerTab {
   closing: boolean;
   recording: Recording | null;
   initialNavigation: Promise<void> | null;
+  /** Counts main-frame navigation requests, so late events can tell they were superseded. */
+  navigationGeneration: number;
+  /**
+   * The latest main-frame navigation, when it aborted, to tell a navigation's
+   * download from a page's. The timer settles it if no download follows.
+   */
+  abortedNavigation: {
+    readonly url: string;
+    readonly generation: number;
+    readonly timer: ReturnType<typeof setTimeout>;
+  } | null;
   /** The latest queued start, so a stop can find a recording still starting. */
   recordingStart: Promise<Recording> | null;
   /** Serializes captures and recording start/stop. */
@@ -349,6 +372,17 @@ interface ServerDownload {
 }
 
 /** One agent session and the whole server; each tab holds a renderer process. */
+/**
+ * Operations an agent may run on any tab in its thread, even while a human
+ * drives it. Evaluate is not one: page script can change anything, so it needs
+ * the same control as clicking.
+ */
+const READ_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "status",
+  "snapshot",
+  "waitFor",
+]);
+
 const AGENT_TAB_LIMIT = 8;
 const SERVER_TAB_LIMIT = 32;
 /** Agent tabs nobody watches close after this long without an agent request. */
@@ -356,6 +390,8 @@ const AGENT_TAB_IDLE_MS = 30 * 60 * 1000;
 const IDLE_SWEEP_INTERVAL = "1 minute";
 
 const DOWNLOAD_LIMIT = 20;
+/** How long an aborted navigation waits for the download that usually explains it. */
+const ABORTED_NAVIGATION_DOWNLOAD_WAIT_MS = 5_000;
 const DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 
 const tabKey = (threadId: string, tabId: string) => `${threadId}\u0000${tabId}`;
@@ -413,48 +449,56 @@ const editingCommand = (key: string, modifiers: number) => {
 };
 
 const CLIPBOARD_TEXT_LIMIT = 1024 * 1024;
-/** Copies reach the viewer only this soon after it last touched the page. */
-const CLIPBOARD_GESTURE_MS = 5_000;
-const CLIPBOARD_BINDING = "__t3PreviewClipboard";
-// Pages report their own copies: reading a host clipboard would cross headless
-// contexts or expose the companion's native pasteboard.
+const CLIPBOARD_WORLD = "t3-preview-clipboard";
+// Headless Chromium shares one clipboard between every context, so the copy
+// a viewer's copy or cut key makes is read from this world instead of the
+// clipboard. Page scripts cannot see the world, and only a copy made while a
+// real key is handled counts.
 const CLIPBOARD_SCRIPT = `(() => {
-  const send = (text) => {
-    if (typeof text !== "string" || text.length === 0) return;
-    try { globalThis.${CLIPBOARD_BINDING}?.(text.slice(0, ${CLIPBOARD_TEXT_LIMIT})); } catch {}
-  };
+  let keying = false;
+  let copied = "";
+  // The same Ctrl or Cmd + C or X that editingCommand sends as copy or cut.
+  addEventListener("keydown", (event) => {
+    if (!event.isTrusted || event.altKey || event.ctrlKey === event.metaKey) return;
+    const key = event.key.toLowerCase();
+    if (key !== "c" && key !== "x") return;
+    keying = true;
+    copied = "";
+    setTimeout(() => { keying = false; });
+  }, true);
   const selection = () => {
-    const field = document.activeElement;
+    let field = document.activeElement;
+    while (field?.shadowRoot?.activeElement) field = field.shadowRoot.activeElement;
     if ((field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) && field.selectionStart !== null)
       return field.value.slice(field.selectionStart, field.selectionEnd ?? field.selectionStart);
     return String(document.getSelection() ?? "");
   };
-  // Bubbling to window runs after page handlers, before cut removes the selection.
-  const copied = (event) =>
-    send(event.defaultPrevented ? event.clipboardData?.getData("text/plain") : selection());
-  addEventListener("copy", copied);
-  addEventListener("cut", copied);
-  const proto = globalThis.Clipboard?.prototype;
-  if (!proto) return;
-  const writeText = proto.writeText;
-  proto.writeText = function (text) {
-    const result = writeText.call(this, text);
-    result.then(() => send(String(text)), () => {});
-    return result;
+  const record = (text) => {
+    copied = String(text ?? "").slice(0, ${CLIPBOARD_TEXT_LIMIT});
   };
-  const write = proto.write;
-  proto.write = function (items) {
-    const result = write.call(this, items);
-    result.then(async () => {
-      const item = [...items].find((candidate) => candidate.types.includes("text/plain"));
-      if (item) send(await (await item.getType("text/plain")).text());
-    }, () => {});
-    return result;
+  // Capturing at window runs before page handlers can stop the event, and
+  // before cut removes the selection.
+  const snapshot = (event) => {
+    if (keying && event.isTrusted) record(selection());
+  };
+  // Bubbling back to window picks up text a page handler set instead.
+  const replace = (event) => {
+    if (keying && event.isTrusted && event.defaultPrevented) record(event.clipboardData?.getData("text/plain"));
+  };
+  for (const type of ["copy", "cut"]) {
+    addEventListener(type, snapshot, true);
+    addEventListener(type, replace);
+  }
+  globalThis.takeCopy = () => {
+    const text = copied;
+    copied = "";
+    return text;
   };
 })();`;
 
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
+  const host = { platform: yield* HostProcess.Platform, arch: yield* HostProcess.Architecture };
   const manager = yield* PreviewManager.PreviewManager;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const environment = yield* ServerEnvironment.ServerEnvironment;
@@ -668,6 +712,7 @@ const make = Effect.gen(function* () {
     if (tabs.get(key) !== tab) return;
     tabs.delete(key);
     tab.closing = true;
+    clearAbortedNavigation(tab);
     // A desktop page outlives the connection unless its session closed with it.
     const end = tab.desktop && !closeSession && sessionOpen(tab) ? "reconnect" : "gone";
     for (const viewer of tab.viewers) viewer.push({ _tag: end });
@@ -737,31 +782,14 @@ const make = Effect.gen(function* () {
       ? await runPlacement(placement.place(snapshot))
       : { _tag: "local" as const };
     const desktop =
-      host._tag === "companion" && placement
-        ? await (async () => {
-            await runPlacement(placement.awaitCompanion(host, snapshot));
-            try {
-              return await connectDesktop(
-                snapshot,
-                { ...desktopChannel, ...placement.channel },
-                host,
-              );
-            } catch {
-              await Effect.runPromise(placement.channel.unmount(host.hostId, snapshot));
-              throw new CompanionHostUnavailable({
-                hostId: host.hostId,
-                label: host.label,
-                state: "timeout",
-              });
-            }
-          })()
-        : adopted === undefined && host._tag === "local" && (await desktopRenders(snapshot))
-          ? await connectDesktop(snapshot)
-          : null;
+      adopted === undefined && (await desktopRenders(snapshot))
+        ? await connectDesktop(snapshot)
+        : null;
+    // An agent tab without a profile (no client reported one) keeps throwaway storage.
     const isolatedContext =
       adopted === undefined &&
       desktop === null &&
-      (snapshot.automationOwner !== undefined ||
+      ((snapshot.automationOwner !== undefined && snapshot.profileId === undefined) ||
         snapshot.profileId === INCOGNITO_BROWSER_PROFILE_ID);
     const context =
       desktop?.page.context() ??
@@ -771,11 +799,14 @@ const make = Effect.gen(function* () {
         isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
       ));
     if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
-    // Companion copy targets the controlling streamed viewer through the same bounded bridge.
-    if (!desktop || desktop.origin !== "local") await prepareContext(context);
-    const page = desktop?.page ?? adopted?.page ?? (await context.newPage());
-    if (desktop && desktop.origin !== "local") await page.evaluate(CLIPBOARD_SCRIPT);
+    // The desktop page already has its own clipboard.
+    if (!desktop) await prepareContext(context);
+    const page = adopted?.page ?? desktop?.page ?? (await context.newPage());
     const cdp = await context.newCDPSession(page);
+    // The desktop's page is already a normal browser. A popup's first request
+    // went out before it became a tab; everything after presents as Chrome.
+    if (!desktop) await presentAsChrome(cdp, host);
+    if (!desktop) await recordCopies(cdp);
     page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
     page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
     const control = new SessionControl(snapshot.automationOwner ?? null, () =>
@@ -786,6 +817,7 @@ const make = Effect.gen(function* () {
       tabId: snapshot.tabId,
       page,
       cdp,
+      frameSessions: new Map(),
       createdAt: Date.now(),
       usedAt: Date.now(),
       viewers: new Set(),
@@ -815,6 +847,8 @@ const make = Effect.gen(function* () {
       recording: null,
       recordingStart: null,
       initialNavigation: null,
+      navigationGeneration: 0,
+      abortedNavigation: null,
       captureLock: Promise.resolve(),
       capturing: 0,
     };
@@ -824,8 +858,11 @@ const make = Effect.gen(function* () {
     await applyRendering(tab, snapshot);
     const isMainNavigation = (request: { isNavigationRequest(): boolean; frame(): unknown }) =>
       request.isNavigationRequest() && request.frame() === page.mainFrame();
+    const navigationGenerations = new WeakMap<object, number>();
     page.on("request", (request) => {
       if (!isMainNavigation(request)) return;
+      navigationGenerations.set(request, ++tab.navigationGeneration);
+      clearAbortedNavigation(tab);
       tab.loading = true;
       report(tab, { _tag: "Loading", url: request.url().slice(0, 2048), title: "" });
     });
@@ -836,7 +873,10 @@ const make = Effect.gen(function* () {
     page.on("framenavigated", (frame) => {
       // Same-document navigations (SPA routes) fire no load event.
       if (frame === page.mainFrame() && !tab.loading) void reportLoaded(tab);
+      if (!desktop) void recordFrameCopies(tab, frame);
     });
+    // An adopted popup's frames may have loaded before the tab listened.
+    if (adopted) for (const frame of page.frames()) void recordFrameCopies(tab, frame);
     page.on("requestfailed", (request) => {
       const errorText = request.failure()?.errorText ?? "";
       pushBounded(tab.networkEntries, {
@@ -847,7 +887,28 @@ const make = Effect.gen(function* () {
         errorText,
         timestamp: new Date().toISOString(),
       });
-      if (!isMainNavigation(request) || errorText.includes("ERR_ABORTED")) return;
+      if (!isMainNavigation(request)) return;
+      // A navigation a newer one replaced leaves the status to the newer one. A
+      // popup's first request can predate the listener, so it is untracked and
+      // superseded by any tracked one.
+      const generation = navigationGenerations.get(request) ?? 0;
+      if (generation !== tab.navigationGeneration) return;
+      // An aborted navigation is usually a download; its `download` event settles the status.
+      if (errorText.includes("ERR_ABORTED")) {
+        const url = request.url();
+        const navigationGeneration = tab.navigationGeneration;
+        clearAbortedNavigation(tab);
+        tab.abortedNavigation = {
+          url,
+          generation: navigationGeneration,
+          timer: setTimeout(() => {
+            if (tab.abortedNavigation?.generation !== navigationGeneration) return;
+            tab.abortedNavigation = null;
+            if (!tab.closing) settleAbortedNavigation(tab, navigationGeneration, url, undefined);
+          }, ABORTED_NAVIGATION_DOWNLOAD_WAIT_MS),
+        };
+        return;
+      }
       tab.loading = false;
       const { code, description } = ServerBrowserPage.parseNetError(errorText);
       report(tab, {
@@ -914,10 +975,47 @@ const make = Effect.gen(function* () {
       NodeCrypto.createHash("sha256").update(tabKey(tab.threadId, tab.tabId)).digest("hex"),
     );
 
+  const clearAbortedNavigation = (tab: ServerTab) => {
+    if (tab.abortedNavigation !== null) clearTimeout(tab.abortedNavigation.timer);
+    tab.abortedNavigation = null;
+  };
+
+  /**
+   * Settles the status of a navigation that aborted, usually into a download.
+   * A tab opened straight to the file has no page to show, so it reports the
+   * file with its download; a page that linked to it keeps showing itself.
+   */
+  const settleAbortedNavigation = (
+    tab: ServerTab,
+    generation: number,
+    url: string,
+    offered: { readonly id: string; readonly fileName: string } | undefined,
+  ) => {
+    // A newer navigation owns the status.
+    if (tab.navigationGeneration !== generation) return;
+    tab.loading = false;
+    if (tab.page.url() !== "about:blank") {
+      void reportLoaded(tab);
+      return;
+    }
+    report(tab, {
+      _tag: "LoadFailed",
+      url: url.slice(0, 2048),
+      title: "",
+      code: -3,
+      description: "ERR_ABORTED",
+      ...(offered === undefined ? {} : { download: offered }),
+    });
+  };
+
   const saveDownload = async (tab: ServerTab, download: Download) => {
     if (await cancelCompanionDownload(tab.desktop?.origin ?? null, download)) return;
     const id = NodeCrypto.randomUUID();
     const path = NodePath.join(downloadDir(tab), id);
+    const navigation =
+      download.url() === tab.abortedNavigation?.url ? tab.abortedNavigation.generation : null;
+    if (navigation !== null) clearAbortedNavigation(tab);
+    let offered: { readonly id: string; readonly fileName: string } | undefined;
     try {
       if (await download.failure()) return;
       await NodeFSP.mkdir(downloadDir(tab), { recursive: true });
@@ -939,6 +1037,12 @@ const make = Effect.gen(function* () {
       for (const evicted of tab.downloads.splice(0, tab.downloads.length - DOWNLOAD_LIMIT)) {
         await NodeFSP.rm(evicted.path, { force: true }).catch(constVoid);
       }
+      offered = { id, fileName: saved.fileName };
+      // A tab whose own address was the file shows it in place (see
+      // settleAbortedNavigation), unless it navigated on while the file saved.
+      const shownInTab =
+        navigation === tab.navigationGeneration && tab.page.url() === "about:blank";
+      if (shownInTab) return;
       // Only the person driving the page gets the file offered; agents read it from status.
       const controller = [...tab.viewers].find((viewer) => viewer.id === tab.control.controller);
       controller?.push({
@@ -950,6 +1054,10 @@ const make = Effect.gen(function* () {
     } catch (cause) {
       await NodeFSP.rm(path, { force: true }).catch(constVoid);
       runFork(Effect.logWarning("server preview download failed", { cause }));
+    } finally {
+      if (navigation !== null && !tab.closing) {
+        settleAbortedNavigation(tab, navigation, download.url(), offered);
+      }
     }
   };
 
@@ -980,14 +1088,27 @@ const make = Effect.gen(function* () {
         .catch(() => null)) ?? "";
     // A newer picker replaces an unanswered one, as a real browser allows only one.
     if (previous) closeFileChooser(tab);
-    tab.fileChooser = { id: NodeCrypto.randomUUID(), chooser, accept: accept.slice(0, 1024) };
+    tab.fileChooser = {
+      id: NodeCrypto.randomUUID(),
+      chooser,
+      accept: accept.slice(0, 1024),
+      offeredTo: null,
+    };
     pushFileChooser(tab);
   };
 
   const pushFileChooser = (tab: ServerTab) => {
-    const message = fileChooserMessage(tab);
+    const open = tab.fileChooser;
     const controller = [...tab.viewers].find((viewer) => viewer.id === tab.control.controller);
-    if (message) controller?.push(message);
+    if (!open || !controller) return;
+    if (open.offeredTo !== controller.id) {
+      // A new controller gets a fresh id; the previous one can no longer answer.
+      tab.fileChooser = { ...open, id: NodeCrypto.randomUUID(), offeredTo: controller.id };
+      if (open.offeredTo !== null)
+        for (const viewer of tab.viewers) viewer.push({ _tag: "fileChooserClosed", id: open.id });
+    }
+    const message = fileChooserMessage(tab);
+    if (message) controller.push(message);
   };
 
   const closeFileChooser = (tab: ServerTab) => {
@@ -1003,8 +1124,14 @@ const make = Effect.gen(function* () {
   ) => {
     const tab = tabs.get(tabKey(input.threadId, input.tabId));
     const open = tab?.fileChooser;
-    if (!tab || !open || open.id !== input.chooserId) return false;
-    assertCompanionCapability(tab.desktop?.origin ?? null, "upload");
+    if (
+      !tab ||
+      !open ||
+      open.id !== input.chooserId ||
+      open.offeredTo === null ||
+      open.offeredTo !== tab.control.controller
+    )
+      return false;
     if (input.files.length > 0) {
       await open.chooser.setFiles(
         open.chooser.isMultiple() ? [...input.files] : input.files.slice(0, 1),
@@ -1060,16 +1187,81 @@ const make = Effect.gen(function* () {
     if (preparedContexts.has(context)) return;
     preparedContexts.add(context);
     await context.grantPermissions(["clipboard-write"]);
-    await context.exposeBinding(CLIPBOARD_BINDING, ({ page }, text: unknown) => {
-      if (typeof text !== "string") return;
-      const tab = [...tabs.values()].find((candidate) => candidate.page === page);
-      const controller = tab
-        ? [...tab.viewers].find((viewer) => viewer.id === tab.control.controller)
-        : undefined;
-      if (!controller || Date.now() - controller.inputAt > CLIPBOARD_GESTURE_MS) return;
-      controller.push({ _tag: "clipboard", text: text.slice(0, CLIPBOARD_TEXT_LIMIT) });
+  };
+
+  /** Records the copies made in each frame a session reaches. */
+  const recordCopies = async (cdp: CDPSession) => {
+    // Scripts for new documents run only while this session's Page domain is on.
+    await cdp.send("Page.enable");
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: CLIPBOARD_SCRIPT,
+      worldName: CLIPBOARD_WORLD,
+      runImmediately: true,
     });
-    await context.addInitScript(CLIPBOARD_SCRIPT);
+  };
+
+  /**
+   * A frame in its own process, such as one with an `Origin-Agent-Cluster`
+   * header, is out of the page session's reach, so it records copies through
+   * its own session until that target closes.
+   */
+  const recordFrameCopies = async (tab: ServerTab, frame: Frame) => {
+    if (frame === tab.page.mainFrame() || tab.frameSessions.has(frame)) return;
+    // A frame in its parent's process has no session of its own.
+    const cdp = await tab.page
+      .context()
+      .newCDPSession(frame)
+      .catch(() => null);
+    if (!cdp) return;
+    if (tab.frameSessions.has(frame) || frame.isDetached()) {
+      await cdp.detach().catch(constVoid);
+      return;
+    }
+    tab.frameSessions.set(frame, cdp);
+    cdp.on("close", () => {
+      if (tab.frameSessions.get(frame) !== cdp) return;
+      tab.frameSessions.delete(frame);
+      // A frame that moved to another process records through its new target.
+      if (!frame.isDetached()) void recordFrameCopies(tab, frame);
+    });
+    await recordCopies(cdp).catch(constVoid);
+  };
+
+  /** Clears and returns the copy of each frame a session reaches. */
+  const takeSessionCopies = async (cdp: CDPSession) => {
+    // An out-of-process frame that closed meanwhile copied nothing.
+    const tree = await cdp.send("Page.getFrameTree").catch(() => null);
+    if (!tree) return [];
+    const frameIds = (node: typeof tree.frameTree): Array<string> => [
+      node.frame.id,
+      ...(node.childFrames ?? []).flatMap(frameIds),
+    ];
+    return Promise.all(
+      frameIds(tree.frameTree).map((frameId) =>
+        cdp
+          .send("Page.createIsolatedWorld", { frameId, worldName: CLIPBOARD_WORLD })
+          .then(({ executionContextId }) =>
+            cdp.send("Runtime.evaluate", {
+              contextId: executionContextId,
+              expression: "globalThis.takeCopy?.()",
+              returnByValue: true,
+            }),
+          )
+          .then(
+            ({ result }) => (typeof result.value === "string" ? result.value : ""),
+            // A frame that detached meanwhile copied nothing.
+            () => "",
+          ),
+      ),
+    );
+  };
+
+  /** Clears every frame's copy and returns what the key just handled copied or cut. */
+  const takeCopiedText = async (tab: ServerTab) => {
+    const copies = await Promise.all(
+      [tab.cdp, ...tab.frameSessions.values()].map(takeSessionCopies),
+    );
+    return copies.flat().find((text) => text.length > 0);
   };
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
@@ -1080,6 +1272,10 @@ const make = Effect.gen(function* () {
       return;
     }
     const url = popup.url();
+    // Captured now: the person whose click opened the popup gets switched to it.
+    const controller = [...opener.viewers].find(
+      (viewer) => viewer.id === opener.control.controller,
+    );
     await Effect.runPromise(
       manager.open({
         threadId: opener.threadId,
@@ -1096,9 +1292,16 @@ const make = Effect.gen(function* () {
             openerTabId: opener.tabId,
           }),
       }),
-    ).catch(async () => {
-      await popup.close().catch(constVoid);
-    });
+    ).then(
+      (snapshot) => {
+        // The opener stays open behind it, so `window.opener` can still report back.
+        if (opener.control.agentId === null)
+          controller?.push({ _tag: "popup", tabId: snapshot.tabId });
+      },
+      async () => {
+        await popup.close().catch(constVoid);
+      },
+    );
   };
 
   const ensureTab = (snapshot: PreviewSessionSnapshot): Promise<ServerTab> => {
@@ -1162,10 +1365,75 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const latestThreadTab = (threadId: string, agentSessionId?: string) =>
-    [...tabs.values()]
-      .filter((tab) => tab.threadId === threadId && tab.control.agentId === agentSessionId)
-      .sort((left, right) => right.createdAt - left.createdAt)[0];
+  /**
+   * The tab a request without a tabId means: the caller's newest tab, else the
+   * thread's tab the user is looking at or used last, so "this page" works.
+   */
+  const latestThreadTab = (threadId: string, agentSessionId?: string) => {
+    const threadTabs = [...tabs.values()].filter((tab) => tab.threadId === threadId);
+    return (
+      threadTabs
+        .filter((tab) => tab.control.agentId === agentSessionId)
+        .sort((left, right) => right.createdAt - left.createdAt)[0] ??
+      threadTabs.sort(
+        (left, right) =>
+          Number(right.viewers.size > 0) - Number(left.viewers.size > 0) ||
+          right.usedAt - left.usedAt,
+      )[0]
+    );
+  };
+
+  const tabOwner = (tab: ServerTab) =>
+    tab.control.controller !== null
+      ? ("human" as const)
+      : tab.control.agentId !== null
+        ? ("agent" as const)
+        : ("unclaimed" as const);
+
+  /** The latest profile list a client reported; agents choose from it. */
+  let reportedProfiles: {
+    readonly profiles: ReadonlyArray<BrowserProfile>;
+    readonly defaultProfileId: string;
+  } | null = null;
+
+  const reportProfiles: ServerBrowser["Service"]["reportProfiles"] = (input) =>
+    Effect.sync(() => {
+      const profiles = resolveBrowserProfiles(input.profiles);
+      reportedProfiles = {
+        profiles,
+        defaultProfileId:
+          findBrowserProfile(profiles, input.defaultProfileId)?.id ?? DEFAULT_BROWSER_PROFILE_ID,
+      };
+    });
+
+  const profileStatus = () => {
+    const profiles = reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES;
+    return {
+      profiles: profiles.map((profile) => ({
+        id: profile.id,
+        name: profile.name,
+        ...(profile.kind === "incognito" ? { incognito: true } : {}),
+      })),
+      ...(reportedProfiles ? { defaultProfileId: reportedProfiles.defaultProfileId } : {}),
+    };
+  };
+
+  /** Matches an id, then a case-insensitive name. Omitted means the reported default. */
+  const resolveOpenProfile = (requested: string | undefined): string | undefined => {
+    if (requested === undefined) return reportedProfiles?.defaultProfileId;
+    const profiles = reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES;
+    const wanted = requested.toLowerCase();
+    const match =
+      findBrowserProfile(profiles, requested) ??
+      profiles.find((profile) => profile.name.toLowerCase() === wanted);
+    if (match) return match.id;
+    throw new ServerBrowserPage.ServerBrowserOperationError(
+      "PreviewAutomationUnknownProfileError",
+      `No browser profile is named "${requested}". Use one of: ${profiles
+        .map((profile) => `${profile.name} (id ${profile.id})`)
+        .join(", ")}.`,
+    );
+  };
 
   const statusWithTitle = async (
     tab: ServerTab | undefined,
@@ -1179,6 +1447,7 @@ const make = Effect.gen(function* () {
         url: null,
         title: null,
         loading: false,
+        ...profileStatus(),
       };
     }
     const url = tab.page.url();
@@ -1191,12 +1460,7 @@ const make = Effect.gen(function* () {
       title: null,
       loading: tab.loading,
       control: {
-        owner:
-          tab.control.controller !== null
-            ? ("human" as const)
-            : tab.control.agentId !== null
-              ? ("agent" as const)
-              : ("unclaimed" as const),
+        owner: tabOwner(tab),
         ownedByCaller: tab.control.agentId === agentSessionId,
         generation: tab.control.generation,
       },
@@ -1207,15 +1471,17 @@ const make = Effect.gen(function* () {
       viewportSetting: tab.setting,
       ...(viewport ? { viewport } : {}),
       tabs: [...tabs.values()]
-        .filter(
-          (candidate) =>
-            candidate.threadId === tab.threadId && candidate.control.agentId === agentSessionId,
-        )
+        .filter((candidate) => candidate.threadId === tab.threadId)
         .map((candidate) => ({
           tabId: candidate.tabId,
           url: candidate.page.url() === "about:blank" ? null : candidate.page.url(),
           ...(candidate.openerTabId === undefined ? {} : { openerTabId: candidate.openerTabId }),
+          owner: tabOwner(candidate),
+          ownedByCaller: candidate.control.agentId === agentSessionId,
+          visible: candidate.viewers.size > 0,
+          ...(candidate.profileId === undefined ? {} : { profileId: candidate.profileId }),
         })),
+      ...profileStatus(),
       downloads: tab.downloads.map(({ fileName, path, sizeBytes, url, completedAt }) => ({
         fileName,
         path,
@@ -1258,6 +1524,12 @@ const make = Effect.gen(function* () {
     }
     await navigation.catch((cause: unknown) => {
       const message = cause instanceof Error ? cause.message : String(cause);
+      if (message.includes("Download is starting")) {
+        throw new ServerBrowserPage.ServerBrowserOperationError(
+          "PreviewAutomationExecutionError",
+          `${url} is a file this browser cannot show, so it was downloaded instead. preview_status lists it under downloads.`,
+        );
+      }
       if (/ERR_[A-Z_]+/.test(message)) {
         throw new ServerBrowserPage.ServerBrowserOperationError(
           "PreviewAutomationExecutionError",
@@ -1512,19 +1784,26 @@ const make = Effect.gen(function* () {
         "No server preview tab is open for this thread. Call preview_open first.",
       );
     }
-    if (tab.control.agentId !== request.agentSessionId)
+    // Any tab in the thread can be read; acting is checked by its control.
+    if (!READ_OPERATIONS.has(request.operation) && !tab.control.agentMayAct(request.agentSessionId))
       throw new BrowserControlInterrupted(
-        "This tab belongs to another agent session or a human. Open your own tab.",
+        "This tab belongs to another agent session. You can read it, but open your own tab to act.",
         "agentMismatch",
       );
     return tab;
   };
 
-  /** Any request, even a failed one, keeps the agent's tabs on the thread from idling out. */
+  /**
+   * Any request, even a failed one, keeps the agent's tabs on the thread from
+   * idling out. The tab it targeted becomes the thread's most recently used.
+   */
   const markUsed = (request: PreviewAutomationRequest) => {
     const now = Date.now();
     for (const tab of tabs.values()) {
-      if (tab.threadId === request.threadId && tab.control.agentId === request.agentSessionId)
+      if (
+        tab.threadId === request.threadId &&
+        (tab.control.agentId === request.agentSessionId || tab.tabId === request.tabId)
+      )
         tab.usedAt = now;
     }
   };
@@ -1588,7 +1867,7 @@ const make = Effect.gen(function* () {
             "tabRequired",
           );
         // A tab still launching exists only as a session, so resolve it like a viewer would.
-        const existing =
+        const found =
           reuse && request.tabId !== undefined
             ? await Effect.runPromise(
                 findTab(request.threadId, request.tabId).pipe(
@@ -1598,13 +1877,14 @@ const make = Effect.gen(function* () {
                 ),
               )
             : undefined;
-        assertCurrentRequest();
-        if (reuse && request.tabId !== undefined && !existing)
-          throw new BrowserControlInterrupted("The requested preview tab is closed.", "closed");
-        const navigationTimeout = Math.min(
-          Math.max(1, deadlineMs - Date.now()),
-          NAVIGATION_TIMEOUT_MS,
-        );
+        // Only an explicit tabId reuses a tab this session did not open; a tab
+        // it last read (such as the user's) is not taken over implicitly.
+        const existing =
+          found && (request.tabIdExplicit || found.control.agentId === request.agentSessionId)
+            ? found
+            : undefined;
+        const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
+        const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
         if (!existing) {
           closeIdleAgentTabs();
           assertTabCapacity(request.agentSessionId);
@@ -1617,6 +1897,7 @@ const make = Effect.gen(function* () {
               manager.open({
                 threadId: request.threadId,
                 ...(url ? { url } : {}),
+                ...(profileId === undefined ? {} : { profileId }),
                 runtime: "server",
                 reveal: false,
                 automationOwner: request.agentSessionId,
@@ -1690,7 +1971,7 @@ const make = Effect.gen(function* () {
         const recordings = [...tabs.values()].filter(
           (candidate) =>
             candidate.threadId === request.threadId &&
-            candidate.control.agentId === request.agentSessionId &&
+            candidate.control.agentMayAct(request.agentSessionId ?? "") &&
             (candidate.recording || candidate.recordingStart),
         );
         const targetTabId =
@@ -1721,6 +2002,11 @@ const make = Effect.gen(function* () {
       throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
     // Closing must unblock an action waiting on a dialog, without queueing behind it.
     if (request.operation === "close") {
+      if (tab.control.agentId !== request.agentSessionId)
+        throw new BrowserControlInterrupted(
+          "Only the agent session that opened this tab can close it.",
+          "agentMismatch",
+        );
       if (tab.control.controller !== null)
         throw new BrowserControlInterrupted("A human controls this tab.", "humanControl");
       onStart();
@@ -1738,27 +2024,38 @@ const make = Effect.gen(function* () {
       await resolveDialog(tab, input as PreviewAutomationDialogInput);
       return statusWithTitle(tab, request.agentSessionId);
     }
-    return tab.control.agent(
-      request.agentSessionId!,
-      async () => {
-        assertCurrentRequest();
-        if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
-          throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
+    const agentSessionId = request.agentSessionId!;
+    // A tab this session did not open, while it cannot act there (another
+    // agent's, or the user's while they drive): read it in place, without
+    // queueing behind the human's input. Its own tabs keep the takeover
+    // contract: a human taking control interrupts every agent call.
+    if (
+      READ_OPERATIONS.has(request.operation) &&
+      tab.control.agentId !== agentSessionId &&
+      !tab.control.agentCanActNow(agentSessionId)
+    ) {
+      return tab.control.observe(async () => {
         if (tab.dialog)
           throw new BrowserControlInterrupted(
-            "A browser dialog is pending. Read preview_status and use preview_dialog first.",
+            "A browser dialog is pending. Read preview_status.",
             "dialogPending",
           );
-        const generation = tab.control.generation;
-        onStart();
-        try {
-          return await executeTabOperation(tab, request, () => onDispatch(tab));
-        } finally {
-          if (generation !== tab.control.generation) ServerBrowserPage.invalidateRefs(tab.page);
-        }
-      },
-      deadlineMs,
-    );
+        return executeTabOperation(tab, request);
+      });
+    }
+    return tab.control.agent(agentSessionId, async () => {
+      if (tab.dialog)
+        throw new BrowserControlInterrupted(
+          "A browser dialog is pending. Read preview_status and use preview_dialog first.",
+          "dialogPending",
+        );
+      const generation = tab.control.generation;
+      try {
+        return await executeTabOperation(tab, request);
+      } finally {
+        if (generation !== tab.control.generation) ServerBrowserPage.invalidateRefs(tab.page);
+      }
+    });
   };
 
   const executeTabOperation = async (
@@ -1844,7 +2141,7 @@ const make = Effect.gen(function* () {
         return ServerBrowserPage.evaluate(
           tab.cdp,
           input as PreviewAutomationEvaluateInput,
-          onDispatch,
+          request.timeoutMs,
         );
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
@@ -2076,7 +2373,6 @@ const make = Effect.gen(function* () {
   ) => {
     const message = asRecord(raw);
     if (!message) return;
-    viewer.inputAt = Date.now();
     const modifiers = modifiersOf(message);
     switch (message.type) {
       case "mouse": {
@@ -2122,19 +2418,29 @@ const make = Effect.gen(function* () {
           viewer.pressedKeys.delete(code || key);
           return;
         }
+        const command = editingCommand(key, modifiers);
+        // Only the controlling viewer's own copy and cut reach its clipboard.
+        const copying =
+          !tab.desktop && (command?.commands[0] === "copy" || command?.commands[0] === "cut");
+        // Clear what any frame kept from an earlier key, so only this key's copy is read.
+        if (copying) await takeCopiedText(tab);
         await session.send("Input.dispatchKeyEvent", {
           type: text ? "keyDown" : "rawKeyDown",
           key,
           code,
           modifiers,
           ...(text ? { text, unmodifiedText: text } : {}),
-          ...editingCommand(key, modifiers),
+          ...command,
           windowsVirtualKeyCode: num(
             message.keyCode,
             key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
           ),
         });
         viewer.pressedKeys.set(code || key, { key, code });
+        if (copying) {
+          const copied = await takeCopiedText(tab);
+          if (copied) viewer.push({ _tag: "clipboard", text: copied });
+        }
         return;
       }
       case "text":
@@ -2269,7 +2575,6 @@ const make = Effect.gen(function* () {
         },
         resume: () => startScreencast(screencastScale),
         scrolledAt: 0,
-        inputAt: 0,
         requestedSize: null,
       };
       yield* Effect.acquireRelease(
@@ -2405,7 +2710,7 @@ const make = Effect.gen(function* () {
   yield* manager.events.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
   // Whoever runs the server learns the fix before anyone opens a tab.
   if (
-    !PreviewBrowserHost.sandboxDisabled(yield* HostProcessEnvironment) &&
+    !PreviewBrowserHost.sandboxDisabled(yield* HostProcess.Environment) &&
     (yield* PreviewBrowserHost.sandboxBlocked)
   ) {
     yield* Effect.logWarning(
@@ -2420,6 +2725,22 @@ const make = Effect.gen(function* () {
         const tab = tabs.get(tabKey(key.threadId, key.tabId));
         if (tab?.desktop) dropTab(tab, false);
       }),
+    ),
+    Effect.forkScoped,
+  );
+  // The page came back, for example after its DevTools closed. Reconnect now
+  // rather than on the next viewer or agent, or the tab's URL and title stop
+  // reaching every client in the meantime.
+  yield* desktopChannel.attached.pipe(
+    Stream.runForEach((key) =>
+      Effect.gen(function* () {
+        if (tabs.has(tabKey(key.threadId, key.tabId))) return;
+        const { sessions } = yield* manager.list({ threadId: ThreadId.make(key.threadId) });
+        const snapshot = sessions.find(
+          (session) => session.tabId === key.tabId && session.runtime === "server",
+        );
+        if (snapshot) yield* Effect.promise(() => ensureTab(snapshot).catch(constVoid));
+      }).pipe(Effect.ignore),
     ),
     Effect.forkScoped,
   );
@@ -2496,6 +2817,7 @@ const make = Effect.gen(function* () {
   return ServerBrowser.of({
     attachViewer,
     clearProfile,
+    reportProfiles,
     openDownload,
     answerFileChooser,
   });
