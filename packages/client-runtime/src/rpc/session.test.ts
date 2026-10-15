@@ -27,7 +27,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import * as Socket from "effect/socket/Socket";
 import * as Tracer from "effect/Tracer";
-import { Rpc, RpcClient, RpcGroup, RpcMessage } from "effect/rpc";
+import { Rpc, RpcClient, RpcClientError, RpcGroup, RpcMessage, RpcSerialization } from "effect/rpc";
 
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -1379,6 +1379,127 @@ describe("RpcSessionFactory", () => {
       );
     },
   );
+
+  it.effect("aborts a saturated stream immediately on a local protocol error", () => {
+    const scheduler = new Scheduler.MixedScheduler("sync");
+    const dispatcher = scheduler.makeDispatcher();
+
+    return Effect.gen(function* () {
+      const group = RpcGroup.make(
+        Rpc.make("subscribe", { success: Schema.Number, stream: true }),
+        Rpc.make("probe", { success: Schema.Number }),
+      );
+      let receive!: (message: RpcMessage.FromServerEncoded) => Effect.Effect<void>;
+      const sent: RpcMessage.FromClientEncoded[] = [];
+      const protocol = RpcClient.Protocol.of({
+        run: (_clientId, onMessage) =>
+          Effect.gen(function* () {
+            receive = onMessage;
+            return yield* Effect.never;
+          }),
+        send: (_clientId, message) =>
+          Effect.sync(() => {
+            sent.push(message);
+          }),
+        supportsAck: true,
+        supportsTransferables: false,
+        codecFor: RpcSerialization.json.codecFor,
+      });
+      const client = yield* RpcClient.make(group).pipe(
+        Effect.provideService(RpcClient.Protocol, protocol),
+      );
+      const queue = yield* client.subscribe(undefined, { asQueue: true, streamBufferSize: 1 });
+      dispatcher.flush();
+      const request = sent.find((message) => message._tag === "Request");
+      expect(request?._tag).toBe("Request");
+      if (request?._tag !== "Request") return;
+
+      const consuming = yield* Deferred.make<void>();
+      const releaseConsumer = yield* Deferred.make<void>();
+      const received: number[] = [];
+      const consumer = yield* Stream.fromQueue(queue).pipe(
+        Stream.runForEach((value) =>
+          Effect.gen(function* () {
+            received.push(value);
+            yield* Deferred.succeed(consuming, undefined);
+            yield* Deferred.await(releaseConsumer);
+          }),
+        ),
+        Effect.exit,
+        Effect.forkChild,
+      );
+      yield* receive({
+        _tag: "Chunk",
+        requestId: request.id,
+        values: [0, ...Array.from({ length: 63 }, (_, index) => index + 1)],
+      });
+      yield* Deferred.await(consuming);
+      for (let index = 64; index < 71; index += 1) {
+        yield* receive({ _tag: "Chunk", requestId: request.id, values: [index] });
+      }
+      dispatcher.flush();
+      expect(received).toEqual([0]);
+      expect(yield* Queue.size(queue)).toBe(1);
+      expect(sent.filter((message) => message._tag === "Ack")).toEqual([]);
+
+      const affectedProbe = yield* client.probe().pipe(Effect.exit, Effect.forkChild);
+      dispatcher.flush();
+      expect(sent.some((message) => message._tag === "Request" && message.tag === "probe")).toBe(
+        true,
+      );
+      const protocolError = new RpcClientError.RpcClientError({
+        reason: new RpcClientError.RpcClientDefect({
+          message: "Synthetic local protocol failure",
+          cause: new Error("Synthetic parser failure"),
+        }),
+      });
+      yield* receive({ _tag: "ClientProtocolError", error: protocolError });
+      dispatcher.flush();
+      expect(consumer.pollUnsafe()).toBeUndefined();
+      expect(received).toEqual([0]);
+      const failedProbe = affectedProbe.pollUnsafe();
+      expect(failedProbe?._tag).toBe("Success");
+      if (failedProbe?._tag !== "Success") return;
+      expect(failedProbe.value._tag).toBe("Failure");
+      if (Exit.isFailure(failedProbe.value)) {
+        expect(Cause.squash(failedProbe.value.cause)).toBe(protocolError);
+      }
+      expect(queue.state._tag).not.toBe("Open");
+
+      // The error must release delivery resources while the client scope stays open.
+      const probe = yield* client.probe().pipe(Effect.forkChild);
+      dispatcher.flush();
+      const probeRequest = sent.findLast(
+        (message) => message._tag === "Request" && message.tag === "probe",
+      );
+      expect(probeRequest?._tag).toBe("Request");
+      if (probeRequest?._tag !== "Request") return;
+      yield* receive({
+        _tag: "Exit",
+        requestId: probeRequest.id,
+        exit: { _tag: "Success", value: 42 },
+      });
+      dispatcher.flush();
+      expect(probe.pollUnsafe()).toEqual(Exit.succeed(42));
+
+      yield* Deferred.succeed(releaseConsumer, undefined);
+      const result = yield* Fiber.join(consumer);
+      expect(result._tag).toBe("Failure");
+      if (Exit.isFailure(result)) {
+        expect(Cause.squash(result.cause)).toBe(protocolError);
+      }
+      expect(received).toEqual([0, 1]);
+      expect(sent.filter((message) => message._tag === "Ack")).toEqual([]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(Scheduler.Scheduler, {
+        executionMode: "sync",
+        shouldYield: () => false,
+        makeDispatcher: () => dispatcher,
+      }),
+      Effect.provide(TestClock.layer()),
+    );
+  });
 
   it.effect("accepts synchronous ACK replenishment of an eight-chunk stream window", () => {
     const scheduler = new Scheduler.MixedScheduler("sync");
