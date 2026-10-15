@@ -487,18 +487,28 @@ export type RecordedRunJson = typeof RecordedRunJson.Type;
 type PublicEventMember = (typeof OrchestrationV2DomainEvent.members)[number];
 // Match payload schemas so upstream event insertion and reordering preserve discriminants.
 const threadEvents = OrchestrationV2DomainEvent.members.filter(
-  (event): event is Extract<PublicEventMember, { fields: { payload: typeof OrchestrationV2AppThread } }> =>
-    event.fields.payload === OrchestrationV2AppThread,
+  (
+    event,
+  ): event is Extract<
+    PublicEventMember,
+    { fields: { payload: typeof OrchestrationV2AppThread } }
+  > => event.fields.payload === OrchestrationV2AppThread,
 );
 const runEvents = OrchestrationV2DomainEvent.members.filter(
-  (event): event is Extract<PublicEventMember, { fields: { payload: typeof OrchestrationV2Run } }> =>
+  (
+    event,
+  ): event is Extract<PublicEventMember, { fields: { payload: typeof OrchestrationV2Run } }> =>
     event.fields.payload === OrchestrationV2Run,
 );
 const ordinaryEvents = OrchestrationV2DomainEvent.members.filter(
   (
     event,
-  ): event is Exclude<PublicEventMember, (typeof threadEvents)[number] | (typeof runEvents)[number]> =>
-    event.fields.payload !== OrchestrationV2AppThread && event.fields.payload !== OrchestrationV2Run,
+  ): event is Exclude<
+    PublicEventMember,
+    (typeof threadEvents)[number] | (typeof runEvents)[number]
+  > =>
+    event.fields.payload !== OrchestrationV2AppThread &&
+    event.fields.payload !== OrchestrationV2Run,
 );
 export const RecordedLifecycleEvent = Schema.Union([
   ...threadEvents.map((event) =>
@@ -516,14 +526,15 @@ const threadJsonEvents = OrchestrationV2DomainEventJson.members.filter(
   ): event is Extract<
     PublicJsonEventMember,
     { fields: { payload: typeof OrchestrationV2AppThreadJson } }
-  > =>
-    event.fields.payload === OrchestrationV2AppThreadJson,
+  > => event.fields.payload === OrchestrationV2AppThreadJson,
 );
 const runJsonEvents = OrchestrationV2DomainEventJson.members.filter(
   (
     event,
-  ): event is Extract<PublicJsonEventMember, { fields: { payload: typeof OrchestrationV2RunJson } }> =>
-    event.fields.payload === OrchestrationV2RunJson,
+  ): event is Extract<
+    PublicJsonEventMember,
+    { fields: { payload: typeof OrchestrationV2RunJson } }
+  > => event.fields.payload === OrchestrationV2RunJson,
 );
 const ordinaryJson = OrchestrationV2DomainEventJson.members.filter(
   (
@@ -539,7 +550,9 @@ export const RecordedLifecycleEventJson = Schema.Union([
   ...threadJsonEvents.map((event) =>
     event.mapFields((fields) => ({ ...fields, payload: RecordedAppThreadJson })),
   ),
-  ...runJsonEvents.map((event) => event.mapFields((fields) => ({ ...fields, payload: RecordedRunJson }))),
+  ...runJsonEvents.map((event) =>
+    event.mapFields((fields) => ({ ...fields, payload: RecordedRunJson })),
+  ),
   ...ordinaryJson,
 ]);
 export type RecordedLifecycleEventJson = typeof RecordedLifecycleEventJson.Type;

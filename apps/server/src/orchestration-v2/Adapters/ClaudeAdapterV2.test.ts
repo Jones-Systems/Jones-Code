@@ -11842,7 +11842,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             siblingOptions.instanceId ?? ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID;
           const ownerAdapter =
             siblingOptions.freshAdapter || siblingOptions.instanceId !== undefined
-              ? (yield* makeAdapter(instanceId))
+              ? yield* makeAdapter(instanceId)
               : adapter;
           const ownerThreadId =
             siblingOptions.threadId ?? ThreadId.make(`claude-retirement-${owner}`);

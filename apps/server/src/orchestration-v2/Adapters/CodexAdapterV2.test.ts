@@ -2231,10 +2231,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         events.filter(
           (
             event,
-          ): event is Extract<
-            ProviderAdapter.ProviderAdapterV2Event,
-            { type: "turn.terminal" }
-          > =>
+          ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }> =>
             event.type === "turn.terminal",
         );
       const subagentUpdates = () =>
@@ -2346,7 +2343,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const itemEvent = published.preceding.find(
           (
             event,
-          ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn_item.updated" }> =>
+          ): event is Extract<
+            ProviderAdapter.ProviderAdapterV2Event,
+            { type: "turn_item.updated" }
+          > =>
             event.type === "turn_item.updated" &&
             event.turnItem.type === "approval_request" &&
             event.turnItem.requestId === pending.id,
@@ -3252,8 +3252,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const rootUpdates = session.events.filter(
         (
           event,
-        ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_turn.updated" }> =>
-          event.type === "provider_turn.updated" && event.threadId === harness.threadId,
+        ): event is Extract<
+          ProviderAdapter.ProviderAdapterV2Event,
+          { type: "provider_turn.updated" }
+        > => event.type === "provider_turn.updated" && event.threadId === harness.threadId,
       );
       assert.equal(rootUpdates.at(-1)?.providerTurn.status, "running");
       yield* awaitUntil(
@@ -3970,8 +3972,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               ): event is Extract<
                 ProviderAdapter.ProviderAdapterV2Event,
                 { type: "provider_turn.updated" }
-              > =>
-                event.type === "provider_turn.updated",
+              > => event.type === "provider_turn.updated",
             )!.providerTurn.id,
           );
           const nativeAttempts = new Set(
@@ -4077,8 +4078,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           const original = harness.events.find(
             (
               event,
-            ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_turn.updated" }> =>
-              event.type === "provider_turn.updated",
+            ): event is Extract<
+              ProviderAdapter.ProviderAdapterV2Event,
+              { type: "provider_turn.updated" }
+            > => event.type === "provider_turn.updated",
           )!.providerTurn.id;
           if (outcome === "stop")
             yield* harness.runtime.interruptTurn({
@@ -4288,7 +4291,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const second = harness.events.find(
           (
             event,
-          ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_turn.updated" }> =>
+          ): event is Extract<
+            ProviderAdapter.ProviderAdapterV2Event,
+            { type: "provider_turn.updated" }
+          > =>
             event.type === "provider_turn.updated" &&
             event.providerTurn.nativeTurnRef?.nativeId === "follow-up-second",
         )!.providerTurn.id;
@@ -4347,8 +4353,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const original = harness.events.find(
           (
             event,
-          ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_turn.updated" }> =>
-            event.type === "provider_turn.updated",
+          ): event is Extract<
+            ProviderAdapter.ProviderAdapterV2Event,
+            { type: "provider_turn.updated" }
+          > => event.type === "provider_turn.updated",
         )!.providerTurn.id;
         yield* harness.runtime.startTurn(
           makeCodexTestTurnInput({
@@ -4426,8 +4434,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               ): event is Extract<
                 ProviderAdapter.ProviderAdapterV2Event,
                 { type: "provider_turn.updated" }
-              > =>
-                event.type === "provider_turn.updated",
+              > => event.type === "provider_turn.updated",
             )!.providerTurn.id;
             yield* TestClock.adjust("10 seconds");
           }
@@ -5363,8 +5370,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const rootUpdates = harness.events.filter(
         (
           event,
-        ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_turn.updated" }> =>
-          event.type === "provider_turn.updated" && event.threadId === harness.threadId,
+        ): event is Extract<
+          ProviderAdapter.ProviderAdapterV2Event,
+          { type: "provider_turn.updated" }
+        > => event.type === "provider_turn.updated" && event.threadId === harness.threadId,
       );
       assert.equal(rootUpdates.at(-1)?.providerTurn.status, "running");
       assert.isFalse(interruptSent, "An unstarted native turn must not receive turn/interrupt");
@@ -8835,7 +8844,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           const original = harness.events.find(
             (
               event,
-            ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_turn.updated" }> =>
+            ): event is Extract<
+              ProviderAdapter.ProviderAdapterV2Event,
+              { type: "provider_turn.updated" }
+            > =>
               event.type === "provider_turn.updated" &&
               event.providerTurn.nativeTurnRef?.nativeId === originalNativeTurn,
           )!.providerTurn.id;
