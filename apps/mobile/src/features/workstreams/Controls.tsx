@@ -150,7 +150,8 @@ export function MobileWorkstreamControls({
       api.read(
         bound,
         (urls) => urls.detail({ params: { workstreamId: item.workstreamId } }),
-        (client, headers) => client.detail({ headers, params: { workstreamId: item.workstreamId } }),
+        (client, headers) =>
+          client.detail({ headers, params: { workstreamId: item.workstreamId } }),
       ),
       api.pages(
         bound,

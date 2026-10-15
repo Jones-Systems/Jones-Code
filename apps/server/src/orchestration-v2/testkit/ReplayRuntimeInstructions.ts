@@ -17,7 +17,11 @@ export function materializeReplayTranscriptRuntimeInstructions(
           ? "acpRegistry"
           : undefined;
   if (harness === undefined) return transcript;
-  const instructions = buildRuntimeInstructions({ appIdentity: APP_IDENTITY, harness, model: runtime.model });
+  const instructions = buildRuntimeInstructions({
+    appIdentity: APP_IDENTITY,
+    harness,
+    model: runtime.model,
+  });
 
   return {
     ...transcript,

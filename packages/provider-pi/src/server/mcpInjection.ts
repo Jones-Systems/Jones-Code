@@ -300,7 +300,9 @@ export function buildPiRpcLaunch(input: {
     args,
     env: {
       ...environment,
-      ...(input.appIdentityInstructions === undefined ? {} : { T3_APP_IDENTITY_INSTRUCTIONS: input.appIdentityInstructions }),
+      ...(input.appIdentityInstructions === undefined
+        ? {}
+        : { T3_APP_IDENTITY_INSTRUCTIONS: input.appIdentityInstructions }),
       ...(hasT3Extension && input.extensionPath !== undefined
         ? { [T3_PI_MCP_EXTENSION_PATH_ENV]: input.extensionPath }
         : {}),

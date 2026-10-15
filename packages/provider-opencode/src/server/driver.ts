@@ -214,7 +214,9 @@ export const OpenCodeDriver: ProviderDriver<
       const crypto = yield* Crypto.Crypto;
       const host = yield* ProviderHost.ProviderHost;
       const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
-      const authority = Option.isSome(authorityOption) ? authorityOption.value.forInstance(instanceId) : undefined;
+      const authority = Option.isSome(authorityOption)
+        ? authorityOption.value.forInstance(instanceId)
+        : undefined;
       const processEnv = yield* mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,

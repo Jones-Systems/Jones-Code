@@ -226,9 +226,7 @@ function buildChart(
     }));
     const first = points[0];
     const curvePoints =
-      points.length === 1 && first !== undefined
-        ? [first, { x: VIEW_WIDTH, y: first.y }]
-        : points;
+      points.length === 1 && first !== undefined ? [first, { x: VIEW_WIDTH, y: first.y }] : points;
     const line = curvePath(smoothCurve(curvePoints));
     return {
       provider,

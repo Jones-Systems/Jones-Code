@@ -92,7 +92,11 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
-import { BrowserRequestDeadline, BrowserActionNotStarted, assertBrowserActionDeadline } from "./SessionControl.ts";
+import {
+  BrowserRequestDeadline,
+  BrowserActionNotStarted,
+  assertBrowserActionDeadline,
+} from "./SessionControl.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
 const RENDER_SCALE = 2;
@@ -1905,7 +1909,10 @@ const make = Effect.gen(function* () {
         assertCurrentRequest();
         if (reuse && request.tabId !== undefined && !existing)
           throw new BrowserControlInterrupted("The requested preview tab is closed.", "closed");
-        const navigationTimeout = Math.min(Math.max(1, deadlineMs - Date.now()), NAVIGATION_TIMEOUT_MS);
+        const navigationTimeout = Math.min(
+          Math.max(1, deadlineMs - Date.now()),
+          NAVIGATION_TIMEOUT_MS,
+        );
         const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
         if (!existing) {
           closeIdleAgentTabs();
@@ -2067,23 +2074,27 @@ const make = Effect.gen(function* () {
         return executeTabOperation(tab, request, () => onDispatch(tab));
       });
     }
-    return tab.control.agent(agentSessionId, async () => {
-      assertCurrentRequest();
-      if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
-        throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
-      onStart();
-      if (tab.dialog)
-        throw new BrowserControlInterrupted(
-          "A browser dialog is pending. Read preview_status and use preview_dialog first.",
-          "dialogPending",
-        );
-      const generation = tab.control.generation;
-      try {
-        return await executeTabOperation(tab, request, () => onDispatch(tab));
-      } finally {
-        if (generation !== tab.control.generation) ServerBrowserPage.invalidateRefs(tab.page);
-      }
-    }, deadlineMs);
+    return tab.control.agent(
+      agentSessionId,
+      async () => {
+        assertCurrentRequest();
+        if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
+          throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
+        onStart();
+        if (tab.dialog)
+          throw new BrowserControlInterrupted(
+            "A browser dialog is pending. Read preview_status and use preview_dialog first.",
+            "dialogPending",
+          );
+        const generation = tab.control.generation;
+        try {
+          return await executeTabOperation(tab, request, () => onDispatch(tab));
+        } finally {
+          if (generation !== tab.control.generation) ServerBrowserPage.invalidateRefs(tab.page);
+        }
+      },
+      deadlineMs,
+    );
   };
 
   const executeTabOperation = async (
@@ -2450,7 +2461,8 @@ const make = Effect.gen(function* () {
         const command = editingCommand(key, modifiers);
         // Only the controlling viewer's own copy and cut reach its clipboard.
         const copying =
-          (!tab.desktop || tab.desktop.origin !== "local") && (command?.commands[0] === "copy" || command?.commands[0] === "cut");
+          (!tab.desktop || tab.desktop.origin !== "local") &&
+          (command?.commands[0] === "copy" || command?.commands[0] === "cut");
         // Clear what any frame kept from an earlier key, so only this key's copy is read.
         if (copying) await takeCopiedText(tab);
         await session.send("Input.dispatchKeyEvent", {

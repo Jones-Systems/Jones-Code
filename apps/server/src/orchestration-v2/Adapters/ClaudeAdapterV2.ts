@@ -9080,36 +9080,36 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
               sdkMessageLock.withPermits(1)(
-              Effect.gen(function* () {
-                if (
-                  !context.acceptingEvidence ||
-                  (yield* Ref.get(queryContext))?.query !== querySession
-                )
-                  return;
-                messageSources.set(message, context);
-                if (message.type === "system" && message.subtype === "init") {
-                  const reportedModel = Reflect.get(message, "model");
-                  const binding = ProviderAdapter.runtimeBinding(boundThread, runtimeGeneration);
-                  if (binding !== undefined)
-                    yield* emitProviderEvent({
-                      type: "runtime_identity.observed",
-                      driver: CLAUDE_PROVIDER,
-                      binding,
-                      requested,
-                      observed: claudeObservedRuntimeIdentity(
-                        typeof reportedModel === "string" ? reportedModel : undefined,
-                      ),
-                    });
-                }
-                if (
-                  message.type === "system" &&
-                  (message.subtype === "init" || message.subtype === "status") &&
-                  message.permissionMode !== undefined
-                ) {
-                  context.permissionMode = message.permissionMode;
-                }
-                yield* handleSdkMessage({ query: querySession, message });
-              }).pipe(Effect.provideService(ClaudeProducerContext, context))
+                Effect.gen(function* () {
+                  if (
+                    !context.acceptingEvidence ||
+                    (yield* Ref.get(queryContext))?.query !== querySession
+                  )
+                    return;
+                  messageSources.set(message, context);
+                  if (message.type === "system" && message.subtype === "init") {
+                    const reportedModel = Reflect.get(message, "model");
+                    const binding = ProviderAdapter.runtimeBinding(boundThread, runtimeGeneration);
+                    if (binding !== undefined)
+                      yield* emitProviderEvent({
+                        type: "runtime_identity.observed",
+                        driver: CLAUDE_PROVIDER,
+                        binding,
+                        requested,
+                        observed: claudeObservedRuntimeIdentity(
+                          typeof reportedModel === "string" ? reportedModel : undefined,
+                        ),
+                      });
+                  }
+                  if (
+                    message.type === "system" &&
+                    (message.subtype === "init" || message.subtype === "status") &&
+                    message.permissionMode !== undefined
+                  ) {
+                    context.permissionMode = message.permissionMode;
+                  }
+                  yield* handleSdkMessage({ query: querySession, message });
+                }).pipe(Effect.provideService(ClaudeProducerContext, context)),
               ),
             ),
             Effect.exit,

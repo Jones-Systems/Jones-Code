@@ -268,10 +268,7 @@ describe("ssh tunnel scripts", () => {
       nodeEngineRange: TEST_NODE_ENGINE_RANGE,
     });
 
-    assert.include(
-      launch,
-      'elif [ -n "$REMOTE_PID" ] && server_running "$REMOTE_PID"; then',
-    );
+    assert.include(launch, 'elif [ -n "$REMOTE_PID" ] && server_running "$REMOTE_PID"; then');
     assert.notInclude(launch, "RUNNER_CHANGED=1");
     assert.include(launch, "ensure_remote_node_path()");
     assert.include(launch, "if ! ensure_remote_node_path; then");
@@ -309,7 +306,10 @@ describe("ssh tunnel scripts", () => {
     assert.include(launch, "if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port))");
     assert.include(launch, 'if [ -n "$DEFAULT_REMOTE_PORT" ]; then');
     assert.include(launch, 'REMOTE_PORT="$DEFAULT_REMOTE_PORT"');
-    assert.include(launch, 'if [ "$REMOTE_MANAGED" != "managed" ] || [ "$REMOTE_PID" != "$DEFAULT_RUNTIME_PID" ]; then');
+    assert.include(
+      launch,
+      'if [ "$REMOTE_MANAGED" != "managed" ] || [ "$REMOTE_PID" != "$DEFAULT_RUNTIME_PID" ]; then',
+    );
     assert.include(launch, 'if [ -z "$REMOTE_PORT" ]; then');
     assert.include(launch, "readiness failure never grants replacement");
     assert.isBelow(
@@ -1164,7 +1164,9 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         assert.isTrue(yield* isListening(launched.remotePort));
         assert.equal(
           (yield* fs.readFileString(`${stateDir}/pid`)).trim(),
-          JSON.parse(yield* fs.readFileString(`${home}/.t3/userdata/server-runtime.json`)).pid.toString(),
+          JSON.parse(
+            yield* fs.readFileString(`${home}/.t3/userdata/server-runtime.json`),
+          ).pid.toString(),
         );
       }).pipe(Effect.provide(NodeServices.layer)),
     60_000,

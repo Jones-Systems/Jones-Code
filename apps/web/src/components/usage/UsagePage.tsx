@@ -794,14 +794,26 @@ export function UsagePage() {
                   <section className="flex flex-col gap-2">
                     <h2 className="text-sm font-medium text-foreground">Totals</h2>
                     <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
-                      <Metric loading={loading.partial} label="Processed tokens" value={formatTokens(merged.totalTokens)} />
-                      <Metric loading={loading.partial} label="Cached input" value={formatTokens(merged.cachedInputTokens)} />
+                      <Metric
+                        loading={loading.partial}
+                        label="Processed tokens"
+                        value={formatTokens(merged.totalTokens)}
+                      />
+                      <Metric
+                        loading={loading.partial}
+                        label="Cached input"
+                        value={formatTokens(merged.cachedInputTokens)}
+                      />
                       <Metric
                         loading={loading.partial}
                         label="Uncached input"
                         value={formatTokens(merged.uncachedInputTokens)}
                       />
-                      <Metric loading={loading.partial} label="Output" value={formatTokens(merged.outputTokens)} />
+                      <Metric
+                        loading={loading.partial}
+                        label="Output"
+                        value={formatTokens(merged.outputTokens)}
+                      />
                       <Metric
                         loading={loading.partial}
                         label="Cache savings"
@@ -972,7 +984,9 @@ export function UsagePage() {
                                       formatUsd(model.costUsd)
                                     )}
                                   </td>
-                                  <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
+                                  <td
+                                    className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}
+                                  >
                                     {share === null ? "" : formatPercent(share)}
                                   </td>
                                   <td className={cn("py-2.5 pl-6", rowFigures)}>

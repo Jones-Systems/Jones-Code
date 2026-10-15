@@ -1,4 +1,8 @@
-import type { NativeProviderExecutionGuard, ProviderRuntimeObservation, ProviderGoalReadResult } from "./jones/runtimeTypes.ts";
+import type {
+  NativeProviderExecutionGuard,
+  ProviderRuntimeObservation,
+  ProviderGoalReadResult,
+} from "./jones/runtimeTypes.ts";
 import type { ProviderEventProducerOrigin } from "./jones/ProviderEventOrigin.ts";
 import { classifyProviderRuntimeBindingFailure } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";

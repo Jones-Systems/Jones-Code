@@ -297,7 +297,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             environmentId={props.environmentId}
             activeInstanceId={activeInstanceId}
             model={props.model}
-            {...(props.selectedModels !== undefined ? { selectedModels: props.selectedModels } : {})}
+            {...(props.selectedModels !== undefined
+              ? { selectedModels: props.selectedModels }
+              : {})}
             {...(props.onToggleModel
               ? {
                   onToggleModel: (instanceId: ProviderInstanceId, model: string) => {
@@ -312,7 +314,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             modelOptionsByInstance={props.modelOptionsByInstance}
             terminalOpen={props.terminalOpen ?? false}
             onRequestClose={() => setIsMenuOpen(false)}
-            {...(props.onOpenProviderSetup ? { onOpenProviderSetup: props.onOpenProviderSetup } : {})}
+            {...(props.onOpenProviderSetup
+              ? { onOpenProviderSetup: props.onOpenProviderSetup }
+              : {})}
             {...(props.getModelDisabledReason
               ? { getModelDisabledReason: props.getModelDisabledReason }
               : {})}

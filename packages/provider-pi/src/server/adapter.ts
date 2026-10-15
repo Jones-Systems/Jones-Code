@@ -1638,14 +1638,14 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           : undefined;
         const failure = interrupted ? null : (turn.rejectedPromptFailure ?? turn.failure);
         const settledProviderTurn: OrchestrationV2ProviderTurn = {
-            ...turn.providerTurn,
-            ...(treeRefs === null || treeRefs.nativeTurnRef === undefined
-              ? {}
-              : { nativeTurnRef: treeRefs.nativeTurnRef }),
-            status: interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
-            completedAt,
-            ...(tokenUsage === undefined ? {} : { tokenUsage }),
-          };
+          ...turn.providerTurn,
+          ...(treeRefs === null || treeRefs.nativeTurnRef === undefined
+            ? {}
+            : { nativeTurnRef: treeRefs.nativeTurnRef }),
+          status: interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
+          completedAt,
+          ...(tokenUsage === undefined ? {} : { tokenUsage }),
+        };
         yield* emit({
           type: "provider_turn.updated",
           driver: PI_PROVIDER,
@@ -2276,7 +2276,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                       message: "Pi process exited unexpectedly.",
                       class: "transport_error",
                     });
-                yield* finalizeTurn(state, false, interrupted ? "attributed_abort" : "local_failure");
+                yield* finalizeTurn(
+                  state,
+                  false,
+                  interrupted ? "attributed_abort" : "local_failure",
+                );
               } else {
                 yield* cancelPendingPrompts(yield* DateTime.now);
               }
@@ -3186,7 +3190,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             // cwd. RPC switch_session/clone alone would retain the source cwd.
             // This short-lived process never prompts or runs user extensions.
             const forkLaunch = buildPiRpcLaunch({
-        appIdentityInstructions: buildAppIdentityInstructions(host.appIdentity),
+              appIdentityInstructions: buildAppIdentityInstructions(host.appIdentity),
               launchArgs: resolvedLaunchArgs.args,
               environment: options.environment,
               mcpSession: undefined,

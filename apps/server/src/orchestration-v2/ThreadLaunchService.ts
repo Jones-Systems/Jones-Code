@@ -1,8 +1,6 @@
 import * as Path from "effect/Path";
 import * as NativeBootstrap from "../jones/nativeCreation/NativeBootstrapDispatch.ts";
-import {
-  EnvironmentAuthenticatedPrincipal,
-} from "@t3tools/contracts";
+import { EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
 import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as ServerConfig from "../config.ts";
 import type * as NativeWorkspaceTypes from "../jones/nativeCreation/NativeCreationWorkspaceTypes.ts";
@@ -19,14 +17,9 @@ import {
   type RecordedThreadProjection as OrchestrationV2ThreadProjection,
 } from "./RecordedTypes.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
-import {
-  awaitThreadCreationCleanup,
-} from "./ThreadDeletion.ts";
+import { awaitThreadCreationCleanup } from "./ThreadDeletion.ts";
 import * as Deferred from "effect/Deferred";
-import {
-  makeLegacyPreflight,
-  type LegacyPreflightOutcome,
-} from "./LegacyBootstrapPreflight.ts";
+import { makeLegacyPreflight, type LegacyPreflightOutcome } from "./LegacyBootstrapPreflight.ts";
 import * as Fiber from "effect/Fiber";
 import {
   canonicalLegacyPayload,
@@ -43,12 +36,8 @@ import * as Stream from "effect/Stream";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
-import type {
-  LegacyWorktreePreparationHooks,
-} from "../vcs/GitVcsDriver.ts";
-import {
-  resolveProjectSettings,
-} from "@t3tools/shared/projectSettings";
+import type { LegacyWorktreePreparationHooks } from "../vcs/GitVcsDriver.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
   EventId,
@@ -98,12 +87,8 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as Orchestrator from "./Orchestrator.ts";
-import {
-  makeProviderFailure,
-} from "@t3tools/provider-core/server/failure";
-import {
-  randomUuidV4,
-} from "@t3tools/provider-core/server/randomUuid";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =

@@ -3059,7 +3059,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     let currentScope = initial.scope;
     // The borrow in use when the session closes is returned with it, so a
     // spawned server can still reach its idle shutdown.
-    yield* Effect.addFinalizer(() => { eventProducer.drain(); return Scope.close(currentScope, Exit.void); });
+    yield* Effect.addFinalizer(() => {
+      eventProducer.drain();
+      return Scope.close(currentScope, Exit.void);
+    });
     const follow = (
       stream: Stream.Stream<OpenCode2Client.OpenCode2StreamEvent, unknown>,
       producer: ProviderEventOrigin.ProviderEventProducer,

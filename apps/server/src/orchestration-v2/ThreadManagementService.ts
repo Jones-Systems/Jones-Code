@@ -41,9 +41,7 @@ import {
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
-import {
-  threadTranscriptHeader,
-} from "@t3tools/shared/threadTranscript";
+import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -58,18 +56,11 @@ import * as Stream from "effect/Stream";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
-import {
-  projectedRowEncodedBytes,
-} from "./threadHistoryPaging.ts";
+import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
 
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
-import {
-  DispatchModeLimit,
-  exceededDispatchModeLimit,
-} from "./DispatchModeLimit.ts";
-import {
-  projectTurnItemForDetail,
-} from "./WireProjection.ts";
+import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
+import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -616,7 +607,9 @@ const make = Effect.gen(function* () {
       Effect.map(Option.isSome),
     );
 
-  const observationSessions = yield* Effect.serviceOption(ProviderSessionManager.ProviderSessionManagerV2);
+  const observationSessions = yield* Effect.serviceOption(
+    ProviderSessionManager.ProviderSessionManagerV2,
+  );
   const observeThreadActivity = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const shell = yield* orchestrator.getThreadShell(threadId);

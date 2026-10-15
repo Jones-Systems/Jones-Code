@@ -8,9 +8,7 @@ import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
 import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
 import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
-import {
-  OrchestrationV2Command as NativeWireCommand,
-} from "@t3tools/contracts";
+import { OrchestrationV2Command as NativeWireCommand } from "@t3tools/contracts";
 import {
   EnvironmentAuthenticatedPrincipal,
   ImportedHistoryStart,
@@ -39,9 +37,7 @@ type OrchestrationV2ServerCommand =
   | RecordedServerCommand
   | LegacyGuardRejectionDeleteCommand
   | LegacyFailureDeleteCommand;
-import {
-  threadCreationCleanupEffects,
-} from "./ThreadDeletion.ts";
+import { threadCreationCleanupEffects } from "./ThreadDeletion.ts";
 import {
   legacyBootstrapBirth,
   canonicalLegacyPayload,
@@ -54,13 +50,8 @@ import {
   legacyNeverInvokedWorkspaceFailure,
 } from "./LegacyBootstrap.ts";
 import * as SqlClient from "effect/sql/SqlClient";
-import {
-  TerminalManager,
-} from "../terminal/Manager.ts";
-import {
-  makeDispatchGuard,
-  DispatchGuardRejected,
-} from "./DispatchGuard.ts";
+import { TerminalManager } from "../terminal/Manager.ts";
+import { makeDispatchGuard, DispatchGuardRejected } from "./DispatchGuard.ts";
 import {
   cancelsSelfSettlement,
   selfSettlementRun,
@@ -73,9 +64,7 @@ import {
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import {
-  threadPullRequestsOf,
-} from "@t3tools/shared/threadPullRequests";
+import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
@@ -123,9 +112,7 @@ import {
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
-import {
-  modelSelectionsEqual,
-} from "@t3tools/shared/model";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
   derivePendingBackgroundWork,
   pendingBackgroundTurnItems,
@@ -144,9 +131,7 @@ import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import {
-  admitWorkMode,
-} from "../jones/workMode/Admission.ts";
+import { admitWorkMode } from "../jones/workMode/Admission.ts";
 import {
   workModeCommand,
   type WorkModeCandidate,
@@ -156,44 +141,22 @@ import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
-import {
-  CheckpointServiceV2,
-} from "./CheckpointService.ts";
-import {
-  CommandPolicyV2,
-  resolveMessageDispatchIntent,
-} from "./CommandPolicy.ts";
-import {
-  CommandReceiptStoreV2,
-} from "./CommandReceiptStore.ts";
-import {
-  ContextHandoffServiceV2,
-} from "./ContextHandoffService.ts";
-import {
-  notificationTurnItem,
-} from "@t3tools/provider-core/server/notification";
-import {
-  isRestartContinuationSource,
-  runOutcome,
-} from "./RestartBackgroundNote.ts";
+import { CheckpointServiceV2 } from "./CheckpointService.ts";
+import { CommandPolicyV2, resolveMessageDispatchIntent } from "./CommandPolicy.ts";
+import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
+import { ContextHandoffServiceV2 } from "./ContextHandoffService.ts";
+import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
+import { isRestartContinuationSource, runOutcome } from "./RestartBackgroundNote.ts";
 import {
   isBufferedProviderNotification,
   isUndeliveredMailboxSteer,
 } from "./NotificationMailbox.ts";
-import {
-  EventSinkV2,
-} from "./EventSink.ts";
+import { EventSinkV2 } from "./EventSink.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
-import type {
-  OrchestrationEffectRequestV2,
-  PendingOrchestrationEffectV2,
-} from "./EffectOutbox.ts";
+import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
-import {
-  DispatchModeLimit,
-  exceededDispatchModeLimit,
-} from "./DispatchModeLimit.ts";
+import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import {
   applyToProjection,
   emptyProjection,
@@ -207,30 +170,15 @@ import {
   type ProjectionCheckpointContext,
   type ShellSnapshotOptions,
 } from "./ProjectionStore.ts";
-import {
-  ProviderAdapterRegistryV2,
-} from "./ProviderAdapterRegistry.ts";
+import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import {
-  makeProviderFailure,
-} from "@t3tools/provider-core/server/failure";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
-import {
-  ProviderSessionManagerV2,
-} from "./ProviderSessionManager.ts";
-import {
-  ProviderSwitchServiceV2,
-} from "./ProviderSwitchService.ts";
-import {
-  isAutomaticCompletionRun,
-  queuedRunsInDeliveryOrder,
-} from "./QueuedRunOrder.ts";
-import {
-  queuedToolBoundaryTarget,
-} from "./QueuedToolBoundary.ts";
-import {
-  RuntimePolicyV2,
-} from "./RuntimePolicy.ts";
+import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
+import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
+import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
+import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
+import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   endOrphanedNativeSubagent,
   endRunlessRootTurns,
@@ -244,11 +192,8 @@ import {
   isForkableSourceRunStatus,
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
-import {
-  planThreadDeletion,
-} from "./ThreadDeletion.ts";
+import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -521,10 +466,7 @@ export interface OrchestratorV2Shape {
   readonly getThreadSnapshotWindow: (
     threadId: ThreadId,
     options: Parameters<ProjectionStoreV2["Service"]["getThreadSnapshotWindow"]>[1],
-  ) => Effect.Effect<
-    RecordedThreadSnapshot,
-    OrchestratorV2Error
-  >;
+  ) => Effect.Effect<RecordedThreadSnapshot, OrchestratorV2Error>;
   readonly getShellSnapshot: (
     options?: ShellSnapshotOptions,
   ) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, OrchestratorV2Error>;
@@ -13141,13 +13083,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         );
       });
-    if (command.type !== "legacy-bootstrap.guard-rejection-delete") return Effect.gen(function* () {
-      if (command.type !== "message.dispatch" || (command.createdBy !== "user" && command.creationSource !== "mcp")) return yield* serialized;
-      const parentThreadId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
-        Effect.mapError((cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause })),
-      );
-      return yield* parentThreadId === undefined ? serialized : threadDispatch.withLock(parentThreadId, serialized);
-    });
+    if (command.type !== "legacy-bootstrap.guard-rejection-delete")
+      return Effect.gen(function* () {
+        if (
+          command.type !== "message.dispatch" ||
+          (command.createdBy !== "user" && command.creationSource !== "mcp")
+        )
+          return yield* serialized;
+        const parentThreadId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+        return yield* parentThreadId === undefined
+          ? serialized
+          : threadDispatch.withLock(parentThreadId, serialized);
+      });
     return Effect.gen(function* () {
       const existing = yield* commandReceipts
         .getByCommandId(command.commandId)
@@ -13413,18 +13364,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .withLock(
           threadId,
           Effect.gen(function* () {
-            if (stored.event.type === "run.updated") yield* consumeSelfSettlement(threadId, stored.event.payload.id);
+            if (stored.event.type === "run.updated")
+              yield* consumeSelfSettlement(threadId, stored.event.payload.id);
             return yield* startNextQueuedRun(
-            threadId,
-            stored.event.type === "run.updated"
-              ? {
-                  endedRunId: stored.event.payload.id,
-                  ...(stored.event.payload.status === "failed"
-                    ? { failedRunId: stored.event.payload.id }
-                    : {}),
-                }
-              : undefined,
-          );
+              threadId,
+              stored.event.type === "run.updated"
+                ? {
+                    endedRunId: stored.event.payload.id,
+                    ...(stored.event.payload.status === "failed"
+                      ? { failedRunId: stored.event.payload.id }
+                      : {}),
+                  }
+                : undefined,
+            );
           }),
         )
         .pipe(

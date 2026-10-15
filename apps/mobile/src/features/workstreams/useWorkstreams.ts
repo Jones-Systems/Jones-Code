@@ -405,7 +405,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       cursor?: string,
     ) => Effect.Effect<WorkstreamDtoPage<Item>, unknown>,
   ) => {
-    let result = await read(snapshot, (urls) => url(urls), (client, headers) => run(client, headers));
+    let result = await read(
+      snapshot,
+      (urls) => url(urls),
+      (client, headers) => run(client, headers),
+    );
     const seen = new Set<string>();
     while (result.next_cursor !== null) {
       const cursor = result.next_cursor;
@@ -445,8 +449,10 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
         pollAttempts: 0,
         submit: () => Promise.reject(new Error("A pending command cannot be resubmitted.")),
         poll: (commandId) =>
-          read(snapshot, (urls) => urls.command({ params: { commandId } }), (client, headers) =>
-            client.command({ headers, params: { commandId } }),
+          read(
+            snapshot,
+            (urls) => urls.command({ params: { commandId } }),
+            (client, headers) => client.command({ headers, params: { commandId } }),
           ),
         assertCurrent: () => assertCurrent(snapshot),
         wait: async () => {},

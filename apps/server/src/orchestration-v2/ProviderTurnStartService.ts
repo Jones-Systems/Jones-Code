@@ -1,17 +1,8 @@
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
-import type {
-  NativeCreationWholeOperationEvidence,
-} from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
-import {
-  isWorkModeKeepWarm,
-  workModeProviderPrompt,
-} from "../jones/provider/workModePrompt.ts";
-import {
-  continuationPrompt,
-} from "../jones/updates/continuationPrompt.ts";
-import {
-  resolveProjectSettings,
-} from "@t3tools/shared/projectSettings";
+import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
+import { isWorkModeKeepWarm, workModeProviderPrompt } from "../jones/provider/workModePrompt.ts";
+import { continuationPrompt } from "../jones/updates/continuationPrompt.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import {
@@ -20,9 +11,7 @@ import {
   normalizeModelSlug,
   getConfiguredReasoningEffort,
 } from "@t3tools/shared/model";
-import {
-  projectComposerContextForProvider,
-} from "@t3tools/shared/composerContextReferences";
+import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
   latestProviderTurnForAttempt,
@@ -46,9 +35,7 @@ import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
-import {
-  withWorkspaceLease,
-} from "../workspace/workspaceLease.ts";
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
@@ -63,9 +50,7 @@ import {
   historicalMessage,
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
-import {
-  deliverContextHandoffs,
-} from "./ContextHandoffDelivery.ts";
+import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
@@ -81,9 +66,7 @@ import {
 
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import {
-  makeProviderFailure,
-} from "@t3tools/provider-core/server/failure";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import {

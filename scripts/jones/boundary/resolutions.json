@@ -7,9 +7,7 @@
       "expression": "`${pathToFileURL(licenseGeneratorSource).href}?version=${String(generatorVersion)}`",
       "reason": "Metro imports the pinned license generator through a cache-busted file URL; expression evaluation is unsupported.",
       "anchors": [],
-      "targets": [
-        "scripts/lib/third-party-licenses.ts"
-      ]
+      "targets": ["scripts/lib/third-party-licenses.ts"]
     },
     {
       "from": "apps/mobile/metro.config.js",
@@ -17,9 +15,7 @@
       "expression": "pathToFileURL(path.join(__dirname, \"scripts\", \"generate-device-stream.mts\")).href",
       "reason": "Metro imports its pinned local device-stream generator through a file URL; expression evaluation is unsupported.",
       "anchors": [],
-      "targets": [
-        "apps/mobile/scripts/generate-device-stream.mts"
-      ]
+      "targets": ["apps/mobile/scripts/generate-device-stream.mts"]
     },
     {
       "from": "apps/mobile/src/features/settings/mobileThirdPartyLicenses.ts",
@@ -36,9 +32,7 @@
           "sha256": "e84458402a6dac5cbf1e5f41f6d2f9eb901d7a070a7c161ecc626e705604ce8d"
         }
       ],
-      "targets": [
-        "scripts/lib/third-party-licenses.ts"
-      ]
+      "targets": ["scripts/lib/third-party-licenses.ts"]
     },
     {
       "from": "apps/mobile/src/features/devices/DeviceStreamWebView.tsx",
@@ -180,9 +174,7 @@
       "expression": "NodeURL.pathToFileURL(root + \"/packages/shared/src/observability.ts\")",
       "reason": "Upstream subprocess fixture imports the fixed local tracing implementation from a caller-supplied root; this exact target still receives boundary checking.",
       "anchors": [],
-      "targets": [
-        "packages/shared/src/observability.ts"
-      ]
+      "targets": ["packages/shared/src/observability.ts"]
     },
     {
       "from": "apps/mobile/src/features/browser/PreviewStreamWebView.tsx",
@@ -231,9 +223,7 @@
       "expression": "NodeURL.pathToFileURL(root + \"/packages/provider-core/src/server/\" + file + \".ts\")",
       "reason": "Upstream subprocess fixture loads only IdAllocator from the extracted provider-core owner. Source-byte binding fixes that finite target; the target still receives boundary checking.",
       "anchors": [],
-      "targets": [
-        "packages/provider-core/src/server/IdAllocator.ts"
-      ]
+      "targets": ["packages/provider-core/src/server/IdAllocator.ts"]
     },
     {
       "from": "apps/mobile/src/features/files/SourceFileSurface.tsx",
@@ -254,9 +244,7 @@
           "sha256": "f9acced1f779de8622f6612aacce6042288b2f8a510e531e151037e49e5f03db"
         }
       ],
-      "targets": [
-        "apps/mobile/modules/t3-source-text/index.ts"
-      ]
+      "targets": ["apps/mobile/modules/t3-source-text/index.ts"]
     }
   ]
 }

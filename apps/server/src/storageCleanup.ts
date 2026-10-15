@@ -17,12 +17,8 @@ import type {
   StorageCleanupReport,
   StorageCleanupReportEntry,
 } from "@t3tools/contracts";
-import {
-  resolveWorktreeCleanup,
-} from "@t3tools/shared/projectSettings";
-import {
-  makeDrainableWorker,
-} from "@t3tools/shared/DrainableWorker";
+import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
+import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
@@ -35,9 +31,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
-import type {
-  PlatformError,
-} from "effect/PlatformError";
+import type { PlatformError } from "effect/PlatformError";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -48,22 +42,13 @@ import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
-import {
-  threadHasQueuedTurnStart,
-} from "./orchestration-v2/ThreadSettlementService.ts";
-import {
-  forkParked,
-} from "./serverActivation.ts";
+import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
+import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
-import {
-  isFilesystemRoot,
-  managedWorktreesDirectories,
-} from "./worktreesDirectory.ts";
+import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
-import {
-  withWorkspaceLease,
-} from "./workspace/workspaceLease.ts";
+import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
@@ -740,15 +725,15 @@ const make = Effect.gen(function* () {
           else yield* deletionRemoval.observe(admission.start.effectId);
           if (yield* fs.exists(worktreePath)) return keep("qualified deletion removal is pending");
         } else {
-        // Clean only untracked files; Git must still refuse removal if a tracked
-        // edit arrives after our last status check.
-        if (settings.worktreeKeepWhen === "tracked-changes")
-          yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
-        yield* cleanupGit(
-          project.workspaceRoot,
-          ["-c", "status.showUntrackedFiles=normal", "worktree", "remove", worktreePath],
-          "git worktree remove",
-        );
+          // Clean only untracked files; Git must still refuse removal if a tracked
+          // edit arrives after our last status check.
+          if (settings.worktreeKeepWhen === "tracked-changes")
+            yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
+          yield* cleanupGit(
+            project.workspaceRoot,
+            ["-c", "status.showUntrackedFiles=normal", "worktree", "remove", worktreePath],
+            "git worktree remove",
+          );
         }
         entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
         yield* gitManager.invalidateStatus(project.workspaceRoot);

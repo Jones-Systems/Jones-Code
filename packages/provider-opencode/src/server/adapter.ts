@@ -3822,7 +3822,9 @@ export const OpenCodeAdapterV2Driver: ProviderAdapterDriver<
       const hostEnvironment = yield* HostProcess.Environment;
       const providerEventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
       const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
-      const authority = Option.isSome(authorityOption) ? authorityOption.value.forInstance(input.instanceId) : undefined;
+      const authority = Option.isSome(authorityOption)
+        ? authorityOption.value.forInstance(input.instanceId)
+        : undefined;
       return yield* makeOpenCodeAdapterV2({
         ...(authority === undefined ? {} : { authority }),
         instanceId: input.instanceId,

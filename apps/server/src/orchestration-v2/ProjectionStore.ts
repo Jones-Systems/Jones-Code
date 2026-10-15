@@ -1,14 +1,7 @@
-import {
-  applyThreadPullRequestLinkUpdate,
-} from "@t3tools/shared/threadPullRequests";
-import {
-  projectTurnItemForWire,
-} from "./WireProjection.ts";
+import { applyThreadPullRequestLinkUpdate } from "@t3tools/shared/threadPullRequests";
+import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
-import {
-  makeThreadFind,
-  findProjectedThreadItems,
-} from "./ThreadFind.ts";
+import { makeThreadFind, findProjectedThreadItems } from "./ThreadFind.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -33,9 +26,7 @@ import {
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import {
-  threadPullRequestsOf,
-} from "@t3tools/shared/threadPullRequests";
+import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import type {
   OrchestrationV2CheckpointScope,
   OrchestrationV2ExecutionNode,
@@ -85,9 +76,7 @@ import {
   createOrchestrationV2TurnItemVisibility,
   isOrchestrationV2SupersededInterrupt,
 } from "@t3tools/shared/orchestrationV2Timeline";
-import {
-  derivePendingBackgroundWork,
-} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   canonicalLegacyPayload,
   sameLegacyBootstrapPolicy,
@@ -95,9 +84,7 @@ import {
   legacyBootstrapCreateCommandId,
   legacyNeverInvokedWorkspaceFailure,
 } from "./LegacyBootstrap.ts";
-import {
-  isPublicOrchestrationEvent,
-} from "./WireProjection.ts";
+import { isPublicOrchestrationEvent } from "./WireProjection.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -109,12 +96,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import {
-  MCP_APP_OUTPUT_KEY,
-} from "@t3tools/shared/mcpApp";
-import {
-  threadHtmlRenderAttachmentIds,
-} from "../attachmentStore.ts";
+import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
+import { threadHtmlRenderAttachmentIds } from "../attachmentStore.ts";
 import {
   isThreadHistoryUserTurn,
   isConversationHistoryItem,

@@ -1,7 +1,8 @@
 import type { JonesAppIdentity } from "@t3tools/contracts/jones/organizationMetadata";
 
 export function buildAppIdentityInstructions(identity?: JonesAppIdentity): string {
-  if (identity === undefined) return "App identity and build source are unavailable. Do not infer product identity from the harness, workspace repository, or compatibility tool names.";
+  if (identity === undefined)
+    return "App identity and build source are unavailable. Do not infer product identity from the harness, workspace repository, or compatibility tool names.";
   const source = identity.source;
   const provenance =
     source === null

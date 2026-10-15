@@ -1,7 +1,5 @@
 import * as Schema from "effect/Schema";
-import {
-  GitPreparePullRequestThreadInput,
-} from "./git.ts";
+import { GitPreparePullRequestThreadInput } from "./git.ts";
 import {
   AuthDiagnosticsReadScope,
   AuthOrchestrationReadScope,
@@ -10,13 +8,8 @@ import {
   AuthSourceControlWriteScope,
   type AuthEnvironmentScope,
 } from "./auth.ts";
-import {
-  ORCHESTRATION_V2_WS_METHODS,
-} from "./orchestrationV2.ts";
-import {
-  WS_METHODS,
-} from "./rpc.ts";
-
+import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
+import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {

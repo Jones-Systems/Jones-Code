@@ -163,10 +163,12 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       expect(yield* Deferred.isDone(invalidated)).toBe(false);
       yield* TestClock.adjust(Duration.minutes(2));
       expect(yield* Deferred.isDone(invalidated)).toBe(false);
-      expect(yield* Effect.flip(sessions.verify(client.token))).toMatchObject({ _tag: "SessionTokenExpiredError" });
-      const afterExpiry = yield* sessions.awaitInvalidation(client.sessionId).pipe(
-        Effect.forkScoped({ startImmediately: true }),
-      );
+      expect(yield* Effect.flip(sessions.verify(client.token))).toMatchObject({
+        _tag: "SessionTokenExpiredError",
+      });
+      const afterExpiry = yield* sessions
+        .awaitInvalidation(client.sessionId)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
       yield* sessions.revoke(client.sessionId);
       yield* Fiber.join(afterExpiry);
       yield* Fiber.join(watcher);

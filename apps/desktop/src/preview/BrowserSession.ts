@@ -320,9 +320,10 @@ export const make = Effect.gen(function* BrowserSessionMake() {
               );
             },
           );
-          browserSession.setPermissionCheckHandler((webContents, permission) =>
-            ALLOWED_PREVIEW_PERMISSIONS.has(permission) &&
-            !(permission === "clipboard-read" && isCompanionGuest(webContents)),
+          browserSession.setPermissionCheckHandler(
+            (webContents, permission) =>
+              ALLOWED_PREVIEW_PERMISSIONS.has(permission) &&
+              !(permission === "clipboard-read" && isCompanionGuest(webContents)),
           );
           const next = new Map(sessions);
           next.set(partition, browserSession);

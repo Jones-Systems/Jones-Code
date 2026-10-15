@@ -75,9 +75,9 @@ const make = Effect.gen(function* () {
       ? {
           enabled: false,
           environmentId: null,
-          hostId: yield* crypto.randomUUIDv4().pipe(
-            Effect.mapError(() => new CompanionConfigError({ operation: "identity" })),
-          ),
+          hostId: yield* crypto
+            .randomUUIDv4()
+            .pipe(Effect.mapError(() => new CompanionConfigError({ operation: "identity" }))),
           label: "Browser host",
           browserOnly: productLocked,
         }
