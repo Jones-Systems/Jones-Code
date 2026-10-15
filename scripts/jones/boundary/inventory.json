@@ -7,6 +7,9 @@
   },
   "baseline": "ede3f2d6ba4943ba0a14aa4af656cfa537a1efe6",
   "paths": {
+    "apps/server/src/device/DeviceHubProxy.stream.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/persistence/OrchestrationEventStore.test.ts": "jones-tests-in-upstream",
     "apps/server/src/preview/testing/DesktopPipeLifecycle.fixture.ts": "jones-tests-in-upstream",
     "apps/server/src/storageCleanup.test.ts": "jones-tests-in-upstream",
     ".github/workflows/mobile-android-apk.yml": "upstream-deleted",
