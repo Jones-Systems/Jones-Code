@@ -12,7 +12,6 @@ import * as Schema from "effect/Schema";
 import { RemoteEnvironmentAuthorization } from "./authorization/service.ts";
 import type { PreparedConnection } from "./connection/model.ts";
 import type { ManagedRelayDpopSigner } from "./relay/managedRelay.ts";
-import { makeEnvironmentHttpApiUrlBuilder } from "./rpc/http.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./state/environmentHttpAuth.ts";
 
 export interface VoiceReviewClientOptions {
@@ -57,7 +56,7 @@ export const fetchVoiceReviewDrafts = Effect.fn("clientRuntime.voiceReview.list"
       group: "voiceReview",
       method: "GET",
       timeoutMs: input.timeoutMs ?? 15_000,
-      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.list({ query }),
+      url: (urls) => urls.list({ query }),
       request: ({ client, headers }) => client.list({ query, headers }),
     }),
   );
@@ -74,7 +73,7 @@ export const fetchVoiceReviewDraft = Effect.fn("clientRuntime.voiceReview.get")(
       group: "voiceReview",
       method: "GET",
       timeoutMs: input.timeoutMs ?? 15_000,
-      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.get({ params }),
+      url: (urls) => urls.get({ params }),
       request: ({ client, headers }) => client.get({ params, headers }),
     }),
   );
@@ -104,8 +103,7 @@ export const mutateVoiceReviewDraft = Effect.fn("clientRuntime.voiceReview.mutat
       group: "voiceReview",
       method: "POST",
       timeoutMs: input.timeoutMs ?? 25_000,
-      url: (base) =>
-        makeEnvironmentHttpApiUrlBuilder(base).voiceReview[endpoint[input.action]]({ params }),
+      url: (urls) => urls[endpoint[input.action]]({ params }),
       request: ({ client, headers }) => {
         const args = { params, headers, payload: input.payload };
         switch (input.action) {
@@ -136,7 +134,7 @@ export const fetchVoiceReviewRecent = Effect.fn("clientRuntime.voiceReview.recen
       group: "voiceReview",
       method: "GET",
       timeoutMs: input.timeoutMs ?? 15_000,
-      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.recent({ query }),
+      url: (urls) => urls.recent({ query }),
       request: ({ client, headers }) => client.recent({ query, headers }),
     }),
   );
@@ -157,8 +155,7 @@ export const fetchThreadRegistrySnapshot = Effect.fn("clientRuntime.voiceReview.
         group: "voiceReview",
         method: "GET",
         timeoutMs: input.timeoutMs ?? 15_000,
-        url: (base) =>
-          makeEnvironmentHttpApiUrlBuilder(base).voiceReview.registrySnapshot({ query }),
+        url: (urls) => urls.registrySnapshot({ query }),
         request: ({ client, headers }) => client.registrySnapshot({ query, headers }),
       }),
     );
@@ -175,7 +172,7 @@ export const fetchThreadRegistryWorkstreams = Effect.fn(
       group: "voiceReview",
       method: "GET",
       timeoutMs: input.timeoutMs ?? 15_000,
-      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.registryWorkstreams(),
+      url: (urls) => urls.registryWorkstreams(),
       request: ({ client, headers }) => client.registryWorkstreams({ headers }),
     }),
   );
@@ -191,7 +188,7 @@ export const fetchVoiceReviewDiagnostics = Effect.fn("clientRuntime.voiceReview.
         group: "voiceReview",
         method: "GET",
         timeoutMs: input.timeoutMs ?? 15_000,
-        url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.diagnostics({ params }),
+        url: (urls) => urls.diagnostics({ params }),
         request: ({ client, headers }) => client.diagnostics({ params, headers }),
       }),
     );
@@ -215,7 +212,7 @@ export const correctThreadRegistryAssociation = Effect.fn(
       group: "voiceReview",
       method: "POST",
       timeoutMs: input.timeoutMs ?? 15_000,
-      url: (base) => makeEnvironmentHttpApiUrlBuilder(base).voiceReview.correctAssociation(),
+      url: (urls) => urls.correctAssociation(),
       request: ({ client, headers }) => client.correctAssociation({ payload, headers }),
     }),
   );

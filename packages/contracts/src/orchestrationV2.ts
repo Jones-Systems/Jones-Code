@@ -3903,6 +3903,7 @@ export const OrchestrationV2RpcSchemas = {
   searchThread: {
     input: OrchestrationV2SearchThreadInput,
     output: OrchestrationV2SearchThreadResult,
+  },
   dispatchNativeBootstrap: {
     input: NativeBootstrapSubmission,
     output: NativeBootstrapDispatchResultV2,

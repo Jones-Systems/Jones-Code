@@ -32,7 +32,13 @@ import { runtime } from "../../lib/runtime";
 import { MobileSecureStorage } from "../../persistence/mobile-secure-storage";
 import { environmentSession } from "../../state/session";
 import { useEnvironments } from "../../state/environments";
-import { workstreamRequest, type WorkstreamClient } from "./gateway";
+import {
+  workstreamPageUrl,
+  workstreamRequest,
+  type WorkstreamClient,
+  type WorkstreamUrls,
+  type WorkstreamUrlSelector,
+} from "./gateway";
 import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/authorization";
 import { loadCompleteWorkstreamList } from "./loaders";
 import { reconcileMobileWorkstreamCommand, waitForWorkstreamReceipt } from "./commands";
@@ -103,14 +109,14 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     <A, E>(
       prepared: PreparedConnection,
       method: "GET" | "POST",
-      path: string,
+      url: WorkstreamUrlSelector,
       run: (client: WorkstreamClient, headers: EnvironmentHttpAuthHeaders) => Effect.Effect<A, E>,
       signal: AbortSignal,
     ) => {
       if (!AsyncResult.isSuccess(context))
         return Promise.reject(new Error("Connection is unavailable."));
       return runtime.runPromise(
-        workstreamRequest(prepared, method, path, run).pipe(Effect.provide(context.value)),
+        workstreamRequest(prepared, method, url, run).pipe(Effect.provide(context.value)),
         { signal },
       );
     },
@@ -204,7 +210,8 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               request(
                 connection.prepared,
                 "GET",
-                "",
+                (urls) =>
+                  workstreamPageUrl(urls.list(), { limit: 50, ...(cursor ? { cursor } : {}) }),
                 (client, headers) =>
                   client.list({ headers, payload: { limit: 50, ...(cursor ? { cursor } : {}) } }),
                 controller.signal,
@@ -220,7 +227,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               const result = await request(
                 connection.prepared,
                 "POST",
-                "/appearance/read",
+                (urls) => urls.appearanceRead(),
                 (client, headers) =>
                   client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
                 controller.signal,
@@ -245,7 +252,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 request(
                   connection.prepared,
                   "POST",
-                  "/thread-placements",
+                  (urls) => urls.threadPlacements(),
                   (client, headers) =>
                     client.threadPlacements({ headers, payload: { identities } }),
                   controller.signal,
@@ -323,7 +330,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
             const result = await request(
               snapshot.prepared,
               "POST",
-              "/appearance/read",
+              (urls) => urls.appearanceRead(),
               (client, headers) =>
                 client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
               abort.signal,
@@ -372,14 +379,14 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   };
   const read = async <A, E>(
     snapshot: MobileWorkstreamSnapshot,
-    path: string,
+    url: WorkstreamUrlSelector,
     run: (client: WorkstreamClient, headers: EnvironmentHttpAuthHeaders) => Effect.Effect<A, E>,
   ) => {
     assertCurrent(snapshot);
     const controller = new AbortController();
     controllers.current.add(controller);
     try {
-      const result = await request(snapshot.prepared, "GET", path, run, controller.signal);
+      const result = await request(snapshot.prepared, "GET", url, run, controller.signal);
       assertCurrent(snapshot);
       return result;
     } catch (cause) {
@@ -391,14 +398,14 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   };
   const pages = async <Item>(
     snapshot: MobileWorkstreamSnapshot,
-    path: string,
+    url: (urls: WorkstreamUrls, cursor?: string) => string,
     run: (
       client: WorkstreamClient,
       headers: EnvironmentHttpAuthHeaders,
       cursor?: string,
     ) => Effect.Effect<WorkstreamDtoPage<Item>, unknown>,
   ) => {
-    let result = await read(snapshot, path, (client, headers) => run(client, headers));
+    let result = await read(snapshot, (urls) => url(urls), (client, headers) => run(client, headers));
     const seen = new Set<string>();
     while (result.next_cursor !== null) {
       const cursor = result.next_cursor;
@@ -406,7 +413,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       seen.add(cursor);
       result = appendWorkstreamDtoPage(
         result,
-        await read(snapshot, path, (client, headers) => run(client, headers, cursor)),
+        await read(
+          snapshot,
+          (urls) => url(urls, cursor),
+          (client, headers) => run(client, headers, cursor),
+        ),
       );
     }
     if (
@@ -434,7 +445,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
         pollAttempts: 0,
         submit: () => Promise.reject(new Error("A pending command cannot be resubmitted.")),
         poll: (commandId) =>
-          read(snapshot, `/commands/${encodeURIComponent(commandId)}`, (client, headers) =>
+          read(snapshot, (urls) => urls.command({ params: { commandId } }), (client, headers) =>
             client.command({ headers, params: { commandId } }),
           ),
         assertCurrent: () => assertCurrent(snapshot),
@@ -471,7 +482,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
             request(
               snapshot.prepared,
               "POST",
-              "/commands",
+              (urls) => urls.submit(),
               (client, headers) => client.submit({ headers, payload: { command } }),
               controller.signal,
             ),
@@ -479,7 +490,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
             request(
               snapshot.prepared,
               "GET",
-              `/commands/${encodeURIComponent(commandId)}`,
+              (urls) => urls.command({ params: { commandId } }),
               (client, headers) => client.command({ headers, params: { commandId } }),
               controller.signal,
             ),
@@ -545,7 +556,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       const result = await request(
         snapshot.prepared,
         "POST",
-        "/appearance/write",
+        (urls) => urls.appearanceSave(),
         (client, headers) => client.appearanceSave({ headers, payload: input }),
         controller.signal,
       );

@@ -1,3 +1,4 @@
+import { workstreamPageUrl } from "./gateway";
 import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/WorkstreamColorPicker";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -87,8 +88,12 @@ export function MobileWorkstreamControls({
       )
     )
       throw new Error("This thread is outside the verified placement inventory.");
-    const references = await api.pages(snapshot, "/references", (client, headers, cursor) =>
-      client.references({ headers, payload: { limit: 50, ...(cursor ? { cursor } : {}) } }),
+    const references = await api.pages(
+      snapshot,
+      (urls, cursor) =>
+        workstreamPageUrl(urls.references(), { limit: 50, ...(cursor ? { cursor } : {}) }),
+      (client, headers, cursor) =>
+        client.references({ headers, payload: { limit: 50, ...(cursor ? { cursor } : {}) } }),
     );
     const target = destination
       ? snapshot.data.items.find((item) => item.workstreamId === destination)
@@ -96,7 +101,11 @@ export function MobileWorkstreamControls({
     const episodes = target
       ? await api.pages(
           snapshot,
-          `/${encodeURIComponent(target.workstreamId)}/memberships`,
+          (urls, cursor) =>
+            workstreamPageUrl(urls.memberships({ params: { workstreamId: target.workstreamId } }), {
+              limit: 50,
+              ...(cursor ? { cursor } : {}),
+            }),
           (client, headers, cursor) =>
             client.memberships({
               headers,
@@ -138,12 +147,18 @@ export function MobileWorkstreamControls({
   const showHistory = async (bound: MobileWorkstreamSnapshot, item: T3WorkstreamMetadata) => {
     const startedBinding = api.bindingRevision;
     const [detail, historyPage, members] = await Promise.all([
-      api.read(bound, `/${encodeURIComponent(item.workstreamId)}`, (client, headers) =>
-        client.detail({ headers, params: { workstreamId: item.workstreamId } }),
+      api.read(
+        bound,
+        (urls) => urls.detail({ params: { workstreamId: item.workstreamId } }),
+        (client, headers) => client.detail({ headers, params: { workstreamId: item.workstreamId } }),
       ),
       api.pages(
         bound,
-        `/${encodeURIComponent(item.workstreamId)}/history`,
+        (urls, cursor) =>
+          workstreamPageUrl(urls.history({ params: { workstreamId: item.workstreamId } }), {
+            limit: 50,
+            ...(cursor ? { cursor } : {}),
+          }),
         (client, headers, cursor) =>
           client.history({
             headers,
@@ -153,7 +168,11 @@ export function MobileWorkstreamControls({
       ),
       api.pages(
         bound,
-        `/${encodeURIComponent(item.workstreamId)}/memberships`,
+        (urls, cursor) =>
+          workstreamPageUrl(urls.memberships({ params: { workstreamId: item.workstreamId } }), {
+            limit: 50,
+            ...(cursor ? { cursor } : {}),
+          }),
         (client, headers, cursor) =>
           client.memberships({
             headers,
