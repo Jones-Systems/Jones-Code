@@ -717,10 +717,10 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   // Usage reads provider history through the ProviderHost, which needs the
   // background policy below it.
   Layer.provideMerge(layerUsage),
-  Layer.provideMerge(layerProcessAttribution),
   Layer.provideMerge(JonesHttp.tokenAccountingLayer),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
+  Layer.provideMerge(layerProcessAttribution),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
