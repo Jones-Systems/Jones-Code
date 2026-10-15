@@ -1,4 +1,5 @@
-import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
+import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -1191,7 +1192,7 @@ export function makeClaudeQueryOptions(input: {
       type: "preset" as const,
       preset: "claude_code" as const,
       append:
-        buildRuntimeInstructions({ harness: "Claude Code" }) +
+        buildRuntimeInstructions({ appIdentity: APP_IDENTITY, harness: "Claude Code" }) +
         (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
     },
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
@@ -6460,6 +6461,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* finalizeActiveTurn({
               context,
               status: interrupted ? "interrupted" : "failed",
+              evidenceKind: interrupted ? "attributed_abort" : "local_failure",
               completedAt: yield* DateTime.now,
               ...(interrupted
                 ? {}
@@ -9078,16 +9080,36 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
               sdkMessageLock.withPermits(1)(
-                Effect.suspend(() => {
-                  if (
-                    message.type === "system" &&
-                    (message.subtype === "init" || message.subtype === "status") &&
-                    message.permissionMode !== undefined
-                  ) {
-                    context.permissionMode = message.permissionMode;
-                  }
-                  return handleSdkMessage({ query: querySession, message });
-                }),
+              Effect.gen(function* () {
+                if (
+                  !context.acceptingEvidence ||
+                  (yield* Ref.get(queryContext))?.query !== querySession
+                )
+                  return;
+                messageSources.set(message, context);
+                if (message.type === "system" && message.subtype === "init") {
+                  const reportedModel = Reflect.get(message, "model");
+                  const binding = ProviderAdapter.runtimeBinding(boundThread, runtimeGeneration);
+                  if (binding !== undefined)
+                    yield* emitProviderEvent({
+                      type: "runtime_identity.observed",
+                      driver: CLAUDE_PROVIDER,
+                      binding,
+                      requested,
+                      observed: claudeObservedRuntimeIdentity(
+                        typeof reportedModel === "string" ? reportedModel : undefined,
+                      ),
+                    });
+                }
+                if (
+                  message.type === "system" &&
+                  (message.subtype === "init" || message.subtype === "status") &&
+                  message.permissionMode !== undefined
+                ) {
+                  context.permissionMode = message.permissionMode;
+                }
+                yield* handleSdkMessage({ query: querySession, message });
+              }).pipe(Effect.provideService(ClaudeProducerContext, context))
               ),
             ),
             Effect.exit,
@@ -9674,6 +9696,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* endSubagentCallsOfClosedQuery(nativeThreadId, "interrupted");
           }
           yield* Deferred.succeed(existing.closed, undefined);
+          if (queryBindingUnknown)
+            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+              driver: CLAUDE_PROVIDER,
+              detail:
+                "The query binding became unconfirmed during retirement; native fork must not run.",
+            });
         });
         const closeLiveQueryForNativeThread = Effect.fnUntraced(function* (nativeThreadId: string) {
           const existing = boundQueriesByNativeThread.get(nativeThreadId);

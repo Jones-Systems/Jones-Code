@@ -28,7 +28,7 @@ import {
 } from "@t3tools/contracts";
 import { failEnvironmentAuthInvalid } from "../auth/http.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import type { ProviderAdapterV2SessionRuntime } from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ProjectStore from "./ProjectStore.ts";

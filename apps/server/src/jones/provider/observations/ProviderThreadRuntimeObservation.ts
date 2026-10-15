@@ -5,14 +5,8 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-export type ProviderRuntimeObservation =
-  | {
-      readonly status: "working" | "monitoring" | "busy" | "idle";
-      readonly binding: ProviderRuntimeBinding;
-      readonly observedAt: string;
-      readonly backgroundCoverage?: "complete" | "partial";
-    }
-  | { readonly status: "unknown"; readonly reason: string };
+import type { ProviderRuntimeObservation } from "@t3tools/provider-core/server/jones/runtimeTypes";
+export type { ProviderRuntimeObservation } from "@t3tools/provider-core/server/jones/runtimeTypes";
 
 export type ProviderThreadForegroundActivity =
   | "working"

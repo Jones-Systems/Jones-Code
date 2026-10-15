@@ -1,4 +1,4 @@
-import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
+import * as OpenCodeCreationPolicy from "@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy";
 /**
  * The OpenCode 2 runtime behind the `opencode` driver. It talks to the
  * instance's `opencode serve` process through the HTTP client and reads that
@@ -23,7 +23,7 @@ import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeC
  * @module orchestration-v2/Adapters/OpenCode2AdapterV2
  */
 import * as Context from "effect/Context";
-import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 import {
   AbsolutePath,
   Agent,
@@ -3059,9 +3059,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     let currentScope = initial.scope;
     // The borrow in use when the session closes is returned with it, so a
     // spawned server can still reach its idle shutdown.
-    yield* Effect.addFinalizer(() => Scope.close(currentScope, Exit.void));
+    yield* Effect.addFinalizer(() => { eventProducer.drain(); return Scope.close(currentScope, Exit.void); });
     const follow = (
       stream: Stream.Stream<OpenCode2Client.OpenCode2StreamEvent, unknown>,
+      producer: ProviderEventOrigin.ProviderEventProducer,
     ): Effect.Effect<void> =>
       stream.pipe(
         Stream.runForEach((event) =>
@@ -3515,7 +3516,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         if (added) state.mcp = wanted;
       }
       const instructions = [
-        buildRuntimeInstructions({ harness: "OpenCode", model: turnInput.modelSelection.model }),
+        buildRuntimeInstructions({ appIdentity: host.appIdentity, harness: "OpenCode", model: turnInput.modelSelection.model }),
         t3OrchestrationSystemPrompt(state.mcp !== undefined),
       ]
         .filter((part) => part !== undefined && part.length > 0)

@@ -2025,7 +2025,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 input: [
                   {
                     type: "text",
-                    text: buildRuntimeInstructions({
+                    text: buildRuntimeInstructions({ appIdentity: providerHost.appIdentity,
                       harness: "Muse Code",
                       model: session.model ?? undefined,
                       reasoningEffort: effort,

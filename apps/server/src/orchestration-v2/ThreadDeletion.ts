@@ -2,12 +2,25 @@ import type {
   RecordedLifecycleEvent as OrchestrationV2DomainEvent,
   RecordedThreadProjection as OrchestrationV2ThreadProjection,
 } from "./RecordedTypes.ts";
-import type { ThreadId, OrchestrationV2Command } from "@t3tools/contracts";
+import type {
+  ThreadId,
+  OrchestrationV2Command,
+} from "@t3tools/contracts";
 import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
-import type { PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
+import type {
+  PendingOrchestrationEffectV2,
+} from "./EffectOutbox.ts";
 import type * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import type {
+  EffectOutboxV2,
+  OrchestrationEffectV2,
+} from "./EffectOutbox.ts";
+import type {
+  IdAllocatorV2,
+  IdAllocatorV2Error,
+} from "@t3tools/provider-core/server/IdAllocator";
 
 export interface ThreadDeletionPlan {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;

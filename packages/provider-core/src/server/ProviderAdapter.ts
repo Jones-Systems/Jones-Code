@@ -1,6 +1,6 @@
-import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
-import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
-import type { ProviderGoalReadResult } from "../provider/providerGoal.ts";
+import type { NativeProviderExecutionGuard, ProviderRuntimeObservation, ProviderGoalReadResult } from "./jones/runtimeTypes.ts";
+import type { ProviderEventProducerOrigin } from "./jones/ProviderEventOrigin.ts";
+import { classifyProviderRuntimeBindingFailure } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
@@ -719,7 +719,7 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly readThreadActivity?: (
     providerThread: OrchestrationV2ProviderThread,
-  ) => Effect.Effect<RuntimeObservation.ProviderRuntimeObservation>;
+  ) => Effect.Effect<ProviderRuntimeObservation>;
   /**
    * Per-provider-thread pending work for root-run ingestion stop gates. When
    * present, RunExecutionService uses only this probe (never the session-wide
@@ -830,6 +830,7 @@ export interface ProviderAdapterV2SessionRuntime {
 export class ProviderAdapterV2 extends Context.Service<
   ProviderAdapterV2,
   {
+    readonly nativeCreationExecution?: boolean;
     readonly instanceId: ProviderInstanceId;
     readonly driver: ProviderDriverKind;
     readonly getCapabilities: () => Effect.Effect<
@@ -844,3 +845,5 @@ export class ProviderAdapterV2 extends Context.Service<
     ) => Effect.Effect<ProviderAdapterV2SessionRuntime, ProviderAdapterV2Error, Scope.Scope>;
   }
 >()("@t3tools/provider-core/server/ProviderAdapter/ProviderAdapterV2") {}
+
+export type ProviderAdapterV2Shape = ProviderAdapterV2["Service"];

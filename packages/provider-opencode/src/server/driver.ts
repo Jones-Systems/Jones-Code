@@ -1,4 +1,4 @@
-import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
+import * as OpenCodeCreationPolicy from "@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy";
 /**
  * OpenCodeDriver — `ProviderDriver` for the OpenCode runtime.
  *
@@ -213,6 +213,8 @@ export const OpenCodeDriver: ProviderDriver<
       const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
       const crypto = yield* Crypto.Crypto;
       const host = yield* ProviderHost.ProviderHost;
+      const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
+      const authority = Option.isSome(authorityOption) ? authorityOption.value.forInstance(instanceId) : undefined;
       const processEnv = yield* mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -313,8 +315,10 @@ export const OpenCodeDriver: ProviderDriver<
         ),
       });
       const loadOpenCode2Models = yield* makeOpenCode2ModelLoader(
-        openCode2Server.withConnection(({ client }) =>
-          loadOpenCode2Catalog(client, host.paths.cwd),
+        openCode2Server.withConnection(
+          ({ client }) => loadOpenCode2Catalog(client, host.paths.cwd),
+          undefined,
+          "models",
         ),
       );
       // A 2.x server lists skills and commands per directory, so one server

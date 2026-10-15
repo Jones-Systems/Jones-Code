@@ -1,5 +1,7 @@
 import { ProjectId, type ProjectScript } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NativeSetup from "../terminal/NativeSetupControl.ts";
+import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
 import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
@@ -514,12 +516,14 @@ export const make = Effect.gen(function* () {
       // Keep TERM's 256-color support without advertising truecolor here.
       COLORTERM: "",
     };
-    const observe = input.observeCompletion;
-    const completionToken = observe
-      ? (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "")
-      : null;
-    const commandLine =
-      observe && completionToken
+    const observe =
+      input.observeCompletion ?? (legacy === undefined && native === undefined ? undefined : {});
+    const completionToken =
+      captured?.completionToken ??
+      (observe ? (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "") : null);
+    let commandLine =
+      captured?.commandLine ??
+      (observe && completionToken
         ? wrapCommandForCompletion(
             script.command,
             completionShell,

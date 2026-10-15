@@ -1,4 +1,12 @@
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import { importedHistoryHttpApiLayer } from "./jones/importedHistory/http.ts";
+import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
+import * as JonesHttp from "./jones/http/registration.ts";
+import * as JonesUpdates from "./jones/updates/service.ts";
+import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
+import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -33,6 +41,14 @@ import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as AgentScopeLive from "./process/agentScope.ts";
+import {
+  workstreamGatewayLayerLive,
+  workstreamHttpApiLayer,
+  workstreamNativeAuthorityLayerLive,
+  workstreamRegistrationContextLayerLive,
+  workstreamResponseHeadersLayer,
+} from "./workstreams/http.ts";
+import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
@@ -701,6 +717,8 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   // Usage reads provider history through the ProviderHost, which needs the
   // background policy below it.
   Layer.provideMerge(layerUsage),
+  Layer.provideMerge(layerProcessAttribution),
+  Layer.provideMerge(JonesHttp.tokenAccountingLayer),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
   Layer.provideMerge(TraceDiagnostics.layer),

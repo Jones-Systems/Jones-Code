@@ -29,7 +29,6 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
   type OrchestrationV2ThreadShellSnapshot,
-  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadTranscript,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
@@ -42,7 +41,9 @@ import {
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
-import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
+import {
+  threadTranscriptHeader,
+} from "@t3tools/shared/threadTranscript";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -57,11 +58,18 @@ import * as Stream from "effect/Stream";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
-import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
-import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import {
+  projectedRowEncodedBytes,
+} from "./threadHistoryPaging.ts";
+
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
-import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
-import { projectTurnItemForDetail } from "./WireProjection.ts";
+import {
+  DispatchModeLimit,
+  exceededDispatchModeLimit,
+} from "./DispatchModeLimit.ts";
+import {
+  projectTurnItemForDetail,
+} from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -326,6 +334,12 @@ export interface ThreadManagementServiceShape {
   readonly searchThread: (
     input: OrchestrationV2SearchThreadInput,
   ) => Effect.Effect<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
+  readonly stopCurrentThreadRuntime?: import("./Orchestrator.ts").OrchestratorV2Shape["stopCurrentThreadRuntime"];
+  readonly reviewImportedHistory?: Orchestrator.OrchestratorV2["Service"]["reviewImportedHistory"];
+  readonly startWithImportedHistory?: Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"];
+  readonly observeImportedHistoryStart?: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
+
+  readonly requestSelfSettlement: Orchestrator.OrchestratorV2["Service"]["requestSelfSettlement"];
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
@@ -600,6 +614,55 @@ const make = Effect.gen(function* () {
     receipts.getByCommandId(commandId).pipe(
       Effect.orElseSucceed(() => Option.none()),
       Effect.map(Option.isSome),
+  const observationSessions = yield* Effect.serviceOption(ProviderSessionManager.ProviderSessionManagerV2);
+  const observeThreadActivity = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const shell = yield* orchestrator.getThreadShell(threadId);
+      if (shell === null)
+        return {
+          foreground: null,
+          background: null,
+          backgroundStatus: "unknown" as const,
+          reason: "thread_unavailable",
+        };
+      if (shell.archivedAt !== null || shell.deletedAt !== null)
+        return { foreground: null, background: null, backgroundStatus: "known" as const };
+      const sampledAt = yield* Clock.currentTimeMillis;
+      const native =
+        Option.isSome(observationSessions) &&
+        Object.hasOwn(observationSessions.value, "observeThreadActivity") &&
+        observationSessions.value.observeThreadActivity !== undefined
+          ? yield* observationSessions.value.observeThreadActivity(threadId)
+          : null;
+      const current = yield* orchestrator.getThreadShell(threadId);
+      if (current === null)
+        return {
+          foreground: null,
+          background: null,
+          backgroundStatus: "unknown" as const,
+          reason: "thread_unavailable",
+        };
+      const activity = RuntimeObservation.providerThreadActivityObservation(
+        current,
+        native,
+        sampledAt,
+      );
+      return {
+        ...activity,
+        foreground:
+          native === null || native.status === "unknown"
+            ? RuntimeObservation.providerThreadForegroundActivity(current)
+            : activity.foreground,
+      };
+    }).pipe(
+      Effect.catchCause(() =>
+        Effect.succeed({
+          foreground: null,
+          background: null,
+          backgroundStatus: "unknown" as const,
+          reason: "native_activity_unavailable",
+        }),
+      ),
     );
 
   const ensureLegacyTranscript = Effect.fn(
@@ -1152,6 +1215,20 @@ const make = Effect.gen(function* () {
       );
     }).pipe((effect) => threadDispatch.withLock(input.threadId, effect));
 
+  const reviewImported = orchestrator.reviewImportedHistory;
+  const reviewImportedHistory =
+    reviewImported === undefined
+      ? undefined
+      : (
+          input: Parameters<NonNullable<ThreadManagementServiceShape["reviewImportedHistory"]>>[0],
+        ) =>
+          ensureLegacyTranscript(input.threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new Orchestrator.OrchestratorProjectionError({ threadId: input.threadId, cause }),
+            ),
+            Effect.andThen(reviewImported(input)),
+          );
   const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = (input) =>
     Effect.gen(function* () {
       const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
@@ -1206,6 +1283,16 @@ const make = Effect.gen(function* () {
           orchestrator.getThreadHistoryPage(threadId, cursor, throughEntryId, conversationOnly),
         ),
       ),
+    ...(orchestrator.dispatchLegacyFailureDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete,
+        }),
+    ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
+      ? {}
+      : {
+          dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete,
+        }),
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getTimelinePage(threadId, options)),

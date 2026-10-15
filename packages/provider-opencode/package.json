@@ -42,6 +42,14 @@
     "./server/v2/textGeneration": {
       "types": "./src/server/v2/textGeneration.ts",
       "import": "./src/server/v2/textGeneration.ts"
+    },
+    "./server/jones/OpenCodeCreationPolicy": {
+      "types": "./src/server/jones/OpenCodeCreationPolicy.ts",
+      "import": "./src/server/jones/OpenCodeCreationPolicy.ts"
+    },
+    "./server/OpenCodeServerOwner": {
+      "types": "./src/server/OpenCodeServerOwner.ts",
+      "import": "./src/server/OpenCodeServerOwner.ts"
     }
   },
   "scripts": {

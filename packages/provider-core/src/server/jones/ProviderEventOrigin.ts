@@ -10,7 +10,7 @@ import type {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import type { ProviderAdapterV2Event } from "../../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2Event } from "../ProviderAdapter.ts";
 
 export class ProviderEventOriginStaleError extends Schema.TaggedError<ProviderEventOriginStaleError>()(
   "ProviderEventOriginStaleError",

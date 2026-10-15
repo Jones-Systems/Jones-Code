@@ -87,6 +87,14 @@ export const PreviewAutomationProfile = Schema.Struct({
   incognito: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationProfile = typeof PreviewAutomationProfile.Type;
+export const PreviewAutomationRuntimeIdentity = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  runtimeKind: Schema.Literal("electron"),
+  runtimeInstanceId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  appVersion: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  buildCommit: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/))),
+});
+export type PreviewAutomationRuntimeIdentity = typeof PreviewAutomationRuntimeIdentity.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,

@@ -33,7 +33,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
-import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
@@ -45,7 +45,7 @@ import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import type {
   ProviderAdapterV2SessionRuntime,
   ProviderAdapterV2Shape,
-} from "../../orchestration-v2/ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as RuntimeLayer from "../../orchestration-v2/runtimeLayer.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";

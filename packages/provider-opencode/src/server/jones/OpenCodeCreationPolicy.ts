@@ -3,8 +3,8 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
-import * as ProviderAdapter from "../../../orchestration-v2/ProviderAdapter.ts";
-import * as OpenCodeRuntime from "../../../provider/opencodeRuntime.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
 
 export interface OpenCodeCreationCapture {
   readonly directory: string;

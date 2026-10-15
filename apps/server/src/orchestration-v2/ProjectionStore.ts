@@ -1,7 +1,14 @@
-import { applyThreadPullRequestLinkUpdate } from "@t3tools/shared/threadPullRequests";
-import { projectTurnItemForWire } from "./WireProjection.ts";
+import {
+  applyThreadPullRequestLinkUpdate,
+} from "@t3tools/shared/threadPullRequests";
+import {
+  projectTurnItemForWire,
+} from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
-import { makeThreadFind, findProjectedThreadItems } from "./ThreadFind.ts";
+import {
+  makeThreadFind,
+  findProjectedThreadItems,
+} from "./ThreadFind.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -26,7 +33,9 @@ import {
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
+import {
+  threadPullRequestsOf,
+} from "@t3tools/shared/threadPullRequests";
 import type {
   OrchestrationV2CheckpointScope,
   OrchestrationV2ExecutionNode,
@@ -42,7 +51,6 @@ import type {
   OrchestrationV2ShellThreadStatus,
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
-  ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -77,7 +85,9 @@ import {
   createOrchestrationV2TurnItemVisibility,
   isOrchestrationV2SupersededInterrupt,
 } from "@t3tools/shared/orchestrationV2Timeline";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  derivePendingBackgroundWork,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   canonicalLegacyPayload,
   sameLegacyBootstrapPolicy,
@@ -85,7 +95,9 @@ import {
   legacyBootstrapCreateCommandId,
   legacyNeverInvokedWorkspaceFailure,
 } from "./LegacyBootstrap.ts";
-import { isPublicOrchestrationEvent } from "./WireProjection.ts";
+import {
+  isPublicOrchestrationEvent,
+} from "./WireProjection.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -97,8 +109,12 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
-import { threadHtmlRenderAttachmentIds } from "../attachmentStore.ts";
+import {
+  MCP_APP_OUTPUT_KEY,
+} from "@t3tools/shared/mcpApp";
+import {
+  threadHtmlRenderAttachmentIds,
+} from "../attachmentStore.ts";
 import {
   isThreadHistoryUserTurn,
   isConversationHistoryItem,
@@ -376,6 +392,29 @@ export interface ProjectionTimelinePage {
   readonly hasMore: boolean;
 }
 
+type ProjectionOperatingCountsCandidate = Pick<
+  OrchestrationV2ThreadShell,
+  | "id"
+  | "projectId"
+  | "activeProviderThreadId"
+  | "archivedAt"
+  | "deletedAt"
+  | "interactionMode"
+  | "activityRunStatus"
+  | "hasActionableProposedPlan"
+  | "latestRunCompletedAt"
+> & {
+  readonly pendingRuntimeRequest: Pick<
+    NonNullable<OrchestrationV2ThreadShell["pendingRuntimeRequest"]>,
+    "kind"
+  > | null;
+};
+
+interface ProjectionOperatingCountsCandidates {
+  readonly snapshotSequence: number;
+  readonly threads: ReadonlyArray<ProjectionOperatingCountsCandidate>;
+}
+
 export interface ShellSnapshotOptions {
   readonly location?: "active" | "archive";
   /**
@@ -397,6 +436,9 @@ export interface ProjectionStoreV2Shape {
   readonly searchThread: (
     input: OrchestrationV2SearchThreadInput,
   ) => Effect.Effect<OrchestrationV2SearchThreadResult, ProjectionStoreV2Error>;
+  readonly getOperatingCountsCandidates?: (input?: {
+    readonly projectId?: ProjectId;
+  }) => Effect.Effect<ProjectionOperatingCountsCandidates, ProjectionStoreV2Error>;
   readonly getThreadAttachmentIds: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<string>, ProjectionStoreV2Error>;
@@ -6617,6 +6659,78 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(shellSnapshotReadError),
         Effect.map(decodeShellSnapshot),
       );
+    const getOperatingCountsCandidates: ProjectionStoreV2Shape["getOperatingCountsCandidates"] = (
+      input,
+    ) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{
+              readonly payload_json: string;
+              readonly activity_run_status: ProjectionOperatingCountsCandidate["activityRunStatus"];
+              readonly pending_request_payload_json: string | null;
+              readonly has_actionable_proposed_plan: number;
+              readonly latest_run_completed_at: string | null;
+            }>`
+          SELECT t.payload_json,
+            (SELECT r.status FROM orchestration_v2_projection_runs r
+              WHERE r.thread_id = t.thread_id AND r.status IN ('preparing', 'starting', 'running', 'waiting')
+              ORDER BY r.ordinal DESC, r.run_id DESC LIMIT 1) AS activity_run_status,
+            (SELECT request.payload_json FROM orchestration_v2_projection_runtime_requests request
+              WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+              ORDER BY request.created_at DESC, request.runtime_request_id DESC LIMIT 1) AS pending_request_payload_json,
+            EXISTS (SELECT 1 FROM orchestration_v2_projection_plans plan
+              WHERE plan.thread_id = t.thread_id AND plan.kind = 'proposed_plan' AND plan.status = 'active') AS has_actionable_proposed_plan,
+            (SELECT r.completed_at FROM orchestration_v2_projection_runs r
+              WHERE r.thread_id = t.thread_id
+                AND CASE WHEN r.status = 'queued'
+                  THEN json_extract(r.payload_json, '$.queueHeld') IS NOT 1 ELSE 1 END
+              ORDER BY r.ordinal DESC, r.run_id DESC LIMIT 1) AS latest_run_completed_at
+          FROM orchestration_v2_projection_threads t
+          WHERE t.deleted_at IS NULL AND json_extract(t.payload_json, '$.archivedAt') IS NULL
+            ${input?.projectId === undefined ? sql`` : sql`AND t.project_id = ${input.projectId}`}
+          ORDER BY t.thread_id ASC
+        `;
+            const threads = yield* Effect.forEach(rows, (row) =>
+              Effect.gen(function* () {
+                const thread = yield* decodeThreadPayload(row.payload_json);
+                const request =
+                  row.pending_request_payload_json === null
+                    ? null
+                    : yield* decodeRuntimeRequestPayload(row.pending_request_payload_json);
+                return {
+                  id: thread.id,
+                  projectId: thread.projectId,
+                  activeProviderThreadId: thread.activeProviderThreadId,
+                  archivedAt: thread.archivedAt,
+                  deletedAt: thread.deletedAt,
+                  interactionMode: thread.interactionMode,
+                  activityRunStatus: row.activity_run_status,
+                  pendingRuntimeRequest: request === null ? null : { kind: request.kind },
+                  hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
+                  latestRunCompletedAt:
+                    row.latest_run_completed_at === null
+                      ? null
+                      : DateTime.makeUnsafe(row.latest_run_completed_at),
+                } satisfies ProjectionOperatingCountsCandidate;
+              }),
+            );
+            const sequences = yield* sql<{ readonly snapshot_sequence: number | null }>`
+          SELECT MAX(sequence) AS snapshot_sequence FROM orchestration_events
+          WHERE application_event_version = 2 AND aggregate_kind = 'thread'
+        `;
+            return { threads, snapshotSequence: sequences[0]?.snapshot_sequence ?? 0 };
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProjectionStoreReadError({
+                threadId: ThreadId.make("thread:operating-counts"),
+                cause,
+              }),
+          ),
+        );
 
     const getShellSnapshot: ProjectionStoreV2Shape["getShellSnapshot"] = (options) =>
       sql

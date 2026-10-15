@@ -38,7 +38,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceEnvironment,
-  ProviderDriverKind,
   type ProviderReplayTranscript,
   type ProviderApprovalDecision,
   ProviderSessionId,
@@ -48,7 +47,11 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import { assert, describe, it } from "@effect/vitest";
+import {
+  assert,
+  describe,
+  it,
+} from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -67,34 +70,70 @@ import * as Scheduler from "effect/Scheduler";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { Tool } from "effect/ai";
-import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
+import {
+  Tool,
+} from "effect/ai";
+import {
+  formatClaudeResumeCompactionQuestion,
+} from "@t3tools/shared/claudeCompaction";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import {
+  getModelSelectionStringOptionValue,
+} from "@t3tools/shared/model";
+import {
+  SpawnExecutableResolution,
+} from "@t3tools/shared/shell";
 
-import { attachmentRelativePath } from "../../attachmentStore.ts";
+import {
+  attachmentRelativePath,
+} from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
-import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
-import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
-import { EnvironmentToolkit } from "../../mcp/toolkits/environment/tools.ts";
-import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
-import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
-import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
-import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
-import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
+import {
+  PreviewControlsToolkit,
+} from "../../mcp/toolkits/previewControls/tools.ts";
+import {
+  HtmlToolkit,
+} from "../../mcp/toolkits/html/tools.ts";
+import {
+  EnvironmentToolkit,
+} from "../../mcp/toolkits/environment/tools.ts";
+import {
+  ProjectToolkit,
+} from "../../mcp/toolkits/project/tools.ts";
+import {
+  WorktreeToolkit,
+} from "../../mcp/toolkits/worktree/tools.ts";
+import {
+  ThreadToolkit,
+} from "../../mcp/toolkits/thread/tools.ts";
+import {
+  OrchestratorToolkit,
+} from "../../mcp/toolkits/orchestrator/tools.ts";
+import {
+  ClaudeExecutableFileCheck,
+} from "../../provider/Drivers/ClaudeExecutable.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import {
+  makeProviderFailure,
+} from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
-import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
-import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
-import { layerProviderReplay } from "../testkit/ProviderReplayHarness.ts";
+import {
+  ClaudeOrchestratorReplayHarness,
+} from "./ClaudeAdapterV2.testkit.ts";
+import {
+  provideDeterministicTestRuntime,
+} from "../testkit/DeterministicRuntime.ts";
+import {
+  runOrchestratorV2Scenario,
+} from "../testkit/OrchestratorScenario.ts";
+import {
+  layerProviderReplay,
+} from "../testkit/ProviderReplayHarness.ts";
 import {
   assertBaseProjection,
   assertSemanticProjectionIntegrity,

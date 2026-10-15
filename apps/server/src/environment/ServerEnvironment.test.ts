@@ -374,7 +374,12 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         if (!isServerEnvironmentIdPersistenceError(error)) {
           throw error;
         }
-      }),
+        expect(error.operation).toBe(operation);
+        expect(error.environmentIdPath).toBe(environmentIdPath);
+        expect(error.cause).toBe(cause);
+        expect(writeAttempts).toEqual(operation === "write" ? [tempPath] : []);
+      }
+    }),
     );
     it.effect.each([
       { name: "missing", content: undefined },
@@ -426,14 +431,14 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
           }),
           Effect.provideService(Crypto.Crypto, {
             ...crypto,
-            randomUUIDv4: Effect.gen(function* () {
-              const id = yield* crypto.randomUUIDv4;
+            randomUUIDv4: (() => Effect.gen(function* () {
+              const id = yield* crypto.randomUUIDv4();
               if (--remaining === 0) {
                 yield* Deferred.succeed(bothGenerated, undefined);
               }
               yield* Deferred.await(bothGenerated);
               return id;
-            }),
+            })) as Crypto.Crypto["randomUUIDv4"],
           }),
         );
 
@@ -648,5 +653,4 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         }
       }),
     );
-  },
-);
+});

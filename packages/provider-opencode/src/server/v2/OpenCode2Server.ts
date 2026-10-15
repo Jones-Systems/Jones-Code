@@ -18,7 +18,7 @@ import * as HttpClientError from "effect/http/HttpClientError";
 import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import * as OpenCode2Client from "./OpenCode2Client.ts";
-import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
+import * as OpenCodeCreationPolicy from "@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy";
 
 const INFO_TIMEOUT = "5 seconds";
 
@@ -40,6 +40,8 @@ export class OpenCode2Server extends Context.Service<
     /** Runs `use` against the instance's server, spawning it first when T3 owns it. */
     readonly withConnection: <A, E, R>(
       use: (connection: OpenCode2Connection) => Effect.Effect<A, E, R>,
+      creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks,
+      consumerKind?: "models" | "inventory" | "session" | "other",
     ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
   }
 >()("@t3tools/provider-opencode/server/v2/OpenCode2Server") {}

@@ -3,13 +3,79 @@ import type {
   OrchestrationV2SearchThreadResult,
   OrchestrationV2ThreadHistoryPage,
 } from "@t3tools/contracts";
+import * as CapturedRuntimeStop from "../jones/runtime/RuntimeStop.ts";
+import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
+import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
+import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
+import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
+import {
+  OrchestrationV2Command as NativeWireCommand,
+} from "@t3tools/contracts";
+import {
+  EnvironmentAuthenticatedPrincipal,
+  ImportedHistoryStart,
+  type ImportedHistoryDelivery,
+  type ImportedHistoryReview,
+  type ImportedHistoryOutcome,
+} from "@t3tools/contracts";
+import {
+  type RecordedServerCommand,
+  type LegacyGuardRejectionDeleteCommand,
+  type LegacyFailureDeleteCommand,
+  LegacyPreparationFailureDecision,
+  LegacyFailureDeletionProvenance,
+  LegacyPreparationUpdate,
+  LegacyOwnedTerminalControl,
+  LegacyNoTerminalControl,
+  LegacyDeletionProvenance,
+  type RecordedAppThread as OrchestrationV2AppThread,
+  type RecordedLifecycleEvent as OrchestrationV2DomainEvent,
+  type RecordedRun as OrchestrationV2Run,
+  type RecordedStoredLifecycleEvent as OrchestrationV2StoredEvent,
+  type RecordedThreadProjection as OrchestrationV2ThreadProjection,
+  type RecordedThreadSnapshot,
+} from "./RecordedTypes.ts";
+type OrchestrationV2ServerCommand =
+  | RecordedServerCommand
+  | LegacyGuardRejectionDeleteCommand
+  | LegacyFailureDeleteCommand;
+import {
+  threadCreationCleanupEffects,
+} from "./ThreadDeletion.ts";
+import {
+  legacyBootstrapBirth,
+  canonicalLegacyPayload,
+  legacyPayloadHash,
+  legacyBootstrapCreateCommandId,
+  sameLegacyBootstrapPolicy,
+  legacyPreparationGeneration,
+  transitionLegacyPreparation,
+  legacyPreparationReleaseBlocker,
+  legacyNeverInvokedWorkspaceFailure,
+} from "./LegacyBootstrap.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import {
+  TerminalManager,
+} from "../terminal/Manager.ts";
+import {
+  makeDispatchGuard,
+  DispatchGuardRejected,
+} from "./DispatchGuard.ts";
+import {
+  cancelsSelfSettlement,
+  selfSettlementRun,
+  selfSettlementTerminalDisposition,
+  type SelfSettlementIntent,
+} from "./SelfSettlement.ts";
 import {
   latestExecutedRun,
   latestRootProviderFailure,
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
+import {
+  threadPullRequestsOf,
+} from "@t3tools/shared/threadPullRequests";
 import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
@@ -57,7 +123,9 @@ import {
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
-import { modelSelectionsEqual } from "@t3tools/shared/model";
+import {
+  modelSelectionsEqual,
+} from "@t3tools/shared/model";
 import {
   derivePendingBackgroundWork,
   pendingBackgroundTurnItems,
@@ -76,7 +144,9 @@ import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { admitWorkMode } from "../jones/workMode/Admission.ts";
+import {
+  admitWorkMode,
+} from "../jones/workMode/Admission.ts";
 import {
   workModeCommand,
   type WorkModeCandidate,
@@ -86,22 +156,44 @@ import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
-import { CheckpointServiceV2 } from "./CheckpointService.ts";
-import { CommandPolicyV2, resolveMessageDispatchIntent } from "./CommandPolicy.ts";
-import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
-import { ContextHandoffServiceV2 } from "./ContextHandoffService.ts";
-import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
-import { isRestartContinuationSource, runOutcome } from "./RestartBackgroundNote.ts";
+import {
+  CheckpointServiceV2,
+} from "./CheckpointService.ts";
+import {
+  CommandPolicyV2,
+  resolveMessageDispatchIntent,
+} from "./CommandPolicy.ts";
+import {
+  CommandReceiptStoreV2,
+} from "./CommandReceiptStore.ts";
+import {
+  ContextHandoffServiceV2,
+} from "./ContextHandoffService.ts";
+import {
+  notificationTurnItem,
+} from "@t3tools/provider-core/server/notification";
+import {
+  isRestartContinuationSource,
+  runOutcome,
+} from "./RestartBackgroundNote.ts";
 import {
   isBufferedProviderNotification,
   isUndeliveredMailboxSteer,
 } from "./NotificationMailbox.ts";
-import { EventSinkV2 } from "./EventSink.ts";
+import {
+  EventSinkV2,
+} from "./EventSink.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
-import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
+import type {
+  OrchestrationEffectRequestV2,
+  PendingOrchestrationEffectV2,
+} from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
-import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
+import {
+  DispatchModeLimit,
+  exceededDispatchModeLimit,
+} from "./DispatchModeLimit.ts";
 import {
   applyToProjection,
   emptyProjection,
@@ -115,15 +207,30 @@ import {
   type ProjectionCheckpointContext,
   type ShellSnapshotOptions,
 } from "./ProjectionStore.ts";
-import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
+import {
+  ProviderAdapterRegistryV2,
+} from "./ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import {
+  makeProviderFailure,
+} from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
-import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
-import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
-import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
-import { queuedToolBoundaryTarget } from "./QueuedToolBoundary.ts";
-import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import {
+  ProviderSessionManagerV2,
+} from "./ProviderSessionManager.ts";
+import {
+  ProviderSwitchServiceV2,
+} from "./ProviderSwitchService.ts";
+import {
+  isAutomaticCompletionRun,
+  queuedRunsInDeliveryOrder,
+} from "./QueuedRunOrder.ts";
+import {
+  queuedToolBoundaryTarget,
+} from "./QueuedToolBoundary.ts";
+import {
+  RuntimePolicyV2,
+} from "./RuntimePolicy.ts";
 import {
   endOrphanedNativeSubagent,
   endRunlessRootTurns,
@@ -137,9 +244,11 @@ import {
   isForkableSourceRunStatus,
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
-import { planThreadDeletion } from "./ThreadDeletion.ts";
+import {
+  planThreadDeletion,
+} from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import * as ServerSettings from "../serverSettings.ts";
+
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -413,11 +522,7 @@ export interface OrchestratorV2Shape {
     threadId: ThreadId,
     options: Parameters<ProjectionStoreV2["Service"]["getThreadSnapshotWindow"]>[1],
   ) => Effect.Effect<
-    {
-      readonly schemaVersion: number;
-      readonly snapshotSequence: number;
-      readonly projection: OrchestrationV2ThreadProjection;
-    },
+    RecordedThreadSnapshot,
     OrchestratorV2Error
   >;
   readonly getShellSnapshot: (
@@ -1431,7 +1536,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const startNextQueuedRun = (
     threadId: ThreadId,
-    options?: { readonly failedRunId?: RunId; readonly endedRunId?: RunId },
+    options?: {
+      readonly failedRunId?: RunId;
+      readonly endedRunId?: RunId;
+      readonly reviewed?: {
+        readonly commandId: CommandId;
+        readonly runId: RunId;
+        readonly messageId: MessageId;
+        readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+        readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
+      };
+    },
   ) =>
     Effect.gen(function* () {
       // Every terminal run checks the queue. Only a deliverable queued run
@@ -5305,6 +5420,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: "queued",
+          ...(command.queuedToolBoundaryEligible === undefined
+            ? {}
+            : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible }),
           ...(worktreeMissingRun !== undefined ||
           projection.runs.some(
             (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
@@ -5328,6 +5446,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
           ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
+          ...(dispatchMode.type === "defer_start" && dispatchMode.runSetupScript !== undefined
+            ? { workspaceRunSetupScript: dispatchMode.runSetupScript }
+            : {}),
+          ...(command.legacyBootstrap === undefined
+            ? {}
+            : { legacyBootstrap: { ...command.legacyBootstrap, runId } }),
         };
         const attempt: OrchestrationV2RunAttempt = {
           id: attemptId,
@@ -12843,26 +12967,431 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     } satisfies OrchestratorV2DispatchResult;
   });
 
-  const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
-    Effect.gen(function* () {
-      const dispatch = threadDispatch.withLock(
-        commandThreadId(command),
-        dispatchWithReceiptEffect(command),
-      );
-      if (
-        command.type !== "message.dispatch" ||
-        (command.createdBy !== "user" && command.creationSource !== "mcp")
-      )
-        return yield* dispatch;
+  const dispatchWithReceipt = (
+    command: OrchestrationV2ServerCommand,
+  ): Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error> => {
+    const serialized = threadDispatch.withLock(
+      commandThreadId(command),
+      dispatchWithReceiptEffect(command).pipe(
+        Effect.tap(() =>
+          command.type === "legacy-bootstrap.failure-delete"
+            ? "legacyNoControl" in command && command.legacyNoControl !== undefined
+              ? readFailureDeletion(command)
+              : Effect.fail(
+                  new OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "Failure D replay lacks closed owner variant.",
+                  }),
+                )
+            : Effect.void,
+        ),
+        Effect.tap((result) =>
+          command.type !== "legacy-bootstrap.guard-rejection-delete"
+            ? Effect.void
+            : Effect.gen(function* () {
+                const receipt = yield* commandReceipts
+                  .getByCommandId(command.commandId)
+                  .pipe(mapDispatchError(command));
+                const collect = (commandId: CommandId) =>
+                  eventSink.readByCommandId({ commandId }).pipe(
+                    Stream.runCollect,
+                    Effect.map((events) => Array.from(events)),
+                    mapDispatchError(command),
+                  );
+                const events = yield* collect(command.commandId);
+                const evidence = events[0];
+                const tombstone = events[1];
+                const recordedRun =
+                  evidence?.event.type === "run.updated" ? evidence.event.payload : undefined;
+                const decision = recordedRun?.legacyReleaseDecision;
+                const deletion = decision?.deletion;
+                const expected =
+                  recordedRun === undefined
+                    ? undefined
+                    : legacyDeletionProvenanceFor(command, recordedRun);
+                const policy = command.legacyBootstrap;
+                const proof = legacyBootstrapBirth({
+                  policy,
+                  claimEvents: yield* collect(policy.createCommandId),
+                  birthEvents: yield* collect(policy.birthCommandId),
+                });
+                const claim = yield* commandReceipts
+                  .getByCommandId(policy.createCommandId)
+                  .pipe(mapDispatchError(command));
+                const birth = yield* commandReceipts
+                  .getByCommandId(policy.birthCommandId)
+                  .pipe(mapDispatchError(command));
+                const release = yield* commandReceipts
+                  .getByCommandId(policy.releaseCommandId)
+                  .pipe(mapDispatchError(command));
+                const released = (yield* collect(policy.releaseCommandId)).at(-1);
+                const original =
+                  decision === undefined
+                    ? undefined
+                    : (({ deletion: _deletion, ...original }) => original)(decision);
+                const effects = yield* effectOutbox
+                  .listByThreadId(command.threadId)
+                  .pipe(mapDispatchError(command));
+                const cleanup = effects.filter(
+                  (effect) =>
+                    effect.commandId === command.commandId &&
+                    effect.request.type === "terminal.cleanup",
+                );
+                const cleanupMatches =
+                  command.legacyNoControl !== undefined
+                    ? cleanup.length === 0
+                    : cleanup.length === 1 &&
+                      cleanup[0]?.request.type === "terminal.cleanup" &&
+                      cleanup[0].request.legacyOwnedControl !== undefined &&
+                      Schema.toEquivalence(LegacyOwnedTerminalControl)(
+                        cleanup[0].request.legacyOwnedControl,
+                        command.legacyOwnedControl,
+                      );
+                if (
+                  Option.isNone(receipt) ||
+                  receipt.value.status !== "accepted" ||
+                  receipt.value.threadId !== command.threadId ||
+                  receipt.value.commandType !== command.type ||
+                  receipt.value.resultSequence !== result.sequence ||
+                  events.length !== 2 ||
+                  evidence?.commandId !== command.commandId ||
+                  evidence.event.type !== "run.updated" ||
+                  evidence.event.threadId !== command.threadId ||
+                  evidence.event.runId !== command.runId ||
+                  evidence.event.payload.id !== command.runId ||
+                  evidence.sequence + 1 !== tombstone?.sequence ||
+                  tombstone?.commandId !== command.commandId ||
+                  tombstone.event.type !== "thread.deleted" ||
+                  tombstone.event.threadId !== command.threadId ||
+                  tombstone.event.payload.deletedAt === null ||
+                  tombstone.sequence !== result.sequence ||
+                  deletion === undefined ||
+                  expected === undefined ||
+                  evidence.event.id !== deletion.evidenceEventId ||
+                  !Schema.toEquivalence(LegacyDeletionProvenance)(deletion, expected) ||
+                  proof.type !== "valid" ||
+                  Option.isNone(claim) ||
+                  Option.isNone(birth) ||
+                  Option.isNone(release) ||
+                  claim.value.status !== "accepted" ||
+                  claim.value.commandType !== "thread.create" ||
+                  claim.value.threadId !== command.threadId ||
+                  birth.value.status !== "accepted" ||
+                  birth.value.commandType !== "message.dispatch" ||
+                  birth.value.threadId !== command.threadId ||
+                  release.value.status !== "rejected" ||
+                  release.value.commandType !== "prepared-run.release" ||
+                  release.value.threadId !== command.threadId ||
+                  decision === undefined ||
+                  decision.claimEventId !== proof.claimEventId ||
+                  decision.claimSequence !== proof.claimSequence ||
+                  decision.claimReceiptSequence !== claim.value.resultSequence ||
+                  decision.birthEventId !== proof.birthEventId ||
+                  decision.birthSequence !== proof.sequence ||
+                  decision.birthReceiptSequence !== birth.value.resultSequence ||
+                  released?.event.type !== "run.updated" ||
+                  released.event.payload.id !== command.runId ||
+                  released.event.id !== decision.evidenceEventId ||
+                  released.sequence !== release.value.resultSequence ||
+                  canonicalLegacyPayload(released.event.payload.legacyReleaseDecision) !==
+                    canonicalLegacyPayload(original) ||
+                  !cleanupMatches
+                )
+                  return yield* new OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause:
+                      "Exact persisted D provenance, rejected C, tombstone, receipt or cleanup readback is unavailable.",
+                  });
+              }),
+        ),
+      ),
+    );
+    if (command.type === "legacy-bootstrap.failure-delete")
+      return Effect.gen(function* () {
+        if (!("legacyNoControl" in command) || command.legacyNoControl === undefined)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Failure D requires closed actual no-control owner provenance.",
+          });
+        const existing = yield* commandReceipts
+          .getByCommandId(command.commandId)
+          .pipe(mapDispatchError(command));
+        if (Option.isSome(existing)) return yield* serialized;
+        const owner = Option.isSome(terminalOwner) ? terminalOwner.value : undefined;
+        if (owner?.withLegacyNoControlGuard === undefined)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Actual no-control owner proof is unavailable for failure D.",
+          });
+        return yield* owner.withLegacyNoControlGuard(command.legacyNoControl, serialized).pipe(
+          mapDispatchError(command),
+          Effect.catch((cause) =>
+            commandReceipts.getByCommandId(command.commandId).pipe(
+              mapDispatchError(command),
+              Effect.flatMap((receipt) =>
+                Option.isSome(receipt) && receipt.value.status === "accepted"
+                  ? serialized
+                  : Effect.fail(cause),
+              ),
+            ),
+          ),
+        );
+      });
+    if (command.type !== "legacy-bootstrap.guard-rejection-delete") return Effect.gen(function* () {
+      if (command.type !== "message.dispatch" || (command.createdBy !== "user" && command.creationSource !== "mcp")) return yield* serialized;
       const parentThreadId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
-        Effect.mapError(
-          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        Effect.mapError((cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause })),
+      );
+      return yield* parentThreadId === undefined ? serialized : threadDispatch.withLock(parentThreadId, serialized);
+    });
+    return Effect.gen(function* () {
+      const existing = yield* commandReceipts
+        .getByCommandId(command.commandId)
+        .pipe(mapDispatchError(command));
+      if (Option.isSome(existing)) return yield* serialized;
+      const owner = Option.isSome(terminalOwner) ? terminalOwner.value : undefined;
+      if (
+        owner === undefined ||
+        (command.legacyNoControl !== undefined
+          ? owner.withLegacyNoControlGuard === undefined
+          : owner.withLegacyOwnedControlGuard === undefined)
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Executing terminal owner proof is unavailable for new D acceptance.",
+        });
+      const guarded =
+        command.legacyNoControl !== undefined
+          ? owner.withLegacyNoControlGuard!(command.legacyNoControl, serialized)
+          : owner.withLegacyOwnedControlGuard!(command.legacyOwnedControl, serialized);
+      return yield* guarded.pipe(
+        mapDispatchError(command),
+        Effect.catch((cause) =>
+          commandReceipts.getByCommandId(command.commandId).pipe(
+            mapDispatchError(command),
+            Effect.flatMap((receipt) => (Option.isSome(receipt) ? serialized : Effect.fail(cause))),
+          ),
         ),
       );
-      // Follow-up intake and Stop serialize on the parent before taking the child lock.
-      return yield* parentThreadId === undefined
-        ? dispatch
-        : threadDispatch.withLock(parentThreadId, dispatch);
+    });
+  };
+
+  const requestWorkMode: OrchestratorV2Shape["requestWorkMode"] = (candidate) => {
+    const command = workModeCommand(candidate);
+    return threadDispatch.withLock(
+      candidate.threadId,
+      admitWorkMode(candidate, {
+        hasReceipt: commandReceipts
+          .getByCommandId(command.commandId)
+          .pipe(mapDispatchError(command), Effect.map(Option.isSome)),
+        getProviderContext: projectionStore.getThread(candidate.threadId).pipe(
+          Effect.flatMap((thread) =>
+            projectionStore.getThreadProviderContext(
+              candidate.threadId,
+              thread.modelSelection.instanceId,
+            ),
+          ),
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: candidate.threadId, cause }),
+          ),
+        ),
+        getProjection: projectionStore
+          .getThreadProjection(candidate.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: candidate.threadId, cause }),
+            ),
+          ),
+        hasLiveSession: (owner) =>
+          providerSessions.get(owner.providerSessionId!).pipe(
+            mapDispatchError(command),
+            Effect.map(
+              (session) =>
+                Option.isSome(session) &&
+                session.value.instanceId === owner.providerInstanceId &&
+                session.value.providerSession.status === "ready",
+            ),
+          ),
+        dispatch: dispatchWithReceiptEffect,
+      }),
+    );
+  };
+
+  const requestSelfSettlement: OrchestratorV2Shape["requestSelfSettlement"] = (input) =>
+    threadDispatch.withLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const command = {
+          type: "thread.metadata.update" as const,
+          threadId: input.threadId,
+          commandId: input.commandId,
+        };
+        const reject = (cause: string) =>
+          new OrchestratorDispatchError({ ...command, commandType: command.type, cause });
+        // Read the original durable acceptance before looking for a current run: credentials span turns.
+        const existingReceipt = yield* commandReceipts
+          .getByCommandId(input.commandId)
+          .pipe(mapDispatchError(command));
+        if (Option.isSome(existingReceipt)) {
+          const receipt = existingReceipt.value;
+          if (receipt.threadId !== input.threadId || receipt.status === "rejected")
+            return yield* reject("Self-settlement request identity conflicts.");
+          const stored = yield* eventSink
+            .readByCommandId({ commandId: input.commandId })
+            .pipe(Stream.runCollect, mapDispatchError(command));
+          for (const entry of stored) {
+            if (entry.event.type !== "thread.metadata-updated") continue;
+            const intent = entry.event.payload.selfSettlement;
+            if (
+              intent?.commandId === input.commandId &&
+              intent.mcpCredentialId === input.mcpCredentialId &&
+              intent.providerInstanceId === input.providerInstanceId
+            )
+              return intent;
+          }
+          return yield* reject("The original command is not this self-settlement request.");
+        }
+        const projection = yield* projectionStore
+          .getThreadRecords(input.threadId, [
+            "runs",
+            "messages",
+            "runtimeRequests",
+            "attempts",
+            "providerThreads",
+          ])
+          .pipe(mapDispatchError(command));
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+        );
+        const owner =
+          providerThread?.providerSessionId == null
+            ? null
+            : {
+                binding: {
+                  providerSessionId: providerThread.providerSessionId,
+                  instanceId: providerThread.providerInstanceId,
+                  providerThreadId: providerThread.id,
+                },
+              };
+        const attached =
+          owner !== null &&
+          (yield* providerSessions.isMcpCallerAttached({
+            threadId: input.threadId,
+            providerSessionId: owner.binding.providerSessionId,
+            providerInstanceId: input.providerInstanceId,
+            mcpCredentialId: input.mcpCredentialId,
+          }));
+        const run = attached
+          ? selfSettlementRun(
+              projection,
+              {
+                providerSessionId: owner!.binding.providerSessionId,
+                providerInstanceId: input.providerInstanceId,
+              },
+              owner!.binding,
+            )
+          : undefined;
+        if (run === undefined)
+          return yield* reject(
+            "Self-settlement requires the calling provider's active run without queued or blocked user work.",
+          );
+        if (projection.thread.selfSettlement != null)
+          return yield* reject(
+            "This turn already has an accepted self-settlement request; retry its original clientRequestId.",
+          );
+        const intent: SelfSettlementIntent = {
+          commandId: input.commandId,
+          runId: run.id,
+          mcpCredentialId: input.mcpCredentialId,
+          providerSessionId: owner!.binding.providerSessionId,
+          providerInstanceId: input.providerInstanceId,
+        };
+        const now = yield* DateTime.now;
+        const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: input.threadId,
+          occurredAt: now,
+          payload: { ...projection.thread, selfSettlement: intent },
+        });
+        yield* eventSink
+          .commitCommand({
+            ...command,
+            commandType: command.type,
+            acceptedAt: now,
+            events: yield* Ref.get(events),
+            effects: [],
+          })
+          .pipe(mapDispatchError(command));
+        return intent;
+      }),
+    );
+
+  const cancelSelfSettlement = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const thread = yield* projectionStore
+        .getThread(threadId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      if (thread.selfSettlement == null) return;
+      const command = {
+        type: "thread.metadata.update" as const,
+        threadId,
+        commandId: CommandId.make(`${thread.selfSettlement.commandId}:cancel`),
+      };
+      const now = yield* DateTime.now;
+      const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...thread, selfSettlement: null },
+      });
+      yield* eventSink
+        .commitCommand({
+          ...command,
+          commandType: command.type,
+          acceptedAt: now,
+          events: yield* Ref.get(events),
+          effects: [],
+        })
+        .pipe(mapDispatchError(command));
+    });
+
+  const consumeSelfSettlement = (threadId: ThreadId, runId: RunId) =>
+    Effect.gen(function* () {
+      const projection = yield* projectionStore
+        .getThreadRecords(threadId, ["runs", "messages", "runtimeRequests", "attempts"])
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      const disposition = selfSettlementTerminalDisposition(projection, runId);
+      if (disposition === "ignore") return;
+      if (disposition === "cancel") return yield* cancelSelfSettlement(threadId);
+      yield* dispatchWithReceiptEffect({
+        type: "thread.settle",
+        threadId,
+        commandId: CommandId.make(`${projection.thread.selfSettlement!.commandId}:settle`),
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.gen(function* () {
+            yield* cancelSelfSettlement(threadId);
+            yield* Effect.logWarning("Self-settlement was cancelled at completion", {
+              threadId,
+              runId,
+              cause,
+            });
+          }),
+        ),
+      );
     });
 
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
@@ -12883,7 +13412,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* threadDispatch
         .withLock(
           threadId,
-          startNextQueuedRun(
+          Effect.gen(function* () {
+            if (stored.event.type === "run.updated") yield* consumeSelfSettlement(threadId, stored.event.payload.id);
+            return yield* startNextQueuedRun(
             threadId,
             stored.event.type === "run.updated"
               ? {
@@ -12893,7 +13424,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     : {}),
                 }
               : undefined,
-          ),
+          );
+          }),
         )
         .pipe(
           Effect.catchCause((cause) =>
@@ -13166,6 +13698,128 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const shellProjectionError = (cause: unknown) =>
     new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell"), cause });
+  const importedTarget = (threadId: ThreadId, delivery: ImportedHistoryDelivery) =>
+    Effect.gen(function* () {
+      const projection = yield* readCommandProjection(threadId);
+      const model =
+        delivery.type === "message" && delivery.command.type === "message.dispatch"
+          ? (delivery.command.modelSelection ?? projection.thread.modelSelection)
+          : delivery.type === "queued_run"
+            ? (projection.runs.find((run) => run.id === delivery.runId)?.modelSelection ??
+              projection.thread.modelSelection)
+            : projection.thread.modelSelection;
+      const adapter = yield* providerAdapters.get(model.instanceId);
+      return yield* adapter.getCapabilities();
+    });
+  const importedError = (threadId: ThreadId, cause: unknown) =>
+    new OrchestratorProjectionError({ threadId, cause });
+  const reviewImportedHistory = (input: {
+    threadId: ThreadId;
+    delivery: ImportedHistoryDelivery;
+  }) =>
+    Effect.gen(function* () {
+      const principal = yield* EnvironmentAuthenticatedPrincipal;
+      if (eventSink.reviewImportedHistory === undefined)
+        return {
+          status: "unavailable" as const,
+          reviewedBasis: null,
+          reason: "review_owner_unavailable",
+        };
+      const targetCapabilities = yield* importedTarget(input.threadId, input.delivery);
+      return yield* eventSink.reviewImportedHistory({ ...input, principal, targetCapabilities });
+    }).pipe(Effect.mapError((cause) => importedError(input.threadId, cause)));
+  const observeImportedHistoryStart = (input: { threadId: ThreadId; commandId: CommandId }) =>
+    Effect.gen(function* () {
+      const principal = yield* EnvironmentAuthenticatedPrincipal;
+      if (eventSink.readImportedHistoryChoice === undefined) return null;
+      return yield* eventSink.readImportedHistoryChoice({ ...input, principal });
+    }).pipe(Effect.mapError((cause) => importedError(input.threadId, cause)));
+  const startWithImportedHistory = (candidate: ImportedHistoryStart) =>
+    Effect.gen(function* () {
+      const principal = yield* EnvironmentAuthenticatedPrincipal;
+      const command = yield* Schema.decodeUnknownEffect(ImportedHistoryStart)(candidate, {
+        onExcessProperty: "error",
+      });
+      return yield* threadDispatch.withLock(
+        command.threadId,
+        Effect.gen(function* () {
+          if (eventSink.readImportedHistoryChoice === undefined)
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Imported choice owner is unavailable",
+            });
+          const prior = yield* eventSink.readImportedHistoryChoice({
+            threadId: command.threadId,
+            commandId: command.commandId,
+            principal,
+          });
+          const targetCapabilities = yield* importedTarget(command.threadId, command.delivery);
+          const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+          const effects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);
+          if (prior === null) {
+            if (eventSink.reviewImportedHistory === undefined)
+              return yield* new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: "Imported review owner is unavailable",
+              });
+            const review = yield* eventSink.reviewImportedHistory({
+              threadId: command.threadId,
+              delivery: command.delivery,
+              principal,
+              targetCapabilities,
+            });
+            if (review.status === "available" && review.reviewedBasis === command.reviewedBasis) {
+              if (command.delivery.type === "queued_run") {
+                yield* startNextQueuedRun(command.threadId, {
+                  reviewed: {
+                    commandId: command.commandId,
+                    runId: command.delivery.runId,
+                    messageId: command.delivery.messageId,
+                    events,
+                    effects,
+                  },
+                });
+              } else {
+                if (
+                  command.delivery.command.type !== "message.dispatch" ||
+                  command.delivery.command.commandId !== command.commandId ||
+                  command.delivery.command.threadId !== command.threadId
+                )
+                  return yield* new OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: "Imported delivery IDs differ",
+                  });
+                yield* dispatchMessage(command.delivery.command, events, effects);
+              }
+            }
+          }
+          yield* eventSink.commitCommand({
+            commandId: command.commandId,
+            threadId: command.threadId,
+            commandType: command.type,
+            acceptedAt: yield* DateTime.now,
+            events: yield* Ref.get(events),
+            effects: yield* Ref.get(effects),
+            importedHistory: { command, principal, targetCapabilities },
+          });
+          const outcome = yield* eventSink.readImportedHistoryChoice({
+            threadId: command.threadId,
+            commandId: command.commandId,
+            principal,
+          });
+          if (outcome === null)
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Imported choice outcome is unknown",
+            });
+          return outcome;
+        }),
+      );
+    }).pipe(Effect.mapError((cause) => importedError(candidate.threadId, cause)));
 
   return OrchestratorV2.of({
     ...(Option.isSome(capturedStop) ? { stopCurrentThreadRuntime: capturedStop.value.stop } : {}),
@@ -13203,6 +13857,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projectionStore
         .getThreadHistoryPage(threadId, cursor, throughEntryId, conversationOnly)
         .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
+    dispatchNativeCreationStage: (command, lineage) =>
+      threadDispatch.withLock(
+        commandThreadId(command),
+        dispatchWithReceiptEffect(command, lineage),
+      ),
+    dispatchLegacyGuardRejectionDelete: dispatchWithReceipt,
+    dispatchLegacyFailureDelete: dispatchWithReceipt,
     getTimelinePage: (threadId, options) =>
       projectionStore
         .getTimelinePage(threadId, options)

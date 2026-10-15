@@ -10,12 +10,12 @@ import {
 import * as CodexReplay from "effect-codex-app-server/replay";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
-import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
   runtimeBinding,
   ProviderRuntimeBindingError,
   ProviderAdapterV2RuntimePolicy,
-} from "../../orchestration-v2/ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { CodexSettings, OrchestrationV2AppThread, NodeId, MessageId } from "@t3tools/contracts";
 import packageJson from "../../../package.json" with { type: "json" };
 import { assert, it } from "@effect/vitest";
@@ -45,7 +45,7 @@ import * as Execution from "./NativeCreationProviderExecution.ts";
 import * as Concrete from "./NativeCreationProviderExecutor.ts";
 import * as Start from "../../orchestration-v2/ProviderTurnStartService.ts";
 import * as Registry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
-import { ProviderAdapterV2 } from "../../orchestration-v2/ProviderAdapter.ts";
+import { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import { NativeWorkspaceVerified } from "./NativeCreationWorkspaceTypes.ts";
 import {
   ProviderRuntimeBinding,

@@ -442,6 +442,7 @@ export const evaluate = async (
   cdp: CDPSession,
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
+  onDispatch: () => void | Promise<void> = constVoid,
 ) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -456,6 +457,7 @@ export const evaluate = async (
       );
     }, timeoutMs);
   });
+  await onDispatch();
   const evaluation = cdp.send("Runtime.evaluate", {
     expression: input.expression,
     awaitPromise: input.awaitPromise ?? true,

@@ -2108,7 +2108,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           yield* writeTextFile(cwd, "tab\tand\nnewline.txt", "unusual path\n");
         }
         yield* git(cwd, ["add", "."]);
-        if ((yield* HostProcessPlatform) !== "win32") {
+        if ((yield* HostProcess.Platform) !== "win32") {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           yield* fileSystem.chmod(path.join(cwd, "mode-only.sh"), 0o755);

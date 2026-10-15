@@ -536,6 +536,30 @@ export const layer: Layer.Layer<
     const normalize: ProviderEventIngestorV2Shape["normalize"] = (input) =>
       Effect.gen(function* () {
         switch (input.event.type) {
+          case "runtime_identity.observed": {
+            const { binding, requested, observed } = input.event;
+            if (
+              input.providerInstanceId !== binding.providerInstanceId ||
+              input.providerSessionId !== binding.providerSessionId ||
+              input.threadId !== binding.threadId ||
+              input.event.driver !== binding.driver
+            )
+              return [];
+            const current = (yield* projections.getThreadRecords(binding.threadId, [
+              "providerThreads",
+            ])).providerThreads.find((thread) => thread.id === binding.providerThreadId);
+            if (current?.runtimeIdentity === undefined) return [];
+            return [
+              yield* makeDomainEvent(input, {
+                type: "provider-thread.updated",
+                threadId: binding.threadId,
+                payload: {
+                  ...current,
+                  runtimeIdentity: { ...current.runtimeIdentity, requested, observed },
+                },
+              }),
+            ];
+          }
           case "app_thread.created": {
             const offered = input.event.appThread;
             const existing = yield* projections.getThread(offered.id).pipe(

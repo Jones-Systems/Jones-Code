@@ -92,6 +92,7 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
+import { BrowserRequestDeadline, BrowserActionNotStarted, assertBrowserActionDeadline } from "./SessionControl.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
 const RENDER_SCALE = 2;
@@ -782,10 +783,27 @@ const make = Effect.gen(function* () {
       ? await runPlacement(placement.place(snapshot))
       : { _tag: "local" as const };
     const desktop =
-      adopted === undefined && (await desktopRenders(snapshot))
-        ? await connectDesktop(snapshot)
-        : null;
-    // An agent tab without a profile (no client reported one) keeps throwaway storage.
+      host._tag === "companion" && placement
+        ? await (async () => {
+            await runPlacement(placement.awaitCompanion(host, snapshot));
+            try {
+              return await connectDesktop(
+                snapshot,
+                { ...desktopChannel, ...placement.channel },
+                host,
+              );
+            } catch {
+              await Effect.runPromise(placement.channel.unmount(host.hostId, snapshot));
+              throw new CompanionHostUnavailable({
+                hostId: host.hostId,
+                label: host.label,
+                state: "timeout",
+              });
+            }
+          })()
+        : adopted === undefined && host._tag === "local" && (await desktopRenders(snapshot))
+          ? await connectDesktop(snapshot)
+          : null;
     const isolatedContext =
       adopted === undefined &&
       desktop === null &&
@@ -800,13 +818,13 @@ const make = Effect.gen(function* () {
       ));
     if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
     // The desktop page already has its own clipboard.
-    if (!desktop) await prepareContext(context);
+    if (!desktop || desktop.origin !== "local") await prepareContext(context);
     const page = adopted?.page ?? desktop?.page ?? (await context.newPage());
     const cdp = await context.newCDPSession(page);
     // The desktop's page is already a normal browser. A popup's first request
     // went out before it became a tab; everything after presents as Chrome.
     if (!desktop) await presentAsChrome(cdp, host);
-    if (!desktop) await recordCopies(cdp);
+    if (!desktop || desktop.origin !== "local") await recordCopies(cdp);
     page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
     page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
     const control = new SessionControl(snapshot.automationOwner ?? null, () =>
@@ -1132,6 +1150,7 @@ const make = Effect.gen(function* () {
       open.offeredTo !== tab.control.controller
     )
       return false;
+    assertCompanionCapability(tab.desktop?.origin ?? null, "upload");
     if (input.files.length > 0) {
       await open.chooser.setFiles(
         open.chooser.isMultiple() ? [...input.files] : input.files.slice(0, 1),
@@ -1883,7 +1902,10 @@ const make = Effect.gen(function* () {
           found && (request.tabIdExplicit || found.control.agentId === request.agentSessionId)
             ? found
             : undefined;
-        const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
+        assertCurrentRequest();
+        if (reuse && request.tabId !== undefined && !existing)
+          throw new BrowserControlInterrupted("The requested preview tab is closed.", "closed");
+        const navigationTimeout = Math.min(Math.max(1, deadlineMs - Date.now()), NAVIGATION_TIMEOUT_MS);
         const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
         if (!existing) {
           closeIdleAgentTabs();
@@ -2040,10 +2062,16 @@ const make = Effect.gen(function* () {
             "A browser dialog is pending. Read preview_status.",
             "dialogPending",
           );
-        return executeTabOperation(tab, request);
+        assertCurrentRequest();
+        onStart();
+        return executeTabOperation(tab, request, () => onDispatch(tab));
       });
     }
     return tab.control.agent(agentSessionId, async () => {
+      assertCurrentRequest();
+      if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
+        throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
+      onStart();
       if (tab.dialog)
         throw new BrowserControlInterrupted(
           "A browser dialog is pending. Read preview_status and use preview_dialog first.",
@@ -2051,11 +2079,11 @@ const make = Effect.gen(function* () {
         );
       const generation = tab.control.generation;
       try {
-        return await executeTabOperation(tab, request);
+        return await executeTabOperation(tab, request, () => onDispatch(tab));
       } finally {
         if (generation !== tab.control.generation) ServerBrowserPage.invalidateRefs(tab.page);
       }
-    });
+    }, deadlineMs);
   };
 
   const executeTabOperation = async (
@@ -2142,6 +2170,7 @@ const make = Effect.gen(function* () {
           tab.cdp,
           input as PreviewAutomationEvaluateInput,
           request.timeoutMs,
+          onDispatch,
         );
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
@@ -2421,7 +2450,7 @@ const make = Effect.gen(function* () {
         const command = editingCommand(key, modifiers);
         // Only the controlling viewer's own copy and cut reach its clipboard.
         const copying =
-          !tab.desktop && (command?.commands[0] === "copy" || command?.commands[0] === "cut");
+          (!tab.desktop || tab.desktop.origin !== "local") && (command?.commands[0] === "copy" || command?.commands[0] === "cut");
         // Clear what any frame kept from an earlier key, so only this key's copy is read.
         if (copying) await takeCopiedText(tab);
         await session.send("Input.dispatchKeyEvent", {

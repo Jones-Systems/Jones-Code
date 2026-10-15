@@ -53,6 +53,7 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
+import { beginQuotaProbe, makeQualifiedQuota } from "./qualifiedQuota.ts";
 import {
   codexRateLimitsFailureMessage,
   codexRateLimitsToLimits,
@@ -531,12 +532,18 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       input.skipNativeUsage
         ? Effect.succeed(undefined)
         : client.request("account/rateLimits/read", null).pipe(
-            Effect.map((response): CodexRateLimitsProbe => ({
-              snapshot: response.rateLimits,
-              rateLimitsByLimitId: response.rateLimitsByLimitId,
-              resetCredits: response.rateLimitResetCredits,
-              accountId: response.accountId,
-            })),
+            Effect.flatMap((response) =>
+              DateTime.now.pipe(
+                Effect.map((receivedAt): CodexRateLimitsProbe => ({
+                  snapshot: response.rateLimits,
+                  rateLimitsByLimitId: response.rateLimitsByLimitId,
+                  resetCredits: response.rateLimitResetCredits,
+                  quotaReceivedAt: DateTime.formatIso(receivedAt),
+                  ordinaryUsageAllowed: response.ordinaryUsageAllowed,
+                  accountId: response.accountId,
+                })),
+              ),
+            ),
             Effect.timeoutOption(Duration.millis(RATE_LIMITS_PROBE_TIMEOUT_MS)),
             Effect.map(
               Option.getOrElse((): CodexRateLimitsProbe => ({

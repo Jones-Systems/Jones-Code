@@ -657,6 +657,7 @@ describe("terminatePosixOwnedProcessTree", () => {
     Effect.gen(function* () {
       // The server fixture's process group is the runner's real pid, so a synthetic
       // parent sharing it would be skipped as the server's own group.
+      const rootPid = 100;
       const parentPidBase = process.pid < 500_000 ? 500_000 : 1_000;
       const parents = Array.from({ length: 130 }, (_, index) =>
         identity(parentPidBase + index, 100, parentPidBase + index, parentPidBase + index),

@@ -1,4 +1,3 @@
-import { APP_IDENTITY } from "../jones/runtimeIdentity/AppIdentity.ts";
 
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 
@@ -42,7 +41,7 @@ export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## Jones Code collaborative browser
 
-You are running inside ${APP_IDENTITY.productName}. The \`t3-code\` MCP server is the product-native collaborative browser shared with the user. When it exposes \`preview_*\` tools, prefer those tools for browser navigation, inspection, interaction, screenshots, and recordings.
+You are running inside Jones Code. The \`t3-code\` MCP server is the product-native collaborative browser shared with the user. When it exposes \`preview_*\` tools, prefer those tools for browser navigation, inspection, interaction, screenshots, and recordings.
 
 For browser work, first call \`preview_status\`. If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
 

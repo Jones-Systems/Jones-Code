@@ -21,6 +21,8 @@ import type * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
+import type { JonesAppIdentity } from "@t3tools/contracts/jones/organizationMetadata";
+
 import type { ProviderCredentialError } from "./errors.ts";
 
 export interface ProviderHostPaths {
@@ -48,6 +50,7 @@ export interface ProviderCredentials {
 export class ProviderHost extends Context.Service<
   ProviderHost,
   {
+    readonly appIdentity?: JonesAppIdentity;
     readonly paths: ProviderHostPaths;
     readonly settings: {
       readonly get: Effect.Effect<ServerSettings, ServerSettingsError>;

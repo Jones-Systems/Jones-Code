@@ -1080,17 +1080,11 @@ export const make = Effect.gen(function* () {
             ),
           );
         if (Option.isNone(row) || row.value.revokedAt !== null) return;
-        const now = yield* DateTime.now;
-        const remaining = row.value.expiresAt.epochMilliseconds - now.epochMilliseconds;
-        if (remaining <= 0) return;
-        yield* Effect.raceFirst(
-          Stream.fromSubscription(subscription).pipe(
-            Stream.filter(
-              (change) => change.type === "clientRemoved" && change.sessionId === sessionId,
-            ),
-            Stream.runHead,
+        yield* Stream.fromSubscription(subscription).pipe(
+          Stream.filter(
+            (change) => change.type === "clientRemoved" && change.sessionId === sessionId,
           ),
-          Effect.sleep(Duration.millis(remaining)),
+          Stream.runHead,
         );
       }),
     );

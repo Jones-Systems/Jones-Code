@@ -2,12 +2,19 @@
 import type * as NodeChildProcess from "node:child_process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
-import { SERVER_EXIT_CODE_STATE_DIR_OWNED } from "@t3tools/contracts";
+import {
+  assert,
+  it,
+} from "@effect/vitest";
+import {
+  SERVER_EXIT_CODE_STATE_DIR_OWNED,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { vi } from "vite-plus/test";
+import {
+  vi,
+} from "vite-plus/test";
 
 import {
   databaseBackupBlocker,
@@ -554,7 +561,11 @@ setInterval(() => {}, 1_000);
         if (kind !== "file") yield* fs.symlink(linkTarget, databasePath);
         const encodedDatabasePath = JSON.stringify(databasePath);
         const childSource = `
-import { realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 if (context.update?.status === "pending") {
   writeFileSync(context.update.dbPath, "database after migration");
@@ -622,7 +633,7 @@ if (context.update?.status === "pending") {
       yield* fs.writeFileString(databasePath, "database");
       const encoded = JSON.stringify({ databasePath, replyPath, trialMarker });
       const childSource = `
-import { writeFileSync } from "node:fs";
+
 const paths = ${encoded};
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 if (context.update?.status === "pending") {
@@ -980,7 +991,9 @@ setInterval(() => {}, 1_000);
           "-e",
           `
           import fs from "node:fs";
-          import { syncBuiltinESMExports } from "node:module";
+          import {
+  syncBuiltinESMExports,
+} from "node:module";
           const authority = await import(process.argv[1]);
           const statePath = authority.nativeStoreAuthorityPaths(process.argv[2]).statePath;
           const rename = fs.renameSync;

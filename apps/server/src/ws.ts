@@ -1888,6 +1888,123 @@ const layerWsRpc = (
             ),
           ),
         [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) => threadManagement.stopWorkflow(input),
+        [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: (input) =>
+          withCurrentRuntimeStop((owner) => owner.readTarget(input.threadId)).pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, runtimeStopPrincipal),
+            Effect.mapError(
+              (error) => new CurrentRuntimeStopRequestError({ reason: error.reason }),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: (submission) =>
+          Effect.annotateCurrentSpan({ "rpc.aggregate": "orchestrationV2" }).pipe(
+            Effect.andThen(
+              threadLaunch.dispatchNativeBootstrap === undefined
+                ? Effect.fail(
+                    new NativeBootstrapDispatchError({
+                      code: "unsupported_authority",
+                      message: "Native bootstrap is unavailable",
+                    }),
+                  )
+                : startup
+                    .enqueueCommand(
+                      threadLaunch.dispatchNativeBootstrap(submission).pipe(
+                        Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+                          ...currentSession,
+                          scopes: new Set(currentSession.scopes),
+                        }),
+                      ),
+                    )
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new NativeBootstrapDispatchError({
+                            code:
+                              "code" in cause &&
+                              typeof cause.code === "string" &&
+                              Schema.is(NativeCreationRejectionCode)(cause.code)
+                                ? cause.code
+                                : "unresolved_claim",
+                            message: "Native bootstrap was rejected; observe the original claim",
+                          }),
+                      ),
+                    ),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
+          Schema.is(QueueDispatchCommand)(command)
+            ? Effect.annotateCurrentSpan({
+                "rpc.aggregate": "orchestration",
+                "orchestration.command_id": command.commandId,
+              }).pipe(
+                Effect.andThen(
+                  startup
+                    .enqueueCommand(queueCompatibility.dispatch(command, "legacy_websocket"))
+                    .pipe(
+                      Effect.mapError((error) => {
+                        const cause = error.cause;
+                        return Schema.is(OrchestrationDispatchCommandError)(cause)
+                          ? cause
+                          : new OrchestrationDispatchCommandError({
+                              message:
+                                Schema.is(QueueCompatibility.QueueCompatibilityError)(error) &&
+                                error.reason === "dispatch_guard_rejected"
+                                  ? "Dispatch guard rejected."
+                                  : "Failed to dispatch orchestration command.",
+                              cause,
+                            });
+                      }),
+                    ),
+                ),
+              )
+            : Effect.annotateCurrentSpan({
+                "rpc.aggregate": "orchestrationV2",
+                "orchestration_v2.command_id": command.commandId,
+                "orchestration_v2.command_type": command.type,
+                "orchestration_v2.thread_id":
+                  command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? command.targetThreadId
+                    : command.type === "delegated_task.request" ||
+                        command.type === "delegated_task.wake-policy" ||
+                        command.type === "delegated_task.completion-delivery.acknowledge" ||
+                        command.type === "delegated_task.completion-delivery.dispose" ||
+                        command.type === "thread.created.record"
+                      ? command.parentThreadId
+                      : command.threadId,
+                ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                  ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                  : {}),
+              }).pipe(
+                Effect.andThen(
+                  startup
+                    .enqueueCommand(
+                      // A retry also restarts the preparation work the launch owns.
+                      (command.type === "prepared-run.retry"
+                        ? threadLaunch.retryPreparation(command)
+                        : ThreadMessageIntake.dispatchCommand(
+                            ThreadManagementService.withCreationProvenance(command, {
+                              createdBy: "user",
+                              creationSource:
+                                "creationSource" in command ? command.creationSource : "web",
+                            }),
+                          )
+                      ).pipe(Effect.provide(intakeContext)),
+                    )
+                    .pipe(
+                      Effect.tap(() => recordClientCommandAnalytics(command)),
+                      Effect.map((result) => ({ sequence: result.sequence })),
+                      Effect.mapError((cause) => {
+                        const detail = userFacingDispatchErrorMessage(cause);
+                        return new OrchestrationV2DispatchCommandError({
+                          commandId: command.commandId,
+                          commandType: command.type,
+                          message: detail ?? "Failed to dispatch orchestration V2 command",
+                          ...(detail === undefined ? {} : { detail }),
+                          cause,
+                        });
+                      }),
+                    ),
+                ),
+              ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           readWorkflowScript({ scriptPath: input.scriptPath }),
         [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
@@ -2445,6 +2562,7 @@ const layerWsRpc = (
           processResourceMonitor.readHistory(input),
         [WS_METHODS.serverGetResourceTelemetryHistory]: (input) =>
           resourceTelemetry.readHistory(input),
+        [WS_METHODS.serverReadTokenAccounting]: (_input) => tokenAccounting.read,
         [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
         [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,

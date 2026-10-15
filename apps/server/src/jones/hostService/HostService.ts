@@ -1,9 +1,5 @@
 import { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
-import {
-  HostProcessArchitecture,
-  HostProcessPlatform,
-  HostProcessUserId,
-} from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Net from "@t3tools/shared/Net";
 import {
   buildTailscaleHttpsBaseUrl,
@@ -176,9 +172,9 @@ const make = Effect.gen(function* () {
   const net = yield* Net.NetService;
   const client = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const platform = yield* HostProcessPlatform;
-  const arch = yield* HostProcessArchitecture;
-  const uid = yield* HostProcessUserId;
+  const platform = yield* HostProcess.Platform;
+  const arch = yield* HostProcess.Architecture;
+  const uid = yield* HostProcess.UserId;
   const alive = yield* ProcessAlive;
   const home = yield* Config.String("HOME").pipe(Config.withDefault(""));
   const context = yield* Effect.context<

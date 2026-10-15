@@ -1,3 +1,4 @@
+import { buildAppIdentityInstructions } from "@t3tools/provider-core/server/jones/AppIdentity";
 /**
  * PiAdapterV2 — orchestrator-v2 adapter for the Pi coding agent
  * (https://pi.dev), driving `pi --mode rpc` over stdio JSONL via `PiRpc.ts`.
@@ -541,6 +542,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         return yield* protocolError(resolvedLaunchArgs.message);
       }
       const launch = buildPiRpcLaunch({
+        appIdentityInstructions: buildAppIdentityInstructions(host.appIdentity),
         launchArgs: resolvedLaunchArgs.args,
         environment: options.environment,
         mcpSession,
@@ -1635,11 +1637,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           ? yield* readTokenUsage(turn.latestCompactionAfterTokens, completedAt)
           : undefined;
         const failure = interrupted ? null : (turn.rejectedPromptFailure ?? turn.failure);
-        yield* emit({
-          type: "provider_turn.updated",
-          driver: PI_PROVIDER,
-          threadId: turn.turnInput.threadId,
-          providerTurn: {
+        const settledProviderTurn: OrchestrationV2ProviderTurn = {
             ...turn.providerTurn,
             ...(treeRefs === null || treeRefs.nativeTurnRef === undefined
               ? {}
@@ -1647,7 +1645,12 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             status: interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
             completedAt,
             ...(tokenUsage === undefined ? {} : { tokenUsage }),
-          },
+          };
+        yield* emit({
+          type: "provider_turn.updated",
+          driver: PI_PROVIDER,
+          threadId: turn.turnInput.threadId,
+          providerTurn: settledProviderTurn,
         });
         yield* updateProviderThread(
           state,
@@ -2273,7 +2276,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                       message: "Pi process exited unexpectedly.",
                       class: "transport_error",
                     });
-                yield* finalizeTurn(state, false);
+                yield* finalizeTurn(state, false, interrupted ? "attributed_abort" : "local_failure");
               } else {
                 yield* cancelPendingPrompts(yield* DateTime.now);
               }
@@ -3183,6 +3186,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             // cwd. RPC switch_session/clone alone would retain the source cwd.
             // This short-lived process never prompts or runs user extensions.
             const forkLaunch = buildPiRpcLaunch({
+        appIdentityInstructions: buildAppIdentityInstructions(host.appIdentity),
               launchArgs: resolvedLaunchArgs.args,
               environment: options.environment,
               mcpSession: undefined,

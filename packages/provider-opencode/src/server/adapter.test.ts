@@ -1,8 +1,15 @@
-import type * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
-import type * as ProviderAdapter from "../ProviderAdapter.ts";
-import { assert, describe, it } from "@effect/vitest";
+import type * as OpenCodeCreationPolicy from "@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  assert,
+  describe,
+  it,
+} from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
+import type {
+  OpencodeClient,
+  ToolPart,
+} from "@opencode-ai/sdk/v2";
 import {
   CheckpointId,
   NodeId,
@@ -18,7 +25,9 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
 } from "@t3tools/contracts";
-import { OpenCodeSettings } from "../settings.ts";
+import {
+  OpenCodeSettings,
+} from "../settings.ts";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -53,7 +62,7 @@ import {
   OPENCODE_PROVIDER,
   reconcileOpenCodePromptAdmissionStatus,
 } from "./adapter.ts";
-import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+
 
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const OPEN_CODE_TEST_SETTINGS = Schema.decodeSync(OpenCodeSettings)({
@@ -2945,7 +2954,7 @@ it.effect(
         invalidate: () => Effect.void,
       };
       const unused = () => Effect.die("Unexpected runtime operation");
-      const runtime: OpenCodeRuntimeShape = {
+      const runtime: OpenCodeRuntime.OpenCodeRuntimeShape = {
         startOpenCodeServerProcess: unused,
         connectToOpenCodeServer: () =>
           Effect.succeed({
@@ -2994,7 +3003,7 @@ it.effect(
         .ensureThread({ threadId, modelSelection, runtimePolicy: policy })
         .pipe(Effect.flip);
       assert.equal(create._tag, "ProviderAdapterEnsureThreadError");
-      if (!OpenCodeRuntimeError.is(create.cause))
+      if (!OpenCodeRuntime.OpenCodeRuntimeError.is(create.cause))
         return yield* Effect.die("Expected adoption currentness refusal");
       assert.equal(create.cause.operation, "adoptServer");
       const now = yield* DateTime.now;
@@ -3021,7 +3030,7 @@ it.effect(
       };
       const resume = yield* session.resumeThread({ providerThread }).pipe(Effect.flip);
       assert.equal(resume._tag, "ProviderAdapterResumeThreadError");
-      if (!OpenCodeRuntimeError.is(resume.cause))
+      if (!OpenCodeRuntime.OpenCodeRuntimeError.is(resume.cause))
         return yield* Effect.die("Expected adoption currentness refusal");
       assert.equal(resume.cause.operation, "adoptServer");
       assert.deepEqual(requests, []);

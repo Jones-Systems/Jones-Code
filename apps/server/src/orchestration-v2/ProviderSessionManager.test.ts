@@ -1,5 +1,18 @@
+import {
+  ProviderAdapterEventStreamError,
+  type ProviderAdapterV2Event,
+  ProviderAdapterProtocolError,
+  type ProviderAdapterV2RuntimePolicy,
+  type ProviderAdapterV2SessionRuntime,
+  type ProviderAdapterV2Shape,
+  type ProviderAdapterV2OpenSessionInput,
+  type ProviderRuntimeLifecycle,
+  unobservedRuntimeIdentity,
+  requestedRuntimeIdentity,
+  runtimeBinding,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
-import * as ProviderEventOrigin from "../jones/orchestration/ProviderEventOrigin.ts";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -337,6 +350,8 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     /** False models a runtime whose background tasks can outlive its process. */
     readonly backgroundTasksEndWithProcess?: boolean;
+    readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
+    readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
@@ -423,7 +438,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
                   cause: "process exited",
                 }),
               )
-            : Stream.fromQueue(events),
+            : options.beforeEventDelivery === undefined
+              ? Stream.fromQueue(events)
+              : Stream.fromQueue(events).pipe(Stream.tap(options.beforeEventDelivery)),
           ...(options.backgroundTasksEndWithProcess === false
             ? {}
             : { backgroundTasksEndWithProcess: true as const }),
@@ -534,6 +551,12 @@ function layerTest(input: {
       ...(input.backgroundTasksEndWithProcess === undefined
         ? {}
         : { backgroundTasksEndWithProcess: input.backgroundTasksEndWithProcess }),
+      ...(input.readThreadActivity === undefined
+        ? {}
+        : { readThreadActivity: input.readThreadActivity }),
+      ...(input.captureRuntimeStop === undefined
+        ? {}
+        : { captureRuntimeStop: input.captureRuntimeStop }),
       ...(input.hangSessionScopeClose === undefined
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
@@ -585,6 +608,8 @@ function layerTest(input: {
     IdAllocator.layer,
     layerConfiguredMcpRegistry,
     McpProviderSessions.layer,
+    ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
+    providerEventIngestorTestLayer,
     ProviderSessionManager.layerWithOptions({
       idleTimeoutMs: input.idleTimeoutMs,
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),

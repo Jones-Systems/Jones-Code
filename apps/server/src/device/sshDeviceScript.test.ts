@@ -1,14 +1,25 @@
 // @effect-diagnostics nodeBuiltinImport:off globalFetchInEffect:off - verifies generated remote scripts using real shell and Node processes.
 import * as Effect from "effect/Effect";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { describe, expect, it } from "@effect/vitest";
+import {
+  describe,
+  expect,
+  it,
+} from "@effect/vitest";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
-import { quoteRemoteArg, remoteDeviceEnvironment, remoteDeviceScript } from "./sshDeviceScript.ts";
-import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
+import {
+  quoteRemoteArg,
+  remoteDeviceEnvironment,
+  remoteDeviceScript,
+} from "./sshDeviceScript.ts";
+import {
+  AGENT_DEVICE_VERSION,
+  DEVICE_HUB_VERSION,
+} from "./DeviceToolchain.ts";
 
 const exec = NodeUtil.promisify(NodeChildProcess.execFile);
 
@@ -83,7 +94,9 @@ describe("remote helper lifecycle", () => {
           );
           await NodeFSP.writeFile(
             agent,
-            `import fs from 'node:fs'; import path from 'node:path'; import http from 'node:http'; import {spawn} from 'node:child_process';
+            ` import path from 'node:path';  import {
+  spawn,
+} from 'node:child_process';
   const args=process.argv.slice(2);
   const state=process.env.AGENT_DEVICE_STATE_DIR || args[args.indexOf('--state-dir')+1];
   const file=path.join(state,'daemon.json');

@@ -5,14 +5,14 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
-import type * as GitHubApi from "../../sourceControl/GitHubApi.ts";
+import type * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
 import type * as PullRequestProviderRegistry from "../../pullRequest/PullRequestProviderRegistry.ts";
 import type {
   PullRequestError,
   PullRequestService,
   SupportedProject,
 } from "../../pullRequest/PullRequestService.ts";
-import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { readGitHubCiStatus } from "./GitHubCiStatus.ts";
 
 interface CiStatusDependencies {

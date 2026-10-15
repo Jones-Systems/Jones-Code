@@ -89,6 +89,11 @@ const TERMINATE_GRACE_MS = 5_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
 // launcher stays independent of the Effect-backed contracts package.
 const STATE_DIR_OWNED_EXIT_CODE = 78;
+// The server abandons a launcher exchange after 30 seconds (serviceLauncherClient).
+// Past this fence, measured from message receipt, a qualified Install is not
+// accepted and a qualified pointer is not committed. The margin covers the
+// durable write and reply on a responsive host; it is not a guarantee.
+const QUALIFIED_EXCHANGE_FENCE_MS = 25_000;
 
 type TerminalStatus = "committed" | "rolled-back" | "failed";
 type ChildRole = "active" | "trial";
@@ -568,22 +573,29 @@ async function restoreDatabaseBackup(
     await validatePairedBackup(baseDir, pending, backupDir);
   }
   await markDatabaseRestorePending(backupDir);
+  fenceNativeStoreAuthorityForBaseDir(baseDir);
+  if (pending.qualified !== undefined)
+    await retainQualifiedAdvancedState(baseDir, pending.dbPath, backupDir);
   const directories = new Set([NodePath.dirname(pending.dbPath)]);
   for (const suffix of DB_FILE_SUFFIXES) {
     const livePath = `${pending.dbPath}${suffix}`;
     const source = databaseBackupFile(backupDir, suffix);
     if (await pathExists(source)) {
-      // A clone replaces its destination, so restore into the file a symlinked
-      // database resolves to and keep the link itself.
+      // Restore through the symlink target so replacing a clone preserves the link itself.
       const target = await restoreTarget(livePath);
-      await copyDatabaseFile(source, target);
-      await syncFile(target);
+      if (pending.qualified !== undefined) await restoreQualifiedBackupFile(source, target);
+      else {
+        await copyDatabaseFile(source, target);
+        await syncFile(target);
+      }
       directories.add(NodePath.dirname(target));
     } else {
       await NodeFSP.rm(livePath, { force: true });
     }
   }
   for (const directory of directories) await syncDirectory(directory);
+  if (pending.qualified !== undefined) await restorePairedSettings(baseDir, backupDir);
+  advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
 
 async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
@@ -712,7 +724,14 @@ export class Launcher {
   constructor(
     baseDir: string,
     state: ServiceState,
-    options: { readonly backupSpaceProbe?: Partial<BackupSpaceProbe> } = {},
+    options: {
+      readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
+      readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
+      readonly startupGateProtocol?: 1;
+      readonly backupAdapter?: QualifiedBackupAdapter;
+      /** Monotonic milliseconds for the qualified exchange fence; injectable in tests. */
+      readonly now?: () => number;
+    } = {},
   ) {
     this.#baseDir = baseDir;
     this.#backupSpaceProbe = options.backupSpaceProbe;
@@ -1365,6 +1384,7 @@ export class Launcher {
   ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
     this.#child = null;
+    await this.#retractCapability(child.process);
     if (code === STATE_DIR_OWNED_EXIT_CODE) {
       await this.#idleWhileStateDirOwned();
       return;

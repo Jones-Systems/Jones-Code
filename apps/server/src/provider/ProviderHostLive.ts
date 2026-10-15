@@ -10,6 +10,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { APP_IDENTITY } from "../jones/runtimeIdentity/AppIdentity.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
@@ -26,6 +27,7 @@ export const layer = Layer.effect(
     const secrets = yield* ServerSecretStore.ServerSecretStore;
     const crypto = yield* Crypto.Crypto;
     return ProviderHost.ProviderHost.of({
+      appIdentity: APP_IDENTITY,
       paths: {
         cwd: config.cwd,
         baseDir: config.baseDir,

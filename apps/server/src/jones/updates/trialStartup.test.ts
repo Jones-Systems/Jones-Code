@@ -2,7 +2,7 @@
 // Each native protocol fixture owns its exact root and drains its startup before cleanup.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { expect, it } from "@effect/vitest";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
@@ -115,13 +115,13 @@ function withRuntime<A, E>(
     E,
     | ServerConfig.ServerConfig
     | ServerEnvironment.ServerEnvironment
-    | Context.Service.Identifier<typeof HostProcessEnvironment>
+    | Context.Service.Identifier<typeof HostProcess.Environment>
     | FileSystem.FileSystem
   >,
 ) {
   return Effect.scoped(
     effect.pipe(
-      Effect.provideService(HostProcessEnvironment, environment),
+      Effect.provideService(HostProcess.Environment, environment),
       Effect.provideService(ServerEnvironment.ServerEnvironment, {
         getEnvironmentId: Effect.succeed(EnvironmentId.make("fixture")),
         getDescriptor: Effect.die("Startup adapter must bind the environment ID directly."),

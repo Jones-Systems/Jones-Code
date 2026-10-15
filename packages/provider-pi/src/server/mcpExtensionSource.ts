@@ -1,3 +1,4 @@
+import { buildAppIdentityInstructions } from "@t3tools/provider-core/server/jones/AppIdentity";
 /**
  * Source for the T3-owned Pi extension that consumes T3's HTTP MCP server.
  *
@@ -34,6 +35,7 @@ const URL_ENV = ${JSON.stringify(T3_MCP_URL_ENV)};
 const TOKEN_ENV = ${JSON.stringify(T3_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(T3_PI_RUNTIME_MODE_ENV)};
 const EXTENSION_PATH_ENV = ${JSON.stringify(T3_PI_MCP_EXTENSION_PATH_ENV)};
+const APP_IDENTITY_INSTRUCTIONS = process.env.T3_APP_IDENTITY_INSTRUCTIONS || ${JSON.stringify(buildAppIdentityInstructions())};
 const ORCHESTRATION_INSTRUCTIONS = ${JSON.stringify(T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim())};
 const PROTOCOL = "2025-06-18";
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);

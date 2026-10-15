@@ -13,8 +13,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 
-import type { ProviderAdapterV2Event } from "../../orchestration-v2/ProviderAdapter.ts";
-import * as ProviderEventOrigin from "./ProviderEventOrigin.ts";
+import type { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 
 const driver = ProviderDriverKind.make("codex");
 const currentCheck = (): Effect.Effect<void, ProviderEventOrigin.ProviderEventOriginStaleError> =>

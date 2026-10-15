@@ -934,7 +934,7 @@ describe("registerCodexAppServerProcess", () => {
           yield* Scope.close(runtimeScope, Exit.void);
           assert.isFalse((yield* attribution.snapshot).has(4_242));
         }),
-      ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+      ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 });
 

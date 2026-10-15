@@ -308,6 +308,7 @@ export interface DesktopUpdateState {
    * not install it again; the user can retry it from the update button.
    */
   notAppliedVersion?: string;
+  jones?: JonesUpdateState;
 }
 
 export interface DesktopUpdateReleaseNote {
@@ -340,6 +341,7 @@ export const DesktopUpdateStateSchema = Schema.Struct({
   errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
   canRetry: Schema.Boolean,
   notAppliedVersion: Schema.optionalKey(Schema.String),
+  jones: Schema.optionalKey(JonesUpdateState),
 });
 
 /** The desktop app's `t3` command on PATH, managed from Settings. */

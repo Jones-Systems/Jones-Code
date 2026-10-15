@@ -23,7 +23,7 @@ import {
   runtimeBinding,
   requestedRuntimeIdentity,
   unobservedRuntimeIdentity,
-} from "../../orchestration-v2/ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as RuntimeObservation from "../provider/observations/ProviderThreadRuntimeObservation.ts";
 import { workModeFixture } from "../workMode/Fixtures.testkit.ts";
 import * as RuntimeCensus from "./RuntimeCensus.ts";

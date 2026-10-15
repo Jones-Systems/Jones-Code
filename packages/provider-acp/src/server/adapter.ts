@@ -1,3 +1,4 @@
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 // @effect-diagnostics nodeBuiltinImport:off
 
 import {
@@ -6073,6 +6074,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const mcpContext = yield* readMcpContext(threadId);
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, runtimeScope);
           const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
+          producerAtGeneration(runtimeGeneration);
           runtime = yield* flavor
             .makeRuntime(makeRuntimeInput(runtimeGeneration, mcpContext, resumeSessionId))
             .pipe(
@@ -6920,7 +6922,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }
           prompt.push({
             type: "text",
-            text: buildRuntimeInstructions({
+            text: buildRuntimeInstructions({ appIdentity: host.appIdentity,
               harness: flavor.runtimeHarness ?? driver,
               model: turnInput.modelSelection.model,
             }),

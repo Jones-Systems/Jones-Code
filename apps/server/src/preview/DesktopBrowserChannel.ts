@@ -57,6 +57,10 @@ export class DesktopBrowserChannel extends Context.Service<
     readonly detached: Stream.Stream<DesktopTabKey>;
     /** Desktop tabs as they attach, including a tab coming back after its DevTools close. */
     readonly attached: Stream.Stream<DesktopTabKey>;
+    readonly runtimeEvidence: (key: DesktopTabKey) => Effect.Effect<{
+      readonly runtimeIdentity: PreviewAutomationRuntimeIdentity | null;
+      readonly attachmentGeneration: number;
+    } | null>;
     readonly isAttached: (key: DesktopTabKey) => Effect.Effect<boolean>;
     /**
      * A one-connection CDP endpoint for an attached tab. Closing the scope

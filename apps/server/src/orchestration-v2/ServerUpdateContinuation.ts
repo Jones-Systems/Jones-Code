@@ -7,7 +7,7 @@ import * as EventSink from "./EventSink.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { randomUuidV4 } from "./RandomUuid.ts";
+import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { restartContinuationRun } from "./RestartContinuation.ts";
 
 const mark = (optedInOnly: boolean) =>

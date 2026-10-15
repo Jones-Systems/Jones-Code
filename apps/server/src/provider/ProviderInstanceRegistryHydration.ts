@@ -46,6 +46,7 @@ import * as ProviderHostLive from "./ProviderHostLive.ts";
 import type * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import type * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import type * as ServerConfig from "../config.ts";
+import type * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 
 type ProviderInstanceRegistryHydrationEnv =
   | Exclude<
@@ -57,7 +58,8 @@ type ProviderInstanceRegistryHydrationEnv =
   | Settings.ServerSettingsService
   // Requirements of the `ProviderHost.ProviderHost` the drivers receive.
   | BackgroundPolicy.BackgroundPolicy
-  | ServerConfig.ServerConfig;
+  | ServerConfig.ServerConfig
+  | ProcessAttribution.ProcessAttribution;
 
 /**
  * Explicit `providerInstances` entries plus an implicit default instance for

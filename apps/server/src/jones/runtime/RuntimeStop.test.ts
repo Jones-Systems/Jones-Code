@@ -23,7 +23,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
-import { ProviderAdapterCloseSessionError } from "../../orchestration-v2/ProviderAdapter.ts";
+import { ProviderAdapterCloseSessionError } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";

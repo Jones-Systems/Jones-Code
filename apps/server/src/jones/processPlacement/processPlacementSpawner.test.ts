@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { controlCommand, layer, placeCommand } from "./processPlacementSpawner.ts";
 import { placementCommand, type ProcessPlacementBinding } from "./processPlacement.ts";
 
@@ -53,7 +53,7 @@ it.effect("fails required placement before the platform spawner executes a provi
     }).pipe(
       Effect.scoped,
       Effect.provide(layer(binding).pipe(Layer.provide(underlying))),
-      Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.provideService(HostProcess.Platform, "linux"),
       Effect.exit,
     );
     expect(Exit.isFailure(exit)).toBe(true);

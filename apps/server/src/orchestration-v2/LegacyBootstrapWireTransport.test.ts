@@ -15,7 +15,7 @@ import * as Sink from "effect/Sink";
 import { projectThreadProjectionForWire } from "./WireProjection.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import * as Deferred from "effect/Deferred";
-import * as PtyAdapter from "../terminal/PtyAdapter.ts";
+import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import type { ProjectScript } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -23,9 +23,9 @@ import * as Stream from "effect/Stream";
 import * as ProcessRunner from "../processRunner.ts";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
-import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 
 import {
@@ -50,7 +50,7 @@ import {
 import * as WsTraceDiagnostics from "../diagnostics/TraceDiagnostics.ts";
 import * as WsProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WsEffectOutbox from "./EffectOutbox.ts";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as WsHttpClient from "effect/http/HttpClient";
 import * as WsWorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as WsVcsProcess from "../vcs/VcsProcess.ts";
@@ -90,10 +90,10 @@ import * as WsPreviewManager from "../preview/Manager.ts";
 import * as WsPortScanner from "../preview/PortScanner.ts";
 import * as WsProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as WsModelManifest from "../provider/ModelManifest.ts";
-import * as WsProviderMaintenance from "../provider/providerMaintenance.ts";
+import * as WsProviderMaintenance from "@t3tools/provider-core/server/maintenance";
 import * as WsProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
-import * as WsAcpRegistrySupport from "../provider/acp/AcpRegistrySupport.ts";
-import * as WsAcpRegistryRuntimeCoordinator from "../provider/acp/AcpRegistryRuntimeCoordinator.ts";
+import * as WsAcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
+import * as WsAcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
 import * as WsProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as WsServerSelfUpdate from "../cloud/selfUpdate.ts";
 import * as WsServerConfig from "../config.ts";
@@ -587,8 +587,8 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(EventSink.EventSinkV2)({}),
     Layer.mock(WsEffectOutbox.EffectOutboxV2)({}),
     Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
-    Layer.succeed(HostProcessEnvironment, {}),
-    Layer.succeed(HostProcessPlatform, "linux"),
+    Layer.succeed(HostProcess.Environment, {}),
+    Layer.succeed(HostProcess.Platform, "linux"),
   );
   const dependencies = Layer.mergeAll(auth, deniedRpcOwners).pipe(
     Layer.provideMerge(config),
@@ -880,8 +880,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     projectOwner,
                     terminal,
                     WsServerSettings.layerTest(),
-                    Layer.succeed(HostProcessEnvironment, {}),
-                    Layer.succeed(HostProcessPlatform, "linux"),
+                    Layer.succeed(HostProcess.Environment, {}),
+                    Layer.succeed(HostProcess.Platform, "linux"),
                   ),
                 ),
               );
@@ -1339,8 +1339,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             awaitCompletion: () => Effect.void,
           }),
           Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
-          Layer.succeed(HostProcessEnvironment, {}),
-          Layer.succeed(HostProcessPlatform, "linux"),
+          Layer.succeed(HostProcess.Environment, {}),
+          Layer.succeed(HostProcess.Platform, "linux"),
         );
 
         const dependencies = Layer.mergeAll(auth, rpcOwners, receivingOwners).pipe(

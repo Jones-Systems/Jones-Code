@@ -414,7 +414,7 @@ function guardedPairLayers(input: {
   return {
     commands,
     layer: Layer.mergeAll(
-      Layer.succeed(HostProcessPlatform, "linux"),
+      Layer.succeed(HostProcess.Platform, "linux"),
       Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Layer.succeed(HttpClient.HttpClient, client),
     ),

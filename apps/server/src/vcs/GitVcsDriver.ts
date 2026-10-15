@@ -924,6 +924,13 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "sparse.expectFilesOutsideOfPatterns=false",
       ];
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
+      const gitDir = yield* resolveGitDir(input.cwd);
+      if (path.normalize(gitDir) === path.normalize(gitCommonDir)) {
+        return yield* new VcsPrimaryCheckoutCheckpointError({
+          operation,
+          cwd: input.cwd,
+        });
+      }
       const indexId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       const tempIndexPath = path.join(gitCommonDir, `t3-checkpoint-index-${indexId}`);
       const commitEnv: NodeJS.ProcessEnv = {

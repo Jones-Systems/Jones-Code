@@ -6,8 +6,8 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import * as GitHubApi from "../../sourceControl/GitHubApi.ts";
-import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
+import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 
 const CI_RUN_STATUSES = ["in_progress", "queued", "waiting", "pending", "requested"] as const;
 const CI_PAGE_SIZE = 100;

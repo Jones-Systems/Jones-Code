@@ -1,6 +1,8 @@
 import * as Path from "effect/Path";
 import * as NativeBootstrap from "../jones/nativeCreation/NativeBootstrapDispatch.ts";
-import { EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
+import {
+  EnvironmentAuthenticatedPrincipal,
+} from "@t3tools/contracts";
 import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as ServerConfig from "../config.ts";
 import type * as NativeWorkspaceTypes from "../jones/nativeCreation/NativeCreationWorkspaceTypes.ts";
@@ -17,9 +19,14 @@ import {
   type RecordedThreadProjection as OrchestrationV2ThreadProjection,
 } from "./RecordedTypes.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
-import { awaitThreadCreationCleanup } from "./ThreadDeletion.ts";
+import {
+  awaitThreadCreationCleanup,
+} from "./ThreadDeletion.ts";
 import * as Deferred from "effect/Deferred";
-import { makeLegacyPreflight, type LegacyPreflightOutcome } from "./LegacyBootstrapPreflight.ts";
+import {
+  makeLegacyPreflight,
+  type LegacyPreflightOutcome,
+} from "./LegacyBootstrapPreflight.ts";
 import * as Fiber from "effect/Fiber";
 import {
   canonicalLegacyPayload,
@@ -36,8 +43,12 @@ import * as Stream from "effect/Stream";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
-import type { LegacyWorktreePreparationHooks } from "../vcs/GitVcsDriver.ts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import type {
+  LegacyWorktreePreparationHooks,
+} from "../vcs/GitVcsDriver.ts";
+import {
+  resolveProjectSettings,
+} from "@t3tools/shared/projectSettings";
 import {
   CommandId,
   EventId,
@@ -68,7 +79,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import * as Stream from "effect/Stream";
+
 import {
   buildTemporaryWorktreeBranchName,
   isTemporaryWorktreeBranch,
@@ -87,8 +98,12 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as Orchestrator from "./Orchestrator.ts";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
-import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
+import {
+  makeProviderFailure,
+} from "@t3tools/provider-core/server/failure";
+import {
+  randomUuidV4,
+} from "@t3tools/provider-core/server/randomUuid";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
@@ -1850,7 +1865,24 @@ const make = Effect.gen(function* () {
               : { legacyBootstrap: { ...input.legacyBootstrap, runId } }),
           })
           .pipe(
-            Effect.mapError(mapError(input, "release-run", threadId)),
+            Effect.catch((cause) =>
+              input.legacyBootstrap === undefined
+                ? Effect.fail(mapError(input, "release-run", threadId)(cause))
+                : deleteLegacyGuardRejectedShell(input, threadId, runId).pipe(
+                    Effect.flatMap((deleted) =>
+                      Effect.fail(
+                        new ThreadLaunchError({
+                          operation: "release-run",
+                          commandId: input.commandId,
+                          projectId: input.projectId,
+                          threadId,
+                          cause,
+                          ...(deleted ? { bootstrapThreadDisposition: "deleted" as const } : {}),
+                        }),
+                      ),
+                    ),
+                  ),
+            ),
             Effect.tap(() =>
               Effect.sync(() => {
                 runReleased = true;
@@ -1875,11 +1907,12 @@ const make = Effect.gen(function* () {
             cancelled ? "cancelled" : "failed",
             cancelled ? null : failureDetail(Cause.squash(cause)),
           );
-          if (cancelled && setupTerminalId)
+          if (input.legacyBootstrap === undefined && cancelled && setupTerminalId)
             yield* terminals
               .close({ threadId, terminalId: setupTerminalId, deleteHistory: true })
               .pipe(Effect.ignore);
           if (
+            input.legacyBootstrap === undefined &&
             tracked &&
             createdWorktreePath &&
             ((cancelled && !runReleased) || !workspaceRecorded)
@@ -1979,7 +2012,7 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     runId: RunId | null,
   ) {
-    const preparation = Effect.gen(function* () {
+    const prepareWithInterruption = Effect.gen(function* () {
       const prepare = prepareInBackground(input, threadId, runId);
       if (
         runId === null ||
@@ -2005,9 +2038,17 @@ const make = Effect.gen(function* () {
         );
       yield* Effect.raceFirst(prepare, interruption);
     });
-    yield* preparation.pipe(
-      Effect.onError((cause) =>
-        failPreparedRun(
+    const completion = (yield* Ref.get(scheduledLaunches)).legacyResults.get(input.commandId);
+    let failureDeleted = false;
+    const prepare = prepareWithInterruption.pipe(
+      Effect.onError((cause) => {
+        const failure = Cause.squash(cause);
+        const releaseRejected =
+          input.legacyBootstrap !== undefined &&
+          isThreadLaunchError(failure) &&
+          failure.operation === "release-run";
+        if (releaseRejected) return Effect.void;
+        return failPreparedRun(
           input,
           threadId,
           runId,
@@ -2675,7 +2716,55 @@ const make = Effect.gen(function* () {
     );
   };
 
-  return ThreadLaunchService.of({ launch, checkWorktreeBase, retryPreparation, prepareRun });
+  return ThreadLaunchService.of({
+    dispatchNativeBootstrap: (submission) =>
+      Effect.flatMap(EnvironmentAuthenticatedPrincipal, (principal) =>
+        Option.isSome(nativeBootstrapConfig) && Option.isSome(nativeBootstrapPath)
+          ? NativeBootstrap.dispatchNativeBootstrap(submission, {
+              bootId: nativeBootstrapBootId,
+              worktreesDir: nativeBootstrapConfig.value.worktreesDir,
+              deriveRunId: (threadId) => ids.derive.run({ threadId, ordinal: 1 }),
+            }).pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+              Effect.provideService(Path.Path, nativeBootstrapPath.value),
+              Effect.provide(nativeBootstrapContext),
+            )
+          : Effect.fail(
+              new NativeAuthority.NativeCreationAuthorityError({
+                code: "unsupported_authority",
+                message: "Native bootstrap server configuration is unavailable",
+              }),
+            ),
+      ),
+    prepareNativeWorkspace: (input) =>
+      Option.isSome(nativeWorkspace)
+        ? nativeWorkspace.value.prepare(input)
+        : Effect.fail(
+            new NativeWorkspace.NativeWorkspaceError({
+              code: "unavailable",
+              message: "Native workspace preparation is not qualified",
+            }),
+          ),
+    preflightLegacyBootstrap: (binding) =>
+      preflight(binding).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ThreadLaunchError({
+              operation: "provision-worktree",
+              commandId: binding.policy.createCommandId,
+              projectId: binding.policy.projectId,
+              threadId: binding.policy.threadId,
+              cause,
+            }),
+        ),
+        Effect.forkIn(preparationScope),
+        Effect.flatMap(Fiber.join),
+      ),
+    checkWorktreeBase,
+    prepareRun,
+    launch,
+    retryPreparation,
+  });
 });
 
 export const layer = Layer.effect(ThreadLaunchService, make);

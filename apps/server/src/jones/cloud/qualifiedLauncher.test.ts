@@ -1,14 +1,27 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { assert, it } from "@effect/vitest";
+import {
+  assert,
+  it,
+} from "@effect/vitest";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import packageJson from "../../../package.json" with { type: "json" };
-import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
-import { readQualifiedBackupReceipt, type QualifiedBackupAdapter } from "./qualifiedBackup.ts";
-import type { QualifiedQuiescenceAdapter } from "./qualifiedQuiescence.ts";
+import {
+  Launcher,
+  main,
+  readServiceState,
+  writeServiceState,
+} from "../../serviceLauncher.ts";
+import {
+  readQualifiedBackupReceipt,
+  type QualifiedBackupAdapter,
+} from "./qualifiedBackup.ts";
+import type {
+  QualifiedQuiescenceAdapter,
+} from "./qualifiedQuiescence.ts";
 import {
   linuxNativeQualifiedQuiescenceAdapter,
   QUALIFIED_STARTUP_STATE_FILES,
@@ -63,8 +76,11 @@ async function runScenario(
     );
     await NodeFSP.writeFile(NodePath.join(userdata, "settings.json"), "before-settings");
     const child = `#!${process.execPath}
-import { readFileSync, writeFileSync } from "node:fs";
-import * as NodeSqlite from "node:sqlite";
+import {
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+
 import * as NodeNet from "node:net";
 import { makeQualifiedTrialReceipt, reserveQualifiedResume, sameQualifiedTrialIdentity } from "${NodePath.join(import.meta.dirname, "qualifiedStartup.ts")}";
 if (process.argv.includes("__service-preflight")) {

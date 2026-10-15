@@ -1,5 +1,5 @@
-import * as OpenCodeCreationPolicy from "../../jones/provider/opencode/OpenCodeCreationPolicy.ts";
-import * as ProviderEventOrigin from "../../jones/orchestration/ProviderEventOrigin.ts";
+import * as OpenCodeCreationPolicy from "@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 import type {
   Event as OpenCodeEvent,
   Message as OpenCodeMessage,
@@ -3339,7 +3339,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               }
               const systemPrompt = [
                 orchestrationSystemPrompt,
-                buildRuntimeInstructions({
+                buildRuntimeInstructions({ appIdentity: host.appIdentity,
                   harness: "OpenCode",
                   model: turnInput.modelSelection.model,
                 }),
@@ -3820,7 +3820,10 @@ export const OpenCodeAdapterV2Driver: ProviderAdapterDriver<
     function* (input: ProviderAdapterDriverCreateInput<OpenCodeSettings>) {
       const hostEnvironment = yield* HostProcess.Environment;
       const providerEventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
+      const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
+      const authority = Option.isSome(authorityOption) ? authorityOption.value.forInstance(input.instanceId) : undefined;
       return yield* makeOpenCodeAdapterV2({
+        ...(authority === undefined ? {} : { authority }),
         instanceId: input.instanceId,
         settings: { ...input.config, enabled: input.enabled },
         environment: yield* mergeProviderInstanceEnvironment(input.environment, hostEnvironment),

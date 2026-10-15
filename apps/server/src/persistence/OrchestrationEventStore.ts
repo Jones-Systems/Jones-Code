@@ -93,7 +93,7 @@ export class OrchestrationEventStore extends Context.Service<
       readonly eventType?: OrchestrationV2RecordedEvent["type"];
       readonly limit?: number;
       readonly skipUnknownEventTypes?: boolean;
-    }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestrationEventStoreError>;
+    }) => Stream.Stream<OrchestrationV2RecordedStoredEvent, OrchestrationEventStoreError>;
 
     /** Measure one thread's bounded replay without loading or decoding its payloads. */
     readonly getAgentReplayStats: (input: {

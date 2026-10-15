@@ -29,7 +29,7 @@ import {
   THREAD_FORK_NATIVE_TARGET_PROMPT,
 } from "./fixtures/shared.ts";
 import { runOrchestratorV2ProviderReplayScenario } from "./ProviderReplayHarness.ts";
-import { makeCheckpointWorkspace as createCheckpointWorkspace } from "./ReplayFixtureWorkspace.ts";
+import { makeCheckpointWorkspace as createCheckpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import {
   decodeProviderReplayNdjson,
   materializeReplayTranscriptWorkspace,

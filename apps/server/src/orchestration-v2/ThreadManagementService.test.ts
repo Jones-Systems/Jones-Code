@@ -1,5 +1,8 @@
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import { expect, it } from "@effect/vitest";
+import {
+  expect,
+  it,
+} from "@effect/vitest";
 import {
   CommandId,
   MessageId,
@@ -36,11 +39,14 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
-import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
-import { DispatchModeLimit, type DispatchModeRefusal } from "./DispatchModeLimit.ts";
+import {
+  DispatchModeLimit,
+  type DispatchModeRefusal,
+} from "./DispatchModeLimit.ts";
 
 it("stamps authoritative provenance on commands that create threads or messages", () => {
   const command: OrchestrationV2Command = {

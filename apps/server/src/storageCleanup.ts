@@ -17,21 +17,27 @@ import type {
   StorageCleanupReport,
   StorageCleanupReportEntry,
 } from "@t3tools/contracts";
-import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import {
+  resolveWorktreeCleanup,
+} from "@t3tools/shared/projectSettings";
+import {
+  makeDrainableWorker,
+} from "@t3tools/shared/DrainableWorker";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
+
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
-import type { PlatformError } from "effect/PlatformError";
+import type {
+  PlatformError,
+} from "effect/PlatformError";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -42,13 +48,22 @@ import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
-import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
-import { forkParked } from "./serverActivation.ts";
+import {
+  threadHasQueuedTurnStart,
+} from "./orchestration-v2/ThreadSettlementService.ts";
+import {
+  forkParked,
+} from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
-import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
+import {
+  isFilesystemRoot,
+  managedWorktreesDirectories,
+} from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
-import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
+import {
+  withWorkspaceLease,
+} from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
@@ -73,6 +88,8 @@ function cleanupFailureReason(error: { readonly message: string }) {
     ? `${error.command}: ${error.detail.split(/\r?\n/)[0]}${error.reason ? ` (${error.reason})` : ""}`
     : (error.message.split(/\r?\n/)[0] ?? error.message);
 }
+const overlapsCleanupPath = (left: string, right: string) =>
+  left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 
 const worktreeCleanupEnabled = (rules: WorktreeCleanupRules) =>
   rules.worktreeAfterDays !== null ||
@@ -689,6 +706,40 @@ const make = Effect.gen(function* () {
           )
         )
           return keep("settings changed since check");
+        if (deleted) {
+          if (sink.startDeletionWorktreeRemoval === undefined) return;
+          const currentRules = settingsService.getSettings.pipe(
+            Effect.map((server) => resolveWorktreeCleanup(server, thread.projectId)),
+          );
+          const currentLive = Effect.gen(function* () {
+            const current = yield* readThreads();
+            return (
+              !hasTerminal(worktreePath) &&
+              !current.threads.some(
+                (entry) =>
+                  entry.worktreePath !== null &&
+                  overlapsCleanupPath(path.resolve(entry.worktreePath), worktreePath),
+              )
+            );
+          }).pipe(Effect.orElseSucceed(() => false));
+          const admission = yield* sink.startDeletionWorktreeRemoval({
+            threadId: thread.id,
+            target: {
+              projectId: thread.projectId,
+              projectRoot: project.workspaceRoot,
+              path: worktreePath,
+              branch: thread.branch,
+              force: false,
+            },
+            rules: settings,
+            currentRules,
+            currentLive,
+          });
+          if (admission.status === "start_now")
+            yield* deletionRemoval.execute(admission.start.effectId, currentRules, currentLive);
+          else yield* deletionRemoval.observe(admission.start.effectId);
+          if (yield* fs.exists(worktreePath)) return keep("qualified deletion removal is pending");
+        } else {
         // Clean only untracked files; Git must still refuse removal if a tracked
         // edit arrives after our last status check.
         if (settings.worktreeKeepWhen === "tracked-changes")
@@ -698,6 +749,7 @@ const make = Effect.gen(function* () {
           ["-c", "status.showUntrackedFiles=normal", "worktree", "remove", worktreePath],
           "git worktree remove",
         );
+        }
         entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch and path: ProviderTurnStartService recreates the checkout

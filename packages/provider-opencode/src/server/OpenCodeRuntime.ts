@@ -1,3 +1,4 @@
+import * as OpenCodeCreationPolicy from "./jones/OpenCodeCreationPolicy.ts";
 import * as NodeURL from "node:url";
 
 import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@t3tools/contracts";
@@ -256,6 +257,7 @@ export class OpenCodeRuntime extends Context.Service<
     readonly startOpenCodeServerProcess: (input: {
       readonly binaryPath: string;
       readonly directory: string;
+      readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
       readonly serverPassword?: string;
       readonly environment?: NodeJS.ProcessEnv;
       readonly port?: number;
@@ -272,6 +274,7 @@ export class OpenCodeRuntime extends Context.Service<
     readonly connectToOpenCodeServer: (input: {
       readonly binaryPath: string;
       readonly directory: string;
+      readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
       readonly serverUrl?: string | null;
       readonly serverPassword?: string;
       readonly environment?: NodeJS.ProcessEnv;
@@ -289,6 +292,7 @@ export class OpenCodeRuntime extends Context.Service<
     readonly createOpenCodeSdkClient: (input: {
       readonly baseUrl: string;
       readonly directory: string;
+      readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
       readonly serverPassword?: string;
     }) => OpencodeClient;
     readonly loadOpenCodeInventory: (
@@ -1155,3 +1159,5 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 export const layer = Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime).pipe(
   Layer.provide(NetService.layer),
 );
+
+export type OpenCodeRuntimeShape = OpenCodeRuntime["Service"];

@@ -889,7 +889,7 @@ it.live.each([
                   }),
               })),
             ),
-        } satisfies ProviderAdapterV2Shape;
+        } satisfies ProviderAdapter.ProviderAdapterV2["Service"];
       });
       const registry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
         get: (instanceId) =>
@@ -933,80 +933,10 @@ it.live.each([
                   ? event.type === "provider-turn.updated" && event.payload.status === "running"
                   : event.type === "run.updated" && event.payload.status === "completed",
               ),
-          } satisfies ProviderAdapter.ProviderAdapterV2["Service"];
-        });
-        const layerRegistry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
-          get: (instanceId) =>
-            Effect.succeed(adapters.find((adapter) => adapter.instanceId === instanceId)!),
-          list: () => Effect.succeed([providerInstanceId, targetId]),
-          getMetadata: (instanceId) =>
-            Effect.succeed({
-              driver,
-              continuationKey:
-                mode === "separate-home" ? `codex:home:/${instanceId}` : "codex:home:/shared",
-              enabled: true,
-              capabilities,
-            }),
-        });
-        yield* Effect.gen(function* () {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-          const selection = {
-            ...initialSelection,
-            model: mode === "active" ? initialSelection.model : "complete",
-          };
-          yield* orchestrator.dispatch({
-            type: "thread.create",
-            commandId: CommandId.make(`${name}:create`),
-            threadId,
-            projectId: ProjectId.make(`project:${name}`),
-            title: name,
-            modelSelection: selection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: cwd,
-            createdBy: "user",
-            creationSource: "web",
-          });
-          const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
-            Effect.gen(function* () {
-              const terminal = yield* orchestrator.streamDomainEvents.pipe(
-                Stream.filter((event) =>
-                  mode === "active" && step === "first"
-                    ? event.type === "provider-turn.updated" && event.payload.status === "running"
-                    : event.type === "run.updated" && event.payload.status === "completed",
-                ),
-                Stream.take(1),
-                Stream.runDrain,
-                Effect.forkScoped,
-              );
-              yield* orchestrator.dispatch({
-                type: "message.dispatch",
-                commandId: CommandId.make(`${name}:${step}`),
-                threadId,
-                messageId: MessageId.make(`${name}:${step}`),
-                text: step,
-                attachments: [],
-                modelSelection,
-                dispatchMode:
-                  targetRunId === undefined
-                    ? { type: "start_immediately" }
-                    : { type: "restart_active", targetRunId },
-                createdBy: "user",
-                creationSource: "web",
-              });
-              yield* worker.drain();
-              yield* Fiber.join(terminal);
-              yield* worker.drain();
-              return yield* orchestrator.getThreadProjection(threadId);
-            });
-          const first = yield* dispatch("first", selection);
-          const originalThread = first.providerThreads.find(
-            (thread) => thread.id === first.thread.activeProviderThreadId,
-          )!;
-          const targetSelection = { instanceId: targetId, model: "complete" };
-          if (mode === "selection-command") {
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
             yield* orchestrator.dispatch({
               type: "message.dispatch",
               commandId: CommandId.make(`${name}:${step}`),

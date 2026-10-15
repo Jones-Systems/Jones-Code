@@ -1,4 +1,7 @@
-import { assert, it } from "@effect/vitest";
+import {
+  assert,
+  it,
+} from "@effect/vitest";
 import {
   CheckpointId,
   CheckpointRef,
@@ -18,7 +21,6 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   PlanId,
-  type ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
   RunId,
@@ -34,16 +36,22 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import { toolOutputImages } from "@t3tools/shared/toolOutput";
+import {
+  toolOutputImages,
+} from "@t3tools/shared/toolOutput";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EventSink from "./EventSink.ts";
-import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import {
+  CodexProviderCapabilitiesV2,
+} from "./Adapters/CodexAdapterV2.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import {
+  makeProviderFailure,
+} from "@t3tools/provider-core/server/failure";
 import {
   makeProviderEventRoutingState,
   type ProviderEventRouteIdentity,

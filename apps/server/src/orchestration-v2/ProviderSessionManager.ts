@@ -1,4 +1,8 @@
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
+import type { CapturedRuntimeStop } from "@t3tools/provider-core/server/ProviderAdapter";
+import type * as RuntimeAttachment from "../jones/runtime/CurrentThreadRuntimeAttachment.ts";
+import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -50,6 +54,19 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
+import {
+  ProviderAdapterEventStreamError,
+  ProviderRuntimeBindingError,
+  runtimeBinding,
+  unobservedRuntimeIdentity,
+  type ProviderRuntimeLifecycle,
+  ProviderAdapterV2RuntimePolicy,
+  type ProviderAdapterV2Error,
+  type ProviderAdapterV2Event,
+  type ProviderAdapterV2EventSubscription,
+  type ProviderAdapterV2SessionRuntime,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -388,6 +405,246 @@ export const layerWithOptions = (
       const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const agentScope = yield* AgentScope;
+      const makeRuntimeLifecycle = (
+        providerSessionId: ProviderSessionId,
+        instanceId: ProviderInstanceId,
+        driver: ProviderAdapterV2SessionRuntime["driver"],
+        nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard,
+      ): ProviderRuntimeLifecycle => {
+        const reservations = new Map<
+          string,
+          {
+            readonly previous: Map<string, string | null>;
+            readonly bindings: Map<string, ThreadId>;
+          }
+        >();
+        const protocolError = (cause: unknown) =>
+          new ProviderRuntimeBindingError({
+            driver,
+            detail:
+              "Failed to establish the actual provider runtime binding; native effects must not be replayed.",
+            cause,
+          });
+        const readThread = (threadId: ThreadId, id: string) =>
+          projectionStore
+            .getThreadRecords(threadId, ["providerThreads"])
+            .pipe(
+              Effect.map((records) => records.providerThreads.find((thread) => thread.id === id)),
+            );
+        return {
+          reserve: (threadId) =>
+            Effect.gen(function* () {
+              yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                threadId,
+              });
+              const rows = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+              const generation = String(
+                yield* idAllocator.allocate.event({ threadId, providerSessionId }),
+              );
+              reservations.set(generation, {
+                previous: new Map(
+                  rows.providerThreads
+                    .filter(
+                      (thread) =>
+                        thread.providerInstanceId === instanceId && thread.driver === driver,
+                    )
+                    .map((thread) => [
+                      String(thread.id),
+                      thread.runtimeIdentity?.runtimeGeneration ?? null,
+                    ]),
+                ),
+                bindings: new Map(),
+              });
+              return generation;
+            }).pipe(Effect.mapError(protocolError)),
+          admit: ({ runtimeGeneration, threadId }) =>
+            Effect.gen(function* () {
+              yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                threadId,
+              });
+              const reservation = reservations.get(runtimeGeneration);
+              if (reservation === undefined)
+                return yield* protocolError("The launch reservation was lost.");
+              const rows = yield* projectionStore.getThreadRecords(threadId, ["providerThreads"]);
+              for (const thread of rows.providerThreads) {
+                if (
+                  thread.providerInstanceId === instanceId &&
+                  thread.driver === driver &&
+                  !reservation.bindings.has(thread.id)
+                ) {
+                  reservation.previous.set(
+                    thread.id,
+                    thread.runtimeIdentity?.runtimeGeneration ?? null,
+                  );
+                }
+              }
+            }).pipe(Effect.mapError(protocolError)),
+          bind: (binding) =>
+            Effect.gen(function* () {
+              const reservation = reservations.get(binding.runtimeGeneration);
+              const thread = binding.providerThread;
+              if (
+                reservation === undefined ||
+                thread.appThreadId === null ||
+                thread.nativeThreadRef === null ||
+                thread.nativeThreadRef.nativeId === null ||
+                thread.nativeThreadRef.driver !== driver ||
+                thread.driver !== driver ||
+                thread.providerInstanceId !== instanceId ||
+                thread.providerSessionId !== providerSessionId ||
+                binding.requested.providerInstanceId !== instanceId ||
+                binding.requested.providerDriver !== driver
+              )
+                return yield* protocolError("The launch reservation or native ownership was lost.");
+              const observedEvent: ProviderAdapterV2Event = {
+                type: "runtime_identity.observed",
+                driver,
+                binding: {
+                  threadId: thread.appThreadId,
+                  providerThreadId: thread.id,
+                  providerSessionId,
+                  providerInstanceId: instanceId,
+                  driver,
+                  nativeThreadId: thread.nativeThreadRef.nativeId,
+                  runtimeGeneration: binding.runtimeGeneration,
+                },
+                requested: binding.requested,
+                observed: binding.observed,
+              };
+              if (binding.producerOrigin !== undefined) {
+                ProviderEventOrigin.stampProviderEvent(observedEvent, {
+                  producer: binding.producerOrigin,
+                });
+              }
+              const revalidateObservation = ProviderEventOrigin.revalidateProviderEventOrigin(
+                observedEvent,
+                { driver, instanceId, providerSessionId },
+              );
+              yield* revalidateObservation;
+              const current = yield* readThread(thread.appThreadId, thread.id);
+              const previous = current?.runtimeIdentity?.runtimeGeneration ?? null;
+              const expected = reservation.bindings.has(thread.id)
+                ? binding.runtimeGeneration
+                : (reservation.previous.get(thread.id) ?? null);
+              if (previous !== expected)
+                return yield* protocolError(
+                  "Another producer already owns this native conversation.",
+                );
+              const id = yield* idAllocator.allocate.event({
+                threadId: thread.appThreadId,
+                providerSessionId,
+              });
+              const boundaryThread = {
+                ...thread,
+                runtimeIdentity: {
+                  runtimeGeneration: binding.runtimeGeneration,
+                  requested: binding.requested,
+                  observed: unobservedRuntimeIdentity(),
+                },
+              };
+              const boundary = yield* eventSink.write({
+                runtimeIdentityBoundary: { expectedGeneration: expected },
+                events: [
+                  {
+                    id,
+                    type: "provider-thread.updated",
+                    threadId: thread.appThreadId,
+                    occurredAt: yield* DateTime.now,
+                    payload: boundaryThread,
+                  },
+                ],
+              });
+              if (boundary.length === 0)
+                return yield* protocolError(
+                  "The native binding changed before its boundary committed.",
+                );
+              reservation.bindings.set(thread.id, thread.appThreadId);
+              yield* revalidateObservation;
+              yield* providerEventIngestor.ingestNormalized({
+                providerSessionId,
+                providerInstanceId: instanceId,
+                threadId: thread.appThreadId,
+                event: observedEvent,
+              });
+              const committedThread = yield* readThread(thread.appThreadId, thread.id);
+              if (nativeCreationGuard !== undefined) {
+                const captured =
+                  committedThread === undefined
+                    ? undefined
+                    : runtimeBinding(committedThread, binding.runtimeGeneration);
+                if (
+                  captured === undefined ||
+                  committedThread?.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration
+                )
+                  return yield* protocolError(
+                    "Native execution has no committed physical runtime binding.",
+                  );
+                yield* NativeProvider.bindNativeProviderGuard(nativeCreationGuard, captured);
+              }
+              return committedThread ?? boundaryThread;
+            }).pipe(Effect.mapError(protocolError)),
+          abandon: (generation) =>
+            Effect.gen(function* () {
+              const reservation = reservations.get(generation);
+              reservations.delete(generation);
+              if (reservation === undefined) return;
+              for (const [id, threadId] of reservation.bindings) {
+                const current = yield* readThread(threadId, id);
+                if (current?.runtimeIdentity?.runtimeGeneration !== generation) continue;
+                yield* eventSink.write({
+                  runtimeIdentityBoundary: { expectedGeneration: generation },
+                  events: [
+                    {
+                      id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
+                      type: "provider-thread.updated",
+                      threadId,
+                      occurredAt: yield* DateTime.now,
+                      payload: {
+                        ...current,
+                        runtimeIdentity: {
+                          requested: current.runtimeIdentity.requested,
+                          observed: unobservedRuntimeIdentity(),
+                        },
+                      },
+                    },
+                  ],
+                });
+              }
+            }).pipe(Effect.mapError(protocolError)),
+          invalidate: (binding) =>
+            Effect.gen(function* () {
+              const current = yield* readThread(binding.threadId, binding.providerThreadId);
+              if (
+                current?.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration ||
+                current.nativeThreadRef?.nativeId !== binding.nativeThreadId
+              )
+                return;
+              yield* eventSink.write({
+                runtimeEvidence: binding,
+                runtimeIdentityBoundary: { expectedGeneration: binding.runtimeGeneration },
+                events: [
+                  {
+                    id: yield* idAllocator.allocate.event({
+                      threadId: binding.threadId,
+                      providerSessionId,
+                    }),
+                    type: "provider-thread.updated",
+                    threadId: binding.threadId,
+                    occurredAt: yield* DateTime.now,
+                    payload: {
+                      ...current,
+                      runtimeIdentity: {
+                        requested: current.runtimeIdentity.requested,
+                        observed: unobservedRuntimeIdentity(),
+                      },
+                    },
+                  },
+                ],
+              });
+            }).pipe(Effect.mapError(protocolError)),
+        };
+      };
+
       const agentAccessSettings = Effect.fn("ProviderSessionManagerV2.agentAccessSettings")(
         function* (threadId: ThreadId) {
           if (Option.isNone(serverSettings)) return { browser: true, device: false };
@@ -2555,6 +2812,13 @@ export const layerWithOptions = (
               const key = sessionKey(input.providerSessionId);
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
+                if (input.nativeCreationGuard !== undefined)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: "Native creation cannot borrow an existing provider runtime.",
+                  });
+
                 const attached = existing.attachedThreadIds.has(input.threadId);
                 if (!attached && !existing.supportsMultipleProviderThreads) {
                   return yield* new ProviderSessionOpenError({

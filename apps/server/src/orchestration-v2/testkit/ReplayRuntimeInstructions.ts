@@ -1,3 +1,4 @@
+import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import type { ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/contracts";
 
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
@@ -16,7 +17,7 @@ export function materializeReplayTranscriptRuntimeInstructions(
           ? "acpRegistry"
           : undefined;
   if (harness === undefined) return transcript;
-  const instructions = buildRuntimeInstructions({ harness, model: runtime.model });
+  const instructions = buildRuntimeInstructions({ appIdentity: APP_IDENTITY, harness, model: runtime.model });
 
   return {
     ...transcript,
