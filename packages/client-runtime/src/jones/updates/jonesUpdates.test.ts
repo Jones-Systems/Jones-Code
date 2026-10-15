@@ -183,7 +183,8 @@ it.effect(
             call.method === "GET",
         ),
       ).toBe(true);
-      expect(proofs.map((proof) => proof.url)).toEqual(
+      expect(proofs.map((proof) => proof.url)).toEqual(calls.map((call) => call.url));
+      expect(proofs.map((proof) => normalizeDpopHtu(proof.url))).toEqual(
         Array(3).fill(`${origin}/api/jones-updates`),
       );
       expect(authorizations).toEqual([undefined, undefined, undefined]);

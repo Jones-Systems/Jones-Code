@@ -461,12 +461,19 @@ describe("UsagePage provider and model details", () => {
     await act(() => button!.click());
   }
 
-  async function clickText(text: string) {
-    const button = [...container.querySelectorAll("button")].find(
+  async function clickText(text: string, within: ParentNode = container) {
+    const button = [...within.querySelectorAll("button")].find(
       (item) => item.textContent?.trim() === text,
     );
     expect(button).toBeDefined();
     await act(() => button!.click());
+  }
+
+  function breakdownSection() {
+    const section = container.querySelector('[aria-label="Usage breakdown"]')?.closest("section");
+    expect(section).toBeDefined();
+    expect(section).not.toBeNull();
+    return section!;
   }
 
   function details() {
@@ -521,7 +528,7 @@ describe("UsagePage provider and model details", () => {
     expect(modelNames()).toEqual(["claude-known"]);
     expect(container.querySelectorAll("#usage-provider-details")).toHaveLength(1);
 
-    await clickText("All providers");
+    await clickText("All providers", breakdownSection());
     expect(container.querySelector("#usage-provider-details")).toBeNull();
     expect(modelNames()).toHaveLength(3);
   });
@@ -550,7 +557,7 @@ describe("UsagePage provider and model details", () => {
       "Total",
       "Tokens",
     ]);
-    await clickText("All providers");
+    await clickText("All providers", breakdownSection());
     expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
 
     const range = container.querySelector<HTMLButtonElement>(
