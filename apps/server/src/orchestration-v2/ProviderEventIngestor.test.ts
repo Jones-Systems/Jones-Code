@@ -39,6 +39,7 @@ import * as EventSink from "./EventSink.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -1975,7 +1976,7 @@ it.effect.each([
       providerInstanceId: modelSelection.instanceId,
       threadId: created.threadId,
     });
-    const requested = requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
+    const requested = ProviderAdapter.requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
     const row: OrchestrationV2ProviderThread = {
       id: ids.derive.providerThread({ driver: CODEX_DRIVER, nativeThreadId: "native-thread" }),
       driver: CODEX_DRIVER,
@@ -1996,7 +1997,7 @@ it.effect.each([
         ...(variant === "missing-generation" ? {} : { runtimeGeneration: "current-generation" }),
         evidenceRevision: 1,
         requested,
-        observed: unobservedRuntimeIdentity(),
+        observed: ProviderAdapter.unobservedRuntimeIdentity(),
       },
     };
     yield* sink.write({
@@ -2012,7 +2013,7 @@ it.effect.each([
       ],
     });
     const observation = {
-      ...unobservedRuntimeIdentity(),
+      ...ProviderAdapter.unobservedRuntimeIdentity(),
       model: {
         status: "observed" as const,
         value: "rerouted-native",
@@ -2052,7 +2053,7 @@ it.effect.each([
     assert.deepEqual(
       (yield* store.getThreadProjection(created.threadId)).providerThreads[0]?.runtimeIdentity
         ?.observed,
-      unobservedRuntimeIdentity(),
+      ProviderAdapter.unobservedRuntimeIdentity(),
     );
   }).pipe(Effect.provide(layerTest)),
 );
@@ -2071,7 +2072,7 @@ it.effect(
         providerInstanceId: modelSelection.instanceId,
         threadId: created.threadId,
       });
-      const requested = requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
+      const requested = ProviderAdapter.requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
       const row: OrchestrationV2ProviderThread = {
         id: ids.derive.providerThread({ driver: CODEX_DRIVER, nativeThreadId: "native-thread" }),
         driver: CODEX_DRIVER,
@@ -2092,7 +2093,7 @@ it.effect(
           runtimeGeneration: "actual-process",
           evidenceRevision: 1,
           requested,
-          observed: unobservedRuntimeIdentity(),
+          observed: ProviderAdapter.unobservedRuntimeIdentity(),
         },
       };
       yield* sink.write({
@@ -2119,7 +2120,7 @@ it.effect(
             runtimeIdentity: {
               ...row.runtimeIdentity!,
               observed: {
-                ...unobservedRuntimeIdentity(),
+                ...ProviderAdapter.unobservedRuntimeIdentity(),
                 model: {
                   status: "observed",
                   value: "argument-model",
@@ -2144,10 +2145,10 @@ it.effect(
       assert.deepEqual(
         (yield* store.getThreadProjection(created.threadId)).providerThreads[0]?.runtimeIdentity
           ?.observed,
-        unobservedRuntimeIdentity(),
+        ProviderAdapter.unobservedRuntimeIdentity(),
       );
       const observed = {
-        ...unobservedRuntimeIdentity(),
+        ...ProviderAdapter.unobservedRuntimeIdentity(),
         model: {
           status: "observed" as const,
           value: "rerouted-native",

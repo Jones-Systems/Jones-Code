@@ -1,5 +1,5 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - observes the children the launcher spawns with Node built-ins.
-import type * as NodeChildProcess from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";

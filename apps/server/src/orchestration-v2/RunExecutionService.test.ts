@@ -47,6 +47,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import type { PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -3914,7 +3915,7 @@ function captureRootRunTermination(input: {
     });
     const finalEvents = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
     const finalEffects = yield* Ref.make<ReadonlyArray<PendingOrchestrationEffectV2>>([]);
-    const ingested = yield* Ref.make<ReadonlyArray<ProviderAdapterV2Event>>([]);
+    const ingested = yield* Ref.make<ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>>([]);
     const writtenItems = yield* Ref.make<ReadonlyArray<OrchestrationV2TurnItem>>([]);
     const observed = yield* Ref.make<ReadonlyArray<string>>([]);
     const submittedEffects = yield* Ref.make<ReadonlyArray<PendingOrchestrationEffectV2>>([]);
@@ -4580,7 +4581,7 @@ it("leaves runtime identity observation ownership and route state to the session
     identity,
     providerTurnId: null,
   });
-  const event: ProviderAdapterV2Event = {
+  const event: ProviderAdapter.ProviderAdapterV2Event = {
     type: "runtime_identity.observed",
     driver,
     binding: {
@@ -4598,7 +4599,7 @@ it("leaves runtime identity observation ownership and route state to the session
       model: "requested",
       serviceTier: null,
     },
-    observed: unobservedRuntimeIdentity(),
+    observed: ProviderAdapter.unobservedRuntimeIdentity(),
   };
   const [accepted, next] = RunExecutionService.routeProviderEvent(event, identity, state);
   assert.isFalse(accepted);
@@ -4787,7 +4788,7 @@ it.effect.each([
         serviceTier: null,
       };
       const observed = {
-        ...unobservedRuntimeIdentity(),
+        ...ProviderAdapter.unobservedRuntimeIdentity(),
         model: {
           status: "observed" as const,
           value: "native-model",
@@ -4808,7 +4809,7 @@ it.effect.each([
         runtimeGeneration: "native-producer",
         evidenceRevision: 1,
       };
-      const terminal: Extract<ProviderAdapterV2Event, { type: "turn.terminal" }> = {
+      const terminal: Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }> = {
         type: "turn.terminal",
         driver,
         providerThreadId,
@@ -4895,7 +4896,7 @@ it.effect.each([
                 });
                 yield* Deferred.succeed(offerTerminal, undefined);
               }),
-          } as unknown as ProviderAdapterV2SessionRuntime,
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
           run,
           rootNode,
           checkpointScope,
@@ -5004,7 +5005,7 @@ it.effect("recovers only exact current-attempt terminal-first provider evidence"
       driver,
     };
     const turnId = ProviderTurnId.make("provider-turn:settlement-first");
-    const terminal: ProviderAdapterV2Event = {
+    const terminal: ProviderAdapter.ProviderAdapterV2Event = {
       type: "turn.terminal",
       driver,
       providerThreadId: identity.providerThreadId,
@@ -5036,7 +5037,7 @@ it.effect("recovers only exact current-attempt terminal-first provider evidence"
     assert.isTrue(accepted);
     assert.equal(recovered.rootProviderTurnId, turnId);
     assert.isTrue(recovered.rootTurnEnded);
-    const variants: ReadonlyArray<ProviderAdapterV2Event> = [
+    const variants: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event> = [
       { ...terminal, providerTurn: undefined },
       { ...terminal, evidenceKind: undefined },
       { ...terminal, evidenceKind: "local_failure" },
@@ -5071,7 +5072,7 @@ it.effect("recovers only exact current-attempt terminal-first provider evidence"
       assert.isNull(unchanged.rootProviderTurnId);
       assert.isFalse(unchanged.rootTurnEnded);
     }
-    const abort: ProviderAdapterV2Event = {
+    const abort: ProviderAdapter.ProviderAdapterV2Event = {
       ...terminal,
       status: "interrupted",
       evidenceKind: "attributed_abort",
@@ -5197,12 +5198,14 @@ it.effect(
           ...(startFails
             ? {
                 startTurn: (
-                  turnInput: Parameters<ProviderAdapterV2SessionRuntime["startTurn"]>[0],
+                  turnInput: Parameters<
+                    ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]
+                  >[0],
                 ) =>
                   Deferred.await(streamEntered).pipe(
                     Effect.andThen(
                       Effect.fail(
-                        new ProviderAdapterTurnStartError({
+                        new ProviderAdapter.ProviderAdapterTurnStartError({
                           driver,
                           threadId: turnInput.threadId,
                           providerThreadId: turnInput.providerThread.id,
@@ -5219,7 +5222,7 @@ it.effect(
                   Stream.flatMap(() => Stream.never),
                 )
               : Stream.fail(
-                  new ProviderAdapterEventStreamError({
+                  new ProviderAdapter.ProviderAdapterEventStreamError({
                     driver,
                     providerSessionId: ProviderSessionId.make("session:local-failure"),
                     cause: new Error("synthetic stream exit"),
@@ -5532,12 +5535,12 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
                     providerTurn: terminalTurn,
                   },
                   { ...rootTerminalEvent(ids, "interrupted"), evidenceKind: "attributed_abort" },
-                ] satisfies ReadonlyArray<ProviderAdapterV2Event>),
+                ] satisfies ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>),
               ),
             ),
             close: Deferred.succeed(done, undefined),
           }),
-        } as unknown as ProviderAdapterV2SessionRuntime,
+        } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
         run,
         attempt,
         attemptId: attempt.id,

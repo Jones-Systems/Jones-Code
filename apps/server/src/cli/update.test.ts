@@ -1,11 +1,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import * as TestClock from "effect/testing/TestClock";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";

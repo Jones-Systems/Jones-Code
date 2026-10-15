@@ -73,7 +73,7 @@ export interface ProviderEventRouteIdentity {
   readonly attemptId: RunAttemptId;
   readonly providerThreadId: ProviderThreadId;
   readonly runOrdinal?: number;
-  readonly driver?: ProviderAdapterV2Event["driver"];
+  readonly driver?: ProviderAdapter.ProviderAdapterV2Event["driver"];
 }
 
 export interface InheritedBackgroundTurnItemRoute {

@@ -20,6 +20,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
   THREAD_FORK_NATIVE_PRIOR_TURN_ALPHA_PROMPT,
@@ -476,7 +477,7 @@ describe("orchestration V2 thread fork", () => {
           finalSourceIdentity?.requested,
           sourceObservation.providerThread.runtimeIdentity?.requested,
         );
-        assert.deepEqual(finalSourceIdentity?.observed, unobservedRuntimeIdentity());
+        assert.deepEqual(finalSourceIdentity?.observed, ProviderAdapter.unobservedRuntimeIdentity());
         const targetObservedModel =
           targetProjection.providerThreads[0]?.runtimeIdentity?.observed.model;
         assert.equal(targetObservedModel?.status, "observed");
