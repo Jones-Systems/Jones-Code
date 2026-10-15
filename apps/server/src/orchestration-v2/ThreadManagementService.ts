@@ -346,6 +346,12 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
+  readonly dispatchLegacyFailureDelete?: (
+    command: LegacyFailureDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyGuardRejectionDelete?: (
+    command: LegacyGuardRejectionDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly getThreadHistoryPage: Orchestrator.OrchestratorV2["Service"]["getThreadHistoryPage"];
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
