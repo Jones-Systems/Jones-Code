@@ -484,75 +484,96 @@ export const RecordedRunJson = Schema.Struct({
 });
 export type RecordedRunJson = typeof RecordedRunJson.Type;
 
+type EventMemberForType<Member, EventType extends string> = Member extends {
+  readonly Type: { readonly type: infer Types };
+}
+  ? EventType extends Types
+    ? Member
+    : never
+  : never;
+
 type PublicEventMember = (typeof OrchestrationV2DomainEvent.members)[number];
-// Match payload schemas so upstream event insertion and reordering preserve discriminants.
-const threadEvents = OrchestrationV2DomainEvent.members.filter(
-  (
-    event,
-  ): event is Extract<
-    PublicEventMember,
-    { fields: { payload: typeof OrchestrationV2AppThread } }
-  > => event.fields.payload === OrchestrationV2AppThread,
+// Extend each member separately so exact event extraction retains its discriminant.
+const threadCreated = OrchestrationV2DomainEvent.members.find(
+  (event): event is EventMemberForType<PublicEventMember, "thread.created"> =>
+    Schema.is(event.fields.type)("thread.created"),
 );
-const runEvents = OrchestrationV2DomainEvent.members.filter(
-  (
-    event,
-  ): event is Extract<PublicEventMember, { fields: { payload: typeof OrchestrationV2Run } }> =>
-    event.fields.payload === OrchestrationV2Run,
+const threadLifecycle = OrchestrationV2DomainEvent.members.find(
+  (event): event is EventMemberForType<PublicEventMember, "thread.archived"> =>
+    Schema.is(event.fields.type)("thread.archived"),
 );
+const runCreated = OrchestrationV2DomainEvent.members.find(
+  (event): event is EventMemberForType<PublicEventMember, "run.created"> =>
+    Schema.is(event.fields.type)("run.created"),
+);
+const runUpdated = OrchestrationV2DomainEvent.members.find(
+  (event): event is EventMemberForType<PublicEventMember, "run.updated"> =>
+    Schema.is(event.fields.type)("run.updated"),
+);
+if (!threadCreated || !threadLifecycle || !runCreated || !runUpdated) {
+  throw new Error("Missing upstream lifecycle event schema for recorded events.");
+}
 const ordinaryEvents = OrchestrationV2DomainEvent.members.filter(
   (
     event,
   ): event is Exclude<
     PublicEventMember,
-    (typeof threadEvents)[number] | (typeof runEvents)[number]
+    typeof threadCreated | typeof threadLifecycle | typeof runCreated | typeof runUpdated
   > =>
-    event.fields.payload !== OrchestrationV2AppThread &&
-    event.fields.payload !== OrchestrationV2Run,
+    event !== threadCreated &&
+    event !== threadLifecycle &&
+    event !== runCreated &&
+    event !== runUpdated,
 );
 export const RecordedLifecycleEvent = Schema.Union([
-  ...threadEvents.map((event) =>
-    event.mapFields((fields) => ({ ...fields, payload: RecordedAppThread })),
-  ),
-  ...runEvents.map((event) => event.mapFields((fields) => ({ ...fields, payload: RecordedRun }))),
+  threadCreated.mapFields((fields) => ({ ...fields, payload: RecordedAppThread })),
+  threadLifecycle.mapFields((fields) => ({ ...fields, payload: RecordedAppThread })),
+  runCreated.mapFields((fields) => ({ ...fields, payload: RecordedRun })),
+  runUpdated.mapFields((fields) => ({ ...fields, payload: RecordedRun })),
   ...ordinaryEvents,
 ]);
 export type RecordedLifecycleEvent = typeof RecordedLifecycleEvent.Type;
 
 type PublicJsonEventMember = (typeof OrchestrationV2DomainEventJson.members)[number];
-const threadJsonEvents = OrchestrationV2DomainEventJson.members.filter(
-  (
-    event,
-  ): event is Extract<
-    PublicJsonEventMember,
-    { fields: { payload: typeof OrchestrationV2AppThreadJson } }
-  > => event.fields.payload === OrchestrationV2AppThreadJson,
+const threadCreatedJson = OrchestrationV2DomainEventJson.members.find(
+  (event): event is EventMemberForType<PublicJsonEventMember, "thread.created"> =>
+    Schema.is(event.fields.type)("thread.created"),
 );
-const runJsonEvents = OrchestrationV2DomainEventJson.members.filter(
-  (
-    event,
-  ): event is Extract<
-    PublicJsonEventMember,
-    { fields: { payload: typeof OrchestrationV2RunJson } }
-  > => event.fields.payload === OrchestrationV2RunJson,
+const threadLifecycleJson = OrchestrationV2DomainEventJson.members.find(
+  (event): event is EventMemberForType<PublicJsonEventMember, "thread.archived"> =>
+    Schema.is(event.fields.type)("thread.archived"),
 );
+const runCreatedJson = OrchestrationV2DomainEventJson.members.find(
+  (event): event is EventMemberForType<PublicJsonEventMember, "run.created"> =>
+    Schema.is(event.fields.type)("run.created"),
+);
+const runUpdatedJson = OrchestrationV2DomainEventJson.members.find(
+  (event): event is EventMemberForType<PublicJsonEventMember, "run.updated"> =>
+    Schema.is(event.fields.type)("run.updated"),
+);
+if (!threadCreatedJson || !threadLifecycleJson || !runCreatedJson || !runUpdatedJson) {
+  throw new Error("Missing upstream JSON lifecycle event schema for recorded events.");
+}
 const ordinaryJson = OrchestrationV2DomainEventJson.members.filter(
   (
     event,
   ): event is Exclude<
     PublicJsonEventMember,
-    (typeof threadJsonEvents)[number] | (typeof runJsonEvents)[number]
+    | typeof threadCreatedJson
+    | typeof threadLifecycleJson
+    | typeof runCreatedJson
+    | typeof runUpdatedJson
   > =>
-    event.fields.payload !== OrchestrationV2AppThreadJson &&
-    event.fields.payload !== OrchestrationV2RunJson,
+    event !== threadCreatedJson &&
+    event !== threadLifecycleJson &&
+    event !== runCreatedJson &&
+    event !== runUpdatedJson,
 );
 export const RecordedLifecycleEventJson = Schema.Union([
-  ...threadJsonEvents.map((event) =>
-    event.mapFields((fields) => ({ ...fields, payload: RecordedAppThreadJson })),
-  ),
-  ...runJsonEvents.map((event) =>
-    event.mapFields((fields) => ({ ...fields, payload: RecordedRunJson })),
-  ),
+  threadCreatedJson.mapFields((fields) => ({ ...fields, payload: RecordedAppThreadJson })),
+  threadLifecycleJson.mapFields((fields) => ({ ...fields, payload: RecordedAppThreadJson })),
+  runCreatedJson.mapFields((fields) => ({ ...fields, payload: RecordedRunJson })),
+  runUpdatedJson.mapFields((fields) => ({ ...fields, payload: RecordedRunJson })),
   ...ordinaryJson,
 ]);
 export type RecordedLifecycleEventJson = typeof RecordedLifecycleEventJson.Type;

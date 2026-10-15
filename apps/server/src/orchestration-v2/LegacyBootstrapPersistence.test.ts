@@ -50,6 +50,12 @@ const decodeRecordedThreadJson = Schema.decodeUnknownSync(RecordedAppThreadJson)
 const decodeRecordedRunJson = Schema.decodeUnknownSync(RecordedRunJson);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
+type RecordedEventForType<EventType extends RecordedLifecycleEvent["type"]> = Extract<
+  RecordedLifecycleEvent,
+  { type: EventType }
+> &
+  Extract<RecordedLifecycleEventJson, { type: EventType }>;
+
 it("recorded event codecs preserve upstream pull request link payloads", () => {
   const input = {
     id: EventId.make("recorded-codec:pull-request"),
@@ -610,19 +616,25 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
       legacyPreparationFailureKnown: false,
       legacyBootstrap: policy,
     });
-    const runEventTypes: ReadonlyArray<"run.created" | "run.updated"> = [
-      "run.created",
-      "run.updated",
+    const runEventBase = {
+      threadId,
+      runId,
+      occurredAt: run.requestedAt,
+      payload: run,
+    };
+    const runEventInputs = [
+      {
+        ...runEventBase,
+        id: EventId.make("recorded-codec:run.created:round-trip"),
+        type: "run.created",
+      } satisfies RecordedEventForType<"run.created">,
+      {
+        ...runEventBase,
+        id: EventId.make("recorded-codec:run.updated:round-trip"),
+        type: "run.updated",
+      } satisfies RecordedEventForType<"run.updated">,
     ];
-    for (const type of runEventTypes) {
-      const input = {
-        id: EventId.make(`recorded-codec:${type}:round-trip`),
-        threadId,
-        runId,
-        type,
-        occurredAt: run.requestedAt,
-        payload: run,
-      };
+    for (const input of runEventInputs) {
       const event = yield* Schema.decodeEffect(RecordedLifecycleEvent)(input);
       assert.deepStrictEqual(event, input);
       const encoded = yield* Schema.encodeEffect(RecordedLifecycleEventJson)(event);
@@ -632,18 +644,24 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
         input,
       );
     }
-    const threadEventTypes: ReadonlyArray<"thread.created" | "thread.archived"> = [
-      "thread.created",
-      "thread.archived",
+    const threadEventBase = {
+      threadId,
+      occurredAt: thread.createdAt,
+      payload: thread,
+    };
+    const threadEventInputs = [
+      {
+        ...threadEventBase,
+        id: EventId.make("recorded-codec:thread.created:round-trip"),
+        type: "thread.created",
+      } satisfies RecordedEventForType<"thread.created">,
+      {
+        ...threadEventBase,
+        id: EventId.make("recorded-codec:thread.archived:round-trip"),
+        type: "thread.archived",
+      } satisfies RecordedLifecycleEvent & RecordedLifecycleEventJson,
     ];
-    for (const type of threadEventTypes) {
-      const input = {
-        id: EventId.make(`recorded-codec:${type}:round-trip`),
-        threadId,
-        type,
-        occurredAt: thread.createdAt,
-        payload: thread,
-      };
+    for (const input of threadEventInputs) {
       const event = yield* Schema.decodeEffect(RecordedLifecycleEvent)(input);
       assert.deepStrictEqual(event, input);
       const encoded = yield* Schema.encodeEffect(RecordedLifecycleEventJson)(event);
