@@ -312,7 +312,8 @@ export function pastedPathQueryLength(
   pathQueryActive = true,
 ): number {
   if (!pathQueryActive) return 0;
-  if (detectComposerTrigger(lineBefore, lineBefore.length)?.kind !== "path") return 0;
+  const tokenStart = tokenStartForCursor(lineBefore, lineBefore.length);
+  if (!lineBefore.slice(tokenStart).startsWith("@")) return 0;
   return /^\S*/.exec(pasted)![0].length;
 }
 

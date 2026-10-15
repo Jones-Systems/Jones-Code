@@ -30,6 +30,8 @@ vi.mock("~/jones/device/useDeviceStreamRoute", () => ({
     retryAccess: refreshRoute,
   }),
 }));
+const reportRoute = () => {};
+const refreshRoute = () => accessStore.refresh();
 // Replace GPU allocation while keeping the real React and stream lifecycles.
 let viewerMounts = 0;
 let viewerUnmounts = 0;

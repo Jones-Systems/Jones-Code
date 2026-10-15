@@ -273,7 +273,7 @@ export function ZoomableImage({
           }}
           onClick={(event) => {
             // Pointer capture also produces a click after dragging; leave the image zoomed.
-            if (suppressClickRef.current || event.detail > 1) return;
+            if (suppressClickRef.current) return;
             cycleZoom({ x: event.clientX, y: event.clientY });
           }}
           onKeyDown={(event) => {

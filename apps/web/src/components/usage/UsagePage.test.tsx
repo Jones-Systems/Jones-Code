@@ -420,6 +420,7 @@ function usageFixture(includeCodex = true, environmentId = "test-environment") {
     environments: [environment],
     selectedEnvironments: [environment],
     isPending: false,
+    shown: null,
     isPartial: false,
     refresh: vi.fn(async () => undefined),
   };
