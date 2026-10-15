@@ -99,7 +99,7 @@ export class OpenCodeAuthority extends Context.Service<
       instanceId: ProviderInstanceId,
     ) => OpenCodeQualifiedAuthority | undefined;
   }
->()("t3/jones/provider/opencode/OpenCodeCreationPolicy/OpenCodeAuthority") {}
+>()("@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy/OpenCodeAuthority") {}
 
 export const requireCurrent = (parent: OpenCodeOwnedProcess | undefined) =>
   Effect.gen(function* () {

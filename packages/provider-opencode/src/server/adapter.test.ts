@@ -2056,7 +2056,10 @@ describe("OpenCodeAdapterV2", () => {
             false,
           );
         }
-      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+      }).pipe(
+        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.scoped,
+      ),
   );
 
   it.effect("fails an active turn when the OpenCode event stream ends cleanly", () =>
@@ -2903,7 +2906,6 @@ it.effect(
   "revoked qualified adoption refuses create and resume before any native SDK request",
   () =>
     Effect.gen(function* () {
-      const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const instanceId = ProviderInstanceId.make("opencode-revoked-adoption");
       const threadId = ThreadId.make("thread-opencode-revoked-adoption");
       const providerSessionId = ProviderSessionId.make("session-opencode-revoked-adoption");
@@ -2913,7 +2915,12 @@ it.effect(
       const requests: string[] = [];
       const nativeEvents = asyncEventStream();
       const client = {
-        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        event: {
+          subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
+            options.signal?.addEventListener("abort", () => nativeEvents.close(), { once: true });
+            return { stream: nativeEvents.stream };
+          },
+        },
         session: {
           create: async () => {
             requests.push("create");
@@ -2969,18 +2976,12 @@ it.effect(
         loadOpenCodeSkills: unused,
         loadSkillsFromCli: unused,
       };
-      const adapter = makeOpenCodeAdapterV2({
+      const adapter = yield* makeOpenCodeAdapterV2({
         instanceId,
         authority,
         settings: OPEN_CODE_TEST_SETTINGS,
         environment: {},
-        runtime,
-        idAllocator,
-        serverConfig: {
-          cwd: "/workspace",
-          attachmentsDir: "/unused",
-        } as ServerConfig.ServerConfig["Service"],
-      });
+      }).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime));
       const session = yield* adapter.openSession({
         threadId,
         providerSessionId,
@@ -2993,7 +2994,7 @@ it.effect(
         .ensureThread({ threadId, modelSelection, runtimePolicy: policy })
         .pipe(Effect.flip);
       assert.equal(create._tag, "ProviderAdapterEnsureThreadError");
-      if (!OpenCodeRuntime.OpenCodeRuntimeError.is(create.cause))
+      if (!OpenCodeRuntime.isOpenCodeRuntimeError(create.cause))
         return yield* Effect.die("Expected adoption currentness refusal");
       assert.equal(create.cause.operation, "adoptServer");
       const now = yield* DateTime.now;
@@ -3020,9 +3021,18 @@ it.effect(
       };
       const resume = yield* session.resumeThread({ providerThread }).pipe(Effect.flip);
       assert.equal(resume._tag, "ProviderAdapterResumeThreadError");
-      if (!OpenCodeRuntime.OpenCodeRuntimeError.is(resume.cause))
+      if (!OpenCodeRuntime.isOpenCodeRuntimeError(resume.cause))
         return yield* Effect.die("Expected adoption currentness refusal");
       assert.equal(resume.cause.operation, "adoptServer");
       assert.deepEqual(requests, []);
-    }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          TestProviderHost.layer({ cwd: "/workspace" }).pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+      Effect.scoped,
+    ),
 );
