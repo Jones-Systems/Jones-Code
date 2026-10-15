@@ -36,6 +36,7 @@ import { ProjectEnrichmentService } from "../project/ProjectEnrichmentService.ts
 import * as OrchestrationHttp from "./http.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as ProjectStore from "./ProjectStore.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -114,6 +115,7 @@ it.effect("exports full history with size, scope, and missing-thread checks", ()
         ),
         OrchestrationEventStore.layer,
         ProjectStore.layer,
+        ProjectionStore.layer,
       ).pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
     );
     const eventSink = Context.get(services, EventSinkV2);

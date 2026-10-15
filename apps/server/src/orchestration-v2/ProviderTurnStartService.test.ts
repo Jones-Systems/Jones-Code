@@ -4,6 +4,7 @@ import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
   ContextHandoffId,
+  DEFAULT_SERVER_SETTINGS,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -15,6 +16,8 @@ import {
   RunId,
   ThreadId,
   ProjectId,
+  type ModelSelection,
+  type ServerProviderModel,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -33,6 +36,8 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -176,6 +181,15 @@ function makeLocalCommandHarness(input: {
   readonly fileSystem?: FileSystem.FileSystem;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
+  readonly keepWarm?: boolean;
+  readonly liveKeepWarmSession?: boolean;
+  readonly effortProof?: {
+    readonly selection?: ModelSelection;
+    readonly models: ReadonlyArray<ServerProviderModel>;
+    readonly getSettings: ServerSettings.ServerSettingsService["Service"]["getSettings"];
+    readonly beforeDispatch?: Effect.Effect<void>;
+    readonly duringHandoff?: Effect.Effect<void>;
+  };
   readonly logoutFailure?: string;
   readonly openFailure?: unknown;
   /** Opens the session, then fails loading its provider thread. */
@@ -440,7 +454,7 @@ function makeLocalCommandHarness(input: {
       ),
     ensureThread: vi.fn(() => Effect.succeed(providerThread)),
   };
-  const dispatched: Array<ProviderAdapterV2TurnInput> = [];
+  const dispatched: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
   const open = vi.fn(
     (
       _openInput: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["open"]>[0],
@@ -481,7 +495,7 @@ function makeLocalCommandHarness(input: {
                       lastError: null,
                     },
                     ensureThread: () => Effect.succeed(providerThread),
-                    startTurn: (value: ProviderAdapterV2TurnInput) =>
+                    startTurn: (value: ProviderAdapter.ProviderAdapterV2TurnInput) =>
                       Effect.sync(() => {
                         dispatched.push(value);
                       }),
@@ -669,6 +683,8 @@ function makeLocalCommandHarness(input: {
     fallbackEnsure: resumeFallbackSession.ensureThread,
     writeIfRunCurrent,
     startRootRun,
+    dispatched,
+    interruptRun,
     tryHandlePromptCommand,
     events,
     oldInstanceId,
@@ -1315,7 +1331,7 @@ effectIt.effect(
               options: [{ id: "reasoningEffort", value: "low" }],
             },
             projectSettingsOverrides: {
-              "effort-project": {
+              "project-native-account-command": {
                 defaultModelSelection: {
                   instanceId,
                   model,

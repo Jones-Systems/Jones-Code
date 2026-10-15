@@ -21,6 +21,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
 import * as NativeEvidence from "./evidence.ts";
 import * as CheckpointService from "../../../orchestration-v2/CheckpointService.ts";
 import * as CommandPolicy from "../../../orchestration-v2/CommandPolicy.ts";
@@ -64,6 +65,7 @@ const runtime = Orchestrator.layer.pipe(
       CommandPolicy.layer,
       IdAllocator.layer,
       RuntimePolicy.layer,
+      ServerSettings.layerTest(),
       ProviderAdapterRegistry.layerFromAdapters([]),
       ProviderContinuationRequests.layer,
       Layer.mock(CheckpointService.CheckpointServiceV2)({}),
