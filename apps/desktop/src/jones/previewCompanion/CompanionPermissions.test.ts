@@ -27,7 +27,9 @@ it.effect(
     Effect.gen(function* () {
       requestHandler.mockClear();
       checkHandler.mockClear();
-      const unexpectedDialog = vi.fn(() => Effect.die("unexpected dialog for clipboard permissions"));
+      const unexpectedDialog = vi.fn(() =>
+        Effect.die("unexpected dialog for clipboard permissions"),
+      );
       const service = yield* BrowserSession.make.pipe(
         Effect.provideService(ElectronDialog.ElectronDialog, {
           pickFolder: unexpectedDialog,
