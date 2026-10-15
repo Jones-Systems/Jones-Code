@@ -22,6 +22,7 @@ export type T3McpToolSummaryAction =
   | "thread-wait"
   | "thread-interrupt"
   | "workflow-stop"
+  | "thread-settle"
   | "thread-configuration"
   | "thread-configure"
   | "thread-fork"

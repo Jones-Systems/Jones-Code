@@ -374,7 +374,7 @@ export const readTailscaleServeConfigJson: Effect.Effect<
 > = Effect.gen(function* () {
   const args = ["serve", "status", "--json"];
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const hostPlatform = yield* HostProcessPlatform;
+  const hostPlatform = yield* HostProcess.Platform;
   const executable = tailscaleCommandForPlatform(hostPlatform);
   const commandContext = { executable, subcommand: "serve" as const, argumentCount: args.length };
   return yield* Effect.gen(function* () {

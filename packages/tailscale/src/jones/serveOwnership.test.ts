@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -35,7 +35,7 @@ function recordingLayer(
 ) {
   const commands: Array<ReadonlyArray<string>> = [];
   const layer = Layer.merge(
-    Layer.succeed(HostProcessPlatform, "linux"),
+    Layer.succeed(HostProcess.Platform, "linux"),
     Layer.succeed(
       ChildProcessSpawner.ChildProcessSpawner,
       ChildProcessSpawner.make((command) => {

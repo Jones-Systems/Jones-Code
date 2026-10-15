@@ -63,14 +63,14 @@
         "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
         "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts",
+        "packages/provider-cursor/src/server/adapter.test.ts",
+        "packages/provider-opencode/src/server/v2/adapter.test.ts",
+        "packages/provider-opencode/src/server/adapter.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
         "apps/server/src/orchestration-v2/assistantStreaming.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/orchestration/ProviderEventOrigin.test.ts apps/server/src/jones/orchestration/assistantStreaming.origin.jones.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/assistantStreaming.test.ts"
+        "vp test run apps/server/src/jones/orchestration/ProviderEventOrigin.test.ts apps/server/src/jones/orchestration/assistantStreaming.origin.jones.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts packages/provider-cursor/src/server/adapter.test.ts packages/provider-opencode/src/server/v2/adapter.test.ts packages/provider-opencode/src/server/adapter.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/assistantStreaming.test.ts"
       ]
     },
     {
@@ -559,13 +559,13 @@
       "id": "jones-opencode-process-adoption",
       "tests": [
         "apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts",
-        "apps/server/src/provider/OpenCodeServerOwner.test.ts",
-        "apps/server/src/provider/opencode2/OpenCode2Server.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts"
+        "packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts",
+        "packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts",
+        "packages/provider-opencode/src/server/adapter.test.ts",
+        "packages/provider-opencode/src/server/v2/adapter.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts apps/server/src/provider/OpenCodeServerOwner.test.ts apps/server/src/provider/opencode2/OpenCode2Server.test.ts apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
+        "vp test run apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts packages/provider-opencode/src/server/adapter.test.ts packages/provider-opencode/src/server/v2/adapter.test.ts",
         "vp run --filter t3 typecheck"
       ]
     },
@@ -970,21 +970,21 @@
       "id": "jones-agent-app-identity",
       "tests": [
         "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts",
-        "apps/server/src/provider/RuntimeInstructions.test.ts",
+        "packages/provider-core/src/server/runtimeInstructions.test.ts",
         "apps/server/src/provider/CodexDeveloperInstructions.test.ts",
-        "apps/server/src/provider/T3OrchestrationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
         "packages/contracts/src/jones/organizationMetadata.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.test.ts",
+        "packages/provider-pi/src/server/mcpExtensionSource.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
+        "packages/provider-pi/src/server/mcpInjection.test.ts",
         "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts apps/server/src/provider/RuntimeInstructions.test.ts apps/server/src/provider/CodexDeveloperInstructions.test.ts apps/server/src/provider/T3OrchestrationInstructions.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.test.ts apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
+        "vp test run apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts packages/provider-core/src/server/runtimeInstructions.test.ts apps/server/src/provider/CodexDeveloperInstructions.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts packages/provider-pi/src/server/mcpExtensionSource.test.ts apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts packages/provider-pi/src/server/mcpInjection.test.ts",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "vp test run apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts -t \"matches the read-only allowlist\"",

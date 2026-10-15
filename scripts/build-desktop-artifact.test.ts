@@ -5,7 +5,6 @@ import * as NodePath from "node:path";
 import { extractFile, statFile } from "@electron/asar";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { extractFile } from "@electron/asar";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as FileSystem from "effect/FileSystem";
@@ -963,7 +962,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           for (const nativeFile of nativeFiles) {
             const nativePath = path.join(sourceDir, nativeFile);
             yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
-            yield* fs.writeFileString(nativePath, `native:${nativeFile}`);
+            yield* fs.writeFileString(nativePath, `MZnative:${nativeFile}`);
           }
           for (const [packedFile, contents] of packedFiles) {
             yield* fs.writeFileString(path.join(sourceDir, packedFile), contents);
@@ -976,7 +975,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             assert.isTrue(statFile(asarPath, nativeFile).unpacked);
             assert.equal(
               yield* fs.readFileString(path.join(unpackedRoot, nativeFile)),
-              `native:${nativeFile}`,
+              `MZnative:${nativeFile}`,
             );
           }
           for (const [packedFile, contents] of packedFiles) {
