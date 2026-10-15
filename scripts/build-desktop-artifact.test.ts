@@ -955,6 +955,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             "node_modules/native/library.dylib",
           ];
           const packedFiles = [
+            ["node_modules/native/foreign/addon.node", "\x7fELF"],
             ["node_modules/native/index.js", "module.exports = true;"],
             ["node_modules/native/package.json", '{"name":"native-fixture"}'],
           ] as const;
@@ -965,7 +966,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             yield* fs.writeFileString(nativePath, `MZnative:${nativeFile}`);
           }
           for (const [packedFile, contents] of packedFiles) {
-            yield* fs.writeFileString(path.join(sourceDir, packedFile), contents);
+            const packedPath = path.join(sourceDir, packedFile);
+            yield* fs.makeDirectory(path.dirname(packedPath), { recursive: true });
+            yield* fs.writeFileString(packedPath, contents);
           }
 
           const asarPath = path.join(tempDir, "server.asar");
