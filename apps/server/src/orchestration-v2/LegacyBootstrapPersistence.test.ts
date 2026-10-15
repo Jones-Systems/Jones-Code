@@ -10,6 +10,7 @@ import {
   RunId,
   ThreadId,
   OrchestrationV2ThreadStreamItem,
+  OrchestrationV2DomainEventJson,
   type OrchestrationV2PrivateEvent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -33,7 +34,12 @@ import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
 import * as Fiber from "effect/Fiber";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
-import { RecordedAppThreadJson, RecordedRunJson } from "./RecordedTypes.ts";
+import {
+  RecordedAppThreadJson,
+  RecordedLifecycleEvent,
+  RecordedLifecycleEventJson,
+  RecordedRunJson,
+} from "./RecordedTypes.ts";
 import {
   canonicalLegacyPayload,
   legacyBootstrapCreateCommandId,
@@ -43,6 +49,36 @@ import {
 const decodeRecordedThreadJson = Schema.decodeUnknownSync(RecordedAppThreadJson);
 const decodeRecordedRunJson = Schema.decodeUnknownSync(RecordedRunJson);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+it("recorded event codecs preserve upstream pull request link payloads", () => {
+  const input = {
+    id: EventId.make("recorded-codec:pull-request"),
+    threadId: ThreadId.make("recorded-codec:T"),
+    type: "thread.pull-request-link-updated",
+    occurredAt: "2026-10-05T00:00:00.000Z",
+    payload: {
+      host: "github.com",
+      repository: "example/project",
+      number: 42,
+      url: "https://github.com/example/project/pull/42",
+      source: "manual",
+      linkedAt: "2026-10-05T00:00:00.000Z",
+      snapshot: null,
+      stack: null,
+    },
+  };
+  const publicEvent = Schema.decodeUnknownSync(OrchestrationV2DomainEventJson)(input);
+  const recordedEvent = Schema.decodeUnknownSync(RecordedLifecycleEventJson)(input);
+  assert.deepStrictEqual(recordedEvent, publicEvent);
+  assert.deepStrictEqual(Schema.decodeUnknownSync(RecordedLifecycleEvent)(publicEvent), publicEvent);
+  assert.deepStrictEqual(Schema.encodeSync(RecordedLifecycleEventJson)(recordedEvent), input);
+  assert.throws(() =>
+    Schema.decodeUnknownSync(RecordedLifecycleEventJson)({
+      ...input,
+      payload: { ...input.payload, number: 0 },
+    }),
+  );
+});
 
 it.effect(
   "private preflight intent and outcome survive SQL reopen without shell birth or original C acceptance",
@@ -574,6 +610,35 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
       legacyPreparationFailureKnown: false,
       legacyBootstrap: policy,
     });
+    for (const type of ["run.created", "run.updated"]) {
+      const input = {
+        id: EventId.make(`recorded-codec:${type}:round-trip`),
+        threadId,
+        runId,
+        type,
+        occurredAt: run.requestedAt,
+        payload: run,
+      };
+      const event = Schema.decodeUnknownSync(RecordedLifecycleEvent)(input);
+      assert.deepStrictEqual(event, input);
+      const encoded = Schema.encodeSync(RecordedLifecycleEventJson)(event);
+      assert.deepStrictEqual(encoded.payload, Schema.encodeSync(RecordedRunJson)(run));
+      assert.deepStrictEqual(Schema.decodeUnknownSync(RecordedLifecycleEventJson)(encoded), input);
+    }
+    for (const type of ["thread.created", "thread.archived"]) {
+      const input = {
+        id: EventId.make(`recorded-codec:${type}:round-trip`),
+        threadId,
+        type,
+        occurredAt: thread.createdAt,
+        payload: thread,
+      };
+      const event = Schema.decodeUnknownSync(RecordedLifecycleEvent)(input);
+      assert.deepStrictEqual(event, input);
+      const encoded = Schema.encodeSync(RecordedLifecycleEventJson)(event);
+      assert.deepStrictEqual(encoded.payload, Schema.encodeSync(RecordedAppThreadJson)(thread));
+      assert.deepStrictEqual(Schema.decodeUnknownSync(RecordedLifecycleEventJson)(encoded), input);
+    }
     yield* Effect.scoped(
       Effect.gen(function* () {
         const sink = yield* EventSink.EventSinkV2;
