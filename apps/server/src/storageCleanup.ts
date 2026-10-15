@@ -484,7 +484,7 @@ const make = Effect.gen(function* () {
         if (deleted && sink.readDeletionWorktreeRemovalStartForTarget !== undefined) {
           const original = yield* sink.readDeletionWorktreeRemovalStartForTarget(thread.id, {
             projectId: thread.projectId,
-            projectRoot: project.workspaceRoot,
+            projectRoot: thread.workspaceRoot,
             path: worktreePath,
             branch: thread.branch,
             force: false,

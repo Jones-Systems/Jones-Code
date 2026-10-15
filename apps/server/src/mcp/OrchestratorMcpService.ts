@@ -2527,10 +2527,7 @@ const make = Effect.gen(function* () {
             page,
             (shell) =>
               Effect.gen(function* () {
-                const item = listItemFromShell(shell, {
-                  environmentId: scope.environmentId,
-                  nowMs,
-                });
+                const item = listItemFromShell(shell, nowMs);
                 if (
                   !Object.hasOwn(threadManagement, "observeThreadActivity") ||
                   threadManagement.observeThreadActivity === undefined

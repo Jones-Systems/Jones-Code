@@ -71,7 +71,6 @@ type CodexRateLimitsProbe =
       readonly rateLimitsByLimitId?: QualifiedQuotaMap | null | undefined;
       readonly quotaReceivedAt?: string | undefined;
       readonly ordinaryUsageAllowed?: boolean | null | undefined;
-      readonly accountId?: string | null | undefined;
       readonly resetCredits: CodexResetCreditsSummary | null | undefined;
       /** The ChatGPT workspace the usage belongs to, when the backend names it. */
       readonly accountId?: string | null | undefined;

@@ -1,4 +1,8 @@
-import { PositiveInt, type PullRequestCiStatusResult } from "@t3tools/contracts";
+import {
+  PositiveInt,
+  SourceControlProviderKind,
+  type PullRequestCiStatusResult,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -60,7 +64,7 @@ export const readGitHubCiStatus = (
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
     const rateLimits = yield* Effect.serviceOption(SourceControlRateLimit.SourceControlRateLimit);
-    const rateLimitKey = { provider: "github" as const, host: input.host };
+    const rateLimitKey = { provider: SourceControlProviderKind.make("github"), host: input.host };
     let lastLease: number | undefined;
     const request: GitHubApi.GitHubApi["Service"]["rest"] = (requestInput) => {
       if (Option.isNone(rateLimits)) return github.rest(requestInput);

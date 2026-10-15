@@ -503,7 +503,10 @@ const CLIPBOARD_SCRIPT = `(() => {
 
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
-  const host = { platform: yield* HostProcess.Platform, arch: yield* HostProcess.Architecture };
+  const browserHost = {
+    platform: yield* HostProcess.Platform,
+    arch: yield* HostProcess.Architecture,
+  };
   const manager = yield* PreviewManager.PreviewManager;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const environment = yield* ServerEnvironment.ServerEnvironment;
@@ -827,7 +830,7 @@ const make = Effect.gen(function* () {
     const cdp = await context.newCDPSession(page);
     // The desktop's page is already a normal browser. A popup's first request
     // went out before it became a tab; everything after presents as Chrome.
-    if (!desktop) await presentAsChrome(cdp, host);
+    if (!desktop) await presentAsChrome(cdp, browserHost);
     if (!desktop || desktop.origin !== "local") await recordCopies(cdp);
     page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
     page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);

@@ -898,7 +898,9 @@ const layerBase: Layer.Layer<
           }
 
           const normalized = yield* normalizeEvents(input.events);
-          const storedEvents = yield* eventStore.append({ events: normalized });
+          const storedEvents = yield* eventStore
+            .append({ events: normalized })
+            .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           yield* applyStoredEvents(storedEvents);
           return { committed: true as const, storedEvents };
         }),

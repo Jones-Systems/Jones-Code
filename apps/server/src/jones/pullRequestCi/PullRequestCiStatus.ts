@@ -1,4 +1,4 @@
-import type { PullRequestCiStatusResult } from "@t3tools/contracts";
+import { SourceControlProviderKind, type PullRequestCiStatusResult } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -65,7 +65,7 @@ export const createCiStatus = ({
           runners: { state: "unavailable", reasons: [reason], items: [] },
         }));
       const project = selected[0];
-      const api = registry.get("github");
+      const api = registry.get(SourceControlProviderKind.make("github"));
       if (project === undefined)
         return yield* unavailable(
           "No configured GitHub repositories match this organization and host.",
