@@ -23,6 +23,7 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Settings from "./serverSettings.ts";
+import * as EventSink from "./orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -272,7 +273,18 @@ const cleanupFixture = (
     let snapshotReads = 0;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
+    const unexpectedDeletionAdmission = () =>
+      Effect.die("The cleanup fixture has no deleted-thread rows to admit or recover.");
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
+      Effect.provide(
+        Layer.mock(EventSink.EventSinkV2)({
+          readDeletionWorktreeRemovalStartForTarget: unexpectedDeletionAdmission,
+          startDeletionWorktreeRemoval: unexpectedDeletionAdmission,
+          readDeletionWorktreeRemovalStart: unexpectedDeletionAdmission,
+          revalidateDeletionWorktreeRemovalStart: unexpectedDeletionAdmission,
+          qualifyDeletionWorktreeRemovalObservation: unexpectedDeletionAdmission,
+        }),
+      ),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
         execute: (input) =>

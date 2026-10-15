@@ -167,6 +167,7 @@ function makeHarness(options: HarnessOptions = {}) {
       : layerOrchestratorBase.pipe(Layer.provide(options.terminalOwner));
   const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
   const layerReceipts = CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase));
+  const layerEvents = EventStore.layer.pipe(Layer.provide(layerDatabase));
   const layerThreadManagementBase = ThreadManagement.layer.pipe(
     Layer.provide(layerOrchestrator),
     Layer.provide(layerServerSettings),
@@ -282,7 +283,7 @@ function makeHarness(options: HarnessOptions = {}) {
         IdAllocator.layer,
         layerOutbox,
         layerOrchestrator,
-        EventStore.layer.pipe(Layer.provide(layerDatabase)),
+        layerEvents,
       ),
     ),
   );
@@ -315,6 +316,9 @@ function makeHarness(options: HarnessOptions = {}) {
   return {
     layer: Layer.mergeAll(
       layerLaunch,
+      layerReceipts,
+      layerEvents,
+      layerOrchestrator,
       layerRegistry,
       layerThreadManagement,
       layerTitleRegeneration,
