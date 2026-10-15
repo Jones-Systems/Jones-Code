@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Entry point for the inherited-pipe shutdown regression test.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -36,6 +37,14 @@ Effect.gen(function* () {
     ),
   );
   const browser = Context.get(context, DesktopBrowserChannel.DesktopBrowserChannel);
+  if ((yield* HostProcess.Arguments).includes("--runtime-evidence")) {
+    const sentinel = { threadId: "sentinel-thread", tabId: "sentinel-tab" };
+    yield* Console.log("ready");
+    const attached = yield* browser.awaitAttached(sentinel, "5 seconds");
+    const evidence = yield* browser.runtimeEvidence(key);
+    yield* Console.log(`runtime-evidence:${JSON.stringify({ attached, evidence })}`);
+    return;
+  }
   const telemetry = Context.get(context, DesktopTelemetryReceiver.DesktopTelemetryReceiver);
   const health = yield* telemetry.subscribeHealth;
   const healthy = yield* health.changes.pipe(

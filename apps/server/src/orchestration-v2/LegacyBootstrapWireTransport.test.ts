@@ -90,7 +90,7 @@ import * as WsPreviewManager from "../preview/Manager.ts";
 import * as WsPortScanner from "../preview/PortScanner.ts";
 import * as WsProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as WsModelManifest from "../provider/ModelManifest.ts";
-import * as WsProviderMaintenance from "@t3tools/provider-core/server/maintenance";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as WsProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as WsAcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as WsAcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
@@ -550,7 +550,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsPortScanner.PortDiscovery)({}),
     Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
     Layer.mock(WsModelManifest.ModelManifest)({}),
-    Layer.succeed(WsProviderMaintenance.ProviderVersionCache, new Map()),
+    ProviderLatestVersions.layer,
     Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({}),
     Layer.mock(WsAcpRegistrySupport.AcpRegistryCatalog)({}),
     Layer.mock(WsAcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
@@ -900,7 +900,13 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 registry,
                 { databaseLayer: receivingDatabase, runEffectWorker: false },
               ).pipe(Layer.provide(terminal));
-              const productionThreads = Threads.layer.pipe(Layer.provide(orchestrator));
+              const receipts = Receipts.layer.pipe(Layer.provide(receivingDatabase));
+              const serverSettings = WsServerSettings.layerTest();
+              const productionThreads = Threads.layer.pipe(
+                Layer.provide(orchestrator),
+                Layer.provide(receipts),
+                Layer.provide(serverSettings),
+              );
               const threads = Layer.effect(
                 Threads.ThreadManagementService,
                 Effect.gen(function* () {
@@ -942,7 +948,6 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   });
                 }),
               ).pipe(Layer.provide(productionThreads));
-              const receipts = Receipts.layer.pipe(Layer.provide(receivingDatabase));
               const outbox = WsEffectOutbox.layer.pipe(Layer.provide(receivingDatabase));
               const store = EventStore.layer.pipe(Layer.provide(receivingDatabase));
               const successfulCheckout = successfulWorktree
@@ -1123,7 +1128,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   generateBranchName: () =>
                     Effect.die("No generated branch in receiving RPC fixture"),
                 }),
-                WsServerSettings.layerTest(),
+                serverSettings,
                 ProviderRegistryMock.layer(),
                 Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
                   namedProjectsRoot: `${cwd}/unused-projects`,
@@ -1295,7 +1300,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsPortScanner.PortDiscovery)({}),
           Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
           Layer.mock(WsModelManifest.ModelManifest)({}),
-          Layer.succeed(WsProviderMaintenance.ProviderVersionCache, new Map()),
+          ProviderLatestVersions.layer,
           Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({}),
           Layer.mock(WsAcpRegistrySupport.AcpRegistryCatalog)({}),
           Layer.mock(WsAcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),

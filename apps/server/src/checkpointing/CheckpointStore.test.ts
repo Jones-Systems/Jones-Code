@@ -506,8 +506,8 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
     );
     it.effect("limits a diff to repository paths from a subdirectory workspace", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         const fileSystem = yield* FileSystem.FileSystem;
         const cwd = NodePath.join(tmp, "app");
         yield* fileSystem.makeDirectory(cwd);
@@ -537,8 +537,8 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
   describe("listAuthoredPaths", () => {
     it.effect("leaves out paths that only a merged upstream changed", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
         const threadId = ThreadId.make("checkpoint-authored-paths");
         const refs = {
@@ -591,8 +591,8 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
 
     it.effect("leaves out paths that only a rebase onto upstream brought in", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
         const threadId = ThreadId.make("checkpoint-authored-paths-rebase");
         const refs = {

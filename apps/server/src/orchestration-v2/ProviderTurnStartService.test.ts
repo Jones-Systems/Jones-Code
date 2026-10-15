@@ -446,11 +446,16 @@ function makeLocalCommandHarness(input: {
     driver: providerThread.driver,
     resumeThread: () =>
       Effect.fail(
-        new ProviderAdapter.ProviderAdapterEventStreamError({
-          driver: providerThread.driver,
-          providerSessionId,
-          cause: "native thread is gone",
-        }),
+        input.unknownResumeBinding === true
+          ? new ProviderAdapter.ProviderRuntimeBindingError({
+              driver: providerThread.driver,
+              detail: "Native launch succeeded but its binding is unknown.",
+            })
+          : new ProviderAdapter.ProviderAdapterEventStreamError({
+              driver: providerThread.driver,
+              providerSessionId,
+              cause: "native thread is gone",
+            }),
       ),
     ensureThread: vi.fn(() => Effect.succeed(providerThread)),
   };
@@ -1184,7 +1189,7 @@ effectIt.effect("keep-warm does not replace a native conversation when resume fa
     });
     yield* harness.start;
     expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.resumeFallbackSession.ensureThread).not.toHaveBeenCalled();
+    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
     expect(harness.projection().runs.at(-1)?.status).toBe("failed");
   }),
