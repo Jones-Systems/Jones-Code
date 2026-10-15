@@ -4,6 +4,7 @@ import {
   USAGE_CONTRACT_VERSION,
   type UsageBucket,
   type UsageSummary,
+  type UsageSummaryInput,
 } from "@t3tools/contracts";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import { act } from "react";
@@ -12,6 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { saveUsagePagePreferences } from "./usagePagePreferences";
+import type { UsageView } from "../../state/usage";
 
 const testState = vi.hoisted(() => ({
   useUsage: vi.fn(),
@@ -104,6 +106,8 @@ const environments = [
     label: "Test environment",
     isPending: false,
     canReadDiagnostics: true,
+    isConnected: true,
+    needsCursorKeychainAccess: false,
     error: null,
     summary: {
       contractVersion: USAGE_CONTRACT_VERSION,
@@ -119,13 +123,19 @@ const environments = [
   },
 ];
 
+function mockAnsweredUsage(view: Omit<UsageView, "shown">) {
+  testState.useUsage.mockImplementation((window: UsageSummaryInput) => ({
+    ...view,
+    shown: { window, merged: view.merged },
+  }));
+}
+
 beforeEach(() => {
-  testState.useUsage.mockReturnValue({
+  mockAnsweredUsage({
     merged: mergeUsage([], USAGE_CONTRACT_VERSION),
     environments,
     selectedEnvironments: environments,
     isPending: false,
-    shown: null,
     isPartial: false,
     refresh: vi.fn(),
   });
@@ -420,7 +430,6 @@ function usageFixture(includeCodex = true, environmentId = "test-environment") {
     environments: [environment],
     selectedEnvironments: [environment],
     isPending: false,
-    shown: null,
     isPartial: false,
     refresh: vi.fn(async () => undefined),
   };
@@ -432,7 +441,7 @@ describe("UsagePage provider and model details", () => {
 
   beforeEach(async () => {
     saveUsagePagePreferences({ metric: "tokens", windowDays: 30 });
-    testState.useUsage.mockReturnValue(usageFixture());
+    mockAnsweredUsage(usageFixture());
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     container = document.createElement("div");
     document.body.append(container);
@@ -579,7 +588,7 @@ describe("UsagePage provider and model details", () => {
     ).toBeNull();
 
     const fixture = usageFixture();
-    testState.useUsage.mockReturnValue({
+    mockAnsweredUsage({
       ...fixture,
       merged: {
         ...fixture.merged,
@@ -598,7 +607,7 @@ describe("UsagePage provider and model details", () => {
   it("recomputes from new environment data and clears a provider that disappears", async () => {
     await clickLabel("Codex usage details");
     const next = usageFixture(true, "other-environment");
-    testState.useUsage.mockReturnValue({
+    mockAnsweredUsage({
       ...next,
       merged: {
         ...next.merged,
@@ -610,11 +619,11 @@ describe("UsagePage provider and model details", () => {
     await act(() => renderer.render(<UsagePage />));
     expect(metric(details(), "Recorded responses")).toBe("7");
 
-    testState.useUsage.mockReturnValue(usageFixture(false, "claude-environment"));
+    mockAnsweredUsage(usageFixture(false, "claude-environment"));
     await act(() => renderer.render(<UsagePage />));
     expect(container.querySelector("#usage-provider-details")).toBeNull();
     expect(modelNames()).toEqual(["claude-known"]);
-    testState.useUsage.mockReturnValue(usageFixture());
+    mockAnsweredUsage(usageFixture());
     await act(() => renderer.render(<UsagePage />));
     expect(container.querySelector("#usage-provider-details")).toBeNull();
     expect(modelNames()).toHaveLength(3);
