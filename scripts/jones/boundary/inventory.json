@@ -318,6 +318,7 @@
     "apps/server/src/nativeCreation/NativeCreationRepositorySqlite.ts": "jones-owned",
     "apps/server/src/observability/RpcInstrumentation.test.ts": "jones-tests-in-upstream",
     "apps/server/src/observability/RpcInstrumentation.ts": "hook",
+    "apps/server/src/orchestration-v2/http.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts": "jones-tests-in-upstream",
     "packages/provider-acp/src/server/adapter.ts": "accepted-shared",
