@@ -234,6 +234,29 @@
       "targets": [
         "packages/provider-core/src/server/IdAllocator.ts"
       ]
+    },
+    {
+      "from": "apps/mobile/src/features/files/SourceFileSurface.tsx",
+      "sourceSha256": "5d72d63977ed2773e887635e8de7c067f7344bd969e36d3588e2fdc1cdb1a1b1",
+      "expression": "\"@t3tools/mobile-source-text\"",
+      "reason": "Metro resolves this checked-in native package through the mobile manifest file dependency and the package main/types/react-native index.ts entry. The boundary resolver supports exports maps only; exact source and manifest hashes bind this entry, which still receives boundary checking.",
+      "anchors": [
+        {
+          "path": "apps/mobile/package.json",
+          "sha256": "de776155786c3a20ac0352a39df80f8874b2d7976b8a4df834ebb3efa1a9d32c"
+        },
+        {
+          "path": "apps/mobile/metro.config.js",
+          "sha256": "96d13349fde397b14420e8f132e25ae2bf995984c5ebf90ac9c7b3f304a1215a"
+        },
+        {
+          "path": "apps/mobile/modules/t3-source-text/package.json",
+          "sha256": "f9acced1f779de8622f6612aacce6042288b2f8a510e531e151037e49e5f03db"
+        }
+      ],
+      "targets": [
+        "apps/mobile/modules/t3-source-text/index.ts"
+      ]
     }
   ]
 }

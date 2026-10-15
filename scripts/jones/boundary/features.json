@@ -270,7 +270,7 @@
         "packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts",
         "packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts",
         "packages/provider-opencode/src/server/adapter.test.ts",
-        "packages/provider-opencode/src/server/v2/adapter.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts"
       ],
       "scope": "Physical process incarnation, qualified per-session adoption and pre-effect revocation checks; absent authority preserves ordinary sessions. Positive authority and live provider qualification are not supplied."
     },

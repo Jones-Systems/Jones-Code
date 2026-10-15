@@ -13,7 +13,10 @@
     "packages/provider-pi/src/server/mcpExtensionSource.ts",
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.testkit.ts",
     "packages/provider-core/src/server/ProviderHost.ts",
-    "packages/provider-pi/src/server/adapter.ts"
+    "packages/provider-pi/src/server/adapter.ts",
+    "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts",
+    "apps/server/src/provider/CodexDeveloperInstructions.ts",
+    "apps/server/src/provider/ProviderHostLive.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -56,6 +59,22 @@
     {
       "from": "packages/provider-pi/src/server/adapter.ts",
       "to": "packages/provider-core/src/server/jones/AppIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/provider/CodexDeveloperInstructions.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/provider/ProviderHostLive.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
     }
   ]
 }

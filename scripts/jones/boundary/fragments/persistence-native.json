@@ -14,7 +14,6 @@
   ],
   "tombstones": [
     "apps/server/src/persistence/JonesMigrationGuard.ts",
-    "apps/server/src/persistence/Migrations.test.ts",
     "apps/server/src/persistence/Migrations/001_JonesWorktreeOwnershipLeases.ts",
     "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.ts",
     "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.ts",
