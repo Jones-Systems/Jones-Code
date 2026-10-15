@@ -9672,30 +9672,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               const ownedLiveQuery = yield* Ref.modify(queryContext, (current) =>
                 current?.query === existing.query ? [true, null] : [false, current],
               );
-              if (ownedLiveQuery)
+              // Once ownership is dropped here, the old stream's exit skips the
+              // subagent's open calls, so they end now.
+              if (ownedLiveQuery) {
+                yield* finalizeActiveTurnAfterQueryExit(existing);
                 yield* endSubagentCallsOfClosedQuery(nativeThreadId, "interrupted");
+              }
               yield* Deferred.succeed(existing.closed, undefined);
             }),
             true,
           );
-          if (Option.isSome(closed)) {
-            return;
-          }
-
-          yield* Effect.logWarning("orchestration-v2.claude-query-close-timeout-before-fork", {
-            providerSessionId: input.providerSessionId,
-            nativeThreadId,
-          });
-          // Once ownership is dropped here, the old stream's exit skips the
-          // subagent's open calls, so they end now.
-          const ownedLiveQuery = yield* Ref.modify(queryContext, (current) =>
-            current?.query === existing.query ? [true, null] : [false, current],
-          );
-          if (ownedLiveQuery) {
-            yield* finalizeActiveTurnAfterQueryExit(existing);
-            yield* endSubagentCallsOfClosedQuery(nativeThreadId, "interrupted");
-          }
-          yield* Deferred.succeed(existing.closed, undefined);
           if (queryBindingUnknown)
             return yield* new ProviderAdapter.ProviderAdapterProtocolError({
               driver: CLAUDE_PROVIDER,

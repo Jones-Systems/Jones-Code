@@ -49,6 +49,7 @@ import {
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -85,6 +86,8 @@ import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
+import { OrganizationMetadataToolkit } from "../../jones/mcp/organizationMetadata/tools.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
@@ -10792,7 +10795,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
             prefix: "t3-claude-v2-subagent-buffer-replace-",
           });
-          const processQueues: Array<Queue.Queue<SDKMessage>> = [];
+          const processQueues: Array<Queue.Queue<SDKMessage, Cause.Done>> = [];
           const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
           const continuationRequests: Array<ProviderContinuationRequests.ProviderContinuationRequest> =
             [];
@@ -11654,7 +11657,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const terminalOffered = yield* Deferred.make<void>();
       const consumeTerminal = yield* Deferred.make<void>();
       if (!options.holdTerminal) yield* Deferred.succeed(consumeTerminal, undefined);
-      const terminalReceipts = yield* Queue.unbounded<ProviderAdapterV2Event>();
+      const terminalReceipts = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
       const abandonmentStarted = yield* Deferred.make<void>();
       const releaseAbandonment = yield* Deferred.make<void>();
       yield* Effect.addFinalizer(() =>
@@ -11665,7 +11668,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
       let abandonmentMode: "normal" | "failure" | "held" = "normal";
       const chronology: Array<string> = [];
-      const events: Array<ProviderAdapterV2Event> = [];
+      const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
       const queries: Array<{
         readonly input: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput;
         readonly queue: Queue.Queue<SDKMessage>;
@@ -11691,7 +11694,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         OrchestrationV2ProviderThread["id"],
         OrchestrationV2ProviderThread
       >();
-      const makeLifecycle = (owner: string): ProviderRuntimeLifecycle => ({
+      const makeLifecycle = (owner: string): ProviderAdapter.ProviderRuntimeLifecycle => ({
         admit: () => Effect.void,
         reserve: () =>
           Effect.sync(() => {
@@ -11724,7 +11727,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             yield* Deferred.succeed(abandonmentStarted, undefined);
             if (abandonmentMode === "held") yield* Deferred.await(releaseAbandonment);
             if (abandonmentMode === "failure")
-              return yield* new ProviderRuntimeBindingError({
+              return yield* new ProviderAdapter.ProviderRuntimeBindingError({
                 driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
                 detail: "Synthetic retirement failure",
                 cause: "not committed",
@@ -11769,6 +11772,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   ),
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  stopTask: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
                   setPermissionMode: () => Effect.void,
                   interrupt: Effect.void,
                   close: Effect.gen(function* () {
@@ -11789,7 +11795,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             assertComplete: Effect.void,
           },
         });
-      const adapter = makeAdapter();
+      const adapter = yield* makeAdapter();
       const threadId = ThreadId.make("claude-retirement-source");
       const runtime = yield* adapter
         .openSession({
@@ -11836,7 +11842,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             siblingOptions.instanceId ?? ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID;
           const ownerAdapter =
             siblingOptions.freshAdapter || siblingOptions.instanceId !== undefined
-              ? makeAdapter(instanceId)
+              ? (yield* makeAdapter(instanceId))
               : adapter;
           const ownerThreadId =
             siblingOptions.threadId ?? ThreadId.make(`claude-retirement-${owner}`);
@@ -11991,7 +11997,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           1,
         );
       }),
-    ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect(
@@ -12018,7 +12028,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             1,
           );
         }),
-      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
   );
 
   it.effect("withholds both overlapping forks when the first retirement fails", () =>
@@ -12051,7 +12065,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         h.setAbandonmentMode("normal");
         yield* h.close;
       }),
-    ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect.each([
@@ -12109,7 +12127,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         assert.equal(h.forks[0]?.sessionId, replacement.nativeThreadRef?.nativeId);
       }),
-    ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect.each(["failure", "interruption"] as const)(
@@ -12129,7 +12151,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               .pipe(Effect.flip);
             assert.equal(failure._tag, "ProviderAdapterForkThreadError");
             if (failure._tag === "ProviderAdapterForkThreadError")
-              assert.instanceOf(failure.cause, ProviderRuntimeBindingError);
+              assert.instanceOf(failure.cause, ProviderAdapter.ProviderRuntimeBindingError);
           } else {
             const pending = yield* h
               .fork(h.source, "claude-interrupted-retirement-target")
@@ -12146,14 +12168,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const unknown = yield* h.fork(h.source, "claude-no-replay-target").pipe(Effect.flip);
           assert.equal(unknown._tag, "ProviderAdapterForkThreadError");
           if (unknown._tag === "ProviderAdapterForkThreadError") {
-            assert.instanceOf(unknown.cause, ProviderAdapterProtocolError);
-            if (Schema.is(ProviderAdapterProtocolError)(unknown.cause))
+            assert.instanceOf(unknown.cause, ProviderAdapter.ProviderAdapterProtocolError);
+            if (Schema.is(ProviderAdapter.ProviderAdapterProtocolError)(unknown.cause))
               assert.include(unknown.cause.detail, "unconfirmed");
           }
           assert.lengthOf(h.forks, 0, "an unknown retirement must not replay native fork");
           yield* h.close;
         }),
-      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
   );
 
   describe("ClaudeAdapterV2 source-owned fork barrier", () => {
@@ -12237,7 +12263,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             1,
           );
         }),
-      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
     );
 
     it.effect.each(["source", "target"] as const)(
@@ -12264,7 +12294,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               0,
             );
           }),
-        ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
     );
 
     it.effect.each([
@@ -12333,7 +12367,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             0,
           );
         }),
-      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
     );
 
     it.effect("isolates equal native IDs across two source sessions on one adapter", () =>
@@ -12383,7 +12421,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             providerSessionId: ProviderSessionId.make("claude-retirement-session-target"),
           });
         }),
-      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
     );
 
     it.effect.each([
@@ -12422,7 +12464,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           assert.equal(h.queries[0]?.closeCount, 0);
         }),
-      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
     );
 
     it.effect.each([true, false])(
@@ -12466,7 +12512,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               "registry absence is not a new retirement effect",
             );
           }),
-        ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
     );
 
     it.effect(
@@ -12509,7 +12559,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             assert.lengthOf(h.forks, 3);
             assert.equal(h.lifecycleCalls.filter((call) => call.method === "abandon").length, 1);
           }),
-        ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
     );
 
     it.effect("rechecks target activity after the source retirement awaited", () =>
@@ -12552,7 +12606,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             1,
           );
         }),
-      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
     );
 
     it.effect("withholds two separate target sessions after an unknown source abandonment", () =>
@@ -12593,7 +12651,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             "waiting targets and source scope cleanup must not replay unknown abandonment",
           );
         }),
-      ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
     );
 
     it.effect.each(["failure", "interruption"] as const)(
@@ -12615,7 +12677,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 .pipe(Effect.flip);
               assert.equal(error._tag, "ProviderAdapterForkThreadError");
               if (error._tag === "ProviderAdapterForkThreadError")
-                assert.instanceOf(error.cause, ProviderRuntimeBindingError);
+                assert.instanceOf(error.cause, ProviderAdapter.ProviderRuntimeBindingError);
             } else {
               const pending = yield* h
                 .fork(source, "claude-source-interruption-target", target.runtime)
@@ -12648,7 +12710,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               "source scope cleanup must not retry an unknown abandonment",
             );
           }),
-        ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
     );
 
     it.effect(
@@ -12690,7 +12756,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             yield* replacement.close;
             assert.equal(h.lifecycleCalls.filter((call) => call.method === "abandon").length, 2);
           }),
-        ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
     );
   });
 
@@ -12708,10 +12778,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const queues: Array<Queue.Queue<SDKMessage>> = [];
         const options: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
         const chronology: Array<string> = [];
-        const events: Array<ProviderAdapterV2Event> = [];
+        const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
         let generations = 0;
         let nativeIds = 0;
-        const lifecycle: ProviderRuntimeLifecycle = {
+        const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
           admit: () => Effect.void,
           reserve: () =>
             Effect.sync(() => {
@@ -12738,7 +12808,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }),
           invalidate: () => Effect.void,
         };
-        const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+        const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
           instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
           settings: DEFAULT_CLAUDE_SETTINGS,
           environment: {},
@@ -12761,6 +12831,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   messages: Stream.fromQueue(queue),
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  stopTask: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
                   setPermissionMode: () => Effect.void,
                   interrupt: Effect.void,
                   close: Effect.sync(() => {
@@ -12906,7 +12979,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           assert.deepEqual(
             rolledBack.providerThread.runtimeIdentity?.observed,
-            unobservedRuntimeIdentity(),
+            ProviderAdapter.unobservedRuntimeIdentity(),
           );
         }
         row = rolledBack.providerThread;
@@ -12960,7 +13033,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         );
       }),
-    ).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   const WORKFLOW_TASK_ID = "task-workflow-run";

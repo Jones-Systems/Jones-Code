@@ -10,6 +10,7 @@ import {
 import * as CodexReplay from "effect-codex-app-server/replay";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
   runtimeBinding,
@@ -657,7 +658,7 @@ const scenario = (mode: Mode) =>
           let opened = 0;
           const requests: Array<string> = [];
           const settings = yield* Schema.decodeUnknownEffect(CodexSettings)({});
-          const adapter = CodexAdapterV2.makeCodexAdapterV2({
+          const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
             instanceId: binding.providerInstanceId,
             settings,
             crypto: yield* Crypto.Crypto,
@@ -837,7 +838,11 @@ const scenario = (mode: Mode) =>
           if (result._tag === "Failure") return yield* result.failure;
           return result.success;
         }),
-      ).pipe(Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer)));
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        ),
+      );
     const start = Layer.succeed(
       Start.ProviderTurnStartServiceV2,
       Start.ProviderTurnStartServiceV2.of({
