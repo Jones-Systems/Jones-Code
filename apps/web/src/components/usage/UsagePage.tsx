@@ -110,6 +110,8 @@ import { UsageRangePicker } from "../../jones/usage/UsageRangePicker";
 import { useUsageProviderDetails } from "../../jones/usage/useUsageProviderDetails";
 import { useUsageWindow } from "../../jones/usage/useUsageWindow";
 
+const providerLabel = (provider: UsageProviderKind) => PROVIDER_PRESENTATION[provider].label;
+
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
 }
