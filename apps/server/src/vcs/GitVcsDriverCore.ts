@@ -3965,11 +3965,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       // A checkout can start at a commit or tag, but a PR must target a branch.
       const baseBranch = yield* resolveBranchName(input.cwd, input.baseRefName);
       if (baseBranch) {
-        yield* runGit("GitVcsDriver.createWorktree.configureBaseRef", input.cwd, [
+        const configArgs = [
           "config",
           `branch.${input.newRefName}.gh-merge-base`,
           baseBranch,
-        ]);
+        ];
+        yield* journalStep(
+          "worktree.base-config",
+          input.cwd,
+          configArgs,
+          runGit("GitVcsDriver.createWorktree.configureBaseRef", input.cwd, configArgs),
+        );
       }
     }
 

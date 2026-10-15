@@ -2182,6 +2182,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           { id: sessionId, driver: "codex", providerInstanceId: instanceId, status: "running" },
         ],
         providerTurns: [{ providerThreadId, runAttemptId: attemptId, status: "running" }],
+        runtimeRequests: [],
+        turnItems: [],
       } as unknown as ProjectionStore.ProjectionRuntimeRecoveryState;
       const projections = Layer.mock(ProjectionStore.ProjectionStoreV2)({
         getRecoveryThreadIds: () => Effect.succeed([threadId]),

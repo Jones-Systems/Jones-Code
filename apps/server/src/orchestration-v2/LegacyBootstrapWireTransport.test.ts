@@ -399,6 +399,12 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
             Effect.andThen(projections.getShellSnapshot(options)),
             Effect.mapError(mapError),
           ),
+        readShellSnapshot: (options) =>
+          prepareSnapshot.pipe(
+            Effect.andThen(projections.readShellSnapshot(options)),
+            Effect.map((decode) => decode.pipe(Effect.mapError(mapError))),
+            Effect.mapError(mapError),
+          ),
       });
     }),
   ).pipe(Layer.provideMerge(persistence));
@@ -1502,6 +1508,38 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             Effect.forkChild,
           );
           yield* Effect.addFinalizer(() => WsFiber.interrupt(serving));
+          const diagnosticTag = (value: unknown) =>
+            typeof value === "object" &&
+            value !== null &&
+            "_tag" in value &&
+            typeof value._tag === "string" &&
+            /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value._tag)
+              ? value._tag
+              : "Untagged";
+          const servingEnded = WsFiber.join(serving).pipe(
+            Effect.matchCauseEffect({
+              onFailure: (cause) =>
+                Effect.die({
+                  _tag: "LegacyWireServingFailed",
+                  causes: cause.reasons.slice(0, 8).map((reason) => ({
+                    kind: reason._tag,
+                    tag:
+                      reason._tag === "Fail"
+                        ? diagnosticTag(reason.error)
+                        : reason._tag === "Die"
+                          ? diagnosticTag(reason.defect)
+                          : "Interrupt",
+                  })),
+                  order: order.slice(0, 8),
+                }),
+              onSuccess: (response) =>
+                Effect.die({
+                  _tag: "LegacyWireServingEnded",
+                  status: response.status,
+                  order: order.slice(0, 8),
+                }),
+            }),
+          );
           yield* WsQueue.offer(
             incoming,
             yield* encodeSocketRpcRequest({
@@ -1513,11 +1551,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             }),
           );
           if (requiredPreflight) {
-            const rawFrame = yield* Effect.race(
+            const rawFrame = yield* Effect.raceFirst(
               WsQueue.take(outgoing),
-              WsFiber.join(serving).pipe(
-                Effect.andThen(Effect.die("Socket ended before preflight failure")),
-              ),
+              servingEnded,
             ).pipe(Effect.timeout("5 seconds"));
             const frame = yield* decodeSocketRpcResponse(
               typeof rawFrame === "string" ? rawFrame : new TextDecoder().decode(rawFrame),
@@ -2351,9 +2387,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               return;
             }
           }
-          const raw = yield* Effect.race(
+          const raw = yield* Effect.raceFirst(
             WsQueue.take(outgoing),
-            WsFiber.join(serving).pipe(Effect.andThen(Effect.die("Socket ended before response"))),
+            servingEnded,
           ).pipe(Effect.timeout("5 seconds"));
           const frame = yield* decodeSocketRpcResponse(
             typeof raw === "string" ? raw : new TextDecoder().decode(raw),

@@ -3107,6 +3107,8 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
             if (args.includes("--git-common-dir")) stdout = `${common}\n`;
             else if (args.includes("--absolute-git-dir")) stdout = `${gitDirectory}\n`;
             else if (args.includes("symbolic-ref")) stdout = `refs/heads/${currentBranch}\n`;
+            else if (args.includes("rev-parse") && args.includes("--symbolic-full-name"))
+              stdout = `refs/heads/${args.at(-1)}\n`;
             else if (args.includes("rev-parse")) stdout = `${oid}\n`;
             else if (args.includes("--porcelain"))
               stdout = added

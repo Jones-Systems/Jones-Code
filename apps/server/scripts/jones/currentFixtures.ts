@@ -16,6 +16,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -675,15 +676,6 @@ export async function produceCurrentFixture<A>(
       foreignKeys: { violations: 0, sha256: hash(foreignKeys) },
     };
     await observe("before-production-close");
-    stage = "maintenance";
-    if (profile === "health-offline-delete") {
-      const checkpoint = (await query("PRAGMA wal_checkpoint(TRUNCATE)"))[0];
-      if (
-        Number(checkpoint?.busy) !== 0 ||
-        Object.values((await query("PRAGMA journal_mode=DELETE"))[0] ?? {})[0] !== "delete"
-      )
-        throw fixtureInvariant("delete_maintenance_failed", "DELETE fixture maintenance failed");
-    }
   } catch (error) {
     result.diagnostic = failureDiagnostic(stage, error);
     result.error = error instanceof Error ? error : new Error(String(error));
@@ -693,7 +685,7 @@ export async function produceCurrentFixture<A>(
     cancellation.abort();
     await Promise.allSettled([...pending]);
     try {
-      const closedProof = await observeSyntheticClose(owner, {
+      let closedProof = await observeSyntheticClose(owner, {
         permit,
         producerStep: options.binding.taskRef,
         resource: runtime,
@@ -704,6 +696,56 @@ export async function produceCurrentFixture<A>(
         stage = "maintenance";
         let maintenance: CurrentFixtureCapture["profile"]["maintenance"];
         if (profile === "health-offline-delete") {
+          options.signal?.throwIfAborted();
+          const maintenancePermit = assertOwnedDatabase(owner, {
+            databaseRelativePath: permit.relativePath,
+            access: "readwrite",
+          });
+          result.closeKnown = false;
+          // Production workers must close before worker-free DELETE maintenance acquires custody.
+          const maintenanceRuntime = ManagedRuntime.make(
+            NodeSqliteClient.layer({ filename: maintenancePermit.canonicalPath }).pipe(
+              Layer.provide(Logger.layer([])),
+            ),
+          );
+          const maintenanceQuery = (text: string) => {
+            options.signal?.throwIfAborted();
+            return maintenanceRuntime
+              .runPromise(
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  return yield* sql.unsafe<Record<string, unknown>>(text);
+                }),
+                { signal: options.signal },
+              )
+              .then((rows) => {
+                options.signal?.throwIfAborted();
+                return rows;
+              });
+          };
+          try {
+            const checkpoint = (await maintenanceQuery("PRAGMA wal_checkpoint(TRUNCATE)"))[0];
+            if (
+              Number(checkpoint?.busy) !== 0 ||
+              Object.values((await maintenanceQuery("PRAGMA journal_mode=DELETE"))[0] ?? {})[0] !==
+                "delete"
+            )
+              throw fixtureInvariant("delete_maintenance_failed", "DELETE fixture maintenance failed");
+          } catch (error) {
+            result.diagnostic = failureDiagnostic(stage, error);
+            result.error = error instanceof Error ? error : new Error(String(error));
+          } finally {
+            stage = "close";
+            closedProof = await observeSyntheticClose(owner, {
+              permit: maintenancePermit,
+              producerStep: options.binding.taskRef,
+              resource: maintenanceRuntime,
+              close: (resource) => resource.dispose(),
+            });
+            result.closeKnown = true;
+          }
+          if (result.error) throw result.error;
+          stage = "maintenance";
           const header = Buffer.alloc(100);
           const fd = NodeFS.openSync(paths.dbPath, "r");
           let bytesRead: number;

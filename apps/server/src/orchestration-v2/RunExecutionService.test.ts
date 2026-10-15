@@ -1598,7 +1598,7 @@ it.effect("ends a nested native subagent and its thread when the root run is int
         Layer.mergeAll(
           McpAppModelContext.layerEmpty,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
-          Layer.mock(EventSink.EventSinkV2)({
+          executionEventSinkLayer({
             write: () => Effect.succeed([]),
             writeWithEffects: (input) =>
               Effect.as(
