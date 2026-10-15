@@ -1,4 +1,3 @@
-import { AllowGitHubReserve } from "@t3tools/source-control-github/server/GitHubApi";
 import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
 import * as PullRequestCiStatus from "../jones/pullRequestCi/PullRequestCiStatus.ts";
 import {
