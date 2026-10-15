@@ -18,7 +18,7 @@ import {
 
 const layerProbePlatform = Layer.mergeAll(
   Path.layer,
-  Layer.mock(FileSystem.FileSystem)({
+  FileSystem.layerNoop({
     readFileString: () => Effect.die("Injected Codex probes must not read provider files."),
   }),
 );
