@@ -17,11 +17,13 @@ import {
 } from "vite-plus/test";
 
 import {
+  configuredDatabasePathForBaseDir,
   databaseBackupBlocker,
   Launcher,
   PREPARED_TIMEOUT_MS,
   type BackupSpaceProbe,
   readServiceState,
+  validateDatabasePathForBaseDir,
   writeServiceState,
 } from "./serviceLauncher.ts";
 import {
