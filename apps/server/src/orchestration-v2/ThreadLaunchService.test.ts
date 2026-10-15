@@ -3447,9 +3447,7 @@ it.effect.each(["sequence", "records", "stream"] as const)(
       if (read === "sequence") sequenceRead.mockImplementationOnce(() => Effect.fail(cause));
       if (read === "records")
         recordsRead.mockImplementation((threadId, fields, filter) =>
-          filter === undefined
-            ? Effect.fail(cause)
-            : originalRecordsRead(threadId, fields, filter),
+          filter === undefined ? Effect.fail(cause) : originalRecordsRead(threadId, fields, filter),
         );
       if (read === "stream") eventStream.mockImplementationOnce(() => Stream.fail(cause));
       const failure = yield* launches
