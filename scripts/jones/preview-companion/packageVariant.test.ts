@@ -84,7 +84,10 @@ describe("dedicated companion artifact", () => {
         expect.objectContaining({ provider: "github", owner: "synthetic", repo: "example" }),
       ]);
       expect(config.mac).toMatchObject({
-        protocols: [{ name: "T3 Code", schemes: ["t3code", "t3code-dev"] }],
+        protocols: [
+          { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+          { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
+        ],
       });
       expect(companionPackageMetadata()).toEqual({});
     }),
