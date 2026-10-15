@@ -515,6 +515,8 @@ function layerTest(input: {
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
   readonly backgroundTasksEndWithProcess?: boolean;
+  readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
+  readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;

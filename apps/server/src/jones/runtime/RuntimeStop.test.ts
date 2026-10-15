@@ -151,6 +151,7 @@ const fixture = Effect.fnUntraced(function* () {
   };
   const manager = Layer.succeed(ProviderSessions.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
+    isLive: () => Effect.die("Runtime stop must use the captured runtime binding"),
     shutdown: Effect.void,
     open: () => Effect.die("unexpected_open"),
     get: () => Effect.succeed(Option.none()),

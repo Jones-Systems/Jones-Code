@@ -4389,7 +4389,7 @@ function makeRunOwnedSubagentChildNodeFixture(input: {
 function rootTerminalEvent(
   ids: BackgroundScenarioIds,
   status: "completed" | "interrupted" | "cancelled" | "failed",
-): ProviderAdapter.ProviderAdapterV2Event {
+): Extract<ProviderAdapter.ProviderAdapterV2Event, { readonly type: "turn.terminal" }> {
   const common = {
     type: "turn.terminal" as const,
     driver,

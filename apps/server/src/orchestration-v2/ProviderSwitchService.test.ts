@@ -70,7 +70,7 @@ function deadSessionRecord(
 }
 
 function layerTest(
-  metadata: Readonly<Record<string, { continuationKey: string }>>,
+  metadata: Readonly<Record<string, { continuationKey: string; driver?: ProviderDriverKind }>>,
   planSelectionTransition: ProviderAdapter.ProviderAdapterV2["Service"]["planSelectionTransition"] = () =>
     Effect.succeed({ type: "restart_session" }),
 ) {

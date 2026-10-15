@@ -201,7 +201,15 @@ function makeHarness(options: HarnessOptions = {}) {
   const runSetup = vi.fn(
     options.runSetup ?? (() => Effect.succeed({ status: "no-script" as const })),
   );
-  const closeTerminal = vi.fn(options.closeTerminal ?? (() => Effect.void));
+  const closeTerminal = vi.fn(
+    (
+      input: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[0],
+      closeOptions?: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[1],
+    ) =>
+      closeOptions === undefined
+        ? (options.closeTerminal?.(input) ?? Effect.void)
+        : Effect.die("Guarded terminal close requires the fixture's terminal owner."),
+  );
   const generateBranchName = vi.fn(
     options.generateBranchName ?? (() => Effect.succeed({ branch: "generated-branch" })),
   );

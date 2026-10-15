@@ -181,6 +181,7 @@ describe("ResourceTelemetry", () => {
           Layer.mergeAll(
             NativeTelemetryClient.layerTest({ readHistory: () => Effect.succeed(samples) }),
             DesktopTelemetryReceiver.layerTest(),
+            ProcessAttribution.layer,
             ResourceAttribution.layer,
           ),
         ),
