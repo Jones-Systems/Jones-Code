@@ -44,41 +44,42 @@ const runtimeEvidenceOver = (events: ReadonlyArray<Record<string, unknown>>) =>
           for (const stream of child.stdio) stream?.destroy();
         }),
     );
-    const result = yield* Effect.tryPromise(() =>
-      new Promise<string>((resolve, reject) => {
-        let output = "";
-        let errors = "";
-        let evidence: string | undefined;
-        child.stderr?.on("data", (chunk: Buffer) => {
-          errors += chunk.toString();
-        });
-        child.stdout?.on("data", (chunk: Buffer) => {
-          output += chunk.toString();
-          let end: number;
-          while ((end = output.indexOf("\n")) >= 0) {
-            const line = output.slice(0, end);
-            output = output.slice(end + 1);
-            if (line === "ready") {
-              const input = child.stdio[3];
-              if (!input || !("write" in input)) {
-                reject(new Error("Missing desktop browser input pipe"));
-                return;
+    const result = yield* Effect.tryPromise(
+      () =>
+        new Promise<string>((resolve, reject) => {
+          let output = "";
+          let errors = "";
+          let evidence: string | undefined;
+          child.stderr?.on("data", (chunk: Buffer) => {
+            errors += chunk.toString();
+          });
+          child.stdout?.on("data", (chunk: Buffer) => {
+            output += chunk.toString();
+            let end: number;
+            while ((end = output.indexOf("\n")) >= 0) {
+              const line = output.slice(0, end);
+              output = output.slice(end + 1);
+              if (line === "ready") {
+                const input = child.stdio[3];
+                if (!input || !("write" in input)) {
+                  reject(new Error("Missing desktop browser input pipe"));
+                  return;
+                }
+                input.write(events.map((event) => `${JSON.stringify(event)}\n`).join(""));
+              } else if (line.startsWith("runtime-evidence:")) {
+                evidence = line.slice("runtime-evidence:".length);
               }
-              input.write(events.map((event) => `${JSON.stringify(event)}\n`).join(""));
-            } else if (line.startsWith("runtime-evidence:")) {
-              evidence = line.slice("runtime-evidence:".length);
             }
-          }
-        });
-        child.once("error", reject);
-        child.once("close", (code, signal) => {
-          if (code !== 0 || signal !== null || evidence === undefined) {
-            reject(new Error(`Desktop evidence fixture failed (${code}, ${signal}): ${errors}`));
-            return;
-          }
-          resolve(evidence);
-        });
-      }),
+          });
+          child.once("error", reject);
+          child.once("close", (code, signal) => {
+            if (code !== 0 || signal !== null || evidence === undefined) {
+              reject(new Error(`Desktop evidence fixture failed (${code}, ${signal}): ${errors}`));
+              return;
+            }
+            resolve(evidence);
+          });
+        }),
     );
     return yield* decodeRuntimeEvidence(result);
   });
