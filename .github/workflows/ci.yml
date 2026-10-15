@@ -367,6 +367,11 @@ jobs:
           row='[.filename, (.previous_filename // empty)] | @tsv'
 
           if [[ -n "${PR_NUMBER}" ]]; then
+            stack_base=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.stack.base.ref // empty') \
+              || fail_open "Could not read native stack membership."
+            if [[ -n "$stack_base" ]]; then
+              fail_open "Native stack qualification covers lower layers as well as this PR."
+            fi
             # The PR files endpoint stops at 3000 files and pagination cannot
             # extend it, so cross-check against the count the PR itself reports.
             expected=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.changed_files') \
