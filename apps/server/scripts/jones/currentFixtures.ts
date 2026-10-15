@@ -730,7 +730,10 @@ export async function produceCurrentFixture<A>(
               Object.values((await maintenanceQuery("PRAGMA journal_mode=DELETE"))[0] ?? {})[0] !==
                 "delete"
             )
-              throw fixtureInvariant("delete_maintenance_failed", "DELETE fixture maintenance failed");
+              throw fixtureInvariant(
+                "delete_maintenance_failed",
+                "DELETE fixture maintenance failed",
+              );
           } catch (error) {
             result.diagnostic = failureDiagnostic(stage, error);
             result.error = error instanceof Error ? error : new Error(String(error));

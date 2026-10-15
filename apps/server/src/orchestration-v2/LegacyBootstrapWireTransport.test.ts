@@ -1551,10 +1551,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             }),
           );
           if (requiredPreflight) {
-            const rawFrame = yield* Effect.raceFirst(
-              WsQueue.take(outgoing),
-              servingEnded,
-            ).pipe(Effect.timeout("5 seconds"));
+            const rawFrame = yield* Effect.raceFirst(WsQueue.take(outgoing), servingEnded).pipe(
+              Effect.timeout("5 seconds"),
+            );
             const frame = yield* decodeSocketRpcResponse(
               typeof rawFrame === "string" ? rawFrame : new TextDecoder().decode(rawFrame),
             );
@@ -2387,10 +2386,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               return;
             }
           }
-          const raw = yield* Effect.raceFirst(
-            WsQueue.take(outgoing),
-            servingEnded,
-          ).pipe(Effect.timeout("5 seconds"));
+          const raw = yield* Effect.raceFirst(WsQueue.take(outgoing), servingEnded).pipe(
+            Effect.timeout("5 seconds"),
+          );
           const frame = yield* decodeSocketRpcResponse(
             typeof raw === "string" ? raw : new TextDecoder().decode(raw),
           );

@@ -7,10 +7,9 @@ import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Bind canonical fixture paths synchronously before runtime acquisition.
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { describe, it } from "@effect/vitest";
+import { describe, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
-import { vi } from "vitest";
 import { produceCurrentFixture } from "./currentFixtures.ts";
 import type { CurrentFixtureOptions, CurrentProductionResult } from "./currentFixtures.ts";
 import {
