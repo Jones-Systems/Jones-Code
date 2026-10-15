@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Entry point for the inherited-pipe shutdown regression test.
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { PreviewAutomationRuntimeIdentity } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
@@ -8,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerSettings from "../../serverSettings.ts";
@@ -17,6 +19,19 @@ import * as DesktopTelemetryReceiver from "../../resourceTelemetry/DesktopTeleme
 import * as DesktopBrowserChannel from "../DesktopBrowserChannel.ts";
 
 const key = { threadId: "thread-1", tabId: "tab-1" };
+const encodeRuntimeEvidence = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      attached: Schema.Boolean,
+      evidence: Schema.NullOr(
+        Schema.Struct({
+          runtimeIdentity: Schema.NullOr(PreviewAutomationRuntimeIdentity),
+          attachmentGeneration: Schema.Number,
+        }),
+      ),
+    }),
+  ),
+);
 
 Effect.gen(function* () {
   const base = yield* ServerConfig.ServerConfig.pipe(
@@ -42,7 +57,8 @@ Effect.gen(function* () {
     yield* Console.log("ready");
     const attached = yield* browser.awaitAttached(sentinel, "5 seconds");
     const evidence = yield* browser.runtimeEvidence(key);
-    yield* Console.log(`runtime-evidence:${JSON.stringify({ attached, evidence })}`);
+    const encoded = yield* encodeRuntimeEvidence({ attached, evidence });
+    yield* Console.log(`runtime-evidence:${encoded}`);
     return;
   }
   const telemetry = Context.get(context, DesktopTelemetryReceiver.DesktopTelemetryReceiver);

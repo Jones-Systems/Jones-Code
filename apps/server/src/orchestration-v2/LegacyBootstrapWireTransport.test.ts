@@ -82,6 +82,7 @@ import * as WsEnvironmentTheme from "../environmentTheme.ts";
 import * as WsExternalLauncher from "../process/externalLauncher.ts";
 import * as WsRemoteOpenTargets from "../environment/RemoteOpenTargets.ts";
 import * as WsGitWorkflowService from "../git/GitWorkflowService.ts";
+import * as WsPullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
 import * as WsReviewService from "../review/ReviewService.ts";
 import * as WsVcsProvisioningService from "../vcs/VcsProvisioningService.ts";
 import * as WsVcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
@@ -98,6 +99,7 @@ import * as WsProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as WsServerSelfUpdate from "../cloud/selfUpdate.ts";
 import * as WsServerConfig from "../config.ts";
 import * as WsServerLifecycleEvents from "../serverLifecycleEvents.ts";
+import * as WsStorageCleanup from "../storageCleanup.ts";
 import * as WsServerSettings from "../serverSettings.ts";
 import * as WsServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as WsWorkspaceEntries from "../workspace/WorkspaceEntries.ts";
@@ -526,6 +528,16 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsThreadLaunchService.ThreadLaunchService)({ launch: denyRpcWork }),
     Layer.mock(WsScheduledTasks.ScheduledTaskService)({}),
     Layer.mock(WsPullRequestService.PullRequestService)({}),
+    Layer.succeed(WsPullRequestReviewGuideService.PullRequestReviewGuideService, {
+      get: denyRpcWork,
+      generate: denyRpcWork,
+    }),
+    Layer.succeed(WsStorageCleanup.StorageCleanup, {
+      runNow: denyRpcWork(),
+      latestReport: denyRpcWork(),
+      reports: Stream.fromEffect(denyRpcWork()),
+      drain: denyRpcWork(),
+    }),
     Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
     Layer.mock(WsDeviceService.DeviceService)({}),
     Layer.mock(WsOrchestrator.OrchestratorV2)({ dispatch: denyRpcWork }),
@@ -1272,6 +1284,19 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           }),
           Layer.mock(WsScheduledTasks.ScheduledTaskService)({}),
           Layer.mock(WsPullRequestService.PullRequestService)({}),
+          Layer.succeed(WsPullRequestReviewGuideService.PullRequestReviewGuideService, {
+            get: () => Effect.die("Legacy bootstrap must not read a pull request review guide."),
+            generate: () =>
+              Effect.die("Legacy bootstrap must not generate a pull request review guide."),
+          }),
+          Layer.succeed(WsStorageCleanup.StorageCleanup, {
+            runNow: Effect.die("Legacy bootstrap must not run storage cleanup."),
+            latestReport: Effect.die("Legacy bootstrap must not read a storage cleanup report."),
+            reports: Stream.fromEffect(
+              Effect.die("Legacy bootstrap must not subscribe to storage cleanup reports."),
+            ),
+            drain: Effect.die("Legacy bootstrap must not drain storage cleanup."),
+          }),
           Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
           Layer.mock(WsDeviceService.DeviceService)({}),
           Layer.mock(WsOrchestrator.OrchestratorV2)({
