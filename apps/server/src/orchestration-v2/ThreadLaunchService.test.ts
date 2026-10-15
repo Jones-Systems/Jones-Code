@@ -3391,6 +3391,107 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
   }),
 );
 
+it.effect.each(["sequence", "records", "stream"] as const)(
+  "reports a preparation interruption-monitor %s failure through the launch error contract",
+  (read) => {
+    const harness = makeHarness({ createWorktree: () => Effect.never });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const sink = yield* EventSink.EventSinkV2;
+      const projectCommandId = CommandId.make(`monitor-failure:project:${read}`);
+      yield* sink.commitProjectCommand({
+        commandId: projectCommandId,
+        projectId,
+        commandType: "project.create",
+        acceptedAt: yield* DateTime.now,
+        event: {
+          eventId: EventId.make(`${projectCommandId}:event`),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: project.createdAt,
+          commandId: projectCommandId,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId,
+            title: project.title,
+            workspaceRoot: project.workspaceRoot,
+            defaultModelSelection: modelSelection,
+            scripts: [],
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt,
+          },
+        },
+      });
+      const base = launchInput({
+        command: `monitor-failure:release:${read}`,
+        thread: `monitor-failure:thread:${read}`,
+        message: "Preserve the preparation failure",
+        workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+      });
+      const createCommandId = legacyBootstrapCreateCommandId(base.threadId, base.commandId);
+      const cause =
+        read === "stream"
+          ? new Orchestrator.OrchestratorDomainEventStreamError({ cause: "Synthetic stream loss" })
+          : new Orchestrator.OrchestratorProjectionError({
+              threadId: base.threadId,
+              cause: `Synthetic ${read} loss`,
+            });
+      const originalRecordsRead = threads.getThreadRecords;
+      const sequenceRead = vi.spyOn(threads, "getThreadEventSequence");
+      const recordsRead = vi.spyOn(threads, "getThreadRecords");
+      const eventStream = vi.spyOn(threads, "streamStoredEventsFrom");
+      if (read === "sequence") sequenceRead.mockImplementationOnce(() => Effect.fail(cause));
+      if (read === "records")
+        recordsRead.mockImplementation((threadId, fields, filter) =>
+          filter === undefined
+            ? Effect.fail(cause)
+            : originalRecordsRead(threadId, fields, filter),
+        );
+      if (read === "stream") eventStream.mockImplementationOnce(() => Stream.fail(cause));
+      const failure = yield* launches
+        .launch({
+          ...base,
+          commandId: createCommandId,
+          preparationReleaseCommandId: base.commandId,
+          runSetupScript: false,
+          legacyBootstrap: {
+            version: 1,
+            createCommandId,
+            birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+            releaseCommandId: base.commandId,
+            projectId,
+            threadId: base.threadId,
+            messageId: base.initialMessage!.messageId,
+            payloadHash: `monitor-failure:${read}`,
+            ownsNewThread: true,
+          },
+        })
+        .pipe(
+          Effect.flip,
+          Effect.ensuring(
+            Effect.sync(() => {
+              sequenceRead.mockRestore();
+              recordsRead.mockRestore();
+              eventStream.mockRestore();
+            }),
+          ),
+        );
+      assert.isTrue(Schema.is(ThreadLaunch.ThreadLaunchError)(failure));
+      if (!Schema.is(ThreadLaunch.ThreadLaunchError)(failure)) return;
+      assert.equal(failure.operation, "update-thread");
+      assert.equal(failure.commandId, createCommandId);
+      assert.equal(failure.projectId, projectId);
+      assert.equal(failure.threadId, base.threadId);
+      assert.strictEqual(failure.cause, cause);
+      assert.isEmpty(harness.runSetup.mock.calls);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect.each([
   { name: "is missing", baseRef: "t3/renamed", startFromOrigin: false, origin: true },
   {

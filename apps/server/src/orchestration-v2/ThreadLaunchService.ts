@@ -1124,8 +1124,9 @@ const make = Effect.gen(function* () {
     "ThreadLaunchService.checkWorktreeBase",
   )(function* (input) {
     const strategy = input.workspaceStrategy;
+    if (strategy.type !== "worktree" || strategy.baseRef === undefined) return;
     // `:/text` is a commit search, which cannot be asked for a commit type.
-    if (strategy.type !== "worktree" || strategy.baseRef.startsWith(":")) return;
+    if (strategy.baseRef.startsWith(":")) return;
     const { baseRef } = strategy;
     // Anything this cannot establish is left for the launch to report: a
     // missing project, a folder that is not a repository, a failing Git.
@@ -2005,8 +2006,12 @@ const make = Effect.gen(function* () {
       ) {
         return yield* prepare;
       }
-      const afterSequence = yield* threads.getThreadEventSequence(threadId);
-      const projection = yield* threads.getThreadRecords(threadId, ["runs"]);
+      const afterSequence = yield* threads
+        .getThreadEventSequence(threadId)
+        .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      const projection = yield* threads
+        .getThreadRecords(threadId, ["runs"])
+        .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       if (projection.runs.find((run) => run.id === runId)?.status !== "preparing") return;
       const interruption = threads
         .streamStoredEventsFrom({ threadId, afterSequence, eventType: "run.updated" })
@@ -2019,6 +2024,7 @@ const make = Effect.gen(function* () {
                 stored.event.payload.status === "cancelled"),
           ),
           Stream.runHead,
+          Effect.mapError(mapError(input, "update-thread", threadId)),
           Effect.flatMap((event) => (Option.isSome(event) ? Effect.interrupt : Effect.never)),
         );
       yield* Effect.raceFirst(prepare, interruption);

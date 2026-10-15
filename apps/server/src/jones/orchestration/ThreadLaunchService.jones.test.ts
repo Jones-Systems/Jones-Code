@@ -301,6 +301,26 @@ function worktreeBaseRef(name: string, overrides: Partial<VcsRef> = {}): VcsRef 
   };
 }
 
+it.effect("defers an omitted worktree base to launch without reading Git refs", () => {
+  const hasCommit = vi.fn(() => Effect.die("Preflight must not substitute HEAD"));
+  const listRefs = vi.fn(() => Effect.die("Launch owns automatic base selection"));
+  const harness = makeHarness({ listRefs });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const git = yield* GitWorkflow.GitWorkflowService;
+    const commitRead = vi.spyOn(git, "hasCommit").mockImplementation(hasCommit);
+    yield* launches
+      .checkWorktreeBase({
+        projectId,
+        workspaceStrategy: { type: "worktree", branch: "feature" },
+      })
+      .pipe(Effect.ensuring(Effect.sync(() => commitRead.mockRestore())));
+    assert.equal(hasCommit.mock.calls.length, 0);
+    assert.equal(listRefs.mock.calls.length, 0);
+    assert.equal(harness.createWorktree.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("accepts the first message while its automatic worktree base is still loading", () =>
   Effect.gen(function* () {
     const refsEntered = yield* Deferred.make<void>();
