@@ -11,7 +11,8 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeNet from "node:net";
 
-import { buildRemoteT3RunnerScript } from "./tunnel.ts";
+import { remoteStateKey } from "./command.ts";
+import { buildRemoteStopScript, buildRemoteT3RunnerScript } from "./tunnel.ts";
 
 const Started = Schema.Struct({
   pid: Schema.Number,

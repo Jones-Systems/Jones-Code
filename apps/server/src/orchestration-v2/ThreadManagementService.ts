@@ -614,6 +614,8 @@ const make = Effect.gen(function* () {
     receipts.getByCommandId(commandId).pipe(
       Effect.orElseSucceed(() => Option.none()),
       Effect.map(Option.isSome),
+    );
+
   const observationSessions = yield* Effect.serviceOption(ProviderSessionManager.ProviderSessionManagerV2);
   const observeThreadActivity = (threadId: ThreadId) =>
     Effect.gen(function* () {
