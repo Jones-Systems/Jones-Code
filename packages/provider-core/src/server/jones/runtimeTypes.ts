@@ -33,4 +33,3 @@ export interface ProviderGoalReadResult {
   readonly state: "inactive" | "active" | "unknown";
   readonly reasonCode: ProviderGoalReasonCode;
 }
-
