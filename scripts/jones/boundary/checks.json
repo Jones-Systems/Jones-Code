@@ -11,10 +11,11 @@
       "tests": [
         "apps/web/src/hostStatus.test.ts",
         "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
+        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/hostStatus.test.ts apps/web/src/components/chat/HostStatusIndicators.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+        "vp test run apps/web/src/hostStatus.test.ts apps/web/src/components/chat/HostStatusIndicators.test.tsx apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts"
       ]
     },
     {
