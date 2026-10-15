@@ -32,6 +32,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
@@ -154,13 +155,16 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             registry,
             { databaseLayer: database, runEffectWorker: false },
           ).pipe(Layer.provide(Layer.succeed(TerminalManager.TerminalManager, manager)));
-          const management = Management.layer.pipe(Layer.provide(runtime));
           const stores = Layer.mergeAll(
             CommandReceipts.layer,
             EffectOutbox.layer,
             EventStore.layer,
             ProjectionStore.layer,
           ).pipe(Layer.provide(database));
+          const management = Management.layer.pipe(
+            Layer.provide(Layer.mergeAll(runtime, stores)),
+            Layer.provide(ServerSettings.layerTest()),
+          );
           const maintenance = ProjectionMaintenance.layer.pipe(
             Layer.provide(Layer.mergeAll(stores, database)),
           );

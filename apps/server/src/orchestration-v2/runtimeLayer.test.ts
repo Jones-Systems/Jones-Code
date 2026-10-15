@@ -5932,6 +5932,7 @@ const LegacyGuardTerminalOwnerLayer = Layer.effect(
 ).pipe(Layer.provideMerge(LegacyGuardTerminalFixtureLayer));
 const LegacyGuardOwnerTestLayer = ThreadManagement.layer.pipe(
   Layer.provideMerge(layerTest),
+  Layer.provide(ServerSettings.layerTest()),
   Layer.provideMerge(LegacyGuardTerminalOwnerLayer),
   Layer.provideMerge(SqlitePersistence.layerMemory),
 );

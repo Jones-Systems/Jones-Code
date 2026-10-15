@@ -2258,6 +2258,7 @@ it.effect(
         });
         const dependencies = Layer.mergeAll(
           NodeServices.layer,
+          ServerSettings.layerTest(),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(projection),
             getThreadShell: () => Effect.succeed(shell),
@@ -2296,7 +2297,7 @@ it.effect(
           assert.equal(detail.thread.threadId, threadId);
           assert.equal(listed.threads[0]?.title, "Serializer fixture");
           assert.equal(detail.thread.title, "Serializer fixture");
-        }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
       }
     }),
 );

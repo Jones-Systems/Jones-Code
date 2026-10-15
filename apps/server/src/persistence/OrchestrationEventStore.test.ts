@@ -28,6 +28,7 @@ import {
 } from "../orchestration-v2/LiveStreamBudget.ts";
 import { PersistenceDecodeError } from "./Errors.ts";
 import { toShellApplicationEvent } from "../orchestration-v2/ShellStream.ts";
+import { isPublicStoredOrchestrationEvent } from "../orchestration-v2/WireProjection.ts";
 import * as OrchestrationEventStore from "./OrchestrationEventStore.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
 const isPersistenceDecodeError = Schema.is(PersistenceDecodeError);
@@ -294,7 +295,9 @@ layer("OrchestrationEventStore", (it) => {
           throughSequence: appended[1]!.sequence,
         })
         .pipe(Stream.runCollect);
-      assert.deepEqual(applicationEvents, [...appended]);
+      const publicAppended = appended.filter(isPublicStoredOrchestrationEvent);
+      assert.lengthOf(publicAppended, appended.length);
+      assert.deepEqual(applicationEvents, publicAppended);
     }),
   );
 

@@ -19,6 +19,7 @@ import {
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
   EnvironmentOrchestrationHttpApi,
+  EnvironmentId,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -27,6 +28,7 @@ import {
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
 import { failEnvironmentAuthInvalid } from "../auth/http.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -111,6 +113,9 @@ function fixture(
     Layer.provide(
       Layer.mergeAll(
         projection,
+        Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:goal-http")),
+        }),
         Layer.mock(EventSinkV2)({}),
         SqlitePersistence.layerMemory,
         Layer.mock(ThreadManagement.ThreadManagementService)({}),

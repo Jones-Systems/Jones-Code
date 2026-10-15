@@ -667,16 +667,17 @@ it.effect.each([false, true])(
       hasActionableProposedPlan: false,
       latestRunCompletedAt: null,
     } as OrchestrationV2ThreadShell;
+    const activityOwnerLayer = ownerProvided
+      ? Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          observeThreadActivity: () =>
+            Effect.succeed({ status: "unknown", reason: "native_activity_unsupported" }),
+        })
+      : Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({});
     const dependencies = Layer.mergeAll(
       Layer.mock(Orchestrator.OrchestratorV2)({ getThreadShell: () => Effect.succeed(shell) }),
-      ...(ownerProvided
-        ? [
-            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-              observeThreadActivity: () =>
-                Effect.succeed({ status: "unknown", reason: "native_activity_unsupported" }),
-            }),
-          ]
-        : []),
+      ServerSettings.layerTest(),
+      layerReceiptsTest,
+      activityOwnerLayer,
     );
     return Effect.gen(function* () {
       const service = yield* ThreadManagementService.ThreadManagementService;

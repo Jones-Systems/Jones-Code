@@ -27,6 +27,7 @@ import { boundedSnapshotProjection } from "@t3tools/shared/orchestrationV2Bounde
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -41,6 +42,7 @@ import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import { subscribeOrchestrationV2Thread } from "../ws.ts";
 import * as OrchestrationHttp from "./http.ts";
+import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -232,6 +234,7 @@ const TestLayer = Layer.mergeAll(
     getEnvironmentId: Effect.succeed(EnvironmentId.make("compact-transport")),
   }),
   Layer.effectDiscard(seed),
+  Layer.mock(EventSink.EventSinkV2)({}),
   Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({}),
   Layer.mock(ProjectStore.ProjectStoreV2)({}),
   Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({}),
@@ -259,6 +262,7 @@ const withHttp = <A>(use: (get: (path: string) => Promise<Response>) => Promise<
                   [ORCHESTRATION_PROTOCOL_HEADER]: String(ORCHESTRATION_PROTOCOL_VERSION),
                 },
               }),
+              Context.empty(),
             ),
           ),
         ),
