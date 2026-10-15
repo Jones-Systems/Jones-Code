@@ -1274,7 +1274,7 @@ export function NewTaskDraftScreen(props: {
       !modelSelection ||
       (initialMessageText.length === 0 && draft.attachments.length === 0) ||
       flow.submitting ||
-      (workspaceMode === "worktree" && !selectedBranchName)
+      (flow.workspaceMode === "worktree" && !selectedBranchName)
     ) {
       return;
     }

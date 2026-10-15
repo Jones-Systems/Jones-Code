@@ -79,6 +79,8 @@ describe("mobile model options", () => {
         config,
         selection,
         undefined,
+        null,
+        false,
         input.defaultModelSelection,
       )[0]!;
       expect(modelOption.capabilities?.optionDescriptors?.[0]?.currentValue).toBe(effort);
