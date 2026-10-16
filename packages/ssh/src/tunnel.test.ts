@@ -1267,7 +1267,10 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         // never reaps. An empty image means the parent itself is gone.
         let parentImage = "";
         for (let attempt = 0; attempt < 20; attempt++) {
-          parentImage = (yield* runScript(home, ["-c", `ps -o comm= -p ${parent.pid}`])).stdout.trim();
+          parentImage = (yield* runScript(home, [
+            "-c",
+            `ps -o comm= -p ${parent.pid}`,
+          ])).stdout.trim();
           if (parentImage === "" || /(^|\/)sleep$/.test(parentImage)) break;
         }
         assert.match(parentImage, /(^|\/)sleep$/);
