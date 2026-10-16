@@ -140,6 +140,13 @@ describe("Prompts environment composition", () => {
     vi.unstubAllGlobals();
   });
 
+  function setConnection(environmentId: string, phase: string) {
+    fixture.environments = fixture.environments.map((environment) =>
+      environment.environmentId === environmentId
+        ? { ...environment, connection: { ...environment.connection, phase } }
+        : environment,
+    );
+  }
   async function render() {
     await act(async () => root.render(<UnifiedQueuePage />));
   }
@@ -418,7 +425,7 @@ describe("Prompts environment composition", () => {
 
   it("keeps a discovered source visible and its editor disabled after disconnect", async () => {
     await render();
-    fixture.environments[1]!.connection.phase = "disconnected";
+    setConnection("beta", "disconnected");
     await render();
     expect(editor("alpha").disabled).toBe(false);
     expect(editor("beta").disabled).toBe(true);
@@ -458,14 +465,14 @@ describe("Prompts environment composition", () => {
   });
 
   it("does not mistake an undiscovered disconnected server for an absent source", async () => {
-    fixture.environments[1]!.connection.phase = "disconnected";
+    setConnection("beta", "disconnected");
     await render();
     expect(groups()).toEqual(["Alpha prompts"]);
     expect(container.textContent).toContain(
       "Cannot check prompt sources on Beta: server disconnected",
     );
     expect(fixture.voiceList).toHaveBeenCalledTimes(1);
-    fixture.environments[1]!.connection.phase = "connected";
+    setConnection("beta", "connected");
     await render();
     expect(groups()).toEqual(["Alpha prompts", "Beta prompts"]);
   });
