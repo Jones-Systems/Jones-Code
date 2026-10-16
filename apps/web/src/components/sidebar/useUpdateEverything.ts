@@ -183,10 +183,14 @@ export function useUpdateEverything(localUpdateVersion: string | null) {
               if (runOutcome.status !== "updated") {
                 providerFailures.set(
                   run.environmentId,
-                  runOutcome.status === "failed" ? runOutcome.line : "Provider update interrupted",
+                  runOutcome.status === "failed" || runOutcome.status === "unchanged"
+                    ? runOutcome.line
+                    : "Provider update interrupted",
                 );
               }
-              return runOutcome;
+              return runOutcome.status === "unchanged"
+                ? { status: "failed" as const, line: runOutcome.line }
+                : runOutcome;
             });
             for (const machine of machinesById.values()) {
               if (machine.server === null) {

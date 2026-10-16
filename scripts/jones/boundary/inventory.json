@@ -999,7 +999,22 @@
     "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts": "jones-owned",
     "scripts/jones/updates/cold-darwin-sdk-oracle.c": "jones-owned",
     "scripts/jones/updates/cold-darwin-native-fixture.mjs": "jones-owned",
-    "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs": "jones-owned"
+    "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs": "jones-owned",
+    "packages/client-runtime/src/jones/providerUpdates/index.ts": "jones-owned",
+    "packages/client-runtime/src/jones/providerUpdates/index.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/providerUpdateVerification.ts": "jones-owned",
+    "apps/server/src/jones/provider/providerUpdateVerification.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/provider-update-trust.json": "jones-owned",
+    "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts": "hook",
+    "apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/ProviderUpdateLaunchNotification.tsx": "hook",
+    "apps/web/src/components/ProviderUpdatePrimaryNotification.tsx": "hook",
+    "apps/web/src/components/ProviderUpdateLaunchNotification.environments.ts": "hook",
+    "apps/web/src/components/ProviderUpdateEnvironmentRows.tsx": "hook",
+    "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx": "jones-tests-in-upstream",
+    "apps/server/src/provider/providerMaintenanceRunner.ts": "hook",
+    "apps/server/src/provider/providerMaintenanceRunner.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/sidebar/useUpdateEverything.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
