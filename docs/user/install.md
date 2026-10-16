@@ -61,6 +61,12 @@ update it with `git pull` and a rebuild.
 
 ## Desktop app
 
+> **Jones Code:** the releases, package managers, and mobile store apps below
+> install upstream T3 Code, not Jones Code. Jones Code Mac builds are unsigned
+> preview artifacts. See [Mac desktop artifact](../operations/build-artifacts.md#mac-desktop-artifact)
+> for how they install and update. The upstream macOS app uses the same bundle
+> identifier as Jones Code, so do not install both on one Mac.
+
 Download a release from [GitHub Releases](https://github.com/pingdotgg/t3code/releases),
 or use a package manager:
 
