@@ -12,7 +12,7 @@ export function ComposerShortcutPlate({
       <div
         aria-hidden
         data-composer-shortcut-plate="true"
-        className="pointer-events-none absolute -inset-x-2 -top-1.5 -bottom-[100vh] -z-10 bg-background"
+        className="pointer-events-none absolute -inset-x-2 -top-1.5 bottom-0 -z-10 bg-background"
       />
       {children}
     </div>

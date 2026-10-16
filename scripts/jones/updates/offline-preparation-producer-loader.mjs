@@ -213,8 +213,8 @@ function uncertainCustody(cause, seen = new Set()) {
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "7a146f2a7650c32c4b8d73180ee5c9d7f1ed60349fcde5611d01715adec4a3aa",
-  size: 825257,
+  sha256: "e4e88dd4b0f2baa0706cdf1c51911d4af4b163560815985d899eef09e4a1ab60",
+  size: 833722,
 };
 const reviewedRawSources = {
   "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts":
@@ -230,7 +230,7 @@ const reviewedRawSources = {
   "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts":
     "fcc87f71203dcc7d559dc082bba7cc495254871cced4daeffaee9376f5820804",
   "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts":
-    "bc6613ce7d2f58bedd29698edd3a15d87944c26a68ebcebcb8d4721aa98ae843",
+    "2188d94da05859b0ed5ada4f0caf006ef9dc9a8b21ab1b08a0d86c63cb45d1b8",
   "apps/desktop/src/jones/updates/jonesPairedStateSource.ts":
     "e70354b5dcbc141c1facf2e2fa3b09032ce095c1bb79fdf21ec87f43020c9810",
   "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts":
@@ -446,8 +446,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 808499,
-      end: 808627,
+      start: 816964,
+      end: 817092,
       endExclusive: true,
     },
   },
@@ -461,8 +461,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 808829,
-      end: 808955,
+      start: 817294,
+      end: 817420,
       endExclusive: true,
     },
   },

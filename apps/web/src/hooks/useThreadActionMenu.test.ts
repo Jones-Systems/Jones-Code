@@ -19,6 +19,7 @@ function deferred<T>() {
 
 const state = vi.hoisted(() => ({
   granted: new Set<string>(),
+  projection: vi.fn(),
   effects: [] as string[],
   completed: deferred<void>(),
   shown: deferred<void>(),
@@ -78,11 +79,11 @@ vi.mock("../state/orchestration", () => ({
 }));
 vi.mock("@t3tools/client-runtime/state/runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@t3tools/client-runtime/state/runtime")>()),
-  executeAtomQuery: async () => AsyncResult.success({ providerSessions: [] }),
+  executeAtomQuery: (...args: unknown[]) => state.projection(...args),
 }));
 vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand: () => async () => {
-    recordEffect("metadata");
+  useAtomCommand: (command: string) => async () => {
+    recordEffect(command);
     return AsyncResult.success(undefined);
   },
 }));
@@ -185,9 +186,34 @@ beforeEach(() => {
   state.completed = deferred<void>();
   state.shown = deferred<void>();
   state.show.mockReset().mockResolvedValue(null);
+  state.projection.mockReset().mockResolvedValue(AsyncResult.success({ providerSessions: [] }));
 });
 
 describe("thread menu permissions", () => {
+  it("opens immediately without waiting for a thread projection", () => {
+    const projection = deferred<unknown>();
+    state.projection.mockReturnValue(projection.promise);
+    try {
+      createMenu().openMenu(position);
+      expect(state.show).toHaveBeenCalledExactlyOnceWith(expect.any(Array), position);
+      expect(state.projection).not.toHaveBeenCalled();
+    } finally {
+      projection.resolve(AsyncResult.success({ providerSessions: [] }));
+    }
+  });
+
+  it("keeps Stop reachable without loaded sessions and uses the authoritative stop command", async () => {
+    state.granted.add("secondary");
+    state.show.mockResolvedValue("stop-thread");
+    createMenu().openMenu(position);
+    await state.shown.promise;
+    expect(
+      state.show.mock.calls[0]![0].find((item) => item.id === "stop-thread")?.disabled,
+    ).not.toBe(true);
+    await state.completed.promise;
+    expect(state.effects).toEqual(["stop-session"]);
+  });
+
   it("disables mutations for a denied secondary environment", async () => {
     createMenu().openMenu(position);
     await state.shown.promise;
@@ -220,20 +246,25 @@ describe("thread menu permissions", () => {
     );
   });
 
-  it.each(["rename", "regenerate-title", "delete", "pin", "settle", "archive"] as const)(
-    "%s rechecks after the native menu closes",
-    async (action) => {
-      state.granted.add("secondary");
-      const choice = deferred<ThreadActionMenuId | null>();
-      state.show.mockReturnValue(choice.promise);
-      createMenu().openMenu(position);
-      await state.shown.promise;
-      state.granted.delete("secondary");
-      choice.resolve(action);
-      await state.completed.promise;
-      expect(state.effects).toEqual([]);
-    },
-  );
+  it.each([
+    "rename",
+    "regenerate-title",
+    "delete",
+    "pin",
+    "settle",
+    "archive",
+    "stop-thread",
+  ] as const)("%s rechecks after the native menu closes", async (action) => {
+    state.granted.add("secondary");
+    const choice = deferred<ThreadActionMenuId | null>();
+    state.show.mockReturnValue(choice.promise);
+    createMenu().openMenu(position);
+    await state.shown.promise;
+    state.granted.delete("secondary");
+    choice.resolve(action);
+    await state.completed.promise;
+    expect(state.effects).toEqual([]);
+  });
 
   it.each([
     ["new-thread-on-branch", "draft"],
