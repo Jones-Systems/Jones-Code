@@ -63,9 +63,13 @@ async function runScenario(
     );
     await NodeFSP.writeFile(NodePath.join(userdata, "settings.json"), "before-settings");
     const child = `#!${process.execPath}
-import { readFileSync, writeFileSync } from "node:fs";
-import * as NodeSqlite from "node:sqlite";
+import {
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+
 import * as NodeNet from "node:net";
+import * as NodeSqlite from "node:sqlite";
 import { makeQualifiedTrialReceipt, reserveQualifiedResume, sameQualifiedTrialIdentity } from "${NodePath.join(import.meta.dirname, "qualifiedStartup.ts")}";
 if (process.argv.includes("__service-preflight")) {
   if (${JSON.stringify(mode)} === "blocked-candidate") {

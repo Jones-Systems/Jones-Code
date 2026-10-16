@@ -4,7 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "vite-plus/test";
 import {
   bundleFileSystem,
@@ -136,7 +136,7 @@ describe("native bundle integrity filesystem", () => {
       expect(await hashMacApp(root)).not.toBe(before);
     }));
 
-  it.skipIf(HostProcessPlatform.defaultValue() === "win32")(
+  it.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     "keeps the canonical native layout digest, modes and internal links",
     () =>
       withBundle(async (root) => {
@@ -158,7 +158,7 @@ describe("native bundle integrity filesystem", () => {
       }),
   );
 
-  it.skipIf(HostProcessPlatform.defaultValue() === "win32")(
+  it.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     "rejects a link escaping the bundle",
     () =>
       withBundle(async (root) => {

@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { shouldUseCompactComposerFooter } from "../../components/composerFooterLayout";
+import { observeResize } from "~/lib/observeResize";
 
 const COMPOSER_SHORTCUT_GROUP_GAP_PX = 16;
 const COMPOSER_SHORTCUT_CONVERSATION_MIN_PX = 160;
@@ -118,8 +119,7 @@ export function useComposerShortcutRails(input: {
   useLayoutEffect(() => {
     measure();
     if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    for (const element of [
+    const elements = [
       host,
       workspace,
       formRef.current,
@@ -127,12 +127,11 @@ export function useComposerShortcutRails(input: {
       accountGroupRef.current,
       effortGroupRef.current,
       host?.closest<HTMLElement>("[data-chat-composer-overlay]"),
-    ]) {
-      if (element) observer.observe(element);
-    }
+    ].filter((element): element is HTMLElement => element != null);
+    const stopResize = observeResize(elements, measure);
     document.fonts?.addEventListener("loadingdone", measure);
     return () => {
-      observer.disconnect();
+      stopResize();
       document.fonts?.removeEventListener("loadingdone", measure);
     };
   }, [host, workspace, formRef, bandRef, accountGroupRef, effortGroupRef, contentKey, measure]);

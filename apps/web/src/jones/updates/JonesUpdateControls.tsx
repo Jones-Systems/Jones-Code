@@ -300,7 +300,7 @@ function CopyableId({
           <button
             type="button"
             aria-label={`Copy ${label} ${value}`}
-            className="cursor-pointer rounded-sm font-mono text-foreground outline-none hover:underline focus-visible:ring-1 focus-visible:ring-ring"
+            className="cursor-pointer rounded-sm font-mono text-foreground outline-none hover:underline focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
             onClick={() => copyToClipboard(value, { value })}
           />
         }

@@ -2,6 +2,14 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-provider-restart-identity",
+      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "vp run --filter t3 typecheck"
+      ]
+    },
+    {
       "id": "jones-environment-sidebar-filters",
       "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
       "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]
@@ -63,19 +71,20 @@
         "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
         "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.test.ts",
+        "packages/provider-cursor/src/server/adapter.test.ts",
         "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts",
+        "packages/provider-opencode/src/server/adapter.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
         "apps/server/src/orchestration-v2/assistantStreaming.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/orchestration/ProviderEventOrigin.test.ts apps/server/src/jones/orchestration/assistantStreaming.origin.jones.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/assistantStreaming.test.ts"
+        "vp test run apps/server/src/jones/orchestration/ProviderEventOrigin.test.ts apps/server/src/jones/orchestration/assistantStreaming.origin.jones.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts packages/provider-cursor/src/server/adapter.test.ts apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts packages/provider-opencode/src/server/adapter.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/assistantStreaming.test.ts"
       ]
     },
     {
       "id": "jones-workstreams-native-stack",
       "tests": [
+        "apps/mobile/src/features/workstreams/gateway.test.ts",
         "apps/mobile/src/features/workstreams/actions.test.ts",
         "apps/mobile/src/features/workstreams/commands.test.ts",
         "apps/mobile/src/features/workstreams/loaders.test.ts",
@@ -123,7 +132,8 @@
         "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts"
       ],
       "commands": [
-        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts apps/server/src/jones/workstreams/enrollment/request.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts apps/server/src/jones/workstreams/nativeProvider/http.test.ts apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts apps/server/src/jones/workstreams/nativeProvider/service.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/workstreamsRegistrationContext.test.ts apps/server/src/auth/SessionStore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/serverActivation.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts"
+        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts apps/server/src/jones/workstreams/enrollment/request.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts apps/server/src/jones/workstreams/nativeProvider/http.test.ts apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts apps/server/src/jones/workstreams/nativeProvider/service.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/workstreamsRegistrationContext.test.ts apps/server/src/auth/SessionStore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/serverActivation.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
+        "vp test run apps/mobile/src/features/workstreams/gateway.test.ts"
       ]
     },
     {
@@ -559,13 +569,13 @@
       "id": "jones-opencode-process-adoption",
       "tests": [
         "apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts",
-        "apps/server/src/provider/OpenCodeServerOwner.test.ts",
-        "apps/server/src/provider/opencode2/OpenCode2Server.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts",
+        "packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts",
+        "packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts",
+        "packages/provider-opencode/src/server/adapter.test.ts",
         "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts apps/server/src/provider/OpenCodeServerOwner.test.ts apps/server/src/provider/opencode2/OpenCode2Server.test.ts apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
+        "vp test run apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts packages/provider-opencode/src/server/adapter.test.ts apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
         "vp run --filter t3 typecheck"
       ]
     },
@@ -971,21 +981,21 @@
       "id": "jones-agent-app-identity",
       "tests": [
         "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts",
-        "apps/server/src/provider/RuntimeInstructions.test.ts",
+        "packages/provider-core/src/server/runtimeInstructions.test.ts",
         "apps/server/src/provider/CodexDeveloperInstructions.test.ts",
-        "apps/server/src/provider/T3OrchestrationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
         "packages/contracts/src/jones/organizationMetadata.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.test.ts",
+        "packages/provider-pi/src/server/mcpExtensionSource.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
+        "packages/provider-pi/src/server/mcpInjection.test.ts",
         "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts apps/server/src/provider/RuntimeInstructions.test.ts apps/server/src/provider/CodexDeveloperInstructions.test.ts apps/server/src/provider/T3OrchestrationInstructions.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.test.ts apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
+        "vp test run apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts packages/provider-core/src/server/runtimeInstructions.test.ts apps/server/src/provider/CodexDeveloperInstructions.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts packages/provider-pi/src/server/mcpExtensionSource.test.ts apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts packages/provider-pi/src/server/mcpInjection.test.ts",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "vp test run apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts -t \"matches the read-only allowlist\"",

@@ -9,7 +9,7 @@ import {
   ServerSelfUpdateError,
 } from "@t3tools/contracts";
 
-import { HostProcessPlatform, HostProcessArchitecture } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -56,8 +56,8 @@ const blocked = (message: string): JonesUpdateState => ({
 export const layer = Layer.effect(
   JonesUpdates,
   Effect.gen(function* () {
-    const platform = yield* HostProcessPlatform;
-    const architecture = yield* HostProcessArchitecture;
+    const platform = yield* HostProcess.Platform;
+    const architecture = yield* HostProcess.Architecture;
     const config = yield* ServerConfig.ServerConfig;
     const selfUpdate = yield* SelfUpdate.ServerSelfUpdate;
     const launcher = yield* Launcher.ServiceLauncherClient;

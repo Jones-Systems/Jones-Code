@@ -1,6 +1,6 @@
 // Requires resolved DEFAULT_RUNTIME_PID and DEFAULT_REMOTE_PORT plus REMOTE_PID,
 // REMOTE_PORT, REMOTE_MANAGED, PID_FILE, PORT_FILE, MANAGED_FILE and wait_ready().
-// The reuse timeout placeholder is replaced by the enclosing launch script.
+// The enclosing launch script provides server_running() and replaces the reuse timeout.
 export const PERSISTENT_REMOTE_REUSE_SCRIPT = `# A client attaches to the host owner; readiness failure never grants replacement.
 if [ -n "$DEFAULT_REMOTE_PORT" ]; then
   REMOTE_PORT="$DEFAULT_REMOTE_PORT"
@@ -16,7 +16,7 @@ if [ -n "$DEFAULT_REMOTE_PORT" ]; then
   fi
   printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
   printf '%s\\n' "$REMOTE_MANAGED" >"$MANAGED_FILE"
-elif [ -n "$REMOTE_PID" ] && kill -0 "$REMOTE_PID" 2>/dev/null; then
+elif [ -n "$REMOTE_PID" ] && server_running "$REMOTE_PID"; then
   if [ -z "$REMOTE_PORT" ] || ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
     printf 'Remote T3 server is already running with PID %s but is not ready. Inspect it on the host before retrying.\\n' "$REMOTE_PID" >&2
     exit 1

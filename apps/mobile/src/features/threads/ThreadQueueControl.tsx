@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import { type StaticScreenProps, useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
 import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -24,10 +25,12 @@ import { AndroidSheetHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { ControlPillMenu } from "../../components/ControlPill";
+import { MaterialScreenContent } from "../../components/MaterialScreenContent";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
-import { nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
+import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { useAssetUrl } from "../../state/assets";
+import { assetImageSource } from "../../lib/assetImageSource";
 import { beginQueuedRunEdit, useQueuedRunEdit } from "../../state/queued-run-edit";
 import {
   environmentThreadDetails,
@@ -35,6 +38,7 @@ import {
   useEnvironmentThread,
 } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import {
   REMOVE_QUEUED_MESSAGE_ACCESSIBILITY_LABEL,
   buildCancelQueuedRunCommand,
@@ -47,6 +51,9 @@ import { threadDragGapOffset } from "./threadDragGap";
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 const REMOVE_ACTION_WIDTH = 76;
 const THUMBNAIL_LIMIT = 3;
+const EMPTY_QUEUED_COUNT_ATOM = Atom.make(0).pipe(
+  Atom.withLabel("mobile-thread-queue-count:empty"),
+);
 
 type QueueTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
 type QueueAction = "steer" | "edit" | "up" | "down" | "remove";
@@ -56,11 +63,14 @@ export function useThreadQueueWorkflow(target: QueueTarget) {
   return useAtomValue(environmentThreadDetails.queueWorkflowAtom(target));
 }
 
-export function useThreadQueuedCount(target: QueueTarget) {
-  return useAtomValue(environmentThreadDetails.queuedCountAtom(target));
+export function useThreadQueuedCount(target: QueueTarget | null) {
+  return useAtomValue(
+    target === null ? EMPTY_QUEUED_COUNT_ATOM : environmentThreadDetails.queuedCountAtom(target),
+  );
 }
 
 export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
+  const { layout } = useAdaptiveWorkspaceLayout();
   const target = route.params;
   const { choice: importedChoice, state: importedState } = useMobileImportedHistoryChoice(
     target.environmentId,
@@ -220,6 +230,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     queuedRuns.map(({ run }) => ({ id: run.id, ...rowLayouts.current.get(run.id) }));
   const content = (
     <ScrollView
+      nestedScrollEnabled
       className="flex-1"
       scrollEnabled={draggedRunId === null}
       // The iOS header is translucent and floats over this view; UIKit has to
@@ -500,8 +511,11 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <View collapsable={false} className="flex-1 bg-sheet">
+        <NativeStackScreenOptions options={{ sheetCornerRadius: 28 }} />
         <AndroidSheetHeader title="Queued" onBack={() => navigation.goBack()} />
-        {content}
+        <MaterialScreenContent insetHorizontal={layout.usesSplitView}>
+          {content}
+        </MaterialScreenContent>
       </View>
     </GestureHandlerRootView>
   );
@@ -610,19 +624,21 @@ function QueueAttachmentThumbnail(props: {
   readonly environmentId: EnvironmentId;
   readonly attachment: ChatAttachment;
 }) {
-  const url = useAssetUrl(props.environmentId, {
+  const resource = {
     _tag: "attachment",
     attachmentId: props.attachment.id,
     fileName: props.attachment.name,
     mimeType: props.attachment.mimeType,
     disposition: "inline",
-  });
+  } as const;
+  const url = useAssetUrl(props.environmentId, resource);
   if (url === null) {
     return <View className="h-6 w-6 rounded bg-subtle" />;
   }
   return (
     <Image
-      source={{ uri: url }}
+      source={assetImageSource(props.environmentId, resource, url)}
+      cachePolicy="memory-disk"
       contentFit="cover"
       style={{ width: 24, height: 24, borderRadius: 4 }}
       accessibilityIgnoresInvertColors

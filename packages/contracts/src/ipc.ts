@@ -302,6 +302,12 @@ export interface DesktopUpdateState {
   message: string | null;
   errorContext: "check" | "download" | "install" | null;
   canRetry: boolean;
+  /**
+   * The version the last install handed to the OS installer that did not
+   * apply: the app came back on its old version. Server-triggered updates do
+   * not install it again; the user can retry it from the update button.
+   */
+  notAppliedVersion?: string;
   jones?: JonesUpdateState;
 }
 
@@ -334,6 +340,7 @@ export const DesktopUpdateStateSchema = Schema.Struct({
   message: Schema.NullOr(Schema.String),
   errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
   canRetry: Schema.Boolean,
+  notAppliedVersion: Schema.optionalKey(Schema.String),
   jones: Schema.optionalKey(JonesUpdateState),
 });
 
@@ -345,6 +352,11 @@ export const DesktopCliCommandStateSchema = Schema.Struct({
   installedPath: Schema.NullOr(Schema.String),
   /** Whether a new terminal finds it; false when the folder is not on PATH yet. */
   onPath: Schema.Boolean,
+  /**
+   * Another `t3` a new terminal runs instead, earlier on PATH. Install refuses
+   * while it is there, since a link behind it would never run.
+   */
+  shadowedBy: Schema.optionalKey(Schema.String),
 });
 export type DesktopCliCommandState = typeof DesktopCliCommandStateSchema.Type;
 
@@ -682,6 +694,14 @@ export interface DesktopPreviewPointerEvent {
   y: number;
   sequence: number;
   createdAt: string;
+}
+
+/** A `target="_blank"` link the previewed page asked to open beside itself. */
+export interface DesktopPreviewOpenLinkEvent {
+  tabId: string;
+  url: string;
+  /** True for middle-click / Cmd-click, which should not take focus. */
+  background: boolean;
 }
 
 /** Recording decorations are forwarded separately from the captured page pixels. */
@@ -1303,6 +1323,14 @@ export interface DesktopBridge {
     uninstall: () => Promise<DesktopCliCommandState>;
   };
   /** Present when the desktop shell accepts `t3 app` activation requests. */
+  /**
+   * Web links the OS opens with T3 Code as the default browser (macOS). The
+   * renderer reports when it listens; links queue in the main process until then.
+   */
+  webLinks?: {
+    setReady: (ready: boolean) => Promise<void>;
+    onOpen: (listener: (url: string) => void) => () => void;
+  };
   appActivation?: {
     setReady: (ready: boolean) => Promise<void>;
     complete: (response: DesktopAppActivationResponse) => Promise<void>;
@@ -1432,6 +1460,7 @@ export interface DesktopPreviewBridge {
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;
+  onOpenLink: (listener: (event: DesktopPreviewOpenLinkEvent) => void) => () => void;
 }
 
 export type ConfirmDialogVariant = "default" | "destructive";

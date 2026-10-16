@@ -144,11 +144,25 @@ describe("PDF zoom and lifetime", () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
-        constructor(callback: () => void) {
-          notifyResize = callback;
+        targets = new Set<Element>();
+        constructor(callback: (entries: { target: Element; contentRect: DOMRect }[]) => void) {
+          notifyResize = () =>
+            callback(
+              [...this.targets].map((target) => ({
+                target,
+                contentRect: target.getBoundingClientRect(),
+              })),
+            );
         }
-        observe() {}
-        disconnect() {}
+        observe(target: Element) {
+          this.targets.add(target);
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target);
+        }
+        disconnect() {
+          this.targets.clear();
+        }
       },
     );
     container = document.createElement("div");

@@ -6,7 +6,7 @@ import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { HttpServer } from "effect/http";
@@ -113,7 +113,7 @@ it.effect("parks automatic pull until activation without delaying command readin
         }),
         Layer.succeed(SqlClient.SqlClient, sql),
         FileSystem.layerNoop({}),
-        Layer.succeed(HostProcessEnvironment, {}),
+        Layer.succeed(HostProcess.Environment, {}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
         Layer.mock(EventSink.EventSinkV2)({}),
         Layer.mock(EffectOutbox.EffectOutboxV2)({}),

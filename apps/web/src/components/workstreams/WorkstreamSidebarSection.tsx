@@ -47,7 +47,7 @@ import {
 export const workstreamCommandId = () =>
   runtime.runPromise(
     Crypto.Crypto.pipe(
-      Effect.flatMap((crypto) => crypto.randomUUIDv4),
+      Effect.flatMap((crypto) => crypto.randomUUIDv4()),
       Effect.map((uuid) => `t3-workstream-${uuid}`),
     ),
   );
@@ -488,7 +488,7 @@ export function WorkstreamSidebarSection(props: {
                         : [...values, item.workstreamId],
                     )
                   }
-                  className="rounded p-1 focus-visible:ring-2 focus-visible:ring-ring"
+                  className="rounded p-1 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 >
                   <ChevronDownIcon
                     aria-hidden
@@ -501,7 +501,7 @@ export function WorkstreamSidebarSection(props: {
                   type="button"
                   draggable
                   aria-label={`Drag Workstream ${item.name} to reorder`}
-                  className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+                  className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring active:cursor-grabbing"
                   onDragStart={(event) => {
                     event.stopPropagation();
                     if (!canWrite) {
@@ -626,7 +626,7 @@ export function WorkstreamSidebarSection(props: {
         >
           <button
             type="button"
-            className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} Unassigned`}
             aria-expanded={!collapsed.includes("__unassigned__")}
             onClick={() =>

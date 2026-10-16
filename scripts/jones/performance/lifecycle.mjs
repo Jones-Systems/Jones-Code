@@ -2,7 +2,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { HostProcessPlatform } from "../../../packages/shared/src/hostProcess.ts";
+import * as HostProcess from "../../../packages/shared/src/HostProcess.ts";
 
 import { ownedChildCustody } from "./guard.mjs";
 
@@ -59,7 +59,7 @@ function validOptions(options) {
 }
 
 function processStartIdentity(pid) {
-  if (HostProcessPlatform.defaultValue() !== "linux" || !Number.isInteger(pid)) return null;
+  if (HostProcess.Platform.defaultValue() !== "linux" || !Number.isInteger(pid)) return null;
   try {
     const text = NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8");
     const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");

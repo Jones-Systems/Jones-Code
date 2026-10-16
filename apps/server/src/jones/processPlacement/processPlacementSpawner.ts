@@ -1,4 +1,4 @@
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
@@ -18,7 +18,7 @@ export function controlCommand<T extends ChildProcess.Command>(command: T): T {
 export function placeCommand(
   command: ChildProcess.Command,
   binding: ProcessPlacementBinding | undefined,
-  platform = HostProcessPlatform.defaultValue(),
+  platform = HostProcess.Platform.defaultValue(),
 ): ChildProcess.Command {
   if (binding === undefined) return command;
   if (command._tag === "PipedCommand") {
@@ -50,7 +50,7 @@ export const layer = (binding: ProcessPlacementBinding | undefined) =>
   Layer.effect(
     ChildProcessSpawner.ChildProcessSpawner,
     Effect.gen(function* () {
-      const platform = yield* HostProcessPlatform;
+      const platform = yield* HostProcess.Platform;
       const underlying = yield* ChildProcessSpawner.ChildProcessSpawner;
       return ChildProcessSpawner.make((command) =>
         Effect.try({

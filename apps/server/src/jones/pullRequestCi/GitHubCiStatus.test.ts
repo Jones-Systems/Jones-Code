@@ -2,10 +2,10 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
-import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as Schema from "effect/Schema";
 import { PullRequestCiStatusResult } from "@t3tools/contracts";
-import * as GitHubApi from "../../sourceControl/GitHubApi.ts";
+import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
 import { readGitHubCiStatus } from "./GitHubCiStatus.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));

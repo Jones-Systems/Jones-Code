@@ -102,10 +102,15 @@ for (const clients of [1, 2, 8, 32]) {
         const threadManagement = boundedService<
           ThreadManagementService.ThreadManagementService["Service"]
         >({
-          getShellSnapshot: () =>
+          readShellSnapshot: () =>
             Effect.sync(() => {
               snapshots++;
-              return { schemaVersion: 1, snapshotSequence: 0, threads: [], archivedThreads: [] };
+              return Effect.succeed({
+                schemaVersion: 1,
+                snapshotSequence: 0,
+                threads: [],
+                archivedThreads: [],
+              });
             }),
           getThreadShell: () =>
             Effect.sync(() => {
