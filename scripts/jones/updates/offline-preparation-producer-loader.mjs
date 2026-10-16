@@ -207,14 +207,14 @@ function uncertainCustody(cause, seen = new Set()) {
   return nested.some((error) => uncertainCustody(error, seen));
 }
 
-// Reviewed c4358d producer: import initializes in-memory Effect schemas/caches/prototypes,
+// Reviewed 7a146f producer: import initializes in-memory Effect schemas/caches/prototypes,
 // Error stack detection, scheduler closures and the optional literal async_hooks lookup.
 // Its only import-time filesystem work resolves this unique captured code root and hashes
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "c4358d0b8d522b2e64242f8bf2fc677e8a8503e5e9a60747f73f2fc817ccbe97",
-  size: 772658,
+  sha256: "7a146f2a7650c32c4b8d73180ee5c9d7f1ed60349fcde5611d01715adec4a3aa",
+  size: 825257,
 };
 const reviewedRawSources = {
   "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts":
@@ -431,8 +431,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 152209,
-      end: 152267,
+      start: 159726,
+      end: 159784,
       endExclusive: true,
     },
   },
@@ -446,8 +446,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 755900,
-      end: 756028,
+      start: 808499,
+      end: 808627,
       endExclusive: true,
     },
   },
@@ -461,14 +461,14 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 756230,
-      end: 756356,
+      start: 808829,
+      end: 808955,
       endExclusive: true,
     },
   },
 ];
 const reviewedLateModulesSha256 =
-  "4d04c5ad32d82c20c1f9150834d41261ae6ab1b7035c225042018d98d0336378";
+  "9c9a575588fb9456f5468b6e48901b90ff4941063f9f2677709e9640176826ea";
 
 function requireProducerExecutionContract(capture) {
   const report = capture.report.document;
