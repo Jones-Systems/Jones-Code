@@ -12059,7 +12059,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             },
             ...plan.events,
           ],
-          effects: plan.effects.filter((effect) => effect.request.type !== "terminal.cleanup"),
+          effects: plan.effects.filter(
+            (effect) =>
+              effect.request.type !== "terminal.cleanup" && effect.request.type !== "preview.cleanup",
+          ),
         };
       }
       case "thread.delete": {

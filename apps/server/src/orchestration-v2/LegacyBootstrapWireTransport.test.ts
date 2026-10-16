@@ -993,6 +993,12 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                         if (args.includes("--git-common-dir")) stdout = `${common}\n`;
                         else if (args.includes("--absolute-git-dir")) stdout = `${gitDirectory}\n`;
                         else if (args.includes("symbolic-ref")) stdout = `refs/heads/${branch}\n`;
+                        else if (
+                          args.includes("rev-parse") &&
+                          args.includes("--symbolic-full-name") &&
+                          args.at(-1) === "main"
+                        )
+                          stdout = "refs/heads/main\n";
                         else if (args.includes("rev-parse")) stdout = `${oid}\n`;
                         else if (args.includes("--porcelain"))
                           stdout = added
@@ -1340,6 +1346,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsServerLifecycleEvents.ServerLifecycleEvents)({}),
           Layer.mock(WsServerSettings.ServerSettingsService)({
             getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+            subscribeChanges: Effect.succeed(Stream.empty),
           }),
           Layer.mock(WsServerRuntimeStartup.ServerRuntimeStartup)({
             enqueueCommand: (effect) => effect,

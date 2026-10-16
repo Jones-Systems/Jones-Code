@@ -459,7 +459,7 @@ if (context.update?.status === "pending") {
         const path = yield* Path.Path;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-slow-" });
         const statePath = path.join(root, "runtime", "service-state.json");
-        const databasePath = path.join(root, "userdata", "state.sqlite");
+        const databasePath = path.join(root, "userdata", "statev2.sqlite");
         yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
         yield* fs.writeFileString(databasePath, "before trial");
         // The trial stands in for slow migrations: it reports prepared only
@@ -537,7 +537,7 @@ setInterval(() => {}, 1_000);
         const path = yield* Path.Path;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-db-" });
         const statePath = path.join(root, "runtime", "service-state.json");
-        const databasePath = path.join(root, "userdata", "state.sqlite");
+        const databasePath = path.join(root, "userdata", "statev2.sqlite");
         // A symlinked database keeps its link: rollback restores the file it points to,
         // even one the trial left missing, as a crash during a macOS clone restore can.
         // The dangling case reaches its file through a directory link and a relative
@@ -622,14 +622,14 @@ if (context.update?.status === "pending") {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-space-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       const replyPath = path.join(root, "rejection.txt");
       const trialMarker = path.join(root, "trial-started");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "database");
       const encoded = JSON.stringify({ databasePath, replyPath, trialMarker });
       const childSource = `
-
+import { writeFileSync } from "node:fs";
 const paths = ${encoded};
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 if (context.update?.status === "pending") {
@@ -719,7 +719,7 @@ if (context.update?.status === "pending") {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-exit-" });
       const statePath = path.join(root, "runtime", "service-state.json");
-      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "database");
       const encoded = JSON.stringify({ databasePath });

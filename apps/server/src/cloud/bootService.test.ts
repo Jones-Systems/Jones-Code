@@ -270,6 +270,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(HostProcess.Platform, platform),
+          Layer.succeed(HostProcess.Architecture, arch),
           Layer.succeed(HostProcess.UserId, 501),
           Layer.succeed(HostProcess.ExecutablePath, "/usr/bin/t3"),
           Layer.succeed(
