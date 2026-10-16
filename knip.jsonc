@@ -26,6 +26,7 @@
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
+        "jones/ci-test-progress-reporter.ts",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
         "jones/performance/prepare-sources.mjs",
