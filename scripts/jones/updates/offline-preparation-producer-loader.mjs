@@ -252,7 +252,7 @@ const reviewedRawSources = {
   "pnpm-lock.yaml": "2af9bc1d58000c848938eceaa9ec06dbbaa22985b73e65e5861d42794473bc6b",
   "pnpm-workspace.yaml": "5b76c5adb82743bbb21822cbeb3a249f493c15c4c21196ffa039041f7de1ee07",
   "scripts/jones/updates/functional-policy.ts":
-    "2f080f0021f772af7e63597aae7389dd4c86fc89fa4f166750d71fa2f8f4efbc",
+    "2e9ffa40a3d6dbb94fbd91807f0cc7a2bfbb909062708f3f64fc257e1fc38ec0",
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
