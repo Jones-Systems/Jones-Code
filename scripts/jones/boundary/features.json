@@ -6,7 +6,7 @@
     {
       "id": "environment-sidebar-filters",
       "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
-      "scope": "Session-only environment inclusion filters cover configured labels, disconnected and duplicate identities, unknown labels, and sidebar remounts. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
+      "scope": "Session-only environment inclusion filters cover explicit categories, Laptop and Mac Mini label aliases, canonical laptop/Mac Mini machine kinds for custom names, disconnected and duplicate identities, unknown hosts, and sidebar remounts. Explicit categories take precedence over machine kinds. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
     },
     {
       "id": "remote-host-status",

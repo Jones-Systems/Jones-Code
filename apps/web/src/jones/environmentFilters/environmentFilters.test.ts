@@ -59,6 +59,96 @@ describe("sidebar environment filters", () => {
     ).toEqual(["other", "blank", "missing", "null", "not-in-catalog"]);
   });
 
+  it.each([
+    ["Home", " Laptop "],
+    ["Mini", " Mac Mini "],
+    ["Mini", "MAC-MINI"],
+  ] as const)(
+    "hides and restores %s threads labelled %s without machine metadata",
+    (filter, label) => {
+      const catalog = [{ environmentId: "host", label }];
+      const off = toggleSidebarEnvironmentFilter(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, filter);
+      expect(
+        filterSidebarEnvironmentThreads(catalog, excludedSidebarEnvironmentIds(catalog, off)),
+      ).toEqual([]);
+      expect(
+        filterSidebarEnvironmentThreads(
+          catalog,
+          excludedSidebarEnvironmentIds(catalog, DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS),
+        ),
+      ).toEqual(catalog);
+    },
+  );
+
+  it("uses machine identity for custom host names and keeps generic or unknown hosts visible", () => {
+    const catalog = [
+      { environmentId: "portable", label: "My workstation" },
+      { environmentId: "small", label: "Build machine" },
+      { environmentId: "generic", label: "Other host" },
+      { environmentId: "unknown", label: "Unclassified" },
+      { environmentId: "lookalike", label: "Miniature laptop test" },
+    ];
+    const machines = new Map([
+      ["portable", "laptop"],
+      ["small", "mac-mini"],
+      ["generic", "server"],
+    ] as const);
+    const homeOff = { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Home: false };
+    const miniOff = { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Mini: false };
+    expect([...excludedSidebarEnvironmentIds(catalog, homeOff, machines)]).toEqual(["portable"]);
+    expect([...excludedSidebarEnvironmentIds(catalog, miniOff, machines)]).toEqual(["small"]);
+    const bothOff = { ...homeOff, Mini: false };
+    expect(
+      filterSidebarEnvironmentThreads(
+        catalog,
+        excludedSidebarEnvironmentIds(catalog, bothOff, machines),
+      ),
+    ).toEqual(catalog.slice(2));
+    expect([
+      ...excludedSidebarEnvironmentIds(catalog, DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, machines),
+    ]).toEqual([]);
+  });
+
+  it("keeps explicit categories ahead of machine kinds", () => {
+    const catalog = [
+      { environmentId: "test-mini", label: "Test" },
+      { environmentId: "test-laptop", label: "Test" },
+      { environmentId: "vps", label: "VPS" },
+      { environmentId: "home", label: "Home" },
+    ];
+    const machines = new Map([
+      ["test-mini", "mac-mini"],
+      ["test-laptop", "laptop"],
+      ["vps", "laptop"],
+      ["home", "mac-mini"],
+    ] as const);
+    expect([
+      ...excludedSidebarEnvironmentIds(
+        catalog,
+        { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Mini: false },
+        machines,
+      ),
+    ]).toEqual([]);
+    expect([
+      ...excludedSidebarEnvironmentIds(
+        catalog,
+        { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Test: false },
+        machines,
+      ),
+    ]).toEqual(["test-mini", "test-laptop"]);
+  });
+
+  it("updates exclusions and reset keys when machine metadata arrives or changes", () => {
+    const catalog = [{ environmentId: "host", label: "Custom name" }];
+    const filters = { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Home: false };
+    const key = (machine: "server" | "laptop" | "mac-mini") =>
+      sidebarEnvironmentExclusionKey(
+        excludedSidebarEnvironmentIds(catalog, filters, new Map([["host", machine]])),
+      );
+    expect(key("laptop")).not.toBe(key("server"));
+    expect(key("mac-mini")).toBe(key("server"));
+  });
+
   it("groups duplicate normalized labels by stable ID even when disconnected", () => {
     const catalog = [
       { environmentId: "first", label: " vPs ", connection: { phase: "disconnected" } },
