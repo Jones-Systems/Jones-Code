@@ -414,13 +414,7 @@ print(json.dumps({'case': manual_fault, 'passed': True}))
         const result = JSON.parse(
           NodeChildProcess.execFileSync(
             "python3",
-            [
-              "-c",
-              nativeFunctions + "\n" + setup + "\n" + scenario,
-              f.directory,
-              "success",
-              fault,
-            ],
+            ["-c", nativeFunctions + "\n" + setup + "\n" + scenario, f.directory, "success", fault],
             { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
           ),
         ) as { passed: boolean };
