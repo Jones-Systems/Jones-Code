@@ -596,6 +596,7 @@
     "apps/web/src/components/sidebar/SidebarChrome.tsx": "hook",
     "apps/web/src/components/sidebar/SidebarThreadHeader.tsx": "accepted-shared",
     "apps/web/src/components/sidebar/SidebarUpdatePill.tsx": "hook",
+    "apps/web/src/components/sidebar/SidebarUpdatePill.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/sidebar/mainAppLocation.test.ts": "jones-owned",
     "apps/web/src/components/sidebar/mainAppLocation.ts": "accepted-shared",
     "apps/web/src/components/threadActionMenu.logic.test.ts": "jones-tests-in-upstream",

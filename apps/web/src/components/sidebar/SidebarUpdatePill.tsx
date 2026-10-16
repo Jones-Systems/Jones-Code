@@ -1,4 +1,4 @@
-import type { DesktopUpdateState } from "@t3tools/contracts";
+import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { TriangleAlertIcon } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -36,6 +36,68 @@ type SidebarUpdatePopoverChangeDetails = Parameters<
   NonNullable<ComponentProps<typeof Popover>["onOpenChange"]>
 >[1];
 type SidebarUpdatePopoverHandle = ReturnType<typeof PopoverCreateHandle>;
+
+export function resolveSidebarUpdateCheckFeedback(state: DesktopUpdateState): {
+  type: "info" | "error";
+  title: string;
+  description?: string;
+} | null {
+  if (state.status !== "idle" && state.status !== "up-to-date" && state.status !== "error") return null;
+  if (state.jones?.phase === "building") {
+    return {
+      type: "info",
+      title: "Update still being qualified",
+      description: state.jones.message ?? state.message ?? "The update is still being qualified.",
+    };
+  }
+  if (state.jones?.phase === "blocked") {
+    return {
+      type: "error",
+      title: "Update check blocked",
+      description: state.jones.message ?? state.message ?? "The update check is blocked.",
+    };
+  }
+  if (state.status === "error") {
+    return {
+      type: "error",
+      title: "Could not check for updates",
+      description: state.message ?? "Update check failed.",
+    };
+  }
+  if (state.status === "up-to-date") {
+    return { type: "info", title: "No new update available" };
+  }
+  return null;
+}
+
+export function checkForSidebarUpdate(bridge: Pick<DesktopBridge, "checkForUpdate">): Promise<void> {
+  return bridge
+    .checkForUpdate()
+    .then((result) => {
+      if (result.checked) {
+        const feedback = resolveSidebarUpdateCheckFeedback(result.state);
+        if (feedback) toastManager.add(stackedThreadToast(feedback));
+        return;
+      }
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not check for updates",
+          description:
+            result.state.message ?? "Automatic updates are not available in this build.",
+        }),
+      );
+    })
+    .catch((error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not check for updates",
+          description: error instanceof Error ? error.message : "Update check failed.",
+        }),
+      );
+    });
+}
 
 export function shouldUseSidebarUpdateReleaseNotesPopover(
   showUpdateDetails: boolean,
@@ -263,29 +325,7 @@ function SidebarUpdateControl() {
       setIsCheckAnimationLatched(true);
       setCheckAnimationKey((key) => key + 1);
     }
-    void bridge
-      .checkForUpdate()
-      .then((result) => {
-        if (result.checked) return;
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not check for updates",
-            description:
-              result.state.message ?? "Automatic updates are not available in this build.",
-          }),
-        );
-      })
-      .catch((error) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not check for updates",
-            description: error instanceof Error ? error.message : "Update check failed.",
-          }),
-        );
-      })
-      .finally(() => setIsActionPending(false));
+    void checkForSidebarUpdate(bridge).finally(() => setIsActionPending(false));
   }, [action, isInteractionDisabled, prefersReducedMotion, state]);
 
   const handleCheckAnimationIteration = useCallback(() => {

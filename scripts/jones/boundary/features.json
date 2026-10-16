@@ -501,13 +501,15 @@
     {
       "id": "jones-local-desktop-update",
       "tests": [
+        "apps/web/src/components/sidebar/SidebarUpdatePill.test.tsx",
         "apps/web/src/jones/updates/versionSkew.test.ts",
         "scripts/stamp-jones-build.test.ts",
         "scripts/jones/updates/build-provenance.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
         "apps/desktop/src/jones/updates/preloadInstall.test.ts",
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
-      ]
+      ],
+      "scope": "Local desktop update actions and manual sidebar check completion feedback. The existing sidebar completion hook and its integration harness retain a small shared-file exception to reuse upstream pending state and toast behavior without duplicating the component. Background checks remain quiet."
     },
     {
       "id": "utility-navigation",

@@ -954,13 +954,14 @@
     {
       "id": "jones-local-desktop-update",
       "tests": [
+        "apps/web/src/components/sidebar/SidebarUpdatePill.test.tsx",
         "apps/desktop/src/jones/updates/preloadInstall.test.ts",
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
         "apps/web/src/components/desktopUpdate.logic.test.ts",
         "apps/web/src/components/desktopUpdate.toast.test.tsx"
       ],
       "commands": [
-        "vp test run apps/desktop/src/jones/updates/preloadInstall.test.ts apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/components/desktopUpdate.logic.test.ts apps/web/src/components/desktopUpdate.toast.test.tsx",
+        "vp test run apps/web/src/components/sidebar/SidebarUpdatePill.test.tsx apps/desktop/src/jones/updates/preloadInstall.test.ts apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/components/desktopUpdate.logic.test.ts apps/web/src/components/desktopUpdate.toast.test.tsx",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/desktop typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
