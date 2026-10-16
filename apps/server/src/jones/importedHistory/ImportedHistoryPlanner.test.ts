@@ -3,6 +3,9 @@ import {
   CommandId,
   EnvironmentAuthenticatedPrincipal,
   EventId,
+  RunId,
+  MessageId,
+  NodeId,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -58,9 +61,9 @@ const receiving = Layer.mergeAll(
   ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect(
-  "actual reviewed queued planner records full handoff and one start atomically without invoking a provider; scratch closes",
-  () =>
+it.effect.each(["start", "invalid reviewed target"] as const)(
+  "reviewed held queue head retains exact identity ahead of newer eligible work: %s",
+  (scenario) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       let scratch: string | undefined;
@@ -116,6 +119,62 @@ it.effect(
             },
           ],
         });
+        const eligibleId = RunId.make("run:planner:newer-eligible");
+        const eligibleMessageId = MessageId.make("message:planner:newer-eligible");
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("event:planner:newer-run"),
+              type: "run.created",
+              threadId,
+              runId: eligibleId,
+              occurredAt: now,
+              payload: {
+                ...run,
+                id: eligibleId,
+                ordinal: 2,
+                queueHeld: false,
+                userMessageId: eligibleMessageId,
+              },
+            },
+            {
+              id: EventId.make("event:planner:newer-message"),
+              type: "message.updated",
+              threadId,
+              runId: eligibleId,
+              occurredAt: now,
+              payload: {
+                id: eligibleMessageId,
+                threadId,
+                runId: eligibleId,
+                nodeId: null,
+                role: "user",
+                text: "Newer eligible work",
+                attachments: [],
+                streaming: false,
+                createdBy: "user",
+                creationSource: "web",
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            ...(scenario === "start"
+              ? []
+              : [
+                  {
+                    id: EventId.make("event:planner:invalid-reviewed"),
+                    type: "run.updated" as const,
+                    threadId,
+                    runId,
+                    occurredAt: now,
+                    payload: {
+                      ...run,
+                      rootNodeId: NodeId.make("node:planner:missing-reviewed-root"),
+                    },
+                  },
+                ]),
+          ],
+        });
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         assert.isDefined(orchestrator.reviewImportedHistory);
         assert.isDefined(orchestrator.startWithImportedHistory);
@@ -131,6 +190,28 @@ it.effect(
           delivery,
           reviewedBasis: review.reviewedBasis ?? "unavailable",
         };
+        if (scenario === "invalid reviewed target") {
+          const failure = yield* orchestrator.startWithImportedHistory!(command).pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+            Effect.flip,
+          );
+          assert.equal(failure._tag, "OrchestratorProjectionError");
+          const records = yield* (yield* ProjectionStore.ProjectionStoreV2).getThreadRecords(
+            threadId,
+            ["runs"],
+          );
+          assert.equal(records.runs.find((candidate) => candidate.id === runId)?.status, "queued");
+          assert.isTrue(records.runs.find((candidate) => candidate.id === runId)?.queueHeld);
+          assert.equal(
+            records.runs.find((candidate) => candidate.id === eligibleId)?.status,
+            "queued",
+          );
+          const sql = yield* SqlClient.SqlClient;
+          assert.isEmpty(
+            yield* sql`SELECT * FROM orchestration_v2_effect_outbox WHERE command_id=${commandId}`,
+          );
+          return;
+        }
         const accepted = yield* orchestrator.startWithImportedHistory!(command).pipe(
           Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
         );
@@ -144,6 +225,10 @@ it.effect(
         ]);
         const started = records.runs.find((candidate) => candidate.id === runId);
         assert.strictEqual(started?.status, "starting");
+        assert.strictEqual(
+          records.runs.find((candidate) => candidate.id === eligibleId)?.status,
+          "queued",
+        );
         assert.strictEqual(started?.queueHeld, false);
         assert.isNotNull(started?.contextHandoffId);
         const handoff = records.contextHandoffs.find(
