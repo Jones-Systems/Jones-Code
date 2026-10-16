@@ -981,9 +981,16 @@ def readonly_rows(database):
             source = pathlib.Path(str(database) + suffix)
             if source.exists(): write(pathlib.Path(str(target) + suffix), source.read_bytes())
         stage = 'reader-open'
-        db = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)
-        db.row_factory = sqlite3.Row
+        db = sqlite3.connect(target.as_uri() + '?mode=rw', uri=True)
         try:
+            # SQLite may initialize the disposable copy; query_only then prohibits SQL writes.
+            try:
+                db.row_factory = sqlite3.Row
+                db.execute('PRAGMA query_only=ON')
+                assert db.execute('PRAGMA query_only').fetchone()[0] == 1
+            except BaseException as failure:
+                remember_failure_stage(failure, 'reader-open')
+                raise
             context = capture_reader_context(target)
             table_index = None
             def read_tables():

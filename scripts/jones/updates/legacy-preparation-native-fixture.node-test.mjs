@@ -1556,6 +1556,36 @@ copied, report = failed('reader-copy', lambda: readonly_rows(source_directory))
 assert isinstance(copied, IsADirectoryError) and report['records'][0]['sqliteErrorCode'] is None
 private = 'Bearer private-secret /private/raw/path'
 real_connect = sqlite3.connect
+source_before_setup = database.read_bytes()
+for setup_failure in ('enable', 'readback', 'disabled'):
+    setup_connections = []
+    class SetupFailure(sqlite3.Connection):
+        closed = False
+        def execute(self, sql, *args, **kwargs):
+            if (setup_failure == 'enable' and sql == 'PRAGMA query_only=ON') or (setup_failure == 'readback' and sql == 'PRAGMA query_only'):
+                raise sqlite3.OperationalError(private)
+            if setup_failure == 'disabled' and sql == 'PRAGMA query_only':
+                return super().execute('SELECT 0')
+            assert not sql.startswith('SELECT * FROM ')
+            return super().execute(sql, *args, **kwargs)
+        def close(self):
+            super().close()
+            self.closed = True
+    def setup_connect(*args, **kwargs):
+        connection = real_connect(*args, factory=SetupFailure, **kwargs)
+        setup_connections.append(connection)
+        return connection
+    sqlite3.connect = setup_connect
+    try:
+        setup_error, report = failed('reader-open', lambda: readonly_rows(database))
+        assert isinstance(setup_error, AssertionError if setup_failure == 'disabled' else sqlite3.OperationalError)
+        assert len(setup_connections) == 1 and setup_connections[0].closed
+        assert all(not pathlib.Path(str(target) + suffix).exists() for suffix in ('', '-wal', '-shm'))
+        assert database.read_bytes() == source_before_setup
+    finally:
+        sqlite3.connect = real_connect
+        for connection in setup_connections:
+            if not connection.closed: connection.close()
 class Closing(sqlite3.Connection):
     def close(self):
         super().close()
@@ -1653,10 +1683,10 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                     pythonVersion=list(sys.version_info[:3]), sqliteVersion=sqlite3.sqlite_version,
                     sqliteSourceId=None, negativeControl=None, seedClosed=False, controlClosed=None,
                     seedCheckpoint=None, seedSidecarsAfterClose=None,
-                    connectionsClosed=False, sourceFamilyHashesUnchanged=False,
+                    connectionsClosed=False, readerConnectionsClosed=False, sourceFamilyHashesUnchanged=False,
                     sourceHashesBefore=None, sourceHashesAfter=None,
                     sidecars=dict(preopen=None, prequery=None, preclose=None),
-                    readerContext=None, preopenContext=None, queryOnly=None, completed=False)
+                    readerContext=None, preopenContext=None, queryOnly=None, writeRefusal=None, completed=False)
     observations.append(observed)
     connections = []
     phase = 'cell-directory'
@@ -1724,6 +1754,12 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                     if sql.startswith('SELECT * FROM '):
                         observed['sidecars']['prequery'] = presence(target)
                         observed['readerContext'] = capture_reader_context(target)
+                        observed['queryOnly'] = super().execute('PRAGMA query_only').fetchone()[0] == 1
+                        if mode == 'rw-query-only':
+                            try:
+                                super().execute("INSERT INTO probe_rows VALUES ('forbidden-write')")
+                            except sqlite3.Error as failure:
+                                observed['writeRefusal'] = sqlite_failure_category(failure)
                     return super().execute(sql, *args, **kwargs)
                 def close(self):
                     observed['sidecars']['preclose'] = presence(target)
@@ -1732,15 +1768,12 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
             def probe_connect(database_uri, *args, **kwargs):
                 observed['sidecars']['preopen'] = presence(target)
                 observed['preopenContext'] = capture_reader_context(target)
-                if mode == 'rw-query-only':
-                    assert database_uri.endswith('?mode=ro')
-                    database_uri = database_uri[:-len('?mode=ro')] + '?mode=rw'
+                assert database_uri.endswith('?mode=rw')
+                if mode == 'ro':
+                    database_uri = database_uri[:-len('?mode=rw')] + '?mode=ro'
                 connection = real_connect(database_uri, *args, factory=ObservedConnection, **kwargs)
                 connections.append(connection)
                 observed['opened'] = True
-                if mode == 'rw-query-only':
-                    sqlite3.Connection.execute(connection, 'PRAGMA query_only=ON')
-                    observed['queryOnly'] = sqlite3.Connection.execute(connection, 'PRAGMA query_only').fetchone()[0] == 1
                 return connection
             # Patch only this synthetic invocation; always restore the native connection function.
             sqlite3.connect = probe_connect
@@ -1756,6 +1789,7 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
             finally:
                 sqlite3.connect = real_connect
                 phase = 'reader-closure'
+                observed['readerConnectionsClosed'] = all(connection.closed for connection in connections)
                 for connection in connections:
                     if not connection.closed:
                         connection.close()
@@ -1797,13 +1831,18 @@ print(json.dumps(observations))
       NodeAssert.equal(observed.setupError, null);
       NodeAssert.equal(observed.seedClosed, true);
       NodeAssert.equal(observed.connectionsClosed, true);
+      NodeAssert.equal(observed.readerConnectionsClosed, true);
       NodeAssert.equal(observed.sourceFamilyHashesUnchanged, true);
       if (observed.family === "wal-family") {
         NodeAssert.equal(observed.negativeControl, true);
         NodeAssert.equal(observed.controlClosed, true);
       }
-      if (observed.opened && observed.readerMode === "rw-query-only")
+      if (observed.readerMode === "rw-query-only") {
+        NodeAssert.equal(observed.opened, true);
+        NodeAssert.equal(observed.querySuccess, true);
         NodeAssert.equal(observed.queryOnly, true);
+        NodeAssert.equal(observed.writeRefusal, "readonly");
+      }
       if (observed.querySuccess) NodeAssert.deepEqual(observed.rows, observed.expectedRows);
       else NodeAssert.notEqual(observed.error, null);
     }
