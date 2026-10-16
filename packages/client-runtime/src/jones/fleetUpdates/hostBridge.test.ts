@@ -135,12 +135,12 @@ it.effect("authenticates relay status reads with and without an operation ID", (
         authorization: "DPoP synthetic-relay-token",
       },
     ]);
+    // The signer receives each exact request URL; its proof claim omits the operation query.
     expect(proofs).toEqual(
-      Array(2).fill({
-        method: "GET",
-        url: "https://fleet.example.test/api/jones-fleet-updates",
-        accessToken: "synthetic-relay-token",
-      }),
+      calls.map(({ url }) => ({ method: "GET", url, accessToken: "synthetic-relay-token" })),
+    );
+    expect(proofs.map((proof) => normalizeDpopHtu(proof.url))).toEqual(
+      Array(2).fill("https://fleet.example.test/api/jones-fleet-updates"),
     );
     expect(authorizations).toEqual(Array(2).fill({ expectedEnvironmentId: target.environmentId }));
   }),
