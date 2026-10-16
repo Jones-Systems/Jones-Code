@@ -13,7 +13,9 @@ import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import { GROK_ACP_CANCEL_META, GROK_ACP_INITIALIZE_META } from "@t3tools/provider-grok/testing";
 import { makeXAiPromptCompletionRuntime } from "@t3tools/provider-grok/testing";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
@@ -36,7 +38,11 @@ function layerGrokProviderAdapterRegistryReplay(
   transcript: AcpReplayTranscript,
   options: { readonly replayGate?: ProviderReplayGate } = {},
 ) {
-  const layerHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
+  // Production's ProviderHostLive binds Jones identity; replay must send the same prompt.
+  const layerHost = Layer.effect(
+    ProviderHost.ProviderHost,
+    Effect.map(ProviderHost.ProviderHost, (host) => ({ ...host, appIdentity: APP_IDENTITY })),
+  ).pipe(Layer.provide(TestProviderHost.layer()), Layer.provide(NodeServices.layer));
 
   return ProviderAdapterRegistry.layerFromAdaptersEffect(
     Effect.gen(function* () {
