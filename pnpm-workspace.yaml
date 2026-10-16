@@ -303,6 +303,9 @@ patchedDependencies:
   "@react-native-menu/menu@2.0.0": patches/@react-native-menu__menu@2.0.0.patch
   "@react-navigation/native-stack@7.17.6": patches/@react-navigation%2Fnative-stack@7.17.6.patch
   dbus-next@0.10.2: patches/dbus-next@0.10.2.patch
+  # Bounds ACK-capable RPC stream delivery so a stalled consumer cannot block unrelated
+  # replies, and aborts saturated streams on protocol errors (rpc/session.test.ts).
+  effect@4.0.4: patches/effect@4.0.4.patch
   node-pty@1.2.0-beta.15: patches/node-pty@1.2.0-beta.15.patch
   react-native-gesture-handler@3.2.1: patches/react-native-gesture-handler@3.2.1.patch
   react-native-keyboard-controller@1.22.6: patches/react-native-keyboard-controller@1.22.6.patch
