@@ -87,8 +87,7 @@ export function checkForSidebarUpdate(
         stackedThreadToast({
           type: "error",
           title: "Could not check for updates",
-          description:
-            result.state.message ?? "Automatic updates are not available in this build.",
+          description: result.state.message ?? "Automatic updates are not available in this build.",
         }),
       );
     })
