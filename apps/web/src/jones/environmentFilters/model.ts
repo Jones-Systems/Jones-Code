@@ -1,6 +1,6 @@
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 
-export const SIDEBAR_ENVIRONMENT_FILTERS = ["VPS", "Test", "Mini", "Home"] as const;
+export const SIDEBAR_ENVIRONMENT_FILTERS = ["VPS", "Test", "Mini", "Laptop"] as const;
 export type SidebarEnvironmentFilter = (typeof SIDEBAR_ENVIRONMENT_FILTERS)[number];
 export type SidebarEnvironmentFilters = Readonly<Record<SidebarEnvironmentFilter, boolean>>;
 
@@ -8,7 +8,7 @@ export const DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS: SidebarEnvironmentFilters = {
   VPS: true,
   Test: true,
   Mini: true,
-  Home: true,
+  Laptop: true,
 };
 
 export function toggleSidebarEnvironmentFilter(
@@ -31,9 +31,9 @@ export function excludedSidebarEnvironmentIds(
     );
     const machine = machines?.get(identity.environmentId);
     if (label === undefined) {
-      if (normalized === "laptop") label = "Home";
+      if (normalized === "home") label = "Laptop";
       else if (normalized === "mac mini" || normalized === "mac-mini") label = "Mini";
-      else if (machine === "laptop") label = "Home";
+      else if (machine === "laptop") label = "Laptop";
       else if (machine === "mac-mini") label = "Mini";
     }
     if (label !== undefined && !filters[label]) excluded.add(identity.environmentId);
