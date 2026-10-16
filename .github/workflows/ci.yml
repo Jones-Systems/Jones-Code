@@ -282,6 +282,35 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # TEMPORARY Jones probe for the grok replay stall on PR 304. It runs one existing replay
+  # case with diagnostics logging; remove it together with JONES_REPLAY_DIAGNOSTICS logging.
+  # Check does not depend on it.
+  grok_replay_probe:
+    name: Grok replay probe
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 304 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Run grok_auto_blocked_command replay with diagnostics
+        env:
+          JONES_REPLAY_DIAGNOSTICS: "1"
+        run: vp run --filter t3 test src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts -t grok_auto_blocked_command --reporter=default --reporter=../../scripts/jones/ci-test-progress-reporter.ts
+
   transfer-report:
     name: Transfer report artifact
     needs: test_server
