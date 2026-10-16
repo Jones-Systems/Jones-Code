@@ -379,7 +379,9 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         ).pipe(Effect.mapError(mapRpcError)),
       ),
       Effect.asVoid,
-      Effect.withSpan("clientRuntime.connection.rpcSession.probe"),
+      Effect.withSpan("clientRuntime.connection.rpcSession.probe", {
+        attributes: { "connection.environment.id": connection.environmentId },
+      }),
     );
 
     return {

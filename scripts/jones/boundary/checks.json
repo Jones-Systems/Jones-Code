@@ -9,13 +9,14 @@
     {
       "id": "jones-remote-host-status",
       "tests": [
+        "apps/server/src/hostStatus/gateway.test.ts",
         "apps/web/src/hostStatus.test.ts",
         "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
         "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/hostStatus.test.ts apps/web/src/components/chat/HostStatusIndicators.test.tsx apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+        "vp test run apps/server/src/hostStatus/gateway.test.ts apps/web/src/hostStatus.test.ts apps/web/src/components/chat/HostStatusIndicators.test.tsx apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts"
       ]
     },
     {
@@ -1003,6 +1004,61 @@
       ],
       "commands": [
         "vp test run apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+      ]
+    },
+    {
+      "id": "jones-connection-diagnostics",
+      "tests": [
+        "apps/web/src/jones/observability/clientTracing.test.ts",
+        "packages/client-runtime/src/rpc/session.test.ts"
+      ],
+      "commands": [
+        "cd apps/web && vp test run --project unit src/jones/observability/clientTracing.test.ts --maxWorkers=1",
+        "cd packages/client-runtime && vp test run src/rpc/session.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp lint apps/web/src/observability/clientTracing.ts apps/web/src/jones/observability/clientTracing.test.ts packages/client-runtime/src/rpc/session.ts packages/client-runtime/src/rpc/session.test.ts",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-connection-rpc-isolation",
+      "tests": [
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "packages/client-runtime/src/rpc/client.test.ts",
+        "packages/client-runtime/src/connection/outdatedHostUpdate.test.ts",
+        "packages/client-runtime/src/connection/supervisor.test.ts",
+        "apps/server/src/terminal/OutputProtocol.test.ts",
+        "apps/server/src/observability/DefectReporter.test.ts",
+        "packages/effect-acp/src/protocol.test.ts",
+        "packages/effect-acp/src/client.test.ts",
+        "packages/effect-acp/src/agent.test.ts"
+      ],
+      "commands": [
+        "cd packages/client-runtime && vp test run src/rpc/session.test.ts src/rpc/client.test.ts src/connection/outdatedHostUpdate.test.ts src/connection/supervisor.test.ts --maxWorkers=1",
+        "cd apps/server && vp test run src/terminal/OutputProtocol.test.ts src/observability/DefectReporter.test.ts --maxWorkers=1",
+        "cd packages/effect-acp && vp test run src/protocol.test.ts src/client.test.ts src/agent.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp lint packages/client-runtime/src/rpc/session.test.ts",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-queue-hold-isolation",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/orchestration-v2/RunCompletionReads.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/orchestration-v2/QueuedRunOrder.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/orchestration/Orchestrator.control-reads.jones.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/QueueHold.test.ts apps/server/src/orchestration-v2/RunCompletionReads.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/jones/orchestration/Orchestrator.control-reads.jones.test.ts apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts --maxWorkers=1"
       ]
     }
   ]

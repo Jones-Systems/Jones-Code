@@ -96,7 +96,7 @@ it("keeps one bubble per host while live samples update both metric colors and a
     "VPS · — · —",
     "Test · — · —",
     "Mini · — · —",
-    "Home · — · —",
+    "Laptop · — · —",
   ]);
   expect(bubbles().every((bubble) => bubble.className.includes("bg-muted"))).toBe(true);
   await act(async () =>
@@ -131,6 +131,31 @@ it("keeps one bubble per host while live samples update both metric colors and a
   expect(bubbles()[0]?.textContent).toBe("VPS · — · —");
   expect(bubbles()[0]?.className).toContain("bg-muted");
   expect(bubbles()[0]?.getAttribute("aria-label")).toContain("stale");
+});
+
+it("shows Mac swap activity without a low available-RAM alarm", async () => {
+  await act(async () =>
+    receive({
+      hosts: [
+        {
+          id: "home",
+          status: "available",
+          cpuUsagePercent: 12,
+          logicalCpuCount: 8,
+          occupiedMemoryBytes: 15 * 1024 ** 3,
+          totalMemoryBytes: 16 * 1024 ** 3,
+          availableMemoryBytes: 0,
+          swapIoBytesPerSecond: 0.3 * 1024 ** 2,
+          sampledAt: new Date().toISOString(),
+        },
+      ],
+    }),
+  );
+  const laptop = container.querySelectorAll('[role="img"]')[3];
+  expect(laptop?.textContent).toBe("Laptop · 12% · Swap 0.3 MiB/s");
+  expect(laptop?.className).toContain("bg-emerald");
+  expect(laptop?.getAttribute("aria-label")).toContain("Available RAM 0.0 GiB");
+  expect(laptop?.getAttribute("aria-label")).toContain("10-second average");
 });
 
 it("colors CPU and RAM separately while either can raise the host background", async () => {
@@ -170,7 +195,7 @@ it("removes complete bubbles from the right as available header space shrinks an
     Array.from(container.querySelectorAll('[role="img"]')).map(
       (bubble) => bubble.textContent?.split(" · ")[0],
     );
-  expect(names()).toEqual(["VPS", "Test", "Mini", "Home"]);
+  expect(names()).toEqual(["VPS", "Test", "Mini", "Laptop"]);
   for (const [width, expected] of [
     [353, ["VPS", "Test", "Mini"]],
     [225, ["VPS", "Test"]],
@@ -179,7 +204,7 @@ it("removes complete bubbles from the right as available header space shrinks an
     [100, ["VPS"]],
     [218, ["VPS", "Test"]],
     [346, ["VPS", "Test", "Mini"]],
-    [484, ["VPS", "Test", "Mini", "Home"]],
+    [484, ["VPS", "Test", "Mini", "Laptop"]],
   ] as const) {
     await act(async () => {
       availableWidth = width;
