@@ -77,8 +77,11 @@ it.effect("collects planner statistics for an existing database on open", () => 
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE stats_probe(id INTEGER PRIMARY KEY, thread_id TEXT NOT NULL)`;
       yield* sql`CREATE INDEX stats_probe_thread_idx ON stats_probe(thread_id)`;
+      // By default PRAGMA optimize caps ANALYZE at 2000 rows per index, scaled down
+      // once the schema passes 100 tables and indexes, but never below 100. Staying
+      // under that floor keeps these statistics exact however large the schema grows.
       yield* sql`
-        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000)
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 90)
         INSERT INTO stats_probe(thread_id) SELECT 'thread-' || (i % 10) FROM n
       `;
     }).pipe(Effect.provide(persistence()));
@@ -89,7 +92,7 @@ it.effect("collects planner statistics for an existing database on open", () => 
       const rows = yield* sql<{ readonly stat: string }>`
         SELECT stat FROM sqlite_stat1 WHERE idx = 'stats_probe_thread_idx'
       `;
-      assert.deepEqual([...rows], [{ stat: "1000 100" }]);
+      assert.deepEqual([...rows], [{ stat: "90 9" }]);
     }).pipe(Effect.provide(persistence()));
   }).pipe(
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),

@@ -441,6 +441,7 @@
     "apps/server/src/persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts": "jones-owned",
     "apps/server/src/persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts": "jones-owned",
     "apps/server/src/persistence/OrchestrationEventStore.ts": "accepted-shared",
+    "apps/server/src/persistence/Sqlite.test.ts": "jones-tests-in-upstream",
     "apps/server/src/preview/DesktopBrowserChannel.test.ts": "jones-tests-in-upstream",
     "apps/server/src/preview/ServerBrowser.test.ts": "jones-tests-in-upstream",
     "apps/server/src/preview/SessionControl.test.ts": "jones-tests-in-upstream",

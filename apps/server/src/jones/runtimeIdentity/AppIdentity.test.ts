@@ -87,7 +87,7 @@ describe("Jones agent app identity", () => {
       (event: { systemPrompt: string }) => { systemPrompt: string }
     >();
     const extension = NodeModule.stripTypeScriptTypes(
-      PI_T3_MCP_EXTENSION_SOURCE.replace('import { Type } from "typebox";', "").replace(
+      PI_T3_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
         "export default async function",
         "async function",
       ),
