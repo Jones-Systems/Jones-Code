@@ -171,6 +171,12 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   dismissSnapShotAnimation: (id) =>
     ipcRenderer.invoke(IpcChannels.DISMISS_SNAP_SHOT_ANIMATION_CHANNEL, id),
   acknowledgeSnapShot: (id) => ipcRenderer.invoke(IpcChannels.ACKNOWLEDGE_SNAP_SHOT_CHANNEL, id),
+  getConnectionCatalogSnapshot: () =>
+    ipcRenderer.invoke(IpcChannels.GET_CONNECTION_CATALOG_SNAPSHOT_CHANNEL),
+  listConnectionCompatibilityHints: () =>
+    ipcRenderer.invoke(IpcChannels.LIST_CONNECTION_COMPATIBILITY_HINTS_CHANNEL),
+  setConnectionCompatibilityHint: (input) =>
+    ipcRenderer.invoke(IpcChannels.SET_CONNECTION_COMPATIBILITY_HINT_CHANNEL, input),
   getConnectionCatalog: () => ipcRenderer.invoke(IpcChannels.GET_CONNECTION_CATALOG_CHANNEL),
   setConnectionCatalog: (catalog) =>
     ipcRenderer.invoke(IpcChannels.SET_CONNECTION_CATALOG_CHANNEL, catalog),
@@ -302,11 +308,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setUpdateChannel: (channel) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_SET_CHANNEL_CHANNEL, channel),
   checkForUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_CHECK_CHANNEL),
-  downloadUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL),
-  installUpdate: (stagedHandle) =>
-    stagedHandle === undefined
-      ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL)
-      : ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, stagedHandle),
+  downloadUpdate: (selection) =>
+    selection === undefined
+      ? ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL)
+      : ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL, selection),
+  discardUpdate: (stagedHandle) =>
+    ipcRenderer.invoke(IpcChannels.UPDATE_DISCARD_CHANNEL, stagedHandle),
+  fleetUpdates: (request) => ipcRenderer.invoke(IpcChannels.FLEET_UPDATES_CHANNEL, request),
+  installUpdate: (stagedHandle, campaignId) =>
+    campaignId !== undefined
+      ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, { stagedHandle, campaignId })
+      : stagedHandle === undefined
+        ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL)
+        : ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, stagedHandle),
   cliCommand: {
     getState: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_GET_STATE_CHANNEL),
     install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),

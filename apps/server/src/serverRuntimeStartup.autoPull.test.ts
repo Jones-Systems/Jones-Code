@@ -128,7 +128,10 @@ it.effect("parks automatic pull until activation without delaying command readin
           prepareForShutdown: Effect.void,
           reconcile: () => Effect.succeed(recovery),
         }),
-        Layer.mock(Orchestrator.OrchestratorV2)({ recoverDelegatedTasks: Effect.void }),
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          recoverDelegatedTasks: Effect.void,
+          recoverPlannedUpdateQueues: Effect.void,
+        }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
         Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ start: () => Effect.void }),
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.never }),
@@ -194,8 +197,13 @@ it.effect("parks automatic pull until activation without delaying command readin
         );
 
         // A reverted, awaited pull reaches statusDetails instead of prepareTrial.
-        // Race the two receipts so that regression fails without a timeout.
-        yield* Effect.raceFirst(Deferred.await(prepared), Deferred.await(statusCalled));
+        // Race both receipts and startup failure so a failed phase cannot leave the test waiting.
+        yield* Effect.raceFirst(
+          Effect.raceFirst(Deferred.await(prepared), Deferred.await(statusCalled)),
+          startup.awaitCommandReady.pipe(
+            Effect.andThen(Effect.die("Command readiness completed before trial preparation.")),
+          ),
+        );
         expect(yield* Deferred.isDone(activation)).toBe(false);
         expect(yield* Deferred.isDone(statusCalled)).toBe(false);
         expect(yield* Deferred.isDone(prepared)).toBe(true);

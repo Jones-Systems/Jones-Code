@@ -1,3 +1,4 @@
+import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { isWorkModeKeepWarm, workModeProviderPrompt } from "../jones/provider/workModePrompt.ts";
@@ -143,6 +144,9 @@ export const layer: Layer.Layer<
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const plannedContinuity = yield* Effect.serviceOption(
+      PlannedUpdateContinuity.PlannedUpdateContinuity,
+    );
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const currentSettings = yield* ServerSettings.ServerSettingsService;
@@ -606,8 +610,14 @@ export const layer: Layer.Layer<
         (candidate) => candidate.id === providerSessionId,
       );
       const keepWarm = isWorkModeKeepWarm(message);
+      const plannedWorkResume =
+        keepWarm &&
+        Option.isSome(plannedContinuity) &&
+        (yield* plannedContinuity.value
+          .allowWorkStart(projection.thread.id, message.id)
+          .pipe(Effect.catch(() => Effect.succeed(false))));
       const sessionResult = yield* Effect.result(
-        keepWarm
+        keepWarm && !plannedWorkResume
           ? providerSessions.get(providerSessionId).pipe(
               Effect.flatMap((live) =>
                 Option.isSome(live) && providerThread.nativeThreadRef !== null
@@ -883,6 +893,23 @@ export const layer: Layer.Layer<
       });
       // The last attempt already failed the run.
       if (loadedProviderThread === undefined) return;
+      if (
+        plannedWorkResume &&
+        (loadedProviderThread.nativeThreadRef?.nativeId !==
+          providerThread.nativeThreadRef?.nativeId ||
+          loadedProviderThread.nativeThreadRef?.driver !== providerThread.nativeThreadRef?.driver)
+      ) {
+        yield* settleStartFailure({
+          signal: "planned-work-native-identity-changed",
+          title: "Work Mode could not resume its existing provider conversation",
+          error: new ProviderTurnStartError({
+            runId,
+            cause:
+              "The provider returned a different native conversation after the planned update.",
+          }),
+        });
+        return;
+      }
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
       }

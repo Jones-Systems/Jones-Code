@@ -62,6 +62,23 @@ with the ready event after reconnecting, then check the outcome and target versi
 A reconnect alone cannot distinguish successful replacement from rollback. Older
 servers without an update ID retain version-only correlation.
 
+Fleet installs use a caller-supplied UUID and an exact source selection. A launcher
+must advertise `updateOperationsProtocol: 1` before accepting that ID. It durably
+reserves the ID with the staged handle, source pair, environment, database, and
+version pair before acknowledging native acceptance. Repeating the same binding
+reads its retained operation; reusing the ID for another binding is rejected.
+The launcher archives a terminal receipt before a later operation replaces its
+service-state entry. These Jones receipts live under `runtime/jones-update-operations`,
+outside the database rollback pair.
+
+An absent reservation and absent matching service state permit submission with the
+same ID. A reservation without matching native state or a retained terminal outcome
+requires reconciliation; it does not authorize another replacement with any ID. The
+launcher inspects at most 4,096 receipt entries and fails closed on malformed,
+unreadable, or larger receipt stores. Receipt preparation failures preserve the old
+child and any partial reservation. Only an exact operation proven absent can clear
+its uncertain in-memory handoff fence. Readback of an operation and observation of the currently installed source are separate checks.
+
 Desktop updates have a separate two-phase handoff because installing the app stops
 its bundled backend. Preparation returns a token while the connection is alive;
 the client commits that token only after receiving it. Otherwise backend shutdown
@@ -77,11 +94,12 @@ opt-out. The
 [v2 recovery service](../../apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts)
 requires matching durable run, provider thread, session, and native resume identity.
 Queued runs never started, so recovery holds them and continues the run they wait
-behind. A settled run qualifies only when the restart cancels work the agent waits on
-(a monitor, subagent, or background task) and its session was live, so stale records
-from an older crash never wake it. Its continuation prompt is the note of what will not
-report back. A shell alone does not wake a settled run: most are dev servers nobody
-waits on, so that note waits for the next user message.
+behind. Ordinary restart recovery leaves those queues held. A settled run qualifies
+only when the restart cancels work the agent waits on (a monitor, subagent, or
+background task) and its session was live, so stale records from an older crash
+never wake it. Its continuation prompt is the note of what will not report back. A
+shell alone does not wake a settled run: most are dev servers nobody waits on, so
+that note waits for the next user message.
 
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.
@@ -89,6 +107,13 @@ Continuation effects wait for activation; a slow provider must not delay the ser
 readiness or the launcher's commit boundary. Graceful shutdown captures intent before
 closing providers, then reconciles after ingestion has stopped so a late completion
 cannot be overwritten by a stale cancellation.
+
+Shutdown releases captured provider sessions concurrently, retaining the existing
+30-second bound for each session scope. The launcher gives the child 75 seconds
+for both session and parent-scope cleanup plus reconciliation; generated systemd
+and launchd definitions explicitly allow 90 seconds. Timeout escalation still
+requires the qualified updater's writer-quiescence proof before backup or restore.
+These source defaults do not rewrite existing installed service definitions.
 
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)
 rechecks the preference, provider selection, newer user work, a stop the user requested,
@@ -111,3 +136,36 @@ listener ignores reconciliation's cancellations. A cancelled child whose restart
 continuation is still pending in the outbox is not a result yet; the continuation's run
 settles it, or the handler settles it when it declines to continue. Schedulers wait for
 activation so they cannot start runs that reconciliation would then cancel.
+
+Qualified planned updates with caller-bound operation support capture eligible queues
+and live Work Mode conversations before handoff. Jones migration 106 stores this
+eligibility separately from upstream projections. Saved continuation preferences or
+the explicit one-install continuation option authorize capture; enrollment does not
+change those preferences. Startup verifies the exact native operation outcome and
+the actual selected source, environment, home, and database before consuming a
+one-shot activation claim. Rollback must prove the restored previous source as well.
+A later ordinary restart cannot grant the same captured eligibility again.
+
+A dedicated indexed selector captures queues behind active roots as well as idle
+roots; ordinary recovery's idle-only queue selector keeps its existing behavior.
+A captured queue is released through the existing deterministic `queue.resume`
+command only after its root or exact restart-continuation chain completes
+successfully. Its messages, ordering, provider selection, and control receipts must
+remain unchanged. Preexisting holds, later Stop or hold commands (including no-op
+commands), edits, new user work, approvals, failures, and identity variance keep it
+held. Recovery's own accepted `provider-runtime.reconcile` receipt is allowed only
+when its internal command identity matches the captured thread, startup or shutdown
+trigger, and canonical acceptance timestamp. Every intervening user control receipt
+is still checked. The exact checkpoint-completion receipt for a captured root or
+its continuation is also allowed; a successful current run is still required.
+Existing continuation and queue outbox identities provide retry idempotence.
+
+Work Mode captures only eligible completed roots whose provider conversation was
+still live before this update. One cold admission may reopen that same native
+conversation at its original due time; it adds no immediate prompt or interval
+reset. Current Work Mode and continuation controls are checked again. A failed
+native resume or a changed native identity sends no keep-warm prompt and does not
+fall back to a fresh conversation. Previously evicted sessions and generic crashes
+do not acquire this planned-update permission. Both the capturing runtime and the
+runtime performing recovery need this implementation; older installed binaries do
+not gain it from source publication alone.

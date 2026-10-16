@@ -1,6 +1,8 @@
+import { FleetEnrollmentControls } from "../../jones/fleetUpdates/FleetEnrollmentControls";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
 import { SessionPermissions } from "./SessionPermissions";
 import { AUTH_SCOPE_OPTIONS as PAIRING_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
+import { JonesBlockedHostUpdates } from "~/jones/fleetUpdates/JonesBlockedHostUpdates";
 import {
   ChevronRightIcon,
   ChevronsLeftRightEllipsisIcon,
@@ -1498,6 +1500,7 @@ function SavedBackendListRow({
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const environmentId = environment.environmentId;
   const unsupported = environment.connection.phase === "unsupported";
+  const historicalUpdate = environment.entry.compatibilityHint?.kind === "outdated-update";
   const enabled = environment.entry.enabled && !unsupported;
   const isConnected = environment.connection.phase === "connected";
   const isRemoving = removingEnvironmentId === environmentId;
@@ -1687,6 +1690,7 @@ function SavedBackendListRow({
       below={
         <>
           {enabled ? <JonesUpdateControls environmentId={environmentId} compareWithLaptop /> : null}
+          <FleetEnrollmentControls environmentId={environmentId} label={environment.label} />
           {serverUpdateState.status !== "idle" ? (
             <div className="mt-1 max-w-md">
               <ServerUpdateProgress state={serverUpdateState} />
@@ -1728,6 +1732,9 @@ function SavedBackendListRow({
           label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
         />
       ) : null}
+      {!unsupported && historicalUpdate ? (
+        <JonesBlockedHostUpdates environmentId={environmentId} historical />
+      ) : null}
       {showUpdateAction ? (
         <ServerUpdateAction
           environmentId={environmentId}
@@ -1747,14 +1754,20 @@ function SavedBackendListRow({
             <Switch
               size="sm"
               checked={enabled}
-              disabled={isRemoving || unsupported}
+              disabled={isRemoving || unsupported || historicalUpdate}
               aria-label={`${enabled ? "Switch off" : "Switch on"} ${environment.label}`}
               onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
             />
           }
         />
         <TooltipPopup side="top">
-          {unsupported ? "Client not supported" : enabled ? "Switch off" : "Switch on"}
+          {unsupported
+            ? "Client not supported"
+            : historicalUpdate
+              ? "Previously required an update; refresh host status"
+              : enabled
+                ? "Switch off"
+                : "Switch on"}
         </TooltipPopup>
       </Tooltip>
       <Menu>

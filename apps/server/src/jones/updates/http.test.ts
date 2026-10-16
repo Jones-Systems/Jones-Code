@@ -148,11 +148,16 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
       return state;
     });
   const service = Layer.succeed(JonesUpdates.JonesUpdates, {
+    fleetOperationsSupported: false,
+    retireStagedOperation: () => Effect.succeed({ retired: false }),
     state: (after) => record("state", after),
     check: record("check"),
     download: (input) => record("download", input),
     prepareNative: (input) => record("prepareNative", input),
     install: (input) => record("install", input),
+    stageExact: (input) => record("stageExact", input),
+    installForOperation: (input) => record("installForOperation", input),
+    reconcileOperation: (operationId) => Effect.succeed({ state: "absent" as const, operationId }),
   });
   const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
     effect.pipe(
@@ -173,7 +178,7 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
 }
 
 describe("qualified update HTTP authority and decoding", () => {
-  test("round trips a fixed download selection and exact install input with no-store", async () => {
+  test("round trips fixed download, install, and native preparation attempt inputs with no-store", async () => {
     const app = fixture(["orchestration:read", "orchestration:operate"]);
     try {
       const download = { artifactId: 101, sourceSha: "a".repeat(40) };
@@ -183,9 +188,16 @@ describe("qualified update HTTP authority and decoding", () => {
         currentVersion: app.state.currentVersion,
         continueRunningThreads: true,
       };
+      const preparation = {
+        stagedHandle: "b".repeat(64),
+        transactionId: "c".repeat(64),
+        environmentId: app.state.environmentId,
+        currentVersion: app.state.currentVersion,
+      };
       for (const [action, input] of [
         ["download", download],
         ["install", install],
+        ["prepare-native", preparation],
       ] as const) {
         const response = await app.handler(
           new Request(`http://fixture/api/jones-updates/${action}`, {
@@ -201,13 +213,14 @@ describe("qualified update HTTP authority and decoding", () => {
       expect(app.calls).toEqual([
         { action: "download", input: download },
         { action: "install", input: install },
+        { action: "prepareNative", input: preparation },
       ]);
     } finally {
       await app.dispose();
     }
   });
 
-  test("rejects malformed install before calling the service", async () => {
+  test("rejects malformed install and missing preparation attempt before calling the service", async () => {
     const app = fixture(["orchestration:operate"]);
     try {
       const response = await app.handler(
@@ -218,6 +231,18 @@ describe("qualified update HTTP authority and decoding", () => {
         }),
       );
       expect(response.status).toBe(400);
+      const preparation = await app.handler(
+        new Request("http://fixture/api/jones-updates/prepare-native", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            stagedHandle: "b".repeat(64),
+            environmentId: app.state.environmentId,
+            currentVersion: app.state.currentVersion,
+          }),
+        }),
+      );
+      expect(preparation.status).toBe(400);
       expect(app.calls).toEqual([]);
     } finally {
       await app.dispose();
@@ -238,7 +263,11 @@ describe("qualified update HTTP authority and decoding", () => {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(
-              action === "download" ? { artifactId: 101, sourceSha: "a".repeat(40) } : input,
+              action === "download"
+                ? { artifactId: 101, sourceSha: "a".repeat(40) }
+                : action === "prepare-native"
+                  ? { ...input, stagedHandle: "b".repeat(64), transactionId: "c".repeat(64) }
+                  : input,
             ),
           }),
         );

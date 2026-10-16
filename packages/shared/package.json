@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/nativeWriterFence": {
+      "types": "./src/jones/nativeWriterFence.ts",
+      "import": "./src/jones/nativeWriterFence.ts"
+    },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",
       "import": "./src/githubMarkdownLinks.ts"

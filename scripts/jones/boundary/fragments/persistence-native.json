@@ -8,6 +8,7 @@
   "hookPaths": [
     "apps/server/src/persistence/Migrations.ts",
     "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
     "apps/server/src/orchestration-v2/EffectWorker.ts",
     "apps/server/src/orchestration-v2/EventSink.ts",
     "apps/server/src/orchestration-v2/ThreadLaunchService.ts"
@@ -109,6 +110,10 @@
     {
       "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
       "to": "apps/server/src/jones/nativeCreation/NativeCreationAuthority.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
     }
   ]
 }

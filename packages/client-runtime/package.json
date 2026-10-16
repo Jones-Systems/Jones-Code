@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/fleet-updates": {
+      "types": "./src/jones/fleetUpdates/index.ts",
+      "default": "./src/jones/fleetUpdates/index.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

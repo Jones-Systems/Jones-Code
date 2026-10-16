@@ -91,6 +91,7 @@ async function descriptor(root: string) {
     protocol: 1,
     startupGateProtocol: 1,
     transactionId: "synthetic-startup",
+    stagedHandle: "f".repeat(64),
     home: await NodeFSP.realpath(root),
     databasePath: await NodeFSP.realpath(NodePath.join(root, "userdata/statev2.sqlite")),
     profile: await NodeFSP.realpath(NodePath.join(root, "profile")),

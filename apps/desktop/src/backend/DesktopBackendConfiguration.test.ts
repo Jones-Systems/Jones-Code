@@ -245,6 +245,8 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.entryPath, environment.backendEntryPath);
         assert.equal(first.cwd, environment.backendCwd);
         assert.equal(first.captureOutput, true);
+        assert.isUndefined(first.jonesColdBackendPermit);
+        assert.isUndefined(second.jonesColdBackendPermit);
         assert.equal(first.env.ELECTRON_RUN_AS_NODE, "1");
         assert.isUndefined(first.env.T3CODE_PORT);
         assert.isUndefined(first.env.T3CODE_MODE);

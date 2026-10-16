@@ -14,6 +14,19 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("accepts older descriptors without claiming a Jones source", () => {
+    expect(decodeDescriptor(descriptor).jonesSource).toBeUndefined();
+    const jonesSource = {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    };
+    expect(decodeDescriptor({ ...descriptor, jonesSource }).jonesSource).toEqual(jonesSource);
+    expect(() =>
+      decodeDescriptor({ ...descriptor, jonesSource: { ...jonesSource, sha: "unknown" } }),
+    ).toThrow();
+  });
+
   it("keeps settled cleanup optional alongside current worktree capabilities", () => {
     expect(decodeDescriptor(descriptor).capabilities.settledWorktreeCleanup).toBeUndefined();
     const capabilities = {

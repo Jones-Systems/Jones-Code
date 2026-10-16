@@ -20,7 +20,10 @@ import {
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
-import { installLocalDesktopUpdate } from "../../jones/updates/localDesktopUpdate";
+import {
+  downloadLocalDesktopUpdate,
+  installLocalDesktopUpdate,
+} from "../../jones/updates/localDesktopUpdate";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -201,17 +204,19 @@ const toastUpdateError: ReportLocalUpdateError = (title, description) => {
   toastManager.add(stackedThreadToast({ type: "error", title, description }));
 };
 
-/** Downloads this app's update. Resolves true when it is ready to install;
-    failures go to `reportError` (a toast by default) and resolve false. */
+/** Downloads this app's update, through the Jones staged download when the
+    app reports one. Resolves true when it is ready to install; failures go to
+    `reportError` (a toast by default) and resolve false. */
 async function downloadLocalUpdate(
   bridge: DesktopBridge,
+  state: DesktopUpdateState | null,
   {
     notifyDownloaded,
     reportError = toastUpdateError,
   }: { readonly notifyDownloaded: boolean; readonly reportError?: ReportLocalUpdateError },
 ): Promise<boolean> {
   try {
-    const result = await bridge.downloadUpdate();
+    const result = await downloadLocalDesktopUpdate(bridge, state);
     if (result.completed && notifyDownloaded) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
     }
@@ -356,7 +361,7 @@ function SidebarUpdateControl() {
     setIsActionPending(true);
 
     if (action === "download") {
-      void downloadLocalUpdate(bridge, { notifyDownloaded: true }).finally(() =>
+      void downloadLocalUpdate(bridge, state, { notifyDownloaded: true }).finally(() =>
         setIsActionPending(false),
       );
       return;
@@ -425,7 +430,7 @@ function SidebarUpdateControl() {
         ...(bridge && action === "download"
           ? {
               downloadLocal: (reportError) =>
-                downloadLocalUpdate(bridge, { notifyDownloaded: false, reportError }),
+                downloadLocalUpdate(bridge, state, { notifyDownloaded: false, reportError }),
             }
           : {}),
         ...(bridge && action !== "none"
@@ -443,7 +448,7 @@ function SidebarUpdateControl() {
     } finally {
       setIsActionPending(false);
     }
-  }, [action, everything]);
+  }, [action, everything, state]);
 
   const handleCheckAnimationIteration = useCallback(() => {
     setIsCheckAnimationLatched(

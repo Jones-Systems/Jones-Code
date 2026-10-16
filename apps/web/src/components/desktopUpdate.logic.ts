@@ -4,6 +4,7 @@ import {
   getJonesDesktopUpdateBlockedMessage,
   getJonesDesktopUpdateOutcomeMessage,
   getJonesDesktopUpdateRefusal,
+  isJonesDesktopUpdatePending,
 } from "../jones/updates/localDesktopUpdate";
 
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
@@ -127,6 +128,7 @@ export function getDesktopUpdateInstallConfirmationMessage(
 }
 
 export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): string | null {
+  if (isJonesDesktopUpdatePending(result)) return null;
   const refusal = getJonesDesktopUpdateRefusal(result);
   if (refusal) return refusal;
   if (!result.accepted || result.completed) return null;

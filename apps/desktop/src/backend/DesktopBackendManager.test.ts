@@ -22,8 +22,20 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Creating layer owns the compiled custody fixture and its scratch tree.
+import * as NodeFSP from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Fixture source and output paths are fixed beneath its owned root.
+import * as NodePath from "node:path";
+// The fixture uses the selected supported test interpreter.
+import * as NodeProcess from "node:process";
+// Resolves only the two canonical modules compiled by this fixture.
+import * as NodeURL from "node:url";
+import { build } from "vite-plus/pack";
+// @ts-expect-error -- Existing owned native fixture helper has no declarations.
+import * as IdentityFixture from "../../../../scripts/jones/updates/legacy-identity-native-fixture.mjs";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
+import type { JonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
 import * as DesktopApp from "../app/DesktopApp.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -120,6 +132,7 @@ function decodeBootstrap(raw: string) {
 }
 
 interface MakeInstanceInput {
+  readonly id?: DesktopBackendManager.BackendInstanceId;
   readonly spawnerLayer: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>;
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   readonly backendOutputLog?: Partial<DesktopObservability.DesktopBackendOutputLogShape>;
@@ -183,7 +196,7 @@ function makeTestInstance(input: MakeInstanceInput) {
   );
 
   const instance = DesktopBackendManager.makeBackendInstance({
-    id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
+    id: input.id ?? DesktopBackendManager.PRIMARY_INSTANCE_ID,
     label: Effect.succeed("Windows"),
     configResolve: input.configResolve ?? Effect.succeed(input.config ?? baseConfig),
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
@@ -195,7 +208,247 @@ function makeTestInstance(input: MakeInstanceInput) {
   return instance.pipe(Effect.provide(layerServices));
 }
 
+// The driver captures the keeper directly. A finite child transfers only fixture
+// pipe descriptors; it exits before the backend proceeds, leaving no orphan helper.
+const coldPipeKeeper = String.raw`
+import array, json, os, socket, sys
+root = sys.argv[1]
+server = socket.socket(socket.AF_UNIX)
+server.bind(root + '/keeper.sock')
+server.listen(1)
+print('ready', flush=True)
+connection, _ = server.accept()
+fds = array.array('i')
+try:
+    _, ancillary, _, _ = connection.recvmsg(1, socket.CMSG_SPACE(2 * fds.itemsize))
+    for level, kind, raw in ancillary:
+        assert level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS
+        fds.frombytes(raw[:len(raw) - len(raw) % fds.itemsize])
+    assert len(fds) == 2
+    connection.sendall(b'held')
+    print('held', flush=True)
+    sys.stdin.buffer.read(1)
+finally:
+    for fd in fds: os.close(fd)
+    connection.close()
+    server.close()
+`;
+
+const coldAdapterChild = String.raw`
+import * as fs from 'node:fs';
+import {spawn} from 'node:child_process';
+const sender = spawn('python3', ['-c',
+ 'import array,socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendmsg([b"x"],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array("i",[1,8]))]); assert s.recv(4)==b"held"; s.close()',
+ process.env.ROOT + '/keeper.sock'], {stdio:['ignore',1,'pipe','ignore','ignore','ignore','ignore','ignore',8]});
+sender.stderr.resume();
+await new Promise((resolve,reject) => {sender.on('error',reject); sender.on('close',code => code===0 ? resolve() : reject(new Error('Descriptor sender failed')));});
+const binding = JSON.parse(process.env.BINDING);
+if(process.env.SCENARIO === 'early-failure') binding.transferId='9'.repeat(64);
+fs.writeSync(8,JSON.stringify({protocol:1,binding,sequence:1,type:'READY',identity:{pid:process.pid,parentPid:process.ppid,uniqueId:'1',parentUniqueId:'2',pidVersion:1,uid:process.getuid()}})+'\n');
+setInterval(()=>{},1000);
+`;
+
+// Appended only to the canonical module in this owned build. Production exports
+// and the production private permit issuer remain unchanged and closed.
+const coldFixturePermit = String.raw`
+export const fixturePermit = Object.freeze({});
+const fixtureRoot = NodeProcess.argv[3];
+const fixtureBinding = {transactionId:'1'.repeat(64),transferId:'2'.repeat(64),handoffSha256:'3'.repeat(64),sourceSha:'4'.repeat(40),sourceTree:'5'.repeat(40),artifactSha256:'6'.repeat(64),bootSessionUuid:'00000000-0000-4000-8000-000000000001'};
+coldPermits.set(fixturePermit, {executable:NodeProcess.execPath,args:[fixtureRoot+'/child.mjs'],cwd:fixtureRoot,
+ env:{PATH:NodeProcess.env.PATH,HOME:fixtureRoot,TMPDIR:fixtureRoot,ROOT:fixtureRoot,SCENARIO:NodeProcess.argv[2],BINDING:JSON.stringify(fixtureBinding)},binding:fixtureBinding});
+`;
+
+const coldManagerHarness = String.raw`
+import * as FixtureAssert from 'node:assert/strict';
+import * as FixtureProcess from 'node:child_process';
+import * as FixtureFS from 'node:fs';
+import * as FixtureTimers from 'node:timers/promises';
+import * as FixtureLayer from 'effect/Layer';
+import * as FixtureDeferred from 'effect/Deferred';
+import {fixturePermit} from '../jones/updates/jonesColdBackendCustody.ts';
+const root=process.argv[3], scenario=process.argv[2];
+const keeper=FixtureProcess.spawn('python3',[root+'/keeper.py',root],{stdio:['pipe','pipe','pipe']});
+let keeperOutput='', keeperClosed=false;
+keeper.stdout.on('data',chunk=>{keeperOutput+=chunk;}); keeper.stderr.resume();
+const keeperDone=new Promise((resolve,reject)=>{keeper.once('error',reject);keeper.once('close',()=>{keeperClosed=true;resolve();});});
+let instance, retained, program, cancellation=false, cleanupRunning;
+const until=async(test)=>{const deadline=Date.now()+10000;while(!test()){if(Date.now()>deadline)throw new Error('Fixture deadline');await FixtureTimers.setTimeout(5);}};
+const cleanup=()=>cleanupRunning ??= (async()=>{
+ retained ??= retainedColdRuns.get(PRIMARY_INSTANCE_ID);
+ keeper.stdin.end('x');
+ await Promise.race([keeperDone,FixtureTimers.setTimeout(1000)]);
+ if(!keeperClosed){keeper.kill('SIGKILL');await keeperDone;}
+ if(retained?.owner){await retained.stop();await until(()=>retained.owner.observe().settled);retained.scopeFinalized=true;retained.reconcile();}
+ FixtureFS.writeFileSync(root+'/settled.json',JSON.stringify({settled:keeperClosed && (!retained?.owner || retained.result?.settled===true)}));
+})();
+const cancel=()=>{if(cancellation)return;cancellation=true;void (async()=>{if(program)await Effect.runPromise(Fiber.interrupt(program));await cleanup();})().finally(()=>{process.exitCode=143;});};
+process.on('SIGTERM',cancel);process.on('SIGINT',cancel);
+try {
+ await until(()=>keeperOutput.includes('ready'));
+ if(cancellation)throw new Error('Cancelled before backend launch');
+ let resolves=0, warmSpawns=0;
+ const config={executablePath:process.execPath,args:[],entryPath:root+'/child.mjs',cwd:root,env:{},
+  bootstrap:{mode:'desktop',noBrowser:true,port:3773,t3Home:root,host:'127.0.0.1',desktopBootstrapToken:'fixture',tailscaleServeEnabled:false,tailscaleServePort:443,desktopTelemetryFd:4,desktopTelemetryControlFd:5,desktopBrowserFd:6,desktopBrowserControlFd:7},
+  bootstrapDelivery:'fd3',extendEnv:false,httpBaseUrl:new URL('http://127.0.0.1:3773'),captureOutput:true,preflightFailure:Option.none(),jonesColdBackendPermit:fixturePermit};
+ const spec={id:PRIMARY_INSTANCE_ID,label:Effect.succeed('fixture'),configResolve:Effect.sync(()=>{resolves++;return config;})};
+ const log={beginSession:()=>Effect.void,writeOutputChunk:()=>Effect.void,persistFailureSnapshot:()=>Effect.void,persistFailure:()=>Effect.void,discardSession:Effect.void};
+ const services=FixtureLayer.mergeAll(
+  FileSystem.layerNoop({exists:()=>Effect.succeed(true)}),
+  FixtureLayer.succeed(ChildProcessSpawner.ChildProcessSpawner,ChildProcessSpawner.make(()=>Effect.sync(()=>{warmSpawns++;throw new Error('Unexpected warm spawn');}))),
+  FixtureLayer.succeed(HttpClient.HttpClient,HttpClient.make(()=>Effect.never)),
+  FixtureLayer.succeed(DesktopObservability.DesktopBackendOutputLogFactory,{forInstance:()=>Effect.succeed(log)}),
+  FixtureLayer.succeed(DesktopTelemetryPublisher.DesktopTelemetryPublisher,{latest:Effect.succeedNone,changes:Stream.empty,encoded:Stream.empty,handleControlForSource:()=>Effect.void,removeControlSource:()=>Effect.void,publishUpdateReport:()=>Effect.void,updateRequests:Stream.empty,updateCommits:Stream.empty,updateCancellations:Stream.empty}),
+  DesktopBrowserHost.layer,DesktopWslEnvironment.layerTest({}));
+ program=Effect.runFork(Effect.scoped(Effect.gen(function*(){
+  const racing=scenario==='race-cold' || scenario==='race-warm';
+  const entered=yield* FixtureDeferred.make(), resume=yield* FixtureDeferred.make();
+  let contenderStart;
+  if(racing){
+   const contender=yield* makeBackendInstance({...spec,configResolve:Effect.gen(function*(){
+    resolves++;yield* FixtureDeferred.succeed(entered,undefined);yield* FixtureDeferred.await(resume);
+    return scenario==='race-warm' ? {...config,jonesColdBackendPermit:undefined} : config;
+   })});
+   contenderStart=yield* contender.start.pipe(Effect.forkChild);
+   yield* FixtureDeferred.await(entered);
+  }
+  instance=yield* makeBackendInstance(spec);yield* instance.start;
+  yield* Effect.promise(()=>until(()=>keeperOutput.includes('held')));
+  retained=retainedColdRuns.get(PRIMARY_INSTANCE_ID);FixtureAssert.ok(retained?.owner);
+  if(scenario!=='early-failure')yield* instance.stop();
+  yield* Effect.promise(()=>until(()=>retained.scopeFinalized));
+  const snapshot=yield* instance.snapshot;
+  FixtureAssert.equal(snapshot.coldCustody.result.settled,false);
+  FixtureAssert.equal(snapshot.coldCustody.result.exitObserved,true);
+  FixtureAssert.equal(snapshot.coldCustody.result.pipesClosed,false);
+  FixtureAssert.equal(snapshot.coldCustody.scopeFinalized,true);
+  FixtureAssert.equal(retainedColdRuns.get(PRIMARY_INSTANCE_ID),retained);
+  if(racing){
+   const owner=retained.owner;
+   yield* FixtureDeferred.succeed(resume,undefined);yield* Fiber.join(contenderStart);
+   FixtureAssert.equal(retainedColdRuns.get(PRIMARY_INSTANCE_ID),retained);
+   FixtureAssert.equal(backendRunAdmissions.get(PRIMARY_INSTANCE_ID),retained);
+   FixtureAssert.equal(retained.owner,owner);FixtureAssert.equal(retained.result.settled,false);
+  }
+  yield* instance.start;
+  const replacement=yield* makeBackendInstance(spec);yield* replacement.start;
+  FixtureAssert.equal(resolves,racing ? 2 : 1);FixtureAssert.equal(warmSpawns,0);
+  yield* instance.stop();
+  FixtureAssert.equal(retainedColdRuns.get(PRIMARY_INSTANCE_ID),retained);
+  const stops=retained.result.events.filter(e=>e==='STOP_REQUEST').length;
+  yield* Effect.promise(cleanup);
+  yield* instance.stop();
+  FixtureAssert.equal(retained.result.events.filter(e=>e==='STOP_REQUEST').length,stops+1);
+  FixtureAssert.equal(retainedColdRuns.has(PRIMARY_INSTANCE_ID),false);
+  FixtureAssert.equal(backendRunAdmissions.has(PRIMARY_INSTANCE_ID),false);
+  FixtureAssert.equal(retained.result.settled,true);
+  FixtureAssert.equal(retained.result.activationAllowed,false);
+  FixtureAssert.equal(Option.isNone((yield* instance.snapshot).activePid),true);
+ }).pipe(Effect.provide(services))));
+ await Effect.runPromise(Fiber.join(program));
+} finally {await cleanup();}
+`;
+
 describe("DesktopBackendManager", () => {
+  it.for(["early-failure", "cancel", "race-cold", "race-warm"] as const)(
+    "retains actual cold custody after %s while captured pipes remain open",
+    async (scenario, { signal }) => {
+      await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
+        const managerPath = NodeURL.fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts");
+        const custodyPath = NodePath.resolve(
+          NodePath.dirname(managerPath),
+          "../jones/updates/jonesColdBackendCustody.ts",
+        );
+        const marker = NodePath.join(root, "settled.json");
+        await NodeFSP.writeFile(marker, JSON.stringify({ settled: false }));
+        await NodeFSP.writeFile(NodePath.join(root, "keeper.py"), coldPipeKeeper);
+        await NodeFSP.writeFile(NodePath.join(root, "child.mjs"), coldAdapterChild);
+        const sources = new Map([
+          [managerPath, (await NodeFSP.readFile(managerPath, "utf8")) + coldManagerHarness],
+          [custodyPath, (await NodeFSP.readFile(custodyPath, "utf8")) + coldFixturePermit],
+        ]);
+        let launched = false;
+        try {
+          await build({
+            config: false,
+            cwd: root,
+            entry: { fixture: managerPath },
+            outDir: root,
+            clean: false,
+            format: "esm",
+            dts: false,
+            sourcemap: false,
+            tsconfig: false,
+            outExtensions: () => ({ js: ".mjs" }),
+            outputOptions: { codeSplitting: false },
+            deps: { alwaysBundle: (id) => !id.startsWith("node:"), onlyBundle: false },
+            plugins: [
+              {
+                name: "owned-lexical-cold-custody-fixture",
+                resolveId(id) {
+                  if (id === "electron") return "\0cold-fixture-electron.cjs";
+                },
+                load(id) {
+                  if (id === "\0cold-fixture-electron.cjs") return "module.exports = {};";
+                  return sources.get(id);
+                },
+              },
+            ],
+            logLevel: "silent",
+          });
+          launched = true;
+          const result = await IdentityFixture.runLegacyIdentityFixtureCommand(
+            NodeProcess.execPath,
+            [NodePath.join(root, "fixture.mjs"), scenario, root],
+            root,
+            { signal },
+          );
+          assert.equal(result.code, 0, result.stderr);
+          assert.equal(JSON.parse(await NodeFSP.readFile(marker, "utf8")).settled, true);
+        } catch (cause) {
+          const settled = await NodeFSP.readFile(marker, "utf8")
+            .then((raw) => JSON.parse(raw).settled)
+            .catch(() => false);
+          if (launched && !settled) Object.assign(cause as object, { preserveScratch: true });
+          throw cause;
+        }
+      });
+    },
+  );
+  it.effect("refuses forged cold custody without spawning or scheduling a warm restart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const finalized = yield* Deferred.make<void>();
+        let starts = 0;
+        const instance = yield* makeTestInstance({
+          config: {
+            ...baseConfig,
+            bootstrap: { ...baseConfig.bootstrap, desktopBrowserFd: 6, desktopBrowserControlFd: 7 },
+            jonesColdBackendPermit: {} as JonesColdBackendPermit,
+          },
+          spawnerLayer: Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.sync(() => {
+                starts++;
+                return makeProcess();
+              }),
+            ),
+          ),
+          desktopTelemetryPublisher: {
+            removeControlSource: () => Deferred.succeed(finalized, undefined).pipe(Effect.asVoid),
+          },
+        });
+        yield* instance.start;
+        yield* Deferred.await(finalized);
+        yield* TestClock.adjust(Duration.seconds(1));
+        const snapshot = yield* instance.snapshot;
+        assert.equal(starts, 0);
+        assert.isFalse(snapshot.desiredRunning);
+        assert.isFalse(snapshot.restartScheduled);
+        assert.isFalse(snapshot.ready);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
   it.effect("spawns the backend with fd3 bootstrap and fd4 telemetry", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1555,6 +1808,7 @@ describe("DesktopBackendManager", () => {
 
         const makeInstance = (name: string) =>
           makeTestInstance({
+            id: DesktopBackendManager.BackendInstanceId(name),
             spawnerLayer: Layer.succeed(
               ChildProcessSpawner.ChildProcessSpawner,
               ChildProcessSpawner.make(() =>

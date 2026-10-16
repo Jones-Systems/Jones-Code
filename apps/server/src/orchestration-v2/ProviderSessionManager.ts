@@ -1,5 +1,6 @@
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
+import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "../jones/cloud/shutdownBudget.ts";
 import type { CapturedRuntimeStop } from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as RuntimeAttachment from "../jones/runtime/CurrentThreadRuntimeAttachment.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
@@ -72,7 +73,6 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
-const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
 
 const busyTurnPrefix = (providerThreadId: ProviderThreadId) => `${providerThreadId}#`;
 /** The identity a turn's start and its `turn.terminal` share. */
@@ -1311,12 +1311,12 @@ export const layerWithOptions = (
             Effect.forkDetach({ startImmediately: true }),
           );
           const closeExit = yield* Fiber.join(closeFiber).pipe(
-            Effect.timeoutOption(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
+            Effect.timeoutOption(PROVIDER_SCOPE_CLOSE_TIMEOUT_MS),
           );
           if (Option.isNone(closeExit)) {
             yield* Effect.logWarning("orchestration-v2.provider-session-scope-close-timeout", {
               ...annotations,
-              timeoutMs: RELEASE_SCOPE_CLOSE_TIMEOUT_MS,
+              timeoutMs: PROVIDER_SCOPE_CLOSE_TIMEOUT_MS,
             });
             yield* Fiber.join(closeFiber).pipe(
               Effect.flatMap((exit) =>
@@ -2523,8 +2523,8 @@ export const layerWithOptions = (
       // Parent of every session scope. On layer close, shutdown releases the
       // live sessions first, then closes any session whose open is still in
       // flight, time-boxed so a stuck adapter cannot hold up server shutdown.
-      // Both steps run in parallel. The service launcher kills the server
-      // 5 s after it asks it to stop, and a busy server can hold 15 sessions.
+      // Both steps run in parallel. The desktop backend kills the server 5 s
+      // after it asks it to stop, and a busy server can hold 15 sessions.
       const sessionScopes = yield* Scope.make("parallel");
       const shutdown = Effect.gen(function* () {
         const activeSessions = [...(yield* Ref.get(sessions)).values()];

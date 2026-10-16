@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/fleet-updates": {
+      "types": "./src/jones/fleetUpdates/index.ts",
+      "import": "./src/jones/fleetUpdates/index.ts"
+    },
     "./conversationLibrary": {
       "types": "./src/conversationLibrary.ts",
       "import": "./src/conversationLibrary.ts"

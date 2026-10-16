@@ -54,8 +54,9 @@ export class ConnectionResolver extends Context.Service<
       entry: ConnectionCatalogEntry,
     ) => Effect.Effect<PreparedConnection, ConnectionAttemptError>;
     /**
-     * Authorizes a socket without the orchestration protocol gate, for hosts
-     * too old to connect normally. Only update RPCs may run over it.
+     * Authorizes an update connection without the orchestration protocol gate.
+     * Only update HTTP requests or legacy update RPCs may use this preparation;
+     * it does not admit ordinary orchestration on an incompatible host.
      */
     readonly prepareForUpdate: (entry: ConnectionCatalogEntry) => Effect.Effect<
       {
