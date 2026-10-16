@@ -1556,6 +1556,36 @@ copied, report = failed('reader-copy', lambda: readonly_rows(source_directory))
 assert isinstance(copied, IsADirectoryError) and report['records'][0]['sqliteErrorCode'] is None
 private = 'Bearer private-secret /private/raw/path'
 real_connect = sqlite3.connect
+source_before_setup = database.read_bytes()
+for setup_failure in ('enable', 'readback', 'disabled'):
+    setup_connections = []
+    class SetupFailure(sqlite3.Connection):
+        closed = False
+        def execute(self, sql, *args, **kwargs):
+            if (setup_failure == 'enable' and sql == 'PRAGMA query_only=ON') or (setup_failure == 'readback' and sql == 'PRAGMA query_only'):
+                raise sqlite3.OperationalError(private)
+            if setup_failure == 'disabled' and sql == 'PRAGMA query_only':
+                return super().execute('SELECT 0')
+            assert not sql.startswith('SELECT * FROM ')
+            return super().execute(sql, *args, **kwargs)
+        def close(self):
+            super().close()
+            self.closed = True
+    def setup_connect(*args, **kwargs):
+        connection = real_connect(*args, factory=SetupFailure, **kwargs)
+        setup_connections.append(connection)
+        return connection
+    sqlite3.connect = setup_connect
+    try:
+        setup_error, report = failed('reader-open', lambda: readonly_rows(database))
+        assert isinstance(setup_error, AssertionError if setup_failure == 'disabled' else sqlite3.OperationalError)
+        assert len(setup_connections) == 1 and setup_connections[0].closed
+        assert all(not pathlib.Path(str(target) + suffix).exists() for suffix in ('', '-wal', '-shm'))
+        assert database.read_bytes() == source_before_setup
+    finally:
+        sqlite3.connect = real_connect
+        for connection in setup_connections:
+            if not connection.closed: connection.close()
 class Closing(sqlite3.Connection):
     def close(self):
         super().close()
@@ -1602,6 +1632,222 @@ print(encoded)
     });
   },
 );
+
+NodeTest.test("isolated SQLite assertion reader matrix", async (test) => {
+  await withLegacyIdentityScratch(async (root) => {
+    const script = NodePath.join(root, "reader-matrix.py");
+    const writeSource = preparationNativeDriver
+      .split("def write(path, raw, mode=0o600):")[1]
+      .split("\ndef command(args):")[0];
+    const readerSource = preparationNativeDriver
+      .split("def readonly_rows(database):")[1]
+      .split("\ndef refusal(body):")[0];
+    await NodeFSP.writeFile(
+      script,
+      "import hashlib, json, os, pathlib, sqlite3, stat, sys, tempfile\n" +
+        preparationFailureCaptureSource +
+        "\ndef write(path, raw, mode=0o600):" +
+        writeSource +
+        "\ndef readonly_rows(database):" +
+        readerSource +
+        String.raw`
+root = pathlib.Path(sys.argv[1])
+os.umask(0o077)
+payload = dict(tables={'probe_rows': None})
+suffixes = ('', '-wal', '-shm')
+real_connect = sqlite3.connect
+def family_hashes(database):
+    return {suffix or 'main': hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+            for suffix in suffixes for path in [pathlib.Path(str(database) + suffix)]}
+def presence(database):
+    return {label: pathlib.Path(str(database) + suffix).exists()
+            for label, suffix in (('wal', '-wal'), ('shm', '-shm'))}
+def error_data(failure, phase):
+    code = getattr(failure, 'sqlite_errorcode', None)
+    name = getattr(failure, 'sqlite_errorname', None)
+    number = getattr(failure, 'errno', None)
+    captured = capture_controller_failure([failure], failure)['records'][0]
+    kind = {NameError: 'NameError', AttributeError: 'AttributeError'}.get(type(failure), captured['type'])
+    return dict(type=kind, phase=phase, readerStage=captured['stage'], frames=captured['frames'],
+                category=sqlite_failure_category(failure),
+                sqliteCode=code if type(code) is int else None,
+                sqliteName=name if isinstance(name, str) and name.startswith('SQLITE_') and len(name) <= 64 else None,
+                osErrno=number if type(number) is int else None)
+observations = []
+fixtures = {}
+for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
+                     ('wal-family', 'ro'), ('wal-family', 'rw-query-only')):
+    observed = dict(family=family, readerMode=mode, opened=False, querySuccess=False,
+                    expectedSentinel='wal-sentinel' if family == 'wal-family' else 'main-sentinel',
+                    expectedRows=None, rows=None, error=None, setupError=None,
+                    pythonVersion=list(sys.version_info[:3]), sqliteVersion=sqlite3.sqlite_version,
+                    sqliteSourceId=None, negativeControl=None, seedClosed=False, controlClosed=None,
+                    seedCheckpoint=None, seedSidecarsAfterClose=None,
+                    connectionsClosed=False, readerConnectionsClosed=False, sourceFamilyHashesUnchanged=False,
+                    sourceHashesBefore=None, sourceHashesAfter=None,
+                    sidecars=dict(preopen=None, prequery=None, preclose=None),
+                    readerContext=None, preopenContext=None, queryOnly=None, writeRefusal=None, completed=False)
+    observations.append(observed)
+    connections = []
+    phase = 'cell-directory'
+    try:
+        with tempfile.TemporaryDirectory(prefix='reader-cell-', dir=root) as cell:
+            directory = pathlib.Path(cell)
+            seed_path = directory / 'seed.sqlite'
+            database = directory / 'source.sqlite'
+            target = directory / 'assertion-copy.sqlite'
+            phase = 'seed-open'
+            seed = real_connect(seed_path)
+            try:
+                phase = 'seed-schema'
+                observed['sqliteSourceId'] = seed.execute('SELECT sqlite_source_id()').fetchone()[0]
+                assert seed.execute('PRAGMA journal_mode=WAL').fetchone()[0] == 'wal'
+                seed.execute('CREATE TABLE probe_rows(value TEXT)')
+                seed.execute("INSERT INTO probe_rows VALUES ('main-sentinel')")
+                seed.commit()
+                observed['seedCheckpoint'] = seed.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                assert observed['seedCheckpoint'] == (0, 0, 0)
+                seed.execute('PRAGMA wal_autocheckpoint=0')
+                if family == 'wal-family':
+                    phase = 'seed-wal-commit'
+                    seed.execute("INSERT INTO probe_rows VALUES ('wal-sentinel')")
+                    seed.commit()
+                    phase = 'seed-family-copy'
+                    for suffix in suffixes:
+                        write(pathlib.Path(str(database) + suffix), pathlib.Path(str(seed_path) + suffix).read_bytes())
+            finally:
+                seed.close()
+                observed['seedClosed'] = True
+                observed['seedSidecarsAfterClose'] = presence(seed_path)
+            if family == 'closed-main':
+                phase = 'closed-main-copy'
+                # The reader input is the checkpointed main copy; seed sidecar retention is diagnostic.
+                write(database, seed_path.read_bytes())
+                phase = 'closed-main-sidecars'
+                assert presence(database) == dict(wal=False, shm=False)
+            phase = 'paired-family-bytes'
+            if family not in fixtures:
+                fixtures[family] = {suffix: pathlib.Path(str(database) + suffix).read_bytes()
+                                    for suffix in suffixes if pathlib.Path(str(database) + suffix).exists()}
+            else:
+                for suffix, raw in fixtures[family].items():
+                    write(pathlib.Path(str(database) + suffix), raw)
+            expected = {'probe_rows': [{'value': 'main-sentinel'}]}
+            if family == 'wal-family':
+                phase = 'negative-control'
+                expected['probe_rows'].append({'value': 'wal-sentinel'})
+                # Immutable/main-only is solely a negative control, never the assertion reader.
+                control_path = directory / 'negative-control.sqlite'
+                write(control_path, database.read_bytes())
+                control = real_connect(control_path.as_uri() + '?immutable=1', uri=True)
+                try:
+                    observed['negativeControl'] = control.execute('SELECT value FROM probe_rows ORDER BY 1').fetchall() == [('main-sentinel',)]
+                finally:
+                    control.close()
+                    observed['controlClosed'] = True
+            observed['expectedRows'] = expected
+            phase = 'source-hashes-before'
+            observed['sourceHashesBefore'] = family_hashes(database)
+            class ObservedConnection(sqlite3.Connection):
+                closed = False
+                def execute(self, sql, *args, **kwargs):
+                    if sql.startswith('SELECT * FROM '):
+                        observed['sidecars']['prequery'] = presence(target)
+                        observed['readerContext'] = capture_reader_context(target)
+                        observed['queryOnly'] = super().execute('PRAGMA query_only').fetchone()[0] == 1
+                        if mode == 'rw-query-only':
+                            try:
+                                super().execute("INSERT INTO probe_rows VALUES ('forbidden-write')")
+                            except sqlite3.Error as failure:
+                                observed['writeRefusal'] = sqlite_failure_category(failure)
+                    return super().execute(sql, *args, **kwargs)
+                def close(self):
+                    observed['sidecars']['preclose'] = presence(target)
+                    super().close()
+                    self.closed = True
+            def probe_connect(database_uri, *args, **kwargs):
+                observed['sidecars']['preopen'] = presence(target)
+                observed['preopenContext'] = capture_reader_context(target)
+                assert database_uri.endswith('?mode=rw')
+                if mode == 'ro':
+                    database_uri = database_uri[:-len('?mode=rw')] + '?mode=ro'
+                connection = real_connect(database_uri, *args, factory=ObservedConnection, **kwargs)
+                connections.append(connection)
+                observed['opened'] = True
+                return connection
+            # Patch only this synthetic invocation; always restore the native connection function.
+            sqlite3.connect = probe_connect
+            try:
+                phase = 'reader-invocation'
+                observed['rows'] = readonly_rows(database)
+                observed['querySuccess'] = True
+            except Exception as failure:
+                observed['error'] = error_data(failure, phase)
+                saved = _failure_stages.get(id(failure))
+                if not isinstance(failure, sqlite3.Error) or saved is None or saved[1] not in ('reader-open', 'reader-query'):
+                    observed['setupError'] = 'reader-lifecycle'
+            finally:
+                sqlite3.connect = real_connect
+                phase = 'reader-closure'
+                observed['readerConnectionsClosed'] = all(connection.closed for connection in connections)
+                for connection in connections:
+                    if not connection.closed:
+                        connection.close()
+                observed['connectionsClosed'] = all(connection.closed for connection in connections)
+                phase = 'source-hashes-after'
+                observed['sourceHashesAfter'] = family_hashes(database)
+                observed['sourceFamilyHashesUnchanged'] = observed['sourceHashesBefore'] == observed['sourceHashesAfter']
+            observed['completed'] = True
+            phase = 'cell-cleanup'
+    except Exception as failure:
+        observed['setupError'] = observed['setupError'] or 'incomplete-cell'
+        observed['error'] = observed['error'] or error_data(failure, phase)
+    finally:
+        sqlite3.connect = real_connect
+print(json.dumps(observations))
+`,
+      { flag: "wx", mode: 0o400 },
+    );
+    const result = await runLegacyIdentityFixtureCommand(
+      "/usr/bin/python3",
+      ["-I", "-B", script, root],
+      root,
+    );
+    const observations = JSON.parse(result.stdout);
+    test.diagnostic(
+      JSON.stringify({
+        classification: "diagnostic-only",
+        sourceRevision: process.env.JONES_READER_PROBE_SOURCE_SHA ?? null,
+        capturedChildClosureComplete: true,
+        observations,
+      }),
+    );
+    NodeAssert.equal(result.code, 0, result.stderr);
+    NodeAssert.equal(observations.length, 4);
+    NodeAssert.deepEqual(observations[0].sourceHashesBefore, observations[1].sourceHashesBefore);
+    NodeAssert.deepEqual(observations[2].sourceHashesBefore, observations[3].sourceHashesBefore);
+    for (const observed of observations) {
+      NodeAssert.equal(observed.completed, true);
+      NodeAssert.equal(observed.setupError, null);
+      NodeAssert.equal(observed.seedClosed, true);
+      NodeAssert.equal(observed.connectionsClosed, true);
+      NodeAssert.equal(observed.readerConnectionsClosed, true);
+      NodeAssert.equal(observed.sourceFamilyHashesUnchanged, true);
+      if (observed.family === "wal-family") {
+        NodeAssert.equal(observed.negativeControl, true);
+        NodeAssert.equal(observed.controlClosed, true);
+      }
+      if (observed.readerMode === "rw-query-only") {
+        NodeAssert.equal(observed.opened, true);
+        NodeAssert.equal(observed.querySuccess, true);
+        NodeAssert.equal(observed.queryOnly, true);
+        NodeAssert.equal(observed.writeRefusal, "readonly");
+      }
+      if (observed.querySuccess) NodeAssert.deepEqual(observed.rows, observed.expectedRows);
+      else NodeAssert.notEqual(observed.error, null);
+    }
+  });
+});
 
 NodeTest.test(
   "reader context schema permits unknown metadata and refuses private or forged fields",
