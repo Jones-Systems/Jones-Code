@@ -542,10 +542,7 @@ export function layer(
         Layer.effect(
           ProviderHost.ProviderHost,
           Effect.map(ProviderHost.ProviderHost, (host) => ({ ...host, appIdentity: APP_IDENTITY })),
-        ).pipe(
-          Layer.provide(TestProviderHost.layer()),
-          Layer.provide(NodeServices.layer),
-        ),
+        ).pipe(Layer.provide(TestProviderHost.layer()), Layer.provide(NodeServices.layer)),
         layerHostEnvironment,
         NodeServices.layer,
         IdAllocator.layer,
