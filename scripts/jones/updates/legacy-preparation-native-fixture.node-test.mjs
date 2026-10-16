@@ -1652,6 +1652,7 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                     expectedRows=None, rows=None, error=None, setupError=None,
                     pythonVersion=list(sys.version_info[:3]), sqliteVersion=sqlite3.sqlite_version,
                     sqliteSourceId=None, negativeControl=None, seedClosed=False, controlClosed=None,
+                    seedCheckpoint=None, seedSidecarsAfterClose=None,
                     connectionsClosed=False, sourceFamilyHashesUnchanged=False,
                     sourceHashesBefore=None, sourceHashesAfter=None,
                     sidecars=dict(preopen=None, prequery=None, preclose=None),
@@ -1674,7 +1675,8 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                 seed.execute('CREATE TABLE probe_rows(value TEXT)')
                 seed.execute("INSERT INTO probe_rows VALUES ('main-sentinel')")
                 seed.commit()
-                assert seed.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
+                observed['seedCheckpoint'] = seed.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                assert observed['seedCheckpoint'] == (0, 0, 0)
                 seed.execute('PRAGMA wal_autocheckpoint=0')
                 if family == 'wal-family':
                     phase = 'seed-wal-commit'
@@ -1686,11 +1688,13 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
             finally:
                 seed.close()
                 observed['seedClosed'] = True
+                observed['seedSidecarsAfterClose'] = presence(seed_path)
             if family == 'closed-main':
-                phase = 'closed-main-sidecars'
-                assert presence(seed_path) == dict(wal=False, shm=False)
                 phase = 'closed-main-copy'
+                # The reader input is the checkpointed main copy; seed sidecar retention is diagnostic.
                 write(database, seed_path.read_bytes())
+                phase = 'closed-main-sidecars'
+                assert presence(database) == dict(wal=False, shm=False)
             phase = 'paired-family-bytes'
             if family not in fixtures:
                 fixtures[family] = {suffix: pathlib.Path(str(database) + suffix).read_bytes()
@@ -1725,13 +1729,13 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                     observed['sidecars']['preclose'] = presence(target)
                     super().close()
                     self.closed = True
-            def probe_connect(uri, *args, **kwargs):
+            def probe_connect(database_uri, *args, **kwargs):
                 observed['sidecars']['preopen'] = presence(target)
                 observed['preopenContext'] = capture_reader_context(target)
                 if mode == 'rw-query-only':
-                    assert uri.endswith('?mode=ro')
-                    uri = uri[:-len('?mode=ro')] + '?mode=rw'
-                connection = real_connect(uri, *args, factory=ObservedConnection, **kwargs)
+                    assert database_uri.endswith('?mode=ro')
+                    database_uri = database_uri[:-len('?mode=ro')] + '?mode=rw'
+                connection = real_connect(database_uri, *args, factory=ObservedConnection, **kwargs)
                 connections.append(connection)
                 observed['opened'] = True
                 if mode == 'rw-query-only':
