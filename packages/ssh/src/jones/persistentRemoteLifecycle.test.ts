@@ -7,14 +7,14 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as SshTunnel from "../tunnel.ts";
 
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
 
 describe("persistent remote launch", () => {
-  it.skipIf(HostProcessPlatform.defaultValue() === "win32").each([
+  it.skipIf(HostProcess.Platform.defaultValue() === "win32").each([
     { name: "same managed PID in the default runtime", runtime: true, ready: true, changed: false },
     { name: "healthy managed PID after runner change", runtime: false, ready: true, changed: true },
     { name: "unready default runtime", runtime: true, ready: false, changed: false },
@@ -75,7 +75,7 @@ sleep() { :; }
     }
   });
 
-  it.skipIf(HostProcessPlatform.defaultValue() === "win32").each([false, true])(
+  it.skipIf(HostProcess.Platform.defaultValue() === "win32").each([false, true])(
     "failed new launch preserves ownership when exit is unknown: %s",
     (exitUnknown) => {
       const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-failed-launch-"));

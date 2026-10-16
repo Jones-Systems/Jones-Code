@@ -1,8 +1,77 @@
-import type { HostStatus, HostStatusSnapshot } from "@t3tools/contracts";
+import { EnvironmentId, type HostStatus, type HostStatusSnapshot } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { fetchHostStatus, hostStatusMetrics, observeHostStatus } from "./hostStatus";
-import { __resetDesktopPrimaryAuthForTests } from "./environments/primary/desktopAuth";
+import type * as EffectTypes from "effect/Effect";
+import type {
+  EnvironmentRegistry as RegistryTypes,
+  EnvironmentSupervisor as SupervisorTypes,
+} from "@t3tools/client-runtime/connection";
+import {
+  BearerConnectionTarget,
+  PrimaryConnectionTarget,
+  type PreparedConnection,
+} from "@t3tools/client-runtime/connection";
+
+const harness = vi.hoisted(() => ({
+  prepared: new Map<string, PreparedConnection>(),
+  selected: [] as string[],
+}));
+
+vi.mock("./connection/runtime", async () => {
+  const { EnvironmentRegistry, EnvironmentSupervisor } =
+    await import("@t3tools/client-runtime/connection");
+  const Effect = await import("effect/Effect");
+  const Layer = await import("effect/Layer");
+  const Option = await import("effect/Option");
+  const SubscriptionRef = await import("effect/SubscriptionRef");
+  const { Atom } = await import("effect/reactivity");
+  const { layerRemoteHttpClient } = await import("@t3tools/client-runtime/rpc");
+  const registry = {
+    run: <A, E, R>(environmentId: EnvironmentId, effect: EffectTypes.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        harness.selected.push(environmentId);
+        const prepared = yield* SubscriptionRef.make(
+          Option.fromNullishOr(harness.prepared.get(environmentId)),
+        );
+        return yield* effect.pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, {
+            prepared,
+          } as unknown as SupervisorTypes.EnvironmentSupervisor["Service"]),
+        );
+      }),
+  } as unknown as RegistryTypes.EnvironmentRegistry["Service"];
+  return {
+    connectionAtomRuntime: Atom.runtime(
+      Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, registry).pipe(
+        Layer.provideMerge(layerRemoteHttpClient((...args) => globalThis.fetch(...args))),
+      ),
+    ),
+  };
+});
+
+const selectedEnvironment = EnvironmentId.make("remote-selected");
+function prepare(base = "https://app.example", token: string | null = null) {
+  harness.prepared.set(selectedEnvironment, {
+    environmentId: selectedEnvironment,
+    label: "Synthetic selected server",
+    httpBaseUrl: base,
+    socketUrl: `${base.replace(/^http/, "ws")}/ws`,
+    httpAuthorization: token ? { _tag: "Bearer", token } : null,
+    target: token
+      ? new BearerConnectionTarget({
+          environmentId: selectedEnvironment,
+          label: "Synthetic",
+          connectionId: "fixture",
+        })
+      : new PrimaryConnectionTarget({
+          environmentId: selectedEnvironment,
+          label: "Synthetic",
+          httpBaseUrl: base,
+          wsBaseUrl: `${base.replace(/^http/, "ws")}/ws`,
+        }),
+  });
+}
 
 const gib = 1024 ** 3;
 const available = {
@@ -31,7 +100,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetDesktopPrimaryAuthForTests();
+  harness.prepared.clear();
+  harness.selected.length = 0;
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -97,6 +167,39 @@ describe("host status metrics", () => {
       health: "unavailable",
     });
   });
+  it.each(["mini", "home"] as const)(
+    "shows combined swap instead of low RAM alarms on %s",
+    (id) => {
+      const mac = { ...available, id, availableMemoryBytes: 0, swapIoBytesPerSecond: 0 };
+      expect(hostStatusMetrics(mac)).toMatchObject({
+        ram: "Swap 0.0 MiB/s",
+        ramHealth: "healthy",
+        health: "healthy",
+      });
+      expect(hostStatusMetrics(mac).detail).toContain("Available RAM 0.0 GiB");
+      expect(hostStatusMetrics(mac).detail).toContain("10-second average");
+      expect(hostStatusMetrics({ ...mac, swapIoBytesPerSecond: 10 * 1024 ** 2 })).toMatchObject({
+        ramHealth: "healthy",
+      });
+      expect(hostStatusMetrics({ ...mac, swapIoBytesPerSecond: 10.01 * 1024 ** 2 })).toMatchObject({
+        ram: "Swap 10.0 MiB/s",
+        ramHealth: "warning",
+        health: "warning",
+      });
+      expect(hostStatusMetrics({ ...mac, cpuUsagePercent: 95 })).toMatchObject({
+        cpuHealth: "critical",
+        ramHealth: "healthy",
+        health: "critical",
+      });
+      const { swapIoBytesPerSecond: _swap, ...olderMac } = mac;
+      expect(hostStatusMetrics(olderMac)).toMatchObject({
+        ram: "Swap —",
+        ramHealth: "unavailable",
+        health: "healthy",
+      });
+      expect(hostStatusMetrics(olderMac).detail).toContain("Swap I/O unavailable");
+    },
+  );
   it("hides values at the thirty-second source freshness boundary", () => {
     vi.advanceTimersByTime(29_999);
     expect(hostStatusMetrics(available).cpu).toBe("23%");
@@ -223,14 +326,20 @@ describe("source timestamp expiry", () => {
   });
 });
 
-describe("typed gateway request", () => {
-  it("requests only the primary gateway endpoint with browser credentials", async () => {
+describe("typed selected-environment gateway request", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    prepare();
+  });
+  it("requests the selected browser gateway endpoint with browser credentials", async () => {
     vi.stubGlobal("window", {
       location: { origin: "https://app.example", href: "https://app.example/" },
     });
     const fetch = vi.fn().mockResolvedValue(Response.json(snapshot));
     vi.stubGlobal("fetch", fetch);
-    expect(await fetchHostStatus(new AbortController().signal)).toEqual(snapshot);
+    expect(await fetchHostStatus(selectedEnvironment, new AbortController().signal)).toEqual(
+      snapshot,
+    );
     const request = new Request(fetch.mock.calls[0]?.[0], fetch.mock.calls[0]?.[1]);
     expect(request.url).toBe("https://app.example/api/host-status");
     expect(request.credentials).toBe("include");
@@ -243,9 +352,12 @@ describe("typed gateway request", () => {
       "fetch",
       vi.fn().mockResolvedValue(Response.json({ hosts: [{ ...available, cpuUsagePercent: -1 }] })),
     );
-    await expect(fetchHostStatus(new AbortController().signal)).rejects.toThrow();
+    await expect(
+      fetchHostStatus(selectedEnvironment, new AbortController().signal),
+    ).rejects.toThrow();
   });
   it("uses the desktop-managed serving environment and bearer without browser cookies", async () => {
+    prepare("http://127.0.0.1:3773", "synthetic-desktop-token");
     const bearer = vi.fn().mockResolvedValue("synthetic-desktop-token");
     vi.stubGlobal("window", {
       location: { origin: "t3code://app", href: "t3code://app/" },
@@ -263,26 +375,74 @@ describe("typed gateway request", () => {
     });
     const fetcher = vi.fn().mockResolvedValue(Response.json(snapshot));
     vi.stubGlobal("fetch", fetcher);
-    expect(await fetchHostStatus(new AbortController().signal)).toEqual(snapshot);
+    expect(await fetchHostStatus(selectedEnvironment, new AbortController().signal)).toEqual(
+      snapshot,
+    );
     const request = new Request(fetcher.mock.calls[0]?.[0], fetcher.mock.calls[0]?.[1]);
     expect(request.url).toBe("http://127.0.0.1:3773/api/host-status");
-    expect(request.credentials).toBe("omit");
+    expect(request.credentials).toBe("same-origin");
     expect(request.headers.get("authorization")).toBe("Bearer synthetic-desktop-token");
-    expect(bearer).toHaveBeenCalledOnce();
+    expect(bearer).not.toHaveBeenCalled();
+  });
+  it("routes a selected remote server even when the desktop local environment is disabled", async () => {
+    prepare("https://selected-vps.example", "synthetic-remote-token");
+    vi.stubGlobal("window", {
+      location: { origin: "t3code://app", href: "t3code://app/" },
+      desktopBridge: { getLocalEnvironmentEnabled: () => false },
+    });
+    const fetcher = vi.fn().mockResolvedValue(Response.json(snapshot));
+    vi.stubGlobal("fetch", fetcher);
+    expect(await fetchHostStatus(selectedEnvironment, new AbortController().signal)).toEqual(
+      snapshot,
+    );
+    expect(harness.selected).toContain(selectedEnvironment);
+    const request = new Request(fetcher.mock.calls[0]?.[0], fetcher.mock.calls[0]?.[1]);
+    expect(request.url).toBe("https://selected-vps.example/api/host-status");
+    expect(request.headers.get("authorization")).toBe("Bearer synthetic-remote-token");
+    expect(request.credentials).toBe("same-origin");
   });
   it("does not substitute the renderer machine when the local desktop environment is disabled", async () => {
+    harness.prepared.clear();
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
     vi.stubGlobal("window", {
       location: { origin: "t3code://app", href: "t3code://app/" },
       desktopBridge: { getLocalEnvironmentEnabled: () => false },
     });
-    await expect(fetchHostStatus(new AbortController().signal)).rejects.toThrow();
+    await expect(
+      fetchHostStatus(selectedEnvironment, new AbortController().signal),
+    ).rejects.toThrow();
     expect(fetcher).not.toHaveBeenCalled();
   });
-  it.each([401, 403, 404, 500])(
-    "treats HTTP %s as unavailable rather than retaining healthy data",
-    async (status) => {
+  it("aborts the selected environment HTTP request when its observer is disposed", async () => {
+    prepare("https://selected-vps.example", "synthetic-remote-token");
+    let requestSignal: AbortSignal | null | undefined;
+    let finish!: (response: Response) => void;
+    const fetcher = vi.fn<typeof fetch>((_input, init) => {
+      requestSignal = init?.signal;
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const abort = new AbortController();
+    const result = fetchHostStatus(selectedEnvironment, abort.signal);
+    const rejected = expect(result).rejects.toThrow();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    abort.abort();
+    await rejected;
+    await vi.waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    finish(Response.json(snapshot));
+  });
+  it.each(
+    [401, 403, 404, 500].flatMap((status) => [
+      { status, token: null },
+      { status, token: "synthetic-remote-token" },
+    ]),
+  )(
+    "treats HTTP $status with token $token as unavailable rather than retaining healthy data",
+    async ({ status, token }) => {
+      prepare("https://remote.example", token);
       vi.stubGlobal("window", {
         location: { origin: "https://remote.example", href: "https://remote.example/" },
       });
@@ -290,10 +450,12 @@ describe("typed gateway request", () => {
         .fn()
         .mockResolvedValue(Response.json({ code: "synthetic-error" }, { status }));
       vi.stubGlobal("fetch", fetcher);
-      await expect(fetchHostStatus(new AbortController().signal)).rejects.toThrow();
+      await expect(
+        fetchHostStatus(selectedEnvironment, new AbortController().signal),
+      ).rejects.toThrow();
       const request = new Request(fetcher.mock.calls[0]?.[0], fetcher.mock.calls[0]?.[1]);
       expect(request.url).toBe("https://remote.example/api/host-status");
-      expect(request.credentials).toBe("include");
+      expect(request.credentials).toBe(token ? "same-origin" : "include");
     },
   );
 });

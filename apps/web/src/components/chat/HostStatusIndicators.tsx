@@ -1,13 +1,15 @@
-import type { HostStatusSnapshot } from "@t3tools/contracts";
+import type { EnvironmentId, HostStatusSnapshot } from "@t3tools/contracts";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   HOST_STATUS_IDS,
   HOST_STATUS_NAMES,
+  fetchHostStatus,
   hostStatusMetrics,
   observeHostStatus,
 } from "../../hostStatus";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { observeResize } from "~/lib/observeResize";
 
 const healthClasses = {
   healthy: "border-emerald-500/30 bg-emerald-500/5",
@@ -28,12 +30,33 @@ const metricClasses = {
 const bubbleClasses =
   "inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-xs font-medium tabular-nums";
 
-export const HostStatusIndicators = memo(function HostStatusIndicators() {
+export const HostStatusIndicators = memo(function HostStatusIndicators({
+  environmentId,
+}: {
+  environmentId: EnvironmentId;
+}) {
+  return <EnvironmentHostStatusIndicators key={environmentId} environmentId={environmentId} />;
+});
+
+function EnvironmentHostStatusIndicators({ environmentId }: { environmentId: EnvironmentId }) {
   const [snapshot, setSnapshot] = useState<HostStatusSnapshot | null>(null);
   const [visibleCount, setVisibleCount] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const measurementRef = useRef<HTMLDivElement>(null);
-  useEffect(() => observeHostStatus(document, setSnapshot), []);
+  useEffect(() => {
+    let active = true;
+    const stop = observeHostStatus(
+      document,
+      (snapshot) => {
+        if (active) setSnapshot(snapshot);
+      },
+      (signal) => fetchHostStatus(environmentId, signal),
+    );
+    return () => {
+      active = false;
+      stop();
+    };
+  }, [environmentId]);
   useLayoutEffect(() => {
     const container = containerRef.current;
     const measurement = measurementRef.current;
@@ -51,11 +74,7 @@ export const HostStatusIndicators = memo(function HostStatusIndicators() {
       setVisibleCount(count);
     };
     update();
-    const observer = new ResizeObserver(update);
-    observer.observe(container);
-    observer.observe(measurement);
-    for (const bubble of measurement.children) observer.observe(bubble);
-    return () => observer.disconnect();
+    return observeResize([container, measurement, ...measurement.children], update);
   }, []);
   const hosts = HOST_STATUS_IDS.map((id) => {
     const host = snapshot?.hosts.find((entry) => entry.id === id);
@@ -114,4 +133,4 @@ export const HostStatusIndicators = memo(function HostStatusIndicators() {
       ))}
     </div>
   );
-});
+}

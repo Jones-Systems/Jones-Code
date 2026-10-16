@@ -5,6 +5,7 @@ import {
   CheckpointScopeId,
   CommandId,
   MessageId,
+  NodeId,
   ProviderSessionId,
   RunAttemptId,
   ProviderApprovalDecision,
@@ -54,6 +55,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
+    subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
   }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.steer"),
@@ -102,6 +104,10 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("terminal.cleanup"),
     legacyOwnedControl: Schema.optional(LegacyOwnedTerminalControl),
   }),
+  /** Closes a deleted thread's preview sessions, ending their server browser tabs. */
+  Schema.Struct({
+    type: Schema.Literal("preview.cleanup"),
+  }),
   Schema.Struct({
     type: Schema.Literal("attachment.cleanup"),
     attachmentIds: Schema.Array(Schema.String),
@@ -127,6 +133,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-thread.rollback",
   "checkpoint.capture",
   "terminal.cleanup",
+  "preview.cleanup",
   "attachment.cleanup",
   "thread-title.generate",
   "delegated-tasks.stop",
@@ -232,6 +239,8 @@ export interface EffectOutboxV2Shape {
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
+  /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
+  readonly awaitSettled: (effectId: string) => Effect.Effect<void, EffectOutboxError>;
   readonly reconcileAfterProcessLoss: Effect.Effect<
     { readonly requeued: number; readonly cancelled: number },
     EffectOutboxError
@@ -339,6 +348,18 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const available = yield* Queue.dropping<void>(64);
     const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
+    const settledSignals = new Map<string, Deferred.Deferred<void>>();
+    const signalSettled = (effectIds: ReadonlyArray<string>) =>
+      Effect.forEach(
+        effectIds,
+        (effectId) => {
+          const signal = settledSignals.get(effectId);
+          if (signal === undefined) return Effect.void;
+          settledSignals.delete(effectId);
+          return Deferred.succeed(signal, undefined);
+        },
+        { discard: true },
+      );
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
@@ -601,6 +622,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             },
             { discard: true },
           );
+          yield* signalSettled(effectIds);
           // Cancellation can unblock other pending work on the same thread.
           // This method is deliberately post-commit, so it is also the safe
           // place to wake claimers after the durable status change.
@@ -610,6 +632,18 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       clearCancellation: (effectId) =>
         Effect.sync(() => {
           cancellationSignals.delete(effectId);
+        }),
+      awaitSettled: (effectId) =>
+        Effect.gen(function* () {
+          // Registered before the read, so a settle right after it still resolves.
+          const signal = settledSignals.get(effectId) ?? Deferred.makeUnsafe<void>();
+          settledSignals.set(effectId, signal);
+          const effect = yield* service.get(effectId);
+          if (Option.exists(effect, ({ status }) => status === "pending" || status === "running")) {
+            return yield* Deferred.await(signal);
+          }
+          // Settled already: release every waiter that shares this signal.
+          yield* signalSettled([effectId]);
         }),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);
@@ -751,7 +785,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
-            yield* PubSub.publish(completionChanges, undefined);
+            yield* signalSettled([effectId]);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -811,7 +845,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
-            yield* PubSub.publish(completionChanges, undefined);
+            yield* signalSettled([effectId]);
             yield* notifyAvailable();
           }
           return rows.length === 1;

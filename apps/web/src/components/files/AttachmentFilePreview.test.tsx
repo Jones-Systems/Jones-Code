@@ -119,7 +119,7 @@ describe("attachment HTML and PDF preview recovery", () => {
     await toggleMode("Show rendered page");
     expect(renderer.root.findByType("iframe").props.src).toBe(renewedUrl);
     expect(renderer.root.findByType("iframe").props.sandbox).toBe(
-      "allow-scripts allow-forms allow-popups allow-modals",
+      "allow-scripts allow-forms allow-popups allow-downloads allow-modals",
     );
     await toggleMode("Show HTML source");
     expect(refresh).toHaveBeenCalledTimes(2);

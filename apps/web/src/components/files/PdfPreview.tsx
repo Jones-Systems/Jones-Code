@@ -11,6 +11,7 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { observeResize } from "~/lib/observeResize";
 
 const assets = import.meta.glob<string>(
   "../../../node_modules/pdfjs-dist/{cmaps,standard_fonts,wasm}/*.{bcmap,pfb,ttf,wasm}",
@@ -164,12 +165,11 @@ export default function PdfPreview({
       .catch(fail);
     const sizing = container.parentElement ?? container;
     let previousWidth = sizing.clientWidth;
-    const resize = new ResizeObserver(() => {
+    const stopResize = observeResize(sizing, () => {
       if (!readyRef.current || sizing.clientWidth === previousWidth) return;
       previousWidth = sizing.clientWidth;
       fit();
     });
-    resize.observe(sizing);
     const wheel = (event: WheelEvent) => {
       if (!readyRef.current || interactive(event.target) || event.deltaY === 0) return;
       event.preventDefault();
@@ -187,7 +187,7 @@ export default function PdfPreview({
       viewerRef.current = null;
       eventBusRef.current = null;
       abort.abort();
-      resize.disconnect();
+      stopResize();
       container.removeEventListener("wheel", wheel);
       eventBus.off("updatefindmatchescount", matchCount);
       eventBus.off("pagesinit", initialize);

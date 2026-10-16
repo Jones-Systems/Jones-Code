@@ -18,7 +18,6 @@ import type { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
-import { environmentEndpointUrl } from "../../environment/endpoint.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
 import { createEnvironmentCommand } from "../../state/runtime.ts";
 import {
@@ -52,7 +51,7 @@ const request = Effect.fn("jonesImportedHistory.request")(function* (
     group: "jonesImportedHistory",
     method: "POST",
     timeoutMs: 30_000,
-    url: (base) => environmentEndpointUrl(base, `/api/jones/imported-history/${action.type}`),
+    url: (urls) => urls[action.type](),
     request: ({ client, headers }) => {
       switch (action.type) {
         case "review":

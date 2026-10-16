@@ -17,7 +17,7 @@ import * as Schema from "effect/Schema";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
-import type { CapturedRuntimeStop } from "../../orchestration-v2/ProviderAdapter.ts";
+import type { CapturedRuntimeStop } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as StopStore from "./RuntimeStopSqlite.ts";
 import {

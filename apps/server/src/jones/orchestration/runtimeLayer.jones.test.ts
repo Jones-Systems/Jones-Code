@@ -8,6 +8,7 @@ import {
   MessageId,
   NodeId,
   RuntimeRequestId,
+  ScheduledTaskId,
   type ModelSelection,
   type OrchestrationV2ExecutionNode,
   ProjectId,
@@ -32,8 +33,9 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
-import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
@@ -45,7 +47,7 @@ import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import type {
   ProviderAdapterV2SessionRuntime,
   ProviderAdapterV2Shape,
-} from "../../orchestration-v2/ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as RuntimeLayer from "../../orchestration-v2/runtimeLayer.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -178,6 +180,7 @@ const TestLayer = Layer.mergeAll(
   ThreadCommandExecutor.layer,
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
+  Layer.provide(McpProviderSessions.layer),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
@@ -735,6 +738,71 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
     { timeout: 6000 },
   );
 
+  it.effect.each(["owner", "peer", "scheduled"] as const)(
+    "skips held work at a tool boundary but preserves the first unheld %s eligibility",
+    (source) =>
+      Effect.gen(function* () {
+        const f = yield* queuedToolFixture(`queue-mixed-hold-${source}`);
+        yield* f.queue("Held");
+        yield* f.orchestrator.dispatch({
+          type: "message.dispatch",
+          threadId: f.threadId,
+          commandId: CommandId.make(`${f.threadId}-candidate`),
+          messageId: MessageId.make(`${f.threadId}-candidate`),
+          text: "Candidate",
+          attachments: [],
+          queuedToolBoundaryEligible: true,
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: source === "owner" ? "user" : "agent",
+          creationSource: source === "owner" ? "web" : "mcp",
+          ...(source === "peer" ? { senderThreadId: ThreadId.make("peer") } : {}),
+          ...(source === "scheduled"
+            ? { scheduledTaskId: ScheduledTaskId.make("scheduled-task") }
+            : {}),
+        });
+        yield* f.queue("Tail");
+        const before = yield* f.orchestrator.getThreadProjection(f.threadId);
+        const [held, candidate, tail] = before.runs.filter((run) => run.status === "queued");
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${f.threadId}-hold`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: held!.id,
+              occurredAt: f.now,
+              payload: { ...held!, queueHeld: true },
+            },
+          ],
+        });
+        yield* f.react(f.tool("mixed-held-boundary"));
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(after.runs.find((run) => run.id === held!.id)?.status, "queued");
+        assert.isTrue(after.runs.find((run) => run.id === held!.id)?.queueHeld);
+        for (const run of [candidate!, tail!]) {
+          assert.equal(
+            after.runs.find((entry) => entry.id === run.id)?.status,
+            source === "owner" ? "cancelled" : "queued",
+          );
+        }
+        assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
+        if (source === "owner") {
+          assert.equal(
+            after.messages.find((message) => message.text === "Candidate")?.runId,
+            f.run.id,
+          );
+          assert.equal(after.messages.find((message) => message.text === "Tail")?.runId, f.run.id);
+        } else {
+          assert.isFalse(
+            after.turnItems.some(
+              (item) =>
+                item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
+            ),
+          );
+        }
+      }),
+  );
+
   it.effect("waits for the last foreground tool then leaves post-boundary additions queued", () =>
     Effect.gen(function* () {
       const f = yield* queuedToolFixture("queue-boundary-parallel");
@@ -850,16 +918,16 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           node = { ...node, runId: RunId.make("previous-run") };
         } else if (condition === "held") {
           yield* f.sink.write({
-            events: [
-              {
-                id: EventId.make("queue-boundary-held-event"),
-                type: "run.updated",
+            events: projection.runs
+              .filter((run) => run.status === "queued")
+              .map((run) => ({
+                id: EventId.make(`queue-boundary-held-event:${run.id}`),
+                type: "run.updated" as const,
                 threadId: f.threadId,
-                runId: first.id,
+                runId: run.id,
                 occurredAt: f.now,
-                payload: { ...first, queueHeld: true },
-              },
-            ],
+                payload: { ...run, queueHeld: true },
+              })),
           });
         } else if (condition === "approval") {
           yield* f.sink.write({

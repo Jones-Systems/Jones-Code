@@ -1,4 +1,5 @@
 export {
+  codexCapacityRetryPolicy,
   makeCodexCapacityContinuation,
   reduceCodexCapacityContinuation,
   type CodexCapacityContinuationAction,

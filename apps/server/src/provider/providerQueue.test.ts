@@ -17,7 +17,7 @@ import {
   ProviderQueueStorageError,
 } from "./providerQueue.ts";
 import { mergeProviderSnapshot } from "./ProviderRegistry.ts";
-import { withInstanceIdentity } from "./Drivers/instanceIdentity.ts";
+import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import {
   makeQualifiedQuota,
   readPrivateQuotaProof,

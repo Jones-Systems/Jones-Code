@@ -5,7 +5,7 @@ import {
   ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -17,13 +17,13 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vite-plus/test";
 
-import * as ProviderAdapter from "../../../orchestration-v2/ProviderAdapter.ts";
-import * as OpenCodeServerLedger from "../../../provider/OpenCodeServerLedger.ts";
-import * as OpenCodeServerOwner from "../../../provider/OpenCodeServerOwner.ts";
-import * as OpenCodeRuntime from "../../../provider/opencodeRuntime.ts";
-import * as OpenCode2Client from "../../../provider/opencode2/OpenCode2Client.ts";
-import * as OpenCode2Server from "../../../provider/opencode2/OpenCode2Server.ts";
-import * as OpenCodeCreationPolicy from "./OpenCodeCreationPolicy.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
+import * as OpenCodeServerOwner from "@t3tools/provider-opencode/server/OpenCodeServerOwner";
+import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
+import * as OpenCode2Client from "@t3tools/provider-opencode/server/v2/OpenCode2Client";
+import * as OpenCode2Server from "@t3tools/provider-opencode/server/v2/OpenCode2Server";
+import * as OpenCodeCreationPolicy from "@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy";
 
 const unusedRuntimeMethod = () =>
   Effect.fail(new OpenCodeRuntime.OpenCodeRuntimeError({ operation: "unused", detail: "unused" }));
@@ -338,7 +338,7 @@ it.effect("blocks the actual local spawn boundary and abandons on authorization 
           Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
         ),
       ),
-      Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.provideService(HostProcess.Platform, "linux"),
     );
   }),
 );
@@ -391,7 +391,7 @@ it.effect.each(["start", "connect"] as const)(
             Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
           ),
         ),
-        Effect.provideService(HostProcessPlatform, "linux"),
+        Effect.provideService(HostProcess.Platform, "linux"),
       );
     }),
 );

@@ -21,7 +21,7 @@ export function SidebarActiveThreadsPill({
             aria-pressed={activeOnly}
             onClick={onToggle}
             className={cn(
-              "relative z-10 inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs font-medium outline-hidden ring-ring transition-colors focus-visible:ring-2 [-webkit-app-region:no-drag]",
+              "relative z-10 inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs font-medium outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
               count > 0 ? "text-success-foreground" : "text-muted-foreground/60",
               activeOnly ? "bg-success/20 ring-1 ring-success/30" : "bg-muted/30 hover:bg-muted/60",
             )}

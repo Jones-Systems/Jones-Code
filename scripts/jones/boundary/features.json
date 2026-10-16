@@ -4,6 +4,26 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "provider-restart-identity",
+      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
+      "scope": "Exact committed restart replacements interrupt the old runtime with its session and instance identity while preserving native references and the replacement projection. The small shared service edit avoids duplicating control-target validation; the existing service integration harness is retained as a Jones test exception to cover same-instance parity and stale replacement rejection."
+    },
+    {
+      "id": "environment-sidebar-filters",
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "scope": "Session-only environment inclusion filters cover explicit categories, Laptop and Mac Mini label aliases, canonical laptop/Mac Mini machine kinds for custom names, disconnected and duplicate identities, unknown hosts, and sidebar remounts. Explicit categories take precedence over machine kinds. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
+    },
+    {
+      "id": "remote-host-status",
+      "tests": [
+        "apps/server/src/hostStatus/gateway.test.ts",
+        "apps/web/src/hostStatus.test.ts",
+        "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
+        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx"
+      ],
+      "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples."
+    },
+    {
       "id": "qualified-updates",
       "tests": [
         "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
@@ -76,7 +96,8 @@
         "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
         "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
         "apps/mobile/src/features/workstreams/projection.test.ts",
-        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
+        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
+        "apps/mobile/src/features/workstreams/gateway.test.ts"
       ]
     },
     {
@@ -108,6 +129,7 @@
     {
       "id": "provider-runtime-identity",
       "tests": [
+        "apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts",
         "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
         "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
         "packages/contracts/src/jones/providerRuntimeIdentity.test.ts"
@@ -128,6 +150,7 @@
         "apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx",
         "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
+        "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
         "apps/web/src/jones/composer/composerShortcutRails.test.ts"
       ]
     },
@@ -245,9 +268,9 @@
       "id": "opencode-process-adoption",
       "tests": [
         "apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts",
-        "apps/server/src/provider/OpenCodeServerOwner.test.ts",
-        "apps/server/src/provider/opencode2/OpenCode2Server.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts",
+        "packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts",
+        "packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts",
+        "packages/provider-opencode/src/server/adapter.test.ts",
         "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts"
       ],
       "scope": "Physical process incarnation, qualified per-session adoption and pre-effect revocation checks; absent authority preserves ordinary sessions. Positive authority and live provider qualification are not supplied."
@@ -469,7 +492,7 @@
     {
       "id": "composer-thread-query",
       "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
-      "scope": "Web/desktop and shared mobile one-space @ query; preserves matcher identities and legacy file chip delimiters."
+      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; preserves matcher identities and legacy file chip delimiters."
     },
     {
       "id": "design-requests",
@@ -486,13 +509,15 @@
     {
       "id": "jones-local-desktop-update",
       "tests": [
+        "apps/web/src/components/sidebar/SidebarUpdatePill.test.tsx",
         "apps/web/src/jones/updates/versionSkew.test.ts",
         "scripts/stamp-jones-build.test.ts",
         "scripts/jones/updates/build-provenance.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
         "apps/desktop/src/jones/updates/preloadInstall.test.ts",
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
-      ]
+      ],
+      "scope": "Local desktop update actions and manual sidebar check completion feedback. The existing sidebar completion hook and its integration harness retain a small shared-file exception to reuse upstream pending state and toast behavior without duplicating the component. Background checks remain quiet."
     },
     {
       "id": "utility-navigation",
@@ -503,19 +528,66 @@
       "id": "agent-app-identity",
       "tests": [
         "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts",
-        "apps/server/src/provider/RuntimeInstructions.test.ts",
+        "packages/provider-core/src/server/runtimeInstructions.test.ts",
         "apps/server/src/provider/CodexDeveloperInstructions.test.ts",
-        "apps/server/src/provider/T3OrchestrationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
         "packages/contracts/src/jones/organizationMetadata.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.test.ts",
+        "packages/provider-pi/src/server/mcpExtensionSource.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
+        "packages/provider-pi/src/server/mcpInjection.test.ts",
         "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
       ]
+    },
+    {
+      "id": "codex-capacity-continuation",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+      ],
+      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded."
+    },
+    {
+      "id": "connection-diagnostics",
+      "tests": [
+        "apps/web/src/jones/observability/clientTracing.test.ts",
+        "packages/client-runtime/src/rpc/session.test.ts"
+      ],
+      "scope": "Tracing initialization can retry after failure, and each RPC probe records its target environment. Two minimal shared-code repairs avoid duplicating upstream tracer/session ownership; session regressions reuse the existing virtual WebSocket harness. No connection policy or runtime adoption changes."
+    },
+    {
+      "id": "connection-rpc-isolation",
+      "tests": [
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "packages/client-runtime/src/rpc/client.test.ts",
+        "packages/client-runtime/src/connection/outdatedHostUpdate.test.ts",
+        "packages/client-runtime/src/connection/supervisor.test.ts",
+        "apps/server/src/terminal/OutputProtocol.test.ts",
+        "apps/server/src/observability/DefectReporter.test.ts",
+        "packages/effect-acp/src/protocol.test.ts",
+        "packages/effect-acp/src/client.test.ts",
+        "packages/effect-acp/src/agent.test.ts"
+      ],
+      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change."
+    },
+    {
+      "id": "queue-hold-isolation",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/orchestration-v2/RunCompletionReads.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/orchestration-v2/QueuedRunOrder.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/orchestration/Orchestrator.control-reads.jones.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
+      ],
+      "scope": "Historical queue holds remain entry-local across later active runs. Same-cohort holds, reviewed full-head delivery, eligible completion priority/FIFO, failure attribution and tool-boundary guards remain intact. Small direct Orchestrator.ts and ProjectionStore.ts shared edits keep one lifecycle decision; extracting predicates would duplicate SQL and orchestration machinery. RunCompletionReads.test.ts retains its SQL/memory parity harness as an explicit test-in-upstream exception; Jones runtime tests import existing services and harnesses."
     }
   ]
 }

@@ -14,7 +14,6 @@
   ],
   "tombstones": [
     "apps/server/src/persistence/JonesMigrationGuard.ts",
-    "apps/server/src/persistence/Migrations.test.ts",
     "apps/server/src/persistence/Migrations/001_JonesWorktreeOwnershipLeases.ts",
     "apps/server/src/persistence/Migrations/002_JonesProjectionThreadRuntimeIdentity.ts",
     "apps/server/src/persistence/Migrations/003_JonesNativeCreationIntents.ts",
@@ -78,10 +77,6 @@
     {
       "from": "packages/contracts/src/rpc.ts",
       "to": "packages/contracts/src/nativeCreation.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/ProviderAdapter.ts",
-      "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderGuard.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",

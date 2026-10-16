@@ -1,11 +1,7 @@
+import { ProjectId, type ProjectScript } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
-import {
-  ProjectId,
-  type ProjectScript,
-  type TerminalError,
-  type TerminalSessionSnapshot,
-} from "@t3tools/contracts";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
 import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
@@ -262,8 +258,8 @@ export const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
   const completionShell = resolveCompletionShell(
-    yield* HostProcessPlatform,
-    yield* HostProcessEnvironment,
+    yield* HostProcess.Platform,
+    yield* HostProcess.Environment,
   );
 
   /**
@@ -475,7 +471,7 @@ export const make = Effect.gen(function* () {
       legacy?.binding.terminalId ??
       input.preferredTerminalId ??
       (trigger === "settle"
-        ? `settle-${script.id}-${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).slice(0, 8)}`
+        ? `settle-${script.id}-${(yield* crypto.randomUUIDv4().pipe(Effect.orDie)).slice(0, 8)}`
         : `setup-${script.id}`);
     if (
       legacy !== undefined &&
@@ -524,7 +520,7 @@ export const make = Effect.gen(function* () {
       input.observeCompletion ?? (legacy === undefined && native === undefined ? undefined : {});
     const completionToken =
       captured?.completionToken ??
-      (observe ? (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "") : null);
+      (observe ? (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "") : null);
     let commandLine =
       captured?.commandLine ??
       (observe && completionToken

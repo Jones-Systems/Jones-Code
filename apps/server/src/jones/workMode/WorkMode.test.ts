@@ -28,11 +28,11 @@ import * as ContextHandoff from "../../orchestration-v2/ContextHandoffService.ts
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
-import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
-import type { ProviderAdapterV2SessionRuntime } from "../../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapters from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as ProviderSwitch from "../../orchestration-v2/ProviderSwitchService.ts";

@@ -4,23 +4,31 @@ export function oneSpaceThreadQuery(
   isBoundary: (char: string) => boolean,
 ): { query: string; rangeStart: number; rangeEnd: number } | null {
   let index = cursor - 1;
-  let spaces = 0;
+  let hasSpace = false;
   while (index >= 0) {
     const char = text[index]!;
     if (char === " ") {
-      spaces += 1;
-      if (spaces === 2) break;
+      if (text[index - 1] === " ") return null;
+      hasSpace = true;
     } else if (isBoundary(char) || /\s/u.test(char) || char === "\uFFFC") {
-      break;
+      return null;
+    } else if (char === "@") {
+      const previous = text[index - 1];
+      if (
+        previous === undefined ||
+        isBoundary(previous) ||
+        /\s/u.test(previous) ||
+        previous === "\uFFFC"
+      ) {
+        if (!hasSpace) return null;
+        const query = text.slice(index + 1, cursor);
+        const firstWord = query.slice(0, query.indexOf(" "));
+        // Legacy file chips use bare @paths; their delimiter must still close the picker.
+        if (!firstWord || /[./\\"@]/u.test(firstWord)) return null;
+        return { query, rangeStart: index, rangeEnd: cursor };
+      }
     }
     index -= 1;
   }
-  const rangeStart = index + 1;
-  const token = text.slice(rangeStart, cursor);
-  if (spaces === 0 || !token.startsWith("@")) return null;
-  const query = token.slice(1);
-  const firstWord = query.slice(0, query.indexOf(" "));
-  // Legacy file chips use bare @paths; their delimiter must still close the picker.
-  if (!firstWord || /[./\\"@]/u.test(firstWord)) return null;
-  return { query, rangeStart, rangeEnd: cursor };
+  return null;
 }
