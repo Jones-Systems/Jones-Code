@@ -83,7 +83,7 @@ describe("remote helper lifecycle", () => {
           );
           await NodeFSP.writeFile(
             agent,
-            ` import path from 'node:path';  import {
+            `import fs from 'node:fs'; import http from 'node:http'; import path from 'node:path';  import {
   spawn,
 } from 'node:child_process';
   const args=process.argv.slice(2);
