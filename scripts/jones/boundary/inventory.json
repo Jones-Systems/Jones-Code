@@ -735,6 +735,7 @@
     "docs/internals/providers.md": "policy",
     "docs/internals/remote.md": "accepted-shared",
     "docs/internals/resource-telemetry.md": "policy",
+    "docs/internals/t3-connect.md": "accepted-shared",
     "docs/operations/build-artifacts.md": "policy",
     "docs/operations/contributor-guidance.md": "policy",
     "docs/operations/development.md": "policy",

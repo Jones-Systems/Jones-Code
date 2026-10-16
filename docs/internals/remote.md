@@ -100,6 +100,9 @@ For persistent Jones hosts, use a host-owned Jones service on a stable loopback
 port, reached through the existing direct pairing protocol over Tailscale HTTPS.
 The systemd unit `jones-code.service` and macOS LaunchAgent
 `com.jones-systems.jones-code.service` are separate from upstream T3 identities.
+Adopting an existing upstream service can keep its `t3code.service` unit
+(`apps/server/src/jones/hostService/adoption.ts`), so a Jones host may still
+run under the upstream unit name.
 Local artifact staging verifies Jones repository/source provenance as well as
 archive and extracted-entry checksums. The default upstream runtime download is
 refused; an explicit network mirror permits checksum-based downloads but does
