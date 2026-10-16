@@ -249,7 +249,7 @@ jobs:
         env:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
-        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=../../scripts/jones/ci-test-progress-reporter.ts
 
       # integration/transferBudgetV2.integration.test.ts writes the report; exactly one shard
       # produces these files. Gating the upload on their presence keeps a

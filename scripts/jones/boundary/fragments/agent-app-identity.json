@@ -21,6 +21,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.testkit.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
       "from": "packages/provider-core/src/server/runtimeInstructions.ts",
       "to": "packages/provider-core/src/server/jones/AppIdentity.ts"
     },
