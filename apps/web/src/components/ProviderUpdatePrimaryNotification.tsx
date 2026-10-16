@@ -134,7 +134,13 @@ export function ProviderUpdatePrimaryNotification() {
     };
   }, []);
 
-  const updateProviders = useMemo(() => collectProviderUpdateCandidates(providers), [providers]);
+  const updateProviders = useMemo(
+    () =>
+      primaryEnvironment?.connection.phase === "connected"
+        ? collectProviderUpdateCandidates(providers)
+        : [],
+    [primaryEnvironment?.connection.phase, providers],
+  );
   const notificationKey = useMemo(
     () => providerUpdateNotificationKey(updateProviders),
     [updateProviders],

@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/provider-updates": {
+      "types": "./src/jones/providerUpdates/index.ts",
+      "default": "./src/jones/providerUpdates/index.ts"
+    },
     "./jones/fleet-updates": {
       "types": "./src/jones/fleetUpdates/index.ts",
       "default": "./src/jones/fleetUpdates/index.ts"

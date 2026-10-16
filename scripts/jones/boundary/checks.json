@@ -1197,6 +1197,25 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
+    },
+    {
+      "id": "jones-provider-update-trust",
+      "tests": [
+        "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
+        "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
+        "apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts",
+        "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx",
+        "apps/server/src/provider/providerMaintenanceRunner.test.ts",
+        "packages/provider-core/src/server/maintenanceResolver.test.ts",
+        "apps/web/src/components/sidebar/updateEverything.logic.test.ts",
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/providerUpdates/index.test.ts apps/server/src/jones/provider/providerUpdateVerification.test.ts apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx apps/server/src/provider/providerMaintenanceRunner.test.ts packages/provider-core/src/server/maintenanceResolver.test.ts apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter t3 typecheck"
+      ]
     }
   ]
 }

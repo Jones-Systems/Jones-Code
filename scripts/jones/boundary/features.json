@@ -678,6 +678,20 @@
         "apps/server/src/testUtils/weightedShardSequencer.test.ts"
       ],
       "scope": "Automatic CI wall-time capture, complete disjoint shard aggregation and read-only reuse of validated main-run weights. One selection applies to every shard; checked-in fallback preserves legacy semantics. Six shards remain default until comparable six/eight evidence."
+    },
+    {
+      "id": "provider-update-trust",
+      "tests": [
+        "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
+        "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
+        "apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts",
+        "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx",
+        "apps/server/src/provider/providerMaintenanceRunner.test.ts",
+        "packages/provider-core/src/server/maintenanceResolver.test.ts",
+        "apps/web/src/components/sidebar/updateEverything.logic.test.ts",
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+      ],
+      "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code."
     }
   ]
 }

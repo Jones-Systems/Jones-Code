@@ -8,7 +8,7 @@ import { useDismissedProviderUpdateNotificationKeys } from "../providerUpdateDis
 import { ProviderUpdateEnvironmentRows } from "./ProviderUpdateEnvironmentRows";
 import { useLocalEnvironmentUpdateGroups } from "./ProviderUpdateLaunchNotification.environments";
 import {
-  collectProviderUpdateCandidates,
+  collectProviderUpdatePresentationCandidates,
   environmentGroupsWithUpdates,
   getProviderUpdateInitialToastView,
   localEnvironmentUpdateNotificationKey,
@@ -91,7 +91,10 @@ function ProviderUpdateEnvironmentsNotification() {
   // Title summarizes the distinct providers on offer across all environments;
   // the per-environment detail lives in the popover body.
   const candidateUnion = useMemo(
-    () => collectProviderUpdateCandidates(updateGroups.flatMap((group) => group.candidates)),
+    () =>
+      collectProviderUpdatePresentationCandidates(
+        updateGroups.flatMap((group) => group.candidates),
+      ),
     [updateGroups],
   );
 

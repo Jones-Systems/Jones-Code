@@ -80,12 +80,7 @@ export function useLocalEnvironmentUpdateGroups(): {
             })
           : environment.label,
         isPrimary,
-        // The primary is the backend serving this renderer, so it is ready
-        // whenever its providers are available; secondaries report their live
-        // connection phase.
-        connectionState: isPrimary
-          ? "ready"
-          : normalizeConnectionState(environment.connection.phase),
+        connectionState: normalizeConnectionState(environment.connection.phase),
         providers: serverConfig?.providers ?? [],
       });
     }
