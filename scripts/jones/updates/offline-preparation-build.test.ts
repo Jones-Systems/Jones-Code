@@ -16,6 +16,7 @@ import {
   offlinePreparationPack,
   offlinePreparationCandidatePack,
   offlinePreparationProducerCandidatePack,
+  preparationHeldEntryDefine,
   inspectPreparationCandidateJavaScript,
   inspectPreparationCandidateCode,
   inspectPreparationCandidateExternal,
@@ -287,6 +288,19 @@ describe("closed preparation SEA build", () => {
         expect(NodeFS.existsSync(NodePath.join(root, "jones-offline-preparation"))).toBe(true);
       }),
   );
+
+  it("accepts the folded held dispatch but refuses an unreplaced held selector", () => {
+    const held = (condition: string) =>
+      [
+        'const output = () => `${JSON.stringify({ status: "held" })}\\n`;',
+        "if (process.argv.length === 2) process.stdout.write(output());",
+        `else if (${condition}) { process.exitCode = 64; process.stdout.write(output()); }`,
+      ].join("\n");
+    expect(verifyPreparationClosure(held("true"))).toEqual([]);
+    expect(() => verifyPreparationClosure(held("import.meta.jonesPreparationHeldEntry"))).toThrow(
+      "Computed or reflective access is outside the fixed preparation entry.",
+    );
+  });
 
   it("accepts only literal builtins in an otherwise closed module", () => {
     expect(
@@ -1115,6 +1129,13 @@ describe("unqualified preparation producer graph", () => {
         offlinePreparationEntry: "src/jones/updates/offlinePreparationEntry.ts",
       });
       expect(new Set([producer.outDir, sea.outDir, held.outDir]).size).toBe(3);
+      // Only the closed held pack folds the entry's worker dispatch away.
+      expect(held.entry).toEqual(sea.entry);
+      expect(held.define).toEqual({ "import.meta.jonesPreparationHeldEntry": "true" });
+      expect(held.define).toEqual(preparationHeldEntryDefine);
+      expect(Object.isFrozen(preparationHeldEntryDefine)).toBe(true);
+      expect("define" in sea).toBe(false);
+      expect("define" in producer).toBe(false);
       expect(producer.clean).toBe(false);
       expect("exe" in producer).toBe(false);
       expect(producer.deps.alwaysBundle("effect/Schema")).toBe(true);

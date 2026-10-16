@@ -1454,6 +1454,15 @@ async function buildPreparationNativeBytes(
   };
 }
 
+/**
+ * Closed held packaging only. The entry's dispatch folds to its held refusal, so the worker
+ * branch and its imports must leave the bundle; the closure checks below prove that they did.
+ * Candidate and producer packs never set it, so functional builds keep the worker branch.
+ */
+export const preparationHeldEntryDefine = Object.freeze({
+  "import.meta.jonesPreparationHeldEntry": "true",
+});
+
 /** Constructed only by the pack hook from its observed emitted graph. No caller-supplied provenance is admitted. */
 export function offlinePreparationPack(
   rootPath: string,
@@ -1522,6 +1531,7 @@ export function offlinePreparationPack(
     outDir,
     format: "esm" as const,
     platform: "node" as const,
+    define: { ...preparationHeldEntryDefine },
     sourcemap: false,
     // Framework cleanup must never remove custody retained by a previous producer.
     clean: false,
