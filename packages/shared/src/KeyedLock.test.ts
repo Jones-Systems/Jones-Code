@@ -3,6 +3,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -10,6 +11,83 @@ import * as Scope from "effect/Scope";
 import * as KeyedLock from "./KeyedLock.ts";
 
 describe("KeyedLock", () => {
+  it.effect(
+    "skips a held key without running or queueing work and retries after ordinary waiters",
+    () =>
+      Effect.gen(function* () {
+        const lock = yield* KeyedLock.make<string>();
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const events = yield* Ref.make<ReadonlyArray<string>>([]);
+        const record = (event: string) => Ref.update(events, (current) => [...current, event]);
+        const holder = yield* lock
+          .withLock(
+            "key",
+            Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        const waiter = yield* lock.withLock("key", record("ordinary")).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        assert.isTrue(Option.isNone(yield* lock.tryWithLock("key", record("must not run"))));
+        assert.deepStrictEqual(
+          yield* lock.tryWithLock("other", Effect.succeed("independent")),
+          Option.some("independent"),
+        );
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.joinAll([holder, waiter]);
+        assert.isTrue(Option.isSome(yield* lock.tryWithLock("key", record("retry"))));
+        assert.deepStrictEqual(yield* Ref.get(events), ["ordinary", "retry"]);
+        assert.deepStrictEqual(yield* lock.activeKeys, []);
+      }),
+  );
+
+  it.effect("releases an opportunistic holder on failure and interruption", () =>
+    Effect.gen(function* () {
+      const lock = yield* KeyedLock.make<string>();
+      assert.equal(
+        yield* lock.tryWithLock("key", Effect.fail("failed")).pipe(Effect.flip),
+        "failed",
+      );
+      assert.deepStrictEqual(yield* lock.activeKeys, []);
+      const entered = yield* Deferred.make<void>();
+      const holder = yield* lock
+        .tryWithLock("key", Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)))
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      assert.isTrue(
+        Option.isNone(yield* lock.tryWithLock("key", Effect.die("overlapping holder"))),
+      );
+      const waiter = yield* lock.withLock("key", Effect.succeed("ordinary")).pipe(Effect.forkChild);
+      yield* Fiber.interrupt(holder);
+      assert.equal(yield* Fiber.join(waiter), "ordinary");
+      assert.deepStrictEqual(yield* lock.activeKeys, []);
+      assert.deepStrictEqual(
+        yield* lock.tryWithLock("key", Effect.succeed("retry")),
+        Option.some("retry"),
+      );
+    }),
+  );
+
+  it.effect("runs opportunistic work in the caller's scope", () =>
+    Effect.gen(function* () {
+      const lock = yield* Effect.scoped(KeyedLock.make<string>());
+      const finalized = yield* Ref.make(false);
+      const callerScope = yield* Scope.make();
+      const result = yield* lock
+        .tryWithLock(
+          "key",
+          Effect.addFinalizer(() => Ref.set(finalized, true)),
+        )
+        .pipe(Scope.provide(callerScope));
+      assert.isTrue(Option.isSome(result));
+      assert.isFalse(yield* Ref.get(finalized));
+      yield* Scope.close(callerScope, Exit.void);
+      assert.isTrue(yield* Ref.get(finalized));
+      assert.deepStrictEqual(yield* lock.activeKeys, []);
+    }),
+  );
+
   it.effect("runs one holder of a key at a time, waiters in the order they queued", () =>
     Effect.gen(function* () {
       const lock = yield* KeyedLock.make<string>();

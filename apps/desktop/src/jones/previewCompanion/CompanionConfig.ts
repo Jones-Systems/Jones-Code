@@ -57,7 +57,7 @@ const make = Effect.gen(function* () {
     );
   const write = (config: DesktopCompanionConfig) =>
     Effect.gen(function* () {
-      const id = yield* crypto.randomUUIDv4;
+      const id = yield* crypto.randomUUIDv4();
       const temporary = `${target}.${id}.tmp`;
       const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(DesktopCompanionConfig))(
         config,
@@ -75,9 +75,9 @@ const make = Effect.gen(function* () {
       ? {
           enabled: false,
           environmentId: null,
-          hostId: yield* crypto.randomUUIDv4.pipe(
-            Effect.mapError(() => new CompanionConfigError({ operation: "identity" })),
-          ),
+          hostId: yield* crypto
+            .randomUUIDv4()
+            .pipe(Effect.mapError(() => new CompanionConfigError({ operation: "identity" }))),
           label: "Browser host",
           browserOnly: productLocked,
         }

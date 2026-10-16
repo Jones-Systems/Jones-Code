@@ -52,9 +52,14 @@ export function useUsageWindow() {
     undefined,
     customOriginalWindow,
   );
+  const updatePreferences = (patch: Partial<UsagePagePreferences>) => {
+    const nextPreferences = { ...preferences, ...patch };
+    setPreferences(nextPreferences);
+    saveUsagePagePreferences(nextPreferences);
+  };
   const selectWindow = (days: number) => {
     if (!isUsageWindowDays(days)) return;
-    const nextPreferences = { metric, windowDays: days };
+    const nextPreferences = { ...preferences, metric, windowDays: days };
     setPreferences(nextPreferences);
     saveUsagePagePreferences(nextPreferences);
     setCustomSinceValue("");
@@ -92,7 +97,7 @@ export function useUsageWindow() {
     selectWindow(preferences.windowDays);
   };
   const selectMetric = (nextMetric: UsageMetric) => {
-    const nextPreferences = { metric: nextMetric, windowDays };
+    const nextPreferences = { ...preferences, metric: nextMetric, windowDays };
     setPreferences(nextPreferences);
     saveUsagePagePreferences(nextPreferences);
   };
@@ -115,6 +120,8 @@ export function useUsageWindow() {
   };
 
   return {
+    preferences,
+    updatePreferences,
     metric,
     windowDays,
     window,

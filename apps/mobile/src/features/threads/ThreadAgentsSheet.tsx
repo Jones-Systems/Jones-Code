@@ -9,6 +9,7 @@ import {
 import { deriveSubagentElapsedMs, formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import * as DateTime from "effect/DateTime";
+import { Atom } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
 import { useEffect, useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
@@ -19,18 +20,29 @@ import { AndroidSheetHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { environmentThreadDetails } from "../../state/threads";
-import { nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
+import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { SubagentRow } from "./SubagentRow";
+import { MaterialScreenContent } from "../../components/MaterialScreenContent";
+import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
 type AgentsTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
 
-export function useThreadTurnSubagents(target: AgentsTarget): ThreadTurnSubagents | null {
-  return useAtomValue(environmentThreadDetails.turnSubagentsAtom(target));
+const EMPTY_TURN_SUBAGENTS_ATOM = Atom.make<ThreadTurnSubagents | null>(null).pipe(
+  Atom.withLabel("mobile-thread-turn-subagents:empty"),
+);
+
+export function useThreadTurnSubagents(target: AgentsTarget | null): ThreadTurnSubagents | null {
+  return useAtomValue(
+    target === null
+      ? EMPTY_TURN_SUBAGENTS_ATOM
+      : environmentThreadDetails.turnSubagentsAtom(target),
+  );
 }
 
 export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
+  const { layout } = useAdaptiveWorkspaceLayout();
   const target = route.params;
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -53,6 +65,7 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
 
   const content = (
     <ScrollView
+      nestedScrollEnabled
       className="flex-1"
       // The iOS header is translucent and floats over this view; UIKit has to
       // inset the content or the first row sits underneath the title.
@@ -112,8 +125,11 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
+      <NativeStackScreenOptions options={{ sheetCornerRadius: 28 }} />
       <AndroidSheetHeader title="Agents" onBack={() => navigation.goBack()} />
-      {content}
+      <MaterialScreenContent insetHorizontal={layout.usesSplitView}>
+        {content}
+      </MaterialScreenContent>
     </View>
   );
 }

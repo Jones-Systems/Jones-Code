@@ -59,7 +59,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { identityForRequest } from "./ProviderAdapter.ts";
+import { identityForRequest } from "@t3tools/provider-core/server/ProviderAdapter";
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
 import { isPublicStoredOrchestrationEvent, projectDomainEventForWire } from "./WireProjection.ts";
@@ -288,6 +288,22 @@ export interface EventSinkV2Shape {
     readonly runId: RunId;
     readonly activeAttemptId: RunAttemptId;
     readonly expectedLastRunOrdinal: number;
+    readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+  }) => Effect.Effect<
+    {
+      readonly committed: boolean;
+      readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+    },
+    EventSinkV2Error
+  >;
+  /**
+   * Atomically commit only while the stored provider thread still equals
+   * `expected`, the row its writer read, so a read-modify-write of the row
+   * cannot overwrite an update published in between. The whole row is
+   * compared because not every writer moves `updatedAt`.
+   */
+  readonly writeIfProviderThreadUnchanged: (input: {
+    readonly expected: OrchestrationV2ProviderThread;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<
     {
@@ -709,7 +725,12 @@ const layerBase: Layer.Layer<
           yield* applyStoredEvents(committed);
           yield* effectOutbox.enqueue(input.effects);
           return committed;
-        }),
+        }).pipe(
+          // Every streamed agent event is a write, so its statements would
+          // dominate the trace file. This span and its sql.transaction span
+          // still time each write, including the commit.
+          Effect.withTracerEnabled(false),
+        ),
         (storedEvents) =>
           Effect.gen(function* () {
             if (input.effects.length > 0) {
@@ -844,6 +865,41 @@ const layerBase: Layer.Layer<
               ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
               events: normalized,
             })
+            .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
+          yield* applyStoredEvents(storedEvents);
+          return { committed: true as const, storedEvents };
+        }),
+        (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+      );
+    });
+
+    const writeIfProviderThreadUnchangedEffect = Effect.fn(
+      "orchestrationV2.EventSink.writeIfProviderThreadUnchanged",
+    )(function* (input: Parameters<EventSinkV2Shape["writeIfProviderThreadUnchanged"]>[0]) {
+      yield* Effect.annotateCurrentSpan({
+        "orchestration_v2.event_count": input.events.length,
+        "orchestration_v2.provider_thread_id": input.expected.id,
+      });
+      const expectedJson = yield* ProjectionStore.encodeProviderThreadPayload(input.expected);
+
+      return yield* commitThenPublish(
+        Effect.gen(function* () {
+          const rows = yield* sql<{ readonly payload_json: string }>`
+            SELECT payload_json
+            FROM orchestration_v2_projection_provider_threads
+            WHERE provider_thread_id = ${input.expected.id}
+            LIMIT 1
+          `;
+          if (rows[0]?.payload_json !== expectedJson) {
+            return {
+              committed: false as const,
+              storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+            };
+          }
+
+          const normalized = yield* normalizeEvents(input.events);
+          const storedEvents = yield* eventStore
+            .append({ events: normalized })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           yield* applyStoredEvents(storedEvents);
           return { committed: true as const, storedEvents };
@@ -1854,6 +1910,12 @@ const layerBase: Layer.Layer<
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                 cause,
               }),
+          ),
+        ),
+      writeIfProviderThreadUnchanged: (input) =>
+        writeIfProviderThreadUnchangedEffect(input).pipe(
+          Effect.mapError(
+            (cause) => new EventSinkWriteError({ eventCount: input.events.length, cause }),
           ),
         ),
       commitCommand: (input) =>

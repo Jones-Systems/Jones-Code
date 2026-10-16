@@ -7,7 +7,7 @@ import type {
   WorkstreamAppearanceWrite,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
-import type { WorkstreamClient } from "./gateway";
+import type { WorkstreamClient, WorkstreamUrls, WorkstreamUrlSelector } from "./gateway";
 import type { MobileWorkstreamGroup, MobileWorkstreamSnapshot } from "./projection";
 
 export interface MobileWorkstreams {
@@ -36,12 +36,12 @@ export interface MobileWorkstreams {
   ) => Promise<WorkstreamReceipt>;
   readonly read: <A, E>(
     snapshot: MobileWorkstreamSnapshot,
-    path: string,
+    url: WorkstreamUrlSelector,
     run: (client: WorkstreamClient, headers: EnvironmentHttpAuthHeaders) => Effect.Effect<A, E>,
   ) => Promise<A>;
   readonly pages: <Item>(
     snapshot: MobileWorkstreamSnapshot,
-    path: string,
+    url: (urls: WorkstreamUrls, cursor?: string) => string,
     run: (
       client: WorkstreamClient,
       headers: EnvironmentHttpAuthHeaders,

@@ -1,3 +1,4 @@
+import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeCreationRepositorySqlite.ts";
 import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as NativeCreationProviderExecutor from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
@@ -29,14 +30,14 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import * as ProviderContinuationRequests from "./ProviderContinuationRequests.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
@@ -149,6 +150,16 @@ const layerProviderSessionManagerProvided = ProviderSessionManager.layer.pipe(
   ),
 );
 
+const layerPlannedUpdateContinuityProvided = PlannedUpdateContinuity.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      ProjectionStore.layer,
+      layerProviderSessionManagerProvided,
+      ThreadCommandExecutor.layer,
+    ),
+  ),
+);
+
 const currentRuntimeStopProvided = RuntimeStop.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -177,6 +188,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
 );
 
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  Layer.provide(layerPlannedUpdateContinuityProvided),
   Layer.provide(
     Layer.mergeAll(
       layerContextHandoffServiceProvided,
@@ -216,6 +228,7 @@ const layerCheckpointRollbackServiceProvided = CheckpointRollbackService.layer.p
       IdAllocator.layer,
       ProjectionStore.layer,
       layerProviderSessionManagerProvided,
+      ThreadCommandExecutor.layer,
       layerRuntimePolicyProvided,
     ),
   ),
@@ -235,6 +248,7 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
 );
 
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
+  Layer.provide(layerPlannedUpdateContinuityProvided),
   Layer.provide(nativeCreationOwnersProvided),
   Layer.provide(
     Layer.mergeAll(
@@ -279,6 +293,7 @@ const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImp
     Layer.mergeAll(
       layerOrchestratorProvided,
       layerLegacyV1ThreadImporterProvided,
+      layerCommandReceiptStoreProvided,
       layerProviderSessionManagerProvided,
     ),
   ),
@@ -384,6 +399,7 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 );
 
 export const layer = Layer.mergeAll(
+  layerPlannedUpdateContinuityProvided,
   layerStores,
   layerEventSinkProvided,
   currentRuntimeStopProvided,

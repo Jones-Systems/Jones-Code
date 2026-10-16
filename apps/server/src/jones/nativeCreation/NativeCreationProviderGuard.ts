@@ -9,12 +9,10 @@ import * as Schema from "effect/Schema";
 import * as Authority from "./NativeCreationAuthority.ts";
 import { NativeCreationWholeOperationEvidence } from "./NativeCreationExecutionTypes.ts";
 import { nativeCreationCanonicalJson } from "./NativeCreationPreparation.ts";
-import { ProviderAdapterProtocolError } from "../../orchestration-v2/ProviderAdapter.ts";
+import { ProviderAdapterProtocolError } from "@t3tools/provider-core/server/ProviderAdapter";
 
-const privateGuard = Symbol("NativeProviderExecutionGuard");
-export interface NativeProviderExecutionGuard {
-  readonly [privateGuard]: true;
-}
+import type { NativeProviderExecutionGuard } from "@t3tools/provider-core/server/jones/runtimeTypes";
+export type { NativeProviderExecutionGuard } from "@t3tools/provider-core/server/jones/runtimeTypes";
 const guards = new WeakMap<
   NativeProviderExecutionGuard,
   {
@@ -164,7 +162,7 @@ export const issueNativeProviderGuard = Effect.fn("issueNativeProviderGuard")(fu
   }).pipe(Effect.mapError(() => refused("Current native creation authority is unavailable")));
   if (binding.providerModelSelection.instanceId !== input.providerInstanceId)
     return yield* refused("Native provider instance differs from its issued operation");
-  const identity: NativeProviderExecutionGuard = { [privateGuard]: true };
+  const identity = {} as NativeProviderExecutionGuard;
   const guard = Object.freeze(identity);
   guards.set(guard, { ...input, retired: false });
   return guard;

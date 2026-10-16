@@ -9,7 +9,11 @@ import {
   validateSyntheticFixture,
 } from "./guard.mjs";
 import { runOwnedChild } from "./lifecycle.mjs";
-import { captureFixture, produceFixture } from "./fixtures-historical-worker.mjs";
+import {
+  captureFixture,
+  compactFixtureDiagnostic,
+  produceFixture,
+} from "./fixtures-historical-worker.mjs";
 import {
   sourceParentEnvironment,
   syntheticSourceParent,
@@ -301,12 +305,17 @@ export async function withClosedSyntheticFixture(options, use) {
   const cleanup = retainReason
     ? retained(owner, childReceipts, retainReason)
     : disposeOwnedRoot(owner, { childReceipts });
+  const diagnostic =
+    envelope?.schema === "jones-performance-fixture-failure/v1"
+      ? compactFixtureDiagnostic(envelope.diagnostic)
+      : undefined;
   const evidence = {
     creationReceipt: owner.creationReceipt,
     childReceipt: child,
     receipt: envelope?.receipt,
     receiptSha256: envelope?.receiptSha256,
     capture: envelope?.capture,
+    ...(diagnostic ? { diagnostic } : {}),
     ...(profile
       ? {
           profile:

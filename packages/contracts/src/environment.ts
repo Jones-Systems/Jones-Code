@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { QueueDispatchCapability } from "./queueProtocol.ts";
 import { ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
+import { JonesSourceIdentity } from "./jones/fleetUpdates/source.ts";
 
 import {
   EnvironmentId,
@@ -160,13 +161,24 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server evaluates merge and inactivity settlement without a client. */
   threadAutoSettlement: Schema.optionalKey(Schema.Boolean),
   storageCleanup: Schema.optionalKey(Schema.Boolean),
+  storageCleanupRun: Schema.optionalKey(Schema.Boolean),
+  /** Server checks OTLP endpoints for the telemetry export settings. */
+  otlpEndpointCheck: Schema.optionalKey(Schema.Boolean),
   projectWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
+  settledWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
   /** Server honors the `worktreesDirectory` setting. */
   worktreesDirectory: Schema.optionalKey(Schema.Boolean),
+  /** Server can exclude PR-linked threads from inactivity settlement. */
+  threadAutoSettlementScope: Schema.optionalKey(Schema.Boolean),
   /** Server persists the opt-in for continuing interrupted threads after restarts. */
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
   /** Server resolves `projectSettingsOverrides`; older servers ignore the key. */
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
+  /** Server resolves a project's `providerInstances` override entry. Older
+      servers decode the key away (unknown fields are stripped, not
+      rejected), so the per-project provider switch would silently do
+      nothing; clients hide it instead of sending a patch that goes nowhere. */
+  projectProviderInstanceOverrides: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.snooze / thread.unsnooze commands. Same
       version-skew contract as threadSettlement. */
   threadSnooze: Schema.optionalKey(Schema.Boolean),
@@ -260,6 +272,7 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   label: TrimmedNonEmptyString,
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
+  jonesSource: Schema.optionalKey(JonesSourceIdentity),
   /** Absent on hosts from before explicit orchestration protocol negotiation. */
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   capabilities: ExecutionEnvironmentCapabilities,

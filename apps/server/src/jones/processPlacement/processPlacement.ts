@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const PROCESS_PLACEMENT_ENV = "T3_PROCESS_PLACEMENT";
 export const PROCESS_PLACEMENT_BOOTSTRAP_ENV = "T3_PROCESS_PLACEMENT_BOOTSTRAP";
@@ -149,7 +149,7 @@ export function readProcessPlacementBinding(
 
 export function validateProcessPlacementBinding(
   binding: ProcessPlacementBinding,
-  platform = HostProcessPlatform.defaultValue(),
+  platform = HostProcess.Platform.defaultValue(),
 ): void {
   if (platform !== "linux") fail("Linux cgroup v2 is required");
   try {
@@ -199,7 +199,7 @@ export function placementCommand(
   role: ProcessRole = "workload",
   binding = readProcessPlacementBinding(),
   server = false,
-  platform = HostProcessPlatform.defaultValue(),
+  platform = HostProcess.Platform.defaultValue(),
 ): { readonly command: string; readonly args: ReadonlyArray<string> } {
   if (binding === undefined) return { command, args };
   if (server && role !== "control") fail("server priority requires control role");
@@ -212,7 +212,7 @@ export function placementCommand(
 
 export function assertControlProcessPlacement(
   binding = readProcessPlacementBinding(),
-  platform = HostProcessPlatform.defaultValue(),
+  platform = HostProcess.Platform.defaultValue(),
 ): void {
   if (binding === undefined) return;
   validateProcessPlacementBinding(binding, platform);
@@ -233,7 +233,7 @@ export function assertControlProcessPlacement(
 
 export function assertServerProcessPlacement(
   binding = readProcessPlacementBinding(),
-  platform = HostProcessPlatform.defaultValue(),
+  platform = HostProcess.Platform.defaultValue(),
 ): void {
   assertControlProcessPlacement(binding, platform);
   if (binding?.serverPriority !== undefined) {

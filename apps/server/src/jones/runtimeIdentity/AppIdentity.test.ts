@@ -3,12 +3,12 @@ import * as NodeVM from "node:vm";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { ProviderInstanceId } from "@t3tools/contracts";
-import { APP_IDENTITY, readAppIdentity } from "./AppIdentity.ts";
-import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
+import { APP_IDENTITY, readAppIdentity, buildAppIdentityInstructions } from "./AppIdentity.ts";
+import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
-import { T3_CODE_BROWSER_TOOL_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
+import { T3_CODE_BROWSER_TOOL_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildCodexTurnStartParams } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import { PI_T3_MCP_EXTENSION_SOURCE } from "../../orchestration-v2/Adapters/piT3McpExtensionSource.ts";
+import { PI_T3_MCP_EXTENSION_SOURCE } from "@t3tools/provider-pi/server/mcpExtensionSource";
 
 const source = {
   repository: "Jones-Systems/Jones-Code",
@@ -49,7 +49,7 @@ describe("Jones agent app identity", () => {
   it.each(["Codex", "Claude Code", "Cursor", "OpenCode", "Grok", "Antigravity"])(
     "injects explicit server identity through the shared %s runtime context",
     (harness) => {
-      const prompt = buildRuntimeInstructions({ harness });
+      const prompt = buildRuntimeInstructions({ appIdentity: APP_IDENTITY, harness });
       expect(prompt).toContain(`running in Jones Code through the ${harness} harness`);
       expect(prompt).toContain(`product ID: jones-code; server version: ${APP_IDENTITY.version}`);
       expect(prompt).toContain("get_invocation_context");
@@ -87,13 +87,13 @@ describe("Jones agent app identity", () => {
       (event: { systemPrompt: string }) => { systemPrompt: string }
     >();
     const extension = NodeModule.stripTypeScriptTypes(
-      PI_T3_MCP_EXTENSION_SOURCE.replace('import { Type } from "typebox";', "").replace(
+      PI_T3_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
         "export default async function",
         "async function",
       ),
     );
     await NodeVM.runInNewContext(`${extension}\nt3McpExtension(pi)`, {
-      process: { env: {} },
+      process: { env: { T3_APP_IDENTITY_INSTRUCTIONS: buildAppIdentityInstructions() } },
       pi: {
         on: (
           name: string,

@@ -1,14 +1,9 @@
-import {
-  PREVIEW_COMPANION_HTTP_BASE,
-  type PreviewRenderHostSelection,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { PreviewRenderHostSelection, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type { PreparedConnection } from "../../connection/model.ts";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
-import { environmentEndpointUrl } from "../../environment/endpoint.ts";
 
 const options = (prepared: PreparedConnection) =>
   Effect.gen(function* () {
@@ -26,7 +21,7 @@ export const fetchCompanionHosts = (prepared: PreparedConnection) =>
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       ...(yield* options(prepared)),
       method: "GET",
-      url: (base) => environmentEndpointUrl(base, `${PREVIEW_COMPANION_HTTP_BASE}/hosts`),
+      url: (urls) => urls.hosts(),
       request: ({ client, headers }) => client.hosts({ headers }),
     });
   });
@@ -36,11 +31,7 @@ export const fetchCompanionThread = (prepared: PreparedConnection, threadId: Thr
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       ...(yield* options(prepared)),
       method: "GET",
-      url: (base) =>
-        environmentEndpointUrl(
-          base,
-          `${PREVIEW_COMPANION_HTTP_BASE}/threads/${encodeURIComponent(threadId)}`,
-        ),
+      url: (urls) => urls.thread({ params: { threadId } }),
       request: ({ client, headers }) => client.thread({ headers, params: { threadId } }),
     });
   });
@@ -53,7 +44,7 @@ export const setCompanionDefault = (
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       ...(yield* options(prepared)),
       method: "PUT",
-      url: (base) => environmentEndpointUrl(base, `${PREVIEW_COMPANION_HTTP_BASE}/default`),
+      url: (urls) => urls.setDefault(),
       request: ({ client, headers }) => client.setDefault({ headers, payload: { selection } }),
     });
   });
@@ -67,11 +58,7 @@ export const setCompanionThread = (
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       ...(yield* options(prepared)),
       method: "PUT",
-      url: (base) =>
-        environmentEndpointUrl(
-          base,
-          `${PREVIEW_COMPANION_HTTP_BASE}/threads/${encodeURIComponent(threadId)}`,
-        ),
+      url: (urls) => urls.setThread({ params: { threadId } }),
       request: ({ client, headers }) =>
         client.setThread({ headers, params: { threadId }, payload: { selection } }),
     });

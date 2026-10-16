@@ -7,7 +7,7 @@ import {
   type DesktopCompanionTicketRequest,
   type DesktopCompanionTicketResponse,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { NodeWS } from "@effect/platform-node/NodeSocket";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
@@ -101,7 +101,7 @@ const make = Effect.gen(function* () {
   const host = yield* DesktopBrowserHost.DesktopBrowserHost;
   const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
   const windows = yield* ElectronWindow.ElectronWindow;
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
   const clock = yield* Clock.Clock;
   const random = yield* Random.Random;
   const runtimeIdentity = yield* identity.previewAutomationRuntimeIdentity;
