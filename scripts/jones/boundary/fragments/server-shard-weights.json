@@ -2,9 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "server-shard-weights",
   "jonesOwnedPaths": [],
-  "hookPaths": [
-    "apps/server/src/testUtils/weightedShardSequencer.ts"
-  ],
+  "hookPaths": ["apps/server/src/testUtils/weightedShardSequencer.ts"],
   "tombstones": [],
   "allowedImports": [
     {

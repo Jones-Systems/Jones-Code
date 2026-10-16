@@ -78,9 +78,7 @@ export class SelectionRefusal extends Error {
   }
 }
 
-type Candidate =
-  | { ok: true; artifactName: string; text: string }
-  | { ok: false; reason: string };
+type Candidate = { ok: true; artifactName: string; text: string } | { ok: false; reason: string };
 
 /** Why a run cannot be a source, or undefined when it can. */
 export function disqualify(
