@@ -163,8 +163,8 @@ These facts hold for the DMG above and affect any install or update plan:
   that record will not start, and neither will any build while an unreconciled
   activation transaction exists. The startup fence
   (`packages/shared/src/jones/nativeWriterFence.ts`) prints the reason to
-  stderr, for example `Jones Code refused native startup: The native writer
-  does not match the admitted source generation.`, and exits with status 1. A
+  stderr and exits with status 1. For example:
+  `The native writer does not match the admitted source generation.` A
   Finder or Dock launch shows no message: the app simply does not appear. So
   copying a newer DMG over an adopted install fails unless it goes through the
   Jones updater or a qualified manual activation. To see the reason while no

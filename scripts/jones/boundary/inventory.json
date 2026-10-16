@@ -742,6 +742,7 @@
     "docs/user/background-service.md": "accepted-shared",
     "docs/user/composer.md": "policy",
     "docs/user/devices.md": "accepted-shared",
+    "docs/user/install.md": "policy",
     "docs/user/providers-codex.md": "policy",
     "docs/user/remote-access.md": "accepted-shared",
     "docs/user/thread-sidebar.md": "policy",
