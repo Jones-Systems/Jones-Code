@@ -17,7 +17,9 @@ import * as Schema from "effect/Schema";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
+import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
 import { CursorAdapterV2Driver } from "@t3tools/provider-cursor/server";
@@ -537,7 +539,13 @@ export function layer(
     Layer.provide(
       Layer.mergeAll(
         layerCursorAgentSdkReplay(transcript, options),
-        TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+        Layer.effect(
+          ProviderHost.ProviderHost,
+          Effect.map(ProviderHost.ProviderHost, (host) => ({ ...host, appIdentity: APP_IDENTITY })),
+        ).pipe(
+          Layer.provide(TestProviderHost.layer()),
+          Layer.provide(NodeServices.layer),
+        ),
         layerHostEnvironment,
         NodeServices.layer,
         IdAllocator.layer,
