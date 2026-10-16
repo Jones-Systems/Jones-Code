@@ -14,13 +14,13 @@ const identities = [
   { environmentId: "vps-one", label: "VPS" },
   { environmentId: "test-one", label: "Test" },
   { environmentId: "mini-one", label: "Mini" },
-  { environmentId: "home-one", label: "Home" },
+  { environmentId: "home-one", label: "Laptop" },
 ];
 const threads = identities.map(({ environmentId }) => ({ environmentId, title: environmentId }));
 
 describe("sidebar environment filters", () => {
   it("includes all four environments by default without copying the thread inventory", () => {
-    expect(SIDEBAR_ENVIRONMENT_FILTERS).toEqual(["VPS", "Test", "Mini", "Home"]);
+    expect(SIDEBAR_ENVIRONMENT_FILTERS).toEqual(["VPS", "Test", "Mini", "Laptop"]);
     const excluded = excludedSidebarEnvironmentIds(identities, DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS);
     expect([...excluded]).toEqual([]);
     expect(filterSidebarEnvironmentThreads(threads, excluded)).toBe(threads);
@@ -60,7 +60,8 @@ describe("sidebar environment filters", () => {
   });
 
   it.each([
-    ["Home", " Laptop "],
+    ["Laptop", " Home "],
+    ["Laptop", " Laptop "],
     ["Mini", " Mac Mini "],
     ["Mini", "MAC-MINI"],
   ] as const)(
@@ -93,7 +94,7 @@ describe("sidebar environment filters", () => {
       ["small", "mac-mini"],
       ["generic", "server"],
     ] as const);
-    const homeOff = { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Home: false };
+    const homeOff = { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Laptop: false };
     const miniOff = { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Mini: false };
     expect([...excludedSidebarEnvironmentIds(catalog, homeOff, machines)]).toEqual(["portable"]);
     expect([...excludedSidebarEnvironmentIds(catalog, miniOff, machines)]).toEqual(["small"]);
@@ -114,7 +115,7 @@ describe("sidebar environment filters", () => {
       { environmentId: "test-mini", label: "Test" },
       { environmentId: "test-laptop", label: "Test" },
       { environmentId: "vps", label: "VPS" },
-      { environmentId: "home", label: "Home" },
+      { environmentId: "home", label: "Laptop" },
     ];
     const machines = new Map([
       ["test-mini", "mac-mini"],
@@ -140,7 +141,7 @@ describe("sidebar environment filters", () => {
 
   it("updates exclusions and reset keys when machine metadata arrives or changes", () => {
     const catalog = [{ environmentId: "host", label: "Custom name" }];
-    const filters = { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Home: false };
+    const filters = { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Laptop: false };
     const key = (machine: "server" | "laptop" | "mac-mini") =>
       sidebarEnvironmentExclusionKey(
         excludedSidebarEnvironmentIds(catalog, filters, new Map([["host", machine]])),
@@ -166,7 +167,7 @@ describe("sidebar environment filters", () => {
     const key = (catalog: typeof identities) =>
       sidebarEnvironmentExclusionKey(excludedSidebarEnvironmentIds(catalog, filters));
     expect(key(identities.toReversed())).toBe(key(identities));
-    expect(key(identities.map((identity) => ({ ...identity, label: "Home" })))).not.toBe(
+    expect(key(identities.map((identity) => ({ ...identity, label: "Laptop" })))).not.toBe(
       key(identities),
     );
   });

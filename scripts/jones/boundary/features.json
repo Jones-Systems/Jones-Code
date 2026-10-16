@@ -11,6 +11,7 @@
     {
       "id": "remote-host-status",
       "tests": [
+        "apps/server/src/hostStatus/gateway.test.ts",
         "apps/web/src/hostStatus.test.ts",
         "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
         "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx"
