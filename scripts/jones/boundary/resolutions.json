@@ -86,7 +86,7 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "ff6b311baaed0d63b9fd288fddf1011fda45654d0c3e6e6297de04823842d4c1",
+      "sourceSha256": "d955ef8d17a80f45c7fbee01ddc28af1a7a951c72d03900711eda90451cdda37",
       "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
       "reason": "Upstream subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
       "anchors": [
@@ -99,7 +99,7 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "ff6b311baaed0d63b9fd288fddf1011fda45654d0c3e6e6297de04823842d4c1",
+      "sourceSha256": "d955ef8d17a80f45c7fbee01ddc28af1a7a951c72d03900711eda90451cdda37",
       "expression": "NodeURL.pathToFileURL(root + \"/apps/server/src/\" + file + \".ts\")",
       "reason": "Upstream subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
       "anchors": [],
@@ -221,7 +221,7 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "ff6b311baaed0d63b9fd288fddf1011fda45654d0c3e6e6297de04823842d4c1",
+      "sourceSha256": "d955ef8d17a80f45c7fbee01ddc28af1a7a951c72d03900711eda90451cdda37",
       "expression": "NodeURL.pathToFileURL(root + \"/packages/provider-core/src/server/\" + file + \".ts\")",
       "reason": "Upstream subprocess fixture loads only IdAllocator from the extracted provider-core owner. Source-byte binding fixes that finite target; the target still receives boundary checking.",
       "anchors": [],
