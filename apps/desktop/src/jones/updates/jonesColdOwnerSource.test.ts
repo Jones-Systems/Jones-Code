@@ -122,6 +122,22 @@ describe("continuous cold-owner source", () => {
     30000,
   );
 
+  it.each(ColdFixture.coldRecoveryCases as string[])(
+    "recovers the original app after restored state only within live custody for %s",
+    async (scenario) => {
+      expect(await ColdFixture.runColdRecoveryFixture(scenario)).toEqual({
+        case: scenario,
+        passed: true,
+        qualification: "owned-mechanical-cold-recovery",
+        stateAdmissionAllowed: false,
+        nativeColdOwnerQualified: false,
+        sqliteQualified: false,
+        bootQualification: "synthetic-prior-boot",
+      });
+    },
+    30000,
+  );
+
   it("refuses missing, duplicate and nonliteral owner composition", async () => {
     const [bootstrap, maintenance, pair, paired, owner] = await sourceTexts();
     expect(maintenance).toBeDefined();

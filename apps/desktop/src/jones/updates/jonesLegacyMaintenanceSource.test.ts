@@ -80,6 +80,70 @@ elif fault == 'handoff-listener':
         try: scope['_cold_handoff_listener'](listener)
         except scope['Refused']: pass
         else: raise AssertionError('Invalid future trial listener accepted')
+elif fault == 'cold-recovery-cursor':
+    Refused, encode = scope['Refused'], scope['encoded']
+    owner = scope['Maintenance'](pathlib.Path('/fixture/runtime/jones-active-install.json'), lambda: None)
+    executable, helper, retained = '/fixture/Old.app/Contents/MacOS/Jones', '/fixture/Old.app/Contents/Frameworks/Helper', '/fixture/Retained.app/Contents/MacOS/Jones'
+    owner.original = {'owner': 'desktop', 'generation': '1' * 64, 'transactionId': 'bootstrap', 'home': '/fixture',
+                      'appPath': '/fixture/Old.app', 'executablePath': executable}
+    owner.plan = {'maintenanceGeneration': '2' * 64, 'inventory': {'listings': {'/fixture/runtime/jones-updates/transactions': ['9' * 64]}}}
+    owner.gates = [{'path': path, 'app': app, 'originalMode': 0o500, 'gatedMode': 0o400}
+                   for path, app in ((executable, '/fixture/Old.app'), (helper, '/fixture/Old.app'), (retained, '/fixture/Retained.app'))]
+    armed, entered = '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002'
+    record = {'schema': 1, 'sessionId': 'a' * 64, 'phase': 'entered', 'bootSessionUuid': entered}
+    fence = {'schema': 1, 'transactionId': '3' * 64, 'intentSha256': '4' * 64}
+    owner.journal = {'phase': 'armed', 'planSha256': 'b' * 64, 'done': [item['path'] for item in owner.gates], 'intent': None, 'cancel': None,
+                     'armedBootSessionUuid': armed, 'coldOwner': record, 'stateTransaction': fence}
+    restored = {'pairSha256': '6' * 64, 'restoreSha256': '7' * 64}
+    value = scope['_cold_recovery_value'](owner, '5' * 64, record, restored)
+    assert [item['path'] for item in owner.recovery_gates()] == [helper, executable]
+    def accepted(changed):
+        owner.journal['coldRecovery'] = changed
+        owner.validate_cursor()
+    def refused(changed, journal=None):
+        saved = owner.journal
+        owner.journal = dict(saved if journal is None else journal, coldRecovery=changed)
+        try: owner.validate_cursor()
+        except Refused: pass
+        else: raise AssertionError('Malformed recovery cursor accepted')
+        finally: owner.journal = saved
+    accepted(value)
+    assert value['manifest'].encode() == encode(dict(owner.original, generation='5' * 64)) + b'\n'
+    restoring = dict(value, phase='restoring', done=[helper], intent=executable)
+    accepted(restoring)
+    assert owner.modes() == {executable: (0o400, 0o500), helper: (0o500,), retained: (0o400,)}
+    owner.require_manifest(value['manifest'].encode())
+    maintenance_owner = encode(owner.owner()) + b'\n'
+    try: owner.require_manifest(maintenance_owner)
+    except Refused: pass
+    else: raise AssertionError('Maintenance owner accepted after recovery publication')
+    accepted(value)
+    owner.require_manifest(maintenance_owner)
+    accepted(dict(value, phase='restoring', done=[helper, executable]))
+    accepted(dict(value, phase='recovered', done=[helper, executable]))
+    for reused in ('1' * 64, '2' * 64, '3' * 64, '9' * 64, 'a' * 64):
+        refused(scope['_cold_recovery_value'](owner, reused, record, restored))
+    journal = dict(owner.journal)
+    for changed in (dict(value, schema=True), dict(value, phase='released'), dict(value, callerAuthorized=True),
+                    dict(value, manifest=encode(owner.original).decode() + '\n'), dict(value, manifestSha256='0' * 64),
+                    dict(value, bootSessionUuid=armed), dict(value, stateTransaction=dict(fence, transactionId='8' * 64)),
+                    dict(value, pairSha256=None), dict(value, phase='restoring', done=[executable]),
+                    dict(value, phase='restoring', intent=executable), dict(value, phase='restoring', intent=retained),
+                    dict(value, phase='intent', done=[helper]), dict(value, phase='recovered', done=[helper]),
+                    dict(value, phase='restoring', done=[helper, executable, retained])):
+        refused(changed)
+    refused(value, {key: item for key, item in journal.items() if key != 'stateTransaction'})
+    refused(value, {key: item for key, item in journal.items() if key != 'coldOwner'})
+    refused(value, dict(journal, phase='gating'))
+elif fault == 'recovery-public-entry':
+    for operation in ('recover-original', 'recover_original', 'recover'):
+        with contextlib.redirect_stderr(io.StringIO()):
+            try: scope['maintenance_main']([operation, '--manifest', '/fixture/runtime/jones-active-install.json'])
+            except SystemExit as result: assert result.code == 2
+            else: raise AssertionError('Public entry exposed post-state recovery')
+    report = scope['_cold_recovery_report']({'phase': 'restoring', 'generation': '5' * 64, 'stateTransaction': {'transactionId': '3' * 64}})
+    assert report['status'] == 'recovery-original-held' and report['canonicalExecutionRestored'] is False
+    assert report['activationAllowed'] is False and report['stateAdmissionAllowed'] is False and report['blocker'] == 'DESK-FIRST-01'
 elif fault == 'shim-bytes':
     active = {'appPath': '/fixture/Jones.app', 'executablePath': '/fixture/Jones.app/Contents/MacOS/Jones'}
     assert scope['expected_shim'](pathlib.Path('/fixture/home'), active).decode() == payload['expectedShim']
@@ -356,6 +420,8 @@ describe("standalone pre-state maintenance protocol", () => {
     "cancel-before-state-fence",
     "private-worker",
     "handoff-listener",
+    "cold-recovery-cursor",
+    "recovery-public-entry",
   ])("enforces %s before granting any maintenance effect", (scenario) => {
     const result = NodeChildProcess.spawnSync("python3", ["-I", "-B", "-c", protocolFixture], {
       input: JSON.stringify({

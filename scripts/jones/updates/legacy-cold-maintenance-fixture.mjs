@@ -1302,6 +1302,14 @@ seed(gate, b'owned-executable-content', 0o400)
 original = {'owner': 'desktop', 'generation': '1' * 64, 'sourceSha': '3' * 40,
             'databasePath': str(database), 'profile': str(profile),
             'appPath': str(root / 'Old.app'), 'executablePath': str(gate)}
+# Recovery cases add one canonical non-executable gate and one candidate gate that must stay closed.
+helper, staged_gate = root / 'owned-helper', root / 'owned-staged-gate'
+gate_items = [(gate, original['appPath'], b'owned-executable-content')]
+if scenario.startswith('recover-'):
+    gate_items += [(helper, original['appPath'], b'owned-helper-content'), (staged_gate, str(root / 'Candidate.app'), b'owned-staged-content')]
+    for path, _, content in gate_items[1:]: seed(path, content, 0o400)
+gate_items = [{'path': str(path), 'app': app, 'originalMode': 0o500, 'gatedMode': 0o400, 'sha256': scope['sha'](content)}
+              for path, app, content in gate_items]
 maintenance_bytes, native_bytes = b'owned-maintenance-tool', b'owned-native-tool'
 bundle = {'maintenanceSha256': sha(maintenance_bytes), 'identityNativeSha256': sha(native_bytes)}
 plan = {'maintenanceGeneration': generation, 'originalManifest': encode(original).decode(),
@@ -1309,7 +1317,7 @@ plan = {'maintenanceGeneration': generation, 'originalManifest': encode(original
         'candidateBinding': {'sourceSha': '4' * 40, 'executorSha256': '5' * 64}}
 plan_raw = encode(plan) + b'\n'
 journal = {'schema': 1, 'maintenanceGeneration': generation, 'planSha256': sha(plan_raw),
-           'phase': 'armed', 'done': [str(gate)], 'intent': None, 'armedBootSessionUuid': epoch_a, 'cancel': None}
+           'phase': 'armed', 'done': [item['path'] for item in gate_items], 'intent': None, 'armedBootSessionUuid': epoch_a, 'cancel': None}
 seed(directory / 'plan.json', plan_raw, 0o400)
 seed(directory / 'journal.json', encode(journal) + b'\n')
 seed(maintenance_root / 'current.json', encode({'schema': 1, 'generation': generation, 'planSha256': sha(plan_raw)}) + b'\n', 0o400)
@@ -1326,14 +1334,16 @@ def load_owned(self):
     self.plan, self.original, self.bundle = json.loads(plan_raw), dict(original), dict(bundle)
     self.journal_raw = (directory / 'journal.json').read_bytes()
     self.journal = json.loads(self.journal_raw)
-    self.gates = [{'path': str(gate), 'app': original['appPath']}]
+    self.gates = [dict(item) for item in gate_items]
     self.validate_cursor()
 def verify_owned(self):
     events.append('verify')
     self.current_lock()
     self.validate_cursor()
-    scope['require'](stat.S_IMODE(gate.stat().st_mode) == 0o400)
-    scope['require'](json.loads(manifest.read_bytes()) == self.owner())
+    # The production mode and owner rules decide which gate modes and manifest bytes are current.
+    allowed = self.modes()
+    for item in self.gates: scope['require'](stat.S_IMODE(pathlib.Path(item['path']).stat().st_mode) in allowed[item['path']])
+    self.require_manifest(manifest.read_bytes())
     scope['require']((directory / 'tools/identity-native').read_bytes() == native_bytes)
     return epoch['current']
 Maintenance.load, Maintenance.verify = load_owned, verify_owned
@@ -1673,6 +1683,34 @@ export const coldPreparationCases = [
   "receiver-later-boot",
 ];
 
+// Post-state recovery to the original app before any desktop handoff, using the captured preparation driver.
+export const coldRecoveryCases = [
+  "recover-snapshot",
+  "recover-prepared",
+  "recover-closed-operations",
+  "recover-later-session",
+  "recover-before-intent",
+  "recover-after-intent",
+  "recover-after-manifest",
+  "recover-after-restoring",
+  "recover-helper-intent",
+  "recover-after-helper",
+  "recover-executable-intent",
+  "recover-after-executable",
+  "recover-before-terminal",
+  "recover-pre-state",
+  "recover-unrestored",
+  "recover-restore-incomplete",
+  "recover-worker-unsettled",
+  "recover-worker-unreaped",
+  "recover-handoff",
+  "recover-receiver",
+  "recover-foreign-manifest",
+  "recover-restored-drift",
+  "recover-gate-drift",
+  "recover-production",
+];
+
 // This framed child models query results, not SQLite or native observations. The
 // real issuer, lock, pair, publishing, process handles and teardown remain in use.
 const preparationChild = String.raw`
@@ -1808,12 +1846,12 @@ bundle = dict(bundle, schema=3, repository='Jones-Systems/Jones-Code', sourceSha
 if scenario == 'v2-held':
     bundle.pop('preparation')
     bundle['schema'] = 2
-if scenario.startswith(('handoff-', 'receiver-')):
+if scenario.startswith(('handoff-', 'receiver-')) or scenario in ('recover-handoff', 'recover-receiver'):
     original.update(protocol=1, home=str(root), environmentId='synthetic-cold-handoff', version='1.0.0-preview.20261010.1', appDigest='1' * 64)
     candidate = {'handle': '6' * 64, 'sourceSha': bundle['sourceSha'], 'sourceTree': bundle['sourceTree'],
                  'appDigest': '7' * 64, 'version': bundle['version'], 'appPath': str(root / 'Candidate.app'),
                  'executablePath': str(root / 'Candidate.app/Contents/MacOS/Jones')}
-    if scenario.startswith('receiver-'):
+    if scenario.startswith('receiver-') or scenario == 'recover-receiver':
         (root / 'runtime/jones-updates').mkdir(mode=0o700)
         original['transactionId'] = 'bootstrap'
         for app_name in ('Old.app', 'Candidate.app'):
@@ -1843,7 +1881,35 @@ for path, raw, mode in ((directory / 'plan.json', plan_raw, 0o400),
 if scenario == 'unretained-runtime': runtime.unlink()
 real_durable = scope['durable_file']
 fault = {'fired': False}
+# Recovery steps are named from the durable bytes actually written; faults fire once, before or after one step.
+recovery_events = []
+recovery_faults = {'recover-before-intent': ('before', 'intent'), 'recover-after-intent': ('after', 'intent'),
+                   'recover-after-manifest': ('after', 'manifest'), 'recover-after-restoring': ('after', 'restoring'),
+                   'recover-helper-intent': ('after', 'gate-intent:' + str(helper)),
+                   'recover-executable-intent': ('after', 'gate-intent:' + str(gate)),
+                   'recover-before-terminal': ('before', 'terminal')}
+def recovery_step(path, raw, previous):
+    if not scenario.startswith('recover-'): return None
+    if path == manifest: return 'manifest'
+    if path != directory / 'journal.json' or previous is None: return None
+    value, prior = json.loads(raw).get('coldRecovery'), json.loads(previous).get('coldRecovery')
+    if value is None or value == prior: return None
+    if prior is None: return value['phase']
+    if value['phase'] != prior['phase']: return 'terminal' if value['phase'] == 'recovered' else value['phase']
+    if value['intent'] is not None and value['intent'] != prior['intent']: return 'gate-intent:' + value['intent']
+    return 'done:' + value['done'][-1]
+def recovery_fault(when, step):
+    if step is None or fault['fired'] or recovery_faults.get(scenario) != (when, step): return
+    fault['fired'] = True
+    raise OSError(errno.EIO, 'owned recovery fault ' + when + ' ' + step)
 def durable(path, raw, mode, previous=None):
+    step = recovery_step(path, raw, previous)
+    recovery_fault('before', step)
+    if step is not None:
+        real_durable(path, raw, mode, previous)
+        recovery_events.append(step)
+        recovery_fault('after', step)
+        return
     is_intent = path == directory / 'state/journal.json' and json.loads(raw)['phase'] == 'preparation-intent'
     is_handoff = path == directory / 'journal.json' and 'desktopHandoff' in json.loads(raw)
     receiver_cursor = path == directory / 'journal.json' and 'desktopReceiver' in json.loads(raw)
@@ -2144,11 +2210,213 @@ def receiver(session):
         assert manifest.read_bytes() == initial_owner and (gate.read_bytes(), stat.S_IMODE(gate.stat().st_mode)) == initial_gate
         assert len(commands) == starts
     finally: subprocess.Popen = real_popen
+# Recovery uses the real issuer, lock, pair restore, journal cursors, owner replacement and descriptor-bound
+# chmod. Only native identity is modeled from lstat device and inode; no app is launched.
+epoch_d = '00000000-0000-4000-8000-000000000004'
+initial_owner_raw = manifest.read_bytes()
+advanced = {}
+if scenario.startswith('recover-'):
+    for item in gate_items:
+        info = pathlib.Path(item['path']).lstat()
+        item['identity'] = [str(info.st_dev), str(info.st_ino)]
+    def owned_native_identity(native, expected, requests=()):
+        assert native == directory / 'tools/identity-native' and expected == bundle['identityNativeSha256']
+        assert len(requests) == 1 and requests[0][0] == 'file'
+        path = pathlib.Path(requests[0][1])
+        assert any(str(path) == item['path'] for item in gate_items)
+        info = path.lstat()
+        return {'bootSessionUuid': epoch['current'], 'objects': [{'owned': [str(info.st_dev), str(info.st_ino)],
+                'stat': {'mode': stat.S_IMODE(info.st_mode), 'inode': str(info.st_ino), 'device': str(info.st_dev)}}]}
+    scope['native_identity'], scope['stable_native'] = owned_native_identity, lambda item: item['owned']
+    real_gate = Maintenance.gate
+    def tracked_gate(self, item, mode):
+        assert mode == item['originalMode']
+        recovery_events.append('gate:' + item['path'])
+        real_gate(self, item, mode)
+        late = {str(helper): 'recover-after-helper', str(gate): 'recover-after-executable'}.get(item['path'])
+        if scenario == late and not fault['fired']:
+            fault['fired'] = True
+            raise OSError(errno.EIO, 'owned failure after a restored gate mode')
+    Maintenance.gate = tracked_gate
+def owner_journal(): return (directory / 'journal.json').read_bytes()
+def mode_of(path): return stat.S_IMODE(path.stat().st_mode)
+def restore_pair(session):
+    session.begin_restore()
+    assert session.reconcile_restore()['status'] == 'pair-restored-gates-retained'
+def staged_for_recovery(session):
+    if scenario == 'recover-snapshot':
+        session.snapshot()
+        write(database, b'advanced-db')
+        advanced['database'] = b'advanced-db'
+    else:
+        prepare(session)
+        advanced['database'] = b'owned-query-normalized-db'
+    restore_pair(session)
+    advanced['fence'] = dict(session.owner.journal['stateTransaction'])
+def assert_recovered(report):
+    current = json.loads(owner_journal())
+    value, fence = current['coldRecovery'], advanced['fence']
+    generation = value['generation']
+    assert report == {'schema': 1, 'status': 'recovered-original-post-state', 'stateAdmissionAllowed': False,
+                      'activationAllowed': False, 'launchMembershipComplete': False, 'processCustody': 'unobserved',
+                      'blocker': 'DESK-FIRST-01', 'recoveredGeneration': generation,
+                      'stateTransactionId': fence['transactionId'], 'canonicalExecutionRestored': True}
+    assert current['phase'] == 'armed' and current['stateTransaction'] == fence
+    assert value['phase'] == 'recovered' and value['done'] == [str(helper), str(gate)] and value['intent'] is None
+    assert scope['hex_value'](generation, 64)
+    assert generation not in (original['generation'], plan['maintenanceGeneration'], fence['transactionId'], value['sessionId'])
+    assert manifest.read_bytes() == encode(dict(original, generation=generation)) + b'\n'
+    assert (mode_of(helper), mode_of(gate), mode_of(staged_gate)) == (0o500, 0o500, 0o400)
+    for item in gate_items: assert sha(pathlib.Path(item['path']).read_bytes()) == item['sha256']
+    assert database.read_bytes() == b'original-db' and (profile / 'Preferences').read_bytes() == b'original-profile'
+    assert (database.parent / 'settings.json').read_bytes() == b'{"owned":true}'
+    assert (directory / 'state/advanced-state/database').read_bytes() == advanced['database']
+    assert (directory / 'state/previous-pair/database').read_bytes() == b'original-db'
+    assert json.loads((directory / 'state/journal.json').read_bytes())['phase'] == 'restored'
+    return generation
+def assert_once():
+    # Every completed step is durable exactly once; only an in-flight gate may be reapplied before its completion.
+    for step in ('intent', 'manifest', 'restoring', 'terminal'): assert recovery_events.count(step) == 1, step
+    order = [recovery_events.index(step) for step in ('intent', 'manifest', 'restoring')]
+    assert order == sorted(order)
+    for path in (helper, gate):
+        attempts = [index for index, event in enumerate(recovery_events) if event == 'gate:' + str(path)]
+        done = [index for index, event in enumerate(recovery_events) if event == 'done:' + str(path)]
+        assert len(done) == 1 and 1 <= len(attempts) <= 2 and all(order[-1] < index < done[0] for index in attempts)
+    assert recovery_events.index('done:' + str(helper)) < recovery_events.index('gate:' + str(gate))
+    assert recovery_events.index('done:' + str(gate)) < recovery_events.index('terminal')
+    assert 'gate:' + str(staged_gate) not in recovery_events
+def terminal_checks():
+    before = owner_journal()
+    epoch['current'] = epoch_d
+    refusal(lambda: enter(lambda session: None), Refused)
+    assert owner_journal() == before
+    with scope['fixed_lock'](manifest) as current:
+        owner = Maintenance(manifest, current)
+        owner.load()
+        assert owner.reconcile()['status'] == 'recovered-original-post-state'
+        refusal(owner.cancel, Refused)
+    assert owner_journal() == before
+def recovered_once(session):
+    staged_for_recovery(session)
+    report = session.recover_original()
+    assert_recovered(report)
+    frozen = owner_journal()
+    assert session.recover_original() == report and owner_journal() == frozen
+    if scenario == 'recover-closed-operations':
+        refusal(lambda: session.prepare_handoff('http://127.0.0.1:4888'), Refused)
+        refusal(session.snapshot, Refused)
+        assert owner_journal() == frozen
+def run_recovery():
+    refused = {'recover-pre-state': None, 'recover-unrestored': 'prepare', 'recover-restore-incomplete': 'begin',
+               'recover-worker-unsettled': 'settled', 'recover-worker-unreaped': 'reaped', 'recover-handoff': 'handoff',
+               'recover-receiver': 'receiver', 'recover-foreign-manifest': 'manifest', 'recover-restored-drift': 'drift',
+               'recover-gate-drift': 'gate'}
+    if scenario in ('recover-snapshot', 'recover-prepared'):
+        enter(recovered_once)
+        assert json.loads(owner_journal())['coldOwner']['phase'] == 'finalized'
+        assert_once()
+        terminal_checks()
+    elif scenario == 'recover-closed-operations':
+        refusal(lambda: enter(recovered_once), Refused)
+        assert json.loads(owner_journal())['coldRecovery']['phase'] == 'recovered'
+        terminal_checks()
+    elif scenario == 'recover-later-session':
+        enter(staged_for_recovery)
+        before = owner_journal()
+        refusal(sessions[-1].recover_original, Refused)
+        refusal(lambda: enter(lambda session: session.recover_original()), Refused)
+        assert owner_journal() == before and 'coldRecovery' not in json.loads(before)
+        epoch['current'] = epoch_c
+        result = []
+        enter(lambda session: result.append(session.recover_original()))
+        assert_recovered(result[0])
+        assert_once()
+        terminal_checks()
+    elif scenario == 'recover-production':
+        import io
+        before = owner_journal()
+        for operation in ('recover-original', 'recover_original', 'recover'):
+            with contextlib.redirect_stderr(io.StringIO()):
+                try: scope['maintenance_main']([operation, '--manifest', str(manifest)])
+                except SystemExit as result: assert result.code == 2
+                else: raise AssertionError('Public entry exposed post-state recovery')
+        assert owner_journal() == before and manifest.read_bytes() == initial_owner_raw
+        assert (mode_of(helper), mode_of(gate), mode_of(staged_gate)) == (0o400, 0o400, 0o400)
+    elif scenario in refused:
+        setup = refused[scenario]
+        def body(session):
+            if setup is not None: prepare(session)
+            if setup == 'begin': session.begin_restore()
+            if setup in ('settled', 'reaped', 'manifest', 'drift', 'gate'): restore_pair(session)
+            if setup in ('handoff', 'receiver'): session.prepare_handoff('http://127.0.0.1:4888')
+            if setup == 'receiver': session.prepare_receiver()
+            if setup == 'settled': session.worker.settled = False
+            if setup == 'reaped': session.worker.process.reaped = False
+            if setup == 'manifest': write(manifest, encode(dict(original, generation='f' * 64)) + b'\n')
+            if setup == 'drift': write(database, b'drifted-db')
+            if setup == 'gate': helper.chmod(0o500)
+            before, owner_raw = owner_journal(), manifest.read_bytes()
+            failure = refusal(session.recover_original, Refused)
+            assert session.failure is failure and owner_journal() == before and manifest.read_bytes() == owner_raw
+            refusal(session.recover_original, Refused)
+            assert owner_journal() == before
+        refusal(lambda: enter(body), Refused)
+        current = json.loads(owner_journal())
+        assert 'coldRecovery' not in current
+        assert ('stateTransaction' in current) == (setup is not None)
+        assert mode_of(gate) == 0o400 and mode_of(staged_gate) == 0o400
+        assert mode_of(helper) == (0o500 if setup == 'gate' else 0o400)
+        if setup == 'manifest': assert json.loads(manifest.read_bytes())['generation'] == 'f' * 64
+        else: assert manifest.read_bytes() == initial_owner_raw
+        if setup == 'drift': assert database.read_bytes() == b'drifted-db'
+        with scope['fixed_lock'](manifest) as current_lock:
+            owner = Maintenance(manifest, current_lock)
+            owner.load()
+            refusal(owner.cancel, Refused)
+    else:
+        assert scenario in recovery_faults or scenario in ('recover-after-helper', 'recover-after-executable')
+        def first(session):
+            staged_for_recovery(session)
+            failure = refusal(session.recover_original, OSError)
+            assert failure.errno == errno.EIO and fault['fired'] and session.failure is failure
+            frozen = owner_journal()
+            refusal(session.recover_original, Refused)
+            assert owner_journal() == frozen
+        refusal(lambda: enter(first), Refused)
+        before = owner_journal()
+        recorded = json.loads(before).get('coldRecovery')
+        helper_open = scenario in ('recover-after-helper', 'recover-executable-intent', 'recover-after-executable', 'recover-before-terminal')
+        executable_open = scenario in ('recover-after-executable', 'recover-before-terminal')
+        published = scenario not in ('recover-before-intent', 'recover-after-intent')
+        assert (recorded is None) == (scenario == 'recover-before-intent')
+        assert (mode_of(helper), mode_of(gate), mode_of(staged_gate)) == (0o500 if helper_open else 0o400, 0o500 if executable_open else 0o400, 0o400)
+        assert (manifest.read_bytes() == initial_owner_raw) == (not published)
+        assert database.read_bytes() == b'original-db'
+        # The same boot cannot reacquire custody; public reconciliation only reports the retained state.
+        refusal(lambda: enter(lambda session: session.recover_original()), Refused)
+        assert owner_journal() == before
+        with scope['fixed_lock'](manifest) as current_lock:
+            owner = Maintenance(manifest, current_lock)
+            owner.load()
+            held = owner.reconcile()
+            refusal(owner.cancel, Refused)
+        assert held['status'] == ('cold-boundary-observed-admission-held' if recorded is None else 'recovery-original-held')
+        assert held['activationAllowed'] is False and held['stateAdmissionAllowed'] is False
+        assert owner_journal() == before
+        epoch['current'] = epoch_c
+        result = []
+        enter(lambda session: result.append(session.recover_original()))
+        generation = assert_recovered(result[0])
+        if recorded is not None: assert generation == recorded['generation']
+        assert_once()
+        terminal_checks()
 fixture_failure = None
 try:
     failures = {'plan-id-drift', 'plan-publication-failure', 'intent-sync-failure', 'worker-exit-failure',
                 'worker-close-failure', 'paused-cancel', 'work-replaced', 'cold-c-reconcile', 'v2-held', 'unretained-runtime'}
-    if scenario.startswith('receiver-'):
+    if scenario.startswith('recover-'): run_recovery()
+    elif scenario.startswith('receiver-'):
         successful = {'receiver-success', 'receiver-same-boot', 'receiver-later-boot'}
         if scenario in successful: enter(receiver)
         else: refusal(lambda: enter(receiver), (Refused, OSError))
@@ -2226,13 +2494,19 @@ finally:
         if not closure(): failures.append(AssertionError('Owned preparation child custody is unproved'))
     except BaseException as failure: failures.append(failure)
     if failures: raise scope['_PreparationFailure'](failures, str(root / 'fixture-closure.json'))
-print(json.dumps({'case': scenario, 'passed': True, 'qualification': 'owned-mechanical-captured-preparation',
+qualification = 'owned-mechanical-cold-recovery' if scenario.startswith('recover-') else 'owned-mechanical-captured-preparation'
+print(json.dumps({'case': scenario, 'passed': True, 'qualification': qualification,
                   'stateAdmissionAllowed': False, 'nativeColdOwnerQualified': False, 'sqliteQualified': False,
                   'bootQualification': 'synthetic-prior-boot'}))
 `;
 
+export async function runColdRecoveryFixture(scenario, { signal } = {}) {
+  NodeAssert.ok(coldRecoveryCases.includes(scenario));
+  return runColdPreparationFixture(scenario, { signal });
+}
+
 export async function runColdPreparationFixture(scenario, { signal } = {}) {
-  NodeAssert.ok(coldPreparationCases.includes(scenario));
+  NodeAssert.ok(coldPreparationCases.includes(scenario) || coldRecoveryCases.includes(scenario));
   const sources = await readColdMaintenanceSources();
   return withLegacyIdentityScratch(async (root) => {
     const payload = NodePath.join(root, "preparation.json");

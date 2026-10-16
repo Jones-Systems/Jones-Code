@@ -4,10 +4,12 @@ import {
   coldMaintenanceCases,
   coldOwnerCases,
   coldPreparationCases,
+  coldRecoveryCases,
   readColdMaintenanceSources,
   runColdMaintenanceFixture,
   runColdOwnerFixture,
   runColdPreparationFixture,
+  runColdRecoveryFixture,
 } from "./legacy-cold-maintenance-fixture.mjs";
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- These standalone tests qualify the actual native identity ABI on an owned synthetic family.
@@ -54,6 +56,20 @@ for (const scenario of coldPreparationCases) {
       case: scenario,
       passed: true,
       qualification: "owned-mechanical-captured-preparation",
+      stateAdmissionAllowed: false,
+      nativeColdOwnerQualified: false,
+      sqliteQualified: false,
+      bootQualification: "synthetic-prior-boot",
+    });
+  });
+}
+
+for (const scenario of coldRecoveryCases) {
+  NodeTest.test(`owned post-state recovery: ${scenario}`, { timeout: 30000 }, async (context) => {
+    NodeAssert.deepEqual(await runColdRecoveryFixture(scenario, { signal: context.signal }), {
+      case: scenario,
+      passed: true,
+      qualification: "owned-mechanical-cold-recovery",
       stateAdmissionAllowed: false,
       nativeColdOwnerQualified: false,
       sqliteQualified: false,

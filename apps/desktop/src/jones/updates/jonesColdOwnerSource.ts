@@ -109,6 +109,55 @@ def _cold_receiver_files(owner):
     for name in names: require(observed.raw(directory / name, LIMITS['metadataBytes']) == value[name[:-5]].encode())
     observed.current()
 
+_COLD_RECOVERY_KEYS = frozenset(('schema', 'phase', 'generation', 'manifest', 'manifestSha256', 'sessionId', 'bootSessionUuid',
+                                 'stateTransaction', 'pairSha256', 'restoreSha256', 'done', 'intent'))
+
+def _cold_recovery_reserved(owner, value):
+    # The recovered generation must not alias any installed, maintenance, state, session or retained transaction identity.
+    reserved = {owner.original['generation'], owner.plan['maintenanceGeneration'],
+                owner.journal['stateTransaction']['transactionId'], value['sessionId']}
+    if isinstance(owner.original.get('transactionId'), str): reserved.add(owner.original['transactionId'])
+    if isinstance(owner.original.get('home'), str):
+        listings = owner.plan.get('inventory', {}).get('listings', {})
+        reserved.update(listings.get(str(absolute(owner.original['home']) / 'runtime/jones-updates/transactions')) or ())
+    return reserved
+
+def _cold_recovery_value(owner, generation, record, pair_journal):
+    raw = encoded(dict(owner.original, generation=generation)) + b'\n'
+    return {'schema': 1, 'phase': 'intent', 'generation': generation, 'manifest': raw.decode(), 'manifestSha256': sha(raw),
+            'sessionId': record['sessionId'], 'bootSessionUuid': record['bootSessionUuid'],
+            'stateTransaction': dict(owner.journal['stateTransaction']),
+            'pairSha256': pair_journal['pairSha256'], 'restoreSha256': pair_journal['restoreSha256'], 'done': [], 'intent': None}
+
+def _validate_cold_recovery_cursor(owner):
+    journal = owner.journal
+    if 'coldRecovery' not in journal: return
+    value = journal['coldRecovery']
+    # This first slice recovers only before any desktop handoff; the fence and entered epoch remain permanent.
+    require(journal['phase'] == 'armed' and 'coldOwner' in journal and 'stateTransaction' in journal)
+    require('desktopHandoff' not in journal and 'desktopReceiver' not in journal)
+    require(isinstance(value, dict) and set(value) == _COLD_RECOVERY_KEYS)
+    require(type(value['schema']) is int and value['schema'] == 1 and value['phase'] in ('intent', 'restoring', 'recovered'))
+    require(hex_value(value['generation'], 64) and hex_value(value['sessionId'], 64))
+    require(hex_value(value['pairSha256'], 64) and hex_value(value['restoreSha256'], 64))
+    require(_cold_owner_boot(value['bootSessionUuid']) != _cold_owner_boot(journal['armedBootSessionUuid']))
+    require(value['stateTransaction'] == journal['stateTransaction'])
+    require(value['generation'] not in _cold_recovery_reserved(owner, value))
+    raw = encoded(dict(owner.original, generation=value['generation'])) + b'\n'
+    require(isinstance(value['manifest'], str) and value['manifest'].encode() == raw and value['manifestSha256'] == sha(raw))
+    paths = [item['path'] for item in owner.recovery_gates()]
+    done, intent = value['done'], value['intent']
+    require(isinstance(done, list) and done == paths[:len(done)])
+    require(intent is None or (len(done) < len(paths) and intent == paths[len(done)]))
+    if value['phase'] == 'intent': require(not done and intent is None)
+    if value['phase'] == 'recovered': require(done == paths and intent is None)
+
+def _cold_recovery_report(value):
+    terminal = value['phase'] == 'recovered'
+    return maintenance_report('recovered-original-post-state' if terminal else 'recovery-original-held',
+                              recoveredGeneration=value['generation'], stateTransactionId=value['stateTransaction']['transactionId'],
+                              canonicalExecutionRestored=terminal)
+
 def _cold_owner_bindings():
     # The issuer captures the real lock implementation, not a caller's assertion
     # of custody. No executable, callback, boot observation or receipt grants entry.
@@ -175,8 +224,9 @@ def _cold_owner_bindings():
                 require(owner.journal['phase'] == 'armed' and owner.journal.get('coldOwner') == self.record)
                 require(read_owned(owner.directory / 'journal.json') == owner.journal_raw)
                 require(decode(owner.journal_raw) == owner.journal)
-                require(decode(read_owned(owner.manifest)) == owner.owner())
-                require(read_owned(owner.manifest) == self.owner_raw)
+                manifest_raw = read_owned(owner.manifest)
+                owner.require_manifest(manifest_raw)
+                require(manifest_raw == self.owner_raw)
                 fence = owner.journal.get('stateTransaction')
                 if self.fence is not None: require(fence is not None and encoded(fence) == self.fence)
                 elif fence is not None: self.fence = encoded(fence)
@@ -207,7 +257,7 @@ def _cold_owner_bindings():
             try:
                 require(self.accepting and name in ('snapshot', 'begin_restore', 'reconcile_restore', 'prepare', 'recover_preparation') and not self.operating)
                 self.boundary()
-                require('desktopHandoff' not in self.owner.journal)
+                require('desktopHandoff' not in self.owner.journal and 'coldRecovery' not in self.owner.journal)
                 if self.worker is not None: self.require_worker_settled()
                 if name in ('prepare', 'recover_preparation'):
                     require(self.worker is None)
@@ -290,6 +340,7 @@ def _cold_owner_bindings():
             try:
                 require(self.accepting and not self.operating)
                 self.boundary()
+                require('coldRecovery' not in self.owner.journal)
                 listener = _cold_handoff_listener(listener)
                 self.operating = True
                 existing = self.owner.journal.get('desktopHandoff')
@@ -377,6 +428,62 @@ def _cold_owner_bindings():
                 self.poison(failure)
                 raise
 
+        def recover_original(self):
+            # Pre-handoff state recovery only: no handoff, receiver, launch or executable release has occurred.
+            try:
+                require(self.accepting and not self.operating)
+                self.boundary()
+                owner = self.owner
+                require('stateTransaction' in owner.journal and 'desktopHandoff' not in owner.journal and 'desktopReceiver' not in owner.journal)
+                self.require_worker_settled()
+                recovery = owner.journal.get('coldRecovery')
+                if recovery is not None and recovery['phase'] == 'recovered': return _cold_recovery_report(recovery)
+                self.operating = True
+                gates = owner.recovery_gates()
+                executable = gates[-1]['path']
+                released = recovery is not None and (executable in recovery['done'] or recovery['intent'] == executable)
+                if not released:
+                    # Until the executable can run, no original writer can have changed the restored pair.
+                    # The existing reconciler revalidates exact restored and retained members; when complete it
+                    # rewrites only its identical journal.
+                    if self.pair is None: self.pair = _ColdPairTransaction(owner)
+                    require(self.pair.journal is not None and self.pair.journal['phase'] == 'restored')
+                    self.pair.reconcile_restore()
+                    restored = self.pair.journal
+                    require(restored['phase'] == 'restored' and restored['reserveState'] == 'released')
+                    if recovery is not None:
+                        require((recovery['pairSha256'], recovery['restoreSha256']) == (restored['pairSha256'], restored['restoreSha256']))
+                if recovery is None:
+                    generation = uuid.uuid4().hex + uuid.uuid4().hex
+                    value = _cold_recovery_value(owner, generation, self.record, restored)
+                    require(generation not in _cold_recovery_reserved(owner, value))
+                    # The durable intent precedes owner replacement; an uncertain write consumes this live session.
+                    owner.save(coldRecovery=value)
+                    owner.sync_evidence()
+                    self.boundary()
+                    recovery = value
+                if recovery['phase'] == 'intent':
+                    target, raw = recovery['manifest'].encode(), read_owned(owner.manifest)
+                    if raw != target:
+                        require(raw == self.owner_raw and decode(raw) == owner.owner())
+                        owner.current_lock()
+                        durable_file(owner.manifest, target, 0o600, raw)
+                    self.owner_raw = target
+                    owner.save(coldRecovery=dict(recovery, phase='restoring'))
+                    owner.sync_evidence()
+                    self.boundary()
+                # Only the original app's gates are restored, its executable last; candidate and retained gates stay closed.
+                owner.apply_recovery(gates)
+                self.boundary()
+                owner.save(coldRecovery=dict(owner.journal['coldRecovery'], phase='recovered'))
+                owner.sync_evidence()
+                self.boundary()
+                return _cold_recovery_report(owner.journal['coldRecovery'])
+            except BaseException as failure:
+                self.poison(failure)
+                raise
+            finally: self.operating = False
+
         def require_worker_settled(self):
             if self.worker is None: return
             if self.failure is not None:
@@ -455,6 +562,8 @@ def _cold_owner_bindings():
             require(owner.journal['phase'] == 'armed')
             # A published handoff belongs to receiving-side recovery, never a fresh cold transaction.
             require('desktopHandoff' not in owner.journal)
+            # Completed recovery returns ownership to the original app; a later epoch may only continue an incomplete one.
+            require(owner.journal.get('coldRecovery', {}).get('phase') != 'recovered')
             boot = _cold_owner_boot(owner.verify())
             require(boot != _cold_owner_boot(owner.journal['armedBootSessionUuid']))
             previous = owner.journal.get('coldOwner')

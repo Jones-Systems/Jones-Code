@@ -543,7 +543,7 @@ class Maintenance:
         self.journal_raw = read_owned(self.directory / 'journal.json')
         self.journal = decode(self.journal_raw)
         journal_keys = {'schema', 'maintenanceGeneration', 'planSha256', 'phase', 'done', 'intent', 'armedBootSessionUuid', 'cancel'}
-        require(journal_keys <= set(self.journal) <= journal_keys | {'stateTransaction', 'coldOwner', 'desktopHandoff', 'desktopReceiver'})
+        require(journal_keys <= set(self.journal) <= journal_keys | {'stateTransaction', 'coldOwner', 'desktopHandoff', 'desktopReceiver', 'coldRecovery'})
         require(self.journal['schema'] == 1 and self.journal['maintenanceGeneration'] == pointer['generation'] and self.journal['planSha256'] == pointer['planSha256'] and self.journal['phase'] in PHASES)
         self.native = self.directory / 'tools/identity-native'
         self.bundle = self.plan['bundle']
@@ -575,6 +575,7 @@ class Maintenance:
             require(type(fence['schema']) is int and fence['schema'] == 1 and hex_value(fence['transactionId'], 64) and hex_value(fence['intentSha256'], 64))
         _validate_cold_handoff_cursor(self)
         _validate_cold_receiver_cursor(self)
+        _validate_cold_recovery_cursor(self)
         paths = [item['path'] for item in self.gates]
         if phase in ('cancel-owner-published', 'cancel-restoring', 'cancelled'):
             paths = sorted((item['path'] for item in self.gates if item['app'] == self.original['appPath']),
@@ -599,10 +600,46 @@ class Maintenance:
         return dict(self.original, owner='maintenance', generation=self.plan['maintenanceGeneration'],
                     maintenance={'schema': 1, 'planSha256': self.journal['planSha256']})
 
+    def recovery_gates(self):
+        # Post-state recovery restores only the original app, with its executable last.
+        canonical = sorted((item for item in self.gates if item['app'] == self.original['appPath']),
+                           key=lambda item: (item['path'] == self.original['executablePath'], item['path']))
+        require(canonical and canonical[-1]['path'] == self.original['executablePath'])
+        return canonical
+
+    def require_manifest(self, raw):
+        # A published recovery owner replaces the maintenance owner; before publication only the latter is current.
+        recovery = self.journal.get('coldRecovery')
+        if recovery is not None and raw == recovery['manifest'].encode(): return
+        require((recovery is None or recovery['phase'] == 'intent') and decode(raw) == self.owner())
+
+    def apply_recovery(self, items):
+        # Each restored mode is bracketed by a durable cursor; a completed path is never changed again.
+        for item in items:
+            recovery = self.journal['coldRecovery']
+            require(recovery['phase'] == 'restoring')
+            path = item['path']
+            if path in recovery['done']: continue
+            require(recovery['intent'] in (None, path))
+            self.save(coldRecovery=dict(recovery, intent=path))
+            self.gate(item, item['originalMode'])
+            recovery = self.journal['coldRecovery']
+            self.save(coldRecovery=dict(recovery, done=recovery['done'] + [path], intent=None))
+
     def modes(self):
         phase, done, intent = self.journal['phase'], self.journal['done'], self.journal['intent']
         cancelling = phase.startswith('cancel')
         result = {}
+        recovery = self.journal.get('coldRecovery')
+        if recovery is not None:
+            canonical = {item['path'] for item in self.recovery_gates()}
+            for item in self.gates:
+                path, old, gated = item['path'], item['originalMode'], item['gatedMode']
+                if path not in canonical: result[path] = (gated,)
+                elif path in recovery['done']: result[path] = (old,)
+                elif path == recovery['intent']: result[path] = (gated, old)
+                else: result[path] = (gated,)
+            return result
         for item in self.gates:
             path, old, gated = item['path'], item['originalMode'], item['gatedMode']
             if phase in ('cancel-owner-published', 'cancel-restoring', 'cancelled'):
@@ -638,7 +675,7 @@ class Maintenance:
             require(active == self.owner() or (phase == 'cancel-intent' and active_raw.decode() == self.plan['originalManifest']))
         elif phase in ('cancel-owner-published', 'cancel-restoring', 'cancelled'):
             require(active_raw.decode() == self.journal['cancel']['manifest'] or (phase == 'cancel-owner-published' and active == self.owner()))
-        else: require(active == self.owner())
+        else: self.require_manifest(active_raw)
         planned = {item['path']: item for item in self.plan['inventory']['objects']}
         _cold_receiver_files(self)
         receiver = self.journal['desktopHandoff']['desktop']['transactionId'] if 'desktopReceiver' in self.journal else None
@@ -713,6 +750,8 @@ class Maintenance:
         require(self.journal['phase'] == 'armed' and isinstance(self.journal['armedBootSessionUuid'], str))
         boot = self.verify()
         self.sync_evidence()
+        # Public reconciliation only reports recovery; continuing it requires a live cold-owner session.
+        if 'coldRecovery' in self.journal: return _cold_recovery_report(self.journal['coldRecovery'])
         if 'desktopReceiver' in self.journal:
             receiver = self.journal['desktopReceiver']
             return maintenance_report('receiver-prepared-held' if receiver['phase'] == 'prepared' else 'receiver-publication-held',
