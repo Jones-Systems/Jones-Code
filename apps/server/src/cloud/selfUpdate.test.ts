@@ -127,7 +127,22 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
     Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order)),
     Effect.provideService(HostProcess.Platform, "linux"),
     Effect.provideService(HostProcess.Architecture, "x64"),
-    Effect.provide(ServerConfig.layer({ ...config, mode: options.mode ?? "web" })),
+    Effect.provide(
+      Layer.mergeAll(
+        ServerConfig.layer({ ...config, mode: options.mode ?? "web" }),
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env:
+              options.releaseBaseUrl === null
+                ? {}
+                : {
+                    T3CODE_RELEASE_BASE_URL:
+                      options.releaseBaseUrl ?? "https://releases.example/download",
+                  },
+          }),
+        ),
+      ),
+    ),
   );
   return { selfUpdate, order };
 });
