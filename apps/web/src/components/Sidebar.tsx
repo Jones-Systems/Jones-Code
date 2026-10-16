@@ -118,7 +118,6 @@ import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
-  executeAtomQuery,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { isElectron } from "../env";
@@ -176,8 +175,6 @@ import {
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
 import { vcsEnvironment } from "../state/vcs";
-import { appAtomRegistry } from "../rpc/atomRegistry";
-import { orchestrationEnvironment } from "../state/orchestration";
 import { threadEnvironment } from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
 import { useThreadSearch } from "../state/queries";
@@ -198,7 +195,6 @@ import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import {
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
-  canStopThreadSession,
   threadActionRequiresOperate,
 } from "./threadActionMenu.logic";
 import {
@@ -4740,17 +4736,6 @@ export default function Sidebar() {
         const supportsTitleRegeneration =
           serverConfigs.get(thread.environmentId)?.environment.capabilities
             .threadTitleRegeneration === true;
-        const projection = await executeAtomQuery(
-          appAtomRegistry,
-          orchestrationEnvironment.v2.threadProjection({
-            environmentId: threadRef.environmentId,
-            input: { threadId: threadRef.threadId },
-          }),
-          { refresh: true, reportFailure: false },
-        );
-        const canStopSession = canStopThreadSession(
-          projection._tag === "Success" ? projection.value.providerSessions : null,
-        );
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
@@ -4786,7 +4771,6 @@ export default function Sidebar() {
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
-              canStopSession,
               supports: {
                 settlement: supportsSettlement,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -4852,7 +4836,6 @@ export default function Sidebar() {
             return;
           }
           case "stop-thread": {
-            if (!canStopSession) return;
             const result = await stopThreadSession({
               environmentId: threadRef.environmentId,
               input: { threadId: threadRef.threadId },
