@@ -730,7 +730,7 @@ function delegatedTaskTerminalStatus(
 function nextQueuedRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
 ): OrchestrationV2Run | undefined {
-  return queuedRunsInDeliveryOrder(projection)[0];
+  return queuedRunsInDeliveryOrder(projection).find((run) => run.queueHeld !== true);
 }
 
 function latestStableRun(
@@ -1448,9 +1448,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
-        projection.runs.some(isBlockingRun) ||
-        (options?.reviewed === undefined &&
-          projection.runs.some((run) => run.status === "queued" && run.queueHeld === true))
+        projection.runs.some(isBlockingRun)
       ) {
         return;
       }
@@ -1467,7 +1465,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (usageLimitBlockedRun(projection.runs, projection.turnItems, sessionError) !== null) {
         return;
       }
-      const queuedRun = nextQueuedRun(projection);
+      const queuedRun =
+        options?.reviewed === undefined
+          ? nextQueuedRun(projection)
+          : queuedRunsInDeliveryOrder(projection)[0];
       if (queuedRun === undefined) {
         return;
       }
@@ -5223,7 +5224,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {}
             : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible }),
           ...(projection.runs.some(
-            (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
+            (candidate) =>
+              candidate.status === "queued" &&
+              candidate.queueHeld === true &&
+              candidate.ordinal > activeRun.ordinal,
           )
             ? { queueHeld: true }
             : {}),

@@ -7,6 +7,9 @@
   },
   "baseline": "d720210996a514368ba99f4860063110033d93fa",
   "paths": {
+    "apps/server/src/jones/orchestration/QueueHold.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/RunCompletionReads.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/boundary/fragments/queue-hold-isolation.json": "jones-owned",
     "scripts/jones/boundary/fragments/environment-sidebar-filters.json": "jones-owned",
     "apps/server/src/jones/hostService/systemServiceControl.pl": "jones-owned",
     "apps/server/src/jones/hostService/systemServiceControl.ts": "jones-owned",
