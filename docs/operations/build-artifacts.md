@@ -2,7 +2,7 @@
 
 The **Linux CLI artifacts** workflow produces unsigned Linux x64 and arm64
 archives for a headless server trial. These are GitHub Actions artifacts retained
-for seven days. They are not GitHub Releases, package publications, or a deployed
+for 30 days. They are not GitHub Releases, package publications, or a deployed
 Jones-Code installation. Native GitHub-hosted Ubuntu 24.04 runners build each
 architecture; the minimum compatible Linux environment is not yet established.
 
@@ -84,7 +84,7 @@ scratch use the exact workspace directory `.artifact-cli-mac-scratch`; scoped
 script cleanup and the always-run job cleanup own removal, with disposable-runner
 teardown covering forced termination.
 
-Download the successful run's seven-day artifact into a new empty directory and
+Download the successful run's 30-day artifact into a new empty directory and
 verify it on a Mac:
 
 ```bash
