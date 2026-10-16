@@ -46,18 +46,113 @@ const same = NodeUtil.isDeepStrictEqual;
 // Reviewed receiver contract for the exact worker bytes pinned below, equal on hosted Ubuntu and Darwin.
 // Fixed failure phases use a private local registry and never serialize raw exceptions.
 // The lazy __esmMin initializer caches its result/error; __exportAll installs local getters.
-// Effect allocates local schemas/caches, inspects Error stacks and uses optional async_hooks.
-// Its scheduler/fiber effects are deferred to invocation. No external dynamic loader remains.
+// __commonJSMin/__toESM wrap only the bundled CommonJS extend package; require_extend() is
+// that local initializer call, never a module loader. Effect allocates local schemas/caches,
+// inspects Error stacks and uses optional async_hooks. Its scheduler/fiber effects are deferred
+// to invocation. Upstream nodeSqliteClient statically binds util and worker_threads, but
+// constructs reader/checkpoint Workers only for readerWorker/checkpointWorker options, which
+// the worker's sole layer({ filename, readonly }) call never sets. Upstream ThreadFind adds the
+// unified/remark pipeline: import builds in-memory processors; VFile, and its process.cwd()
+// read, exists only while thread search processes text, which preparation never invokes.
+// node:module and the self dynamic import are bundler metadata, not emitted loading.
 // Native worker dispatch separately requires SEA/Node 26.8.2/Darwin arm64 and inherited owner
 // descriptors before bounded IPC, retained SQLite scopes and CLOSED_RESULT. This policy gives
 // the worker no producer download, child-process, tool, cold-owner, activation or state admission.
+const workerImport = (
+  kind: "static" | "process-builtin" | "require",
+  specifier: string | null,
+  expressionSha256: string,
+) => ({
+  kind,
+  specifier,
+  computed: specifier === null,
+  builtin: specifier !== null,
+  expressionSha256,
+});
+const asyncHooksImport = workerImport(
+  "process-builtin",
+  "node:async_hooks",
+  "d64bd1adb71bdcc572de3468d66276ee84b3df3e7df69858acd26bde23a60ddb",
+);
 const workerPolicy = {
-  schema: "jones.preparation-worker-policy/v1",
+  schema: "jones.preparation-worker-policy/v2",
   entry: {
-    sha256: "245c7f2cf7453e85030e5994c4a0924b4a37e3d4a8eff7244a4c4bfe75d55018",
-    size: 1888482,
+    sha256: "a41837a91273e190b79ac517ff9442dd9222a43941eb89725883a27891f0ef7a",
+    size: 2965421,
   },
-  staticImports: [
+  // Exact syntax records in emitted order; each hash binds one reviewed source expression.
+  imports: [
+    workerImport(
+      "static",
+      "node:fs",
+      "b6471bb6742ff95f8b90244d773ca1c10cc1db5944b113871b5a68c8cbb7d5f7",
+    ),
+    workerImport(
+      "static",
+      "node:fs/promises",
+      "1f29457074f2f8d43846ad4a6d8ed6be9ef55c3ec889034c42124eece4c51ca9",
+    ),
+    workerImport(
+      "static",
+      "node:crypto",
+      "68ea541bde6e48ae4d48e87096319c19cb79eff795f410e570728487674bfc30",
+    ),
+    workerImport(
+      "static",
+      "node:path",
+      "9bdcd607570c70a7543e1c3e6960556cc1cd881e04f742ba1df616cdd1af45a5",
+    ),
+    workerImport(
+      "static",
+      "node:path",
+      "4640f7f903e0f3b35bbfb2245c2e02ff59c9da4552512bcd105e55de7bdde77c",
+    ),
+    workerImport(
+      "static",
+      "node:sea",
+      "598d1644c9184ec281b26857374b87c2584583cdb661aa37d865d659f3782cca",
+    ),
+    workerImport(
+      "static",
+      "node:url",
+      "945f2c2f0419c74ddaefb5d7910178df8de728174d3b31c98a1b5dedb5f05efb",
+    ),
+    workerImport(
+      "static",
+      "node:url",
+      "abfa2dd0cf2eaa2177cdf7efbbd423ec718fedbe133c8eb9c8730e82a358401b",
+    ),
+    workerImport(
+      "static",
+      "node:sqlite",
+      "2bd5504e1d0bb27346554ed60f076385cb4382e78c43a191bf44f3ca1ab93154",
+    ),
+    workerImport(
+      "static",
+      "node:util",
+      "a138b11f80981629c94d05920e4c2e87f7d8c56dc577c4daaf6301e1ab935ee9",
+    ),
+    workerImport(
+      "static",
+      "node:worker_threads",
+      "57702c143ca0016269f6a75a49258b783d817f1f9e106e5f3d644f934bf7f743",
+    ),
+    workerImport(
+      "static",
+      "node:process",
+      "2de05ae74318d70e976279b10d352685d0a77c26ae477e009ebb6390b452eda1",
+    ),
+    asyncHooksImport,
+    // sha256("require_extend()"): the bundler-local CommonJS initializer, not a computed loader.
+    workerImport(
+      "require",
+      null,
+      "08c78723a6d6d64cbdf26ff77b54a66ef44596967d50811517d940773f4266b6",
+    ),
+  ],
+  // Bundler-reported imports; node:module and the self import are metadata-only evidence.
+  bundlerImports: [
+    "node:module",
     "node:fs",
     "node:fs/promises",
     "node:crypto",
@@ -65,16 +160,61 @@ const workerPolicy = {
     "node:sea",
     "node:url",
     "node:sqlite",
+    "node:util",
+    "node:worker_threads",
+    "node:process",
   ],
-  optionalBuiltin: "node:async_hooks",
+  bundlerDynamicImports: ["offlinePreparationEntry.mjs"],
+  staticEvidence: {
+    emitted: [
+      "node:crypto",
+      "node:fs",
+      "node:fs/promises",
+      "node:path",
+      "node:process",
+      "node:sea",
+      "node:sqlite",
+      "node:url",
+      "node:util",
+      "node:worker_threads",
+    ],
+    reported: [
+      "node:crypto",
+      "node:fs",
+      "node:fs/promises",
+      "node:module",
+      "node:path",
+      "node:process",
+      "node:sea",
+      "node:sqlite",
+      "node:url",
+      "node:util",
+      "node:worker_threads",
+    ],
+    metadataOnly: ["node:module"],
+    syntaxOnly: [],
+  },
+  dynamicEvidence: {
+    emitted: [],
+    reported: ["offlinePreparationEntry.mjs"],
+    metadataOnly: ["offlinePreparationEntry.mjs"],
+    syntaxOnly: [],
+  },
+  processBuiltinCalls: [asyncHooksImport],
   generatedRuntime: {
-    sha256: "d0cade7c803777eac7670c49f9841f6991e8089cea038bcfc91f1fd8b4523e09",
-    startByte: 311,
-    endByte: 771,
+    sha256: "12e51bf9c791c00b848088823f4f70e11310a9a7ba55d0cf2a74d9daa57119be",
+    startByte: 532,
+    endByte: 2070,
   },
   receiver: "inherited-native-owner-before-sqlite-and-ipc;closed-result-after-scope-close",
-  initializers:
-    "local-schema-cache-stack-detection;deferred-fiber-scheduler;fixed-optional-async-hooks",
+  initializers: [
+    "local-schema-cache-stack-detection",
+    "deferred-fiber-scheduler",
+    "fixed-optional-async-hooks",
+    "local-commonjs-extend",
+    "in-memory-markdown-processors",
+  ],
+  workerThreads: "imported-never-constructed-without-reader-or-checkpoint-option",
   externalDynamicImports: false,
   producerPermissions: false,
   nativeColdOwnerQualified: false,
@@ -206,28 +346,32 @@ export function verifyFunctionalPreparationGraph(input: {
     emitted.mapPresent !== false ||
     !same(emitted.assets, []) ||
     !same(emitted.files, [{ fileName: "offlinePreparationEntry.mjs", ...workerPolicy.entry }]) ||
+    !same(emitted.imports, workerPolicy.bundlerImports) ||
+    !same(emitted.dynamicImports, workerPolicy.bundlerDynamicImports) ||
     !Array.isArray(imports) ||
-    imports.length !== 8
+    imports.length !== workerPolicy.imports.length
   )
     throw new Error("Preparation emitted inventory differs from the reviewed worker.");
+  // Each record must equal its reviewed expression exactly; no other computed loader is admitted.
   for (const [index, item] of imports.entries()) {
-    const observed = record(item);
-    if (
-      observed.kind !== (index < 7 ? "static" : "process-builtin") ||
-      observed.specifier !==
-        (index < 7 ? workerPolicy.staticImports[index] : workerPolicy.optionalBuiltin) ||
-      observed.computed !== false ||
-      observed.builtin !== true
-    )
+    if (!same(record(item), workerPolicy.imports[index]))
       throw new Error("Preparation import inventory differs from the reviewed worker.");
   }
   // Metadata-only node:module and self-import are recorded discrepancies, never runtime permission.
   const evidence = record(emitted.importEvidence);
   if (
-    !same(record(evidence.static).emitted, [...workerPolicy.staticImports].sort()) ||
-    !same(record(evidence.static).metadataOnly, ["node:module"]) ||
-    !same(record(evidence.dynamic).emitted, []) ||
-    !same(record(evidence.dynamic).metadataOnly, ["offlinePreparationEntry.mjs"])
+    !same(Object.keys(evidence).sort(), [
+      "dynamic",
+      "processBuiltinCalls",
+      "qualification",
+      "static",
+      "syntax",
+    ]) ||
+    evidence.qualification !== "unqualified" ||
+    !same(evidence.syntax, syntax) ||
+    !same(evidence.static, workerPolicy.staticEvidence) ||
+    !same(evidence.dynamic, workerPolicy.dynamicEvidence) ||
+    !same(evidence.processBuiltinCalls, workerPolicy.processBuiltinCalls)
   )
     throw new Error("Preparation import evidence differs from the reviewed worker.");
   const runtime = record(emitted.generatedRuntime),
@@ -237,7 +381,7 @@ export function verifyFunctionalPreparationGraph(input: {
     runtime.evidence !== "emitted-top-level-region" ||
     runtime.startByte !== expectedRuntime.startByte ||
     runtime.endByte !== expectedRuntime.endByte ||
-    runtime.size !== 460 ||
+    runtime.size !== expectedRuntime.endByte - expectedRuntime.startByte ||
     runtime.sha256 !== expectedRuntime.sha256 ||
     digest(input.entryBytes.subarray(expectedRuntime.startByte, expectedRuntime.endByte)) !==
       expectedRuntime.sha256

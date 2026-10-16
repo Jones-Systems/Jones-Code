@@ -148,7 +148,7 @@ async function prepareLocalFleetCampaign(
       "The staged desktop source is unavailable; enrolled updates cannot be prepared.",
     );
   const campaignId = await runtime.runPromise(
-    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4)),
+    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
   );
   const prepared = await bridge.fleetUpdates({
     action: "prepare",

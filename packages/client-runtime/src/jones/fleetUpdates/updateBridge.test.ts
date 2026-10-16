@@ -217,12 +217,16 @@ describe("qualified update-only connection", () => {
           authorization: "DPoP synthetic-relay-token",
         })),
       );
+      // The signer receives each exact request URL; its proof claim omits the cursor query.
       expect(proofs).toEqual(
-        Array(3).fill({
+        ["", "?after=0", "?after=7"].map((query) => ({
           method: "GET",
-          url: "https://updates.example.test/api/jones-updates",
+          url: `https://updates.example.test/api/jones-updates${query}`,
           accessToken: "synthetic-relay-token",
-        }),
+        })),
+      );
+      expect(proofs.map((proof) => normalizeDpopHtu(proof.url))).toEqual(
+        Array(3).fill("https://updates.example.test/api/jones-updates"),
       );
       expect(authorizations).toEqual(
         Array(3).fill({ expectedEnvironmentId: target.environmentId }),

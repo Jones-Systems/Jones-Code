@@ -1,4 +1,6 @@
 import { FleetDesktopState } from "@t3tools/contracts/jones/fleet-updates";
+import type * as CryptoTypes from "effect/Crypto";
+import type * as EffectTypes from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -20,9 +22,21 @@ import {
 
 const toast = vi.hoisted(() => ({ add: vi.fn() }));
 vi.mock("../../components/ui/toast", () => ({ toastManager: toast }));
-vi.mock("../../lib/runtime", () => ({
-  runtime: { runPromise: vi.fn(async () => "33333333-3333-4333-8333-333333333333") },
-}));
+vi.mock("../../lib/runtime", async () => {
+  const Crypto = await import("effect/Crypto");
+  const Effect = await import("effect/Effect");
+  // Run the caller's real Crypto pipeline so a non-Effect identifier step fails here.
+  const crypto = Crypto.make({
+    randomBytes: (size) => new Uint8Array(size).fill(0x33),
+    digest: (_algorithm, data) => Effect.succeed(data),
+  });
+  return {
+    runtime: {
+      runPromise: <A, E>(effect: EffectTypes.Effect<A, E, CryptoTypes.Crypto>) =>
+        Effect.runPromise(Effect.provideService(effect, Crypto.Crypto, crypto)),
+    },
+  };
+});
 
 const downloaded: DesktopUpdateState = {
   enabled: true,
@@ -204,6 +218,7 @@ describe("Jones local desktop update UI", () => {
       targetSource: "a".repeat(40),
       desktopStagedHandle: "downloaded-1.1.0",
     });
+    expect(prepare.input.campaignId).toMatch(/^33333333-3333-4333-[89ab]333-333333333333$/);
     expect(bridge.installUpdate).toHaveBeenCalledExactlyOnceWith(
       "downloaded-1.1.0",
       prepare.input.campaignId,
