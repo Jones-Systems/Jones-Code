@@ -262,7 +262,7 @@ const reviewedRawSources = {
   "scripts/jones/updates/legacy-preparation-native-fixture.d.mts":
     "6d0d5a36bfa5ea815af8b13c8f432a6ec61d2ffb04c0d1579a5d5ca9cb852043",
   "scripts/jones/updates/legacy-preparation-native-fixture.mjs":
-    "f7ec2ae82484edde361ec263552b55bf87cc0700d920f95e83b76bccdc521d87",
+    "d43e1527d749df5e19730e145a13d75898c47c0172dff9c2e700e22c8c555f92",
   "scripts/jones/updates/offline-preparation-build.ts":
     "59e1eec050703a29cb4b4637202f4868e84aafccf8aad80e0cde05702dc0de9e",
   "scripts/jones/updates/offline-preparation-producer-entry.ts":
@@ -468,7 +468,7 @@ const reviewedImports = [
   },
 ];
 const reviewedLateModulesSha256 =
-  "a3cd52589b03ddf03e12033ea1019cc85540179867c1bfb203fd416e20e1601b";
+  "4d04c5ad32d82c20c1f9150834d41261ae6ab1b7035c225042018d98d0336378";
 
 function requireProducerExecutionContract(capture) {
   const report = capture.report.document;
