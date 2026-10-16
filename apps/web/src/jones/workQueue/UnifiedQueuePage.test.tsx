@@ -21,6 +21,7 @@ const fixture = vi.hoisted(() => ({
       serverConfig: { environment: { capabilities: { workQueueMetadata: true } } },
     },
   ],
+  voiceList: vi.fn(),
   recent: null as VoiceReviewRecentList | null,
   mounts: new Map<string, number>(),
   blockerOptions: null as null | {
@@ -47,6 +48,9 @@ vi.mock("../../components/ui/sidebar", () => ({
   SidebarInset: ({ children }: { children: ReactNode }) => <main>{children}</main>,
 }));
 vi.mock("./useWorkQueueMetadata", () => ({ useWorkQueueMetadata: () => fixture.load }));
+vi.mock("../../components/voiceReview/useVoiceReview", () => ({
+  useVoiceReview: () => ({ fetchList: fixture.voiceList }),
+}));
 vi.mock("../../components/voiceReview/VoiceReviewPage", () => ({
   EnvironmentVoiceReview: ({
     environmentId,
@@ -113,6 +117,7 @@ describe("Prompts environment composition", () => {
     originals = structuredClone(fixture.environments);
     fixture.mounts.clear();
     fixture.recent = null;
+    fixture.voiceList.mockReset().mockResolvedValue({ drafts: [] });
     fixture.blockerStatus = "idle";
     fixture.blockerOptions = null;
     fixture.load
@@ -187,11 +192,28 @@ describe("Prompts environment composition", () => {
     });
   }
 
+  it("shows one configured source across all stages without offering unconfigured servers", async () => {
+    fixture.environments[0]!.label = "VPS";
+    fixture.environments[1]!.label = "Mac Mini";
+    fixture.voiceList
+      .mockResolvedValueOnce({ drafts: [] })
+      .mockRejectedValueOnce({ _tag: "VoiceReviewNotConfiguredError" });
+    await render();
+    expect(groups()).toEqual(["VPS prompts"]);
+    expect(container.querySelector('[aria-label="Prompts environment"]')).toBeNull();
+    expect(container.textContent).not.toContain("Mac Mini");
+    for (const stage of ["Queued", "Sent", "Pending"]) {
+      await click(stage);
+      expect(groups()).toEqual(["VPS prompts"]);
+      expect(container.textContent).not.toContain("Mac Mini");
+    }
+  });
+
   it("defaults to All and groups environments across All → single → All without remounting the retained editor", async () => {
     await render();
     expect(groups()).toEqual(["Alpha prompts", "Beta prompts"]);
     expect(container.querySelector("header")!.textContent).toContain(
-      "Prompts/All environmentsPendingQueuedSent",
+      "Prompts/All prompt sourcesPendingQueuedSent",
     );
     expect(
       container.querySelector('header [data-slot="toggle-group"]')?.getAttribute("data-size"),
@@ -200,7 +222,7 @@ describe("Prompts environment composition", () => {
     await scope("Alpha");
     expect(groups()).toEqual(["Alpha prompts"]);
     expect(editor("alpha")).toBe(alpha);
-    await scope("All environments");
+    await scope("All prompt sources");
     expect(groups()).toEqual(["Alpha prompts", "Beta prompts"]);
     expect(editor("alpha")).toBe(alpha);
     expect(fixture.mounts.get("alpha")).toBe(1);
@@ -214,7 +236,7 @@ describe("Prompts environment composition", () => {
     expect(container.textContent).not.toContain("Leave Prompts?");
     expect(editor("alpha").value).toBe("Keep Alpha text");
     expect(fixture.blockerOptions!.enableBeforeUnload()).toBe(true);
-    await scope("All environments");
+    await scope("All prompt sources");
     expect(editor("alpha").value).toBe("Keep Alpha text");
     expect(fixture.blockerOptions!.shouldBlockFn()).toBe(true);
   });
@@ -235,7 +257,7 @@ describe("Prompts environment composition", () => {
     expect(editor("alpha")).toBe(alpha);
     expect(editor("alpha").value).toBe("Alpha draft");
     expect(fixture.blockerOptions!.shouldBlockFn()).toBe(true);
-    await scope("All environments");
+    await scope("All prompt sources");
     expect(editor("beta").value).toBe("");
     expect(editor("alpha").value).toBe("Alpha draft");
   });
@@ -394,44 +416,64 @@ describe("Prompts environment composition", () => {
     expect(container.textContent).toContain("Sent history is unavailable");
   });
 
-  it("keeps healthy content usable beside disconnected, disabled and unsupported environments", async () => {
+  it("keeps a discovered source visible and its editor disabled after disconnect", async () => {
+    await render();
     fixture.environments[1]!.connection.phase = "disconnected";
-    fixture.environments.push(
-      {
-        ...structuredClone(fixture.environments[0]!),
-        environmentId: "disabled",
-        label: "Disabled",
-        entry: { enabled: false },
-      },
-      {
-        ...structuredClone(fixture.environments[0]!),
-        environmentId: "unsupported",
-        label: "Unsupported",
-        serverConfig: { environment: { capabilities: { workQueueMetadata: false } } },
-      },
-    );
     await render();
     expect(editor("alpha").disabled).toBe(false);
     expect(editor("beta").disabled).toBe(true);
-    const beta = container.querySelector('[aria-label="Beta prompts"]')!;
-    expect(beta.textContent).toContain("This environment is disconnected");
-    expect(container.querySelector('[aria-label="Disabled prompts"]')!.textContent).toContain(
-      "This environment is disabled",
+    expect(container.querySelector('[aria-label="Beta prompts"]')!.textContent).toContain(
+      "This environment is disconnected",
     );
+  });
+
+  it("retains read failures as unknown and allows retry to discover a configured source", async () => {
+    fixture.voiceList.mockRejectedValue({ _tag: "VoiceReviewForbiddenError" });
+    fixture.load.mockRejectedValue(new Error("Offline"));
+    await render();
+    expect(groups()).toEqual([]);
+    expect(container.textContent).toContain("Could not check prompt sources on Alpha");
+    expect(container.textContent).not.toContain("No prompt sources configured");
+    fixture.voiceList.mockResolvedValue({ drafts: [] });
+    await click("Retry sources");
+    expect(groups()).toEqual(["Alpha prompts", "Beta prompts"]);
+  });
+
+  it("shows an empty state only after every source explicitly reports absence", async () => {
+    fixture.voiceList.mockRejectedValue({ _tag: "VoiceReviewNotConfiguredError" });
+    await render();
+    expect(groups()).toEqual([]);
+    expect(container.textContent).toContain("No prompt sources configured");
+    expect(container.textContent).not.toContain("Alpha");
+    expect(container.querySelector('[aria-label="Prompts environment"]')).toBeNull();
+  });
+
+  it("keeps a configured queue visible when its sample cannot be read", async () => {
+    fixture.voiceList.mockRejectedValue({ _tag: "VoiceReviewNotConfiguredError" });
+    fixture.load.mockResolvedValue({ status: "unavailable", reason: "source_unavailable" });
+    await render();
+    expect(groups()).toEqual(["Alpha prompts", "Beta prompts"]);
     await click("Queued");
-    expect(container.querySelector('[aria-label="Unsupported prompts"]')!.textContent).toContain(
-      "Queue metadata unsupported",
+    expect(container.textContent).toContain("the source cannot be read");
+  });
+
+  it("does not mistake an undiscovered disconnected server for an absent source", async () => {
+    fixture.environments[1]!.connection.phase = "disconnected";
+    await render();
+    expect(groups()).toEqual(["Alpha prompts"]);
+    expect(container.textContent).toContain(
+      "Cannot check prompt sources on Beta: server disconnected",
     );
-    expect(container.querySelector('[aria-label="Alpha prompts"]')!.textContent).toContain(
-      "not configured",
-    );
-    expect(fixture.load).toHaveBeenCalledTimes(1);
+    expect(fixture.voiceList).toHaveBeenCalledTimes(1);
+    fixture.environments[1]!.connection.phase = "connected";
+    await render();
+    expect(groups()).toEqual(["Alpha prompts", "Beta prompts"]);
   });
 
   it("distinguishes an empty environment catalog from an unavailable connection", async () => {
     fixture.environments = [];
     await render();
-    expect(container.textContent).toContain("No environments configured.");
+    expect(container.textContent).toContain("No prompt sources configured.");
     expect(groups()).toEqual([]);
     expect(fixture.load).not.toHaveBeenCalled();
   });

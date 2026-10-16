@@ -700,10 +700,9 @@ describe("submitted work page integration", () => {
       expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
       expect(mutate).toHaveBeenCalledTimes(1);
       expect(load).toHaveBeenCalledTimes(supported ? 1 : 0);
-      expect(container.querySelector('[aria-label="Queue metadata"]') !== null).toBe(supported);
-      expect(container.textContent).toContain(
-        supported ? "not configured" : "Queue metadata unsupported by this environment",
-      );
+      expect(container.querySelector('[aria-label="Queue metadata"]')).toBeNull();
+      expect(container.textContent).not.toContain("Queue metadata unsupported");
+      expect(container.querySelector('[aria-label="Prompts environment"]')).toBeNull();
       await act(() => {
         environmentSnapshot = {
           environments: [

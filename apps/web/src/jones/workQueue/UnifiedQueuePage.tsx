@@ -31,6 +31,7 @@ import { WorkQueueMetadataPanel } from "./WorkQueueMetadataPanel";
 import { classifySentPrompts } from "./classifySentPrompts";
 import { SentPrompts } from "./SentPrompts";
 import { useWorkQueueMetadata } from "./useWorkQueueMetadata";
+import { useVoiceReview } from "../../components/voiceReview/useVoiceReview";
 
 export type PromptQueueView = "pending" | "queued" | "sent";
 const views = ["pending", "queued", "sent"] as const;
@@ -38,14 +39,36 @@ const views = ["pending", "queued", "sent"] as const;
 export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: PromptQueueView }) {
   const { environments } = useEnvironments();
   const [requestedId, setRequestedId] = useState<EnvironmentId | null>(null);
-  const selected = environments.filter(
-    (environment) => requestedId === null || environment.environmentId === requestedId,
+  const [sources, setSources] = useState<ReadonlyMap<EnvironmentId, PromptSources>>(
+    () => new Map(),
   );
+  const [sourceRevision, setSourceRevision] = useState(0);
+  const reportSources = useCallback((environmentId: EnvironmentId, result: PromptSources) => {
+    setSources((current) => new Map(current).set(environmentId, result));
+  }, []);
   const [pane, setPane] = useState<PromptQueueView>(defaultView);
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
   const [dirtyEnvironments, setDirtyEnvironments] = useState<ReadonlySet<EnvironmentId>>(
     () => new Set(),
   );
+  const configured = environments.filter((environment) => {
+    const source = sources.get(environment.environmentId);
+    return (
+      source?.voice === "configured" ||
+      source?.queue === "configured" ||
+      dirtyEnvironments.has(environment.environmentId)
+    );
+  });
+  const selected = configured.filter(
+    (environment) => requestedId === null || environment.environmentId === requestedId,
+  );
+  const unresolved = environments.filter((environment) => {
+    const source = sources.get(environment.environmentId);
+    return (
+      !configured.includes(environment) &&
+      (!source || source.voice === "unknown" || source.queue === "unknown" || source.checking)
+    );
+  });
   const reportDirty = useCallback((environmentId: EnvironmentId, dirty: boolean) => {
     setDirtyEnvironments((current) => {
       if (current.has(environmentId) === dirty) return current;
@@ -86,45 +109,49 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
           <WorkspaceBreadcrumbItem>
             <h1>Prompts</h1>
           </WorkspaceBreadcrumbItem>
-          <WorkspaceBreadcrumbSeparator />
+          {configured.length > 0 ? <WorkspaceBreadcrumbSeparator /> : null}
           <WorkspaceBreadcrumbItem current className="min-w-10">
-            <Menu>
-              <MenuTrigger
-                render={<InlineButton />}
-                aria-label="Prompts environment"
-                className="group/prompts-environment min-w-0 max-w-full"
-              >
-                <span className="min-w-0 truncate">
-                  {requestedId === null
-                    ? "All environments"
-                    : (selected[0]?.label ?? "Unavailable")}
-                </span>
-                <ChevronDownIcon
-                  className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/prompts-environment:opacity-100 group-focus-visible/prompts-environment:opacity-100 group-data-popup-open/prompts-environment:opacity-100"
-                  aria-hidden
-                />
-              </MenuTrigger>
-              <MenuPopup align="start">
-                <MenuCheckboxItem
-                  checked={requestedId === null}
-                  closeOnClick
-                  onClick={() => changeEnvironment(null)}
+            {configured.length === 1 && requestedId === null ? (
+              <span className="truncate">{configured[0]!.label}</span>
+            ) : configured.length > 1 || requestedId !== null ? (
+              <Menu>
+                <MenuTrigger
+                  render={<InlineButton />}
+                  aria-label="Prompts environment"
+                  className="group/prompts-environment min-w-0 max-w-full"
                 >
-                  All environments
-                </MenuCheckboxItem>
-                <MenuSeparator />
-                {environments.map((environment) => (
+                  <span className="min-w-0 truncate">
+                    {requestedId === null
+                      ? "All prompt sources"
+                      : (selected[0]?.label ?? "Unavailable")}
+                  </span>
+                  <ChevronDownIcon
+                    className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/prompts-environment:opacity-100 group-focus-visible/prompts-environment:opacity-100 group-data-popup-open/prompts-environment:opacity-100"
+                    aria-hidden
+                  />
+                </MenuTrigger>
+                <MenuPopup align="start">
                   <MenuCheckboxItem
-                    key={environment.environmentId}
-                    checked={requestedId === environment.environmentId}
+                    checked={requestedId === null}
                     closeOnClick
-                    onClick={() => changeEnvironment(environment.environmentId)}
+                    onClick={() => changeEnvironment(null)}
                   >
-                    {environment.label}
+                    All prompt sources
                   </MenuCheckboxItem>
-                ))}
-              </MenuPopup>
-            </Menu>
+                  <MenuSeparator />
+                  {configured.map((environment) => (
+                    <MenuCheckboxItem
+                      key={environment.environmentId}
+                      checked={requestedId === environment.environmentId}
+                      closeOnClick
+                      onClick={() => changeEnvironment(environment.environmentId)}
+                    >
+                      {environment.label}
+                    </MenuCheckboxItem>
+                  ))}
+                </MenuPopup>
+              </Menu>
+            ) : null}
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
         <ToggleGroup
@@ -172,6 +199,41 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
       </WorkspacePageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <WorkspacePageContainer width="expanded">
+          {environments.map((environment) => (
+            <PromptSourceDiscovery
+              key={environment.environmentId}
+              environment={environment}
+              revision={sourceRevision}
+              onChange={reportSources}
+            />
+          ))}
+          {configured.length > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Prompts are stored on their source server and accessible from any connected device.
+            </p>
+          ) : null}
+          {unresolved.length > 0 ? (
+            <div role="status" className="space-y-2 text-sm text-muted-foreground">
+              {unresolved.map((environment) => (
+                <p key={environment.environmentId}>
+                  {sources.get(environment.environmentId)?.checking
+                    ? `Checking prompt sources on ${environment.label}…`
+                    : !environment.entry.enabled
+                      ? `Cannot check prompt sources on ${environment.label}: server disabled.`
+                      : environment.connection.phase !== "connected"
+                        ? `Cannot check prompt sources on ${environment.label}: server disconnected.`
+                        : `Could not check prompt sources on ${environment.label}.`}
+                </p>
+              ))}
+              <Button
+                variant="outline"
+                size="compact"
+                onClick={() => setSourceRevision((value) => value + 1)}
+              >
+                Retry sources
+              </Button>
+            </div>
+          ) : null}
           {blocker.status === "blocked" || pendingScope !== null ? (
             <Alert variant="warning">
               <AlertTitle>Leave Prompts?</AlertTitle>
@@ -213,9 +275,11 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
           >
             {selected.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                {environments.length === 0
-                  ? "No environments configured."
-                  : "The selected environment is unavailable."}
+                {requestedId !== null
+                  ? "The selected prompt source is unavailable. Choose another source."
+                  : unresolved.length > 0
+                    ? "Prompt sources have not all been checked."
+                    : "No prompt sources configured. Connect to the server that hosts your queue or prompt review."}
               </p>
             ) : (
               selected.map((environment) => (
@@ -223,7 +287,9 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
                   key={environment.environmentId}
                   environment={environment}
                   pane={pane}
-                  grouped={requestedId === null}
+                  grouped={requestedId === null && configured.length > 1}
+                  sources={sources.get(environment.environmentId)!}
+                  preserveEditor={dirtyEnvironments.has(environment.environmentId)}
                   onDirtyChange={reportDirty}
                 />
               ))
@@ -239,11 +305,15 @@ function EnvironmentPrompts({
   environment,
   pane,
   grouped,
+  sources,
+  preserveEditor,
   onDirtyChange,
 }: {
   environment: EnvironmentPresentation;
   pane: PromptQueueView;
   grouped: boolean;
+  sources: PromptSources;
+  preserveEditor: boolean;
   onDirtyChange: (environmentId: EnvironmentId, dirty: boolean) => void;
 }) {
   const { environmentId } = environment;
@@ -278,21 +348,22 @@ function EnvironmentPrompts({
           This environment is disconnected. Previously observed prompts may be stale.
         </p>
       ) : null}
-      <EnvironmentVoiceReview
-        environmentId={environmentId}
-        pane={pane}
-        onDirtyChange={reportDirty}
-        unavailable={unavailable}
-        onRecentChange={setRecent}
-        queuedEntriesOverride={classified.remainingVoice}
-      />
+      {sources.voice !== "absent" || preserveEditor ? (
+        <EnvironmentVoiceReview
+          environmentId={environmentId}
+          pane={pane}
+          onDirtyChange={reportDirty}
+          unavailable={unavailable}
+          onRecentChange={setRecent}
+          queuedEntriesOverride={classified.remainingVoice}
+        />
+      ) : pane === "pending" ? (
+        <p className="text-sm text-muted-foreground">
+          No pending prompt review configured on this source.
+        </p>
+      ) : null}
       <div hidden={pane !== "queued"}>
-        {unavailable ? null : environment.serverConfig?.environment.capabilities
-            .workQueueMetadata !== true ? (
-          <p className="text-sm text-muted-foreground">
-            Queue metadata unsupported by this environment.
-          </p>
-        ) : (
+        {unavailable || sources.queue === "absent" ? null : (
           <EnvironmentWorkQueue
             environmentId={environmentId}
             onResult={setMetadata}
@@ -376,4 +447,81 @@ export function PromptQueueSettingsStatus({
       </WorkspacePageContainer>
     </SidebarInset>
   );
+}
+
+type SourcePresence = "configured" | "absent" | "unknown";
+type PromptSources = {
+  voice: SourcePresence;
+  queue: SourcePresence;
+  checking: boolean;
+};
+
+function PromptSourceDiscovery({
+  environment,
+  revision,
+  onChange,
+}: {
+  environment: EnvironmentPresentation;
+  revision: number;
+  onChange: (environmentId: EnvironmentId, sources: PromptSources) => void;
+}) {
+  const { environmentId } = environment;
+  const { fetchList } = useVoiceReview(environmentId);
+  const loadQueue = useWorkQueueMetadata(environmentId);
+  const connected = environment.entry.enabled && environment.connection.phase === "connected";
+  const supportsQueue =
+    environment.serverConfig?.environment.capabilities.workQueueMetadata === true;
+  const requestKey = `${connected}:${supportsQueue}:${revision}`;
+  const [sources, setSources] = useState<{
+    voice: SourcePresence;
+    queue: SourcePresence;
+    observedFor: string | null;
+  }>({
+    voice: "unknown",
+    queue: "unknown",
+    observedFor: null,
+  });
+
+  useEffect(
+    () =>
+      onChange(environmentId, {
+        voice: sources.voice,
+        queue: sources.queue,
+        checking: connected && sources.observedFor !== requestKey,
+      }),
+    [connected, environmentId, onChange, requestKey, sources],
+  );
+  useEffect(() => {
+    if (!connected) return;
+    const controller = new AbortController();
+    void Promise.allSettled([
+      fetchList("pending"),
+      supportsQueue
+        ? loadQueue(controller.signal)
+        : Promise.resolve({ status: "unconfigured" } as const),
+    ]).then(([voice, queue]) => {
+      if (controller.signal.aborted) return;
+      setSources((current) => ({
+        voice:
+          voice.status === "fulfilled"
+            ? "configured"
+            : voice.reason?._tag === "VoiceReviewNotConfiguredError"
+              ? "absent"
+              : current.voice === "configured"
+                ? "configured"
+                : "unknown",
+        queue:
+          queue.status === "fulfilled"
+            ? queue.value.status === "unconfigured"
+              ? "absent"
+              : "configured"
+            : current.queue === "configured"
+              ? "configured"
+              : "unknown",
+        observedFor: requestKey,
+      }));
+    });
+    return () => controller.abort();
+  }, [connected, fetchList, loadQueue, requestKey, supportsQueue]);
+  return null;
 }
