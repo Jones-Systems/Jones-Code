@@ -17,13 +17,14 @@
     {
       "id": "jones-remote-host-status",
       "tests": [
+        "apps/server/src/hostStatus/gateway.test.ts",
         "apps/web/src/hostStatus.test.ts",
         "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
         "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/hostStatus.test.ts apps/web/src/components/chat/HostStatusIndicators.test.tsx apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts"
+        "vp test run apps/server/src/hostStatus/gateway.test.ts apps/web/src/hostStatus.test.ts apps/web/src/components/chat/HostStatusIndicators.test.tsx apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts"
       ]
     },
     {
@@ -1049,6 +1050,24 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp lint packages/client-runtime/src/rpc/session.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-queue-hold-isolation",
+      "tests": [
+        "apps/server/src/jones/orchestration/QueueHold.test.ts",
+        "apps/server/src/orchestration-v2/RunCompletionReads.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/orchestration-v2/QueuedRunOrder.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/orchestration/Orchestrator.control-reads.jones.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts",
+        "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/QueueHold.test.ts apps/server/src/orchestration-v2/RunCompletionReads.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/jones/orchestration/Orchestrator.control-reads.jones.test.ts apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts --maxWorkers=1"
       ]
     }
   ]
