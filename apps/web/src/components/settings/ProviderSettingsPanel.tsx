@@ -1,4 +1,5 @@
 import { SettingsGroup } from "./SettingsGroup";
+import { ProviderOrderControls } from "~/jones/settings/ProviderOrderControls";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
   AuthSettingsWriteScope,
@@ -1227,7 +1228,14 @@ export function EnvironmentProviderSettings({
           <div className="min-w-0 @min-[48rem]/providers:min-h-0">
             {selectedRow ? (
               <ScrollArea scrollFade chainVerticalScroll className="@min-[48rem]/providers:h-full">
-                <div className="space-y-6 p-4">{renderProviderInstance(selectedRow, "editor")}</div>
+                <div className="space-y-6 p-4">
+                  <ProviderOrderControls
+                    environmentId={environmentId}
+                    instanceId={selectedRow.instanceId}
+                    readOnly={readOnly}
+                  />
+                  {renderProviderInstance(selectedRow, "editor")}
+                </div>
               </ScrollArea>
             ) : (
               <div className="p-6 text-sm text-muted-foreground">
