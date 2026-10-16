@@ -25,6 +25,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           sparse-checkout: |
             /*
             !/.repos/
@@ -52,8 +53,26 @@ jobs:
       - name: Check unused code
         run: vp run knip:check
 
+      - name: Verify Jones boundary accounting
+        run: node scripts/jones/check-boundary.ts --strict --json
+
       - name: Check
         run: vp check
+
+      - name: Capture formatting repair patch
+        if: failure()
+        run: |
+          vp fmt
+          git diff --binary > "${{ runner.temp }}/formatting-repair.patch"
+
+      - name: Upload formatting repair patch
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: formatting-repair
+          path: ${{ runner.temp }}/formatting-repair.patch
+          if-no-files-found: ignore
+          retention-days: 7
 
   typecheck:
     name: Typecheck
@@ -153,6 +172,9 @@ jobs:
 
       - name: Test nightly release checks
         run: node --test .github/scripts/check-nightly-release.test.cjs
+
+      - name: Test process placement build custody
+        run: node --test native/process-placement/build.test.mjs
 
       - name: Install browser secret helper build libraries
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
@@ -345,6 +367,11 @@ jobs:
           row='[.filename, (.previous_filename // empty)] | @tsv'
 
           if [[ -n "${PR_NUMBER}" ]]; then
+            stack_base=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.stack.base.ref // empty') \
+              || fail_open "Could not read native stack membership."
+            if [[ -n "$stack_base" ]]; then
+              fail_open "Native stack qualification covers lower layers as well as this PR."
+            fi
             # The PR files endpoint stops at 3000 files and pagination cannot
             # extend it, so cross-check against the count the PR itself reports.
             expected=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.changed_files') \

@@ -8,6 +8,8 @@ import {
   CommandId,
   EventId,
   MessageId,
+  ProjectId,
+  ProviderInstanceId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -21,17 +23,18 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import {
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorThreadMessagesBlockedError,
   OrchestratorDispatchError,
 } from "./Orchestrator.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
-import { dispatchCommand } from "./ThreadMessageIntake.ts";
+import { dispatchCommand, sendToThread } from "./ThreadMessageIntake.ts";
 
 const layerIntakeTest = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-question-intake-",
-}).pipe(Layer.provideMerge(NodeServices.layer));
+}).pipe(Layer.provideMerge(NodeServices.layer), Layer.provideMerge(ServerSettings.layerTest()));
 
 const layerFailingDispatch = (captured: OrchestrationV2ServerCommand[]) =>
   Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -767,51 +770,52 @@ it.effect("applies the image budget across all questions before dispatch", () =>
   }).pipe(Effect.provide(layerIntakeTest)),
 );
 
-it.effect(
-  "releases newly claimed message attachments when the target blocks foreign messages",
-  () =>
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
-      NodeFS.writeFileSync(
-        NodePath.join(config.attachmentsDir, `${pendingId}.png`),
-        new Uint8Array([1, 2, 3]),
-      );
-      const result = yield* dispatchCommand({
-        type: "message.dispatch",
-        commandId: CommandId.make("message-blocked"),
-        threadId: ThreadId.make("thread-rejected"),
-        senderThreadId: ThreadId.make("thread-sender"),
-        messageId: MessageId.make("message-blocked"),
-        text: "Foreign attachment",
-        attachments: [
-          { type: "image", id: pendingId, name: "screen.png", mimeType: "image/png", sizeBytes: 3 },
-        ],
-        createdBy: "agent",
-        creationSource: "mcp",
-        dispatchMode: { type: "start_immediately" },
-      }).pipe(
-        Effect.provide(
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            dispatch: (command) =>
-              Effect.fail(
-                new OrchestratorThreadMessagesBlockedError({
-                  commandId: command.commandId,
-                  threadId: ThreadId.make("thread-rejected"),
-                }),
-              ),
-          }),
-        ),
-        Effect.result,
-      );
-      expect(result._tag).toBe("Failure");
-      expect(
-        NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
-          entry.startsWith("thread-rejected-"),
-        ),
-      ).toEqual([]);
-      expect(NodeFS.existsSync(NodePath.join(config.attachmentsDir, `${pendingId}.png`))).toBe(
-        true,
-      );
-    }).pipe(Effect.provide(layerIntakeTest)),
+it.effect("releases claimed copies when a project disables the message's provider instance", () =>
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
+    NodeFS.writeFileSync(
+      NodePath.join(config.attachmentsDir, `${pendingId}.png`),
+      new Uint8Array([1, 2, 3]),
+    );
+    const result = yield* sendToThread({
+      projectId: ProjectId.make("project-disabled-send"),
+      commandId: CommandId.make("command-disabled-send"),
+      threadId: ThreadId.make("thread-disabled-send"),
+      messageId: MessageId.make("message-disabled-send"),
+      text: "Hello",
+      attachments: [
+        {
+          type: "image",
+          id: pendingId,
+          name: "screen.png",
+          mimeType: "image/png",
+          sizeBytes: 3,
+        },
+      ],
+      mode: "auto",
+      createdBy: "user",
+      creationSource: "web",
+    }).pipe(
+      Effect.provide(
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          sendToThread: (input) =>
+            Effect.fail(
+              new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
+                projectId: input.projectId,
+                instanceId: ProviderInstanceId.make("codex"),
+              }),
+            ),
+        }),
+      ),
+      Effect.result,
+    );
+    expect(result._tag).toBe("Failure");
+    expect(
+      NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
+        entry.startsWith("thread-disabled-send-"),
+      ),
+    ).toEqual([]);
+    expect(NodeFS.existsSync(NodePath.join(config.attachmentsDir, `${pendingId}.png`))).toBe(true);
+  }).pipe(Effect.provide(layerIntakeTest)),
 );

@@ -95,7 +95,8 @@
         "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
         "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
         "apps/mobile/src/features/workstreams/projection.test.ts",
-        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
+        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
+        "apps/mobile/src/features/workstreams/gateway.test.ts"
       ]
     },
     {
@@ -265,9 +266,9 @@
       "id": "opencode-process-adoption",
       "tests": [
         "apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts",
-        "apps/server/src/provider/OpenCodeServerOwner.test.ts",
-        "apps/server/src/provider/opencode2/OpenCode2Server.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/OpenCodeAdapterV2.test.ts",
+        "packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts",
+        "packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts",
+        "packages/provider-opencode/src/server/adapter.test.ts",
         "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts"
       ],
       "scope": "Physical process incarnation, qualified per-session adoption and pre-effect revocation checks; absent authority preserves ordinary sessions. Positive authority and live provider qualification are not supplied."
@@ -523,14 +524,14 @@
       "id": "agent-app-identity",
       "tests": [
         "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts",
-        "apps/server/src/provider/RuntimeInstructions.test.ts",
+        "packages/provider-core/src/server/runtimeInstructions.test.ts",
         "apps/server/src/provider/CodexDeveloperInstructions.test.ts",
-        "apps/server/src/provider/T3OrchestrationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
         "packages/contracts/src/jones/organizationMetadata.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.test.ts",
+        "packages/provider-pi/src/server/mcpExtensionSource.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/piT3McpInjection.test.ts",
+        "packages/provider-pi/src/server/mcpInjection.test.ts",
         "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",

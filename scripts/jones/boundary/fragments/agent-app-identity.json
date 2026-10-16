@@ -4,31 +4,37 @@
   "jonesOwnedPaths": [
     "apps/server/src/jones/runtimeIdentity/AppIdentity.ts",
     "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts",
-    "apps/server/src/jones/runtimeIdentity/CodexReplayIdentity.ts"
+    "apps/server/src/jones/runtimeIdentity/CodexReplayIdentity.ts",
+    "packages/provider-core/src/server/jones/AppIdentity.ts"
   ],
   "hookPaths": [
-    "apps/server/src/provider/RuntimeInstructions.ts",
-    "apps/server/src/provider/T3OrchestrationInstructions.ts",
-    "apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.ts",
-    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.testkit.ts"
+    "packages/provider-core/src/server/runtimeInstructions.ts",
+    "packages/provider-core/src/server/orchestrationInstructions.ts",
+    "packages/provider-pi/src/server/mcpExtensionSource.ts",
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.testkit.ts",
+    "packages/provider-core/src/server/ProviderHost.ts",
+    "packages/provider-pi/src/server/adapter.ts",
+    "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts",
+    "apps/server/src/provider/CodexDeveloperInstructions.ts",
+    "apps/server/src/provider/ProviderHostLive.ts"
   ],
   "tombstones": [],
   "allowedImports": [
     {
-      "from": "apps/server/src/provider/RuntimeInstructions.ts",
-      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+      "from": "packages/provider-core/src/server/runtimeInstructions.ts",
+      "to": "packages/provider-core/src/server/jones/AppIdentity.ts"
     },
     {
-      "from": "apps/server/src/provider/T3OrchestrationInstructions.ts",
-      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+      "from": "packages/provider-core/src/server/orchestrationInstructions.ts",
+      "to": "packages/provider-core/src/server/jones/AppIdentity.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
     },
     {
-      "from": "apps/server/src/orchestration-v2/Adapters/piT3McpExtensionSource.ts",
-      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+      "from": "packages/provider-pi/src/server/mcpExtensionSource.ts",
+      "to": "packages/provider-core/src/server/jones/AppIdentity.ts"
     },
     {
       "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
@@ -41,6 +47,34 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
       "to": "apps/server/src/jones/runtimeIdentity/CodexReplayIdentity.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/ProviderHost.ts",
+      "to": "packages/contracts/src/jones/organizationMetadata.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/runtimeInstructions.ts",
+      "to": "packages/contracts/src/jones/organizationMetadata.ts"
+    },
+    {
+      "from": "packages/provider-pi/src/server/adapter.ts",
+      "to": "packages/provider-core/src/server/jones/AppIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/provider/CodexDeveloperInstructions.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
+      "from": "apps/server/src/provider/ProviderHostLive.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
     }
   ]
 }

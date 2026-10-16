@@ -66,10 +66,14 @@ describe("image zoom interactions", () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
-        constructor(callback: typeof resize) {
-          resize = callback;
+        constructor(
+          private readonly callback: (
+            entries: { target: Element; contentRect: { width: number; height: number } }[],
+          ) => void,
+        ) {}
+        observe(target: Element) {
+          resize = (entries) => this.callback(entries.map((entry) => ({ ...entry, target })));
         }
-        observe() {}
         disconnect() {}
       },
     );

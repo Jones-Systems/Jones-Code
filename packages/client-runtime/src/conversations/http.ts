@@ -10,10 +10,7 @@ import * as Schema from "effect/Schema";
 import { RemoteEnvironmentAuthorization } from "../authorization/service.ts";
 import type { PreparedConnection } from "../connection/model.ts";
 import { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
-import {
-  makeEnvironmentHttpApiUrlBuilder,
-  type RemoteEnvironmentRequestError,
-} from "../rpc/http.ts";
+import type { RemoteEnvironmentRequestError } from "../rpc/http.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../state/environmentHttpAuth.ts";
 
 const DEFAULT_CONVERSATION_LIBRARY_TIMEOUT_MS = 30_000;
@@ -39,8 +36,7 @@ export const fetchEnvironmentConversationLibraryRequest = Effect.fn(
     remoteAuthorization,
     group: "conversationLibrary",
     method: "POST",
-    url: (httpBaseUrl) =>
-      makeEnvironmentHttpApiUrlBuilder(httpBaseUrl).conversationLibrary.conversationLibrary(),
+    url: (urls) => urls.conversationLibrary(),
     timeoutMs: input.timeoutMs ?? DEFAULT_CONVERSATION_LIBRARY_TIMEOUT_MS,
     request: ({ client, headers }) => {
       switch (input.request.kind) {

@@ -10,7 +10,7 @@ import {
   type AuthEnvironmentScope,
   type JonesUpdateState,
 } from "@t3tools/contracts";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -68,8 +68,8 @@ it.layer(NodeServices.layer)("Jones update Release compatibility", (it) => {
         });
         const updates = JonesUpdates.layer.pipe(
           Layer.provide(ServerConfig.layer({ ...config, mode })),
-          Layer.provide(Layer.succeed(HostProcessPlatform, "linux")),
-          Layer.provide(Layer.succeed(HostProcessArchitecture, "x64")),
+          Layer.provide(Layer.succeed(HostProcess.Platform, "linux")),
+          Layer.provide(Layer.succeed(HostProcess.Architecture, "x64")),
           Layer.provide(
             Layer.succeed(
               SelfUpdate.ServerSelfUpdate,

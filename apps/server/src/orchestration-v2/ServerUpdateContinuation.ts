@@ -7,7 +7,7 @@ import * as EventSink from "./EventSink.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { randomUuidV4 } from "./RandomUuid.ts";
+import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { restartContinuationRun } from "./RestartContinuation.ts";
 
 const mark = (optedInOnly: boolean) =>
@@ -30,7 +30,8 @@ const mark = (optedInOnly: boolean) =>
               .continueThreadsAfterServerUpdate
           )
             continue;
-          const run = restartContinuationRun(projection);
+          const now = yield* DateTime.now;
+          const run = restartContinuationRun(projection, now);
           if (run === undefined || run.status !== "running") continue;
           const existing = yield* sql<{
             effect_id: string;

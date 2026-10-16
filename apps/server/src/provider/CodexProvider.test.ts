@@ -1,4 +1,7 @@
 import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -12,6 +15,13 @@ import {
   mapCodexModelCapabilities,
   checkCodexProviderStatus,
 } from "./CodexProvider.ts";
+
+const layerProbePlatform = Layer.mergeAll(
+  Path.layer,
+  FileSystem.layerNoop({
+    readFileString: () => Effect.die("Injected Codex probes must not read provider files."),
+  }),
+);
 
 it("uses medium instead of low for newly discovered Codex models when supported", () => {
   const capabilities = mapCodexModelCapabilities({
@@ -288,6 +298,7 @@ it.effect(
       assert.strictEqual(serializedQuota.includes("ordinaryUsageAllowed"), false);
       assert.strictEqual(serializedQuota.includes("bindingGeneration"), false);
     }).pipe(
+      Effect.provide(layerProbePlatform),
       Effect.provideService(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
@@ -317,6 +328,7 @@ it.effect(
       );
       assert.strictEqual(serializedQuota.includes("private fixture error"), false);
     }).pipe(
+      Effect.provide(layerProbePlatform),
       Effect.provideService(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
@@ -385,6 +397,7 @@ it.effect(
       assert.strictEqual(json.includes("private-managed-email"), false);
       assert.strictEqual(json.includes("native-sentinel"), false);
     }).pipe(
+      Effect.provide(layerProbePlatform),
       Effect.provideService(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),
@@ -405,6 +418,7 @@ it.effect("a bounded whole-probe timeout cannot qualify a partial quota response
     assert.strictEqual(result.qualifiedQuota?.quotaReceivedAt, null);
     assert.strictEqual(result.qualifiedQuota?.rateLimitsByLimitId, null);
   }).pipe(
+    Effect.provide(layerProbePlatform),
     Effect.provideService(
       ChildProcessSpawner.ChildProcessSpawner,
       ChildProcessSpawner.make(() => Effect.die("unexpected spawn")),

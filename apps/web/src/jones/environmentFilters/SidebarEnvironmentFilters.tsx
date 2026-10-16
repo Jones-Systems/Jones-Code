@@ -19,7 +19,7 @@ export function SidebarEnvironmentFilters() {
           aria-pressed={filters[label]}
           onClick={() => setFilters((current) => toggleSidebarEnvironmentFilter(current, label))}
           className={cn(
-            "relative z-10 inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-medium outline-hidden ring-ring transition-colors focus-visible:ring-2 [-webkit-app-region:no-drag]",
+            "relative z-10 inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-medium outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
             filters[label]
               ? "bg-success/20 text-success-foreground ring-1 ring-success/30"
               : "bg-muted/30 text-muted-foreground hover:bg-muted/60",
