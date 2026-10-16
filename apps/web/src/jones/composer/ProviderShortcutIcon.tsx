@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { providerInstanceInitials } from "@t3tools/client-runtime/state/provider-instance-display";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon";
@@ -7,6 +8,7 @@ export function ProviderShortcutIcon({
 }: {
   entry: Pick<ProviderInstanceEntry, "driverKind" | "displayName" | "accentColor">;
 }) {
+  const labelId = useId();
   const initials = Array.from(providerInstanceInitials(entry.displayName));
   const letters =
     initials.length === 1 ? (
@@ -50,10 +52,16 @@ export function ProviderShortcutIcon({
         }}
         dominantBaseline="central"
       >
-        <g className="stroke-black fill-black" strokeWidth={6.25} strokeLinejoin="round">
-          {letters}
-        </g>
-        <g className="fill-white">{letters}</g>
+        <defs>
+          <g id={labelId}>{letters}</g>
+        </defs>
+        <use
+          href={`#${labelId}`}
+          className="stroke-black fill-black"
+          strokeWidth={6.25}
+          strokeLinejoin="round"
+        />
+        <use href={`#${labelId}`} className="fill-white" />
       </svg>
     </span>
   );
