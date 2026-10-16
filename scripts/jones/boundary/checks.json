@@ -2,6 +2,14 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-provider-restart-identity",
+      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "vp run --filter t3 typecheck"
+      ]
+    },
+    {
       "id": "jones-environment-sidebar-filters",
       "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
       "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]

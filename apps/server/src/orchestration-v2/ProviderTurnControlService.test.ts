@@ -122,9 +122,9 @@ function makeProjection(input: {
   };
 }
 
-it.effect(
-  "interrupts the historical session only for the exact committed restart replacement",
-  () =>
+it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")])(
+  "interrupts the historical session only for the exact committed restart replacement on %s",
+  (replacementInstanceId) =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const threadId = ThreadId.make("thread:restart-session");
@@ -141,7 +141,7 @@ it.effect(
       const providerThread: OrchestrationV2ProviderThread = {
         id: providerThreadId,
         driver,
-        providerInstanceId,
+        providerInstanceId: replacementInstanceId,
         // The restart command has already projected this replacement binding
         // before the process-bound restart effect executes.
         providerSessionId: replacementSessionId,
@@ -152,7 +152,11 @@ it.effect(
           nativeId: "native-thread:restart-session",
           strength: "strong",
         },
-        nativeConversationHeadRef: null,
+        nativeConversationHeadRef: {
+          driver,
+          nativeId: "native-head:restart-session",
+          strength: "strong",
+        },
         status: "not_loaded",
         firstRunOrdinal: 1,
         lastRunOrdinal: 1,
@@ -187,21 +191,32 @@ it.effect(
         resumeThread: () => Effect.die("unused resumeThread"),
         startTurn: () => Effect.die("unused startTurn"),
         steerTurn: () => Effect.die("unused steerTurn"),
-        interruptTurn: ({ providerThread: target }) =>
-          Effect.all(
-            [
-              Ref.set(interruptedThread, target),
-              Ref.update(projection, (current) => ({
-                ...current,
-                providerTurns: current.providerTurns.map((turn) =>
-                  turn.id === providerTurnId
-                    ? { ...turn, status: "interrupted" as const, completedAt: now }
-                    : turn,
-                ),
-              })),
-            ],
-            { discard: true },
-          ),
+        interruptTurn: ({ providerThread: target, providerTurnId: targetTurnId }) =>
+          Effect.gen(function* () {
+            assert.equal(target.providerInstanceId, runtime.instanceId);
+            assert.equal(target.providerSessionId, runtime.providerSessionId);
+            assert.equal(target.id, providerThreadId);
+            assert.deepEqual(target.nativeThreadRef, providerThread.nativeThreadRef);
+            assert.deepEqual(
+              target.nativeConversationHeadRef,
+              providerThread.nativeConversationHeadRef,
+            );
+            assert.equal(targetTurnId, providerTurnId);
+            yield* Effect.all(
+              [
+                Ref.set(interruptedThread, target),
+                Ref.update(projection, (current) => ({
+                  ...current,
+                  providerTurns: current.providerTurns.map((turn) =>
+                    turn.id === providerTurnId
+                      ? { ...turn, status: "interrupted" as const, completedAt: now }
+                      : turn,
+                  ),
+                })),
+              ],
+              { discard: true },
+            );
+          }),
         respondToRuntimeRequest: () => Effect.die("unused respondToRuntimeRequest"),
         readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
         rollbackThread: () => Effect.die("unused rollbackThread"),
@@ -322,6 +337,10 @@ it.effect(
       const interrupted = yield* Ref.get(interruptedThread);
       assert.isNotNull(interrupted);
       assert.equal(interrupted?.providerSessionId, oldSessionId);
+      assert.equal(interrupted?.providerInstanceId, providerInstanceId);
+      const current = yield* Ref.get(projection);
+      assert.equal(current.providerTurns[0]?.status, "interrupted");
+      assert.deepEqual(current.providerThreads[0], providerThread);
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
     }),

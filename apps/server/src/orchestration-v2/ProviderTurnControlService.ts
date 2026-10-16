@@ -111,13 +111,6 @@ export const layer: Layer.Layer<
             cause: "The recorded provider execution target is no longer valid.",
           });
         }
-        // A restart-session command commits the replacement binding before its
-        // process-bound effect runs. The old live runtime must still receive
-        // the interrupt, but only when the projection matches the exact
-        // replacement captured by that same durable effect.
-        const interruptProviderThread = targetsRecordedSession
-          ? providerThread
-          : { ...providerThread, providerSessionId: input.providerSessionId };
         if (providerTurn.status !== "running") {
           if (input.operation === "steer") {
             return yield* new ProviderTurnControlError({
@@ -130,7 +123,7 @@ export const layer: Layer.Layer<
           }
           return {
             context,
-            providerThread: interruptProviderThread,
+            providerThread,
             providerTurn,
             session: Option.none(),
           };
@@ -154,7 +147,7 @@ export const layer: Layer.Layer<
             );
             return {
               context,
-              providerThread: interruptProviderThread,
+              providerThread,
               providerTurn,
               session: Option.none(),
             };
@@ -166,6 +159,17 @@ export const layer: Layer.Layer<
             cause: `Provider session ${input.providerSessionId} is not active.`,
           });
         }
+        // A restart-session command commits the replacement binding before its
+        // process-bound effect runs. The old live runtime must still receive
+        // the interrupt, but only when the projection matches the exact
+        // replacement captured by that same durable effect.
+        const interruptProviderThread = targetsRecordedSession
+          ? providerThread
+          : {
+              ...providerThread,
+              providerSessionId: input.providerSessionId,
+              providerInstanceId: session.value.instanceId,
+            };
         return { context, providerThread: interruptProviderThread, providerTurn, session };
       });
 
