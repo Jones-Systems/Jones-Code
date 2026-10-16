@@ -27,6 +27,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
+import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -75,7 +76,8 @@ const logReplayDiagnostic = (
               Effect.result,
               Effect.map((result) => result._tag === "Success"),
             );
-      yield* Effect.logWarning("jones.replay-diagnostic", {
+      // it.effect records Console output in memory; print this probe line on the host console.
+      yield* Effect.logError("jones.replay-diagnostic", {
         stage,
         outcome,
         eventType: event.type,
@@ -96,7 +98,7 @@ const logReplayDiagnostic = (
             ? event.binding.runtimeGeneration
             : event.runtimeEvidence?.runtimeGeneration) ?? null,
         turnGeneration: origin?.turn?.binding.runtimeGeneration ?? null,
-      });
+      }).pipe(Effect.provideService(Console.Console, globalThis.console));
     });
   });
 
