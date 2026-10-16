@@ -539,6 +539,29 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
       ],
       "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded."
+    },
+    {
+      "id": "connection-diagnostics",
+      "tests": [
+        "apps/web/src/jones/observability/clientTracing.test.ts",
+        "packages/client-runtime/src/rpc/session.test.ts"
+      ],
+      "scope": "Tracing initialization can retry after failure, and each RPC probe records its target environment. Two minimal shared-code repairs avoid duplicating upstream tracer/session ownership; session regressions reuse the existing virtual WebSocket harness. No connection policy or runtime adoption changes."
+    },
+    {
+      "id": "connection-rpc-isolation",
+      "tests": [
+        "packages/client-runtime/src/rpc/session.test.ts",
+        "packages/client-runtime/src/rpc/client.test.ts",
+        "packages/client-runtime/src/connection/outdatedHostUpdate.test.ts",
+        "packages/client-runtime/src/connection/supervisor.test.ts",
+        "apps/server/src/terminal/OutputProtocol.test.ts",
+        "apps/server/src/observability/DefectReporter.test.ts",
+        "packages/effect-acp/src/protocol.test.ts",
+        "packages/effect-acp/src/client.test.ts",
+        "packages/effect-acp/src/agent.test.ts"
+      ],
+      "scope": "Bounded serial delivery per ACK-capable RPC stream keeps unrelated unary replies and health traffic responsive while preserving ordered chunks, acknowledgments, cancellation and terminal flow-control windows. Non-ACK transports preserve synchronous backpressure. Shared dependency patch and existing virtual WebSocket integration harness are the lifecycle owners; no wire or installed-runtime change."
     }
   ]
 }
