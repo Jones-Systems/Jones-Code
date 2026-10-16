@@ -1144,24 +1144,6 @@ export class Launcher {
       await reject("The requested target runtime is missing or incomplete.");
       return;
     }
-    // A check that cannot run refuses the update too: the alternative is
-    // stopping the server without knowing whether the backup fits.
-    const backupBlocker = await databaseBackupBlocker(
-      this.#baseDir,
-      message.dbPath,
-      this.#backupSpaceProbe,
-    ).catch(
-      (error: unknown) =>
-        `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
-    );
-    // The child may have exited during the check. Its queued exit transition
-    // reports that; answering it or recording a pending update would not.
-    if (!child.process.connected) return;
-    if (backupBlocker !== undefined) {
-      await reject(backupBlocker);
-      return;
-    }
-
     if (message.stagedHandle !== undefined && this.#startupGateProtocol !== 1) {
       await reject("bootstrap-required: The qualified startup gate is not bound on this launcher.");
       return;
@@ -1206,6 +1188,26 @@ export class Launcher {
         );
         return;
       }
+    }
+    // A check that cannot run refuses the update too: the alternative is
+    // stopping the server without knowing whether the backup fits.
+    const backupBlocker = await databaseBackupBlocker(
+      this.#baseDir,
+      message.dbPath,
+      this.#backupSpaceProbe,
+    ).catch(
+      (error: unknown) =>
+        `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
+    );
+    // The child may have exited during the check. Its queued exit transition
+    // reports that; answering it or recording a pending update would not.
+    if (!child.process.connected) return;
+    if (backupBlocker !== undefined) {
+      await reject(backupBlocker);
+      return;
+    }
+    if (message.stagedHandle !== undefined) {
+      if (this.#child !== child || this.#stopRequested || this.#stopping) return;
       if (this.#exchangeExpired(receivedAt)) {
         // The requester may already have reported a timeout; never accept,
         // record or stop behind it. A disconnected requester needs no reply.
