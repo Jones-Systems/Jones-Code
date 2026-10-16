@@ -115,6 +115,8 @@
         // Qualification invokes the config by CLI and the fixture entry through HTML.
         "vite.install-preview.config.ts",
         "src/jones/updates/fixtures/install-preview-entry.ts",
+        // The dev server serves this synthetic update-views fixture through its HTML page.
+        "src/jones/updates/fixtures/environment-updates-entry.tsx",
       ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
