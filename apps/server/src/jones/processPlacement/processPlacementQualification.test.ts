@@ -9,7 +9,7 @@ import * as NodeURL from "node:url";
 import * as NodeChildProcessSpawner from "@effect/platform-node/NodeChildProcessSpawner";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodeEffectPath from "@effect/platform-node/NodePath";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it as effectIt } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -28,7 +28,7 @@ import {
 } from "./processPlacement.ts";
 import * as ProcessPlacementSpawner from "./processPlacementSpawner.ts";
 
-const linux = HostProcessPlatform.defaultValue() === "linux";
+const linux = HostProcess.Platform.defaultValue() === "linux";
 const fixtureText = process.env.JONES_PLACEMENT_CGROUP_FIXTURE;
 const payload = NodeURL.fileURLToPath(new URL("./qualificationPayload.mjs", import.meta.url));
 const source = NodeURL.fileURLToPath(
@@ -229,7 +229,7 @@ const cancelPipeline = (candidate: ProcessPlacementBinding | undefined) =>
     }).pipe(
       Effect.scoped,
       Effect.provide(placedServices(candidate)),
-      Effect.provideService(HostProcessPlatform, "linux"),
+      Effect.provideService(HostProcess.Platform, "linux"),
       Effect.forkScoped,
     );
     const receipt = yield* Deferred.await(ready);
@@ -369,7 +369,7 @@ describe.skipIf(!linux)("source qualification (no delegated cgroup required)", (
         }).pipe(
           Effect.scoped,
           Effect.provide(placedServices(candidate)),
-          Effect.provideService(HostProcessPlatform, "linux"),
+          Effect.provideService(HostProcess.Platform, "linux"),
           Effect.exit,
         );
         expect(Exit.isFailure(exit)).toBe(true);
