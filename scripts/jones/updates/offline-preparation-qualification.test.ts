@@ -336,6 +336,29 @@ it("copies strict native failure evidence into the receipt and rejects private e
     const failureEvidence = {
       schema: 1,
       classification: "native-preparation-failure",
+      controllerFailure: {
+        records: [
+          {
+            parent: null,
+            relation: "primary",
+            type: "OperationalError",
+            stage: "reader-query",
+            frames: [{ source: "fixture.py", function: "readonly_rows", line: 321 }],
+            duplicateOf: null,
+            sqliteErrorCode: 1,
+            sqliteErrorCategory: "missing-table",
+            readerContext: {
+              timing: "before-query",
+              pythonVersion: [3, 9, 6],
+              sqliteVersion: "3.51.0",
+              parent: null,
+              files: { database: null, wal: null, shm: null },
+              tableIndex: 1,
+            },
+          },
+        ],
+        truncated: false,
+      },
       case: "apply",
       completedCases: 0,
       expectedFrames: ["PLAN_READY", "CLOSED_RESULT"],

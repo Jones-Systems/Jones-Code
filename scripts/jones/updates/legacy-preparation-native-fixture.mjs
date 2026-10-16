@@ -568,7 +568,201 @@ def require_repeat_rejection(evidence):
         assert lines[1] == 'JONES_PREPARATION_FAILURE phase=command-validation kind=refused'
 `;
 
+const controllerFailureStages = [
+  "unknown",
+  "setup",
+  "session-entry",
+  "session-operation",
+  "session-finalization",
+  "worker-perform",
+  "worker-finish",
+  "work-cleanup",
+  "receipt-publication",
+  "plan-publication",
+  "envelope-publication",
+  "evidence-publication",
+  "intent-publication",
+  "case-assertions",
+  "fixture-cleanup",
+  "reader-copy",
+  "reader-open",
+  "reader-query",
+  "reader-close",
+  "reader-removal",
+];
+const controllerFailureTypes = [
+  "unknown",
+  "AssertionError",
+  "Refused",
+  "_PreparationFailure",
+  "OSError",
+  "PermissionError",
+  "FileNotFoundError",
+  "FileExistsError",
+  "TimeoutError",
+  "ValueError",
+  "TypeError",
+  "KeyError",
+  "RuntimeError",
+  "KeyboardInterrupt",
+  "Error",
+  "Warning",
+  "InterfaceError",
+  "DatabaseError",
+  "DataError",
+  "OperationalError",
+  "IntegrityError",
+  "InternalError",
+  "ProgrammingError",
+  "NotSupportedError",
+];
+const controllerFailureFunctions = [
+  "unknown",
+  "<module>",
+  "<lambda>",
+  "run_case",
+  "readonly_rows",
+  "read_tables",
+  "<dictcomp>",
+  "<listcomp>",
+  "enter",
+  "perform",
+  "finish",
+  "clean_work",
+  "save_receipt",
+  "durable",
+  "durable_file",
+  "require",
+  "operation",
+  "boundary",
+  "check",
+  "require_worker_settled",
+  "session",
+  "root_identity",
+  "native_identity",
+  "preparation_observed",
+  "guarded",
+  "save",
+  "write",
+  "current",
+  "names",
+  "stat_at",
+  "sync_fd",
+  "receive",
+  "send",
+  "observe",
+  "planning_family",
+  "run",
+  "stop",
+  "close",
+  "check_roots",
+  "bind_root_identity",
+  "verify",
+  "sync_evidence",
+  "_cold_owner_session",
+];
 export const preparationFailureCaptureSource = String.raw`
+import os, pathlib, sqlite3, stat, sys
+_CONTROLLER_STAGES = ${JSON.stringify(controllerFailureStages)}
+_CONTROLLER_TYPES = ${JSON.stringify(controllerFailureTypes)}
+_CONTROLLER_FUNCTIONS = ${JSON.stringify(controllerFailureFunctions)}
+_failure_stages = {}
+_reader_contexts = {}
+def capture_reader_context(target):
+    # lstat and real-ID access observations are diagnostics, never permission or currentness gates.
+    def metadata(path):
+        try:
+            info = path.lstat()
+            symlink = stat.S_ISLNK(info.st_mode)
+            directory = stat.S_ISDIR(info.st_mode)
+            return dict(exists=True, mode=stat.S_IMODE(info.st_mode), owned=info.st_uid == os.getuid(),
+                        regular=stat.S_ISREG(info.st_mode), directory=directory, symlink=symlink,
+                        readable=None if symlink else os.access(path, os.R_OK),
+                        writable=None if symlink else os.access(path, os.W_OK),
+                        searchable=os.access(path, os.X_OK) if directory and not symlink else None)
+        except FileNotFoundError:
+            return dict(exists=False, mode=None, owned=None, regular=None, directory=None,
+                        symlink=None, readable=None, writable=None, searchable=None)
+        except Exception: return None
+    try:
+        parent = metadata(target.parent)
+        files = {label: metadata(pathlib.Path(str(target) + suffix)) if parent is not None and parent['directory'] is True and parent['symlink'] is False else None
+                 for label, suffix in (('database', ''), ('wal', '-wal'), ('shm', '-shm'))}
+        version = sqlite3.sqlite_version
+        if len(version) > 32 or len(version.split('.')) != 3 or any(not 1 <= len(part) <= 8 or any(char not in '0123456789' for char in part) for part in version.split('.')): version = None
+        return dict(timing='before-query', pythonVersion=list(sys.version_info[:3]), sqliteVersion=version,
+                    parent=parent, files=files, tableIndex=None)
+    except Exception: return None
+def remember_reader_context(failure, context, table_index):
+    try:
+        if context is not None and id(failure) not in _reader_contexts and len(_reader_contexts) < 64:
+            index = table_index if type(table_index) is int and 0 <= table_index <= 1023 else None
+            _reader_contexts[id(failure)] = (failure, dict(context, tableIndex=index))
+    except Exception: pass
+def remember_failure_stage(failure, stage):
+    if stage in _CONTROLLER_STAGES and id(failure) not in _failure_stages and len(_failure_stages) < 64:
+        _failure_stages[id(failure)] = (failure, stage)
+def at_failure_stage(stage, operation):
+    try: return operation()
+    except BaseException as failure:
+        remember_failure_stage(failure, stage)
+        raise
+def sqlite_failure_category(failure):
+    if type(failure) not in (sqlite3.Error, sqlite3.InterfaceError, sqlite3.DatabaseError, sqlite3.DataError,
+                             sqlite3.OperationalError, sqlite3.IntegrityError, sqlite3.InternalError,
+                             sqlite3.ProgrammingError, sqlite3.NotSupportedError): return None
+    args = failure.args
+    if len(args) != 1 or type(args[0]) is not str: return 'other'
+    message = args[0][:1024]
+    if message.startswith('no such table: '): return 'missing-table'
+    if message.startswith('no such column: '): return 'missing-column'
+    if message.startswith('attempt to write a readonly database'): return 'readonly'
+    if message.startswith(('database is locked', 'database table is locked', 'database schema is locked')): return 'locked'
+    if message.startswith(('database disk image is malformed', 'malformed database schema', 'file is not a database')): return 'malformed'
+    if message.startswith('unable to open database file'): return 'cannot-open'
+    if len(args[0]) <= 1024 and message.startswith('near ') and message.endswith(': syntax error'): return 'syntax'
+    return 'other'
+def capture_controller_failure(failures, primary):
+    records, seen = [], {}
+    truncated = False
+    def visit(failure, parent, relation, depth):
+        nonlocal truncated
+        if not isinstance(failure, BaseException): return
+        if len(records) >= 16 or depth >= 8:
+            truncated = True
+            return
+        index = len(records)
+        previous = seen.get(id(failure))
+        saved = _failure_stages.get(id(failure))
+        reader = _reader_contexts.get(id(failure))
+        reader_context = reader[1] if reader is not None and reader[0] is failure and saved is not None and saved[0] is failure and saved[1] == 'reader-query' else None
+        name = type(failure).__name__
+        frames, trace, steps = [], failure.__traceback__, 0
+        while trace is not None and steps < 64:
+            code = trace.tb_frame.f_code
+            source = 'maintenance.py' if code.co_filename == 'maintenance.py' else 'fixture.py' if code.co_filename == globals().get('__file__') else None
+            if source is not None and code.co_name in _CONTROLLER_FUNCTIONS:
+                frames.append(dict(source=source, function=code.co_name, line=min(trace.tb_lineno, 1000000)))
+            trace, steps = trace.tb_next, steps + 1
+        if trace is not None or len(frames) > 8: truncated = True
+        sqlite_code = getattr(failure, 'sqlite_errorcode', None) if isinstance(failure, sqlite3.Error) else None
+        if type(sqlite_code) is not int or not 0 <= sqlite_code <= 2147483647: sqlite_code = None
+        records.append(dict(parent=parent, relation=relation, type=name if name in _CONTROLLER_TYPES else 'unknown',
+                            stage=saved[1] if saved is not None and saved[0] is failure else 'fixture-cleanup' if relation == 'cleanup' else 'unknown',
+                            frames=frames[-8:], duplicateOf=previous, sqliteErrorCode=sqlite_code,
+                            sqliteErrorCategory=sqlite_failure_category(failure), readerContext=reader_context))
+        if previous is not None: return
+        seen[id(failure)] = index
+        if type(failure).__name__ == '_PreparationFailure':
+            children = getattr(failure, 'errors', ())
+            if isinstance(children, tuple):
+                if len(children) > 16: truncated = True
+                for child in children[:16]: visit(child, index, 'aggregate', depth + 1)
+        if failure.__cause__ is not None: visit(failure.__cause__, index, 'cause', depth + 1)
+        elif failure.__context__ is not None and not failure.__suppress_context__: visit(failure.__context__, index, 'context', depth + 1)
+    if len(failures) > 16: truncated = True
+    for failure in failures[:16]: visit(failure, None, 'primary' if failure is primary else 'cleanup', 0)
+    return dict(records=records, truncated=truncated)
 _FAILURE_PHASES = {'entry', 'owner-namespace', 'ready', 'command-receive', 'command-validation', 'retained-basis', 'sql-open', 'scope-send', 'continue-receive', 'continue-validation', 'owner-current', 'sqlite-identity', 'sql-query', 'sql-close', 'post-sql-current', 'plan-encode', 'result-send', 'cleanup'}
 _FAILURE_GATES = {'pair-journal', 'scope-result', 'lock-path', 'parent', 'runtime', 'dispatch', 'database-parent', 'pair', 'sql-directory', 'generation', 'owner-journal', 'state', 'lock-descriptor', 'manifest', 'cursor', 'intent', 'retained-plan', 'inherited-directory'}
 _FAILURE_FRAMES = {'READY', 'PLAN', 'APPLY', 'RECONCILE', 'EXIT', 'ABORT', 'SQL_SCOPE_OPENED', 'CONTINUE', 'PLAN_READY', 'CLOSED_RESULT'}
@@ -779,19 +973,46 @@ def setup(base, bundle):
 
 def readonly_rows(database):
     # Observe a disposable copy only after the SEA is reaped; inspection cannot normalize live WAL.
-    target = database.parent / 'assertion-copy.sqlite'
-    for suffix in ('', '-wal', '-shm'):
-        source = pathlib.Path(str(database) + suffix)
-        if source.exists(): write(pathlib.Path(str(target) + suffix), source.read_bytes())
-    db = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)
-    db.row_factory = sqlite3.Row
+    # Early failures leave this owned copy in outer fixture scratch until failure evidence is published.
+    stage = 'reader-copy'
     try:
-        return {table: [dict(row) for row in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')] for table in payload['tables']}
-    finally:
-        db.close()
+        target = database.parent / 'assertion-copy.sqlite'
         for suffix in ('', '-wal', '-shm'):
-            path = pathlib.Path(str(target) + suffix)
-            if path.exists(): path.unlink()
+            source = pathlib.Path(str(database) + suffix)
+            if source.exists(): write(pathlib.Path(str(target) + suffix), source.read_bytes())
+        stage = 'reader-open'
+        db = sqlite3.connect(target.as_uri() + '?mode=rw', uri=True)
+        try:
+            # SQLite may initialize the disposable copy; query_only then prohibits SQL writes.
+            try:
+                db.row_factory = sqlite3.Row
+                db.execute('PRAGMA query_only=ON')
+                assert db.execute('PRAGMA query_only').fetchone()[0] == 1
+            except BaseException as failure:
+                remember_failure_stage(failure, 'reader-open')
+                raise
+            context = capture_reader_context(target)
+            table_index = None
+            def read_tables():
+                nonlocal table_index
+                rows = {}
+                for table_index, table in enumerate(payload['tables']):
+                    rows[table] = [dict(row) for row in db.execute('SELECT * FROM ' + table + ' ORDER BY 1')]
+                return rows
+            try:
+                return at_failure_stage('reader-query', read_tables)
+            except BaseException as failure:
+                remember_reader_context(failure, context, table_index)
+                raise
+        finally:
+            at_failure_stage('reader-close', db.close)
+            stage = 'reader-removal'
+            for suffix in ('', '-wal', '-shm'):
+                path = pathlib.Path(str(target) + suffix)
+                if path.exists(): path.unlink()
+    except BaseException as failure:
+        remember_failure_stage(failure, stage)
+        raise
 
 def refusal(body):
     try: body()
@@ -808,6 +1029,11 @@ def run_case(case, bundle):
     contexts, scope_frames = [], {}
     held_receipt = None
     original_receive, original_observe, original_send, original_finish = Worker.receive, Worker.observe, Worker.send, Worker.finish
+    original_perform, original_clean_work, original_save_receipt = Worker.perform, Worker.clean_work, Worker.save_receipt
+    Worker.perform = lambda self, recovery: at_failure_stage('worker-perform', lambda: original_perform(self, recovery))
+    Worker.clean_work = lambda self: at_failure_stage('work-cleanup', lambda: original_clean_work(self))
+    Worker.save_receipt = lambda self, phase: at_failure_stage('receipt-publication', lambda: original_save_receipt(self, phase))
+    case_stage = 'setup'
     original_durable = scope['durable_file']
     first_command = len(commands)
     def observe(self, path, capture=False, access=None):
@@ -871,12 +1097,13 @@ def run_case(case, bundle):
             faults.append('repeat'); self.sequence += 1
             original_send(self, 'APPLY', **sent['APPLY'])
             observe_repeat_rejection(self.process, repeat_evidence)
-        original_finish(self)
+        at_failure_stage('worker-finish', lambda: original_finish(self))
         assert self.process.reaped and self.process.closed
         events.append('reaped')
     Worker.finish = finish
     def durable(path, raw, mode, previous=None):
-        original_durable(path, raw, mode, previous)
+        stage = 'plan-publication' if path.name == 'preparation-plan.json' else 'envelope-publication' if path.name == 'preparation-envelope.json' else 'evidence-publication' if path.name.startswith('preparation-evidence-') else 'intent-publication' if path == directory / 'state/journal.json' else 'receipt-publication'
+        at_failure_stage(stage, lambda: original_durable(path, raw, mode, previous))
         if path == directory / 'state/journal.json' and json.loads(raw)['phase'] == 'preparation-intent':
             assert (directory / 'state/preparation-plan.json').is_file() and (directory / 'state/preparation-envelope.json').is_file()
             events.append('intent-durable')
@@ -895,11 +1122,20 @@ def run_case(case, bundle):
         return real_stop(self)
     Process.stop = stop
     def enter(operation):
-        with scope['fixed_lock'](manifest):
-            with scope['_cold_owner_session']() as session:
-                sessions.append(session)
-                assert session.record['bootSessionUuid'] == actual_boot
-                return operation(session)
+        stage = 'session-entry'
+        try:
+            with scope['fixed_lock'](manifest):
+                with scope['_cold_owner_session']() as session:
+                    sessions.append(session)
+                    assert session.record['bootSessionUuid'] == actual_boot
+                    stage = 'session-operation'
+                    result = operation(session)
+                    stage = 'session-finalization'
+                    return result
+        except BaseException as failure:
+            remember_failure_stage(failure, stage)
+            raise
+    case_stage = 'case-assertions'
     try:
         if case == 'closed-query-failure':
             # Modify only fixture seed data before snapshot; its invalid ledger causes a settled SQL query rejection.
@@ -916,6 +1152,7 @@ def run_case(case, bundle):
             result = enter(rejected)
         elif case in ('apply', 'reconcile'):
             result = enter(lambda session: session.prepare())
+            case_stage = 'case-assertions'
             assert result['status'] == 'applied' and result['workerReaped']
         else:
             failure = refusal(lambda: enter(lambda session: session.prepare()))
@@ -942,6 +1179,7 @@ def run_case(case, bundle):
                 assert worker.process.reaped and worker.process.closed and worker.failed
                 assert sessions[-1].failure is not None and retained.exists()
             result = {'status': 'expected-refusal'}
+        case_stage = 'case-assertions'
         assert all(item.reaped and item.closed and not item.spawn_unknown for item in commands[first_command:])
         before_reentry = (directory / 'journal.json').read_bytes()
         refusal(lambda: enter(lambda session: session.prepare()))
@@ -992,7 +1230,11 @@ def run_case(case, bundle):
                     productionCustodyHeld=held_receipt is not None,
                     independentCleanupRecovered=case == 'custody-uncertainty', heldCustodyReceipt=held_receipt,
                     repeatRejection=repeat_evidence if case in ('repeat-plan', 'repeat-apply') else None)
+    except BaseException as failure:
+        remember_failure_stage(failure, case_stage)
+        raise
     finally:
+        Worker.perform, Worker.clean_work, Worker.save_receipt = original_perform, original_clean_work, original_save_receipt
         Worker.receive, Worker.observe, Worker.send, Worker.finish = original_receive, original_observe, original_send, original_finish
         scope['durable_file'], Process.close, Process.stop = original_durable, real_close, real_stop
 
@@ -1030,7 +1272,8 @@ finally:
             assert len(commands) <= 64
             diagnostic = dict(schema=1, classification='native-preparation-failure', case=failure_state['case'],
                               completedCases=len(results), expectedFrames=failure_state['expectedFrames'], lastPhase=failure_state['lastPhase'],
-                              processes=[failure_process_record(item, prior) for prior, item in zip(before, commands)], closure=closed)
+                              processes=[failure_process_record(item, prior) for prior, item in zip(before, commands)], closure=closed,
+                              controllerFailure=capture_controller_failure(failures, failure))
             raw = encode(diagnostic); assert len(raw) <= 262144
             write(root / 'fixture-failure.json', raw)
     except BaseException as cause: failures.append(cause)
@@ -1799,6 +2042,7 @@ export function validatePreparationNativeFailure(value) {
     "lastPhase",
     "processes",
     "closure",
+    "controllerFailure",
   ]);
   NodeAssert.equal(value.schema, 1);
   NodeAssert.equal(value.classification, "native-preparation-failure");
@@ -1820,6 +2064,142 @@ export function validatePreparationNativeFailure(value) {
       (/^(?:sent|received)-/.test(value.lastPhase) &&
         failureFrames.has(value.lastPhase.replace(/^(?:sent|received)-/, ""))),
   );
+  exact(value.controllerFailure, ["records", "truncated"]);
+  NodeAssert.equal(typeof value.controllerFailure.truncated, "boolean");
+  NodeAssert.ok(
+    Array.isArray(value.controllerFailure.records) && value.controllerFailure.records.length <= 16,
+  );
+  for (const [index, cause] of value.controllerFailure.records.entries()) {
+    exact(cause, [
+      "parent",
+      "relation",
+      "type",
+      "stage",
+      "frames",
+      "duplicateOf",
+      "sqliteErrorCode",
+      "sqliteErrorCategory",
+      "readerContext",
+    ]);
+    if (cause.readerContext !== null) {
+      NodeAssert.equal(cause.stage, "reader-query");
+      const context = cause.readerContext;
+      exact(context, ["timing", "pythonVersion", "sqliteVersion", "parent", "files", "tableIndex"]);
+      NodeAssert.equal(context.timing, "before-query");
+      NodeAssert.ok(
+        Array.isArray(context.pythonVersion) &&
+          context.pythonVersion.length === 3 &&
+          context.pythonVersion.every(
+            (part) => Number.isSafeInteger(part) && part >= 0 && part <= 65535,
+          ),
+      );
+      NodeAssert.ok(
+        context.sqliteVersion === null ||
+          (typeof context.sqliteVersion === "string" &&
+            /^[0-9]{1,8}\.[0-9]{1,8}\.[0-9]{1,8}$/.test(context.sqliteVersion)),
+      );
+      NodeAssert.ok(
+        context.tableIndex === null ||
+          (Number.isSafeInteger(context.tableIndex) &&
+            context.tableIndex >= 0 &&
+            context.tableIndex <= 1023),
+      );
+      exact(context.files, ["database", "wal", "shm"]);
+      for (const item of [context.parent, ...Object.values(context.files)]) {
+        if (item === null) continue;
+        exact(item, [
+          "exists",
+          "mode",
+          "owned",
+          "regular",
+          "directory",
+          "symlink",
+          "readable",
+          "writable",
+          "searchable",
+        ]);
+        NodeAssert.equal(typeof item.exists, "boolean");
+        NodeAssert.ok(
+          item.mode === null ||
+            (Number.isSafeInteger(item.mode) && item.mode >= 0 && item.mode <= 0o7777),
+        );
+        for (const key of [
+          "owned",
+          "regular",
+          "directory",
+          "symlink",
+          "readable",
+          "writable",
+          "searchable",
+        ])
+          NodeAssert.ok(item[key] === null || typeof item[key] === "boolean");
+        if (!item.exists)
+          NodeAssert.ok(
+            Object.entries(item).every(([key, value]) => key === "exists" || value === null),
+          );
+      }
+    }
+    NodeAssert.ok(
+      cause.sqliteErrorCategory === null ||
+        ([
+          "missing-table",
+          "missing-column",
+          "readonly",
+          "locked",
+          "malformed",
+          "cannot-open",
+          "syntax",
+          "other",
+        ].includes(cause.sqliteErrorCategory) &&
+          [
+            "Error",
+            "InterfaceError",
+            "DatabaseError",
+            "DataError",
+            "OperationalError",
+            "IntegrityError",
+            "InternalError",
+            "ProgrammingError",
+            "NotSupportedError",
+          ].includes(cause.type)),
+    );
+    NodeAssert.ok(
+      cause.sqliteErrorCode === null ||
+        (Number.isSafeInteger(cause.sqliteErrorCode) &&
+          cause.sqliteErrorCode >= 0 &&
+          cause.sqliteErrorCode <= 2147483647 &&
+          [
+            "Error",
+            "InterfaceError",
+            "DatabaseError",
+            "DataError",
+            "OperationalError",
+            "IntegrityError",
+            "InternalError",
+            "ProgrammingError",
+            "NotSupportedError",
+          ].includes(cause.type)),
+    );
+    for (const key of ["parent", "duplicateOf"])
+      NodeAssert.ok(
+        cause[key] === null ||
+          (Number.isSafeInteger(cause[key]) && cause[key] >= 0 && cause[key] < index),
+      );
+    NodeAssert.ok(["primary", "cleanup", "aggregate", "cause", "context"].includes(cause.relation));
+    NodeAssert.equal(cause.parent === null, ["primary", "cleanup"].includes(cause.relation));
+    NodeAssert.ok(
+      controllerFailureTypes.includes(cause.type) && controllerFailureStages.includes(cause.stage),
+    );
+    NodeAssert.ok(Array.isArray(cause.frames) && cause.frames.length <= 8);
+    for (const frame of cause.frames) {
+      exact(frame, ["source", "function", "line"]);
+      NodeAssert.ok(
+        ["maintenance.py", "fixture.py"].includes(frame.source) &&
+          controllerFailureFunctions.includes(frame.function),
+      );
+      NodeAssert.ok(Number.isSafeInteger(frame.line) && frame.line >= 1 && frame.line <= 1000000);
+    }
+  }
   validatePreparationNativeClosure(value.closure);
   NodeAssert.ok(
     Array.isArray(value.processes) &&

@@ -275,6 +275,17 @@ jobs:
           architecture: arm64
           check-latest: false
 
+      - name: Diagnose the isolated macOS SQLite assertion reader matrix
+        if: matrix.os == 'macos-15'
+        shell: bash
+        env:
+          NODE_OPTIONS: ""
+        run: |
+          set -euo pipefail
+          export JONES_READER_PROBE_SOURCE_SHA="$(git rev-parse HEAD)"
+          [[ "$JONES_READER_PROBE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          node --test --test-name-pattern='^isolated SQLite assertion reader matrix$' scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs
+
       - name: Qualify the exact captured producer and staged native bytes
         if: matrix.os == 'macos-15'
         env:
