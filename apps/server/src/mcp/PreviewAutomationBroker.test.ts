@@ -1403,7 +1403,7 @@ it.effect("evicts an unanswered host and lets later calls use a healthy runtime"
           Effect.forkScoped,
         );
       yield* Deferred.await(otherReceived);
-      yield* TestClock.adjust(1_000);
+      yield* TestClock.adjust(2_000);
       expect(yield* Fiber.join(timedOut)).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
       yield* Deferred.await(otherCompleted);
       expect(yield* Deferred.isDone(otherCompleted)).toBe(true);
@@ -1777,7 +1777,7 @@ it.effect("expires one request without evicting a generation with a newer valid 
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Deferred.await(received);
       expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toBe("alive");
-      yield* TestClock.adjust(1000);
+      yield* TestClock.adjust(2000);
       const error = yield* Fiber.join(expired);
       expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toBe("alive");
       expect(error).toMatchObject({ _tag: "PreviewAutomationTimeoutError", outcome: "unknown" });
@@ -1851,7 +1851,7 @@ it.effect("coalesces simultaneous expiries into one unanswered ping before evict
         .invoke({ scope, operation: "snapshot", input: {}, timeoutMs: 100 })
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Deferred.await(routed);
-      yield* TestClock.adjust(100);
+      yield* TestClock.adjust(1100);
       expect(yield* Fiber.join(a)).toMatchObject({ outcome: "unknown" });
       expect(yield* Fiber.join(b)).toMatchObject({ outcome: "unknown" });
       expect(pings).toBe(1);
@@ -1898,7 +1898,7 @@ it.effect.each(["late reply", "snapshot"])(
           .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
         const late = yield* Deferred.await(received);
         yield* broker.invoke({ scope, operation: "status", input: {} });
-        yield* TestClock.adjust(100);
+        yield* TestClock.adjust(1100);
         yield* Fiber.join(a);
         expect(
           yield* broker
@@ -1961,7 +1961,7 @@ it.effect("snapshot cannot clear a mutation outside the controlled semaphore", (
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Deferred.await(received);
       yield* broker.invoke({ scope, operation: "status", input: {} });
-      yield* TestClock.adjust(100);
+      yield* TestClock.adjust(1100);
       yield* Fiber.join(expired);
       yield* broker.invoke({ scope, operation: "snapshot", tabId, input: {} });
       expect(
@@ -2068,7 +2068,7 @@ it.effect("a stale unanswered ping cannot evict a replacement generation", () =>
         .invoke({ scope, operation: "status", input: {}, timeoutMs: 100 })
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Deferred.await(received);
-      yield* TestClock.adjust(100);
+      yield* TestClock.adjust(1100);
       yield* Fiber.join(expired);
       yield* Deferred.await(pingReady);
       yield* Stream.runForEach(
@@ -2126,7 +2126,7 @@ it.effect(
           .invoke({ scope, operation: "evaluate", input: {}, timeoutMs: 5000 })
           .pipe(Effect.forkScoped);
         const bRequest = yield* Deferred.await(bReady);
-        yield* TestClock.adjust(100);
+        yield* TestClock.adjust(1100);
         expect(yield* Fiber.join(a)).toMatchObject({ outcome: "unknown" });
         yield* broker.respond({
           clientId: "client-1",
@@ -2168,7 +2168,7 @@ it.effect("an exact late unknown reply retains quarantine until a settled reply 
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       const late = yield* Deferred.await(ready);
       yield* broker.invoke({ scope, operation: "status", input: {} });
-      yield* TestClock.adjust(100);
+      yield* TestClock.adjust(1100);
       yield* Fiber.join(a);
       yield* broker.respond({
         clientId: "client-1",
