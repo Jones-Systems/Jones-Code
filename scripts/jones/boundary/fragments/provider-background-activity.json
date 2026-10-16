@@ -18,10 +18,6 @@
   "tombstones": [],
   "allowedImports": [
     {
-      "from": "apps/server/src/orchestration-v2/ProviderAdapter.ts",
-      "to": "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts"
-    },
-    {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
       "to": "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts"
     },

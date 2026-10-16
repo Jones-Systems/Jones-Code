@@ -493,7 +493,8 @@ describe("voice command queue receipt enrichment", () => {
   const delivery = {
     id: "delivery",
     queue_request_id: "queue-request",
-    payload_hash: "a".repeat(64),
+    payload_hash: "b".repeat(64),
+    queue_payload_sha256: "a".repeat(64),
     destination: { backend: "codex", instance: "worker", thread_id: "thread", project_id: null },
     prompt: "private prompt",
     detail: "private detail",
@@ -551,6 +552,40 @@ describe("voice command queue receipt enrichment", () => {
       expect(result.entries[4]?.text).toBeNull();
       expect(JSON.stringify(result)).not.toContain("private");
     }));
+  it("uses only the submitted queue digest and counts missing legacy digests as unlinked", async () =>
+    withFixture(async (tokenFile) => {
+      const { queue_payload_sha256: _digest, ...legacy } = delivery;
+      const fetcher = vi.fn<typeof fetch>(async (url) =>
+        Response.json(
+          String(url).includes("/recent?")
+            ? recent([recentEntry("command")])
+            : {
+                ...command(),
+                deliveries: [
+                  delivery,
+                  { ...legacy, id: "legacy", payload_hash: delivery.queue_payload_sha256 },
+                  { ...delivery, id: "missing", queue_payload_sha256: null },
+                ],
+              },
+        ),
+      );
+      const result = await makeVoiceReviewBridge(config(tokenFile), fetcher).recent(principal);
+      expect(result.entries[0]?.text).toBe("retained transcript");
+      expect(result.entries[0]?.queue_delivery_links).toEqual({
+        status: "ready",
+        reason: null,
+        unlinked_delivery_count: 2,
+        deliveries: [
+          {
+            delivery_id: delivery.id,
+            queue_request_id: delivery.queue_request_id,
+            payload_sha256: delivery.queue_payload_sha256,
+            destination: delivery.destination,
+          },
+        ],
+      });
+      expect(delivery.payload_hash).not.toBe(delivery.queue_payload_sha256);
+    }));
   it("counts prepared and failed siblings without queue IDs while preserving explicit links", async () =>
     withFixture(async (tokenFile) => {
       const fetcher = vi.fn<typeof fetch>(async (url) =>
@@ -594,7 +629,10 @@ describe("voice command queue receipt enrichment", () => {
         [() => Response.json(command("other")), "invalid_receipt"],
         [
           () =>
-            Response.json({ ...command(), deliveries: [{ ...delivery, payload_hash: "wrong" }] }),
+            Response.json({
+              ...command(),
+              deliveries: [{ ...delivery, queue_payload_sha256: "wrong" }],
+            }),
           "invalid_receipt",
         ],
         [

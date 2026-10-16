@@ -1,7 +1,6 @@
 import * as Effect from "effect/Effect";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
 import type { PreparedConnection } from "../../connection/model.ts";
-import { environmentEndpointUrl } from "../../environment/endpoint.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
 
@@ -11,7 +10,7 @@ export const fetchEnvironmentHostStatus = (prepared: PreparedConnection) =>
       prepared,
       group: "hostStatus",
       method: "GET",
-      url: (base) => environmentEndpointUrl(base, "/api/host-status"),
+      url: (urls) => urls.snapshot(),
       timeoutMs: 8_000,
       signer: yield* Effect.serviceOption(ManagedRelayDpopSigner),
       remoteAuthorization: yield* Effect.serviceOption(RemoteEnvironmentAuthorization),

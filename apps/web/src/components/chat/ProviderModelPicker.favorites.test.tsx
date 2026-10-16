@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS, type ClientSettings } from "@t3tools/contracts/settings";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import type { ClientSettings } from "@t3tools/contracts/settings";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
@@ -12,10 +17,10 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 let favorites: ClientSettings["favorites"] = [];
 
 vi.mock("~/hooks/useSettings", () => ({
-  useClientSettings: (select: (settings: ClientSettings) => unknown) =>
-    select({ ...DEFAULT_CLIENT_SETTINGS, favorites }),
-  useUpdateClientSettings: () => vi.fn(),
+  useEnvironmentModelPreferences: () => ({ favorites }),
+  useToggleEnvironmentModelFavorite: () => vi.fn(),
 }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => [] }));
 vi.mock("../../state/server", () => ({ primaryServerKeybindingsAtom: {} }));
 vi.mock("./ChatGptSharingControl", () => ({ ChatGptSharingControl: () => null }));
@@ -93,6 +98,7 @@ it.each([
       root.render(
         <TooltipProvider>
           <ProviderModelPicker
+            environmentId={EnvironmentId.make("test-environment")}
             open={open}
             activeInstanceId={instanceId}
             model="test-model"

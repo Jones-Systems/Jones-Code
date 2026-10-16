@@ -245,6 +245,8 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.entryPath, environment.backendEntryPath);
         assert.equal(first.cwd, environment.backendCwd);
         assert.equal(first.captureOutput, true);
+        assert.isUndefined(first.jonesColdBackendPermit);
+        assert.isUndefined(second.jonesColdBackendPermit);
         assert.equal(first.env.ELECTRON_RUN_AS_NODE, "1");
         assert.isUndefined(first.env.T3CODE_PORT);
         assert.isUndefined(first.env.T3CODE_MODE);
@@ -323,6 +325,21 @@ describe("DesktopBackendConfiguration", () => {
       );
       assert.equal(config.env.ELECTRON_RUN_AS_NODE, "1");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("only the local primary bootstrap claims the prepared shell environment", () =>
+    withHarness(
+      Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+
+        const primary = yield* configuration.resolvePrimary;
+        const wsl = yield* configuration.resolveWsl({ port: 5000, distro: null });
+
+        assert.equal(primary.bootstrap.shellEnvironmentPrepared, true);
+        // A WSL server runs on its own Linux user environment and must hydrate it.
+        assert.isUndefined(wsl.bootstrap.shellEnvironmentPrepared);
+      }),
+    ),
   );
 
   it.effect("resolveWsl reuses the primary's bootstrap token", () =>

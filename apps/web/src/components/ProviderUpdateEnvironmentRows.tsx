@@ -17,7 +17,6 @@ import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useLocalEnvironmentUpdateGroups } from "./ProviderUpdateLaunchNotification.environments";
 import {
-  collectProviderUpdateOutcomeSnapshots,
   firstRejectedProviderUpdateMessage,
   getProviderUpdateProgressToastView,
   getProviderUpdateSidebarPillView,
@@ -333,13 +332,17 @@ export function ProviderUpdateEnvironmentRows({
           return;
         }
         const view = getProviderUpdateProgressToastView({
-          providers: collectProviderUpdateOutcomeSnapshots(results),
+          providers: results.flatMap((result) =>
+            result.status === "fulfilled" && result.value.provider !== null
+              ? [result.value.provider]
+              : [],
+          ),
           providerCount,
         });
         // Only persist a terminal outcome. A non-terminal ("running"/"initial")
         // view means this dispatch could not confirm completion — e.g. a snapshot
-        // came back without its targeted instance (collectProviderUpdateOutcome-
-        // Snapshots drops null providers), which happens when the command is
+        // came back without its targeted instance (null providers are omitted),
+        // which happens when the command is
         // interrupted as a second backend connects and supersedes the in-flight
         // update. A stored view never re-polls, so persisting it would pin the
         // row's spinner forever once the pending flag expires. Drop it and let

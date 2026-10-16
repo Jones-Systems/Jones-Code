@@ -1,9 +1,5 @@
-import {
-  HostProcessArchitecture,
-  HostProcessExecutablePath,
-  HostProcessPlatform,
-  HostProcessUserId,
-} from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SERVICE_MANAGER_STOP_TIMEOUT_SECONDS } from "../jones/cloud/shutdownBudget.ts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -134,13 +130,23 @@ export function renderBootServiceUnit(
     // Let the launcher mark an explicit stop before it signals the server.
     // systemd still SIGKILLs the whole cgroup if graceful shutdown times out.
     "KillMode=mixed",
-    // Agent tool calls run as children of the server, so they share this cgroup.
-    // With the systemd default of OOMPolicy=stop, the kernel killing one greedy
-    // child stops the whole unit: the server, every live agent, and the user's
-    // connection. Keep running and let Restart=always cover the main process.
+    `TimeoutStopSec=${SERVICE_MANAGER_STOP_TIMEOUT_SECONDS}`,
+    // Agents and terminals run in their own scopes in app-t3code-agents.slice
+    // (see process/agentScope.ts). Short helper commands still share this
+    // cgroup, and with the systemd default of OOMPolicy=stop, the kernel
+    // killing one of them stops the whole unit. Keep running and let
+    // Restart=always cover the main process.
     "OOMPolicy=continue",
     "Restart=always",
     "RestartSec=5",
+    // The agents slice is a sibling in app.slice, so these weights keep the
+    // server responsive while agents saturate CPU or disk.
+    "CPUWeight=1000",
+    "IOWeight=1000",
+    // systemd-oomd only honors this when the cgroup it watches is owned by the
+    // same user. Distros watch user-1000.slice, which root owns, so there it is
+    // ignored. The agent scopes are what keep oomd off the server.
+    "ManagedOOMPreference=avoid",
     `StandardOutput=append:${escapeSystemdSpecifiers(plan.logPath)}`,
     `StandardError=append:${escapeSystemdSpecifiers(plan.logPath)}`,
     "",
@@ -163,9 +169,9 @@ export function renderBootServicePlist(
 ): string {
   // KeepAlive + ThrottleInterval mirror Restart=always + RestartSec=5. launchd
   // has no StartLimitBurst analog; a hard crash loop respawns every 5s forever.
-  // ExitTimeOut 90 matches systemd's default TimeoutStopSec. A plain stop
-  // completes within the launcher's 5s child grace, but a stop that queues
-  // behind an in-flight update transition can take much longer; launchd's
+  // ExitTimeOut matches the explicit systemd TimeoutStopSec and exceeds the
+  // launcher's 75s child grace. A stop queued behind an update transition can
+  // take longer, so timeout still leaves that transaction held. launchd's
   // system-defined default (5s on current macOS) would SIGKILL the launcher
   // (and, with it, the process group) mid-handoff.
   // ProcessType Interactive opts out of background-job resource throttling.
@@ -208,7 +214,7 @@ export function renderBootServicePlist(
     `  <key>ThrottleInterval</key>`,
     `  <integer>5</integer>`,
     `  <key>ExitTimeOut</key>`,
-    `  <integer>90</integer>`,
+    `  <integer>${SERVICE_MANAGER_STOP_TIMEOUT_SECONDS}</integer>`,
     `  <key>ProcessType</key>`,
     `  <string>Interactive</string>`,
     `  <key>StandardOutPath</key>`,
@@ -618,10 +624,10 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   readonly allowEnableLinger?: boolean;
   readonly runtimeMode?: "verified-private-artifact";
 }) {
-  const hostExecPath = yield* HostProcessExecutablePath;
-  const platform = yield* HostProcessPlatform;
-  const arch = yield* HostProcessArchitecture;
-  const uid = yield* HostProcessUserId;
+  const hostExecPath = yield* HostProcess.ExecutablePath;
+  const platform = yield* HostProcess.Platform;
+  const arch = yield* HostProcess.Architecture;
+  const uid = yield* HostProcess.UserId;
   const httpClient = yield* HttpClient.HttpClient;
   const releaseBaseUrl = Option.getOrUndefined(
     yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),

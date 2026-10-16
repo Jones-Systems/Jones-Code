@@ -7,7 +7,7 @@ import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Bind canonical fixture paths synchronously before runtime acquisition.
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { describe, it } from "@effect/vitest";
+import { describe, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { produceCurrentFixture } from "./currentFixtures.ts";
@@ -102,9 +102,43 @@ describe("receiving V2 synthetic fixtures", () => {
     "seeds coherent V2 history and closes %s with observed durability",
     async (profile) => {
       await invocation(async (options, observe) => {
-        const result = await produceCurrentFixture({ ...options, profile }, () => undefined);
-        observe(result);
+        const lifetime: string[] = [];
+        let recordLifetime = false;
+        const nativeClose = NodeSqlite.DatabaseSync.prototype.close;
+        const nativePrepare = NodeSqlite.DatabaseSync.prototype.prepare;
+        const close = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "close")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync) {
+            nativeClose.call(this);
+            if (recordLifetime) lifetime.push("closed");
+          });
+        const prepare = vi
+          .spyOn(NodeSqlite.DatabaseSync.prototype, "prepare")
+          .mockImplementation(function (this: NodeSqlite.DatabaseSync, sql: string) {
+            if (
+              recordLifetime &&
+              (sql === "PRAGMA wal_checkpoint(TRUNCATE)" || sql === "PRAGMA journal_mode=DELETE")
+            )
+              lifetime.push(sql);
+            return nativePrepare.call(this, sql);
+          });
+        let result: CurrentProductionResult<void>;
+        try {
+          result = await produceCurrentFixture({ ...options, profile }, () => {
+            recordLifetime = true;
+          });
+          observe(result);
+        } finally {
+          prepare.mockRestore();
+          close.mockRestore();
+        }
         NodeAssert.equal(result.error, undefined);
+        NodeAssert.deepEqual(
+          lifetime,
+          profile === "health-offline-delete"
+            ? ["closed", "PRAGMA wal_checkpoint(TRUNCATE)", "PRAGMA journal_mode=DELETE", "closed"]
+            : ["closed"],
+        );
         NodeAssert.equal(result.closeKnown, true);
         NodeAssert.equal(result.receipt?.schema, "jones-performance-fixture/v2");
         NodeAssert.equal(result.receipt?.producer, "current-v2");
@@ -136,10 +170,16 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 103, name: "RuntimeStop" },
           { id: 104, name: "DeletionAdmission" },
           { id: 105, name: "UpstreamReferenceIsolation" },
+          { id: 106, name: "PlannedUpdateContinuity" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);
         NodeAssert.equal(result.capture?.profile.productionObservations.length, 5);
+        NodeAssert.ok(
+          result.capture?.profile.productionObservations.every(
+            (observation) => observation.pragmas.journal_mode === "wal",
+          ),
+        );
         NodeAssert.equal(result.capture?.runtime.pragmas.journal_mode, "wal");
         NodeAssert.equal(result.capture?.runtime.pragmas.foreign_keys, 1);
         NodeAssert.equal(result.capture?.runtime.pragmas.busy_timeout, 5000);
@@ -161,6 +201,9 @@ describe("receiving V2 synthetic fixtures", () => {
             shm: false,
             journal: false,
           });
+          for (const suffix of ["-wal", "-shm", "-journal"]) {
+            NodeAssert.equal(NodeFS.existsSync(`${validated.canonicalPath}${suffix}`), false);
+          }
           const db = new NodeSqlite.DatabaseSync(validated.canonicalPath, { readOnly: true });
           try {
             NodeAssert.deepEqual(
@@ -173,6 +216,8 @@ describe("receiving V2 synthetic fixtures", () => {
           } finally {
             db.close();
           }
+        } else {
+          NodeAssert.equal(result.capture?.profile.maintenance, undefined);
         }
       });
     },

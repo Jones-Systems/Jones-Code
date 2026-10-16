@@ -167,6 +167,39 @@ describe("host status metrics", () => {
       health: "unavailable",
     });
   });
+  it.each(["mini", "home"] as const)(
+    "shows combined swap instead of low RAM alarms on %s",
+    (id) => {
+      const mac = { ...available, id, availableMemoryBytes: 0, swapIoBytesPerSecond: 0 };
+      expect(hostStatusMetrics(mac)).toMatchObject({
+        ram: "Swap 0.0 MiB/s",
+        ramHealth: "healthy",
+        health: "healthy",
+      });
+      expect(hostStatusMetrics(mac).detail).toContain("Available RAM 0.0 GiB");
+      expect(hostStatusMetrics(mac).detail).toContain("10-second average");
+      expect(hostStatusMetrics({ ...mac, swapIoBytesPerSecond: 10 * 1024 ** 2 })).toMatchObject({
+        ramHealth: "healthy",
+      });
+      expect(hostStatusMetrics({ ...mac, swapIoBytesPerSecond: 10.01 * 1024 ** 2 })).toMatchObject({
+        ram: "Swap 10.0 MiB/s",
+        ramHealth: "warning",
+        health: "warning",
+      });
+      expect(hostStatusMetrics({ ...mac, cpuUsagePercent: 95 })).toMatchObject({
+        cpuHealth: "critical",
+        ramHealth: "healthy",
+        health: "critical",
+      });
+      const { swapIoBytesPerSecond: _swap, ...olderMac } = mac;
+      expect(hostStatusMetrics(olderMac)).toMatchObject({
+        ram: "Swap —",
+        ramHealth: "unavailable",
+        health: "healthy",
+      });
+      expect(hostStatusMetrics(olderMac).detail).toContain("Swap I/O unavailable");
+    },
+  );
   it("hides values at the thirty-second source freshness boundary", () => {
     vi.advanceTimersByTime(29_999);
     expect(hostStatusMetrics(available).cpu).toBe("23%");

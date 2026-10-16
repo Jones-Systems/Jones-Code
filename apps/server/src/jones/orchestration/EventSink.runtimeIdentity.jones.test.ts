@@ -15,7 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
-import { unobservedRuntimeIdentity } from "../../orchestration-v2/ProviderAdapter.ts";
+import { unobservedRuntimeIdentity } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 

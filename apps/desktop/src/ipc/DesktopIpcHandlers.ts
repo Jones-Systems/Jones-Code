@@ -9,6 +9,9 @@ import { getClientSettings, setClientSettings } from "./methods/clientSettings.t
 import {
   clearConnectionCatalog,
   getConnectionCatalog,
+  getConnectionCatalogSnapshot,
+  listConnectionCompatibilityHints,
+  setConnectionCompatibilityHint,
   setConnectionCatalog,
 } from "./methods/connectionCatalog.ts";
 import {
@@ -35,6 +38,8 @@ import {
 import {
   checkForUpdate,
   downloadUpdate,
+  discardUpdate,
+  fleetUpdates,
   getUpdateState,
   installUpdate,
   setUpdateChannel,
@@ -73,6 +78,7 @@ import {
 } from "./methods/snapShot.ts";
 import * as PreviewIpc from "./methods/preview.ts";
 import * as AppActivationIpc from "./methods/appActivation.ts";
+import * as WebLinksIpc from "./methods/webLinks.ts";
 import {
   completeLegacyLocalStorage,
   takeLegacyLocalStorage,
@@ -92,6 +98,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
 
   yield* ipc.handle(AppActivationIpc.setReady);
   yield* ipc.handle(AppActivationIpc.complete);
+  yield* ipc.handle(WebLinksIpc.setReady);
 
   yield* ipc.handleSync(takeLegacyLocalStorage);
   yield* ipc.handle(completeLegacyLocalStorage);
@@ -107,6 +114,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getClientSettings);
   yield* ipc.handle(setClientSettings);
   yield* ipc.handle(getConnectionCatalog);
+  yield* ipc.handle(getConnectionCatalogSnapshot);
+  yield* ipc.handle(listConnectionCompatibilityHints);
+  yield* ipc.handle(setConnectionCompatibilityHint);
   yield* ipc.handle(getSnapShotState);
   yield* ipc.handle(setupSnapShot);
   yield* ipc.handle(previewSnapShotConfig);
@@ -159,6 +169,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getUpdateState);
   yield* ipc.handle(setUpdateChannel);
   yield* ipc.handle(downloadUpdate);
+  yield* ipc.handle(discardUpdate);
+  yield* ipc.handle(fleetUpdates);
   yield* ipc.handle(installUpdate);
   yield* ipc.handle(checkForUpdate);
   yield* ipc.handle(getCliCommandState);

@@ -4,6 +4,7 @@ import {
   getJonesDesktopUpdateBlockedMessage,
   getJonesDesktopUpdateOutcomeMessage,
   getJonesDesktopUpdateRefusal,
+  isJonesDesktopUpdatePending,
 } from "../jones/updates/localDesktopUpdate";
 
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
@@ -86,6 +87,13 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     resolveDesktopUpdateButtonAction(state),
   );
   if (blocked) return blocked;
+  if (
+    state.notAppliedVersion !== undefined &&
+    (state.status === "available" || state.status === "downloaded") &&
+    getDesktopUpdateDownloadedVersion(state) === state.notAppliedVersion
+  ) {
+    return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
+  }
   if (state.status === "available") {
     return `Update ${state.availableVersion ?? "available"} ready to download`;
   }
@@ -120,6 +128,7 @@ export function getDesktopUpdateInstallConfirmationMessage(
 }
 
 export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): string | null {
+  if (isJonesDesktopUpdatePending(result)) return null;
   const refusal = getJonesDesktopUpdateRefusal(result);
   if (refusal) return refusal;
   if (!result.accepted || result.completed) return null;

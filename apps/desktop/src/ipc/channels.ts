@@ -10,6 +10,8 @@ export const PROBE_REMOTE_EDITORS_CHANNEL = "desktop:probe-remote-editors";
 export const MENU_ACTION_CHANNEL = "desktop:menu-action";
 export const PASTE_AS_TEXT_CHANNEL = "desktop:paste-as-text";
 export const SNAP_SHOT_EVENT_CHANNEL = "desktop:snap-shot-event";
+export const WEB_LINK_OPEN_CHANNEL = "desktop:web-link-open";
+export const WEB_LINK_READY_CHANNEL = "desktop:web-link-ready";
 export const QUIT_SHORTCUT_CHANNEL = "desktop:quit-shortcut";
 export const TRACKPAD_SCROLL_END_CHANNEL = "desktop:trackpad-scroll-end";
 export const GET_WINDOW_FULLSCREEN_STATE_CHANNEL = "desktop:get-window-fullscreen-state";
@@ -21,6 +23,8 @@ export const UPDATE_STATE_CHANNEL = "desktop:update-state";
 export const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 export const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
 export const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
+export const FLEET_UPDATES_CHANNEL = "desktop:fleet-updates";
+export const UPDATE_DISCARD_CHANNEL = "desktop:update-discard";
 export const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 export const UPDATE_CHECK_CHANNEL = "desktop:update-check";
 export const CLI_COMMAND_GET_STATE_CHANNEL = "desktop:cli-command-get-state";
@@ -113,6 +117,7 @@ export const PREVIEW_RECORDING_SAVE_CHANNEL = "desktop:preview-recording-save";
 export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop:preview-recording-frame";
 export const PREVIEW_STATE_CHANGE_CHANNEL = "desktop:preview-state-change";
 export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
+export const PREVIEW_OPEN_LINK_CHANNEL = "desktop:preview-open-link";
 
 export const MAC_PERMISSION_HELPER_CHANNEL = "desktop:mac-permission-helper";
 
@@ -124,3 +129,9 @@ export const RECEIVE_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:receive-provider-
 export const CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:cancel-provider-auth-callback";
 export const TAKE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:take-legacy-local-storage";
 export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-local-storage";
+
+export const GET_CONNECTION_CATALOG_SNAPSHOT_CHANNEL = "desktop:get-connection-catalog-snapshot";
+export const LIST_CONNECTION_COMPATIBILITY_HINTS_CHANNEL =
+  "desktop:list-connection-compatibility-hints";
+export const SET_CONNECTION_COMPATIBILITY_HINT_CHANNEL =
+  "desktop:set-connection-compatibility-hint";

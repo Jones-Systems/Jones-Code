@@ -8,7 +8,7 @@ import {
   TokenAccountingReport,
   TokenAccountingUnavailable,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -171,7 +171,7 @@ export function makeProcessReader(
   }
 
   const run = (operation: "check" | "read") =>
-    HostProcessPlatform.pipe(
+    HostProcess.Platform.pipe(
       Effect.flatMap((platform) =>
         Effect.callback<string | TokenAccountingUnavailable>((resume) => {
           const abort = new AbortController();

@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeURL from "node:url";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "vite-plus/test";
 import {
   assertControlProcessPlacement,
@@ -126,11 +126,11 @@ describe("required process placement", () => {
 
 const helperPath = NodeURL.fileURLToPath(
   new URL(
-    `../../../dist/native/process-placement-linux-${HostProcessArchitecture.defaultValue()}`,
+    `../../../dist/native/process-placement-linux-${HostProcess.Architecture.defaultValue()}`,
     import.meta.url,
   ),
 );
-describe.skipIf(HostProcessPlatform.defaultValue() !== "linux" || !NodeFS.existsSync(helperPath))(
+describe.skipIf(HostProcess.Platform.defaultValue() !== "linux" || !NodeFS.existsSync(helperPath))(
   "native placement gate",
   () => {
     const helperIdentity = () => {

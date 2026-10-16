@@ -32,7 +32,10 @@ export function classifySentPrompts(
       }
     }
   }
-  if (snapshot?.schema === "codex.t3-work-queue-metadata/v2") {
+  if (
+    snapshot?.schema === "codex.t3-work-queue-metadata/v2" ||
+    snapshot?.schema === "codex.t3-work-queue-metadata/v3"
+  ) {
     for (const item of snapshot.items) {
       const proof = item.native_handoff;
       if (
@@ -41,10 +44,16 @@ export function classifySentPrompts(
         !item.payload_sha256 ||
         !/^[a-f0-9]{64}$/.test(item.payload_sha256) ||
         proof.command_status !== "accepted" ||
-        proof.correlation_status !== "exact" ||
+        (proof.correlation_status === "exact"
+          ? !proof.turn_id
+          : snapshot.schema !== "codex.t3-work-queue-metadata/v3" ||
+            proof.correlation_status !== "pending" ||
+            proof.turn_id !== null ||
+            (proof.turn_state !== "pending" &&
+              proof.turn_state !== "error" &&
+              proof.turn_state !== "interrupted")) ||
         !proof.command_id ||
         !proof.message_id ||
-        !proof.turn_id ||
         !Number.isSafeInteger(proof.receipt_sequence) ||
         proof.receipt_sequence < 0 ||
         !Number.isSafeInteger(proof.observed_at_ms) ||
