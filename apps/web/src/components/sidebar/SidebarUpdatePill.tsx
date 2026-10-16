@@ -42,7 +42,9 @@ export function resolveSidebarUpdateCheckFeedback(state: DesktopUpdateState): {
   title: string;
   description?: string;
 } | null {
-  if (state.status !== "idle" && state.status !== "up-to-date" && state.status !== "error") return null;
+  if (state.status !== "idle" && state.status !== "up-to-date" && state.status !== "error") {
+    return null;
+  }
   if (state.jones?.phase === "building") {
     return {
       type: "info",
@@ -70,7 +72,9 @@ export function resolveSidebarUpdateCheckFeedback(state: DesktopUpdateState): {
   return null;
 }
 
-export function checkForSidebarUpdate(bridge: Pick<DesktopBridge, "checkForUpdate">): Promise<void> {
+export function checkForSidebarUpdate(
+  bridge: Pick<DesktopBridge, "checkForUpdate">,
+): Promise<void> {
   return bridge
     .checkForUpdate()
     .then((result) => {

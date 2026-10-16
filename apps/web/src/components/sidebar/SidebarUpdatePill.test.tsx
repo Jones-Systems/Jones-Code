@@ -147,19 +147,22 @@ describe("sidebar manual update check feedback", () => {
     },
   );
 
-  it.each(["Connection lost.", null])("reports a completed error with message %s", async (message) => {
-    const state = checkedState({ status: "error", message });
-    await checkForSidebarUpdate({
-      checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state }),
-    });
-    expect(toast.add).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        type: "error",
-        title: "Could not check for updates",
-        description: message ?? "Update check failed.",
-      }),
-    );
-  });
+  it.each(["Connection lost.", null])(
+    "reports a completed error with message %s",
+    async (message) => {
+      const state = checkedState({ status: "error", message });
+      await checkForSidebarUpdate({
+        checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state }),
+      });
+      expect(toast.add).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          type: "error",
+          title: "Could not check for updates",
+          description: message ?? "Update check failed.",
+        }),
+      );
+    },
+  );
 
   it.each(["no-new", "committed", "rolled-back"] as const)(
     "reports no new update without replaying a retained %s transaction",
@@ -251,7 +254,10 @@ describe("sidebar manual update check feedback", () => {
     "does not announce completion for %s",
     async (status) => {
       await checkForSidebarUpdate({
-        checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state: checkedState({ status }) }),
+        checkForUpdate: vi.fn().mockResolvedValue({
+          checked: true,
+          state: checkedState({ status }),
+        }),
       });
       expect(toast.add).not.toHaveBeenCalled();
     },
@@ -282,7 +288,10 @@ describe("sidebar manual update check feedback", () => {
     "preserves unchecked feedback with message %s",
     async (message) => {
       await checkForSidebarUpdate({
-        checkForUpdate: vi.fn().mockResolvedValue({ checked: false, state: checkedState({ message }) }),
+        checkForUpdate: vi.fn().mockResolvedValue({
+          checked: false,
+          state: checkedState({ message }),
+        }),
       });
       expect(toast.add).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
