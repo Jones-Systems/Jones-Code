@@ -2,6 +2,11 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-provider-order",
+      "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
+      "commands": ["vp test run apps/web/src/jones/settings/providerOrder.test.ts"]
+    },
+    {
       "id": "jones-provider-restart-identity",
       "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
       "commands": [

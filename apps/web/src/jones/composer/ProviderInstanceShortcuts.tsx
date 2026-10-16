@@ -184,7 +184,11 @@ export function ProviderInstanceShortcuts(props: {
               accentColor={entry.accentColor}
               showBadge
               className="size-4"
-              iconClassName="size-4"
+              iconClassName={
+                entry.driverKind === "codex" || entry.driverKind === "claudeAgent"
+                  ? "size-5"
+                  : "size-4"
+              }
               indicatorBackground="var(--background)"
             />
           </ComposerControl>
