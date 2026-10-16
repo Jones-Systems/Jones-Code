@@ -1070,6 +1070,25 @@
       "commands": [
         "vp test run apps/server/src/jones/orchestration/QueueHold.test.ts apps/server/src/orchestration-v2/RunCompletionReads.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/jones/orchestration/Orchestrator.control-reads.jones.test.ts apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts --maxWorkers=1"
       ]
+    },
+    {
+      "id": "jones-server-shard-weights",
+      "tests": [
+        "scripts/jones/server-shard-weights/envelope.test.ts",
+        "scripts/jones/server-shard-weights/capture.test.ts",
+        "scripts/jones/server-shard-weights/aggregate.test.ts",
+        "scripts/jones/server-shard-weights/select.test.ts",
+        "scripts/jones/server-shard-weights/aggregate-cli.test.ts",
+        "scripts/jones/ci-test-progress-reporter.test.ts",
+        "apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts",
+        "apps/server/src/testUtils/weightedShardSequencer.test.ts"
+      ],
+      "commands": [
+        "vp test run scripts/jones/server-shard-weights/envelope.test.ts scripts/jones/server-shard-weights/capture.test.ts scripts/jones/server-shard-weights/aggregate.test.ts scripts/jones/server-shard-weights/select.test.ts scripts/jones/server-shard-weights/aggregate-cli.test.ts scripts/jones/ci-test-progress-reporter.test.ts apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts apps/server/src/testUtils/weightedShardSequencer.test.ts",
+        "vp run --filter @t3tools/scripts typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }

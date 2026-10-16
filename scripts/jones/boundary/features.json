@@ -588,6 +588,20 @@
         "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
       ],
       "scope": "Historical queue holds remain entry-local across later active runs. Same-cohort holds, reviewed full-head delivery, eligible completion priority/FIFO, failure attribution and tool-boundary guards remain intact. Small direct Orchestrator.ts and ProjectionStore.ts shared edits keep one lifecycle decision; extracting predicates would duplicate SQL and orchestration machinery. RunCompletionReads.test.ts retains its SQL/memory parity harness as an explicit test-in-upstream exception; Jones runtime tests import existing services and harnesses."
+    },
+    {
+      "id": "server-shard-weights",
+      "tests": [
+        "scripts/jones/server-shard-weights/envelope.test.ts",
+        "scripts/jones/server-shard-weights/capture.test.ts",
+        "scripts/jones/server-shard-weights/aggregate.test.ts",
+        "scripts/jones/server-shard-weights/select.test.ts",
+        "scripts/jones/server-shard-weights/aggregate-cli.test.ts",
+        "scripts/jones/ci-test-progress-reporter.test.ts",
+        "apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts",
+        "apps/server/src/testUtils/weightedShardSequencer.test.ts"
+      ],
+      "scope": "Automatic CI wall-time capture, complete disjoint shard aggregation and read-only reuse of validated main-run weights. One selection applies to every shard; checked-in fallback preserves legacy semantics. Six shards remain default until comparable six/eight evidence."
     }
   ]
 }

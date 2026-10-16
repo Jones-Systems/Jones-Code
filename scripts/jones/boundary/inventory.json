@@ -9,6 +9,7 @@
   "paths": {
     "apps/server/src/orchestration-v2/ProviderTurnControlService.ts": "accepted-shared",
     "scripts/jones/ci-test-progress-reporter.ts": "jones-owned",
+    "apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/shellFanout.test.ts": "jones-owned",
     "apps/server/src/device/DeviceHubProxy.stream.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts": "jones-tests-in-upstream",
@@ -920,7 +921,10 @@
     "packages/client-runtime/src/rpc/session.ts": "accepted-shared",
     "packages/client-runtime/src/rpc/session.test.ts": "jones-tests-in-upstream",
     "apps/web/src/jones/observability/clientTracing.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/connection-diagnostics.json": "jones-owned"
+    "scripts/jones/boundary/fragments/connection-diagnostics.json": "jones-owned",
+    "apps/server/src/testUtils/weightedShardSequencer.ts": "hook",
+    "apps/server/src/testUtils/weightedShardSequencer.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/boundary/fragments/server-shard-weights.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

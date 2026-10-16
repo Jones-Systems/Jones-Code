@@ -27,6 +27,8 @@
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
         "jones/ci-test-progress-reporter.ts",
+        "jones/server-shard-weights/select.ts",
+        "jones/server-shard-weights/aggregate-cli.ts",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
         "jones/performance/prepare-sources.mjs",

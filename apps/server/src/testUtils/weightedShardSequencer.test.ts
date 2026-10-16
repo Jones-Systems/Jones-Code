@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { TestSpecification, Vitest } from "vite-plus/test/node";
 
 import shardWeights from "./shardWeights.json" with { type: "json" };
 import { WeightedShardSequencer } from "./weightedShardSequencer.ts";
+
+// CI shards may name a runtime weights file; these cases cover the checked-in map.
+vi.stubEnv("JONES_SERVER_SHARD_WEIGHTS_PATH", "");
 
 const root = "/repo/apps/server";
 const recordedSeconds: Readonly<Record<string, number>> = shardWeights;
