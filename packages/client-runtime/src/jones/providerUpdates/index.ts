@@ -8,9 +8,7 @@ export type ProviderUpdateCandidate = ServerProvider & {
 };
 
 /** Instance IDs are scoped to one environment; select freshness before eligibility. */
-export function freshestProviderSnapshots<T extends ServerProvider>(
-  providers: ReadonlyArray<T>,
-): T[] {
+function freshestProviderSnapshots<T extends ServerProvider>(providers: ReadonlyArray<T>): T[] {
   const latest = new Map<ProviderInstanceId, T>();
   for (const provider of providers) {
     const current = latest.get(provider.instanceId);
