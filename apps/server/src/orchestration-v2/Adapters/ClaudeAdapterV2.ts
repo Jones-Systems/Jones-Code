@@ -6521,7 +6521,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? {}
                 : { workflowFrame: completion, result: completion.summary }),
               onlyIfRunningInRun: subagent.task.runId,
-            });
+            }).pipe(
+              Effect.provideService(ClaudeProducerContext, undefined),
+              Effect.provideService(ClaudeEventProducerContext, sessionEventProducer),
+            );
           }
           yield* Ref.update(interruptedTurns, (current) => {
             const next = new Set(current);

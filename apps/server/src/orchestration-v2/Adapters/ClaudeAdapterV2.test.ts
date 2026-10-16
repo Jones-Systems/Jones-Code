@@ -13897,7 +13897,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const clock = yield* Clock.Clock;
-        const cleanupPaused = yield* Deferred.make<void>();
+        const cleanupPaused = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
         const releaseCleanup = yield* Deferred.make<void>();
         let readsUntilPause = 0;
         yield* Effect.gen(function* () {
@@ -13946,7 +13946,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               }),
             })
             .pipe(Effect.forkScoped);
-          yield* Deferred.await(cleanupPaused);
+          const oldCleanupFiber = yield* Deferred.await(cleanupPaused);
           yield* TestClock.adjust("10 seconds");
           yield* Fiber.join(stop);
           yield* Queue.take(harness.terminalReceipts);
@@ -13984,7 +13984,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             "resumed workflow tool running",
           );
           yield* Deferred.succeed(releaseCleanup, undefined);
-          yield* Queue.take(harness.terminalReceipts);
+          const cleanupExit = yield* Fiber.await(oldCleanupFiber);
+          assert.isTrue(Exit.isSuccess(cleanupExit));
           assert.lengthOf(toolUpdates(oldBash), oldToolCount);
           assert.deepEqual(
             toolUpdates(newBash).map((item) => item.status),
@@ -14008,7 +14009,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             ...clock,
             currentTimeMillis: Effect.gen(function* () {
               if (readsUntilPause > 0 && --readsUntilPause === 0) {
-                yield* Deferred.succeed(cleanupPaused, undefined);
+                yield* Deferred.succeed(cleanupPaused, yield* Effect.fiber);
                 yield* Deferred.await(releaseCleanup);
               }
               return yield* clock.currentTimeMillis;
