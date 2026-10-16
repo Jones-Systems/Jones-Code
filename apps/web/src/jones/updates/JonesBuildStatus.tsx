@@ -17,7 +17,13 @@ import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "../../components/settings/itemRows";
 import { compactJonesVersionText } from "./buildVersion";
-import { DETAIL_PANEL_CLASSNAME, DetailItem, DetailList, DisclosureButton } from "./disclosure";
+import {
+  DETAIL_PANEL_CLASSNAME,
+  DetailItem,
+  DetailList,
+  DisclosureButton,
+  INLINE_ACTIONS_CLASSNAME,
+} from "./disclosure";
 import { BuildVersion, CopyableValue } from "./updateDisplay";
 
 export type JonesBuildRequest =
@@ -40,7 +46,7 @@ const LAYOUTS = {
     root: "mt-1.5",
     header: "flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5",
     summary: "min-w-0 space-y-0.5 text-xs",
-    actions: "flex shrink-0 items-center gap-1.5",
+    actions: INLINE_ACTIONS_CLASSNAME,
     button: "xs",
     after: "mt-1.5 space-y-1.5 text-xs empty:hidden",
   },

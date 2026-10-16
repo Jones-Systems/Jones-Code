@@ -1,11 +1,15 @@
+import { EllipsisIcon, ChevronRightIcon, GripVerticalIcon, PlusIcon } from "lucide-react";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { EnvironmentId, type EnvironmentMachineKind } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
+import { AUTH_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import "../../../index.css";
 import { EnvironmentRow } from "../../../components/settings/EnvironmentRow";
 import { SettingsGroup } from "../../../components/settings/SettingsGroup";
+import { Button } from "../../../components/ui/button";
+import { cn } from "../../../lib/utils";
 import { Switch } from "../../../components/ui/switch";
 import { ToastProvider, AnchoredToastProvider } from "../../../components/ui/toast";
 import { TooltipProvider } from "../../../components/ui/tooltip";
@@ -40,12 +44,21 @@ const lastInstall = {
 const state = (environmentId: EnvironmentId, fields: object) =>
   ({ ...base, environmentId, ...fields }) as unknown as JonesUpdateState;
 
+interface SyntheticRoute {
+  readonly label: string;
+  readonly address: string;
+  readonly inUse?: boolean;
+}
+
 interface Scenario {
   readonly key: string;
   readonly label: string;
   readonly kind: EnvironmentMachineKind;
   readonly subtitle: string;
   readonly subtitleTone?: "error";
+  /** Synthetic stand-ins for the saved routes and session grants the real row reads. */
+  readonly routes: readonly SyntheticRoute[];
+  readonly deniedScopes?: readonly string[];
   readonly build?: {
     readonly state: JonesUpdateState | null;
     readonly freshness: "loading" | "fresh" | "stale" | "unsupported";
@@ -71,6 +84,7 @@ function scenarios(): readonly Scenario[] {
       subtitle:
         "T3 Connect · Reconnecting: Relay could not reach the environment endpoint (endpoint_request_failed)",
       subtitleTone: "error",
+      routes: [{ label: "T3 Connect", address: "relay · mac-mini" }],
       build: {
         state: null,
         freshness: "stale",
@@ -83,6 +97,10 @@ function scenarios(): readonly Scenario[] {
       label: "VPS",
       kind: "cloud",
       subtitle: "via T3 Connect · Connected",
+      routes: [
+        { label: "T3 Connect", address: "relay · vps", inUse: true },
+        { label: "SSH", address: "deploy@vps.example:22" },
+      ],
       build: {
         state: state(id("downloading"), {
           phase: "downloading",
@@ -103,6 +121,11 @@ function scenarios(): readonly Scenario[] {
       label: "Build server",
       kind: "linux",
       subtitle: "SSH builder@build.example · Connected",
+      routes: [
+        { label: "SSH", address: "builder@build.example", inUse: true },
+        { label: "Remote link", address: "http://192.168.1.40:3773 · found automatically" },
+      ],
+      deniedScopes: [AUTH_SCOPE_OPTIONS[2]!.scope],
       build: {
         state: state(id("available"), {
           phase: "available",
@@ -119,6 +142,7 @@ function scenarios(): readonly Scenario[] {
       label: "Studio",
       kind: "server",
       subtitle: "via T3 Connect · Connected",
+      routes: [{ label: "T3 Connect", address: "relay · studio", inUse: true }],
       build: {
         state: state(id("staged"), {
           phase: "staged",
@@ -141,6 +165,7 @@ function scenarios(): readonly Scenario[] {
       label: "Lab host",
       kind: "server",
       subtitle: "Remote link · Connected",
+      routes: [{ label: "Remote link", address: "http://lab.example:3773", inUse: true }],
       build: {
         state: state(id("rolled-back"), {
           phase: "rolled-back",
@@ -168,10 +193,130 @@ function scenarios(): readonly Scenario[] {
       label: "Older host",
       kind: "server",
       subtitle: "Remote link · Connected",
+      routes: [{ label: "Remote link", address: "http://older.example:3773", inUse: true }],
       build: { state: null, freshness: "unsupported" },
       fleet: { enrolled: false, readiness: "setup-required" },
     },
   ];
+}
+
+const SUBTITLE_TOGGLE_CLASSNAME =
+  "inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
+
+/** The row's Routes and Permissions toggles, copied from the saved environment row's markup. */
+function SubtitleToggle({
+  open,
+  onToggle,
+  children,
+}: {
+  readonly open: boolean;
+  readonly onToggle: () => void;
+  readonly children: string;
+}) {
+  return (
+    <>
+      <span aria-hidden className="shrink-0">
+        ·
+      </span>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className={SUBTITLE_TOGGLE_CLASSNAME}
+      >
+        {children}
+        <ChevronRightIcon
+          aria-hidden
+          className={cn(
+            "size-3 shrink-0 transition-transform duration-150 motion-reduce:transition-none",
+            open && "rotate-90",
+          )}
+        />
+      </button>
+    </>
+  );
+}
+
+/**
+ * Static copies of the expanded Routes list and session Permissions. The real panels read the
+ * connection catalog and session; these keep their layout with inert controls.
+ */
+function SyntheticRoutes({
+  label,
+  routes,
+}: {
+  readonly label: string;
+  readonly routes: readonly SyntheticRoute[];
+}) {
+  return (
+    <div data-synthetic="routes" className="mt-2 border-t border-border/50 py-2">
+      <ol aria-label={`Synthetic routes to ${label}, preferred first`}>
+        {routes.map((route, index) => (
+          <li key={route.label} className="flex items-center gap-2 py-2">
+            <div className="min-w-0 flex-1">
+              <p className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                {route.label}
+                {route.inUse ? (
+                  <span className="rounded-sm bg-success/12 px-1 text-2xs font-normal text-success-foreground">
+                    In use
+                  </span>
+                ) : null}
+              </p>
+              <p className="truncate text-2xs text-muted-foreground">{route.address}</p>
+            </div>
+            <button
+              type="button"
+              aria-label={`Reorder ${route.label}, position ${index + 1}`}
+              className="flex size-6 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground/70"
+            >
+              <GripVerticalIcon className="size-3.5" />
+            </button>
+          </li>
+        ))}
+      </ol>
+      <div className="-ml-1.5 pt-1">
+        <Button size="xs" variant="ghost-muted">
+          <PlusIcon className="size-3" />
+          Add route
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SyntheticPermissions({
+  connected,
+  deniedScopes,
+}: {
+  readonly connected: boolean;
+  readonly deniedScopes?: readonly string[] | undefined;
+}) {
+  return (
+    <div data-synthetic="permissions" className="mt-2 border-t border-border/50">
+      {connected ? (
+        <div className="space-y-3 py-3 text-xs">
+          <p className="text-muted-foreground">
+            These permissions apply to your active route. Other routes may have different
+            permissions.
+          </p>
+          <ul className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+            {AUTH_SCOPE_OPTIONS.map(({ scope, title }) => (
+              <li key={scope} className="flex items-start justify-between gap-3">
+                <span>{title}</span>
+                <span className="shrink-0 text-muted-foreground">
+                  {deniedScopes?.includes(scope) ? "Not granted" : "Allowed"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="py-3 text-xs text-muted-foreground">
+          Permissions not checked. Connect to this environment to view this session’s permissions.
+        </p>
+      )}
+    </div>
+  );
 }
 
 function ScenarioRow({
@@ -183,14 +328,33 @@ function ScenarioRow({
 }) {
   const [enrolled, setEnrolled] = useState(scenario.fleet.enrolled);
   const [continueThreads, setContinueThreads] = useState(false);
+  const [routesOpen, setRoutesOpen] = useState(false);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
   const environmentId = EnvironmentId.make(`fixture-${scenario.key}`);
+  const routeCount = scenario.routes.length;
   return (
     <EnvironmentRow
       kind={scenario.kind}
       label={scenario.label}
       subtitle={
-        <span className={scenario.subtitleTone === "error" ? "text-destructive" : undefined}>
-          {scenario.subtitle}
+        <span className="flex min-w-0 items-center gap-1">
+          <span
+            className={cn(
+              "min-w-0 truncate",
+              scenario.subtitleTone === "error" && "text-destructive",
+            )}
+          >
+            {scenario.subtitle}
+          </span>
+          <SubtitleToggle open={routesOpen} onToggle={() => setRoutesOpen((open) => !open)}>
+            {routeCount === 1 ? "Routes" : `${routeCount} routes`}
+          </SubtitleToggle>
+          <SubtitleToggle
+            open={permissionsOpen}
+            onToggle={() => setPermissionsOpen((open) => !open)}
+          >
+            Permissions
+          </SubtitleToggle>
         </span>
       }
       below={
@@ -226,8 +390,26 @@ function ScenarioRow({
           />
         </>
       }
+      detail={
+        <>
+          {routesOpen ? <SyntheticRoutes label={scenario.label} routes={scenario.routes} /> : null}
+          {permissionsOpen ? (
+            <SyntheticPermissions
+              connected={scenario.subtitleTone !== "error"}
+              deniedScopes={scenario.deniedScopes}
+            />
+          ) : null}
+        </>
+      }
     >
       <Switch size="sm" checked aria-label={`Switch off ${scenario.label}`} />
+      <Button
+        size="icon-xs"
+        variant="ghost-muted"
+        aria-label={`More actions for ${scenario.label}`}
+      >
+        <EllipsisIcon className="size-3.5" />
+      </Button>
     </EnvironmentRow>
   );
 }
@@ -251,7 +433,8 @@ function FixtureScreen() {
               <h1 className="text-xl font-semibold">Jones environment updates fixture</h1>
               <p className="text-sm text-muted-foreground">
                 Production update views with synthetic states. No connection, desktop bridge, host
-                request, enrollment, or installation.
+                request, enrollment, or installation. Routes and Permissions open static copies of
+                those panels with synthetic routes and grants; their controls do nothing.
               </p>
             </header>
             <section aria-label="This machine">
@@ -274,7 +457,9 @@ function FixtureScreen() {
               <h2 className="mb-2 text-sm text-muted-foreground">Environments</h2>
               <SettingsGroup>
                 {scenarios().map((scenario) => (
-                  <ScenarioRow key={scenario.key} scenario={scenario} onRequest={record} />
+                  <div key={scenario.key} data-fixture-row={scenario.key}>
+                    <ScenarioRow scenario={scenario} onRequest={record} />
+                  </div>
                 ))}
               </SettingsGroup>
             </section>

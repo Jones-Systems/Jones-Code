@@ -2,7 +2,11 @@ import { useId, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { RefreshIcon } from "../../components/ui/refresh-icon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
-import { DETAIL_PANEL_CLASSNAME, DisclosureButton } from "../updates/disclosure";
+import {
+  DETAIL_PANEL_CLASSNAME,
+  DisclosureButton,
+  INLINE_ACTIONS_CLASSNAME,
+} from "../updates/disclosure";
 
 /** What this laptop knows about the host's ability to join automatic updates. */
 export type FleetHostReadiness = "loading" | "unavailable" | "setup-required" | "qualified";
@@ -62,7 +66,7 @@ export function FleetEnrollmentStatus({
             About
           </DisclosureButton>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
           {!enrolled && readiness === "qualified" ? (
             <label className="flex items-center gap-1.5 text-muted-foreground">
               <input
@@ -74,31 +78,33 @@ export function FleetEnrollmentStatus({
               Continue eligible threads after update
             </label>
           ) : null}
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label={`${enrolled ? "Turn off" : "Turn on"} automatic updates for ${label}`}
-            disabled={busy || (!enrolled && readiness !== "qualified")}
-            onClick={onToggle}
-          >
-            {enrolled ? "Turn off" : "Turn on"}
-          </Button>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="icon-xs"
-                  variant="ghost-muted"
-                  aria-label={`Refresh automatic update status for ${label}`}
-                  disabled={busy}
-                  onClick={onRefresh}
-                />
-              }
+          <div className={INLINE_ACTIONS_CLASSNAME}>
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label={`${enrolled ? "Turn off" : "Turn on"} automatic updates for ${label}`}
+              disabled={busy || (!enrolled && readiness !== "qualified")}
+              onClick={onToggle}
             >
-              <RefreshIcon refreshing={busy} />
-            </TooltipTrigger>
-            <TooltipPopup side="top">Refresh status</TooltipPopup>
-          </Tooltip>
+              {enrolled ? "Turn off" : "Turn on"}
+            </Button>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon-xs"
+                    variant="ghost-muted"
+                    aria-label={`Refresh automatic update status for ${label}`}
+                    disabled={busy}
+                    onClick={onRefresh}
+                  />
+                }
+              >
+                <RefreshIcon refreshing={busy} />
+              </TooltipTrigger>
+              <TooltipPopup side="top">Refresh status</TooltipPopup>
+            </Tooltip>
+          </div>
         </div>
       </div>
       <div className="mt-1 space-y-1 empty:hidden">
