@@ -348,6 +348,7 @@
     "apps/server/src/orchestration-v2/Adapters/CursorAdapterV2.testkit.ts": "accepted-shared",
     "packages/provider-cursor/src/server/adapter.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.testkit.ts": "accepted-shared",
+    "apps/server/src/orchestration-v2/Adapters/MuseAdapterV2.testkit.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts": "jones-tests-in-upstream",
     "packages/provider-opencode/src/server/v2/adapter.ts": "hook",
     "packages/provider-opencode/src/server/adapter.test.ts": "hook",

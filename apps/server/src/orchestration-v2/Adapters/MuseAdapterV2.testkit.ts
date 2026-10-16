@@ -37,6 +37,8 @@ import {
   type MuseSdkHostOptions,
 } from "@t3tools/provider-muse/testing";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
@@ -463,7 +465,11 @@ export function layer(input: {
   ).pipe(
     Layer.provide(
       Layer.mergeAll(
-        TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+        // Production's ProviderHostLive binds Jones identity; replay must send the same prompt.
+        Layer.effect(
+          ProviderHost.ProviderHost,
+          Effect.map(ProviderHost.ProviderHost, (host) => ({ ...host, appIdentity: APP_IDENTITY })),
+        ).pipe(Layer.provide(TestProviderHost.layer()), Layer.provide(NodeServices.layer)),
         NodeServices.layer,
         IdAllocator.layer,
       ),

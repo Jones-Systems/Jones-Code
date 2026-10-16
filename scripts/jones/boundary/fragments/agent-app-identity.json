@@ -33,6 +33,10 @@
       "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/Adapters/MuseAdapterV2.testkit.ts",
+      "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
       "from": "packages/provider-core/src/server/runtimeInstructions.ts",
       "to": "packages/provider-core/src/server/jones/AppIdentity.ts"
     },

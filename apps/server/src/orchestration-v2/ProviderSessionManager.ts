@@ -19,7 +19,6 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
-import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -70,55 +69,6 @@ import {
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-
-// TEMPORARY Jones replay probe, enabled only by JONES_REPLAY_DIAGNOSTICS=1 in one CI job.
-// Remove after the grok replay stall is diagnosed. Logs stages, event types, outcomes and
-// runtime generations only; never event payloads or causes.
-const replayDiagnosticsEnabled = process.env.JONES_REPLAY_DIAGNOSTICS === "1";
-let replayDiagnosticsRemaining = 300;
-const logReplayDiagnostic = (
-  stage: string,
-  event: ProviderAdapter.ProviderAdapterV2Event,
-  runtime: Parameters<typeof ProviderEventOrigin.revalidateProviderEventOrigin>[1],
-  outcome: string,
-): Effect.Effect<void> =>
-  Effect.suspend(() => {
-    if (!replayDiagnosticsEnabled || replayDiagnosticsRemaining <= 0) return Effect.void;
-    replayDiagnosticsRemaining -= 1;
-    const origin = ProviderEventOrigin.readProviderEventOrigin(event);
-    return Effect.gen(function* () {
-      const producerCurrent =
-        origin === undefined
-          ? null
-          : yield* origin.producer.revalidateCurrent.pipe(
-              Effect.result,
-              Effect.map((result) => result._tag === "Success"),
-            );
-      // it.effect records Console output in memory; print this probe line on the host console.
-      yield* Effect.logError("jones.replay-diagnostic", {
-        stage,
-        outcome,
-        eventType: event.type,
-        eventOriginMode: runtime.eventOriginMode ?? null,
-        hasOrigin: origin !== undefined,
-        hasTurnOrigin: origin?.turn !== undefined,
-        producerCurrent,
-        producerMatchesRuntime:
-          origin === undefined
-            ? null
-            : origin.producer.driver === event.driver &&
-              origin.producer.driver === runtime.driver &&
-              origin.producer.instanceId === runtime.instanceId &&
-              origin.producer.providerSessionId === runtime.providerSessionId,
-        producerGeneration: origin?.producer.runtimeGeneration ?? null,
-        evidenceGeneration:
-          (event.type === "runtime_identity.observed"
-            ? event.binding.runtimeGeneration
-            : event.runtimeEvidence?.runtimeGeneration) ?? null,
-        turnGeneration: origin?.turn?.binding.runtimeGeneration ?? null,
-      }).pipe(Effect.provideService(Console.Console, globalThis.console));
-    });
-  });
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -569,15 +519,6 @@ export const layerWithOptions = (
               const revalidateObservation = ProviderEventOrigin.revalidateProviderEventOrigin(
                 observedEvent,
                 { driver, instanceId, providerSessionId },
-              ).pipe(
-                Effect.tapCause(() =>
-                  logReplayDiagnostic(
-                    "session.observe",
-                    observedEvent,
-                    { driver, instanceId, providerSessionId },
-                    "rejected:origin-check-failed",
-                  ),
-                ),
               );
               yield* revalidateObservation;
               const current = yield* readThread(thread.appThreadId, thread.id);
@@ -2188,30 +2129,11 @@ export const layerWithOptions = (
       ) =>
         Effect.gen(function* () {
           const current = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
-          if (current !== undefined && current.runtime !== runtime) {
-            yield* logReplayDiagnostic("session.validate", event, runtime, "rejected:superseded");
-            return false;
-          }
+          if (current !== undefined && current.runtime !== runtime) return false;
           yield* ProviderEventOrigin.revalidateProviderEventOrigin(event, runtime);
           const latest = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
-          const accepted = latest === undefined || latest.runtime === runtime;
-          yield* logReplayDiagnostic(
-            "session.validate",
-            event,
-            runtime,
-            accepted ? "accepted" : "rejected:replaced",
-          );
-          return accepted;
-        }).pipe(
-          Effect.catchCause(() =>
-            logReplayDiagnostic(
-              "session.validate",
-              event,
-              runtime,
-              "rejected:origin-check-failed",
-            ).pipe(Effect.as(false)),
-          ),
-        );
+          return latest === undefined || latest.runtime === runtime;
+        }).pipe(Effect.catchCause(() => Effect.succeed(false)));
 
       const makeEventSubscription = (
         runtime: ProviderAdapterV2SessionRuntime,

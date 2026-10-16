@@ -27,7 +27,6 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
-import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -52,55 +51,6 @@ import {
   makeProviderFailureTurnItem,
 } from "@t3tools/provider-core/server/failure";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
-
-// TEMPORARY Jones replay probe, enabled only by JONES_REPLAY_DIAGNOSTICS=1 in one CI job.
-// Remove after the grok replay stall is diagnosed. Logs stages, event types, outcomes and
-// runtime generations only; never event payloads or causes.
-const replayDiagnosticsEnabled = process.env.JONES_REPLAY_DIAGNOSTICS === "1";
-let replayDiagnosticsRemaining = 300;
-const logReplayDiagnostic = (
-  stage: string,
-  event: ProviderAdapter.ProviderAdapterV2Event,
-  runtime: Parameters<typeof ProviderEventOrigin.revalidateProviderEventOrigin>[1],
-  outcome: string,
-): Effect.Effect<void> =>
-  Effect.suspend(() => {
-    if (!replayDiagnosticsEnabled || replayDiagnosticsRemaining <= 0) return Effect.void;
-    replayDiagnosticsRemaining -= 1;
-    const origin = ProviderEventOrigin.readProviderEventOrigin(event);
-    return Effect.gen(function* () {
-      const producerCurrent =
-        origin === undefined
-          ? null
-          : yield* origin.producer.revalidateCurrent.pipe(
-              Effect.result,
-              Effect.map((result) => result._tag === "Success"),
-            );
-      // it.effect records Console output in memory; print this probe line on the host console.
-      yield* Effect.logError("jones.replay-diagnostic", {
-        stage,
-        outcome,
-        eventType: event.type,
-        eventOriginMode: runtime.eventOriginMode ?? null,
-        hasOrigin: origin !== undefined,
-        hasTurnOrigin: origin?.turn !== undefined,
-        producerCurrent,
-        producerMatchesRuntime:
-          origin === undefined
-            ? null
-            : origin.producer.driver === event.driver &&
-              origin.producer.driver === runtime.driver &&
-              origin.producer.instanceId === runtime.instanceId &&
-              origin.producer.providerSessionId === runtime.providerSessionId,
-        producerGeneration: origin?.producer.runtimeGeneration ?? null,
-        evidenceGeneration:
-          (event.type === "runtime_identity.observed"
-            ? event.binding.runtimeGeneration
-            : event.runtimeEvidence?.runtimeGeneration) ?? null,
-        turnGeneration: origin?.turn?.binding.runtimeGeneration ?? null,
-      }).pipe(Effect.provideService(Console.Console, globalThis.console));
-    });
-  });
 
 export interface ProviderEventRoutingState {
   readonly ownedThreadIds: ReadonlySet<ThreadId>;
@@ -1364,29 +1314,10 @@ export const layer: Layer.Layer<
               ProviderEventOrigin.revalidateProviderEventOrigin(event, input.session).pipe(
                 Effect.result,
                 Effect.map((result) => result._tag === "Success"),
-                Effect.tap((accepted) =>
-                  logReplayDiagnostic(
-                    "run.origin",
-                    event,
-                    input.session,
-                    accepted ? "accepted" : "rejected:origin-check-failed",
-                  ),
-                ),
               ),
             ),
             Stream.filterEffect((event) =>
-              Ref.modify(eventRouting, (state) =>
-                routeProviderEvent(event, routeIdentity, state),
-              ).pipe(
-                Effect.tap((routed) =>
-                  logReplayDiagnostic(
-                    "run.route",
-                    event,
-                    input.session,
-                    routed ? "accepted" : "rejected:unrouted",
-                  ),
-                ),
-              ),
+              Ref.modify(eventRouting, (state) => routeProviderEvent(event, routeIdentity, state)),
             ),
             Stream.tap((event) =>
               Effect.gen(function* () {
@@ -1402,9 +1333,6 @@ export const layer: Layer.Layer<
                   event,
                   DateTime.toEpochMillis(yield* DateTime.now),
                 );
-                if (!deliveredEvent) {
-                  yield* logReplayDiagnostic("run.deliver", event, input.session, "held:streaming");
-                }
                 if (deliveredEvent) {
                   // Root provider-thread snapshots use an ownership gate:
                   // pre-terminal writeIfRunCurrent (attempt still running), or
@@ -1421,21 +1349,7 @@ export const layer: Layer.Layer<
                     deliveredEvent,
                     input.session,
                   ).pipe(Effect.result);
-                  if (currentOrigin._tag === "Failure") {
-                    yield* logReplayDiagnostic(
-                      "run.ingest",
-                      deliveredEvent,
-                      input.session,
-                      "rejected:origin-check-failed",
-                    );
-                    return;
-                  }
-                  yield* logReplayDiagnostic(
-                    "run.ingest",
-                    deliveredEvent,
-                    input.session,
-                    "accepted",
-                  );
+                  if (currentOrigin._tag === "Failure") return;
                   const storedEvents = yield* providerEventIngestor.ingestNormalized({
                     analyticsContext: {
                       modelSelection: input.modelSelection,
