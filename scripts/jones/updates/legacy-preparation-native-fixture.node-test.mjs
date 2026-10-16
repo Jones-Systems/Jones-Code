@@ -1632,11 +1632,14 @@ def family_hashes(database):
 def presence(database):
     return {label: pathlib.Path(str(database) + suffix).exists()
             for label, suffix in (('wal', '-wal'), ('shm', '-shm'))}
-def error_data(failure):
+def error_data(failure, phase):
     code = getattr(failure, 'sqlite_errorcode', None)
     name = getattr(failure, 'sqlite_errorname', None)
     number = getattr(failure, 'errno', None)
-    return dict(category=sqlite_failure_category(failure),
+    captured = capture_controller_failure([failure], failure)['records'][0]
+    kind = {NameError: 'NameError', AttributeError: 'AttributeError'}.get(type(failure), captured['type'])
+    return dict(type=kind, phase=phase, readerStage=captured['stage'], frames=captured['frames'],
+                category=sqlite_failure_category(failure),
                 sqliteCode=code if type(code) is int else None,
                 sqliteName=name if isinstance(name, str) and name.startswith('SQLITE_') and len(name) <= 64 else None,
                 osErrno=number if type(number) is int else None)
@@ -1655,14 +1658,17 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                     readerContext=None, preopenContext=None, queryOnly=None, completed=False)
     observations.append(observed)
     connections = []
+    phase = 'cell-directory'
     try:
         with tempfile.TemporaryDirectory(prefix='reader-cell-', dir=root) as cell:
             directory = pathlib.Path(cell)
             seed_path = directory / 'seed.sqlite'
             database = directory / 'source.sqlite'
             target = directory / 'assertion-copy.sqlite'
+            phase = 'seed-open'
             seed = real_connect(seed_path)
             try:
+                phase = 'seed-schema'
                 observed['sqliteSourceId'] = seed.execute('SELECT sqlite_source_id()').fetchone()[0]
                 assert seed.execute('PRAGMA journal_mode=WAL').fetchone()[0] == 'wal'
                 seed.execute('CREATE TABLE probe_rows(value TEXT)')
@@ -1671,16 +1677,21 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                 assert seed.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
                 seed.execute('PRAGMA wal_autocheckpoint=0')
                 if family == 'wal-family':
+                    phase = 'seed-wal-commit'
                     seed.execute("INSERT INTO probe_rows VALUES ('wal-sentinel')")
                     seed.commit()
+                    phase = 'seed-family-copy'
                     for suffix in suffixes:
                         write(pathlib.Path(str(database) + suffix), pathlib.Path(str(seed_path) + suffix).read_bytes())
             finally:
                 seed.close()
                 observed['seedClosed'] = True
             if family == 'closed-main':
+                phase = 'closed-main-sidecars'
                 assert presence(seed_path) == dict(wal=False, shm=False)
+                phase = 'closed-main-copy'
                 write(database, seed_path.read_bytes())
+            phase = 'paired-family-bytes'
             if family not in fixtures:
                 fixtures[family] = {suffix: pathlib.Path(str(database) + suffix).read_bytes()
                                     for suffix in suffixes if pathlib.Path(str(database) + suffix).exists()}
@@ -1689,6 +1700,7 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                     write(pathlib.Path(str(database) + suffix), raw)
             expected = {'probe_rows': [{'value': 'main-sentinel'}]}
             if family == 'wal-family':
+                phase = 'negative-control'
                 expected['probe_rows'].append({'value': 'wal-sentinel'})
                 # Immutable/main-only is solely a negative control, never the assertion reader.
                 control_path = directory / 'negative-control.sqlite'
@@ -1700,6 +1712,7 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
                     control.close()
                     observed['controlClosed'] = True
             observed['expectedRows'] = expected
+            phase = 'source-hashes-before'
             observed['sourceHashesBefore'] = family_hashes(database)
             class ObservedConnection(sqlite3.Connection):
                 closed = False
@@ -1728,25 +1741,29 @@ for family, mode in (('closed-main', 'ro'), ('closed-main', 'rw-query-only'),
             # Patch only this synthetic invocation; always restore the native connection function.
             sqlite3.connect = probe_connect
             try:
+                phase = 'reader-invocation'
                 observed['rows'] = readonly_rows(database)
                 observed['querySuccess'] = True
             except Exception as failure:
-                observed['error'] = error_data(failure)
+                observed['error'] = error_data(failure, phase)
                 saved = _failure_stages.get(id(failure))
-                if saved is None or saved[1] not in ('reader-open', 'reader-query'):
+                if not isinstance(failure, sqlite3.Error) or saved is None or saved[1] not in ('reader-open', 'reader-query'):
                     observed['setupError'] = 'reader-lifecycle'
             finally:
                 sqlite3.connect = real_connect
+                phase = 'reader-closure'
                 for connection in connections:
                     if not connection.closed:
                         connection.close()
                 observed['connectionsClosed'] = all(connection.closed for connection in connections)
+                phase = 'source-hashes-after'
                 observed['sourceHashesAfter'] = family_hashes(database)
                 observed['sourceFamilyHashesUnchanged'] = observed['sourceHashesBefore'] == observed['sourceHashesAfter']
             observed['completed'] = True
+            phase = 'cell-cleanup'
     except Exception as failure:
         observed['setupError'] = observed['setupError'] or 'incomplete-cell'
-        observed['error'] = observed['error'] or error_data(failure)
+        observed['error'] = observed['error'] or error_data(failure, phase)
     finally:
         sqlite3.connect = real_connect
 print(json.dumps(observations))
