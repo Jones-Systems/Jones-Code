@@ -82,6 +82,8 @@ it("emits only fixed failure diagnostics and retains exit 70", async () => {
       "4",
     ];
     await offlinePreparationMain();
+    // Source execution has no held build define, so recognized arguments reach the worker.
+    expect(run).toHaveBeenCalledOnce();
     expect(process.exitCode).toBe(70);
     expect(write).toHaveBeenCalledExactlyOnceWith(
       "Closed preparation worker refused.\nJONES_PREPARATION_FAILURE phase=entry kind=unexpected\n",

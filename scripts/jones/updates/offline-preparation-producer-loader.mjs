@@ -240,7 +240,7 @@ const reviewedRawSources = {
   "apps/server/src/jones/updates/offlinePreparationCore.ts":
     "0ef63d0c2fad4d2e3163c254364d97f8a280551deeb861e46a6a548aa9d53bdb",
   "apps/server/src/jones/updates/offlinePreparationEntry.ts":
-    "0414cb886fbc7c6809f43abb246a100ff2a82d3032437b4fa6c8b445a89f5c89",
+    "fa93192f5731f7f3e26527ad6b469051d7a89b1da7ace639afaba59ad9fd3774",
   "apps/server/src/jones/updates/offlinePreparationPlan.ts":
     "3af9931a1136b162ee94d9d8b0f62c2b538824b0cfb917598c7e423b0deb884b",
   "apps/server/src/jones/updates/offlinePreparationWorker.test.ts":
@@ -264,7 +264,7 @@ const reviewedRawSources = {
   "scripts/jones/updates/legacy-preparation-native-fixture.mjs":
     "d43e1527d749df5e19730e145a13d75898c47c0172dff9c2e700e22c8c555f92",
   "scripts/jones/updates/offline-preparation-build.ts":
-    "59e1eec050703a29cb4b4637202f4868e84aafccf8aad80e0cde05702dc0de9e",
+    "42aa94a85e8e71a188aec142e60069509e7cf1019c5d6ce9abe099e5dc789812",
   "scripts/jones/updates/offline-preparation-producer-entry.ts":
     "779e2bb0d298a04b17debed2de6088fec1aefcb52b57e47e0664e027b5bbd247",
   "scripts/package.json": "021407078841ca3f0fdb4d6347ba8989c826b80127268844ff2fd257647ba504",

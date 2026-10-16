@@ -14,12 +14,32 @@ export function offlinePreparationEntryOutput(): string {
   return `${JSON.stringify(offlinePreparationStatus())}\n`;
 }
 
+declare global {
+  interface ImportMeta {
+    /**
+     * Set only by the closed held pack's build define. Source execution and the functional
+     * worker build leave it absent; no caller, environment or runtime value can supply it.
+     */
+    readonly jonesPreparationHeldEntry?: true;
+  }
+}
+
 /** The only executable dispatch reads the real inherited-process invocation. */
 export async function offlinePreparationMain(): Promise<void> {
   if (process.argv.length === 2) {
     process.stdout.write(offlinePreparationEntryOutput());
     return;
   }
+  // The held build folds this to a literal and drops the worker branch and its imports.
+  if (import.meta.jonesPreparationHeldEntry) {
+    process.exitCode = 64;
+    process.stdout.write(offlinePreparationEntryOutput());
+  } else {
+    await runPreparationWorker();
+  }
+}
+
+async function runPreparationWorker(): Promise<void> {
   const worker = await import("./offlinePreparationWorker.ts");
   if (worker.preparationWorkerArguments(process.argv.slice(2)) === null) {
     process.exitCode = 64;
