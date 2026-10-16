@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "connection-diagnostics",
+  "jonesOwnedPaths": ["apps/web/src/jones/observability/clientTracing.test.ts"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}
