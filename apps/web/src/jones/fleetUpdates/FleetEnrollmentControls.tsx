@@ -80,7 +80,7 @@ export function FleetEnrollmentControls({
         const fresh = await fleetHost(environmentId, { action: "status" });
         const selected = {
           enrollmentId: await runtime.runPromise(
-            Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4)),
+            Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
           ),
           environmentId,
           enabled: true,
