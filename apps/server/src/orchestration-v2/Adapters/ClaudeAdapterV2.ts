@@ -6473,7 +6473,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   }),
             });
           } else {
-            yield* resetBackgroundTaskStateForNativeThreadProcess(closedQuery.nativeThreadId);
+            const liveQuery = yield* Ref.get(queryContext);
+            if (liveQuery === null || liveQuery.query === closedQuery.query) {
+              // Close retires the query producer before its stream exits. The
+              // session owns this roster clear, but never a replacement's roster.
+              yield* resetBackgroundTaskStateForNativeThreadProcess(
+                closedQuery.nativeThreadId,
+              ).pipe(
+                Effect.provideService(ClaudeProducerContext, undefined),
+                Effect.provideService(ClaudeEventProducerContext, sessionEventProducer),
+              );
+            }
           }
           // A workflow can outlive its launching turn, but not its CLI process.
           // Apply buffered outcomes before Stop can discard their wake buffer.
@@ -7151,7 +7161,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               const canApplyOutcome =
                 subagentStopOutcomes.has(message.task_id) ||
                 (!hasBufferedStart && registered?.task.workflow === undefined);
-              if (registered !== undefined && settled !== undefined && canApplyOutcome) {
+              const acceptedProducer = acceptedWakeProducers.get(message);
+              if (
+                registered !== undefined &&
+                settled !== undefined &&
+                canApplyOutcome &&
+                acceptedProducer !== undefined
+              ) {
+                const current = yield* acceptedProducer.origin.revalidateCurrent.pipe(Effect.result);
+                if (current._tag === "Failure") return;
                 yield* discardBufferedSubagentStarts(
                   liveQuery.nativeThreadId,
                   message.task_id,
@@ -7166,7 +7184,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   result: message.summary,
                   status: claudeTaskOutcome(message.status),
                   onlyIfRunningInRun: registered.task.runId,
-                });
+                }).pipe(
+                  Effect.provideService(ClaudeProducerContext, undefined),
+                  Effect.provideService(ClaudeEventProducerContext, acceptedProducer),
+                );
               }
             } else {
               yield* applyBackgroundTaskRosterMessage({
