@@ -5346,11 +5346,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           SELECT 1 AS ready FROM orchestration_v2_projection_threads AS thread
           WHERE thread.thread_id = ${threadId} AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
             AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
-              WHERE thread_id = ${threadId} AND status = 'queued')
+              WHERE thread_id = ${threadId} AND status = 'queued'
+                AND json_extract(payload_json, '$.queueHeld') IS NOT 1)
             AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
               WHERE thread_id = ${threadId}
-                AND (status IN ('preparing', 'starting', 'running', 'waiting')
-                  OR (status = 'queued' AND json_extract(payload_json, '$.queueHeld') = 1)))`;
+                AND status IN ('preparing', 'starting', 'running', 'waiting'))`;
             return rows.length > 0;
           }),
         )
@@ -5363,8 +5363,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sql<{ ready: number }>`SELECT 1 AS ready FROM orchestration_v2_projection_threads AS thread
         WHERE thread.thread_id = ${threadId} AND thread.archived_at IS NULL AND thread.deleted_at IS NULL
           AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${threadId} AND run_id = ${runId} AND status = 'running')
-          AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${threadId} AND status = 'queued')
-          AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${threadId} AND status = 'queued' AND json_extract(payload_json, '$.queueHeld') = 1)
+          AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${threadId} AND status = 'queued' AND json_extract(payload_json, '$.queueHeld') IS NOT 1)
           AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runtime_requests WHERE thread_id = ${threadId} AND status = 'pending')
       `.pipe(
         Effect.map((rows) => rows.length > 0),
@@ -7416,14 +7415,13 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           return (
             projection.thread.archivedAt === null &&
             projection.thread.deletedAt === null &&
-            projection.runs.some((run) => run.status === "queued") &&
+            projection.runs.some((run) => run.status === "queued" && run.queueHeld !== true) &&
             !projection.runs.some(
               (run) =>
                 run.status === "preparing" ||
                 run.status === "starting" ||
                 run.status === "running" ||
-                run.status === "waiting" ||
-                (run.status === "queued" && run.queueHeld === true),
+                run.status === "waiting",
             )
           );
         }),
@@ -7435,8 +7433,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             projection.thread.archivedAt === null &&
             projection.thread.deletedAt === null &&
             projection.runs.some((run) => run.id === runId && run.status === "running") &&
-            projection.runs.some((run) => run.status === "queued") &&
-            !projection.runs.some((run) => run.status === "queued" && run.queueHeld === true) &&
+            projection.runs.some((run) => run.status === "queued" && run.queueHeld !== true) &&
             !projection.runtimeRequests.some((request) => request.status === "pending")
           );
         }),
