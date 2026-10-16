@@ -1,4 +1,6 @@
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as FleetUpdates from "./jones/fleetUpdates/service.ts";
+import { fleetUpdatesHttpApiLayer } from "./jones/fleetUpdates/http.ts";
 import { importedHistoryHttpApiLayer } from "./jones/importedHistory/http.ts";
 import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
 import * as JonesHttp from "./jones/http/registration.ts";
@@ -745,6 +747,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(McpOAuthHttp.layer.pipe(Layer.provide(McpOAuth.layer))),
       Layer.provide(CloudHttp.layer),
       Layer.provide(jonesUpdatesHttpApiLayer),
+      Layer.provide(fleetUpdatesHttpApiLayer),
       Layer.provide(importedHistoryHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
@@ -797,6 +800,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(workstreamRegistrationContextLayerLive),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(layerServerSelfUpdate),
+  Layer.provide(FleetUpdates.layer),
   Layer.provide(layerJonesUpdates),
   Layer.provide(layerCommandReadiness),
   Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),

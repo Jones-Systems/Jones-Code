@@ -13,9 +13,8 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
-  ProjectId,
   ProjectScript,
-  ProjectSettingsOverrides,
+  type ProjectSettingsOverrides,
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
   defaultInstanceIdForDriver,
@@ -23,7 +22,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
-  ResponseStreamingMode,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
@@ -43,7 +41,6 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -52,7 +49,7 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
-import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
+import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import {
   applyServerSettingsPatch,
   deriveLegacyProjectOverrides,
@@ -64,6 +61,7 @@ import {
   readSecretFieldValues,
   sourceControlHostSecretName,
 } from "./sourceControl/sourceControlHostSecrets.ts";
+import { decodePersistedServerSettings } from "./ServerSettingsPersistence.ts";
 
 import { mapSettingsSecrets, SECRET_REDACTED, type SettingsSecret } from "./settingsSecrets.ts";
 
@@ -287,51 +285,6 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
 
 export const layerTest = (overrides: DeepPartial<ServerSettings> = {}) =>
   Layer.effect(ServerSettingsService, makeTest(overrides));
-
-// Migrate saved token delivery without accepting it in settings writes or
-// letting one retired value reset the rest of the environment's settings.
-const PersistedResponseStreamingMode = Schema.Union([
-  ResponseStreamingMode,
-  Schema.Literal("token"),
-]).pipe(
-  Schema.decodeTo(
-    ResponseStreamingMode,
-    SchemaTransformation.transform({
-      decode: (mode) => (mode === "token" ? "paragraph" : mode),
-      encode: (mode) => mode,
-    }),
-  ),
-);
-const ServerSettingsJson = fromLenientJson(
-  Schema.Struct({
-    ...ServerSettings.fields,
-    responseStreamingMode: PersistedResponseStreamingMode.pipe(
-      Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
-    ),
-    projectSettingsOverrides: Schema.Record(
-      ProjectId,
-      Schema.Struct({
-        ...ProjectSettingsOverrides.fields,
-        responseStreamingMode: Schema.optionalKey(PersistedResponseStreamingMode),
-      }),
-    ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  }),
-);
-const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson);
-/**
- * The retired `providers.<kind>` map, read without its old schemas. Before
- * `providerInstances` existed each built-in driver had one blob there; it
- * now only feeds `migrateLegacyProviderSettings`.
- */
-const LegacyProviderSettingsJson = fromLenientJson(
-  Schema.Struct({
-    providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-    // Retired for `sourceControlHosts`; read only by `migrateLegacySourceControlSettings`.
-    bitbucket: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-    github: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-  }),
-);
-const decodeLegacyProviderSettingsJsonExit = Schema.decodeUnknownExit(LegacyProviderSettingsJson);
 
 /** The secret store names the retired `bitbucket` and `github` keys kept their tokens under. */
 const LEGACY_BITBUCKET_SECRET_NAMES: Readonly<Record<string, string>> = {
@@ -718,39 +671,21 @@ const make = Effect.gen(function* () {
     });
 
   const loadSettingsFromDisk = Effect.gen(function* () {
-    let settings = DEFAULT_SERVER_SETTINGS;
-    let legacyProviders: Readonly<Record<string, unknown>> | undefined;
-    let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
+    const raw = (yield* readConfigExists) ? yield* readRawConfig : undefined;
     // A file that failed to decode must stay on disk for the user to repair;
     // the fold below only writes when it started from the file's real contents.
-    let settingsFileTrusted = true;
-
-    if (yield* readConfigExists) {
-      const raw = yield* readRawConfig;
-      const decoded = decodeServerSettingsJsonExit(raw);
-      const legacySettings = decodeLegacyProviderSettingsJsonExit(raw);
-      if (legacySettings._tag === "Success") {
-        legacyProviders = legacySettings.value.providers;
-        legacySourceControl = {
-          bitbucket: legacySettings.value.bitbucket,
-          github: legacySettings.value.github,
-        };
-      }
-      if (decoded._tag === "Failure" || legacySettings._tag === "Failure") {
-        const failure = decoded._tag === "Failure" ? decoded : legacySettings;
-        settingsFileTrusted = false;
-        // The file may hold an opt-out we can no longer read; never resume threads on a guess.
-        settings = { ...DEFAULT_SERVER_SETTINGS, continueThreadsAfterServerUpdate: false };
-        if (failure._tag === "Failure") {
-          yield* Effect.logWarning("failed to parse settings.json, using defaults", {
-            path: settingsPath,
-            issues: Cause.pretty(failure.cause),
-            cause: failure.cause,
-          });
-        }
-      } else {
-        settings = decoded.value;
-      }
+    const { settings, legacy, settingsFileTrusted, cause } = decodePersistedServerSettings(raw);
+    const legacyProviders = legacy.providers;
+    const legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {
+      bitbucket: legacy.bitbucket,
+      github: legacy.github,
+    };
+    if (cause !== undefined) {
+      yield* Effect.logWarning("failed to parse settings.json, using defaults", {
+        path: settingsPath,
+        issues: Cause.pretty(cause),
+        cause,
+      });
     }
 
     const providerHistory = yield* sql<{

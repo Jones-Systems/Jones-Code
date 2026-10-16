@@ -7,11 +7,73 @@ on:
       - .github/workflows/artifact-desktop-mac.yml
       - .github/workflows/artifact-cli-linux.yml
       - apps/desktop/src/jones/updates/**
+      - apps/desktop/src/boot.ts
+      - apps/desktop/vite.config.ts
+      - apps/desktop/scripts/main-process-bundle.test.mjs
+      - apps/desktop/package.json
+      - packages/shared/src/jones/nativeWriterFence*
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - packages/client-runtime/src/platform/storageDocument.ts
+      - packages/client-runtime/src/platform/storageDocument.test.ts
+      - packages/client-runtime/src/platform/persistence.ts
+      - packages/client-runtime/src/connection/registry.ts
+      - packages/client-runtime/src/connection/registry.test.ts
+      - apps/web/src/connection/storage.ts
+      - apps/web/src/connection/storage.test.ts
+      - apps/mobile/src/connection/catalog-store.ts
+      - apps/mobile/src/connection/storage.ts
+      - apps/mobile/src/connection/storage.test.ts
+      - apps/desktop/src/app/DesktopConnectionCatalogStore.ts
+      - apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts
+      - apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts
+      - apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts
+      - apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts
+      - apps/desktop/src/ipc/methods/connectionCatalog.ts
+      - apps/desktop/src/ipc/channels.ts
+      - apps/desktop/src/ipc/DesktopIpcHandlers.ts
+      - apps/desktop/src/preload.ts
+      - packages/contracts/src/ipc.ts
+      - apps/web/src/components/settings/ConnectionsSettings.tsx
+      - apps/web/src/jones/fleetUpdates/**
       - apps/server/src/jones/updates/**
+      - apps/server/vite.config.ts
+      - vite.config.ts
+      - apps/server/package.json
+      - apps/server/src/orchestration-v2/RestartContinuation*
+      - apps/server/src/orchestration-v2/ServerUpdateContinuation*
+      - apps/server/src/ServerSettingsPersistence*
+      - apps/server/src/serverSettings*
       - apps/server/src/jones/cloud/qualifiedStartup.ts
       - apps/web/src/jones/updates/**
+      - apps/web/jones-install-fixture.html
+      - apps/web/vite.install-preview.config.ts
+      - apps/web/vite.config.ts
+      - apps/web/src/index.css
+      - apps/web/src/env.ts
+      - apps/web/src/state/desktopUpdate.ts
+      - apps/web/src/rpc/atomRegistry.ts
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/SettingsGroup.tsx
+      - apps/web/src/components/sidebar/SidebarUpdatePill.tsx
+      - apps/web/src/components/desktopUpdate.logic.ts
+      - apps/web/src/components/desktopUpdate.toast.tsx
+      - apps/web/src/components/ConfirmDialogHost.tsx
+      - apps/web/src/confirmDialog.ts
+      - apps/web/src/localApi.ts
+      - apps/web/src/components/ui/toast.tsx
+      - apps/web/src/components/ui/tooltip.tsx
+      - apps/web/src/jones/fleetUpdates/**
+      - packages/client-runtime/src/jones/updates/**
+      - packages/client-runtime/src/jones/fleetUpdates/**
+      - packages/contracts/src/jones/jonesUpdates.ts
+      - packages/contracts/src/jones/fleetUpdates/**
+      - packages/contracts/src/ipc.ts
+      - packages/contracts/src/resourceTelemetry.ts
       - apps/web/src/versionSkew.ts
       - scripts/stamp-jones-build*
+      - scripts/package.json
       - scripts/build-desktop-artifact.ts
       - scripts/jones/updates/**
       - scripts/jones/boundary/**
@@ -56,13 +118,311 @@ jobs:
           apps/desktop/src/jones/updates/preloadInstall.test.ts
           apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
           apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
+          apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
+          apps/desktop/src/jones/updates/jonesColdPairSource.test.ts
+          apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts
+          apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts
+          apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts
+          apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts
+          apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts
+          packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts
+          packages/contracts/src/jones/fleetUpdates/source.test.ts
+          packages/client-runtime/src/platform/storageDocument.test.ts
+          packages/client-runtime/src/connection/registry.test.ts
+          apps/web/src/connection/storage.test.ts
+          apps/mobile/src/connection/storage.test.ts
+          apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts
+          apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts
+          apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx
+          packages/contracts/src/ipc.test.ts
           apps/desktop/src/jones/updates/jonesMacStaging.test.ts
           apps/server/src/jones/updates/trialGate.test.ts
+          apps/server/src/orchestration-v2/RestartContinuation.test.ts
+          apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts
+          apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts
+          apps/server/src/jones/updates/offlinePreparation.test.ts
+          apps/server/src/jones/updates/offlinePreparationEntry.test.ts
+          apps/server/src/jones/updates/offlinePreparationPlan.test.ts
+          apps/server/src/jones/updates/offlinePreparationCore.test.ts
+          apps/server/src/jones/updates/offlinePreparationWorker.test.ts
+          scripts/jones/updates/offline-preparation-build.test.ts
+          scripts/jones/updates/functional-policy.test.ts
+          scripts/jones/updates/offline-preparation-qualification.test.ts
+          apps/server/src/ServerSettingsPersistence.test.ts
+          apps/server/src/serverSettings.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
           apps/server/src/jones/cloud/qualifiedStartup.test.ts
           scripts/stamp-jones-build.test.ts
           scripts/jones/updates/build-provenance.test.ts
           scripts/build-desktop-artifact.test.ts
+          apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts
+          scripts/jones/updates/legacy-bootstrap-bundle.test.ts
+          apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts
+
+      - name: Validate preparation fixture binding and cleanup contracts
+        run: node --test --test-concurrency=1 scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs scripts/jones/updates/offline-preparation-producer-loader.node-test.mjs
+
+      - name: Install virtual display for Chromium startup qualification
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Check startup qualification fixtures
+        run: node --test --test-concurrency=1 scripts/jones/updates/native-startup-fixture.node-test.mjs scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs
+
+      - name: Qualify Chromium-mode native startup refusal
+        run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
 
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
+
+  preparation-candidate:
+    name: Preparation graph and hosted qualification (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - name: Checkout exact public candidate
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          # Public-only fetch avoids auth cleanup traversing unmapped vendored gitlinks.
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Record the candidate checkout state
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          git -c core.quotePath=true ls-files --others --exclude-standard
+
+      - name: Stamp the exact preview source before either graph is collected
+        env:
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          source_date=$(git show -s --format=%cs HEAD | tr -d '-')
+          version="${base}-preview.${source_date}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          node scripts/stamp-jones-build.ts
+
+      - name: Collect the actual preparation bundle graph without executing it
+        working-directory: apps/server
+        env:
+          JONES_PACK_PREPARATION_CANDIDATE: "1"
+        run: vp pack
+
+      - name: Preserve unqualified graph evidence
+        if: always() && hashFiles('apps/server/dist-exe/preparation-candidate/candidate-graph.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preparation-candidate-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/server/dist-exe/preparation-candidate/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Collect the producer bundle graph without importing or executing it
+        working-directory: apps/server
+        env:
+          JONES_PACK_PREPARATION_PRODUCER_CANDIDATE: "1"
+        run: vp pack
+
+      - name: Preserve unqualified producer graph evidence
+        if: always() && hashFiles('apps/server/dist-exe/preparation-producer-candidate/producer-candidate-graph.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preparation-producer-candidate-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/server/dist-exe/preparation-producer-candidate/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Verify reviewed worker bytes and policy rejection cases without execution
+        env:
+          NODE_OPTIONS: ""
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$JONES_EXPECTED_SOURCE_SHA"
+          export JONES_EXPECTED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          node scripts/jones/updates/offline-preparation-qualification.ts --verify-worker-graph
+
+      - name: Select the pinned native qualification driver
+        if: matrix.os == 'macos-15'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.13.1"
+          architecture: arm64
+          check-latest: false
+
+      - name: Diagnose the isolated macOS SQLite assertion reader matrix
+        if: matrix.os == 'macos-15'
+        shell: bash
+        env:
+          NODE_OPTIONS: ""
+        run: |
+          set -euo pipefail
+          export JONES_READER_PROBE_SOURCE_SHA="$(git rev-parse HEAD)"
+          [[ "$JONES_READER_PROBE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          node --test --test-name-pattern='^isolated SQLite assertion reader matrix$' scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs
+
+      - name: Qualify the exact captured producer and staged native bytes
+        if: matrix.os == 'macos-15'
+        env:
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(/usr/bin/uname -sm)" = "Darwin arm64"
+          test "$(git rev-parse HEAD)" = "$JONES_EXPECTED_SOURCE_SHA"
+          driver_node=$(command -v node)
+          test "$("$driver_node" --version)" = "v24.13.1"
+          umask 077
+          qualification_root=$(mktemp -d "$RUNNER_TEMP/jones-native-qualification.XXXXXX")
+          qualification_root=$(cd "$qualification_root" && pwd -P)
+          mkdir "$qualification_root/home" "$qualification_root/tmp"
+          echo "JONES_QUALIFICATION_ROOT=$qualification_root" >> "$GITHUB_ENV"
+          df -Pk "$RUNNER_TEMP" > "$qualification_root/storage.txt"
+          # The driver owns these exact roots and retains them when custody is uncertain.
+          # Before the driver starts, only still-empty setup directories can be removed.
+          # Once started, its retention decision also covers empty directories with uncertain users.
+          driver_started=0
+          trap 'if [ "$driver_started" = 0 ]; then rmdir "$qualification_root/home" "$qualification_root/tmp" 2>/dev/null || true; fi' EXIT
+          driver_started=1
+          env -i PATH="$(dirname "$driver_node"):/usr/bin:/bin:/usr/sbin:/sbin" \
+            HOME="$qualification_root/home" TMPDIR="$qualification_root/tmp" \
+            JONES_QUALIFICATION_ROOT="$qualification_root" \
+            JONES_EXPECTED_SOURCE_SHA="$JONES_EXPECTED_SOURCE_SHA" \
+            JONES_EXPECTED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')" \
+            "$driver_node" scripts/jones/updates/offline-preparation-qualification.ts --native-preparation \
+            > "$qualification_root/driver.stdout" 2> "$qualification_root/driver.stderr"
+
+      - name: Preserve native qualification result and exact staged bytes
+        if: always() && matrix.os == 'macos-15' && env.JONES_QUALIFICATION_ROOT != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preparation-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.JONES_QUALIFICATION_ROOT }}/evidence/
+            ${{ env.JONES_QUALIFICATION_ROOT }}/driver.stdout
+            ${{ env.JONES_QUALIFICATION_ROOT }}/driver.stderr
+            ${{ env.JONES_QUALIFICATION_ROOT }}/storage.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  preview:
+    name: Jones native Preview evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact public candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Verify isolated Preview provider and evidence controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs
+
+      - name: Build matching server and web source
+        env:
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          node scripts/stamp-jones-build.ts
+          vp run --filter t3 build
+
+      - name: Build explicit desktop renderer fixture
+        working-directory: apps/web
+        env:
+          JONES_INSTALL_RENDERER_FIXTURE: "1"
+          JONES_INSTALL_FIXTURE_OUT: ${{ runner.temp }}/install-preview-renderer
+          JONES_INSTALL_FIXTURE_SOURCE_SHA: ${{ env.JONES_SOURCE_SHA }}
+          JONES_INSTALL_FIXTURE_SOURCE_TREE: ${{ env.JONES_SOURCE_TREE }}
+        run: pnpm exec vp build --config vite.install-preview.config.ts --mode jones-install-fixture
+
+      - name: Install Chromium host libraries
+        run: node apps/server/node_modules/playwright-core/cli.js install-deps chromium
+
+      - name: Prepare native Preview sandbox on the ephemeral runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup_root=$(mktemp -d "$RUNNER_TEMP/jones-preview-browser-setup.XXXXXX")
+          trap 'rmdir -- "$setup_root"' EXIT
+          sudo -n "$(command -v node)" "$GITHUB_WORKSPACE/apps/server/dist/bin.mjs" browser setup --base-dir "$setup_root"
+
+      - name: Bind source and served build receipt
+        run: >-
+          node scripts/jones/updates/install-preview-qualification.mjs record-build
+          --source "$GITHUB_WORKSPACE"
+          --out "$RUNNER_TEMP/install-preview-build.json"
+          --fixture-build "$RUNNER_TEMP/install-preview-renderer"
+
+      - name: Exercise renderer through real injected T3 Preview tools
+        run: >-
+          node scripts/jones/updates/install-preview-qualification.mjs run
+          --source "$GITHUB_WORKSPACE"
+          --receipt "$RUNNER_TEMP/install-preview-build.json"
+          --out "$RUNNER_TEMP/install-preview-evidence"
+          --scratch-parent "$RUNNER_TEMP"
+          --fixture-build "$RUNNER_TEMP/install-preview-renderer"
+
+      - name: Preserve source-bound Preview reports and native screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: install-preview-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/install-preview-build.json
+            ${{ runner.temp }}/install-preview-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove only this job's renderer build scratch
+        if: always()
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import shutil
+          parent = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          target = parent / "install-preview-renderer"
+          if target.is_symlink():
+              raise RuntimeError("Renderer build scratch was replaced by a symlink")
+          if target.exists():
+              shutil.rmtree(target)

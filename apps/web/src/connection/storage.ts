@@ -8,6 +8,13 @@ import {
   StoredOrchestrationThreadSnapshot,
   decodeOrDiscardOrchestrationCache,
   putRemoteDpopTokenInCatalog,
+  listConnectionCompatibilityHints,
+  catalogCompatibilityRouteBinding,
+  decodeConnectionCompatibilityHints,
+  MAX_CONNECTION_COMPATIBILITY_HINTS,
+  StoredConnectionCompatibilityHint,
+  putConnectionProfileInCatalog,
+  removeConnectionProfileFromCatalog,
   registerConnectionInCatalog,
   removeCatalogValue,
   removeConnectionFromCatalog,
@@ -41,6 +48,8 @@ import { projectFaviconCache } from "../assets/projectFaviconCache";
 
 const DATABASE_NAME = "t3code:connection-runtime";
 const DATABASE_VERSION = 4;
+const COMPATIBILITY_HINT_DATABASE_NAME = "t3code:connection-compatibility-hints";
+const COMPATIBILITY_HINT_STORE_NAME = "compatibility-hints";
 const CATALOG_STORE_NAME = "catalog";
 const SHELL_STORE_NAME = "shell";
 const THREAD_STORE_NAME = "thread";
@@ -87,6 +96,8 @@ function persistenceError(
   operation:
     | "list-targets"
     | "list-disabled-targets"
+    | "list-compatibility-hints"
+    | "set-compatibility-hint"
     | "register-connection"
     | "set-connection-routes"
     | "remove-connection"
@@ -150,6 +161,56 @@ const openDatabase = Effect.fn("web.connectionStorage.openDatabase")(function* (
   });
 });
 
+// An older renderer can keep its version-4 runtime connection while hints open independently.
+const openCompatibilityHintDatabase = Effect.fn(
+  "web.connectionStorage.openCompatibilityHintDatabase",
+)(function* () {
+  return yield* Effect.callback<IDBDatabase, ConnectionTransientError>((resume) => {
+    let settled = false;
+    let request: IDBOpenDBRequest | undefined;
+    try {
+      request = indexedDB.open(COMPATIBILITY_HINT_DATABASE_NAME, 1);
+      const owned = request;
+      owned.addEventListener("upgradeneeded", () => {
+        if (settled) {
+          owned.transaction?.abort();
+          return;
+        }
+        owned.result.createObjectStore(COMPATIBILITY_HINT_STORE_NAME);
+      });
+      owned.addEventListener("error", () => {
+        if (settled) return;
+        settled = true;
+        resume(Effect.fail(catalogError("open compatibility hints", owned.error)));
+      });
+      owned.addEventListener("blocked", () => {
+        if (settled) return;
+        settled = true;
+        resume(
+          Effect.fail(catalogError("open compatibility hints", "Hint database upgrade blocked.")),
+        );
+      });
+      owned.addEventListener("success", () => {
+        if (settled) {
+          owned.result.close();
+          return;
+        }
+        settled = true;
+        resume(Effect.succeed(owned.result));
+      });
+    } catch (cause) {
+      settled = true;
+      resume(Effect.fail(catalogError("open compatibility hints", cause)));
+    }
+    return Effect.sync(() => {
+      if (!settled) {
+        settled = true;
+        request?.transaction?.abort();
+      }
+    });
+  });
+});
+
 interface DatabaseHandle {
   readonly get: Effect.Effect<IDBDatabase, ConnectionTransientError>;
   /** Forget `database` if it is still the shared connection, so the next access reopens. */
@@ -157,7 +218,9 @@ interface DatabaseHandle {
 }
 
 /** Share a connection until the browser closes it; the next access reopens it. */
-const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")(function* () {
+const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")(function* (
+  open: () => Effect.Effect<IDBDatabase, ConnectionTransientError> = openDatabase,
+) {
   const lock = yield* Semaphore.make(1);
   let current: IDBDatabase | null = null;
   const forget = (database: IDBDatabase) => {
@@ -169,7 +232,7 @@ const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")
       : lock.withPermits(1)(
           Effect.gen(function* () {
             if (current !== null) return current;
-            const opened = yield* openDatabase();
+            const opened = yield* open();
             current = opened;
             opened.addEventListener("close", () => forget(opened));
             // Another tab upgrading the schema waits on this connection.
@@ -391,6 +454,7 @@ const encodeCatalog = Effect.fn("web.connectionStorage.encodeCatalog")(function*
 export interface CatalogBackend {
   readonly read: Effect.Effect<string | null, ConnectionTransientError>;
   readonly write: (raw: string) => Effect.Effect<void, ConnectionTransientError>;
+  readonly snapshot?: Effect.Effect<string | null, ConnectionTransientError>;
   readonly quarantine?: (raw: string) => Effect.Effect<void, ConnectionTransientError>;
 }
 
@@ -398,6 +462,13 @@ export function makeCatalogBackend(database: DatabaseHandle): CatalogBackend {
   const bridge = window.desktopBridge;
   if (bridge?.getConnectionCatalog !== undefined && bridge.setConnectionCatalog !== undefined) {
     return {
+      snapshot:
+        bridge.getConnectionCatalogSnapshot === undefined
+          ? Effect.succeed(null)
+          : Effect.tryPromise({
+              try: () => bridge.getConnectionCatalogSnapshot!(),
+              catch: (cause) => catalogError("read snapshot from", cause),
+            }),
       read: Effect.tryPromise({
         try: () => bridge.getConnectionCatalog!(),
         catch: (cause) => catalogError("load", cause),
@@ -431,6 +502,219 @@ export function makeCatalogBackend(database: DatabaseHandle): CatalogBackend {
   };
 }
 
+export interface CompatibilityHintBackend {
+  readonly supported: boolean;
+  readonly read: Effect.Effect<unknown, ConnectionTransientError>;
+  readonly set: (
+    environmentId: EnvironmentId,
+    routeBinding: string,
+    kind: "outdated-update" | null,
+  ) => Effect.Effect<void, ConnectionTransientError>;
+}
+
+/** No bridge fallback may write a catalog, including on an older desktop build. */
+export function makeCompatibilityHintBackend(database: DatabaseHandle): CompatibilityHintBackend {
+  const bridge = window.desktopBridge;
+  if (bridge !== undefined) {
+    const supported =
+      bridge.getConnectionCatalogSnapshot !== undefined &&
+      bridge.listConnectionCompatibilityHints !== undefined &&
+      bridge.setConnectionCompatibilityHint !== undefined;
+    return {
+      supported,
+      read: !supported
+        ? Effect.succeed([])
+        : Effect.tryPromise({
+            try: () => bridge.listConnectionCompatibilityHints!(),
+            catch: (cause) => catalogError("read compatibility hints from", cause),
+          }),
+      set: (environmentId, routeBinding, kind) =>
+        !supported
+          ? Effect.fail(
+              catalogError(
+                "save compatibility hints in",
+                "This desktop build has no isolated hint store.",
+              ),
+            )
+          : Effect.tryPromise({
+              try: () =>
+                bridge.setConnectionCompatibilityHint!({ environmentId, routeBinding, kind }),
+              catch: (cause) => catalogError("save compatibility hints in", cause),
+            }).pipe(
+              Effect.flatMap((stored) =>
+                stored
+                  ? Effect.void
+                  : Effect.fail(
+                      catalogError(
+                        "save compatibility hints in",
+                        "Hint storage declined the write.",
+                      ),
+                    ),
+              ),
+            ),
+    };
+  }
+  return {
+    supported: true,
+    read: withDatabase(database, (opened) =>
+      Effect.callback<unknown, ConnectionTransientError>((resume) => {
+        let transaction: IDBTransaction | undefined;
+        let settled = false;
+        try {
+          transaction = opened.transaction(COMPATIBILITY_HINT_STORE_NAME, "readonly");
+          const request = transaction
+            .objectStore(COMPATIBILITY_HINT_STORE_NAME)
+            .getAll(undefined, MAX_CONNECTION_COMPATIBILITY_HINTS + 1);
+          transaction.addEventListener("complete", () => {
+            settled = true;
+            resume(Effect.succeed(request.result));
+          });
+          transaction.addEventListener("abort", () => {
+            settled = true;
+            resume(Effect.fail(catalogError("read compatibility hints", transaction?.error)));
+          });
+        } catch (cause) {
+          settled = true;
+          resume(Effect.fail(catalogError("read compatibility hints", cause)));
+        }
+        return Effect.sync(() => {
+          if (!settled) transaction?.abort();
+        });
+      }),
+    ),
+    set: (environmentId, routeBinding, kind) =>
+      withDatabase(database, (opened) =>
+        Effect.callback<void, ConnectionTransientError>((resume) => {
+          let transaction: IDBTransaction | undefined;
+          let settled = false;
+          let failure: unknown;
+          try {
+            transaction = opened.transaction(COMPATIBILITY_HINT_STORE_NAME, "readwrite");
+            const owned = transaction;
+            owned.addEventListener("complete", () => {
+              settled = true;
+              resume(Effect.void);
+            });
+            owned.addEventListener("abort", () => {
+              settled = true;
+              resume(
+                Effect.fail(catalogError("write compatibility hints", failure ?? owned.error)),
+              );
+            });
+            const store = owned.objectStore(COMPATIBILITY_HINT_STORE_NAME);
+            const key: IDBValidKey = [environmentId, routeBinding];
+            if (kind === null) store.delete(key);
+            else {
+              const count = store.count();
+              count.addEventListener("success", () => {
+                try {
+                  // These callbacks keep the native readwrite transaction active through its put.
+                  const existing = store.get(key);
+                  existing.addEventListener("success", () => {
+                    try {
+                      if (
+                        existing.result === undefined &&
+                        count.result >= MAX_CONNECTION_COMPATIBILITY_HINTS
+                      ) {
+                        failure = "Compatibility hint capacity exceeded.";
+                        owned.abort();
+                        return;
+                      }
+                      store.put({ environmentId, routeBinding, kind }, key);
+                    } catch (cause) {
+                      failure = cause;
+                      owned.abort();
+                    }
+                  });
+                } catch (cause) {
+                  failure = cause;
+                  owned.abort();
+                }
+              });
+            }
+          } catch (cause) {
+            failure = cause;
+            try {
+              transaction?.abort();
+            } catch {
+              /* An already finished transaction has no pending write. */
+            }
+            settled = true;
+            resume(Effect.fail(catalogError("write compatibility hints", cause)));
+          }
+          return Effect.sync(() => {
+            if (!settled) transaction?.abort();
+          });
+        }),
+      ),
+  };
+}
+
+/** Fresh diagnostic reads never invoke catalog recovery or migration. */
+export function makeCompatibilityHintStore(
+  backend: CompatibilityHintBackend,
+  snapshot: Effect.Effect<string | null, ConnectionTransientError>,
+) {
+  const fresh = snapshot.pipe(
+    Effect.flatMap((raw) =>
+      raw === null || raw.trim() === ""
+        ? Effect.succeed(EMPTY_CONNECTION_CATALOG_DOCUMENT)
+        : decodeCatalog(raw),
+    ),
+  );
+  const read = Effect.gen(function* () {
+    const records = yield* backend.read;
+    return listConnectionCompatibilityHints(yield* fresh, records);
+  }).pipe(
+    Effect.catch(() =>
+      Effect.logWarning("Could not load historical connection compatibility hints.").pipe(
+        Effect.as([]),
+      ),
+    ),
+  );
+  const set = Effect.fn("web.connectionStorage.setCompatibilityHint")(function* (
+    environmentId: EnvironmentId,
+    routeBinding: string,
+    kind: "outdated-update" | null,
+  ) {
+    yield* Schema.decodeUnknownEffect(StoredConnectionCompatibilityHint)({
+      environmentId,
+      routeBinding,
+      kind: kind ?? "outdated-update",
+    }).pipe(Effect.mapError((cause) => catalogError("validate compatibility hint", cause)));
+    if (!backend.supported) return yield* backend.set(environmentId, routeBinding, kind);
+    if (
+      kind !== null &&
+      catalogCompatibilityRouteBinding(yield* fresh, environmentId) !== routeBinding
+    )
+      return;
+    yield* backend.set(environmentId, routeBinding, kind);
+  });
+  const invalidate = (
+    previous: ConnectionCatalogDocumentType,
+    next: ConnectionCatalogDocumentType,
+  ) =>
+    !backend.supported
+      ? Effect.void
+      : Effect.gen(function* () {
+          if (previous.targets === next.targets && previous.profiles === next.profiles) return;
+          const records = decodeConnectionCompatibilityHints(yield* backend.read);
+          for (const record of records) {
+            if (
+              catalogCompatibilityRouteBinding(previous, record.environmentId) ===
+                record.routeBinding &&
+              catalogCompatibilityRouteBinding(next, record.environmentId) !== record.routeBinding
+            )
+              yield* backend.set(record.environmentId, record.routeBinding, null);
+          }
+        }).pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Could not clear historical connection compatibility hints."),
+          ),
+        );
+  return { read, set, invalidate };
+}
+
 interface CatalogStore {
   readonly read: Effect.Effect<ConnectionCatalogDocumentType, ConnectionTransientError>;
   readonly update: (
@@ -440,6 +724,10 @@ interface CatalogStore {
 
 export const makeCatalogStore = Effect.fn("web.connectionStorage.makeCatalogStore")(function* (
   backend: CatalogBackend,
+  beforeWrite?: (
+    previous: ConnectionCatalogDocumentType,
+    next: ConnectionCatalogDocumentType,
+  ) => Effect.Effect<void, ConnectionTransientError>,
 ) {
   const state = yield* Ref.make<Option.Option<ConnectionCatalogDocumentType>>(Option.none());
   const lock = yield* Semaphore.make(1);
@@ -489,7 +777,9 @@ export const makeCatalogStore = Effect.fn("web.connectionStorage.makeCatalogStor
     function* (transform) {
       yield* lock.withPermits(1)(
         Effect.gen(function* () {
-          const next = transform(yield* loadUnlocked());
+          const previous = yield* loadUnlocked();
+          const next = transform(previous);
+          if (beforeWrite !== undefined) yield* beforeWrite(previous, next);
           yield* backend.write(yield* encodeCatalog(next));
           yield* Ref.set(state, Option.some(next));
         }),
@@ -607,7 +897,16 @@ export const layer = Layer.effectContext(
       makeDatabaseHandle(),
       (owned) => owned.close,
     );
-    const catalog = yield* makeCatalogStore(makeCatalogBackend(database));
+    const { handle: hintDatabase } = yield* Effect.acquireRelease(
+      makeDatabaseHandle(openCompatibilityHintDatabase),
+      (owned) => owned.close,
+    );
+    const backend = makeCatalogBackend(database);
+    const hints = makeCompatibilityHintStore(
+      makeCompatibilityHintBackend(hintDatabase),
+      backend.snapshot ?? backend.read,
+    );
+    const catalog = yield* makeCatalogStore(backend, hints.invalidate);
     const githubRoutingPermissions = makeBrowserGitHubRoutingPermissions();
 
     const targetStore = Persistence.ConnectionTargetStore.of({
@@ -619,8 +918,19 @@ export const layer = Layer.effectContext(
         Effect.map((document) => document.disabledEnvironmentIds),
         Effect.mapError((cause) => persistenceError("list-disabled-targets", cause)),
       ),
+      listCompatibilityHints: hints.read,
     });
     const registrationStore = Persistence.ConnectionRegistrationStore.of({
+      setCompatibilityHint: (environmentId, routeBinding, kind) =>
+        hints.set(environmentId, routeBinding, kind).pipe(
+          Effect.mapError(
+            () =>
+              new Persistence.ConnectionPersistenceError({
+                operation: "set-compatibility-hint",
+                message: "Could not save historical connection compatibility hints.",
+              }),
+          ),
+        ),
       register: (registration, routes) =>
         catalog
           .update((document) => registerConnectionInCatalog(document, registration, routes))
@@ -648,19 +958,9 @@ export const layer = Layer.effectContext(
           ),
         ),
       put: (profile) =>
-        catalog.update((document) => ({
-          ...document,
-          profiles: replaceCatalogValue(document.profiles, (value) => value.connectionId, profile),
-        })),
+        catalog.update((document) => putConnectionProfileInCatalog(document, profile)),
       remove: (connectionId) =>
-        catalog.update((document) => ({
-          ...document,
-          profiles: removeCatalogValue(
-            document.profiles,
-            (value) => value.connectionId,
-            connectionId,
-          ),
-        })),
+        catalog.update((document) => removeConnectionProfileFromCatalog(document, connectionId)),
     });
     const credentialStore = CredentialStore.make({
       get: (connectionId) =>

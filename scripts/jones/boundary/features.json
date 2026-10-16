@@ -24,21 +24,6 @@
       "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples."
     },
     {
-      "id": "qualified-updates",
-      "tests": [
-        "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
-        "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts"
-      ],
-      "scope": "Qualified update writer-observer sudo and socket transports retain one shared protocol parser, exact endpoint trust, bounded response lifecycle, and fail-closed incomplete observations."
-    },
-    {
-      "id": "update-continuity",
-      "tests": [
-        "apps/server/src/jones/updates/continuationPrompt.test.ts",
-        "apps/server/src/jones/updates/serverCapability.test.ts"
-      ]
-    },
-    {
       "id": "desktop-stage-attempts",
       "tests": [
         "packages/shared/src/jones/jonesActionsStage.test.ts",
@@ -515,9 +500,23 @@
         "scripts/jones/updates/build-provenance.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
         "apps/desktop/src/jones/updates/preloadInstall.test.ts",
-        "apps/web/src/jones/updates/localDesktopUpdate.test.ts"
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
+        "packages/shared/src/jones/nativeWriterFence.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/server/src/jones/updates/nativePreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "scripts/jones/updates/native-startup-fixture.node-test.mjs",
+        "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
+        "scripts/jones/updates/legacy-bootstrap-bundle.test.ts",
+        "scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs",
+        "scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs",
+        "scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs",
+        "scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs",
+        "scripts/jones/updates/legacy-process-custody-fixture.node-test.mjs",
+        "scripts/jones/updates/legacy-identity-native-fixture.node-test.mjs",
+        "scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ],
-      "scope": "Local desktop update actions and manual sidebar check completion feedback. The existing sidebar completion hook and its integration harness retain a small shared-file exception to reuse upstream pending state and toast behavior without duplicating the component. Background checks remain quiet."
+      "scope": "Local desktop update actions, including sidebar and Update Everything downloads through the Jones staged path, and manual sidebar check completion feedback. The existing sidebar completion hook and its integration harness retain a small shared-file exception to reuse upstream pending state and toast behavior without duplicating the component. Background checks remain quiet."
     },
     {
       "id": "utility-navigation",
@@ -588,6 +587,83 @@
         "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
       ],
       "scope": "Historical queue holds remain entry-local across later active runs. Same-cohort holds, reviewed full-head delivery, eligible completion priority/FIFO, failure attribution and tool-boundary guards remain intact. Small direct Orchestrator.ts and ProjectionStore.ts shared edits keep one lifecycle decision; extracting predicates would duplicate SQL and orchestration machinery. RunCompletionReads.test.ts retains its SQL/memory parity harness as an explicit test-in-upstream exception; Jones runtime tests import existing services and harnesses."
+    },
+    {
+      "id": "fleet-update-access",
+      "tests": [
+        "apps/desktop/src/jones/fleetUpdates/store.test.ts",
+        "apps/server/src/jones/fleetUpdates/service.test.ts",
+        "apps/server/src/jones/fleetUpdates/store.test.ts",
+        "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx",
+        "apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts",
+        "apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts",
+        "packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts",
+        "packages/client-runtime/src/platform/storageDocument.test.ts",
+        "packages/client-runtime/src/connection/registry.test.ts",
+        "apps/web/src/connection/storage.test.ts",
+        "apps/mobile/src/connection/storage.test.ts",
+        "apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts",
+        "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
+        "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx",
+        "packages/contracts/src/ipc.test.ts"
+      ]
+    },
+    {
+      "id": "update-continuity",
+      "tests": [
+        "apps/server/src/ServerSettingsPersistence.test.ts",
+        "apps/server/src/serverSettings.test.ts",
+        "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+        "apps/server/src/jones/updates/continuationPrompt.test.ts",
+        "apps/server/src/jones/updates/launcherOperation.test.ts",
+        "apps/server/src/jones/updates/operationHandoff.test.ts",
+        "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts",
+        "apps/server/src/jones/workMode/WorkMode.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/jones/updates/desktopInstall.test.ts",
+        "apps/server/src/jones/cloud/shutdownBudget.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts"
+      ]
+    },
+    {
+      "id": "qualified-updates",
+      "tests": [
+        "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
+        "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
+        "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts",
+        "scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs",
+        "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
+        "apps/server/src/jones/updates/offlinePreparation.test.ts",
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
+        "apps/server/src/jones/updates/offlinePreparationEntry.test.ts",
+        "scripts/jones/updates/offline-preparation-build.test.ts",
+        "scripts/jones/updates/functional-policy.test.ts",
+        "scripts/jones/updates/offline-preparation-qualification.test.ts",
+        "apps/server/src/jones/updates/offlinePreparationPlan.test.ts",
+        "apps/server/src/jones/updates/offlinePreparationCore.test.ts",
+        "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
+        "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+        "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs",
+        "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts",
+        "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
+        "apps/desktop/scripts/main-process-bundle.test.mjs",
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
+        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs"
+      ],
+      "scope": "Qualified update writer-observer sudo and socket transports retain one shared protocol parser, exact endpoint trust, bounded response lifecycle, and fail-closed incomplete observations. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held."
     },
     {
       "id": "server-shard-weights",

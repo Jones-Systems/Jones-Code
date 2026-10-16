@@ -1,4 +1,5 @@
 import {
+  jonesUpdateActionError,
   compareJonesSource,
   jonesCandidatePresentation,
   jonesUpdatePresentation,
@@ -45,7 +46,8 @@ const laptopInstalledSourceAtom = Atom.make((get) => {
   } catch {
     return undefined;
   }
-  return get(jonesUpdates.value(environmentId))?.installedSource;
+  const observation = get(jonesUpdates.observation(environmentId));
+  return observation.freshness === "fresh" ? observation.state?.installedSource : undefined;
 });
 
 const LAYOUTS = {
@@ -101,28 +103,39 @@ export function JonesUpdateControls({
   /** Badges another machine's offered or staged build against this laptop's installed source. */
   readonly compareWithLaptop?: boolean;
 }) {
-  const state = useAtomValue(jonesUpdates.value(environmentId));
+  const observation = useAtomValue(jonesUpdates.observation(environmentId));
+  const state = observation.state;
   const laptopInstalledSource = useAtomValue(
     compareWithLaptop ? laptopInstalledSourceAtom : noLaptopSourceAtom,
   );
   const action = useAtomCommand(jonesUpdates.action, { reportFailure: false });
   const [pending, setPending] = useState(false);
-  if (state === null) return null;
+  const [actionError, setActionError] = useState<string | null>(null);
+  if (state === null)
+    return observation.freshness === "stale" ? (
+      <p role="status" className="mt-2 text-xs text-muted-foreground">
+        {observation.message}
+      </p>
+    ) : null;
   const run = async (input: Parameters<typeof action>[0]["input"]) => {
     setPending(true);
+    setActionError(null);
     try {
-      await action({ environmentId, input });
+      setActionError(jonesUpdateActionError(await action({ environmentId, input })));
     } finally {
       setPending(false);
     }
   };
   const presentation = jonesUpdatePresentation(state);
   const candidate = jonesCandidatePresentation(state);
-  const busy = pending || presentation.busy;
+  const busy = pending || presentation.busy || observation.freshness !== "fresh";
   const provenance = state.provenance;
   const styles = LAYOUTS[layout];
   const comparison = compareWithLaptop
-    ? compareJonesSource(laptopInstalledSource, provenance)
+    ? compareJonesSource(
+        laptopInstalledSource,
+        observation.freshness === "fresh" ? provenance : undefined,
+      )
     : null;
   const details = [
     state.migrationPlan === undefined
@@ -142,6 +155,8 @@ export function JonesUpdateControls({
             <p className={styles.title}>Jones main builds</p>
           )}
           <p className={styles.message}>{presentation.message}</p>
+          {observation.freshness !== "fresh" ? <p role="status">{observation.message}</p> : null}
+          {actionError ? <p role="alert">{actionError}</p> : null}
         </div>
         <div className={styles.actions}>
           <Button

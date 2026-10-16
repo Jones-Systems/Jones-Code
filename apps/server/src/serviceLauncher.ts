@@ -6,6 +6,7 @@
 // runtime: it is the one part of the executable that cannot depend on the
 // rest of it being loadable.
 import * as NodeChildProcess from "node:child_process";
+import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "./jones/cloud/shutdownBudget.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -49,6 +50,16 @@ import {
   qualifiedServicePreflightFailure,
 } from "./cloud/servicePreflight.ts";
 import type { MigrationPlan } from "./jones/updates/migrationPlan.ts";
+import {
+  archiveUpdateOperation,
+  assertNoUnreconciledUpdateOperations,
+  operationBinding,
+  readOperationReservation,
+  reconcileUpdateOperation,
+  reserveUpdateOperation,
+} from "./jones/updates/launcherOperation.ts";
+
+import { assertStageNotRevoked, retireNativeStage } from "./jones/updates/stageRevocation.ts";
 
 import type {
   PendingServiceUpdate,
@@ -85,7 +96,6 @@ const HANDOFF_DELAY_MS = 2_000;
  * exit; this only bounds a trial that is alive but stuck.
  */
 export const PREPARED_TIMEOUT_MS = 30 * 60_000;
-const TERMINATE_GRACE_MS = 5_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
 // launcher stays independent of the Effect-backed contracts package.
 const STATE_DIR_OWNED_EXIT_CODE = 78;
@@ -690,7 +700,7 @@ async function terminateChild(
 ): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill(signal);
-  const force = setTimeout(() => child.kill("SIGKILL"), TERMINATE_GRACE_MS);
+  const force = setTimeout(() => child.kill("SIGKILL"), SERVER_CHILD_SHUTDOWN_GRACE_MS);
   try {
     await waitForExit(child);
   } finally {
@@ -709,6 +719,10 @@ export class Launcher {
   readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
   readonly #startupGateProtocol: 1 | undefined;
   readonly #backupAdapter: QualifiedBackupAdapter | undefined;
+  readonly #updateOperationIO: {
+    readonly archive: typeof archiveUpdateOperation;
+    readonly reserve: typeof reserveUpdateOperation;
+  };
   readonly #now: () => number;
   #state: ServiceState;
   #child: ManagedChild | null = null;
@@ -729,6 +743,10 @@ export class Launcher {
       readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
       readonly startupGateProtocol?: 1;
       readonly backupAdapter?: QualifiedBackupAdapter;
+      readonly updateOperationIO?: {
+        readonly archive: typeof archiveUpdateOperation;
+        readonly reserve: typeof reserveUpdateOperation;
+      };
       /** Monotonic milliseconds for the qualified exchange fence; injectable in tests. */
       readonly now?: () => number;
     } = {},
@@ -740,6 +758,10 @@ export class Launcher {
     this.#quiescenceAdapter = options.quiescenceAdapter;
     this.#startupGateProtocol = options.startupGateProtocol;
     this.#backupAdapter = options.backupAdapter;
+    this.#updateOperationIO = options.updateOperationIO ?? {
+      archive: archiveUpdateOperation,
+      reserve: reserveUpdateOperation,
+    };
     this.#now = options.now ?? (() => performance.now());
   }
 
@@ -998,6 +1020,8 @@ export class Launcher {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      updateOperationsProtocol: 1,
+      updateRetirementProtocol: 1,
       ...(this.#startupGateProtocol === undefined
         ? {}
         : { startupGateProtocol: this.#startupGateProtocol }),
@@ -1086,6 +1110,31 @@ export class Launcher {
     receivedAt: number,
   ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
+    if (message.type === "request-retire-update") {
+      let retired = false;
+      let reason: string | undefined;
+      try {
+        if (
+          child.role !== "active" ||
+          child.version !== this.#state.activeVersion ||
+          this.#startupGateProtocol !== 1 ||
+          this.#stopRequested
+        )
+          throw new Error("Only the selected active qualified server can retire a stage.");
+        await retireNativeStage(this.#baseDir, child.version, this.#state.update, message);
+        retired = true;
+      } catch (cause) {
+        reason = cause instanceof Error ? cause.message : "Native stage retirement is uncertain.";
+      }
+      await sendMessage(child.process, {
+        type: "update-retired",
+        operationId: message.operationId,
+        stagedHandle: message.stagedHandle,
+        retired,
+        ...(reason === undefined ? {} : { reason }),
+      });
+      return;
+    }
     if (message.type === "request-update") {
       await this.#handleUpdateRequest(child, message, receivedAt);
       return;
@@ -1099,7 +1148,11 @@ export class Launcher {
     receivedAt: number,
   ): Promise<void> {
     const reject = (reason: string) =>
-      sendMessage(child.process, { type: "update-rejected", reason });
+      sendMessage(child.process, {
+        type: "update-rejected",
+        reason,
+        ...(message.operationId === undefined ? {} : { operationId: message.operationId }),
+      });
     if (child.role !== "active") {
       await reject("Only the active server can request an update.");
       return;
@@ -1107,6 +1160,44 @@ export class Launcher {
     if (child.version !== this.#state.activeVersion) {
       await reject("The requesting server is not the selected active version.");
       return;
+    }
+    if (message.stagedHandle !== undefined) {
+      try {
+        await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
+      } catch (cause) {
+        await reject(cause instanceof Error ? cause.message : "Stage revocation is uncertain.");
+        return;
+      }
+    }
+    if (message.operationId !== undefined) {
+      const existing = await reconcileUpdateOperation(
+        this.#baseDir,
+        message.operationId,
+        this.#state.update,
+      );
+      if (existing.state !== "absent") {
+        if (existing.state === "blocked") {
+          await reject("The update operation is ambiguous and requires reconciliation.");
+          return;
+        }
+        const reserved = await readOperationReservation(this.#baseDir, message.operationId).catch(
+          () => undefined,
+        );
+        if (
+          reserved === undefined ||
+          reserved.binding.stagedHandle !== message.stagedHandle ||
+          reserved.binding.dbPath !== message.dbPath ||
+          reserved.binding.targetVersion !== message.targetVersion
+        ) {
+          await reject("The update operation is ambiguous or its immutable binding changed.");
+          return;
+        }
+        await sendMessage(child.process, {
+          type: "update-accepted",
+          updateId: message.operationId,
+        });
+        return;
+      }
     }
     if (this.#state.update?.status === "pending") {
       await reject("Another server update is already pending.");
@@ -1217,8 +1308,40 @@ export class Launcher {
         return;
       }
     }
+    try {
+      if (message.stagedHandle !== undefined)
+        await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
+      await this.#updateOperationIO.archive(this.#baseDir, this.#state.update);
+      await assertNoUnreconciledUpdateOperations(this.#baseDir, this.#state.update);
+      if (message.operationId !== undefined) {
+        if (qualified === undefined) {
+          await reject("An operation ID requires a qualified staged runtime.");
+          return;
+        }
+        await this.#updateOperationIO.reserve(
+          this.#baseDir,
+          message.operationId,
+          operationBinding(qualified),
+        );
+      }
+    } catch {
+      // A failed fsync may leave a reservation. Preserve it for reconciliation
+      // while the unchanged active child continues serving.
+      await reject(
+        "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
+      );
+      return;
+    }
+    if (qualified !== undefined && this.#exchangeExpired(receivedAt)) {
+      // Receipt preparation can consume the exchange budget too. A reservation
+      // already written stays available for reconciliation; no Install was accepted.
+      await reject(
+        "request-expired: Native operation preparation outlasted the server's launcher exchange; Install was not admitted.",
+      ).catch(() => undefined);
+      return;
+    }
     const pending: PendingServiceUpdate = {
-      id: NodeCrypto.randomUUID(),
+      id: message.operationId ?? NodeCrypto.randomUUID(),
       fromVersion: child.version,
       targetVersion: message.targetVersion,
       dbPath: message.dbPath,

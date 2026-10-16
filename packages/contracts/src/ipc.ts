@@ -1,7 +1,8 @@
+import type { FleetDesktopRequest, FleetDesktopState } from "./jones/fleetUpdates/campaign.ts";
 import * as Schema from "effect/Schema";
 import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
 
-import { JonesUpdateState } from "./jones/jonesUpdates.ts";
+import { JonesUpdateState, type JonesUpdateDownloadInput } from "./jones/jonesUpdates.ts";
 import type {
   DesktopDeviceMediaTunnelInput,
   DesktopDeviceMediaTunnel,
@@ -1213,6 +1214,19 @@ export interface DesktopBridge {
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
   getConnectionCatalog?: () => Promise<string | null>;
+  getConnectionCatalogSnapshot?: () => Promise<string | null>;
+  listConnectionCompatibilityHints?: () => Promise<
+    ReadonlyArray<{
+      readonly environmentId: EnvironmentId;
+      readonly routeBinding: string;
+      readonly kind: "outdated-update";
+    }>
+  >;
+  setConnectionCompatibilityHint?: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly routeBinding: string;
+    readonly kind: "outdated-update" | null;
+  }) => Promise<boolean>;
   setConnectionCatalog?: (catalog: string) => Promise<boolean>;
   clearConnectionCatalog?: () => Promise<void>;
   discoverSshHosts: () => Promise<readonly DesktopDiscoveredSshHost[]>;
@@ -1313,8 +1327,10 @@ export interface DesktopBridge {
   getUpdateState: () => Promise<DesktopUpdateState>;
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
-  downloadUpdate: () => Promise<DesktopUpdateActionResult>;
-  installUpdate: (stagedHandle?: string) => Promise<DesktopUpdateActionResult>;
+  downloadUpdate: (selection?: JonesUpdateDownloadInput) => Promise<DesktopUpdateActionResult>;
+  discardUpdate?: (stagedHandle: string) => Promise<DesktopUpdateActionResult>;
+  installUpdate: (stagedHandle?: string, campaignId?: string) => Promise<DesktopUpdateActionResult>;
+  fleetUpdates?: (request: FleetDesktopRequest) => Promise<FleetDesktopState>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /** Settings → `t3` command. Optional: older desktop builds lack it. */
   cliCommand?: {

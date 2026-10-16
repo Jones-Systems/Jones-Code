@@ -3,6 +3,7 @@ import type {
   OrchestrationV2SearchThreadResult,
   OrchestrationV2ThreadHistoryPage,
 } from "@t3tools/contracts";
+import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as CapturedRuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
@@ -394,6 +395,7 @@ export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   /** Startup pass that settles delegated-task results and deliveries runs left behind. */
   readonly recoverDelegatedTasks: Effect.Effect<void>;
+  readonly recoverPlannedUpdateQueues?: Effect.Effect<void>;
   /** Settles a delegated child whose restart continuation of `sourceRunId` declined or failed. */
   readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId: RunId) => Effect.Effect<void>;
   /**
@@ -1010,6 +1012,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
+  const plannedContinuity = yield* Effect.serviceOption(
+    PlannedUpdateContinuity.PlannedUpdateContinuity,
+  );
   const capturedStop = yield* Effect.serviceOption(CapturedRuntimeStop.CurrentRuntimeStop);
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -13142,7 +13147,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const requestWorkMode: OrchestratorV2Shape["requestWorkMode"] = (candidate) => {
     const command = workModeCommand(candidate);
-    return threadDispatch.withLock(
+    const admission = threadDispatch.tryWithLock(
       candidate.threadId,
       admitWorkMode(candidate, {
         hasReceipt: commandReceipts
@@ -13176,9 +13181,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 session.value.providerSession.status === "ready",
             ),
           ),
+        ...(Option.isNone(plannedContinuity)
+          ? {}
+          : {
+              hasPlannedContext: plannedContinuity.value
+                .hasWork(candidate.threadId)
+                .pipe(mapDispatchError(command)),
+              admitPlannedContext: (
+                projection: OrchestrationV2ThreadProjection,
+                fresh: WorkModeCandidate,
+                nowMs: number,
+              ) =>
+                plannedContinuity.value
+                  .admitWork(projection, fresh, nowMs)
+                  .pipe(mapDispatchError(command)),
+              finishPlannedContext: plannedContinuity.value
+                .finishWork(candidate.threadId)
+                .pipe(mapDispatchError(command)),
+            }),
         dispatch: dispatchWithReceiptEffect,
       }),
     );
+    return admission.pipe(Effect.map(Option.getOrElse(() => "skipped" as const)));
   };
 
   const requestSelfSettlement: OrchestratorV2Shape["requestSelfSettlement"] = (input) =>
@@ -13353,6 +13377,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     });
 
+  const releasePlannedUpdateQueue = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      if (
+        Option.isNone(plannedContinuity) ||
+        !(yield* plannedContinuity.value.queueThreadIds).includes(threadId)
+      )
+        return;
+      const projection = yield* projectionStore.getThreadProjection(threadId);
+      const commandId = yield* plannedContinuity.value.queueCommand(projection);
+      if (commandId === undefined) return;
+      yield* dispatchWithReceiptEffect({ type: "queue.resume", threadId, commandId });
+      yield* plannedContinuity.value.finishQueue(threadId);
+    });
+  const recoverPlannedUpdateQueues = Effect.gen(function* () {
+    if (Option.isNone(plannedContinuity)) return;
+    for (const threadId of yield* plannedContinuity.value.queueThreadIds)
+      yield* threadDispatch.withLock(threadId, releasePlannedUpdateQueue(threadId));
+  }).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Planned update queues remain held", { cause })),
+  );
+
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {
       const threadId = stored.event.threadId;
@@ -13374,6 +13419,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Effect.gen(function* () {
             if (stored.event.type === "run.updated")
               yield* consumeSelfSettlement(threadId, stored.event.payload.id);
+            yield* releasePlannedUpdateQueue(threadId);
             return yield* startNextQueuedRun(
               threadId,
               stored.event.type === "run.updated"
@@ -13513,8 +13559,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // Settles child results and completion deliveries whose runs ended without
   // the listener above: before this boot, or in runtime reconciliation, which
   // it skips. Startup runs this after reconciliation and before the effect
-  // worker. Queue recovery instead holds unstarted runs until an explicit
-  // queue.resume command arrives.
+  // worker. Ordinary queue recovery holds unstarted runs. A separately verified
+  // planned-update snapshot may issue its own idempotent queue.resume afterward.
   const recoverDelegatedTasks = Effect.gen(function* () {
     yield* projectionStore.getRecoveryThreadIds("subagent-results").pipe(
       // Candidate counts let a startup trace show whether recovery scales
@@ -13790,6 +13836,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     requestSelfSettlement,
     resumeQueuedRuns,
     recoverDelegatedTasks,
+    recoverPlannedUpdateQueues,
     recoverDelegatedTask,
     delegatedTaskResultPending,
     restartContinuationPending: (run) =>

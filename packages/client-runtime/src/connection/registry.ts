@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -36,6 +36,11 @@ import type {
 } from "./model.ts";
 import { ConnectionBlockedError } from "./model.ts";
 import * as Persistence from "../platform/persistence.ts";
+import {
+  connectionCompatibilityRouteBinding,
+  decodeConnectionCompatibilityHints,
+} from "../platform/storageDocument.ts";
+import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionDriver from "./driver.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
@@ -173,6 +178,11 @@ export class EnvironmentRegistry extends Context.Service<
       environmentId: EnvironmentId,
       error: ConnectionBlockedError | null,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
+    /** Accepts fresh update preparation only while its captured registration is still current. */
+    readonly recordUpdateCompatibility: (
+      entry: ConnectionCatalogEntry,
+      descriptor: ExecutionEnvironmentDescriptor,
+    ) => Effect.Effect<boolean, Persistence.ConnectionPersistenceError>;
     readonly state: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<SupervisorConnectionState, EnvironmentNotRegisteredError>;
@@ -224,6 +234,14 @@ export const make = Effect.gen(function* () {
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
   const persistedTargets = yield* storage.list;
   const disabledEnvironmentIds = new Set(yield* storage.listDisabled);
+  const compatibilityHints = yield* (storage.listCompatibilityHints ?? Effect.succeed([])).pipe(
+    Effect.map(decodeConnectionCompatibilityHints),
+    Effect.catch(() =>
+      Effect.logWarning("Could not load historical connection compatibility hints.").pipe(
+        Effect.as([]),
+      ),
+    ),
+  );
   const loadRoute = Effect.fn("EnvironmentRegistry.loadRoute")(function* (
     target: ConnectionTarget,
   ) {
@@ -256,16 +274,23 @@ export const make = Effect.gen(function* () {
         });
         const routes = usable.length > 0 ? usable : loaded.slice(0, 1);
         const first = routes[0]!;
+        const entry = entryWithRoutes(
+          {
+            target: first.target,
+            profile: first.profile,
+            enabled: !disabledEnvironmentIds.has(environmentId),
+          },
+          routes,
+        );
+        const binding = connectionCompatibilityRouteBinding(connectionRoutes(entry));
+        const hint = compatibilityHints.find(
+          (hint) => hint.environmentId === environmentId && hint.routeBinding === binding,
+        );
         return [
           environmentId,
-          entryWithRoutes(
-            {
-              target: first.target,
-              profile: first.profile,
-              enabled: !disabledEnvironmentIds.has(environmentId),
-            },
-            routes,
-          ),
+          hint === undefined
+            ? entry
+            : { ...entry, compatibilityHint: { routeBinding: hint.routeBinding, kind: hint.kind } },
         ] as const;
       }),
       { concurrency: "unbounded" },
@@ -547,9 +572,15 @@ export const make = Effect.gen(function* () {
    * verdict both belong to the saved addresses: a changed set may reach a
    * different server, so both are dropped and the next connection decides.
    * Reordering keeps the same addresses, so both stay.
+   * Historical update hints bind the ordered route configuration and are dropped on any change.
    */
   const withRoutes = (previous: ConnectionCatalogEntry, routes: ReadonlyArray<ConnectionRoute>) => {
-    const next = entryWithRoutes(previous, routes);
+    const routed = entryWithRoutes(previous, routes);
+    const { compatibilityHint, ...withoutHint } = routed;
+    const next =
+      compatibilityHint?.routeBinding === connectionCompatibilityRouteBinding(routes)
+        ? routed
+        : withoutHint;
     if (gitHubRoutingConnectionKey(previous) === gitHubRoutingConnectionKey(next)) {
       return { entry: next, addressesChanged: false };
     }
@@ -933,7 +964,7 @@ export const make = Effect.gen(function* () {
           allowInsecure: allowInsecureRoutes,
         });
         if (routes === null) return Option.none<ConnectionCatalogEntry>();
-        const next = entryWithRoutes(entry, routes);
+        const next = withRoutes(entry, routes).entry;
         // Save new learned profiles and any whose Tailscale mark changed. A
         // learned route owns its profile; the credential stays with the route
         // it borrows from.
@@ -1138,39 +1169,63 @@ export const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  const setCompatibility = Effect.fn("EnvironmentRegistry.setCompatibility")(function* (
+  const updateCompatibility = Effect.fn("EnvironmentRegistry.updateCompatibility")(function* (
     environmentId: EnvironmentId,
     error: ConnectionBlockedError | null,
+    capturedEntry?: ConnectionCatalogEntry,
   ) {
-    yield* withLeaseLock(
+    return yield* withLeaseLock(
       environmentId,
       Effect.gen(function* () {
         const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
+        // Hold the same lease lock through optional hint write settlement. Route CAS alone cannot
+        // distinguish removal followed by re-registration of identical addresses.
+        if (entry === undefined || (capturedEntry !== undefined && entry !== capturedEntry))
+          return false;
+        const routeBinding = connectionCompatibilityRouteBinding(connectionRoutes(entry));
+        const kind = error?.serverUpdateRequired === true ? "outdated-update" : null;
+        const persisted = !(yield* Ref.get(platformEnvironmentIds)).has(environmentId);
+        const hint: ConnectionCatalogEntry["compatibilityHint"] =
+          kind !== null && routeBinding !== null && persisted ? { routeBinding, kind } : undefined;
+        const persistHint = () =>
+          persisted && routeBinding !== null && registrations.setCompatibilityHint !== undefined
+            ? registrations
+                .setCompatibilityHint(environmentId, routeBinding, kind)
+                .pipe(
+                  Effect.catch(() =>
+                    Effect.logWarning(
+                      "Could not persist historical connection compatibility hints.",
+                    ),
+                  ),
+                )
+            : Effect.void;
         if (
-          entry === undefined ||
-          (entry.unsupportedReason === (error?.message ?? undefined) &&
-            entry.serverUpdateRequired === (error?.serverUpdateRequired ?? undefined))
-        )
-          return;
+          entry.unsupportedReason === (error?.message ?? undefined) &&
+          entry.serverUpdateRequired === (error?.serverUpdateRequired ?? undefined) &&
+          entry.compatibilityHint?.kind === hint?.kind &&
+          entry.compatibilityHint?.routeBinding === hint?.routeBinding
+        ) {
+          // A fresh captured check can retry persistence without republishing unchanged live state.
+          if (capturedEntry !== undefined) yield* persistHint();
+          return true;
+        }
         const {
           unsupportedReason: _previousReason,
           serverUpdateRequired: _previousUpdateRequired,
+          compatibilityHint: _previousHint,
           ...rest
         } = entry;
+        const hinted = hint !== undefined ? { ...rest, compatibilityHint: hint } : rest;
         const next: ConnectionCatalogEntry =
           error === null
-            ? rest
+            ? hinted
             : {
-                ...rest,
+                ...hinted,
                 enabled: false,
                 unsupportedReason: error.message,
                 ...(error.serverUpdateRequired === true ? { serverUpdateRequired: true } : {}),
               };
-        if (
-          error !== null &&
-          entry.enabled &&
-          !(yield* Ref.get(platformEnvironmentIds)).has(environmentId)
-        ) {
+        if (error !== null && entry.enabled && persisted) {
           yield* registrations.setEnabled(environmentId, false);
         }
         const lease = (yield* SubscriptionRef.get(serviceScopes)).get(environmentId);
@@ -1183,9 +1238,26 @@ export const make = Effect.gen(function* () {
         yield* SubscriptionRef.update(entries, (current) =>
           new Map(current).set(environmentId, next),
         );
-      }),
+        // Fresh compatibility and disconnection do not depend on historical persistence.
+        yield* persistHint();
+        return true;
+      }).pipe(Effect.uninterruptible),
     );
   });
+
+  const setCompatibility = (environmentId: EnvironmentId, error: ConnectionBlockedError | null) =>
+    updateCompatibility(environmentId, error).pipe(Effect.asVoid);
+  const recordUpdateCompatibility = (
+    entry: ConnectionCatalogEntry,
+    descriptor: ExecutionEnvironmentDescriptor,
+  ) =>
+    descriptor.environmentId !== entry.target.environmentId
+      ? Effect.succeed(false)
+      : updateCompatibility(
+          entry.target.environmentId,
+          orchestrationProtocolCompatibilityError(descriptor),
+          entry,
+        );
 
   return EnvironmentRegistry.of({
     entries,
@@ -1201,6 +1273,7 @@ export const make = Effect.gen(function* () {
     retryNow,
     setEnabled,
     setCompatibility,
+    recordUpdateCompatibility,
     state,
     stateChanges,
     run,
