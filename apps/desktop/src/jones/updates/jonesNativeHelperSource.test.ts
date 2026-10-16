@@ -271,6 +271,166 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it("clears inherited trial and cold selectors for an ordinary native launch", () => {
+    const nativeFunctions = jonesNativeHelperSource.split(
+      "\nparser = argparse.ArgumentParser()",
+    )[0];
+    const scenario = String.raw`
+manifest_path = pathlib.Path('/synthetic/jones-active-install.json')
+active = {'home': '/synthetic', 'profile': '/synthetic-profile', 'generation': 'new-generation',
+          'executablePath': '/synthetic/Jones.app/Contents/MacOS/Jones'}
+selectors = ('T3CODE_JONES_TRIAL_DESCRIPTOR', 'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR')
+for name in selectors: os.environ[name] = 'stale'
+captured = {}
+def capture(command, **kwargs):
+    captured.update(kwargs['env'])
+    return type('Child', (), {'pid': 456})()
+subprocess.Popen = capture
+process_identity = lambda pid: 'captured-process'
+assert launch(active) == {'pid': 456, 'identity': 'captured-process'}
+assert all(name not in captured for name in selectors)
+assert captured['T3CODE_JONES_ACTIVE_GENERATION'] == 'new-generation'
+assert captured['T3CODE_HOME'] == '/synthetic'
+`;
+    NodeChildProcess.execFileSync("python3", ["-c", nativeFunctions + "\n" + scenario], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+    });
+  });
+
+  it.each([
+    "success",
+    "stale-admission",
+    "wrong-bundle",
+    "wrong-artifact",
+    "missing-bundle-identity",
+    "cold-state",
+    "launch-unknown",
+  ])(
+    "runs the controlled manual installation with %s and preserves the recovery pair",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const nativeFunctions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const setup = activationScenario.split("\nevents = []")[0];
+        const scenario = String.raw`
+manual_fault = sys.argv[3]
+# A completed old transaction remains historical; manual adoption creates no warm transaction.
+durable(tx / 'journal.json', {'intent': intent, 'phase': 'resumed'}, True)
+installed = dict(expected, version='old-13', sourceSha='3' * 40, sourceTree='4' * 40,
+                 bundleIdentifier='com.jones.code')
+candidate = dict(staged, version='new-16', bundleIdentifier='com.jones.code')
+for value in (installed, candidate):
+    app = pathlib.Path(value['appPath'])
+    with open(app / 'Contents/Info.plist', 'wb') as stream:
+        plistlib.dump({'CFBundleIdentifier': value['bundleIdentifier'], 'CFBundleExecutable': 'Jones',
+                      'CFBundleShortVersionString': value['version']}, stream)
+    payload = json.dumps({'version': value['version'], 'jonesSource': {
+        'repository': 'Jones-Systems/Jones-Code', 'sha': value['sourceSha'], 'tree': value['sourceTree']}}).encode()
+    header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(payload)}}}).encode()
+    (app / 'Contents/Resources/app.asar').write_bytes(
+        struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + payload)
+    value['appDigest'] = app_digest(app)
+plan = {'protocol': 1, 'restart': 'ordinary', 'expectedManifestSha256': digest(manifest_path),
+        'installed': installed, 'candidate': candidate,
+        'artifact': {'path': str(root / 'native.dmg'), 'sha256': digest(root / 'native.dmg')},
+        'processes': [{'pid': 123, 'identity': 'captured-old-process'}]}
+plan_path = root / 'manual-plan.json'
+if manual_fault == 'wrong-bundle': plan['installed']['sourceSha'] = '9' * 40
+if manual_fault == 'wrong-artifact': plan['artifact']['sha256'] = '0' * 64
+if manual_fault == 'missing-bundle-identity':
+    plan['installed'].pop('bundleIdentifier'); plan['candidate'].pop('bundleIdentifier')
+durable(plan_path, plan, True)
+plan_hash = digest(plan_path)
+if manual_fault == 'stale-admission': durable(manifest_path, dict(expected, generation='changed'))
+if manual_fault == 'cold-state': (manifest_path.parent / 'jones-maintenance').mkdir()
+events = []
+process_identity = lambda pid: None
+stop_exact = lambda proofs: events.append('stopped')
+prove_quiescence = lambda active: events.append('quiescent')
+original_manifest = manifest_path.read_bytes()
+def manual_launch(active, descriptor=None):
+    assert descriptor is None
+    assert active == read(manifest_path)
+    assert active['sourceSha'] == candidate['sourceSha']
+    pair = next((manifest_path.parent / 'jones-manual-installs').glob('*/previous-pair'))
+    assert (pair / 'state.sqlite').read_bytes() == database.read_bytes()
+    assert (pair / 'profile/opaque').read_text() == 'same-host-profile'
+    assert (pair / 'settings.json').read_text() == 'previous-settings'
+    events.append('launched')
+    if manual_fault == 'launch-unknown':
+        with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
+        (profile / 'opaque').write_text('advanced-profile')
+        raise RuntimeError('Synthetic unknown launch effect')
+    return {'pid': 456, 'identity': 'captured-new-process'}
+launch = manual_launch
+manual_root = manifest_path.parent / 'jones-manual-installs'
+if manual_fault in ('stale-admission', 'wrong-bundle', 'wrong-artifact', 'missing-bundle-identity', 'cold-state'):
+    try: manual_install(plan_path, plan_hash, apply=True)
+    except RuntimeError: pass
+    else: raise AssertionError('A changed manual plan or cold state was accepted')
+    assert events == []
+    assert not manual_root.exists()
+    assert manifest_path.read_bytes() == original_manifest
+    assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
+else:
+    inspected = manual_install(plan_path, plan_hash)
+    assert inspected['status'] == 'ready' and not manual_root.exists()
+    try: result = manual_install(plan_path, plan_hash, apply=True)
+    except RuntimeError:
+        assert manual_fault == 'launch-unknown'
+    else:
+        assert manual_fault == 'success'
+        assert result['status'] == 'launched' and result['readinessVerified'] is False
+        assert result['automaticContinuationRequested'] is False
+    receipt = read(next(manual_root.glob('*/receipt.json')))
+    assert receipt['originalManifest'].encode() == original_manifest
+    assert receipt['installed']['sourceSha'] == '3' * 40
+    assert receipt['phase'] == ('held' if manual_fault == 'launch-unknown' else 'launched')
+    assert receipt['automaticContinuationRequested'] is False
+    assert read(manifest_path)['sourceSha'] == candidate['sourceSha']
+    assert read(manifest_path)['transactionId'].startswith('manual-')
+    assert (pathlib.Path(receipt['previousBundle']) / 'Contents/MacOS/Jones').read_text() == 'previous-executable'
+    assert (previous_app / 'Contents/MacOS/Jones').read_text() == 'candidate-executable'
+    assert events.index('stopped') < events.index('quiescent') < events.index('launched')
+    assert not list(manual_root.glob('*/continuation.json'))
+    assert list(tx.parent.iterdir()) == [tx]
+    if manual_fault == 'launch-unknown':
+        assert receipt['stoppedAt'] == 'launch-intent'
+        assert (profile / 'opaque').read_text() == 'advanced-profile'
+        with sqlite3.connect(database) as db:
+            assert db.execute('SELECT value FROM identity').fetchone()[0] == 'advanced-state'
+        with sqlite3.connect(pathlib.Path(receipt['pairedState']) / 'state.sqlite') as db:
+            assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
+    try: manual_install(plan_path, plan_hash, apply=True)
+    except RuntimeError: pass
+    else: raise AssertionError('The same manual operation replayed')
+    assert events.count('launched') == 1
+print(json.dumps({'case': manual_fault, 'passed': True}))
+`;
+        const result = JSON.parse(
+          NodeChildProcess.execFileSync(
+            "python3",
+            [
+              "-c",
+              nativeFunctions + "\n" + setup + "\n" + scenario,
+              f.directory,
+              "success",
+              fault,
+            ],
+            { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
+          ),
+        ) as { passed: boolean };
+        expect(result.passed).toBe(true);
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
   it.each(["intent-fsync", "receipt-fsync", "mount-inspect", "mount-delete"])(
     "holds retirement at the exact %s boundary before trusting evidence or deleting payload",
     async (fault) => {
