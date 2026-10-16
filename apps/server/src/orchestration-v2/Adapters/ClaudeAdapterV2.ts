@@ -7168,7 +7168,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 canApplyOutcome &&
                 acceptedProducer !== undefined
               ) {
-                const current = yield* acceptedProducer.origin.revalidateCurrent.pipe(Effect.result);
+                const current = yield* acceptedProducer.origin.revalidateCurrent.pipe(
+                  Effect.result,
+                );
                 if (current._tag === "Failure") return;
                 yield* discardBufferedSubagentStarts(
                   liveQuery.nativeThreadId,

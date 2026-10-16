@@ -12061,7 +12061,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ],
           effects: plan.effects.filter(
             (effect) =>
-              effect.request.type !== "terminal.cleanup" && effect.request.type !== "preview.cleanup",
+              effect.request.type !== "terminal.cleanup" &&
+              effect.request.type !== "preview.cleanup",
           ),
         };
       }
