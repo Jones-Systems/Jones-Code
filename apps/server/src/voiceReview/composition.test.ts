@@ -16,6 +16,7 @@ import * as Data from "effect/Data";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
+import type { VoiceReviewConfig } from "./config.ts";
 import { makeVoiceReviewComposition, makeVoiceReviewCompositionFactory } from "./composition.ts";
 
 class NativeReadFailure extends Data.TaggedError("NativeReadFailure")<{
@@ -79,7 +80,7 @@ const seam = (location: "active" | "archive" = "active") => {
   const run = (
     input: {
       binding: typeof binding | null;
-      reviewConfig: typeof reviewConfig | null;
+      reviewConfig: VoiceReviewConfig | null;
       principal: EnvironmentSessionPrincipalShape;
     } = { binding, reviewConfig, principal },
   ) =>
@@ -182,6 +183,48 @@ describe("voice native service composition", () => {
       fixture.changeEnvironment();
       expect(yield* fixture.run()).toBeUndefined();
       expect(fixture.projectionRead).not.toHaveBeenCalled();
+      expect(fixture.read).not.toHaveBeenCalled();
+    }),
+  );
+  it.effect("accepts renewed enrolled DPoP keys and denies shared subjects with other keys", () =>
+    Effect.gen(function* () {
+      const fixture = seam();
+      const enrolled = {
+        ...reviewConfig,
+        allowed_session_ids: new Set<string>(),
+        allowed_dpop_identities: [
+          { subject: "cloud-connect", proof_key_thumbprint: "fixture-key" },
+        ],
+      };
+      const device: EnvironmentSessionPrincipalShape = {
+        ...principal,
+        method: "dpop-access-token",
+        subject: "cloud-connect",
+        proofKeyThumbprint: "fixture-key",
+      };
+      for (const session of ["before-renewal", "after-renewal"]) {
+        expect(
+          yield* fixture.run({
+            binding,
+            reviewConfig: enrolled,
+            principal: { ...device, sessionId: AuthSessionId.make(session) },
+          }),
+        ).toBeDefined();
+      }
+      expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
+      for (const denied of [
+        { ...device, proofKeyThumbprint: "other-key" },
+        { ...principal, method: "dpop-access-token" as const, subject: "cloud-connect" },
+        { ...device, method: "bearer-access-token" as const },
+        { ...device, scopes: new Set<never>() },
+      ]) {
+        expect(
+          yield* fixture
+            .run({ binding, reviewConfig: enrolled, principal: denied })
+            .pipe(Effect.flip),
+        ).toBeInstanceOf(VoiceReviewForbiddenError);
+      }
+      expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
