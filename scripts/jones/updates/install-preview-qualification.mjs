@@ -221,6 +221,132 @@ async function unusedPort() {
   return port;
 }
 
+export function waitForFixtureStartup(child, label, signal, timeoutMs = 90_000) {
+  let output = "";
+  let ready = false;
+  let timer;
+  let collect, onError, onExit, onAbort;
+  const detach = () => {
+    child.stdout.off("data", collect);
+    child.stderr.off("data", collect);
+    child.off("error", onError);
+    child.off("exit", onExit);
+  };
+  return new Promise((resolve, reject) => {
+    const fail = (message) => reject(new Error(`Owned ${label} server ${message}`));
+    collect = (chunk) => {
+      output = (output + chunk.toString()).slice(-256_000);
+      if (output.includes("Startup pairing credential issued; credential output withheld.")) {
+        ready = true;
+        resolve(() => output);
+      }
+    };
+    onError = () => fail("could not start");
+    onExit = (code) => {
+      detach();
+      fail(`exited (${code})`);
+    };
+    onAbort = () => fail("startup cancelled");
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    child.once("error", onError);
+    child.once("exit", onExit);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => fail("startup timed out"), timeoutMs);
+    if (signal?.aborted) onAbort();
+  }).finally(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+    if (!ready) detach();
+  });
+}
+
+export async function issueFixturePairing({
+  source,
+  owned,
+  baseDir,
+  processes,
+  signal,
+  timeoutMs = 30_000,
+}) {
+  NodeAssert.equal(baseDir, NodePath.join(owned, "t3"), "Pair only the owned fixture base");
+  if (signal?.aborted) throw new Error("Owned fixture pairing cancelled");
+  // Match startup's administrative grant: this driver must mint the ordinary
+  // client links used by Preview tabs. Explicit --scope replaces CLI defaults.
+  const scopes = [
+    "orchestration:read",
+    "orchestration:operate",
+    "settings:write",
+    "providers:manage",
+    "environment:maintain",
+    "preview:operate",
+    "diagnostics:read",
+    "terminal:read",
+    "terminal:operate",
+    "source-control:write",
+    "filesystem:read",
+    "filesystem:write",
+    "relay:read",
+    "access:read",
+    "access:write",
+    "relay:write",
+  ];
+  let child;
+  let primary;
+  try {
+    return await new Promise((resolve, reject) => {
+      child = NodeChildProcess.execFile(
+        process.execPath,
+        [
+          NodePath.join(source, "apps/server/dist/bin.mjs"),
+          "pair",
+          "--base-dir",
+          baseDir,
+          ...scopes.flatMap((scope) => ["--scope", scope]),
+        ],
+        {
+          cwd: owned,
+          env: isolatedEnvironment(owned),
+          encoding: "utf8",
+          timeout: timeoutMs,
+          killSignal: "SIGKILL",
+          maxBuffer: 256_000,
+          signal,
+        },
+        (error, stdout) => {
+          // execFile errors contain captured stdout/stderr. Never propagate
+          // those objects or copy credential output into fixture evidence.
+          if (error) {
+            reject(new Error("Owned fixture pairing command failed"));
+            return;
+          }
+          const tokens = [...stdout.matchAll(/^Token: ([^\s]+)\r?$/gm)];
+          if (tokens.length !== 1) {
+            reject(new Error("Owned fixture pairing command returned invalid output"));
+            return;
+          }
+          resolve(tokens[0][1]);
+        },
+      );
+      processes.push(child);
+    });
+  } catch (error) {
+    primary = error;
+    throw error;
+  } finally {
+    if (child) {
+      try {
+        await stopChild(child);
+      } catch {
+        const failure = primary ?? new Error("Owned fixture pairing cleanup failed");
+        failure.retainScratch = true;
+        failure.cleanupError = "Owned fixture pairing child cleanup is unresolved";
+        if (!primary) throw failure;
+      }
+    }
+  }
+}
+
 async function startServer(source, root, label, processes, signal) {
   const owned = NodePath.join(root, label);
   await NodeFSP.mkdir(owned);
@@ -243,41 +369,12 @@ async function startServer(source, root, label, processes, signal) {
     { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] },
   );
   processes.push(child);
-  let output = "";
-  let rejectStartup;
-  const startup = new Promise((resolve, reject) => {
-    rejectStartup = reject;
-    const collect = (chunk) => {
-      output = (output + chunk.toString()).slice(-256_000);
-      const match = output.match(
-        /Pairing URL:\s*(http:\/\/127\.0\.0\.1:\d+\/pair#token=[^\s\x1b]+)/,
-      );
-      if (match) resolve(match[1]);
-    };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
-    child.once("error", reject);
-    child.once("exit", (code) =>
-      reject(new Error(`Owned ${label} server exited (${code}): ${redact(output)}`)),
-    );
-  });
+  const startup = waitForFixtureStartup(child, label, signal);
   startup.catch(() => {});
   child.ownedIdentity = await processIdentity(child.pid);
-  const abortStartup = () => rejectStartup(signal.reason);
-  signal?.addEventListener("abort", abortStartup, { once: true });
-  const timer = setTimeout(
-    () => rejectStartup(new Error(`Owned ${label} server startup timed out: ${redact(output)}`)),
-    90_000,
-  );
-  let pairingUrl;
-  try {
-    pairingUrl = await startup;
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abortStartup);
-  }
+  const output = await startup;
+  const credential = await issueFixturePairing({ source, owned, baseDir, processes, signal });
   const origin = `http://127.0.0.1:${port}`;
-  const credential = new URL(pairingUrl).hash.slice("#token=".length);
   const response = await fetch(`${origin}/api/auth/browser-session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -319,7 +416,7 @@ async function startServer(source, root, label, processes, signal) {
     api,
     rpc,
     child,
-    output: () => redact(output, [credential, cookies]),
+    output: () => redact(output(), [credential, cookies]),
     async pairing() {
       const issued = await api("/api/auth/pairing-token", { label: "Owned synthetic Preview tab" });
       return `${origin}/pair#token=${encodeURIComponent(issued.credential)}`;
