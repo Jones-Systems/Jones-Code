@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { appendServiceLog, prepareServiceLog } from "../jones/cloud/serviceLog.ts";
 import { verifyPrivateServiceRuntimeCache } from "../jones/hostService/privateRuntime.ts";
 import {
   QUALIFIED_RUNTIME_RECEIPT,
@@ -711,7 +712,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const logFailure = (error: { readonly message: string }) =>
     DateTime.now.pipe(
       Effect.flatMap((now) =>
-        fs.writeFileString(logPath, `${DateTime.formatIso(now)} ${error.message}\n`, { flag: "a" }),
+        Effect.tryPromise(() =>
+          appendServiceLog(logPath, `${DateTime.formatIso(now)} ${error.message}\n`),
+        ),
       ),
       Effect.ignore,
     );
@@ -900,6 +903,11 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     yield* fs
       .makeDirectory(input.logsDir, { recursive: true })
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
+
+    yield* Effect.tryPromise({
+      try: () => prepareServiceLog(logPath),
+      catch: (cause) => new BootServiceInstallError({ cause }),
+    });
 
     // A permissions failure must not leave a partial install or stop a working server.
     if (manager.kind === "systemd") {

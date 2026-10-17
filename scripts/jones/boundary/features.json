@@ -4,6 +4,17 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "startup-access-logging",
+      "tests": [
+        "apps/server/src/startupAccess.logging.test.ts",
+        "apps/server/src/startupAccess.test.ts",
+        "apps/server/src/jones/startupAccessLogging.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "scope": "Startup console and structured logs withhold pairing credentials and token-bearing URLs unconditionally while preserving browser launch and explicit pair commands. Synthetic logging and existing runtime integration fixtures prove both paths."
+    },
+    {
       "id": "provider-order",
       "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
       "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."

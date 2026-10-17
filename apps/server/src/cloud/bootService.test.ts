@@ -173,6 +173,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
   const unitFile = serviceOptions.identity?.systemdUnitFile ?? "t3code.service";
   const commands: string[] = [];
   const timeouts = new Map<string, unknown>();
+  const logModesAtStart: Array<number | undefined> = [];
   const control: {
     failCommand: string | undefined;
     stateAfterStop?: string;
@@ -192,6 +193,15 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       input: ProcessRunner.ProcessRunInput,
     ) {
       const command = `${input.command} ${input.args.join(" ")}`;
+      if (
+        command.startsWith("launchctl bootstrap ") ||
+        command.startsWith("systemctl --user restart ")
+      ) {
+        const log = path.join(baseDir, "userdata", "logs", BootService.BOOT_SERVICE_LOG_FILE);
+        logModesAtStart.push(
+          (yield* fs.exists(log)) ? (yield* fs.stat(log)).mode & 0o777 : undefined,
+        );
+      }
       commands.push(command);
       timeouts.set(command, input.timeout);
       const failed = command === control.failCommand;
@@ -292,10 +302,94 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       ),
     );
   const service = yield* makeService();
-  return { service, makeService, fs, statePath, commands, timeouts, control, runtime };
+  return {
+    service,
+    makeService,
+    fs,
+    statePath,
+    commands,
+    timeouts,
+    control,
+    runtime,
+    logModesAtStart,
+  };
 });
 
 it.layer(NodeServices.layer)("boot service install", (it) => {
+  it.effect.each(["linux", "darwin"] as const)(
+    "creates a private future service log before manager start on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const { service, fs, logModesAtStart } = yield* makeHarness(platform);
+        const plan = yield* service.install();
+        expect(logModesAtStart).toEqual([0o600]);
+        expect((yield* fs.stat(plan.logPath)).mode & 0o777).toBe(0o600);
+        expect(yield* fs.readFileString(plan.logPath)).toBe("");
+      }),
+  );
+
+  it.effect("preserves existing service log content and mode", () =>
+    Effect.gen(function* () {
+      const { service, fs } = yield* makeHarness("darwin");
+      const { logPath } = yield* service.status;
+      const path = yield* Path.Path;
+      yield* fs.makeDirectory(path.dirname(logPath), { recursive: true });
+      yield* fs.writeFileString(logPath, "existing log\n", { mode: 0o640 });
+      const before = yield* fs.stat(logPath);
+      yield* service.install();
+      expect((yield* fs.stat(logPath)).mode).toBe(before.mode);
+      expect(yield* fs.readFileString(logPath)).toBe("existing log\n");
+    }),
+  );
+
+  it.effect("creates a private missing service log when a command fails", () =>
+    Effect.gen(function* () {
+      const { service, fs, control } = yield* makeHarness();
+      const plan = yield* service.install();
+      yield* fs.remove(plan.logPath).pipe(Effect.ignore);
+      control.failCommand = "systemctl --user restart t3code.service";
+      yield* service.restart.pipe(Effect.flip);
+      expect((yield* fs.stat(plan.logPath)).mode & 0o777).toBe(0o600);
+      expect(yield* fs.readFileString(plan.logPath)).not.toBe("");
+    }),
+  );
+
+  it.effect("refuses a symlink service log before manager mutation", () =>
+    Effect.gen(function* () {
+      const { service, fs, commands } = yield* makeHarness("darwin");
+      const { logPath } = yield* service.status;
+      const path = yield* Path.Path;
+      yield* fs.makeDirectory(path.dirname(logPath), { recursive: true });
+      const target = path.join(path.dirname(logPath), "untouched.log");
+      yield* fs.writeFileString(target, "untouched\n", { mode: 0o640 });
+      const before = yield* fs.stat(target);
+      yield* fs.symlink(target, logPath);
+      const commandsBefore = commands.length;
+      expect((yield* service.install().pipe(Effect.flip))._tag).toBe("BootServiceInstallError");
+      expect(
+        commands.slice(commandsBefore).some((command) => command.startsWith("launchctl ")),
+      ).toBe(false);
+      expect(yield* fs.readFileString(target)).toBe("untouched\n");
+      expect((yield* fs.stat(target)).mode).toBe(before.mode);
+    }),
+  );
+
+  it.effect("does not append failure text through a symlink service log", () =>
+    Effect.gen(function* () {
+      const { service, fs, control } = yield* makeHarness();
+      const plan = yield* service.install();
+      const target = `${plan.logPath}.target`;
+      yield* fs.writeFileString(target, "untouched\n", { mode: 0o640 });
+      const before = yield* fs.stat(target);
+      yield* fs.remove(plan.logPath);
+      yield* fs.symlink(target, plan.logPath);
+      control.failCommand = "systemctl --user restart t3code.service";
+      expect((yield* service.restart.pipe(Effect.flip))._tag).toBe("BootServiceCommandError");
+      expect(yield* fs.readFileString(target)).toBe("untouched\n");
+      expect((yield* fs.stat(target)).mode).toBe(before.mode);
+    }),
+  );
+
   it.effect(
     "fails before installing files or validating a runtime when lingering needs an administrator",
     () =>
