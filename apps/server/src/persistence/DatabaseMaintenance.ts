@@ -7,6 +7,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
+import * as SettlementCompactionPreflight from "../jones/persistence/settlementCompactionPreflight.ts";
+
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -80,6 +82,7 @@ export class DatabaseMaintenance extends Context.Service<
       | DatabaseInUseError
       | DatabaseProjectionsInvalidError
       | DatabaseCompactError
+      | SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError
     >;
   }
 >()("t3/persistence/DatabaseMaintenance") {}
@@ -149,6 +152,7 @@ const make = Effect.gen(function* () {
         if (!(yield* maintenance.verify).valid) {
           return yield* new DatabaseProjectionsInvalidError({ path: databasePath });
         }
+        yield* SettlementCompactionPreflight.requireSettlementProofsBeforeCompaction;
         const summary = yield* maintenance.compactEventStore;
         if (!(yield* maintenance.verify).valid) {
           return yield* new DatabaseProjectionsInvalidError({ path: databasePath });
@@ -178,7 +182,10 @@ const make = Effect.gen(function* () {
     (effect, databasePath) =>
       effect.pipe(
         Effect.mapError((cause) =>
-          isDomainError(cause) ? cause : new DatabaseCompactError({ path: databasePath, cause }),
+          isDomainError(cause) ||
+          Schema.is(SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError)(cause)
+            ? cause
+            : new DatabaseCompactError({ path: databasePath, cause }),
         ),
       ),
   );
