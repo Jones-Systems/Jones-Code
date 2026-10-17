@@ -23,7 +23,6 @@ import { data } from "../../components/workstreams/nativeWorkstreamActions.fixtu
 import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
 import {
   routeWorkstreamsHttp,
-  sha256Hex,
   syntheticWorkstreams,
   type WorkstreamsHttpCall,
 } from "./workstreamsHttp.fixtures";
@@ -71,17 +70,24 @@ const start = Date.parse("2026-09-30T12:00:00Z");
 const local = { environmentId: "env:a", id: "local" };
 const remote = { environmentId: "env:b", id: "remote" };
 const threads = [local, remote];
+const sha256Hex = async (text: string): Promise<string> =>
+  Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
+    (value) => value.toString(16).padStart(2, "0"),
+  ).join("");
 const keyOf = (thread: { readonly environmentId: string; readonly id: string }) =>
   nativeWorkstreamThreadKey(thread.environmentId, thread.id);
 
 let registry: ReturnType<typeof AtomRegistry.make>;
 let renderer: ReactTestRenderer | undefined;
 let latest: WorkstreamListView;
+let staleRenders: boolean[];
 
 function Mounted() {
   const view = useWorkstreams(true, threads);
   useLayoutEffect(() => {
     latest = view;
+    staleRenders.push(view.stale === true);
   });
   return null;
 }
@@ -338,6 +344,7 @@ beforeEach(() => {
   http.environment.mockReset();
   registry = AtomRegistry.make();
   registry.set(connection, AsyncResult.success(connected));
+  staleRenders = [];
 });
 
 afterEach(async () => {
@@ -515,8 +522,16 @@ describe("assigning a thread from another environment", () => {
       return undefined;
     };
 
+    const rendersBeforeLoss = staleRenders.length;
     expect(await assignRemote()).toBeDefined();
     expect(lost?.action.operation).toBe("register_reference");
+    // The effect may have reached the shared registry: the primary reloads, staying read-only
+    // until that reload succeeds.
+    expect(staleRenders.slice(rendersBeforeLoss)).toContain(true);
+    await settle(() => {
+      expect(latest.loading).toBe(false);
+      expect(latest.stale).toBe(false);
+    });
     const callsAfterLoss = environment.state.calls.length;
 
     // The effect is unknown, so another assignment waits for reconciliation instead of guessing.

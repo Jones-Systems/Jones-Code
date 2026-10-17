@@ -15,6 +15,7 @@ import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
+import { canEditWorkstreams } from "../../components/workstreams/nativeWorkstreamActions";
 import {
   data,
   thread,
@@ -745,8 +746,11 @@ it("keeps an explicit recovery path after a preflight refusal without submitting
       }),
     ).rejects.toThrow("preflight refused");
   });
-  expect(latest.data).toBeNull();
-  expect(latest.registrationContext).toBeNull();
+  // A refusal that is not lost access keeps the last good list, stale and read-only.
+  expect(latest.data).toEqual({ ...data, stale: true });
+  expect(latest.stale).toBe(true);
+  expect(canEditWorkstreams(latest.data)).toBe(false);
+  expect(latest.registrationContext).toEqual(registration);
   expect(latest.placements).toBeNull();
   expect(latest.error).toBeTruthy();
   expect(http.run).toHaveBeenCalledTimes(2);
@@ -756,6 +760,7 @@ it("keeps an explicit recovery path after a preflight refusal without submitting
     .mockResolvedValueOnce({ ...registration, registry_version: 12 });
   await act(async () => latest.refresh());
   expect(latest.data).toEqual(fresh);
+  expect(latest.stale).toBe(false);
   expect(latest.error).toBeNull();
   expect(http.run).toHaveBeenCalledTimes(4);
 });

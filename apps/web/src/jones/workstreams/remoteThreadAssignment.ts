@@ -258,6 +258,11 @@ export interface RemoteThreadAssignmentInput extends NativeThreadAssignmentOptio
   ) => Promise<T3WorkstreamListResult>;
   /** Reloads the primary index; the remote receipt is never placement proof. */
   readonly refreshPrimary: () => void;
+  /**
+   * A failure after a command was sent may have changed the shared registry, so the primary
+   * snapshot becomes read-only until its reload. Earlier refusals changed nothing and leave it.
+   */
+  readonly commandFailed: () => void;
   readonly now?: () => number;
 }
 
@@ -389,6 +394,9 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
     };
     try {
       return await operation(submit);
+    } catch (cause) {
+      if (commandAttempted && !signal?.aborted) input.commandFailed();
+      throw cause;
     } finally {
       if (commandAttempted) input.refreshPrimary();
     }

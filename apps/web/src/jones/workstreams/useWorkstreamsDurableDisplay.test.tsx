@@ -20,6 +20,7 @@ import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { canEditWorkstreams } from "../../components/workstreams/nativeWorkstreamActions";
 import { data } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
 import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
 import {
@@ -635,5 +636,437 @@ describe("durable Workstream assignment display", () => {
     expect(failure).toMatchObject({ reason: "stale" });
     expect(submitted).toEqual(["register_reference"]);
     expect(submitted).not.toContain("attach_primary");
+  });
+
+  it("refuses every registry write while the last good snapshot is stale", async () => {
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "beta")],
+    });
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    await settle(() => loaded());
+    expect(canEditWorkstreams(latest.view.data)).toBe(true);
+    server.state.intercept = (call) => {
+      if (call.route === "list") throw new Error("Connection interrupted");
+      return undefined;
+    };
+    await act(async () => latest.view.refresh());
+    await settle(() => expect(latest.view.stale).toBe(true));
+    server.state.intercept = null;
+
+    // Every edit affordance fed by the hook's list reads the snapshot as not current.
+    expect(canEditWorkstreams(latest.view.data)).toBe(false);
+    const command = {
+      command_id: "command-stale",
+      expected_server_generation: data.binding.serverGeneration,
+      expected_registry_version: data.binding.registryVersion,
+      action: { operation: "update_workstream" },
+    } as unknown as Parameters<WorkstreamListView["submit"]>[0];
+    const operation = vi.fn(async () => undefined);
+    const failures: unknown[] = [];
+    await act(async () => {
+      await latest.view.submit(command).catch((cause: unknown) => failures.push(cause));
+      await latest.view
+        .runBindingOperation(operation)
+        .catch((cause: unknown) => failures.push(cause));
+      await latest.view.assignNativeThread!(threads[1]!, "beta", {
+        commandId: async () => "command-assign",
+      }).catch((cause: unknown) => failures.push(cause));
+    });
+    expect(failures).toHaveLength(3);
+    for (const failure of failures) expect(failure).toMatchObject({ reason: "stale" });
+    expect(operation).not.toHaveBeenCalled();
+    expect(server.state.calls.filter((call) => call.route === "submit")).toHaveLength(0);
+    // Refusals keep the last good groups visible.
+    expect(latest.view.stale).toBe(true);
+    expect(latest.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+  });
+
+  it("purges when the registration context rejects authorization after list and index load", async () => {
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "beta")],
+    });
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    await settle(() => loaded());
+    const denied = new EnvironmentHttpUnauthorizedError({ message: "authorization revoked" });
+    server.state.intercept = (call) => {
+      if (call.route === "registrationContext") throw denied;
+      return undefined;
+    };
+    await act(async () => latest.view.refresh());
+    await settle(() => expect(latest.view.loading).toBe(false));
+    expect(latest.view.data).toBeNull();
+    expect(latest.view.assignmentIndex).toBeNull();
+    expect(latest.view.placements).toBeNull();
+    expect(latest.view.registrationContext).toBeNull();
+    expect(latest.view.stale).toBe(false);
+    expect(latest.view.error).toBe(denied.message);
+  });
+
+  it("keeps the last good snapshot stale when the registration context read fails", async () => {
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "beta")],
+    });
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    await settle(() => loaded());
+    const context = latest.view.registrationContext;
+    const index = latest.view.assignmentIndex;
+    expect(context).not.toBeNull();
+    server.state.version += 1;
+    server.state.intercept = (call) => {
+      if (call.route === "registrationContext") throw new Error("Connection interrupted");
+      return undefined;
+    };
+    await act(async () => latest.view.refresh());
+    await settle(() => expect(latest.view.loading).toBe(false));
+    // The newer list and index were read but never published without a validated context.
+    expect(latest.view.stale).toBe(true);
+    expect(latest.view.error).toBe("Connection interrupted");
+    expect(latest.view.data?.binding.registryVersion).toBe(11);
+    expect(latest.view.assignmentIndex).toBe(index);
+    expect(latest.view.registrationContext).toBe(context);
+    expect(latest.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+  });
+
+  it("shows the error instead of a snapshot when the first registration context read fails", async () => {
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "beta")],
+    });
+    server.state.intercept = (call) => {
+      if (call.route === "registrationContext") throw new Error("Connection interrupted");
+      return undefined;
+    };
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    await settle(() => expect(latest.view.loading).toBe(false));
+    expect(latest.view.data).toBeNull();
+    expect(latest.view.assignmentIndex).toBeNull();
+    expect(latest.view.stale).toBe(false);
+    expect(latest.view.error).toBe("Connection interrupted");
+  });
+
+  it("publishes without a registration context when the server does not provide one", async () => {
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "beta")],
+    });
+    server.state.intercept = (call) => {
+      if (call.route === "registrationContext")
+        throw Object.assign(new Error("Not Found"), {
+          _tag: "ResponseError",
+          response: { status: 404 },
+        });
+      return undefined;
+    };
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    await settle(() => loaded());
+    expect(latest.view.registrationContext).toBeNull();
+    expect(latest.view.stale).toBe(false);
+    expect(latest.view.error).toBeNull();
+    expect(latest.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+  });
+
+  it("purges at once when a proof-only refresh rejects authorization", async () => {
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "alpha"), assign(threads[1]!, "beta")],
+    });
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount([threads[0]!]);
+    await settle(() => loaded());
+    const denied = new EnvironmentHttpUnauthorizedError({ message: "authorization revoked" });
+    server.state.intercept = (call) => {
+      if (call.route === "threadPlacements") throw denied;
+      // A later list read would fail as an outage, which alone would only mark it stale.
+      if (call.route === "list") throw new Error("Connection interrupted");
+      return undefined;
+    };
+    await act(async () => {
+      renderer!.update(
+        <RegistryContext.Provider value={registry}>
+          <Mounted threads={threads} />
+        </RegistryContext.Provider>,
+      );
+    });
+    await settle(() => expect(latest.view.data).toBeNull());
+    await settle(() => expect(latest.view.loading).toBe(false));
+    expect(latest.view.assignmentIndex).toBeNull();
+    expect(latest.view.placements).toBeNull();
+    expect(latest.view.stale).toBe(false);
+    expect(latest.view.error).toBe(denied.message);
+  });
+
+  it("installs a retry's list, context and index together at one registry version", async () => {
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "beta")],
+    });
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    await settle(() => loaded());
+    const firstCommit = renders.findIndex((render) => render.view.data !== null);
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Only the assignment index reads memberships, so this gates the index alone.
+    server.state.intercept = async (call) => {
+      if (call.route === "memberships") await held;
+      return undefined;
+    };
+    server.state.version += 1;
+    let retried!: Promise<void>;
+    await act(async () => {
+      retried = latest.view.retry!();
+    });
+    await settle(() => expect(server.state.calls.at(-1)?.route).toBe("memberships"));
+    await act(async () => retried);
+    expect(latest.view.assignmentIndex?.registryVersion).toBe(11);
+    server.state.intercept = null;
+    release();
+    await settle(() => loaded(12));
+    expect(latest.view.assignmentIndex?.registryVersion).toBe(12);
+    expect(latest.view.registrationContext?.registry_version).toBe(12);
+    expect(latest.view.error).toBeNull();
+    for (const render of renders.slice(firstCommit)) {
+      const version = render.view.data?.binding.registryVersion;
+      expect(render.view.assignmentIndex?.registryVersion).toBe(version);
+      expect(render.view.registrationContext?.registry_version).toBe(version);
+      expect(render.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+    }
+  });
+
+  describe("after reference commands commit and the next snapshot read fails", () => {
+    const expiredReference = {
+      native_reference_id: "reference-00000",
+      owner_id: "owner",
+      identity: {
+        provider: "t3",
+        source_instance_id: "env:a",
+        native_id: "00000",
+        resource_kind: "thread",
+        id_kind: "internal",
+        account_provenance: { kind: "not_account_scoped" },
+      },
+      pr_locator: null,
+      registration: {
+        state: "attested",
+        attestation_version: 3,
+        attested_at: "2026-09-30T11:00:00Z",
+        expires_at: "2026-09-30T11:05:00Z",
+        evidence: {
+          provider: "t3",
+          source_instance_id: "env:a",
+          native_id: "00000",
+          authority_namespace: "authority",
+          store_generation: 1,
+          evidence_sha256: "a".repeat(64),
+        },
+      },
+      created_at: "2026-09-30T11:00:00Z",
+      created_by: { principal_id: "owner" },
+      created_registry_version: 1,
+    };
+    const readySource = {
+      provider: "t3",
+      source_instance_id: "env:a",
+      authority_namespace: "authority",
+      store_generation: 1,
+      resource_kind: "thread",
+      id_kind: "internal",
+      account_provenance: { kind: "not_account_scoped" },
+      native_protocol: "workstreams-t3-provider/1.0.0",
+      build: { repository: "Jones-Systems/Jones-Code", sha: "a".repeat(40), tree: "b".repeat(40) },
+    };
+
+    /**
+     * Moves a thread whose stored primary is beta but whose proof has expired, so the
+     * assignment registers and re-verifies its reference before the next snapshot read.
+     */
+    const startMove = async (input: {
+      readonly failure: (call: { readonly route: string }) => unknown;
+      readonly verifyState?: "committed" | "pending";
+    }) => {
+      const threads = nativeThreads(2);
+      const server = syntheticWorkstreams({
+        now: () => Date.now(),
+        assignments: [
+          assign(threads[0]!, "beta", {
+            attestedAt: "2026-09-30T11:00:00Z",
+            expiresAt: "2026-09-30T11:05:00Z",
+          }),
+        ],
+      });
+      http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+      await mount(threads);
+      await settle(() => loaded());
+      expect(latest.grouping.assuranceByKey?.get(keyOf(threads[0]!))).toBe("recorded");
+      const submitted: string[] = [];
+      const failing = { active: false };
+      const receipt = (command: { command_id: string; action: { operation: string } }) =>
+        ({
+          command_id: command.command_id,
+          owner_id: "owner",
+          actor: { principal_id: "principal" },
+          operation: command.action.operation,
+          request_sha256: "c".repeat(64),
+          server_generation: 7,
+          accepted_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          state: "committed",
+          registry_version: server.state.version,
+          changed: true,
+          effects: { native_reference_id: "reference-00000" },
+        }) as unknown as WorkstreamReceipt;
+      let pendingCommand: { command_id: string; action: { operation: string } } | null = null;
+      server.state.intercept = (call) => {
+        if (failing.active) {
+          const failed = input.failure(call);
+          if (failed !== undefined) return failed;
+        }
+        if (call.route === "registrationContext")
+          return { ...server.registration(), sources: [readySource] };
+        if (call.route === "reference")
+          return {
+            context: {
+              owner_id: "owner",
+              server_generation: 7,
+              registry_version: server.state.version,
+            },
+            reference: expiredReference,
+            latest_observation: null,
+          };
+        if (call.route === "command" && pendingCommand !== null) return receipt(pendingCommand);
+        if (call.route === "submit") {
+          const command = call.request.payload?.command as {
+            command_id: string;
+            action: { operation: string };
+          };
+          submitted.push(command.action.operation);
+          server.state.version += 1;
+          if (submitted.length === 2) {
+            failing.active = true;
+            if (input.verifyState === "pending") {
+              pendingCommand = command;
+              return {
+                ...receipt(command),
+                state: "pending",
+                completed_at: null,
+                retry_after_seconds: 1,
+              };
+            }
+          }
+          return receipt(command);
+        }
+        return undefined;
+      };
+      let nextId = 0;
+      let failure: unknown;
+      await act(async () => {
+        void latest.view.assignNativeThread!(threads[0]!, "alpha", {
+          commandId: async () => `command-${++nextId}`,
+        }).catch((cause: unknown) => {
+          failure = cause;
+        });
+      });
+      // A pending receipt is polled after its retry delay.
+      for (let attempt = 0; failure === undefined && attempt < 200; attempt += 1) {
+        await act(() => vi.advanceTimersByTimeAsync(250));
+        await settle(() => undefined, 1);
+      }
+      expect(failure).toBeDefined();
+      await settle(() => expect(latest.view.loading).toBe(false));
+      expect(submitted).toEqual(["register_reference", "verify_reference"]);
+      return { threads, server, submitted, failing };
+    };
+
+    const transport = (call: { readonly route: string }) => {
+      if (call.route === "list" || call.route === "command")
+        throw new Error("Connection interrupted");
+      return undefined;
+    };
+
+    it("keeps the stored beta group stale and read-only and reconciles only by reads", async () => {
+      const { threads, submitted, failing } = await startMove({ failure: transport });
+      expect(latest.view.data).not.toBeNull();
+      expect(latest.view.stale).toBe(true);
+      expect(latest.view.error).not.toBeNull();
+      expect(canEditWorkstreams(latest.view.data)).toBe(false);
+      expect(
+        latest.view.assignmentIndex?.entries.get(keyOf(threads[0]!))?.primary?.workstreamId,
+      ).toBe("beta");
+      expect(
+        latest.grouping.groups
+          .find((group) => group.workstream.workstreamId === "beta")
+          ?.threads.map((thread) => thread.id),
+      ).toEqual(["00000"]);
+
+      await act(async () => {
+        await latest.view.retry!().catch(() => undefined);
+        latest.view.refresh();
+      });
+      await settle(() => expect(latest.view.loading).toBe(false));
+      expect(latest.view.stale).toBe(true);
+      expect(submitted).toHaveLength(2);
+
+      failing.active = false;
+      await act(async () => latest.view.refresh());
+      await settle(() => expect(latest.view.stale).toBe(false));
+      expect(latest.view.error).toBeNull();
+      expect(canEditWorkstreams(latest.view.data)).toBe(true);
+      expect(latest.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+      expect(submitted).toHaveLength(2);
+    });
+
+    it("fences an unproved command and resolves it through retry reads without resubmitting", async () => {
+      const { threads, submitted, failing, server } = await startMove({
+        failure: transport,
+        verifyState: "pending",
+      });
+      expect(latest.view.data).not.toBeNull();
+      expect(latest.view.stale).toBe(true);
+      expect(latest.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+      expect(submitted).toHaveLength(2);
+
+      failing.active = false;
+      const commandReads = server.state.calls.filter((call) => call.route === "command").length;
+      await act(async () => latest.view.retry!());
+      await settle(() => expect(latest.view.stale).toBe(false));
+      expect(latest.view.error).toBeNull();
+      expect(server.state.calls.filter((call) => call.route === "command").length).toBe(
+        commandReads + 1,
+      );
+      expect(submitted).toHaveLength(2);
+    });
+
+    it("still purges when the next snapshot read rejects authorization", async () => {
+      const denied = new EnvironmentHttpUnauthorizedError({ message: "authorization revoked" });
+      const { submitted } = await startMove({
+        failure: (call) => {
+          if (call.route === "list") throw denied;
+          return undefined;
+        },
+      });
+      expect(latest.view.data).toBeNull();
+      expect(latest.view.assignmentIndex).toBeNull();
+      expect(latest.view.stale).toBe(false);
+      expect(latest.view.error).not.toBeNull();
+      expect(submitted).toHaveLength(2);
+    });
   });
 });
