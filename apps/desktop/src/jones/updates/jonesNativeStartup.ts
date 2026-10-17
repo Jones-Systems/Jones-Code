@@ -10,11 +10,11 @@ import { isCompanionPackage } from "@t3tools/shared/jones/previewCompanionProduc
 import { holdJonesColdStartup } from "./jonesColdBackendCustody.ts";
 import { resolveDesktopUserDataOverride } from "../../app/DesktopUserDataOverride.ts";
 
-let desktopOwner: JonesNativeWriterAdmission | undefined;
+let resolveDesktopOwner: (() => JonesNativeWriterAdmission) | undefined;
 
-export function currentJonesDesktopOwner(): JonesNativeWriterAdmission | undefined {
-  desktopOwner?.assertCurrent();
-  return desktopOwner;
+/** Called only by primary backend configuration, after Clerk forwards secondary launches. */
+export function currentJonesDesktopOwner(): (() => JonesNativeWriterAdmission) | undefined {
+  return resolveDesktopOwner;
 }
 
 export function holdJonesDesktopNativeWriterFence(input: {
@@ -25,7 +25,7 @@ export function holdJonesDesktopNativeWriterFence(input: {
   readonly version: string;
   readonly metadata: unknown;
 }): void {
-  desktopOwner = undefined;
+  resolveDesktopOwner = undefined;
   holdJonesColdStartup(input.env);
   if (input.platform !== "darwin" || isCompanionPackage(input.metadata)) return;
   const explicitHome = input.env.T3CODE_HOME?.trim();
@@ -37,7 +37,7 @@ export function holdJonesDesktopNativeWriterFence(input: {
     (development && NodeFS.existsSync(legacy)
       ? legacy
       : NodePath.join(input.appDataDirectory, development ? "t3code-dev" : "t3code-v2"));
-  const admission = holdJonesNativeWriterFence({
+  const writerInput = {
     home,
     databasePath: NodePath.join(
       home,
@@ -48,6 +48,18 @@ export function holdJonesDesktopNativeWriterFence(input: {
     descriptorPath: input.env.T3CODE_JONES_TRIAL_DESCRIPTOR,
     version: input.version,
     buildMetadata: input.metadata,
-  });
-  if (admission !== undefined) desktopOwner = holdJonesDesktopOwner(admission);
+  };
+  const admission = holdJonesNativeWriterFence(writerInput);
+  if (admission === undefined && writerInput.descriptorPath === undefined) return;
+  let owner: JonesNativeWriterAdmission | undefined;
+  resolveDesktopOwner = () => {
+    if (owner === undefined) {
+      const ordinary = holdJonesNativeWriterFence({ ...writerInput, descriptorPath: undefined });
+      if (ordinary === undefined)
+        throw new Error("Desktop ownership requires ordinary native admission.");
+      owner = holdJonesDesktopOwner(ordinary);
+    }
+    owner.assertCurrent();
+    return owner;
+  };
 }

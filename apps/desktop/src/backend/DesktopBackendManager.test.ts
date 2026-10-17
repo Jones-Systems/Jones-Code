@@ -1837,3 +1837,179 @@ describe("DesktopBackendManager", () => {
     ),
   );
 });
+
+it.for(["ordinary", "trial"] as const)(
+  "joins the production Manager and bundled backend owner channel after %s admission",
+  async (scenario, { signal }) => {
+    await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
+      const managerPath = NodeURL.fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts");
+      const backendPath = NodePath.resolve(
+        NodePath.dirname(managerPath),
+        "../../../server/src/jones/workstreams/DesktopNativeOwner.ts",
+      );
+      const home = await NodeFSP.realpath(root);
+      const profile = NodePath.join(home, "profile");
+      const databasePath = NodePath.join(home, "userdata/statev2.sqlite");
+      await NodeFSP.mkdir(profile);
+      await NodeFSP.mkdir(NodePath.dirname(databasePath));
+      await NodeFSP.mkdir(NodePath.join(home, "runtime"));
+      await NodeFSP.writeFile(databasePath, "opaque state");
+      const metadata = {
+        name: "t3code",
+        jonesSource: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "a".repeat(40),
+          tree: "b".repeat(40),
+        },
+      };
+      const active = {
+        protocol: 1,
+        owner: "desktop",
+        home,
+        databasePath,
+        profile,
+        environmentId: "fixture",
+        version: "fixture",
+        sourceSha: metadata.jonesSource.sha,
+        sourceTree: metadata.jonesSource.tree,
+      };
+      const manifest = NodePath.join(home, "runtime/jones-active-install.json");
+      const tx = NodePath.join(home, "runtime/jones-updates/transactions", "f".repeat(64));
+      const descriptorPath =
+        scenario === "trial" ? NodePath.join(tx, "trial-descriptor.json") : undefined;
+      await NodeFSP.writeFile(
+        manifest,
+        JSON.stringify(
+          scenario === "trial"
+            ? {
+                ...active,
+                version: "previous",
+                sourceSha: "c".repeat(40),
+                sourceTree: "d".repeat(40),
+              }
+            : active,
+        ),
+        { mode: 0o600 },
+      );
+      if (descriptorPath !== undefined) {
+        await NodeFSP.mkdir(tx, { recursive: true });
+        await NodeFSP.writeFile(
+          descriptorPath,
+          JSON.stringify({
+            ...active,
+            startupGateProtocol: 1,
+            transactionId: "f".repeat(64),
+            stagedHandle: "e".repeat(64),
+          }),
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(tx, "journal.json"),
+          JSON.stringify({
+            phase: "trial",
+            intent: {
+              protocol: 1,
+              transactionId: "f".repeat(64),
+              staged: { ...active, handle: "e".repeat(64) },
+            },
+          }),
+        );
+      }
+      const fixture = {
+        home,
+        databasePath,
+        profile,
+        metadata,
+        active,
+        manifest,
+        tx,
+        descriptorPath,
+      };
+      await NodeFSP.writeFile(NodePath.join(root, "input.json"), JSON.stringify(fixture));
+      const parentHarness = [
+        "import * as OwnerFixtureFS from 'node:fs';",
+        "import * as OwnerFixtureAssert from 'node:assert/strict';",
+        "import * as OwnerFixtureServices from '@effect/platform-node/NodeServices';",
+        "import * as OwnerFixtureStartup from '../jones/updates/jonesNativeStartup.ts';",
+        "const fixture = JSON.parse(OwnerFixtureFS.readFileSync(process.argv[2] + '/input.json', 'utf8'));",
+        "OwnerFixtureStartup.holdJonesDesktopNativeWriterFence({ platform:'darwin', env:{ T3CODE_HOME:fixture.home, T3CODE_DESKTOP_USER_DATA_DIR:fixture.profile, T3CODE_JONES_TRIAL_DESCRIPTOR:fixture.descriptorPath }, homeDirectory:fixture.home, appDataDirectory:fixture.home, version:'fixture', metadata:fixture.metadata });",
+        "const ownerResolver = OwnerFixtureStartup.currentJonesDesktopOwner();",
+        "let output = ''; let committed = false;",
+        "await Effect.runPromise(Effect.scoped(runBackendProcess({",
+        "executablePath:process.execPath,args:[fixture.home+'/backend.mjs',fixture.home],entryPath:fixture.home+'/backend.mjs',cwd:fixture.home,env:{},extendEnv:true,",
+        "bootstrap:{mode:'desktop',noBrowser:true,port:3773,t3Home:fixture.home,host:'127.0.0.1',desktopBootstrapToken:'fixture',tailscaleServeEnabled:false,tailscaleServePort:443,desktopNativeOwnerInputFd:8,desktopNativeOwnerOutputFd:9},",
+        "bootstrapDelivery:'fd3',httpBaseUrl:new URL('http://127.0.0.1:3773'),captureOutput:true,preflightFailure:Option.none(),jonesDesktopOwner:ownerResolver,desktopTelemetryStream:Stream.empty,",
+        "onOutput:(kind,bytes)=>Effect.sync(()=>{ output += new TextDecoder().decode(bytes); if(fixture.descriptorPath && output.includes('pending') && !committed){ committed=true; OwnerFixtureFS.writeFileSync(fixture.manifest,JSON.stringify(fixture.active)); const journal=JSON.parse(OwnerFixtureFS.readFileSync(fixture.tx+'/journal.json','utf8')); journal.phase='resumed'; OwnerFixtureFS.writeFileSync(fixture.tx+'/journal.json',JSON.stringify(journal)); OwnerFixtureFS.writeFileSync(fixture.home+'/commit-ready','ready'); } })",
+        "}).pipe(Effect.provide(OwnerFixtureServices.layer), Effect.provideService(HttpClient.HttpClient, HttpClient.make(()=>Effect.never)))));",
+        "OwnerFixtureAssert.ok(output.includes('qualified'),output);",
+        "if(fixture.descriptorPath) OwnerFixtureAssert.ok(output.includes('pending'),output);",
+        "OwnerFixtureFS.writeFileSync(fixture.home+'/settled.json',JSON.stringify({settled:true}));",
+      ].join("\n");
+      const childHarness = [
+        "const fixture = JSON.parse(NodeFS.readFileSync(process.argv[2] + '/input.json','utf8'));",
+        "const owner = openDesktopNativeOwnerSession({ home:fixture.home,databasePath:fixture.databasePath,authorityDir:fixture.home+'/native-store-authority',version:'fixture',buildMetadata:fixture.metadata,descriptorPath:fixture.descriptorPath,inputFd:8,outputFd:9 });",
+        "try {",
+        "if(fixture.descriptorPath){ let refused=false; try{ await owner.refresh(); }catch{refused=true;} if(!refused||owner.available)throw new Error('Trial prematurely qualified'); process.stdout.write('pending\\n');",
+        "await new Promise((resolve,reject)=>{ const deadline=Date.now()+10000; const check=()=>{if(NodeFS.existsSync(fixture.home+'/commit-ready'))resolve();else if(Date.now()>deadline)reject(new Error('Commit not observed'));else NodeTimers.setTimeout(check,10);};check();}); }",
+        "await owner.refresh(); owner.assertCurrent(); if(owner.binding?.version!=='fixture')throw new Error('Wrong generation'); process.stdout.write('qualified\\n');",
+        "}finally{owner.close();}",
+      ].join("\n");
+      const sources = new Map([
+        [managerPath, (await NodeFSP.readFile(managerPath, "utf8")) + "\n" + parentHarness],
+        [backendPath, (await NodeFSP.readFile(backendPath, "utf8")) + "\n" + childHarness],
+      ]);
+      await NodeFSP.writeFile(
+        NodePath.join(root, "settled.json"),
+        JSON.stringify({ settled: false }),
+      );
+      let launched = false;
+      try {
+        for (const [name, entry] of Object.entries({ fixture: managerPath, backend: backendPath }))
+          await build({
+            config: false,
+            cwd: root,
+            entry: { [name]: entry },
+            outDir: root,
+            clean: false,
+            format: "esm",
+            dts: false,
+            sourcemap: false,
+            tsconfig: false,
+            outExtensions: () => ({ js: ".mjs" }),
+            outputOptions: { codeSplitting: false },
+            deps: { alwaysBundle: (id) => !id.startsWith("node:"), onlyBundle: false },
+            plugins: [
+              {
+                name: "owned-desktop-owner-integration",
+                resolveId(id) {
+                  if (id === "electron") return "\0owner-fixture-electron.cjs";
+                },
+                load(id) {
+                  if (id === "\0owner-fixture-electron.cjs") return "module.exports = {};";
+                  return sources.get(id);
+                },
+              },
+            ],
+            logLevel: "silent",
+          });
+        launched = true;
+        const result = await IdentityFixture.runLegacyIdentityFixtureCommand(
+          NodeProcess.execPath,
+          [NodePath.join(root, "fixture.mjs"), root],
+          root,
+          { signal },
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(
+          JSON.parse(await NodeFSP.readFile(NodePath.join(root, "settled.json"), "utf8")).settled,
+          true,
+        );
+      } catch (cause) {
+        const settled = await NodeFSP.readFile(NodePath.join(root, "settled.json"), "utf8")
+          .then((raw) => JSON.parse(raw).settled)
+          .catch(() => false);
+        if (launched && !settled) Object.assign(cause as object, { preserveScratch: true });
+        throw cause;
+      }
+    });
+  },
+);

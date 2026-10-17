@@ -75,7 +75,7 @@ export type DesktopBackendBootstrapDelivery = "fd3" | "stdin";
 
 export interface DesktopBackendStartConfig extends BackendProcessContext {
   readonly jonesColdBackendPermit?: JonesColdBackendPermit;
-  readonly jonesDesktopOwner?: JonesNativeWriterAdmission;
+  readonly jonesDesktopOwner?: () => JonesNativeWriterAdmission;
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string | undefined>;
   // When true the spawner merges the desktop process.env on top of `env`;

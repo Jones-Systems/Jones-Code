@@ -15,9 +15,8 @@ import {
 
 /** One channel is created for one Manager-owned spawn; it cannot be rebound after exit. */
 export const makeDesktopNativeOwnerChannel = Effect.fn("makeDesktopNativeOwnerChannel")(function* (
-  owner: JonesNativeWriterAdmission,
+  resolveOwner: () => JonesNativeWriterAdmission,
 ) {
-  owner.assertCurrent();
   const replies = yield* Queue.unbounded<Uint8Array, Cause.Done>();
   const runId = NodeCrypto.randomBytes(32).toString("hex");
   let active = true;
@@ -52,6 +51,7 @@ export const makeDesktopNativeOwnerChannel = Effect.fn("makeDesktopNativeOwnerCh
                 buffer = buffer.slice(newline + 1);
                 const response = yield* Effect.try(() => {
                   if (!active) throw new Error("Desktop owner channel is closed.");
+                  const owner = resolveOwner();
                   owner.assertCurrent();
                   const request = decodeDesktopNativeOwnerMessage(line, false);
                   if (

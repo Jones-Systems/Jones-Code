@@ -68,30 +68,28 @@ const makeNativeWorkstreamsRuntimeLayer = (
       return NativeWorkstreamsRuntime.of({
         enrollments,
         ownerOperations: (request) =>
-          owner.available && owner.binding !== undefined
-            ? runDesktopNativeOwnerOperation(
-                request,
-                {
-                  binding: owner.binding,
-                  assertCurrent: owner.assertCurrent,
-                  refresh: owner.refresh,
-                },
-                {
-                  baseDir: config.baseDir,
-                  authorityDir: config.authorityStateDir,
-                  environmentId: owner.binding.environmentId,
-                },
-              ).pipe(
-                Effect.mapError(
-                  () =>
-                    new EnvironmentHttpBadRequestError({
-                      message: "desktop_native_owner_unavailable",
-                    }),
-                ),
-              )
-            : Effect.fail(
+          Effect.gen(function* () {
+            yield* owner.refresh;
+            const binding = owner.binding;
+            if (!owner.available || binding === undefined)
+              return yield* new EnvironmentHttpBadRequestError({
+                message: "desktop_native_owner_unavailable",
+              });
+            return yield* runDesktopNativeOwnerOperation(
+              request,
+              { binding, assertCurrent: owner.assertCurrent, refresh: owner.refresh },
+              {
+                baseDir: config.baseDir,
+                authorityDir: config.authorityStateDir,
+                environmentId: binding.environmentId,
+              },
+            );
+          }).pipe(
+            Effect.mapError(
+              () =>
                 new EnvironmentHttpBadRequestError({ message: "desktop_native_owner_unavailable" }),
-              ),
+            ),
+          ),
         provider: makeWorkstreamsNativeProvider({
           authority,
           threadExists: (threadId) =>

@@ -22,7 +22,7 @@ const bytes = (value: unknown) => new TextEncoder().encode(`${JSON.stringify(val
 it.effect("answers only for the captured child and closes when its source ends", () =>
   Effect.gen(function* () {
     const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
-    const channel = yield* makeDesktopNativeOwnerChannel({ binding, assertCurrent() {} });
+    const channel = yield* makeDesktopNativeOwnerChannel(() => ({ binding, assertCurrent() {} }));
     yield* channel.bind(123, Stream.fromQueue(output));
     const response = yield* channel.input.pipe(
       Stream.take(1),
@@ -46,12 +46,12 @@ it.effect("refuses stale admission and another child before producing proof", ()
     for (const fault of ["stale", "child", "oversized"]) {
       const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
       let current = true;
-      const channel = yield* makeDesktopNativeOwnerChannel({
+      const channel = yield* makeDesktopNativeOwnerChannel(() => ({
         binding,
         assertCurrent() {
           if (!current) throw new Error("stale");
         },
-      });
+      }));
       yield* channel.bind(123, Stream.fromQueue(output));
       if (fault === "stale") current = false;
       const response = yield* Stream.runCollect(channel.input).pipe(Effect.forkScoped);

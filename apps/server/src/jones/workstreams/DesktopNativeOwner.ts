@@ -47,8 +47,9 @@ export function openDesktopNativeOwnerChannel(
   admission: JonesNativeWriterAdmission,
   inputFd: number,
   outputFd: number,
+  expectedParentPid = process.ppid,
 ) {
-  if (inputFd !== 8 || outputFd !== 9) throw unavailable();
+  if (inputFd !== 8 || outputFd !== 9 || process.ppid !== expectedParentPid) throw unavailable();
   for (const fd of [inputFd, outputFd]) {
     const stat = NodeFS.fstatSync(fd);
     if (!stat.isFIFO() && !stat.isSocket()) throw unavailable();
@@ -56,7 +57,7 @@ export function openDesktopNativeOwnerChannel(
   admission.assertCurrent();
   const input = new NodeNet.Socket({ fd: inputFd, readable: true, writable: false });
   const output = new NodeNet.Socket({ fd: outputFd, readable: false, writable: true });
-  const parentPid = process.ppid;
+  const parentPid = expectedParentPid;
   let live = true;
   let runId: string | undefined;
   let sequence = 0;
@@ -173,6 +174,111 @@ export function openDesktopNativeOwnerChannel(
   };
 }
 
+/** A valid trial can wait for ordinary admission; an attempted handshake can never be retried. */
+export function openDesktopNativeOwnerSession(input: {
+  readonly home: string;
+  readonly databasePath: string;
+  readonly authorityDir: string;
+  readonly version: string;
+  readonly buildMetadata: unknown;
+  readonly descriptorPath: string | undefined;
+  readonly inputFd: number;
+  readonly outputFd: number;
+}) {
+  if (input.authorityDir !== NodePath.join(input.home, "native-store-authority"))
+    throw unavailable();
+  const parentPid = process.ppid;
+  if (input.inputFd !== 8 || input.outputFd !== 9) throw unavailable();
+  for (const fd of [input.inputFd, input.outputFd]) {
+    const stat = NodeFS.fstatSync(fd);
+    if (!stat.isFIFO() && !stat.isSocket()) throw unavailable();
+  }
+  // Validate the original startup admission before retaining a deliberately pending trial.
+  holdJonesNativeWriterFence(input);
+  let live = true;
+  let admission: JonesNativeWriterAdmission | undefined;
+  let channel: ReturnType<typeof openDesktopNativeOwnerChannel> | undefined;
+  let pending: Promise<void> | undefined;
+  const close = () => {
+    if (!live) return;
+    live = false;
+    if (channel !== undefined) channel.close();
+    else
+      for (const fd of [input.inputFd, input.outputFd]) {
+        try {
+          NodeFS.closeSync(fd);
+        } catch {
+          /* The captured channel is already closed. */
+        }
+      }
+  };
+  const refresh = (): Promise<void> => {
+    if (!live || process.ppid !== parentPid) {
+      close();
+      return Promise.reject(unavailable());
+    }
+    if (pending !== undefined) return pending;
+    const attempt = async () => {
+      if (channel === undefined) {
+        let ordinary: JonesNativeWriterAdmission | undefined;
+        try {
+          ordinary = holdJonesNativeWriterFence({ ...input, descriptorPath: undefined });
+        } catch (cause) {
+          if (input.descriptorPath !== undefined) {
+            try {
+              // Only a still-valid trial is pending. Missing, malformed or stale admission is terminal.
+              holdJonesNativeWriterFence(input);
+            } catch {
+              close();
+            }
+          } else close();
+          throw cause;
+        }
+        if (ordinary === undefined) {
+          close();
+          throw unavailable();
+        }
+        try {
+          admission = ordinary;
+          channel = openDesktopNativeOwnerChannel(
+            ordinary,
+            input.inputFd,
+            input.outputFd,
+            parentPid,
+          );
+        } catch (cause) {
+          close();
+          throw cause;
+        }
+      }
+      try {
+        await channel.refresh();
+      } catch (cause) {
+        close();
+        throw cause;
+      }
+    };
+    pending = attempt().finally(() => {
+      pending = undefined;
+    });
+    return pending;
+  };
+  return {
+    get available() {
+      return live && channel !== undefined;
+    },
+    get binding() {
+      return live && channel !== undefined ? admission?.binding : undefined;
+    },
+    assertCurrent: () => {
+      if (!live || channel === undefined || process.ppid !== parentPid) throw unavailable();
+      channel.assertCurrent();
+    },
+    refresh,
+    close,
+  };
+}
+
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   if (
@@ -188,40 +294,33 @@ const make = Effect.gen(function* () {
       },
       refresh: Effect.fail(unavailable()),
     });
-  const channel = yield* Effect.acquireRelease(
+  const session = yield* Effect.acquireRelease(
     Effect.try({
-      try: () => {
-        if (
-          config.authorityStateDir !== NodePath.join(config.baseDir, "native-store-authority") ||
-          process.env.T3CODE_JONES_TRIAL_DESCRIPTOR !== undefined
-        )
-          throw unavailable();
-        const admission = holdJonesNativeWriterFence({
+      try: () =>
+        openDesktopNativeOwnerSession({
           home: config.baseDir,
           databasePath: config.dbPath,
+          authorityDir: config.authorityStateDir,
           version: packageJson.version,
           buildMetadata: packageJson,
-        });
-        if (admission === undefined) throw unavailable();
-        return {
-          admission,
-          channel: openDesktopNativeOwnerChannel(
-            admission,
-            config.desktopNativeOwnerInputFd!,
-            config.desktopNativeOwnerOutputFd!,
-          ),
-        };
-      },
+          descriptorPath: process.env.T3CODE_JONES_TRIAL_DESCRIPTOR,
+          inputFd: config.desktopNativeOwnerInputFd!,
+          outputFd: config.desktopNativeOwnerOutputFd!,
+        }),
       catch: () => unavailable(),
     }),
-    (value) => Effect.sync(() => value.channel.close()),
+    (value) => Effect.sync(value.close),
   );
-  const refresh = Effect.tryPromise({ try: channel.channel.refresh, catch: () => unavailable() });
-  yield* refresh;
+  const refresh = Effect.tryPromise({ try: session.refresh, catch: () => unavailable() });
+  if (process.env.T3CODE_JONES_TRIAL_DESCRIPTOR === undefined) yield* refresh;
   return DesktopNativeOwner.of({
-    available: true,
-    binding: channel.admission.binding,
-    assertCurrent: channel.channel.assertCurrent,
+    get available() {
+      return session.available;
+    },
+    get binding() {
+      return session.binding;
+    },
+    assertCurrent: session.assertCurrent,
     refresh,
   });
 });
