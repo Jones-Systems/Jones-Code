@@ -2839,11 +2839,24 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           }),
           { type: "runtime_exit", status: "success" },
         ]);
-        const events = yield* runtime.events.pipe(Stream.runCollect, Effect.forkScoped);
+        const itemType = kind === "text" ? "assistant_message" : "reasoning";
+        const buffered = yield* Deferred.make<void>();
+        const events = yield* runtime.events.pipe(
+          Stream.tap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === itemType &&
+            event.turnItem.status === "running" &&
+            event.turnItem.text === "Answer preserved across provider exit."
+              ? Deferred.succeed(buffered, undefined)
+              : Effect.void,
+          ),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
         yield* runtime.startTurn(turnInput(thread));
+        yield* Deferred.await(buffered);
         yield* TestClock.adjust("1 minute");
         const collected = Array.from(yield* Fiber.join(events));
-        const itemType = kind === "text" ? "assistant_message" : "reasoning";
         const items = collected.flatMap((event) =>
           event.type === "turn_item.updated" && event.turnItem.type === itemType
             ? [event.turnItem]
