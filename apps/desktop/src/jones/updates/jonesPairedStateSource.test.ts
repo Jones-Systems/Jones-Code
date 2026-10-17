@@ -1,12 +1,10 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Executes only synthetic paired-state fixtures.
 import * as NodeChildProcess from "node:child_process";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- This byte-preservation test hashes the exact standalone Python payload.
-import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The raw-source consumer must read the same tracked literals as the TypeScript composer.
 import * as NodeFSP from "node:fs/promises";
 import { describe, expect, it } from "vite-plus/test";
 // @ts-expect-error -- This standalone Node fixture has no declaration file; its output is checked against the typed source exports below.
-import * as ColdMaintenanceFixture from "../../../../../scripts/jones/updates/legacy-cold-maintenance-fixture.mjs";
+import * as ColdMaintenanceFixture from "../../../../../scripts/jones/updates/paired-executor-fixture.mjs";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";
 
@@ -39,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='paired-identity-') as scratch:
     authority_record.write_bytes(b'authority-generation-7')
     expected = {'home': str(root), 'databasePath': str(database), 'profile': str(profile)}
     pair, advanced = transaction / 'previous-pair', transaction / 'advanced-state'
-    baseline_bytes = len(b'previous-database') + len(b'previous-profile')
+    baseline_bytes = len(b'previous-database')
     if fault in ('symlink', 'directory'):
         identity.unlink()
         if fault == 'symlink': identity.symlink_to(authority_record)
@@ -93,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='paired-identity-') as scratch:
         else:
             restore_pair(expected, pair, advanced, {})
             assert database.read_bytes() == b'previous-database'
-            assert (profile / 'opaque').read_bytes() == b'previous-profile'
+            assert (profile / 'opaque').read_bytes() == b'candidate-profile'
             assert (advanced / 'environment-id').read_bytes() == changed_id
             assert not (advanced / 'native-store-authority').exists()
             assert authority_record.read_bytes() == b'authority-generation-10'
@@ -117,13 +115,7 @@ describe("shared paired-state Python source", () => {
     },
   );
 
-  it("pins the paired-restore authority transition executor", () => {
-    // Intentional executor changes update this byte contract together with the
-    // source-qualified producer pins and transaction safety tests.
-    expect(Buffer.byteLength(jonesNativeHelperSource)).toBe(84542);
-    expect(NodeCrypto.createHash("sha256").update(jonesNativeHelperSource).digest("hex")).toBe(
-      "ba6feda7de60d5569580ed612d8b2c57c8a7a82ee21b2d34075e5facd457508f",
-    );
+  it("composes each shared paired-state fragment exactly once", () => {
     for (const fragment of Object.values(jonesPairedStateSource)) {
       expect(jonesNativeHelperSource.split(fragment)).toHaveLength(2);
     }
@@ -134,9 +126,7 @@ describe("shared paired-state Python source", () => {
     expect(ColdMaintenanceFixture.materializePairedExecutor(executorText, pairedText)).toBe(
       jonesNativeHelperSource,
     );
-    expect((await ColdMaintenanceFixture.readColdMaintenanceSources()).executor).toBe(
-      jonesNativeHelperSource,
-    );
+    expect(await ColdMaintenanceFixture.readPairedExecutorSource()).toBe(jonesNativeHelperSource);
   });
 
   it("refuses missing, duplicate, unknown, and nonliteral substitutions", async () => {

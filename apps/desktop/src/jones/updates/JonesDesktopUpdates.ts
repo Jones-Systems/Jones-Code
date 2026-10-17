@@ -6,6 +6,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import {
   JonesActionsClient,
+  JonesActionsError,
   validateJonesStagedArtifact,
   requireJonesStageDirectory,
   type JonesActionsCandidate,
@@ -144,6 +145,44 @@ function provenance(candidate: JonesActionsCandidate) {
     architecture: candidate.architecture,
     version: candidate.version,
   } as const;
+}
+
+function downloadFailureCategory(cause: unknown): string {
+  const codes: Record<string, string> = {
+    ENOSPC: "not enough disk space",
+    EACCES: "file access denied",
+    EPERM: "file access denied",
+    ENOENT: "required file or tool unavailable",
+    EIO: "disk I/O error",
+    ETIMEDOUT: "network timeout",
+    ECONNRESET: "network connection interrupted",
+    ENOTFOUND: "network unavailable",
+  };
+  const reasons: Record<string, string> = {
+    "gh-missing": "GitHub CLI unavailable",
+    "authentication-required": "GitHub sign-in required",
+    "rate-limited": "GitHub rate limit reached",
+    unavailable: "GitHub unavailable",
+    unqualified: "build no longer qualified",
+    integrity: "artifact integrity check failed",
+    "occupied-cache": "download cache needs recovery",
+    "unsupported-platform": "unsupported platform",
+  };
+  let current = cause;
+  for (let depth = 0; depth < 5 && typeof current === "object" && current !== null; depth++) {
+    if (current instanceof JonesActionsError)
+      return reasons[current.reason] ?? "artifact staging failed";
+    if ("code" in current && typeof current.code === "string" && codes[current.code])
+      return codes[current.code]!;
+    if (current instanceof Error) {
+      if (/digest|checksum|integrity/i.test(current.message))
+        return "artifact integrity check failed";
+      if (/network|fetch failed/i.test(current.message)) return "network unavailable";
+      if (/extract|archive|dmg|hdiutil/i.test(current.message)) return "app extraction failed";
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return "artifact staging failed";
 }
 
 export interface JonesDesktopDownloadSelection {
@@ -500,7 +539,10 @@ export class JonesDesktopUpdateController {
     await this.#options.onState(this.#state);
   }
 
-  async #adopt(metadata: typeof BuildMetadata.Type): Promise<ActiveInstall> {
+  async #adopt(
+    metadata: typeof BuildMetadata.Type,
+    previous?: ActiveInstall,
+  ): Promise<ActiveInstall> {
     if (
       metadata.jonesSource === undefined ||
       this.#options.profile === undefined ||
@@ -513,7 +555,7 @@ export class JonesDesktopUpdateController {
       if (cause.code === "ENOENT") return [];
       throw cause;
     });
-    if (transactions.length > 0)
+    if (transactions.length > 0 && previous === undefined)
       throw new Error("Retained native transactions require reconciliation before app setup.");
     const appPath = await requireStableMacAppPath(this.#options.appPath);
     const bundle = await readMacBundleIdentity(appPath);
@@ -543,12 +585,75 @@ export class JonesDesktopUpdateController {
       bundleIdentifier: bundle.bundleIdentifier,
     };
     await NodeFSP.mkdir(NodePath.dirname(this.manifestPath), { recursive: true, mode: 0o700 });
+    if (previous !== undefined) return this.#reconcileRunning(active, previous);
     try {
       await writeJonesNativeFile(this.manifestPath, JSON.stringify(active) + "\n", 0o600);
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
     }
     return decodeActiveInstall(JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")));
+  }
+
+  async #reconcileRunning(observed: ActiveInstall, expected = observed): Promise<ActiveInstall> {
+    const raw = await NodeFSP.readFile(this.manifestPath, "utf8");
+    if (JSON.stringify(decodeActiveInstall(JSON.parse(raw))) !== JSON.stringify(expected))
+      throw new Error("The app binding changed during recovery. Restart Jones Code to retry.");
+    const request =
+      JSON.stringify({
+        manifestSha256: NodeCrypto.createHash("sha256").update(raw).digest("hex"),
+        observed,
+      }) + "\n";
+    const digest = NodeCrypto.createHash("sha256").update(request).digest("hex");
+    await NodeFSP.mkdir(this.updaterRoot, { recursive: true, mode: 0o700 });
+    const requestPath = NodePath.join(this.updaterRoot, `running-${digest}.json`);
+    try {
+      await writeJonesNativeFile(requestPath, request, 0o600);
+    } catch (cause) {
+      if (
+        (cause as NodeJS.ErrnoException).code !== "EEXIST" ||
+        (await NodeFSP.readFile(requestPath, "utf8")) !== request
+      )
+        throw cause;
+    }
+    const result = Schema.decodeUnknownSync(
+      Schema.Struct({
+        protocol: Schema.Literal(1),
+        status: Schema.Literals(["reconciled", "refused"]),
+        active: Schema.optionalKey(JonesActiveInstall),
+        reason: Schema.optionalKey(Schema.String),
+      }),
+    )(
+      JSON.parse(
+        await runNativeCommand("/usr/bin/python3", [
+          await this.#helperPath(),
+          "--manifest",
+          this.manifestPath,
+          "--reconcile-running",
+          requestPath,
+          "--plan-sha256",
+          digest,
+        ]),
+      ),
+    );
+    if (result.status !== "reconciled" || result.active === undefined) {
+      const message =
+        result.reason === "busy"
+          ? "An update helper is still running. Let it finish, then restart Jones Code to retry."
+          : result.reason === "restore-incomplete"
+            ? "A state restore is incomplete. Finish the retained update recovery before retrying Install."
+            : result.reason === "preparation-incomplete"
+              ? "Update preparation is incomplete. Restart Jones Code to finish preparation before retrying Install."
+              : result.reason === "activation-incomplete"
+                ? "The interrupted update did not finish committing. Complete its retained recovery before retrying Install."
+                : "The running app could not resolve the retained update. Reinstall the current Jones Code app, then restart to retry.";
+      throw new Error(message);
+    }
+    const active = decodeActiveInstall(
+      JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")),
+    );
+    if (JSON.stringify(active) !== JSON.stringify(result.active))
+      throw new Error("The app binding changed during recovery. Restart Jones Code to retry.");
+    return active;
   }
 
   async configure(): Promise<void> {
@@ -577,6 +682,7 @@ export class JonesDesktopUpdateController {
       }
       boundManifest = true;
       const appPath = await requireStableMacAppPath(this.#options.appPath);
+      let matches = true;
       if (active.bundleIdentifier !== undefined) {
         const bundle = await readMacBundleIdentity(appPath);
         if (
@@ -584,7 +690,7 @@ export class JonesDesktopUpdateController {
           bundle.version !== active.version ||
           bundle.executablePath !== active.executablePath
         )
-          throw new Error("The native manifest does not match the running bundle identity.");
+          matches = false;
       }
       if (
         active.home !== (await NodeFSP.realpath(this.#options.home)) ||
@@ -598,7 +704,8 @@ export class JonesDesktopUpdateController {
         (metadata.jonesSource?.sha ?? metadata.t3codeCommitHash) !== active.sourceSha ||
         (metadata.jonesSource !== undefined && metadata.jonesSource.tree !== active.sourceTree)
       )
-        throw new Error("The native launcher does not bind the running app.");
+        matches = false;
+      if (!matches) active = await this.#adopt(metadata, active);
       this.#bootstrap = active;
       this.#source = active.sourceSha;
       if (
@@ -617,6 +724,31 @@ export class JonesDesktopUpdateController {
         if (cause.code === "ENOENT") return [];
         throw cause;
       });
+      for (const entry of entries) {
+        const directory = NodePath.join(transactions, entry);
+        let phase: unknown;
+        try {
+          const journal = decodeActivationJournal(
+            JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8")),
+          );
+          phase = journal.phase;
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+          try {
+            requireWarmJonesInstallIntent(
+              JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "intent.json"), "utf8")),
+            );
+          } catch (intentError) {
+            if ((intentError as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw intentError;
+          }
+        }
+        if (phase !== "resumed" && phase !== "rolled-back") {
+          active = await this.#reconcileRunning(active);
+          this.#bootstrap = active;
+          break;
+        }
+      }
       let latestOutcomeTime = -Infinity;
       for (const entry of entries) {
         if (!/^[a-f0-9]{64}$/.test(entry))
@@ -859,12 +991,12 @@ export class JonesDesktopUpdateController {
       }
       await this.#publish("staged", "downloaded");
       return { accepted: true, completed: true };
-    } catch {
+    } catch (cause) {
       this.#staged = undefined;
       await this.#publish(
         "error",
         "available",
-        "The qualified native app could not be staged; the active app and state were left running.",
+        `Download failed (${downloadFailureCategory(cause)}). Check for builds and retry; the active app is still running.`,
       );
       return { accepted: true, completed: false };
     } finally {

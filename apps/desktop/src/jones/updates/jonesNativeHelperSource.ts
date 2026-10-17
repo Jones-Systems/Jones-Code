@@ -113,8 +113,8 @@ def prove_quiescence(expected):
     files += [database.parent / name for name in SETTINGS]
     existing = [str(path) for path in files if path.exists()]
     if not existing: raise RuntimeError('Native database files are missing; writer inspection held.')
-    # Chromium stores are not a fixed filename list. Inspect the copied profile
-    # tree as well as SQLite/settings; this observes outsiders without excluding them.
+    # Chromium stores are not a fixed filename list. Inspect the profile tree
+    # as well as SQLite/settings; this observes outsiders without excluding them.
     result = subprocess.run(['/usr/sbin/lsof', '-F', 'pfa', '+D', str(profile), '--'] + existing, capture_output=True, text=True, timeout=30)
     if result.returncode not in (0, 1): raise RuntimeError('Native file-writer inspection failed.')
     if result.stderr.strip() and (any(path in result.stderr for path in existing + [str(profile)]) or not all(line.startswith("lsof: WARNING: can't stat()") or line.strip() == 'Output information may be incomplete.' for line in result.stderr.splitlines() if line.strip())):
@@ -451,6 +451,112 @@ def inspect_selection_transactions(active, transaction_id=None, claiming=False, 
                     raise SelectionRefused('activation-pending')
         elif intent.exists() or preparation.exists() or prepared:
             raise SelectionRefused('activation-pending')
+
+def reconcile_running(request_path, request_sha256):
+    result = {'protocol': PROTOCOL, 'status': 'refused'}
+    try:
+        request, raw, _ = bounded_native_json(request_path)
+        if hashlib.sha256(raw).hexdigest() != request_sha256: raise SelectionRefused('running-changed')
+        active, manifest_raw, _ = bounded_native_json(manifest_path)
+        if hashlib.sha256(manifest_raw).hexdigest() != request.get('manifestSha256'):
+            raise SelectionRefused('running-changed')
+        observed = request['observed']
+        if observed.get('protocol') != PROTOCOL or observed.get('owner') != 'desktop': raise SelectionRefused('running-changed')
+        for key in ('home', 'databasePath', 'profile', 'appPath', 'executablePath'):
+            if str(pathlib.Path(observed[key]).resolve(strict=True)) != observed[key]: raise SelectionRefused('running-changed')
+        if pathlib.Path(observed['home']) / 'runtime' / 'jones-active-install.json' != manifest_path:
+            raise SelectionRefused('running-changed')
+        if pathlib.Path(observed['databasePath']).parent != pathlib.Path(observed['home']) / 'userdata':
+            raise SelectionRefused('running-changed')
+        if (pathlib.Path(observed['databasePath']).parent / 'environment-id').read_text().strip() != observed['environmentId']:
+            raise SelectionRefused('running-changed')
+        bundle_identity(observed)
+        if (manifest_path.parent / 'jones-maintenance').exists(): raise SelectionRefused('unknown-transaction')
+        root = manifest_path.parent / 'jones-updates' / 'transactions'
+        pending, resolved = [], None
+        entries = list(root.iterdir()) if root.exists() else []
+        if root.is_symlink() or len(entries) > 1000: raise SelectionRefused('unknown-transaction')
+        observed_digest = None
+        for tx in entries:
+            if tx.is_symlink() or not tx.is_dir() or len(tx.name) != 64 or any(char not in '0123456789abcdef' for char in tx.name):
+                raise SelectionRefused('unknown-transaction')
+            journal_path, intent_path = tx / 'journal.json', tx / 'intent.json'
+            journal = bounded_native_json(journal_path)[0] if journal_path.exists() else None
+            if journal is not None:
+                recorded = journal.get('intent', {})
+                if not isinstance(recorded, dict) or recorded.get('protocol') != PROTOCOL or recorded.get('transactionId') != tx.name or any(key in recorded for key in ('kind', 'maintenanceGeneration', 'handoffSha256', 'stateTransaction')):
+                    raise SelectionRefused('unknown-transaction')
+                if journal.get('phase') in ('resumed', 'rolled-back'): continue
+            if (tx / 'retirement-intent.json').exists() and not (tx / 'retirement-receipt.json').exists():
+                raise SelectionRefused('restore-incomplete')
+            retained = tx / 'advanced-state' / 'retained.json'
+            guard_path = tx / 'advanced-state-authority-guard.json'
+            if (guard_path.exists() or (tx / 'advanced-state').exists()) and not retained.exists():
+                raise SelectionRefused('restore-incomplete')
+            if not intent_path.exists():
+                if journal is not None or any((tx / name).exists() for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json')):
+                    raise SelectionRefused('preparation-incomplete')
+                continue
+            intent, _, _ = bounded_native_json(intent_path)
+            if intent.get('protocol') != PROTOCOL or intent.get('transactionId') != tx.name or any(key in intent for key in ('kind', 'maintenanceGeneration', 'handoffSha256', 'stateTransaction')) or (journal is not None and journal.get('intent') != intent):
+                raise SelectionRefused('unknown-transaction')
+            previous, staged = intent['expected'], intent['staged']
+            if any(previous.get(key) != observed[key] for key in ('home', 'databasePath', 'profile', 'environmentId', 'appPath')):
+                raise SelectionRefused('unknown-transaction')
+            target = dict(previous, generation=tx.name, transactionId=tx.name,
+                          **{key: staged[key] for key in ('version', 'sourceSha', 'sourceTree', 'appDigest')},
+                          executablePath=str(pathlib.Path(previous['appPath']) / pathlib.Path(staged['executablePath']).relative_to(staged['appPath'])))
+            identity = ('version', 'sourceSha', 'sourceTree', 'appPath', 'executablePath')
+            matches_old = all(previous.get(key) == observed[key] for key in identity)
+            matches_target = all(target.get(key) == observed[key] for key in identity)
+            if observed_digest is None: observed_digest = app_digest(observed['appPath'])
+            matches_old = matches_old and (previous.get('appDigest') is None or previous['appDigest'] == observed_digest)
+            matches_target = matches_target and target['appDigest'] == observed_digest
+            if matches_old == matches_target or active not in (previous, target): raise SelectionRefused('running-changed')
+            if matches_target and (type(staged.get('startupGateProtocol')) is not int or staged['startupGateProtocol'] != STARTUP_GATE_PROTOCOL):
+                raise SelectionRefused('running-changed')
+            phase = journal.get('phase') if journal is not None else None
+            restored = False
+            if retained.exists():
+                retained_state, _, _ = bounded_native_json(retained)
+                if retained_state != {'protocol': PROTOCOL, 'previous': previous} or not guard_path.exists():
+                    raise SelectionRefused('restore-incomplete')
+                guard_record, _, _ = bounded_native_json(guard_path)
+                guard = guard_record.get('guard')
+                configured_authority = os.environ.get('T3CODE_NATIVE_AUTHORITY_STATE_DIR', '').strip()
+                if configured_authority == '~': configured_authority = os.path.expanduser('~')
+                elif configured_authority.startswith(('~/', '~\\')): configured_authority = os.path.join(os.path.expanduser('~'), configured_authority[2:])
+                authority_directory = pathlib.Path(os.path.abspath(configured_authority)) if configured_authority else pathlib.Path(previous['home']) / 'native-store-authority'
+                authority_path = authority_directory / 'native-store-authority-v1.json'
+                if guard == {'kind': 'absent'}:
+                    restored = not authority_path.exists()
+                elif isinstance(guard, dict) and guard.get('kind') == 'fenced' and guard.get('environmentId') == previous['environmentId']:
+                    authority, _, _ = bounded_native_json(authority_path)
+                    restored = authority.get('state') == 'active' and authority.get('transition_id') is None and authority.get('authority_namespace') == guard.get('authorityNamespace') and authority.get('store_generation') == guard.get('storeGeneration', 0) + 1
+                if not restored: raise SelectionRefused('restore-incomplete')
+            before_swap = phase in (None, 'intent', 'preparing', 'quiescent', 'paired', 'swap-intent')
+            if matches_old:
+                if active != previous or not (restored or before_swap): raise SelectionRefused('activation-incomplete')
+            elif active != target or phase not in ('committed', 'resume-intent', 'resumed'):
+                raise SelectionRefused('activation-incomplete')
+            terminal, binding = ('rolled-back', previous) if matches_old else ('resumed', target)
+            if resolved is not None and resolved != binding: raise SelectionRefused('unknown-transaction')
+            resolved = binding
+            pending.append((journal_path, dict(journal or {}, intent=intent, phase=terminal,
+                message='Interrupted update resolved from the running app; ' + ('previous version remains active.' if matches_old else 'target version is active.'))))
+        next_active = resolved or observed
+        if manifest_path.read_bytes() != manifest_raw: raise SelectionRefused('running-changed')
+        if next_active != active:
+            # Keep one preimage under the same helper lock as activation and adoption.
+            durable(manifest_path.with_name(manifest_path.name + '.superseded'), active)
+            if manifest_path.read_bytes() != manifest_raw: raise SelectionRefused('running-changed')
+            durable(manifest_path, next_active)
+        for journal_path, journal in pending: durable(journal_path, journal)
+        return dict(result, status='reconciled', active=next_active)
+    except SelectionRefused as error:
+        return dict(result, reason=error.reason)
+    except Exception:
+        return dict(result, reason='unknown-transaction')
 
 def preparation_claim(active, staged_handle, transaction_id, selection_path, selection_digest):
     return dict(protocol=PROTOCOL, preparationClaimProtocol=2, stagedHandle=staged_handle, transactionId=transaction_id,
@@ -831,8 +937,8 @@ def activate(intent_file):
         record('resumed')
     except Exception as failure:
         try:
-            # Error evidence has its own small reserve. Candidate writers cannot
-            # consume the bulk rollback capacity while shutdown is unresolved.
+            # Error evidence has its own small reserve. Keep recovery headroom
+            # reserved until candidate shutdown is proved.
             release_recovery_reserve(recovery_reserves, 'journal')
         except Exception:
             record('blocked', message='Recovery reserve ownership or release is uncertain; state retained.')
@@ -1002,6 +1108,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--manifest', required=True)
 action = parser.add_mutually_exclusive_group(required=True)
 action.add_argument('--activate')
+action.add_argument('--reconcile-running')
 action.add_argument('--inspect-manual-install')
 action.add_argument('--manual-install')
 action.add_argument('--launch', action='store_true')
@@ -1039,6 +1146,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if args.reconcile_running:
+            print(json.dumps({'protocol': PROTOCOL, 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
         if retirement_operation:
             print(json.dumps({'protocol': PROTOCOL, 'operation': retirement_operation, 'transactionId': args.inspect_retirement or args.retire_transaction, 'status': 'refused', 'reason': 'busy'}))
             raise SystemExit(0)
@@ -1048,6 +1158,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
             print(json.dumps(result))
             raise SystemExit(0)
         raise
+    if args.reconcile_running:
+        print(json.dumps(reconcile_running(args.reconcile_running, args.plan_sha256)))
+        raise SystemExit(0)
     active = read(manifest_path)
     if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':
         raise SystemExit('Native launcher bootstrap is required.')
