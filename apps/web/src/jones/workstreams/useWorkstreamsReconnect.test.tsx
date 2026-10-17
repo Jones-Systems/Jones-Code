@@ -614,40 +614,72 @@ it.each([11, 12])(
         true,
       ),
     ];
+    const initialProjection = responses[2];
+    const refreshedProjection = responses.at(-1);
+    const completion = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    const initialRead = { requested: completion(), response: completion() };
+    const refreshedRead = { requested: completion(), response: completion() };
+    const completePlacementRead = async (read: typeof initialRead, assertCommitted: () => void) => {
+      await read.requested.promise;
+      // Waiting for rendered state inside act would block the commit being observed.
+      await act(async () => {
+        read.response.resolve();
+      });
+      assertCommitted();
+    };
     http.run.mockImplementation(async () => {
       const response = responses.shift();
       if (!response) throw new Error("Unexpected additional HTTP request");
+      const read =
+        response === initialProjection
+          ? initialRead
+          : response === refreshedProjection
+            ? refreshedRead
+            : null;
+      if (read) {
+        read.requested.resolve();
+        await read.response.promise;
+      }
       return response;
     });
-    await act(async () => {
-      renderer = create(
-        <RegistryContext.Provider value={registry}>
-          <MountedWorkstreams enabled threads={threads} />
-        </RegistryContext.Provider>,
-      );
-    });
-    await act(async () => {
-      await vi.waitFor(() => expect(latest.loading).toBe(false));
-    });
-    expect(latest.placementInventory.identities).not.toContainEqual(selected[0]);
-    expect(latest.data?.binding.registryVersion).toBe(11);
-    const mountedConnection = registry.get(connection);
-    let nextId = 0;
-    await act(async () => {
-      await latest.assignNativeThread!(chosen, "beta", {
-        commandId: async () => `command-${++nextId}`,
+    try {
+      await act(async () => {
+        renderer = create(
+          <RegistryContext.Provider value={registry}>
+            <MountedWorkstreams enabled threads={threads} />
+          </RegistryContext.Provider>,
+        );
       });
-    });
-    await act(async () => {
-      await vi.waitFor(() => expect(latest.placements?.items[0]?.native_thread_id).toBe(chosen.id));
-    });
-    expect(latest.placements?.items[0]?.workstream_id).toBe("beta");
-    expect(latest.placementInventory.identities).toHaveLength(1000);
-    expect(latest.placementInventory.identities).toContainEqual(selected[0]);
-    expect(latest.data?.binding.registryVersion).toBe(freshVersion + 3);
-    expect(nextId).toBe(3);
-    expect(registry.get(connection)).toBe(mountedConnection);
-    expect(responses).toHaveLength(0);
+      await completePlacementRead(initialRead, () => expect(latest.loading).toBe(false));
+      expect(latest.placementInventory.identities).not.toContainEqual(selected[0]);
+      expect(latest.data?.binding.registryVersion).toBe(11);
+      const mountedConnection = registry.get(connection);
+      let nextId = 0;
+      await act(async () => {
+        await latest.assignNativeThread!(chosen, "beta", {
+          commandId: async () => `command-${++nextId}`,
+        });
+      });
+      await completePlacementRead(refreshedRead, () =>
+        expect(latest.placements?.items[0]?.native_thread_id).toBe(chosen.id),
+      );
+      expect(latest.placements?.items[0]?.workstream_id).toBe("beta");
+      expect(latest.placementInventory.identities).toHaveLength(1000);
+      expect(latest.placementInventory.identities).toContainEqual(selected[0]);
+      expect(latest.data?.binding.registryVersion).toBe(freshVersion + 3);
+      expect(nextId).toBe(3);
+      expect(registry.get(connection)).toBe(mountedConnection);
+      expect(responses).toHaveLength(0);
+    } finally {
+      initialRead.response.resolve();
+      refreshedRead.response.resolve();
+    }
   },
 );
 
