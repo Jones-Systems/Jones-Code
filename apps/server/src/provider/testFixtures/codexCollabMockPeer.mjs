@@ -12,6 +12,25 @@ const script = JSON.parse(NodeFS.readFileSync(process.env.T3_CODEX_COLLAB_SCRIPT
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 let turnStartCount = 0;
 let activeTurn;
+const readGoalStatus = () => {
+  if (script.goalStatePath && NodeFS.existsSync(script.goalStatePath)) {
+    return JSON.parse(NodeFS.readFileSync(script.goalStatePath, "utf8")).status;
+  }
+  return script.goalStatus;
+};
+const recordControlRequest = (method, params) => {
+  if (!script.recordControlRequests) return;
+  NodeFS.appendFileSync(
+    `${process.env.T3_CODEX_COLLAB_SCRIPT}.control`,
+    `${JSON.stringify({ method, params })}\n`,
+  );
+};
+const writeGoalStatus = (status) => {
+  script.goalStatus = status;
+  if (script.goalStatePath) {
+    NodeFS.writeFileSync(script.goalStatePath, JSON.stringify({ status }), "utf8");
+  }
+};
 const openServerRequests = new Map();
 const rl = NodeReadline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
@@ -263,6 +282,7 @@ rl.on("line", (line) => {
     return;
   }
   if (method === "turn/interrupt") {
+    recordControlRequest(method, message.params);
     const target = message.params?.threadId;
     NodeFS.appendFileSync(
       `${process.env.T3_CODEX_COLLAB_SCRIPT}.interrupts`,
@@ -297,7 +317,12 @@ rl.on("line", (line) => {
       write({ id, error: { code: -32000, message: "thread already closed" } });
       return;
     }
-    if (script.hangInterruptFor && script.hangInterruptFor === target) {
+    if (
+      script.hangInterruptsFor?.includes(target) ||
+      (script.hangInterruptFor && script.hangInterruptFor === target)
+    ) {
+      // Never respond: simulates a wedged native RPC that neither resolves
+      // nor rejects. The runtime's bounded deadline must move on.
       return;
     }
     write({ id, result: {} });
