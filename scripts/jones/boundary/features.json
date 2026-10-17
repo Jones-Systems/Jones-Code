@@ -725,6 +725,17 @@
         "apps/server/src/cli/pair.test.ts"
       ],
       "scope": "Startup console and structured logs withhold pairing credentials and token-bearing URLs unconditionally while preserving browser launch and explicit pair commands. Synthetic logging and existing runtime integration fixtures prove both paths."
+    },
+    {
+      "id": "launcher-commit-diagnostics",
+      "tests": [
+        "apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts",
+        "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/jones/cloud/launcherCapability.test.ts",
+        "apps/server/src/serviceLauncher.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts"
+      ],
+      "scope": "Update-bound pointer uncertainty, bounded safe commit diagnostics and launcher/server drift notices. Shared launcher edits preserve its existing state machine and commit guards; focused synthetic lifecycle coverage exercises pointer failure, promotion and sequential updates."
     }
   ]
 }
