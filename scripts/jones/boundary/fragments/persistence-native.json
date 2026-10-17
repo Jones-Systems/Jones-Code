@@ -6,6 +6,7 @@
     "apps/server/src/jones/nativeCreation/"
   ],
   "hookPaths": [
+    "apps/server/src/persistence/DatabaseMaintenance.ts",
     "apps/server/src/persistence/Migrations.ts",
     "apps/server/src/orchestration-v2/EffectOutbox.ts",
     "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
@@ -31,6 +32,18 @@
     "apps/server/src/nativeCreation/NativeCreationRepositorySqlite.ts"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.ts",
+      "to": "apps/server/src/jones/persistence/settlementCompactionPreflight.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+      "to": "apps/server/src/jones/persistence/JonesMigrationGuard.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+      "to": "apps/server/src/jones/persistence/JonesMigrations.ts"
+    },
     {
       "from": "apps/server/src/persistence/Migrations.ts",
       "to": "apps/server/src/jones/persistence/JonesMigrations.ts"

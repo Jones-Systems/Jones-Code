@@ -45,6 +45,8 @@
         "jones/performance/migration-restore-worker.mjs",
         "jones/performance/current-qualification-worker.mjs",
       ],
+      // The `t3` npm package's files: copied into the package, never imported.
+      "ignore": ["npm-launcher/**"],
     },
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
@@ -164,6 +166,11 @@
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],
       "ignoreIssues": { "src/_generated/**": ["exports", "types"] },
+    },
+    "packages/source-control-github": {
+      // graphqlgen reads its config; the generated operations export every selection's class.
+      "entry": ["graphql.config.ts"],
+      "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
     },
   },
 }
