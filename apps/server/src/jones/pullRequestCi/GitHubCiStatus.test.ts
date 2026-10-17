@@ -2,10 +2,11 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
-import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as Schema from "effect/Schema";
 import { PullRequestCiStatusResult } from "@t3tools/contracts";
-import * as GitHubApi from "../../sourceControl/GitHubApi.ts";
+import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
+import * as GitHubRequestPolicy from "@t3tools/source-control-github/server/GitHubRequestPolicy";
 import { readGitHubCiStatus } from "./GitHubCiStatus.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -49,7 +50,7 @@ const runner = (id: number) => ({
   busy: false,
   labels: [{ name: "self-hosted" }],
 });
-function cli(read: (endpoint: string) => unknown): Pick<GitHubApi.GitHubApi["Service"], "rest"> {
+function cli(read: (endpoint: string) => unknown): Pick<GitHubRest.GitHubRest["Service"], "rest"> {
   return {
     rest: (request) => {
       assert.equal(request.host, "github.com");
@@ -176,7 +177,7 @@ it.effect("keeps runner permission errors independent and never returns error pa
         rest: (request) =>
           request.path.includes("/runners")
             ? Effect.fail(
-                new GitHubApi.GitHubApiResponseError({
+                new GitHubRequestPolicy.GitHubApiResponseError({
                   host: "github.com",
                   operation: "fixture",
                   status: 403,
@@ -263,11 +264,11 @@ it.effect(
       const limits = yield* SourceControlRateLimit.make;
       let reads = 0;
       const now = yield* Clock.currentTimeMillis;
-      const failing: Pick<GitHubApi.GitHubApi["Service"], "rest"> = {
+      const failing: Pick<GitHubRest.GitHubRest["Service"], "rest"> = {
         rest: () => {
           reads++;
           return Effect.fail(
-            new GitHubApi.GitHubApiRateLimitError({
+            new GitHubRequestPolicy.GitHubApiRateLimitError({
               host: "github.com",
               operation: "fixture",
               retryAt: now + 300_000,

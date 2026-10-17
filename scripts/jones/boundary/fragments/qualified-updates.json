@@ -2,6 +2,9 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
+    "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.ts",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts",
     "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
     "apps/desktop/src/jones/updates/JonesDesktopUpdates.ts",
     "apps/desktop/src/jones/updates/jonesActivation.ts",
@@ -9,6 +12,8 @@
     "apps/desktop/src/jones/updates/jonesMacStaging.ts",
     "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
     "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
+    "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+    "apps/desktop/src/jones/updates/jonesNativeStartup.ts",
     "apps/desktop/src/jones/updates/jonesNativePreparation.ts",
     "apps/desktop/src/jones/updates/preloadInstall.test.ts",
     "apps/mobile/src/jones/updates/JonesUpdateControls.tsx",
@@ -44,6 +49,8 @@
     "apps/server/src/jones/updates/migrationPlan.test.ts",
     "apps/server/src/jones/updates/migrationPlan.ts",
     "apps/server/src/jones/updates/nativePreparation.ts",
+    "apps/server/src/jones/updates/nativePreparation.test.ts",
+    "apps/server/src/jones/updates/nativeWriterStartup.ts",
     "apps/server/src/jones/updates/qualification.test.ts",
     "apps/server/src/jones/updates/qualification.ts",
     "apps/server/src/jones/updates/service.ts",
@@ -62,9 +69,54 @@
     "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
     "packages/client-runtime/src/jones/updates/jonesUpdates.ts",
     "packages/shared/src/jones/jonesActions.test.ts",
-    "packages/shared/src/jones/jonesActions.ts"
+    "packages/shared/src/jones/jonesActions.ts",
+    "packages/shared/src/jones/nativeWriterFence.test.ts",
+    "packages/shared/src/jones/nativeWriterFence.ts",
+    "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+    "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts",
+    "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
+    "docs/operations/desktop-bootstrap.md",
+    "apps/web/jones-install-fixture.html",
+    "apps/web/vite.install-preview.config.ts",
+    "apps/web/src/jones/updates/fixtures/install-preview-entry.ts",
+    "apps/web/src/jones/updates/fixtures/install-preview-bridge.ts",
+    "apps/web/src/jones/updates/fixtures/InstallPreview.tsx",
+    "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts",
+    "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.ts",
+    "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
+    "apps/server/src/jones/updates/offlinePreparation.ts",
+    "apps/server/src/jones/updates/offlinePreparation.test.ts",
+    "apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
+    "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdPairSource.ts",
+    "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdReceiverSource.ts",
+    "apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
+    "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
+    "apps/server/src/jones/updates/offlinePreparationEntry.ts",
+    "apps/server/src/jones/updates/offlinePreparationEntry.test.ts",
+    "apps/server/src/jones/updates/offlinePreparationPlan.ts",
+    "apps/server/src/jones/updates/offlinePreparationPlan.test.ts",
+    "apps/server/src/jones/updates/offlinePreparationCore.ts",
+    "apps/server/src/jones/updates/offlinePreparationCore.test.ts",
+    "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts",
+    "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
+    "apps/server/src/jones/updates/offlinePreparationWorker.ts",
+    "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts",
+    "apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.ts",
+    "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdDarwinLayout.ts",
+    "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts"
   ],
   "hookPaths": [
+    "apps/server/src/orchestration-v2/RestartContinuation.ts",
+    "apps/desktop/src/boot.ts",
+    "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
+    "apps/server/src/persistence/Sqlite.ts",
     "apps/web/src/versionSkew.ts",
     "apps/desktop/src/ipc/methods/updates.ts",
     "apps/desktop/src/preload.ts",
@@ -103,10 +155,33 @@
     "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
     "apps/web/src/components/settings/SettingsPanels.tsx",
     "apps/web/src/components/LegacySidebar.tsx",
-    "apps/web/src/components/desktopUpdate.toast.tsx"
+    "apps/web/src/components/desktopUpdate.toast.tsx",
+    "scripts/tsconfig.json",
+    "apps/desktop/tsconfig.json",
+    "apps/desktop/src/backend/DesktopBackendConfiguration.ts"
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/desktop/src/boot.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
+    },
+    {
+      "from": "apps/desktop/src/app/DesktopPreReadyPlatform.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
+    },
+    {
+      "from": "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
+      "to": "packages/shared/src/jones/nativeWriterFence.ts"
+    },
+    {
+      "from": "apps/server/src/config.ts",
+      "to": "apps/server/src/jones/updates/nativeWriterStartup.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "apps/server/src/jones/updates/nativeWriterStartup.ts"
+    },
     {
       "from": "apps/web/src/versionSkew.ts",
       "to": "apps/web/src/jones/updates/versionSkew.ts"
@@ -278,6 +353,42 @@
     {
       "from": "apps/server/src/serviceLauncher.ts",
       "to": "apps/server/src/jones/cloud/launcherCapability.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/updates/legacy-bootstrap-bundle.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.test.ts",
+      "to": "scripts/jones/updates/legacy-bootstrap-bundle.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts"
+    },
+    {
+      "from": "apps/server/vite.config.ts",
+      "to": "scripts/jones/updates/offline-preparation-build.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/updates/legacy-bootstrap-after-pack.mjs"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
+      "to": "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+      "to": "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+      "to": "scripts/jones/updates/legacy-identity-native-fixture.mjs"
     }
   ]
 }

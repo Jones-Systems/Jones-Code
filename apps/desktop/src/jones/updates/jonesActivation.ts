@@ -46,3 +46,17 @@ export const JonesInstallIntent = Schema.Struct({
   continuationReceipt: Schema.String,
 });
 export type JonesInstallIntent = typeof JonesInstallIntent.Type;
+
+/** Inspect discriminators before the warm schema can discard unknown fields. */
+export function requireWarmJonesInstallIntent(value: unknown): void {
+  if (typeof value !== "object" || value === null)
+    throw new Error("Unknown activation intent; startup held.");
+  if ("kind" in value && value.kind === "cold-first-transition")
+    throw new Error("Cold receiver requires reconciliation; startup held.");
+  if (
+    ["kind", "maintenanceGeneration", "handoffSha256", "stateTransaction"].some(
+      (key) => key in value,
+    )
+  )
+    throw new Error("Unknown or mixed activation intent; startup held.");
+}

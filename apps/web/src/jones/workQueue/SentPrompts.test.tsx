@@ -46,7 +46,9 @@ describe("confirmed sent prompts", () => {
     expect(article.textContent).toContain("Prompt review");
     expect(article.textContent).toContain("Voice prompt");
     expect(article.textContent).toContain("Prompt history");
+    expect(article.querySelector("time")!.textContent).toContain("Handoff observed");
     expect(article.querySelector("time")!.textContent).toContain("EDT");
+    expect(article.querySelector("time")!.dateTime).toBe(new Date(prompt.sentAt).toISOString());
     const details = article.querySelector("details")!;
     expect(details.open).toBe(false);
     await act(() => details.querySelector("summary")!.click());

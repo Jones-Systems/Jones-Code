@@ -109,7 +109,7 @@ export function SentPrompts({ state }: { state: SentPromptsState }) {
           )}
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <time dateTime={new Date(entry.sentAt).toISOString()}>
-              {sentTimeFormatter.format(entry.sentAt)}
+              Handoff observed {sentTimeFormatter.format(entry.sentAt)}
             </time>
             {entry.providerState ? (
               <span>Provider turn: {entry.providerState} · finish line not tracked</span>

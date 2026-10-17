@@ -31,8 +31,7 @@ export function queuedToolBoundaryTarget(
     current?.status !== "completed" ||
     current.providerTurnId !== providerTurn.id ||
     current.runId !== activeRun.id ||
-    projection.runtimeRequests.some((request) => request.status === "pending") ||
-    projection.runs.some((run) => run.status === "queued" && run.queueHeld === true)
+    projection.runtimeRequests.some((request) => request.status === "pending")
   )
     return null;
 
@@ -67,7 +66,7 @@ export function queuedToolBoundaryTarget(
     )
   )
     return null;
-  const queuedRun = queuedRunsInDeliveryOrder(projection)[0];
+  const queuedRun = queuedRunsInDeliveryOrder(projection).find((run) => run.queueHeld !== true);
   const message = projection.messages.find(
     (candidate) => candidate.id === queuedRun?.userMessageId,
   );

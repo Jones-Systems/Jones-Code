@@ -8,6 +8,7 @@
     "apps/mobile/src/features/workstreams/actions.ts",
     "apps/mobile/src/features/workstreams/commands.test.ts",
     "apps/mobile/src/features/workstreams/commands.ts",
+    "apps/mobile/src/features/workstreams/gateway.test.ts",
     "apps/mobile/src/features/workstreams/gateway.ts",
     "apps/mobile/src/features/workstreams/listProjection.ts",
     "apps/mobile/src/features/workstreams/loaders.test.ts",
@@ -139,6 +140,18 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/enrollment.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/testFixtures.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/settlementProof.ts"
+    },
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/workstreamAppearance.ts"

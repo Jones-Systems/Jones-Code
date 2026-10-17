@@ -119,7 +119,15 @@ function resultFromThread(input: {
   readonly action: ThreadMetadataMcpAction;
   readonly commandId: CommandId;
   readonly sequence: number;
-  readonly thread: OrchestrationV2AppThread;
+  readonly thread: Pick<
+    OrchestrationV2AppThread,
+    | "id"
+    | "title"
+    | "titleRegeneration"
+    | "linkedPullRequest"
+    | "threadMessagesBlocked"
+    | "updatedAt"
+  >;
 }): ThreadMetadataMcpUpdateResult {
   return {
     threadId: input.thread.id,
@@ -186,7 +194,7 @@ const make = Effect.gen(function* () {
     }
     const requestKey =
       input.clientRequestId === undefined
-        ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+        ? yield* crypto.randomUUIDv4().pipe(Effect.orDie)
         : input.clientRequestId;
     const updateCommandId = commandId({
       scope,
@@ -214,7 +222,15 @@ const make = Effect.gen(function* () {
     const metadataEvent = dispatched.storedEvents.find(
       (stored) => stored.event.type === "thread.metadata-updated",
     );
-    if (metadataEvent === undefined || metadataEvent.event.type !== "thread.metadata-updated") {
+    // A retried commandId replays the stored events of the first dispatch;
+    // compaction may have deleted them by then, so answer from the projection.
+    const thread =
+      metadataEvent?.event.type === "thread.metadata-updated"
+        ? metadataEvent.event.payload
+        : yield* threadManagement
+            .getThreadShell(threadId)
+            .pipe(Effect.mapError((error) => failure("orchestration_error", errorMessage(error))));
+    if (thread === null) {
       return yield* failure(
         "orchestration_error",
         `Thread ${threadId} metadata update completed without a resultant state.`,
@@ -224,7 +240,7 @@ const make = Effect.gen(function* () {
       action: input.action,
       commandId: updateCommandId,
       sequence: dispatched.sequence,
-      thread: metadataEvent.event.payload,
+      thread,
     });
   });
 

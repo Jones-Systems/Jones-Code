@@ -55,6 +55,7 @@ export interface MergeProcessesInput {
   readonly previous: ReadonlyMap<string, ProcessState>;
   readonly counters: TelemetryCounters;
   readonly updatePrevious: boolean;
+  readonly accumulateCounters?: boolean;
 }
 
 export interface MergeProcessesResult {
@@ -583,14 +584,15 @@ export function mergeProcesses(input: MergeProcessesInput): MergeProcessesResult
   });
   const ordered = orderProcessTree(normalized, rootPids);
 
-  const counters = input.updatePrevious
-    ? applyLifecycleCounters({
-        counters: input.counters,
-        deltas: processDeltas,
-        current: nextPrevious,
-        previous: input.previous,
-      })
-    : input.counters;
+  const counters =
+    input.updatePrevious && input.accumulateCounters !== false
+      ? applyLifecycleCounters({
+          counters: input.counters,
+          deltas: processDeltas,
+          current: nextPrevious,
+          previous: input.previous,
+        })
+      : input.counters;
   const backendProcesses = ordered.filter(
     (process) => categoryGroup(process.category) === "backend",
   );

@@ -5,10 +5,10 @@ import {
   hasUnknownRuntimeBinding,
   ProviderAdapterTurnStartError,
   ProviderRuntimeBindingError,
-} from "../../orchestration-v2/ProviderAdapter.ts";
-import { makeProviderFailure } from "../../orchestration-v2/ProviderFailure.ts";
-import { ProviderEventOriginStaleError } from "./ProviderEventOrigin.ts";
-import { classifyProviderRuntimeBindingFailure } from "./ProviderRuntimeBindingDiagnostics.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { ProviderEventOriginStaleError } from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
+import { classifyProviderRuntimeBindingFailure } from "@t3tools/provider-core/server/jones/ProviderRuntimeBindingDiagnostics";
 
 const driver = ProviderDriverKind.make("codex");
 const canary = "PRIVATE_CANARY_prompt_settings_env_path";

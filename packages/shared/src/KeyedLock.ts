@@ -1,11 +1,15 @@
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 
 export interface KeyedLock<Key> {
-  /** Runs `effect` once no other holder of `key` is running. Queued waiters go first-in, first-out. */
   readonly withLock: <A, E, R>(key: Key, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
-  /** The keys someone holds or waits on right now. */
+  /** Runs only if the key has no holder or waiter; otherwise returns None without running `effect`. */
+  readonly tryWithLock: <A, E, R>(
+    key: Key,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<Option.Option<A>, E, R>;
   readonly activeKeys: Effect.Effect<ReadonlyArray<Key>>;
 }
 
@@ -15,12 +19,7 @@ interface LockEntry {
 }
 
 /**
- * Mutual exclusion per key. A key's lock exists only while someone holds or
- * waits on it, so locks for keys that come and go never accumulate. Not
- * reentrant: taking a key while already holding it deadlocks.
- *
- * Keys compare like `Map` keys (by value for strings and numbers). The lock is
- * not tied to a scope, so it keeps working for as long as anyone references it.
+ * Not reentrant: taking a key while already holding it deadlocks.
  */
 export const make = <Key>(): Effect.Effect<KeyedLock<Key>> =>
   Effect.gen(function* () {
@@ -56,6 +55,26 @@ export const make = <Key>(): Effect.Effect<KeyedLock<Key>> =>
           acquire(key),
           (semaphore) => semaphore.withPermit(effect),
           () => release(key),
+        ),
+      tryWithLock: <A, E, R>(
+        key: Key,
+        effect: Effect.Effect<A, E, R>,
+      ): Effect.Effect<Option.Option<A>, E, R> =>
+        Effect.acquireUseRelease(
+          Effect.flatMap(Semaphore.make(1), (semaphore) =>
+            Ref.modify(locks, (current) => {
+              // Reserving the key also respects waiters whose permit has not been handed over yet.
+              if (current.has(key)) return [Option.none<Semaphore.Semaphore>(), current] as const;
+              const next = new Map(current);
+              next.set(key, { semaphore, users: 1 });
+              return [Option.some(semaphore), next] as const;
+            }),
+          ),
+          (reserved): Effect.Effect<Option.Option<A>, E, R> =>
+            Option.isSome(reserved)
+              ? reserved.value.withPermitsIfAvailable(1)(effect)
+              : Effect.succeed(Option.none<A>()),
+          (reserved) => (Option.isSome(reserved) ? release(key) : Effect.void),
         ),
       activeKeys: Effect.map(Ref.get(locks), (current) => Array.from(current.keys())),
     } satisfies KeyedLock<Key>;

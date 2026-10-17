@@ -7,5 +7,10 @@
   ],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/ChatHeader.tsx",
+      "to": "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.tsx"
+    }
+  ]
 }

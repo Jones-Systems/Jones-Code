@@ -118,14 +118,12 @@ const targetLocator = (
   return page.locator(selector);
 };
 
-/** Shows the agent's pointer to viewers before an action lands at that point. */
 export type PointerReporter = (
   point: { readonly x: number; readonly y: number },
   phase: "move" | "click",
 ) => Promise<void>;
 const noPointer: PointerReporter = async () => {};
 
-/** The viewport point an action will hit: the target's center after scrolling it into view. */
 const targetPoint = async (
   page: Page,
   locator: Locator | null,
@@ -327,7 +325,6 @@ export const type = async (
   await page.keyboard.insertText(input.text);
 };
 
-/** Hovering by locator moves the real mouse, so CSS :hover and pointer events both apply. */
 export const hover = async (
   page: Page,
   input: PreviewAutomationHoverInput,
@@ -349,7 +346,6 @@ export const select = async (
 ): Promise<PreviewAutomationSelectResult> => {
   const locator = targetLocator(page, input)!;
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  // Each entry matches an option by value first, then by its visible label.
   const options = await locator.evaluate(
     (element) =>
       element.tagName === "SELECT"
@@ -388,14 +384,18 @@ export const drag = async (
   const source = targetLocator(page, { locator: input.source })!;
   const target = targetLocator(page, { locator: input.target })!;
   await pointer(await targetPoint(page, source, {}, timeout), "move");
-  // The cursor travels with the drag; the page sees one continuous gesture.
-  const dropped = source.dragTo(target, { timeout });
+  // Observe the drag's outcome as it starts: a rejection nobody handles while the cursor
+  // moves exits the server.
+  const dragFailure = source.dragTo(target, { timeout }).then(
+    () => null,
+    (error: unknown) => ({ error }),
+  );
   const end = await target.boundingBox({ timeout }).catch(() => null);
   if (end) await pointer({ x: end.x + end.width / 2, y: end.y + end.height / 2 }, "move");
-  await dropped;
+  const failure = await dragFailure;
+  if (failure) throw failure.error;
 };
 
-/** Sets files on one file input; false when no locator or selector names one. */
 export const setInputFiles = async (page: Page, input: PreviewAutomationUploadInput) => {
   const locator = targetLocator(page, input);
   if (locator === null) return false;
@@ -428,17 +428,38 @@ export const scroll = async (
   await locator.evaluate((element, [x, y]) => element.scrollBy(x, y), delta);
 };
 
+/**
+ * Runs an agent's expression, bounded by its request's deadline. Past it, the
+ * page's script is terminated and the call fails, so the tab's control queue
+ * frees for the next request instead of waiting on the script.
+ */
 export const evaluate = async (
   cdp: CDPSession,
   input: PreviewAutomationEvaluateInput,
+  timeoutMs: number,
   onDispatch: () => void | Promise<void> = constVoid,
 ) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      // Stops a busy script; an awaited promise is abandoned and settles unread.
+      void cdp.send("Runtime.terminateExecution").catch(constVoid);
+      reject(
+        new ServerBrowserOperationError(
+          "PreviewAutomationTimeoutError",
+          `Evaluation did not finish within ${timeoutMs}ms and was stopped.`,
+        ),
+      );
+    }, timeoutMs);
+  });
   await onDispatch();
-  const result = await cdp.send("Runtime.evaluate", {
+  const evaluation = cdp.send("Runtime.evaluate", {
     expression: input.expression,
     awaitPromise: input.awaitPromise ?? true,
     returnByValue: input.returnByValue ?? true,
   });
+  void evaluation.catch(constVoid);
+  const result = await Promise.race([evaluation, expired]).finally(() => clearTimeout(timer));
   if (result.exceptionDetails) {
     throw new ServerBrowserOperationError(
       "PreviewAutomationExecutionError",
@@ -464,7 +485,6 @@ export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) 
   const locator = targetLocator(page, input);
   const { text, urlIncludes } = input;
   const checks: Array<() => Promise<boolean>> = [];
-  // Like the desktop host: the selector must match an element, visible or not.
   if (locator !== null) checks.push(async () => (await locator.count()) > 0);
   if (text !== undefined) {
     // A navigation can destroy the context mid-check; that counts as not yet.
@@ -507,8 +527,6 @@ export const parseNetError = (errorText: string) => {
   return { description, code: NET_ERROR_CODES[description] ?? -2 };
 };
 
-// Browser-side encoding avoids ffmpeg. Resizes are letterboxed into the first frame;
-// the agent cursor is drawn here so it never changes the page under test.
 export const RECORDING_ENCODER_SCRIPT = `(() => {
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");

@@ -203,6 +203,41 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
     );
 
     it.effect.skipIf(!symlinksSupported)(
+      "keeps a Codex-created SQLite lock local while sharing MCP OAuth locks",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          const sharedLock = path.join(sharedHome, ".sqlite-maintenance.lock");
+          const shadowLock = path.join(shadowHome, ".sqlite-maintenance.lock");
+
+          yield* writeTextFile(sharedLock, "shared-lock");
+          yield* writeTextFile(shadowLock, "account-lock");
+          yield* writeTextFile(path.join(shadowHome, "mcp-oauth-locks", "local.lock"), "");
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({
+              homePath: sharedHome,
+              shadowHomePath: shadowHome,
+            }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+
+          // SQLite maintenance stays account-local; MCP OAuth locks coordinate shared state.
+          expect((yield* fileSystem.readLink(shadowLock).pipe(Effect.result))._tag).toBe("Failure");
+          expect(yield* fileSystem.readFileString(shadowLock)).toBe("account-lock");
+          expect(yield* fileSystem.readFileString(sharedLock)).toBe("shared-lock");
+          expect(yield* fileSystem.readLink(path.join(shadowHome, "mcp-oauth-locks"))).toBe(
+            path.join(sharedHome, "mcp-oauth-locks"),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
       "replaces Codex-created local MCP OAuth locks with the shared lock directory",
       () =>
         Effect.gen(function* () {

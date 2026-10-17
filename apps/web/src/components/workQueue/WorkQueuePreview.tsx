@@ -24,7 +24,7 @@ export function WorkQueuePreview() {
   }, [leaving, dirty]);
 
   return (
-    <div className="h-dvh overflow-y-auto bg-background text-foreground">
+    <div className="h-dvh overflow-y-auto scrollbar-gutter-both bg-background text-foreground">
       <header className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
         <span className="text-sm font-medium">Submitted work preview</span>
         <Button variant="outline" onClick={() => setLeaving(true)}>

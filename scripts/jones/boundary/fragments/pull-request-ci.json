@@ -3,7 +3,7 @@
   "feature": "pull-request-ci",
   "jonesOwnedPaths": ["apps/server/src/jones/pullRequestCi/", "apps/web/src/jones/pullRequestCi/"],
   "hookPaths": [
-    "apps/server/src/pullRequest/GitHubPullRequestApi.ts",
+    "packages/source-control-github/src/server/GitHubPullRequestApi.ts",
     "apps/server/src/pullRequest/PullRequestService.ts",
     "apps/web/src/routes/_chat.pull-requests.tsx"
   ],

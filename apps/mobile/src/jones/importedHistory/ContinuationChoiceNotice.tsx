@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { Pressable, View } from "react-native";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { getMobileImportedHistoryChoice } from "./runtime";
 export function useMobileImportedHistoryChoice(environmentId: EnvironmentId, threadId: ThreadId) {
   const choice = useMemo(

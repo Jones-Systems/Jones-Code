@@ -39,7 +39,6 @@ describe("mobile provider options", () => {
     expect(
       applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "priority" }),
     ).toEqual([{ id: "serviceTier", value: "priority" }]);
-    // Choices the model doesn't advertise are rejected, not stored.
     expect(
       applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "turbo" }),
     ).toBeNull();

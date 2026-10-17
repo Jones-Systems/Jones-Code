@@ -1,3 +1,6 @@
+import * as Option from "effect/Option";
+import * as PlannedUpdateContinuity from "./jones/updates/PlannedUpdateContinuityService.ts";
+import { activatePlannedUpdateContinuity } from "./jones/updates/plannedContinuityStartup.ts";
 import * as ServerUpdateContinuation from "./orchestration-v2/ServerUpdateContinuation.ts";
 import {
   CommandId,
@@ -74,6 +77,9 @@ export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeS
 export class ServerRuntimeStartup extends Context.Service<
   ServerRuntimeStartup,
   {
+    readonly capturePlannedUpdate?: (
+      input: Parameters<PlannedUpdateContinuity.PlannedUpdateContinuity["Service"]["capture"]>[0],
+    ) => Effect.Effect<void, ServerRuntimeStartupError>;
     readonly markRunningProviderSessionsForContinuation: Effect.Effect<
       ReadonlyArray<ThreadId>,
       ServerRuntimeStartupError
@@ -271,7 +277,7 @@ export const resolveWelcomeBase = Effect.gen(function* () {
 
 const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
-  const randomUUID = crypto.randomUUIDv4;
+  const randomUUID = crypto.randomUUIDv4();
   const serverConfig = yield* ServerConfig.ServerConfig;
   const projects = yield* ProjectService.ProjectService;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -282,8 +288,6 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
   let bootstrapThreadId: ThreadId | undefined;
 
   if (serverConfig.autoBootstrapProjectFromCwd) {
-    // Project creation has no user model choice; only the bootstrap thread
-    // gets an automatic selection, and an explicit project default wins.
     const threadModelSelection = getAutoBootstrapThreadModelSelection();
     const { project } = yield* projects.bootstrap({
       commandId: CommandId.make(yield* randomUUID),
@@ -360,8 +364,10 @@ const maybeOpenBrowser = (target: string) =>
 
 const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
-    Effect.annotateSpans({ "startup.phase": phase }),
-    Effect.withSpan(`server.startup.${phase}`),
+    // Attributes on the span itself, not annotateSpans: an annotation follows
+    // every fiber forked inside the phase, such as the effect worker, for the
+    // life of the server.
+    Effect.withSpan(`server.startup.${phase}`, { attributes: { "startup.phase": phase } }),
   );
 
 interface StartupOptions {
@@ -415,7 +421,6 @@ export function runOrderedV2StartupPhases<
   readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
-  /** Settles delegated tasks whose runs recovery just terminalized. */
   readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
   readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
@@ -461,6 +466,9 @@ const make = (options?: StartupOptions) =>
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
     const crypto = yield* Crypto.Crypto;
     const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+    const plannedContinuity = yield* Effect.serviceOption(
+      PlannedUpdateContinuity.PlannedUpdateContinuity,
+    );
 
     const continuationContext = yield* Effect.context<
       | Effect.Services<typeof ServerUpdateContinuation.markRunningProviderSessionsForContinuation>
@@ -581,10 +589,28 @@ const make = (options?: StartupOptions) =>
             ),
           ),
         ),
-        recover: runStartupPhase("orchestration-v2.recovery", providerRuntimeRecovery.recover),
+        recover: runStartupPhase(
+          "orchestration-v2.recovery",
+          Effect.gen(function* () {
+            if (Option.isSome(plannedContinuity))
+              yield* activatePlannedUpdateContinuity({
+                baseDir: serverConfig.baseDir,
+                dbPath: serverConfig.dbPath,
+                launcher,
+                continuity: plannedContinuity.value,
+              }).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Planned update continuity remains held", { cause }),
+                ),
+              );
+            return yield* providerRuntimeRecovery.recover;
+          }),
+        ),
         recoverDelegatedTasks: runStartupPhase(
           "orchestration-v2.delegated-tasks.recover",
-          orchestrator.recoverDelegatedTasks,
+          orchestrator.recoverDelegatedTasks.pipe(
+            Effect.andThen(orchestrator.recoverPlannedUpdateQueues ?? Effect.void),
+          ),
         ),
         startEffectWorker: runStartupPhase(
           "orchestration-v2.effect-worker.start",
@@ -647,8 +673,9 @@ const make = (options?: StartupOptions) =>
         Effect.gen(function* () {
           yield* Effect.logDebug("startup phase: recording startup heartbeat");
           yield* recordStartupHeartbeat.pipe(
-            Effect.annotateSpans({ "startup.phase": "heartbeat.record" }),
-            Effect.withSpan("server.startup.heartbeat.record"),
+            Effect.withSpan("server.startup.heartbeat.record", {
+              attributes: { "startup.phase": "heartbeat.record" },
+            }),
             Effect.ignoreCause({ log: true }),
           );
           if (serverConfig.startupPresentation === "headless") {
@@ -722,12 +749,15 @@ const make = (options?: StartupOptions) =>
       yield* Effect.logDebug("startup phase: complete");
       yield* flushCompileCache;
     }).pipe(
-      Effect.annotateSpans({
-        "server.mode": serverConfig.mode,
-        "server.port": serverConfig.port,
-        "server.host": serverConfig.host ?? "default",
+      Effect.withSpan("server.startup", {
+        kind: "server",
+        root: true,
+        attributes: {
+          "server.mode": serverConfig.mode,
+          "server.port": serverConfig.port,
+          "server.host": serverConfig.host ?? "default",
+        },
       }),
-      Effect.withSpan("server.startup", { kind: "server", root: true }),
     );
 
     yield* Effect.forkScoped(
@@ -751,6 +781,12 @@ const make = (options?: StartupOptions) =>
     );
 
     return {
+      capturePlannedUpdate: (
+        input: Parameters<PlannedUpdateContinuity.PlannedUpdateContinuity["Service"]["capture"]>[0],
+      ) =>
+        Option.isSome(plannedContinuity)
+          ? plannedContinuity.value.capture(input).pipe(Effect.mapError(continuationError))
+          : Effect.fail(continuationError("Planned update continuity is not configured.")),
       markRunningProviderSessionsForContinuation:
         ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
           Effect.provide(continuationContext),

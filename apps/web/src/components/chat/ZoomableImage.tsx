@@ -1,5 +1,6 @@
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { observeResize } from "~/lib/observeResize";
 import {
   useCallback,
   useEffect,
@@ -17,7 +18,6 @@ export interface ZoomableImageHandle {
   pan: (key: string) => boolean;
 }
 
-/** Zooms around the pointer and keeps the whole image accessible by dragging or scrolling. */
 export function ZoomableImage({
   src,
   name,
@@ -144,13 +144,11 @@ export function ZoomableImage({
     if (!viewport) return;
     const sizing = sizingRef.current;
     if (!sizing) return;
-    const observer = new ResizeObserver(([entry]) => {
+    return observeResize(sizing, ([entry]) => {
       if (!entry) return;
       setPanelSize({ width: entry.contentRect.width, height: entry.contentRect.height });
       changeZoom(1);
     });
-    observer.observe(sizing);
-    return () => observer.disconnect();
   }, [layout, changeZoom]);
 
   const stepZoom = (direction: number) =>
@@ -264,7 +262,7 @@ export function ZoomableImage({
           aria-label={`${name}, zoomable image`}
           aria-description="Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to cycle zoom, plus or minus to zoom, and 0 to fit."
           tabIndex={0}
-          className={`${layout === "panel" ? "absolute inset-0 min-h-0 min-w-0" : "max-w-[var(--media-width)]"} overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+          className={`${layout === "panel" ? "absolute inset-0 min-h-0 min-w-0" : "max-w-[var(--media-width)]"} overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring`}
           style={{
             width: layout === "panel" ? undefined : width || undefined,
             height: layout === "panel" ? undefined : height || undefined,

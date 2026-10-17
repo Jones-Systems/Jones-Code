@@ -1,11 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous fixture provenance hashes must match the staged executable bytes.
 import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
-import {
-  HostProcessArchitecture,
-  HostProcessPlatform,
-  HostProcessUserId,
-} from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Net from "@t3tools/shared/Net";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -179,6 +175,7 @@ function fixture(
         };
       }),
     restart: Effect.succeed(false),
+    withStopped: (operation) => operation,
     uninstall: Effect.succeed(false),
   });
   vi.spyOn(BootService, "layer").mockReturnValue(Layer.succeed(BootService.BootService, boot));
@@ -210,9 +207,9 @@ function fixture(
     configLayer,
     Layer.succeed(FileSystem.FileSystem, fs),
     Path.layer,
-    Layer.succeed(HostProcessPlatform, platform),
-    Layer.succeed(HostProcessArchitecture, platform === "darwin" ? "arm64" : "x64"),
-    Layer.succeed(HostProcessUserId, 1000),
+    Layer.succeed(HostProcess.Platform, platform),
+    Layer.succeed(HostProcess.Architecture, platform === "darwin" ? "arm64" : "x64"),
+    Layer.succeed(HostProcess.UserId, 1000),
     Layer.succeed(
       Net.NetService,
       Net.NetService.of({

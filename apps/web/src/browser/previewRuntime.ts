@@ -6,12 +6,12 @@ import {
   readBindingResult,
 } from "../jones/previewCompanion/state";
 import { nativeCompanionRendering } from "../jones/previewCompanion/inventory";
-import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, PreviewRuntime, PreviewSessionSnapshot } from "@t3tools/contracts";
 
 import { isElectron } from "~/env";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import {
   readEnvironmentSupportsServerBrowser,
@@ -19,10 +19,27 @@ import {
 } from "~/state/entities";
 
 export function previewRuntimeFor(environmentId: EnvironmentId): PreviewRuntime | undefined {
-  return readEnvironmentSupportsServerBrowser(environmentId) ? "server" : undefined;
+  if (!readEnvironmentSupportsServerBrowser(environmentId)) return undefined;
+  if (
+    isPreviewSupportedInRuntime() &&
+    environmentId !== appAtomRegistry.get(primaryEnvironmentIdAtom)
+  ) {
+    return undefined;
+  }
+  return "server";
 }
 
-/** Electron hosts its own browser tabs; other clients need the environment to host them. */
+export function alternatePreviewRuntime(
+  environmentId: EnvironmentId,
+  primaryEnvironmentId: EnvironmentId | null,
+  serverBrowser: boolean,
+  snapshot: Pick<PreviewSessionSnapshot, "runtime"> | null | undefined,
+): PreviewRuntime | null {
+  if (!snapshot || !serverBrowser || !isPreviewSupportedInRuntime()) return null;
+  if (environmentId === primaryEnvironmentId) return null;
+  return snapshot.runtime === "server" ? "desktop" : "server";
+}
+
 export function isPreviewAvailableFor(environmentId: EnvironmentId): boolean {
   return isPreviewSupportedInRuntime() || readEnvironmentSupportsServerBrowser(environmentId);
 }
@@ -32,11 +49,6 @@ export function usePreviewAvailable(environmentId: EnvironmentId | null): boolea
   return isPreviewSupportedInRuntime() || serverBrowser;
 }
 
-/**
- * Whether this client draws a server tab with its own `<webview>`. The desktop
- * app obeys immutable host bindings first; the local-server rule remains the
- * fallback only for a server binding or an older server without this endpoint.
- */
 export function rendersServerTabNatively(
   environmentId: EnvironmentId,
   primaryEnvironmentId: EnvironmentId | null,

@@ -1,11 +1,23 @@
-import type { DesktopUpdateState } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
+import type { DesktopUpdateCheckResult, DesktopUpdateState } from "@t3tools/contracts";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  checkForSidebarUpdate,
   handleSidebarUpdateReleaseNotesPopoverOpenChange,
   openSidebarUpdateReleaseNotesPopoverOnForwardTab,
+  resolveSidebarUpdateCheckFeedback,
   shouldUseSidebarUpdateReleaseNotesPopover,
 } from "./SidebarUpdatePill";
+import {
+  isDesktopUpdateButtonDisabled,
+  resolveDesktopUpdateButtonAction,
+} from "../desktopUpdate.logic";
+
+const toast = vi.hoisted(() => ({ add: vi.fn() }));
+vi.mock("../ui/toast", async () => {
+  const { stackedThreadToast } = await import("../ui/toastHelpers");
+  return { toastManager: toast, stackedThreadToast };
+});
 
 const nightlyState: DesktopUpdateState = {
   enabled: true,
@@ -83,4 +95,225 @@ describe("sidebar update release notes popover", () => {
 
     expect(open).not.toHaveBeenCalled();
   });
+});
+
+function checkedState(overrides: Partial<DesktopUpdateState> = {}): DesktopUpdateState {
+  return {
+    ...nightlyState,
+    status: "up-to-date",
+    availableVersion: null,
+    jones: {
+      source: "jones-actions",
+      channel: "jones-main",
+      phase: "no-new",
+      capability: { check: true, download: false, install: false },
+    },
+    ...overrides,
+  };
+}
+
+function jonesState(
+  phase: NonNullable<DesktopUpdateState["jones"]>["phase"],
+  message?: string,
+): DesktopUpdateState {
+  const state = checkedState();
+  return { ...state, jones: { ...state.jones!, phase, ...(message ? { message } : {}) } };
+}
+
+describe("sidebar manual update check feedback", () => {
+  beforeEach(() => toast.add.mockClear());
+
+  it.each([
+    ["building", "info", "Update still being qualified", "Qualification is running."],
+    ["blocked", "error", "Update check blocked", "The source is not qualified."],
+  ] as const)(
+    "explains a %s result without offering stale candidates",
+    async (phase, type, title, message) => {
+      const state: DesktopUpdateState = {
+        ...jonesState(phase, message),
+        status: phase === "blocked" ? "error" : "idle",
+        errorContext: "check",
+        availableVersion: "99.0.0",
+        downloadedVersion: "98.0.0",
+      };
+      await checkForSidebarUpdate({
+        checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state }),
+      });
+      expect(toast.add).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ type, title, description: message }),
+      );
+      expect(toast.add.mock.calls[0]![0]).not.toHaveProperty("actionProps");
+      expect(resolveDesktopUpdateButtonAction(state)).toBe("none");
+    },
+  );
+
+  it.each(["Connection lost.", null])(
+    "reports a completed error with message %s",
+    async (message) => {
+      const state = checkedState({ status: "error", message });
+      await checkForSidebarUpdate({
+        checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state }),
+      });
+      expect(toast.add).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          type: "error",
+          title: "Could not check for updates",
+          description: message ?? "Update check failed.",
+        }),
+      );
+    },
+  );
+
+  it.each(["no-new", "committed", "rolled-back"] as const)(
+    "reports no new update without replaying a retained %s transaction",
+    async (phase) => {
+      const state = {
+        ...jonesState(phase, "Previous transaction finished."),
+        message: "Previous outcome.",
+      };
+      await checkForSidebarUpdate({
+        checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state }),
+      });
+      expect(toast.add).toHaveBeenCalledExactlyOnceWith({
+        type: "info",
+        title: "No new update available",
+        data: { actionLayout: "stacked-end" },
+      });
+    },
+  );
+
+  it.each(["available", "downloaded"] as const)(
+    "leaves %s actions available without redundant feedback",
+    async (status) => {
+      const state = checkedState({
+        status,
+        availableVersion: "2.0.0",
+        downloadedVersion: status === "downloaded" ? "1.5.0" : null,
+        jones: {
+          ...jonesState(status === "downloaded" ? "staged" : "available").jones!,
+          capability: { check: true, download: true, install: true },
+          stagedHandle: "staged-1.5.0",
+        },
+      });
+      await checkForSidebarUpdate({
+        checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state }),
+      });
+      expect(toast.add).not.toHaveBeenCalled();
+      expect(resolveDesktopUpdateButtonAction(state)).toBe(
+        status === "downloaded" ? "install" : "download",
+      );
+      expect(isDesktopUpdateButtonDisabled(state)).toBe(false);
+    },
+  );
+
+  it.each(["building", "blocked"] as const)(
+    "preserves a staged candidate while the next check reports %s",
+    async (phase) => {
+      const state: DesktopUpdateState = {
+        ...jonesState(phase, "The newer candidate is not qualified."),
+        status: "downloaded",
+        availableVersion: "2.0.0",
+        downloadedVersion: "1.5.0",
+        jones: {
+          ...jonesState(phase).jones!,
+          capability: { check: true, download: false, install: true },
+          stagedHandle: "staged-1.5.0",
+        },
+      };
+      await checkForSidebarUpdate({
+        checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state }),
+      });
+      expect(toast.add).not.toHaveBeenCalled();
+      expect(resolveDesktopUpdateButtonAction(state)).toBe("install");
+      expect(isDesktopUpdateButtonDisabled(state)).toBe(false);
+    },
+  );
+
+  it.each(["building", "blocked"] as const)(
+    "keeps active statuses quiet despite a retained %s phase",
+    async (phase) => {
+      for (const status of [
+        "available",
+        "downloaded",
+        "downloading",
+        "checking",
+        "disabled",
+      ] as const) {
+        await checkForSidebarUpdate({
+          checkForUpdate: vi.fn().mockResolvedValue({
+            checked: true,
+            state: { ...jonesState(phase), status },
+          }),
+        });
+      }
+      expect(toast.add).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["checking", "downloading", "idle", "disabled"] as const)(
+    "does not announce completion for %s",
+    async (status) => {
+      await checkForSidebarUpdate({
+        checkForUpdate: vi.fn().mockResolvedValue({
+          checked: true,
+          state: checkedState({ status }),
+        }),
+      });
+      expect(toast.add).not.toHaveBeenCalled();
+    },
+  );
+
+  it("waits for the manual result and announces its returned state exactly once", async () => {
+    let complete!: (result: DesktopUpdateCheckResult) => void;
+    const request = new Promise<DesktopUpdateCheckResult>((resolve) => {
+      complete = resolve;
+    });
+    const bridge = { checkForUpdate: vi.fn(() => request) };
+    const pending = checkForSidebarUpdate(bridge);
+    expect(bridge.checkForUpdate).toHaveBeenCalledOnce();
+    expect(toast.add).not.toHaveBeenCalled();
+    resolveSidebarUpdateCheckFeedback(jonesState("blocked", "A background result."));
+    expect(toast.add).not.toHaveBeenCalled();
+    complete({ checked: true, state: jonesState("building", "Returned qualification result.") });
+    await pending;
+    expect(toast.add).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        title: "Update still being qualified",
+        description: "Returned qualification result.",
+      }),
+    );
+  });
+
+  it.each(["Checks are disabled.", null])(
+    "preserves unchecked feedback with message %s",
+    async (message) => {
+      await checkForSidebarUpdate({
+        checkForUpdate: vi.fn().mockResolvedValue({
+          checked: false,
+          state: checkedState({ message }),
+        }),
+      });
+      expect(toast.add).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          type: "error",
+          title: "Could not check for updates",
+          description: message ?? "Automatic updates are not available in this build.",
+        }),
+      );
+    },
+  );
+
+  it.each([new Error("Bridge failed."), "unknown rejection"])(
+    "preserves rejected request feedback: %s",
+    async (error) => {
+      await checkForSidebarUpdate({ checkForUpdate: vi.fn().mockRejectedValue(error) });
+      expect(toast.add).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          type: "error",
+          title: "Could not check for updates",
+          description: error instanceof Error ? error.message : "Update check failed.",
+        }),
+      );
+    },
+  );
 });

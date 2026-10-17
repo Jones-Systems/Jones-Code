@@ -28,7 +28,10 @@ export type Fragment = {
 };
 export type Inventory = {
   schema: "jones.boundary-inventory/v1";
-  upstream: { repository: string; tag: string; commit: string };
+  upstream: { repository: string; commit: string } & (
+    | { tag: string; ref?: never }
+    | { ref: "refs/heads/main"; tag?: never }
+  );
   baseline: string;
   paths: Record<string, Category>;
   jonesOwnedPaths: string[];
@@ -160,12 +163,19 @@ export function parseInventory(value: unknown): Inventory {
     "tombstones",
     "allowedImports",
   ]);
-  const upstream = object(input.upstream, ["repository", "tag", "commit"]);
+  const upstream = object(
+    input.upstream,
+    input.upstream && typeof input.upstream === "object" && "ref" in input.upstream
+      ? ["repository", "ref", "commit"]
+      : ["repository", "tag", "commit"],
+  );
   if (
     input.schema !== "jones.boundary-inventory/v1" ||
     upstream.repository !== "pingdotgg/t3code" ||
-    typeof upstream.tag !== "string" ||
-    !/^v[\w.-]+$/.test(upstream.tag)
+    !(
+      (typeof upstream.tag === "string" && /^v[\w.-]+$/.test(upstream.tag)) ||
+      upstream.ref === "refs/heads/main"
+    )
   )
     throw new Error("Invalid inventory provenance");
   if (
@@ -186,7 +196,13 @@ export function parseInventory(value: unknown): Inventory {
   }
   return {
     schema: input.schema,
-    upstream: { repository: upstream.repository, tag: upstream.tag, commit: upstream.commit },
+    upstream: {
+      repository: upstream.repository,
+      commit: upstream.commit,
+      ...(upstream.ref === "refs/heads/main"
+        ? { ref: upstream.ref }
+        : { tag: upstream.tag as string }),
+    },
     baseline: input.baseline,
     paths: classified,
     jonesOwnedPaths: ownedPaths(input.jonesOwnedPaths),

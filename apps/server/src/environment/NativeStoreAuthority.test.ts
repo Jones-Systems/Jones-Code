@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { expect, it } from "@effect/vitest";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { ServiceLauncherHostProcess } from "../cloud/serviceLauncherClient.ts";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -36,7 +36,7 @@ const authorityLayer = (
 ) =>
   Layer.mergeAll(
     Layer.succeed(
-      HostProcessEnvironment,
+      HostProcess.Environment,
       context === null ? {} : { [SERVICE_LAUNCHER_CONTEXT_ENV]: context },
     ),
     Layer.succeed(ServiceLauncherHostProcess, {

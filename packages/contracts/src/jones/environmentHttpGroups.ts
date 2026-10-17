@@ -8,10 +8,12 @@ import {
 } from "./importedHistory.ts";
 import {
   JonesUpdateDownloadInput,
+  JonesNativePrepareInput,
   JonesUpdateInstallInput,
   JonesUpdateState,
 } from "./jonesUpdates.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
+import { makeFleetUpdatesHttpGroup } from "./fleetUpdates/http.ts";
 import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
 import {
   VoiceReviewRecentList,
@@ -411,7 +413,7 @@ export const makeJonesHttpGroups = ({
     .add(
       HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
         headers: OptionalBearerHeaders,
-        payload: JonesUpdateInstallInput,
+        payload: JonesNativePrepareInput,
         success: JonesUpdateState,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
@@ -475,6 +477,13 @@ export const makeJonesHttpGroups = ({
     ) {}
 
   return {
+    EnvironmentFleetUpdatesHttpApi: makeFleetUpdatesHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+    }),
     EnvironmentPreviewCompanionHttpApi: makePreviewCompanionHttpGroup({
       OptionalBearerHeaders,
       EnvironmentAuthenticatedAuth,

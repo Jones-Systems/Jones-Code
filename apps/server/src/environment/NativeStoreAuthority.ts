@@ -1,4 +1,4 @@
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { ServiceLauncherHostProcess } from "../cloud/serviceLauncherClient.ts";
 import type { TrustedT3PlacementEnvironment } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -69,7 +69,7 @@ export const make = Effect.fn("NativeStoreAuthority.make")(function* () {
   const identity = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const environmentId = yield* identity.getEnvironmentId;
   const authorityStateDir = config.authorityStateDir;
-  const environment = yield* HostProcessEnvironment;
+  const environment = yield* HostProcess.Environment;
   const host = yield* ServiceLauncherHostProcess;
   const requireSafeLauncher = () => {
     validateNativeStoreAuthorityPath(config.baseDir, authorityStateDir);

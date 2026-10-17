@@ -6,19 +6,16 @@ import type { ThreadId, OrchestrationV2Command } from "@t3tools/contracts";
 import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
-import type {
-  EffectOutboxV2,
-  OrchestrationEffectV2,
-  PendingOrchestrationEffectV2,
-} from "./EffectOutbox.ts";
-import type { IdAllocatorV2, IdAllocatorV2Error } from "./IdAllocator.ts";
+import type { PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
+import type * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import type { EffectOutboxV2, OrchestrationEffectV2 } from "./EffectOutbox.ts";
+import type { IdAllocatorV2, IdAllocatorV2Error } from "@t3tools/provider-core/server/IdAllocator";
 
 export interface ThreadDeletionPlan {
   readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   readonly effects: ReadonlyArray<PendingOrchestrationEffectV2>;
 }
 
-/** Plan the same durable cleanup for direct thread deletion and project removal. */
 export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")(function* (input: {
   readonly command: Extract<OrchestrationV2Command, { readonly type: "thread.delete" }>;
   readonly projection: Pick<
@@ -27,8 +24,8 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
   >;
   readonly attachmentIds: ReadonlyArray<string>;
   readonly now: DateTime.Utc;
-  readonly idAllocator: IdAllocatorV2["Service"];
-}): Effect.fn.Return<ThreadDeletionPlan, IdAllocatorV2Error> {
+  readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
+}): Effect.fn.Return<ThreadDeletionPlan, IdAllocator.IdAllocatorV2Error> {
   const { command, projection, now, idAllocator } = input;
   const events: Array<OrchestrationV2DomainEvent> = [];
   const effects: Array<PendingOrchestrationEffectV2> = [];
@@ -218,6 +215,12 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
     commandId: command.commandId,
     threadId: command.threadId,
     request: { type: "terminal.cleanup" },
+  });
+  effects.push({
+    id: `effect:${command.commandId}:preview.cleanup`,
+    commandId: command.commandId,
+    threadId: command.threadId,
+    request: { type: "preview.cleanup" },
   });
   const attachmentIds = Array.from(new Set(input.attachmentIds));
   if (attachmentIds.length > 0) {

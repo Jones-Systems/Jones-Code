@@ -1,18 +1,18 @@
-import type { PullRequestCiStatusResult } from "@t3tools/contracts";
+import { SourceControlProviderKind, type PullRequestCiStatusResult } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
-import type * as GitHubApi from "../../sourceControl/GitHubApi.ts";
+import type * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import type * as PullRequestProviderRegistry from "../../pullRequest/PullRequestProviderRegistry.ts";
 import type {
   PullRequestError,
   PullRequestService,
   SupportedProject,
 } from "../../pullRequest/PullRequestService.ts";
-import * as SourceControlRateLimit from "../../sourceControl/SourceControlRateLimit.ts";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { readGitHubCiStatus } from "./GitHubCiStatus.ts";
 
 interface CiStatusDependencies {
@@ -23,7 +23,7 @@ interface CiStatusDependencies {
     PullRequestProviderRegistry.PullRequestProviderRegistry["Service"],
     "get"
   >;
-  readonly githubCi: Option.Option<GitHubApi.GitHubApi["Service"]>;
+  readonly githubCi: Option.Option<GitHubRest.GitHubRest["Service"]>;
   readonly rateLimits: SourceControlRateLimit.SourceControlRateLimit["Service"];
 }
 
@@ -65,7 +65,7 @@ export const createCiStatus = ({
           runners: { state: "unavailable", reasons: [reason], items: [] },
         }));
       const project = selected[0];
-      const api = registry.get("github");
+      const api = registry.get(SourceControlProviderKind.make("github"));
       if (project === undefined)
         return yield* unavailable(
           "No configured GitHub repositories match this organization and host.",

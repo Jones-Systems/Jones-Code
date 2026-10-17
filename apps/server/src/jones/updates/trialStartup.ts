@@ -1,4 +1,4 @@
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
@@ -13,7 +13,7 @@ import { awaitJonesTrialCommit, JonesTrialGateError } from "./trialGate.ts";
 export { readJonesStartupGateProtocol } from "../cloud/qualifiedStartup.ts";
 
 export const hasJonesTrialDescriptor = Effect.map(
-  HostProcessEnvironment,
+  HostProcess.Environment,
   (environment) => environment.T3CODE_JONES_TRIAL_DESCRIPTOR !== undefined,
 );
 
@@ -28,7 +28,7 @@ export const awaitJonesTrialStartup = <E, R>(input: {
   readonly observedListener: Effect.Effect<NetAddress.SocketAddress, E, R>;
 }) =>
   Effect.gen(function* () {
-    const environment = yield* HostProcessEnvironment;
+    const environment = yield* HostProcess.Environment;
     const descriptorPath = environment.T3CODE_JONES_TRIAL_DESCRIPTOR;
     if (descriptorPath === undefined) return;
     const config = yield* ServerConfig.ServerConfig;

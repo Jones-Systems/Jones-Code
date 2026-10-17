@@ -15,7 +15,7 @@ import * as Sink from "effect/Sink";
 import { projectThreadProjectionForWire } from "./WireProjection.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import * as Deferred from "effect/Deferred";
-import * as PtyAdapter from "../terminal/PtyAdapter.ts";
+import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import type { ProjectScript } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -23,9 +23,9 @@ import * as Stream from "effect/Stream";
 import * as ProcessRunner from "../processRunner.ts";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
-import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
+import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 
 import {
@@ -50,7 +50,7 @@ import {
 import * as WsTraceDiagnostics from "../diagnostics/TraceDiagnostics.ts";
 import * as WsProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WsEffectOutbox from "./EffectOutbox.ts";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as WsHttpClient from "effect/http/HttpClient";
 import * as WsWorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as WsVcsProcess from "../vcs/VcsProcess.ts";
@@ -82,6 +82,7 @@ import * as WsEnvironmentTheme from "../environmentTheme.ts";
 import * as WsExternalLauncher from "../process/externalLauncher.ts";
 import * as WsRemoteOpenTargets from "../environment/RemoteOpenTargets.ts";
 import * as WsGitWorkflowService from "../git/GitWorkflowService.ts";
+import * as WsPullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
 import * as WsReviewService from "../review/ReviewService.ts";
 import * as WsVcsProvisioningService from "../vcs/VcsProvisioningService.ts";
 import * as WsVcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
@@ -90,14 +91,17 @@ import * as WsPreviewManager from "../preview/Manager.ts";
 import * as WsPortScanner from "../preview/PortScanner.ts";
 import * as WsProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as WsModelManifest from "../provider/ModelManifest.ts";
-import * as WsProviderMaintenance from "../provider/providerMaintenance.ts";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as WsProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
-import * as WsAcpRegistrySupport from "../provider/acp/AcpRegistrySupport.ts";
-import * as WsAcpRegistryRuntimeCoordinator from "../provider/acp/AcpRegistryRuntimeCoordinator.ts";
+import * as WsAcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
+import * as WsAcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
 import * as WsProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as WsServerSelfUpdate from "../cloud/selfUpdate.ts";
 import * as WsServerConfig from "../config.ts";
 import * as WsServerLifecycleEvents from "../serverLifecycleEvents.ts";
+import * as WsStorageCleanup from "../storageCleanup.ts";
+import * as WsDatabaseStorage from "../persistence/DatabaseStorage.ts";
+import * as WsCommandOutputHub from "./CommandOutputHub.ts";
 import * as WsServerSettings from "../serverSettings.ts";
 import * as WsServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as WsWorkspaceEntries from "../workspace/WorkspaceEntries.ts";
@@ -397,6 +401,12 @@ it("serves authenticated full, bounded and shell HTTP snapshots from recorded SQ
             Effect.andThen(projections.getShellSnapshot(options)),
             Effect.mapError(mapError),
           ),
+        readShellSnapshot: (options) =>
+          prepareSnapshot.pipe(
+            Effect.andThen(projections.readShellSnapshot(options)),
+            Effect.map((decode) => decode.pipe(Effect.mapError(mapError))),
+            Effect.mapError(mapError),
+          ),
       });
     }),
   ).pipe(Layer.provideMerge(persistence));
@@ -526,6 +536,18 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsThreadLaunchService.ThreadLaunchService)({ launch: denyRpcWork }),
     Layer.mock(WsScheduledTasks.ScheduledTaskService)({}),
     Layer.mock(WsPullRequestService.PullRequestService)({}),
+    Layer.succeed(WsPullRequestReviewGuideService.PullRequestReviewGuideService, {
+      get: denyRpcWork,
+      generate: denyRpcWork,
+    }),
+    Layer.succeed(WsStorageCleanup.StorageCleanup, {
+      runNow: denyRpcWork(),
+      latestReport: denyRpcWork(),
+      reports: Stream.fromEffect(denyRpcWork()),
+      drain: denyRpcWork(),
+    }),
+    Layer.mock(WsDatabaseStorage.DatabaseStorage)({}),
+    Layer.mock(WsCommandOutputHub.CommandOutputHub)({}),
     Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
     Layer.mock(WsDeviceService.DeviceService)({}),
     Layer.mock(WsOrchestrator.OrchestratorV2)({ dispatch: denyRpcWork }),
@@ -550,7 +572,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsPortScanner.PortDiscovery)({}),
     Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
     Layer.mock(WsModelManifest.ModelManifest)({}),
-    Layer.succeed(WsProviderMaintenance.ProviderVersionCache, new Map()),
+    ProviderLatestVersions.layer,
     Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({}),
     Layer.mock(WsAcpRegistrySupport.AcpRegistryCatalog)({}),
     Layer.mock(WsAcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
@@ -587,8 +609,8 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(EventSink.EventSinkV2)({}),
     Layer.mock(WsEffectOutbox.EffectOutboxV2)({}),
     Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
-    Layer.succeed(HostProcessEnvironment, {}),
-    Layer.succeed(HostProcessPlatform, "linux"),
+    Layer.succeed(HostProcess.Environment, {}),
+    Layer.succeed(HostProcess.Platform, "linux"),
   );
   const dependencies = Layer.mergeAll(auth, deniedRpcOwners).pipe(
     Layer.provideMerge(config),
@@ -880,8 +902,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     projectOwner,
                     terminal,
                     WsServerSettings.layerTest(),
-                    Layer.succeed(HostProcessEnvironment, {}),
-                    Layer.succeed(HostProcessPlatform, "linux"),
+                    Layer.succeed(HostProcess.Environment, {}),
+                    Layer.succeed(HostProcess.Platform, "linux"),
                   ),
                 ),
               );
@@ -900,7 +922,13 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 registry,
                 { databaseLayer: receivingDatabase, runEffectWorker: false },
               ).pipe(Layer.provide(terminal));
-              const productionThreads = Threads.layer.pipe(Layer.provide(orchestrator));
+              const receipts = Receipts.layer.pipe(Layer.provide(receivingDatabase));
+              const serverSettings = WsServerSettings.layerTest();
+              const productionThreads = Threads.layer.pipe(
+                Layer.provide(orchestrator),
+                Layer.provide(receipts),
+                Layer.provide(serverSettings),
+              );
               const threads = Layer.effect(
                 Threads.ThreadManagementService,
                 Effect.gen(function* () {
@@ -942,7 +970,6 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   });
                 }),
               ).pipe(Layer.provide(productionThreads));
-              const receipts = Receipts.layer.pipe(Layer.provide(receivingDatabase));
               const outbox = WsEffectOutbox.layer.pipe(Layer.provide(receivingDatabase));
               const store = EventStore.layer.pipe(Layer.provide(receivingDatabase));
               const successfulCheckout = successfulWorktree
@@ -970,6 +997,12 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                         if (args.includes("--git-common-dir")) stdout = `${common}\n`;
                         else if (args.includes("--absolute-git-dir")) stdout = `${gitDirectory}\n`;
                         else if (args.includes("symbolic-ref")) stdout = `refs/heads/${branch}\n`;
+                        else if (
+                          args.includes("rev-parse") &&
+                          args.includes("--symbolic-full-name") &&
+                          args.at(-1) === "main"
+                        )
+                          stdout = "refs/heads/main\n";
                         else if (args.includes("rev-parse")) stdout = `${oid}\n`;
                         else if (args.includes("--porcelain"))
                           stdout = added
@@ -1123,7 +1156,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                   generateBranchName: () =>
                     Effect.die("No generated branch in receiving RPC fixture"),
                 }),
-                WsServerSettings.layerTest(),
+                serverSettings,
                 ProviderRegistryMock.layer(),
                 Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
                   namedProjectsRoot: `${cwd}/unused-projects`,
@@ -1267,6 +1300,21 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           }),
           Layer.mock(WsScheduledTasks.ScheduledTaskService)({}),
           Layer.mock(WsPullRequestService.PullRequestService)({}),
+          Layer.succeed(WsPullRequestReviewGuideService.PullRequestReviewGuideService, {
+            get: () => Effect.die("Legacy bootstrap must not read a pull request review guide."),
+            generate: () =>
+              Effect.die("Legacy bootstrap must not generate a pull request review guide."),
+          }),
+          Layer.succeed(WsStorageCleanup.StorageCleanup, {
+            runNow: Effect.die("Legacy bootstrap must not run storage cleanup."),
+            latestReport: Effect.die("Legacy bootstrap must not read a storage cleanup report."),
+            reports: Stream.fromEffect(
+              Effect.die("Legacy bootstrap must not subscribe to storage cleanup reports."),
+            ),
+            drain: Effect.die("Legacy bootstrap must not drain storage cleanup."),
+          }),
+          Layer.mock(WsDatabaseStorage.DatabaseStorage)({}),
+          Layer.mock(WsCommandOutputHub.CommandOutputHub)({}),
           Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
           Layer.mock(WsDeviceService.DeviceService)({}),
           Layer.mock(WsOrchestrator.OrchestratorV2)({
@@ -1295,7 +1343,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsPortScanner.PortDiscovery)({}),
           Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
           Layer.mock(WsModelManifest.ModelManifest)({}),
-          Layer.succeed(WsProviderMaintenance.ProviderVersionCache, new Map()),
+          ProviderLatestVersions.layer,
           Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({}),
           Layer.mock(WsAcpRegistrySupport.AcpRegistryCatalog)({}),
           Layer.mock(WsAcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
@@ -1304,6 +1352,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsServerLifecycleEvents.ServerLifecycleEvents)({}),
           Layer.mock(WsServerSettings.ServerSettingsService)({
             getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+            subscribeChanges: Effect.succeed(Stream.empty),
           }),
           Layer.mock(WsServerRuntimeStartup.ServerRuntimeStartup)({
             enqueueCommand: (effect) => effect,
@@ -1339,8 +1388,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             awaitCompletion: () => Effect.void,
           }),
           Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
-          Layer.succeed(HostProcessEnvironment, {}),
-          Layer.succeed(HostProcessPlatform, "linux"),
+          Layer.succeed(HostProcess.Environment, {}),
+          Layer.succeed(HostProcess.Platform, "linux"),
         );
 
         const dependencies = Layer.mergeAll(auth, rpcOwners, receivingOwners).pipe(
@@ -1472,6 +1521,38 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             Effect.forkChild,
           );
           yield* Effect.addFinalizer(() => WsFiber.interrupt(serving));
+          const diagnosticTag = (value: unknown) =>
+            typeof value === "object" &&
+            value !== null &&
+            "_tag" in value &&
+            typeof value._tag === "string" &&
+            /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value._tag)
+              ? value._tag
+              : "Untagged";
+          const servingEnded = WsFiber.join(serving).pipe(
+            Effect.matchCauseEffect({
+              onFailure: (cause) =>
+                Effect.die({
+                  _tag: "LegacyWireServingFailed",
+                  causes: cause.reasons.slice(0, 8).map((reason) => ({
+                    kind: reason._tag,
+                    tag:
+                      reason._tag === "Fail"
+                        ? diagnosticTag(reason.error)
+                        : reason._tag === "Die"
+                          ? diagnosticTag(reason.defect)
+                          : "Interrupt",
+                  })),
+                  order: order.slice(0, 8),
+                }),
+              onSuccess: (response) =>
+                Effect.die({
+                  _tag: "LegacyWireServingEnded",
+                  status: response.status,
+                  order: order.slice(0, 8),
+                }),
+            }),
+          );
           yield* WsQueue.offer(
             incoming,
             yield* encodeSocketRpcRequest({
@@ -1483,12 +1564,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             }),
           );
           if (requiredPreflight) {
-            const rawFrame = yield* Effect.race(
-              WsQueue.take(outgoing),
-              WsFiber.join(serving).pipe(
-                Effect.andThen(Effect.die("Socket ended before preflight failure")),
-              ),
-            ).pipe(Effect.timeout("5 seconds"));
+            const rawFrame = yield* Effect.raceFirst(WsQueue.take(outgoing), servingEnded).pipe(
+              Effect.timeout("5 seconds"),
+            );
             const frame = yield* decodeSocketRpcResponse(
               typeof rawFrame === "string" ? rawFrame : new TextDecoder().decode(rawFrame),
             );
@@ -2321,10 +2399,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               return;
             }
           }
-          const raw = yield* Effect.race(
-            WsQueue.take(outgoing),
-            WsFiber.join(serving).pipe(Effect.andThen(Effect.die("Socket ended before response"))),
-          ).pipe(Effect.timeout("5 seconds"));
+          const raw = yield* Effect.raceFirst(WsQueue.take(outgoing), servingEnded).pipe(
+            Effect.timeout("5 seconds"),
+          );
           const frame = yield* decodeSocketRpcResponse(
             typeof raw === "string" ? raw : new TextDecoder().decode(raw),
           );
