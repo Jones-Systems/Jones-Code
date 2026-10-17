@@ -213,8 +213,8 @@ function uncertainCustody(cause, seen = new Set()) {
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "56822c4ac815bb8a8d0d49f2743c2068a07336b4e8d59b56fce862a8c39890dd",
-  size: 846403,
+  sha256: "1af15bf7cafcec1899ae09a7ee1a299640e8db17aeedb5a13f372bb98afb9c47",
+  size: 851654,
 };
 const reviewedRawSources = {
   "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts":
@@ -252,7 +252,7 @@ const reviewedRawSources = {
   "pnpm-lock.yaml": "6017f11e0032db8fbbc84086cd4cc0ae6f312f4ae99384e91d733f7b3c7f43aa",
   "pnpm-workspace.yaml": "3a93aa85c1edb088a14afba8659404a2a321817ce6590589bb055fa0ecf8d103",
   "scripts/jones/updates/functional-policy.ts":
-    "2c0894f55cf24badba36f0baa8b904719c96e72800f4f6288043a40680d934e4",
+    "9684a2198f0e6772f96734b754d56836a095c245664599a15621199c4433d513",
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
@@ -446,8 +446,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 829643,
-      end: 829771,
+      start: 834894,
+      end: 835022,
       endExclusive: true,
     },
   },
@@ -461,8 +461,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 829973,
-      end: 830099,
+      start: 835224,
+      end: 835350,
       endExclusive: true,
     },
   },
