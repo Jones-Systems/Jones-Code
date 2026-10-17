@@ -47,6 +47,7 @@ import {
 
 import {
   runNativeAttestationRenewal,
+  reconcileNativeRenewalJournal,
   nativeRenewalStorage,
 } from "../jones/workstreams/nativeAttestationRenewal";
 
@@ -783,7 +784,12 @@ export function useWorkstreams(
     if (!placements || placements.items.length === 0) return;
     const expiry = Math.min(...placements.items.map((item) => Date.parse(item.expires_at)));
     const timer = window.setTimeout(
-      () => setPlacements(null),
+      () =>
+        setPlacements((current) => {
+          if (current !== placements) return current;
+          const items = current.items.filter((item) => Date.parse(item.expires_at) > Date.now());
+          return items.length ? { ...current, items } : null;
+        }),
       Math.max(0, Math.min(2_147_483_647, expiry - Date.now())),
     );
     return () => window.clearTimeout(timer);
@@ -1145,29 +1151,55 @@ export function useWorkstreams(
     const started = dataRef.current?.binding;
     if (!started) throw new WorkstreamActionError("stale");
     const authority = actionAuthorityKey(started);
-    await loadActionSnapshot();
+    const startedGeneration = generation.current;
+    renewalRequest.current?.abort();
+    const check = () => {
+      if (
+        generation.current !== startedGeneration ||
+        !dataRef.current ||
+        actionAuthorityKey(dataRef.current.binding) !== authority
+      )
+        throw new WorkstreamActionError("stale");
+    };
+    const initial = await loadActionSnapshot();
+    const observe = async (id: string) => {
+      check();
+      const receipt = await request((client) =>
+        client.workstreams.command({ headers: {}, params: { commandId: id } }),
+      );
+      check();
+      return receipt;
+    };
+    check();
+    const storage = nativeRenewalStorage();
+    if (storage && initial.registrationContext?.state === "ready") {
+      const settled = await reconcileNativeRenewalJournal({
+        snapshot: { data: initial.data, context: initial.registrationContext },
+        storage,
+        observe,
+        check,
+        commandPending: (id, pending) => {
+          if (pending) unresolvedCommands.current.set(id, authority);
+          else unresolvedCommands.current.delete(id);
+        },
+      });
+      if (!settled) throw new WorkstreamActionError("unknown");
+    }
     await reconcileWorkstreamCommands({
       commandIds: [...unresolvedCommands.current]
         .filter(([, key]) => key === authority)
         .map(([id]) => id),
-      observe: async (id) => {
-        if (!dataRef.current || actionAuthorityKey(dataRef.current.binding) !== authority)
-          throw new WorkstreamActionError("stale");
-        const receipt = await request((client) =>
-          client.workstreams.command({ headers: {}, params: { commandId: id } }),
-        );
-        if (!dataRef.current || actionAuthorityKey(dataRef.current.binding) !== authority)
-          throw new WorkstreamActionError("stale");
-        return receipt;
-      },
+      observe,
       resolved: (id) => unresolvedCommands.current.delete(id),
     });
     const snapshot = await loadActionSnapshot();
+    check();
     metadataCache.write(snapshot.data);
     setData(metadataCache.read(snapshot.data.binding));
     setRegistrationContext(snapshot.registrationContext);
     setError(null);
-  }, [loadActionSnapshot]);
+    refresh();
+  }, [loadActionSnapshot, refresh]);
 
   return {
     assignNativeThread: assignThread,

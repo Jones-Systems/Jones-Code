@@ -182,7 +182,7 @@ it.effect("refuses mutations while offline or against stale generation and revis
     const stale = yield* gateway
       .submit(updateCommand({ expected_registry_version: 10 }))
       .pipe(Effect.flip);
-    expect(stale.reason).toBe("version-conflict");
+    expect(stale.reason).toBe("command-precondition-rejected");
   }),
 );
 

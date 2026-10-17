@@ -30,7 +30,12 @@ import * as HttpPlatform from "effect/http/HttpPlatform";
 import * as Etag from "effect/http/Etag";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { layerAuthenticatedAuth } from "../auth/http.ts";
-import { make, WorkstreamGateway, WorkstreamGatewayError } from "./WorkstreamGateway.ts";
+import {
+  make,
+  WorkstreamGateway,
+  WorkstreamGatewayError,
+  WorkstreamTransportError,
+} from "./WorkstreamGateway.ts";
 import { WorkstreamsRegistrationContext } from "../jones/workstreams/registrationContext/service.ts";
 import { makeRegistrationFixture } from "../jones/workstreams/registrationContext/testFixtures.ts";
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
@@ -119,18 +124,47 @@ const withHttpFixture = Effect.fn(function* (
   run: (fixture: {
     handler: (request: Request) => Promise<Response>;
     calls: { reads: number; writes: number };
+    advanceRegistry: () => void;
+    transportSubmissions: () => number;
   }) => Promise<void>,
-  failure?: "offline" | "cursor-stale" | "not-configured",
+  failure?: "offline" | "cursor-stale" | "not-configured" | "submit-unknown",
 ) {
   const calls = { reads: 0, writes: 0 };
-  const gateway = yield* make(makeSyntheticWorkstreamTransport(), {
-    binding: {
-      registryId: "https://workstream-registry.invalid",
-      ownerId: "owner-fixture",
-      principalId: "principal-fixture",
-      authorizationRevision: 1,
+  let registryVersion = 11;
+  let transportSubmissions = 0;
+  const transport = makeSyntheticWorkstreamTransport();
+  const gateway = yield* make(
+    {
+      ...transport,
+      getCapabilities: (input) =>
+        transport.getCapabilities(input).pipe(
+          Effect.map((value) => ({
+            ...value,
+            context: { ...value.context, registry_version: registryVersion },
+          })),
+        ),
+      submitCommand: (input) => {
+        transportSubmissions++;
+        return failure === "submit-unknown"
+          ? Effect.fail(
+              new WorkstreamTransportError({
+                operation: "submit",
+                effect: "unknown-effect",
+                detail: "lost reply",
+              }),
+            )
+          : transport.submitCommand(input);
+      },
     },
-  });
+    {
+      binding: {
+        registryId: "https://workstream-registry.invalid",
+        ownerId: "owner-fixture",
+        principalId: "principal-fixture",
+        authorizationRevision: 1,
+      },
+    },
+  );
   const authenticate: EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"] = (
     request,
   ) => {
@@ -167,7 +201,7 @@ const withHttpFixture = Effect.fn(function* (
         ...gateway,
         readMetadata: (input) => {
           calls.reads += 1;
-          return failure === undefined
+          return failure === undefined || failure === "submit-unknown"
             ? gateway.readMetadata(input)
             : Effect.fail(
                 new WorkstreamGatewayError({ reason: failure, detail: "synthetic failure" }),
@@ -190,7 +224,17 @@ const withHttpFixture = Effect.fn(function* (
   );
   return yield* Effect.acquireUseRelease(
     Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
-    (app) => Effect.promise(() => run({ handler: (request) => app.handler(request), calls })),
+    (app) =>
+      Effect.promise(() =>
+        run({
+          handler: (request) => app.handler(request),
+          calls,
+          advanceRegistry: () => {
+            registryVersion++;
+          },
+          transportSubmissions: () => transportSubmissions,
+        }),
+      ),
     (app) => Effect.promise(() => app.dispose()),
   );
 });
@@ -392,3 +436,64 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
 vi.mock("node:fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:fs")>()),
 }));
+
+const decodeSubmitConflict = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
+const decodeSubmitInternal = Schema.decodeUnknownSync(EnvironmentInternalError);
+
+it.effect(
+  "preserves a proven pre-submit registry rejection through the real typed HTTP boundary",
+  () =>
+    withHttpFixture(
+      [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+      async ({ handler, advanceRegistry, transportSubmissions }) => {
+        const headers = {
+          authorization: "Bearer synthetic-token",
+          "content-type": "application/json",
+        };
+        const initial = await handler(
+          new Request("http://fixture/api/workstreams?limit=1", { headers }),
+        );
+        expect(initial.status).toBe(200);
+        advanceRegistry();
+        const response = await handler(
+          new Request("http://fixture/api/workstreams/commands", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              command: {
+                ...command,
+                action: {
+                  operation: "verify_reference",
+                  native_reference_id: "reference",
+                  expected_attestation_version: 2,
+                },
+              },
+            }),
+          }),
+        );
+        expect(response.status).toBe(409);
+        const error = decodeSubmitConflict(await response.json());
+        expect(error.message).toBe("workstream_command_not_submitted");
+        expect(transportSubmissions()).toBe(0);
+      },
+    ),
+);
+
+it.effect("keeps an opaque submitted-command failure internal instead of claiming no effect", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, transportSubmissions }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/commands", {
+          method: "POST",
+          headers: { authorization: "Bearer synthetic-token", "content-type": "application/json" },
+          body: JSON.stringify({ command }),
+        }),
+      );
+      expect(response.status).toBe(500);
+      expect(decodeSubmitInternal(await response.json()).reason).toBe("internal_error");
+      expect(transportSubmissions()).toBe(1);
+    },
+    "submit-unknown",
+  ),
+);

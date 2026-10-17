@@ -1,4 +1,5 @@
 import { RegistryContext } from "@effect/atom-react";
+import { workstreamBindingKey } from "@t3tools/client-runtime/state/workstreams";
 import type { SupervisorConnectionState } from "@t3tools/client-runtime/connection";
 import type { WorkstreamsRegistrationContextAcceptedResponse } from "@t3tools/contracts";
 import {
@@ -619,6 +620,15 @@ it.each([11, 12])(
       if (!response) throw new Error("Unexpected additional HTTP request");
       return response;
     });
+    let releaseDigest!: () => void;
+    const digestGate = new Promise<void>((resolve) => {
+      releaseDigest = resolve;
+    });
+    const nativeDigest = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, "digest").mockImplementationOnce(async (algorithm, bytes) => {
+      await digestGate;
+      return nativeDigest(algorithm, bytes);
+    });
     await act(async () => {
       renderer = create(
         <RegistryContext.Provider value={registry}>
@@ -626,9 +636,13 @@ it.each([11, 12])(
         </RegistryContext.Provider>,
       );
     });
+    expect(latest.loading).toBe(true);
+    expect(http.run).toHaveBeenCalledTimes(2);
     await act(async () => {
-      await vi.waitFor(() => expect(latest.loading).toBe(false));
+      releaseDigest();
+      await vi.waitFor(() => expect(http.run).toHaveBeenCalledTimes(3));
     });
+    expect(latest.loading).toBe(false);
     expect(latest.placementInventory.identities).not.toContainEqual(selected[0]);
     expect(latest.data?.binding.registryVersion).toBe(11);
     const mountedConnection = registry.get(connection);
@@ -639,7 +653,7 @@ it.each([11, 12])(
       });
     });
     await act(async () => {
-      await vi.waitFor(() => expect(latest.placements?.items[0]?.native_thread_id).toBe(chosen.id));
+      await vi.waitFor(() => expect(responses).toHaveLength(0));
     });
     expect(latest.placements?.items[0]?.workstream_id).toBe("beta");
     expect(latest.placementInventory.identities).toHaveLength(1000);
@@ -683,7 +697,7 @@ it("keeps an explicit recovery path after a preflight refusal without submitting
   expect(http.run).toHaveBeenCalledTimes(4);
 });
 
-it("automatically starts verify-only renewal before the original native proof expires", async () => {
+it("expires only the failed proof while another thread retains grouping and renews on its own deadline", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(now);
   vi.stubGlobal("window", globalThis);
@@ -692,59 +706,179 @@ it("automatically starts verify-only renewal before the original native proof ex
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value),
   });
+  const threads = [thread, { ...thread, id: "thread-b" }];
   const source = {
-    provider: "t3" as const,
+    provider: "t3",
     source_instance_id: thread.environmentId,
     authority_namespace: "authority",
     store_generation: 1,
-    resource_kind: "thread" as const,
-    id_kind: "internal" as const,
-    account_provenance: { kind: "not_account_scoped" as const },
-    native_protocol: "workstreams-t3-provider/1.0.0" as const,
+    resource_kind: "thread",
+    id_kind: "internal",
+    account_provenance: { kind: "not_account_scoped" },
+    native_protocol: "workstreams-t3-provider/1.0.0",
     build: { repository: "Jones-Systems/Jones-Code", sha: "a".repeat(40), tree: "b".repeat(40) },
   };
-  const identities = nativePlacementInventory(nativeThreads).identities;
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(t3PlacementInventoryJson(identities)),
-  );
-  const projection = {
-    page: {
-      context: placements.context,
-      items: placements.items.map((item) => ({
-        ...item,
-        expires_at: new Date(now + 300_000).toISOString(),
-      })),
-      next_cursor: null,
-      inventory_sha256: Array.from(new Uint8Array(digest), (value) =>
-        value.toString(16).padStart(2, "0"),
-      ).join(""),
-    },
+  const digest = Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(
+          t3PlacementInventoryJson(nativePlacementInventory(threads).identities),
+        ),
+      ),
+    ),
+    (value) => value.toString(16).padStart(2, "0"),
+  ).join("");
+  const a = { ...placements.items[0]!, expires_at: new Date(now + 120_000).toISOString() };
+  const b = {
+    ...placements.items[0]!,
+    native_reference_id: "reference-b",
+    native_thread_id: "thread-b",
+    membership_id: "membership-b",
+    workstream_id: "beta",
+    expires_at: new Date(now + 300_000).toISOString(),
+  };
+  const renewed = {
+    ...b,
+    attestation_version: 3,
+    attested_at: new Date(now + 240_000).toISOString(),
+    expires_at: new Date(now + 540_000).toISOString(),
+  };
+  const readContext = (version: number) => ({ ...placements.context, registry_version: version });
+  const list = (version: number) => ({
+    ...data,
+    binding: { ...data.binding, registryVersion: version },
+  });
+  const context = (version: number) => ({
+    ...registration,
+    registry_version: version,
+    sources: [source],
+  });
+  const projection = (version: number, items: typeof placements.items) => ({
+    page: { context: readContext(version), items, next_cursor: null, inventory_sha256: digest },
     trustedEnvironments: placements.trustedEnvironments,
     readiness: "ready",
-  };
+  });
+  const detail = (version: number, item: typeof b) => ({
+    context: readContext(version),
+    latest_observation: null,
+    reference: {
+      ...reference,
+      native_reference_id: "reference-b",
+      identity: { ...reference.identity, native_id: "thread-b" },
+      registration: {
+        ...reference.registration,
+        attestation_version: item.attestation_version,
+        attested_at: item.attested_at,
+        expires_at: item.expires_at,
+        evidence: { ...reference.registration.evidence!, native_id: "thread-b" },
+      },
+    },
+  });
+  const member = (version: number) => ({
+    context: readContext(version),
+    next_cursor: null,
+    items: [
+      {
+        membership_id: "membership-b",
+        workstream_id: "beta",
+        native_reference_id: "reference-b",
+        kind: "primary",
+        opened: {
+          at: new Date(now).toISOString(),
+          actor: { principal_id: "principal" },
+          command_id: "original",
+          registry_version: 1,
+        },
+        closed: null,
+      },
+    ],
+  });
   http.run
-    .mockResolvedValueOnce(data)
-    .mockResolvedValueOnce({ ...registration, sources: [source] })
-    .mockResolvedValueOnce(projection);
+    .mockResolvedValueOnce(list(11))
+    .mockResolvedValueOnce(context(11))
+    .mockResolvedValueOnce(projection(11, [a, b]))
+    .mockRejectedValueOnce(new Error("A renewal read failed"));
   await act(async () => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
-        <MountedWorkstreams enabled />
+        <MountedWorkstreams enabled threads={threads} />
       </RegistryContext.Provider>,
     );
   });
-  expect(latest.placements?.items).toHaveLength(2);
-  http.run.mockRejectedValue(new Error("synthetic renewal read outage"));
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(240_000);
+    await vi.waitFor(() => expect(http.run).toHaveBeenCalledTimes(3));
   });
-  expect(http.run.mock.calls.length).toBeGreaterThan(3);
-  expect(latest.placements?.items).toHaveLength(2);
+  expect(latest.placements?.items).toEqual([a, b]);
+  const sameConnection = registry.get(connection);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(60_000);
   });
-  expect(latest.placements).toBeNull();
+  expect(http.run).toHaveBeenCalledTimes(4);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(latest.placements?.items).toEqual([b]);
+  const responses = [
+    list(11),
+    context(11),
+    projection(11, [b]),
+    detail(11, b),
+    member(11),
+    "receipt",
+    list(12),
+    context(12),
+    projection(12, [renewed]),
+    detail(12, renewed),
+    member(12),
+  ];
+  http.run.mockImplementation(async () => {
+    const response = responses.shift();
+    if (response === "receipt") {
+      const records: { commandId: string }[] = JSON.parse([...storage.values()][0]!);
+      return {
+        command_id: records[0]!.commandId,
+        owner_id: "owner",
+        actor: { principal_id: "principal" },
+        operation: "verify_reference",
+        request_sha256: "c".repeat(64),
+        server_generation: 7,
+        accepted_at: renewed.attested_at,
+        completed_at: renewed.attested_at,
+        state: "committed",
+        registry_version: 12,
+        changed: true,
+        effects: {
+          native_reference_id: "reference-b",
+          registration: detail(12, renewed).reference.registration,
+          workstream_versions: [],
+          membership_ids: [],
+          declaration_id: null,
+          declaration_revision: null,
+          edge_id: null,
+          observation: null,
+          lifecycle_declaration: null,
+          coordination_disposition: null,
+          native_settlement: null,
+        },
+      };
+    }
+    if (!response) throw new Error("unexpected HTTP request");
+    return response;
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(120_000);
+  });
+  await act(async () => {
+    await vi.waitFor(() => expect(responses).toHaveLength(0));
+  });
+  expect(latest.placements?.items).toEqual([renewed]);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(latest.placements?.items).toEqual([renewed]);
+  expect(registry.get(connection)).toBe(sameConnection);
+  expect(latest.error).toBeTruthy();
 });
 
 it.each(["cold load", "reconnect"])(
@@ -780,6 +914,14 @@ it.each(["cold load", "reconnect"])(
     const readContext = (version: number) => ({ ...placements.context, registry_version: version });
     const list = (version: number) => ({
       ...data,
+      items: [
+        ...Array.from({ length: 10 }, (_, index) => ({
+          ...data.items[0]!,
+          workstreamId: `preceding-${index}`,
+          sortOrder: index,
+        })),
+        { ...data.items.find((item) => item.workstreamId === "alpha")!, sortOrder: 10 },
+      ],
       binding: { ...data.binding, registryVersion: version },
     });
     const context = (version: number) => ({
@@ -842,8 +984,8 @@ it.each(["cold load", "reconnect"])(
       context(11),
       projection(11, 2, expiredAt, true),
       { context: readContext(11), items: [native(2, expiredAt)], next_cursor: null },
+      ...Array.from({ length: 10 }, () => members(11, false)),
       members(11),
-      members(11, false),
     );
     for (let round = 0; round < 3; round++) {
       const version = 11 + round;
@@ -919,7 +1061,7 @@ it.each(["cold load", "reconnect"])(
       });
     await act(async () => {
       await vi.waitFor(() =>
-        expect(http.run).toHaveBeenCalledTimes(mode === "cold load" ? 17 : 20),
+        expect(http.run).toHaveBeenCalledTimes(mode === "cold load" ? 26 : 29),
       );
     });
     expect(latest.placements?.items[0]).toMatchObject({
@@ -935,7 +1077,7 @@ it.each(["cold load", "reconnect"])(
       await act(async () => {
         await vi.waitFor(() =>
           expect(http.run).toHaveBeenCalledTimes(
-            (mode === "cold load" ? 17 : 20) + (proof - 3) * 11,
+            (mode === "cold load" ? 26 : 29) + (proof - 3) * 11,
           ),
         );
       });
@@ -953,3 +1095,97 @@ it.each(["cold load", "reconnect"])(
     expect(responses).toHaveLength(0);
   },
 );
+
+it("Retry durably settles a renewal ID outside the current inventory and does not observe it again after remount", async () => {
+  const storage = new Map<string, string>();
+  const key = "jones.workstreams.native-renewal.v1";
+  storage.set(
+    key,
+    JSON.stringify([
+      {
+        authority: JSON.stringify([
+          workstreamBindingKey({ ...data.binding, registryVersion: 0 }),
+          [...data.binding.permissions].sort(),
+          registration.grant_id,
+          registration.sources,
+        ]),
+        referenceId: "outside-inventory",
+        version: 2,
+        commandId: "lost-renewal",
+        terminal: false,
+      },
+    ]),
+  );
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  });
+  const references = { context: placements.context, items: [], next_cursor: null };
+  const receipt: WorkstreamReceipt = {
+    command_id: "lost-renewal",
+    owner_id: "owner",
+    actor: { principal_id: "principal" },
+    operation: "verify_reference",
+    request_sha256: "c".repeat(64),
+    server_generation: 7,
+    accepted_at: new Date(now).toISOString(),
+    completed_at: new Date(now).toISOString(),
+    state: "committed",
+    registry_version: 11,
+    changed: false,
+    effects: {
+      native_reference_id: "outside-inventory",
+      registration: null,
+      workstream_versions: [],
+      membership_ids: [],
+      declaration_id: null,
+      declaration_revision: null,
+      edge_id: null,
+      observation: null,
+      lifecycle_declaration: null,
+      coordination_disposition: null,
+      native_settlement: null,
+    },
+  };
+  const mount = async () => {
+    http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(registration);
+    await act(async () => {
+      renderer = create(
+        <RegistryContext.Provider value={registry}>
+          <MountedWorkstreams />
+        </RegistryContext.Provider>,
+      );
+    });
+  };
+  await mount();
+  http.run
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce(references)
+    .mockResolvedValueOnce(registration)
+    .mockResolvedValueOnce(receipt)
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce(references)
+    .mockResolvedValueOnce(registration)
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce(registration);
+  await act(async () => latest.retry!());
+  expect(storage.get(key)).toContain('"terminal":true');
+  expect(latest.data).toEqual(data);
+  expect(latest.error).toBeNull();
+  expect(http.run).toHaveBeenCalledTimes(11);
+  await act(async () => renderer?.unmount());
+  await mount();
+  http.run
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce(references)
+    .mockResolvedValueOnce(registration)
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce(references)
+    .mockResolvedValueOnce(registration)
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce(registration);
+  await act(async () => latest.retry!());
+  expect(http.run).toHaveBeenCalledTimes(21);
+  expect(latest.data).toEqual(data);
+  expect(storage.get(key)).toContain('"terminal":true');
+});

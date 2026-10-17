@@ -76,6 +76,7 @@ export class WorkstreamGatewayError extends Schema.TaggedError<WorkstreamGateway
       "contract-mismatch",
       "permission-denied",
       "version-conflict",
+      "command-precondition-rejected",
       "cursor-stale",
       "idempotency-conflict",
       "invalid-response",
@@ -671,7 +672,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           command.expected_registry_version !== authorized.binding.registryVersion
         )
           return yield* new WorkstreamGatewayError({
-            reason: "version-conflict",
+            reason: "command-precondition-rejected",
             detail: "Command generation or registry revision is not current.",
           });
         const body = canonicalJson(command);

@@ -405,6 +405,7 @@ const EnvironmentWorkstreamCommandErrors = [
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
+  EnvironmentHttpConflictError,
 ] as const;
 const EnvironmentWorkstreamPagedSnapshotErrors = [
   ...EnvironmentWorkstreamSnapshotErrors,

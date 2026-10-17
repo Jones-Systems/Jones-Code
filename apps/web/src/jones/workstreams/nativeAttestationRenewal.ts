@@ -137,13 +137,69 @@ function save(storage: RenewalStorage, record: PendingRenewal) {
   if (storage.getItem(JOURNAL_KEY) !== encoded) throw new WorkstreamActionError("unknown");
 }
 
-const authorityKey = (snapshot: RenewalSnapshot) =>
+const authorityKey = (snapshot: Pick<RenewalSnapshot, "data" | "context">) =>
   JSON.stringify([
     workstreamBindingKey({ ...snapshot.data.binding, registryVersion: 0 }),
     [...snapshot.data.binding.permissions].sort(),
     snapshot.context.grant_id,
     snapshot.context.sources,
   ]);
+
+function validateReceipt(
+  record: PendingRenewal,
+  receipt: WorkstreamReceipt,
+  data: T3WorkstreamListResult,
+) {
+  if (
+    receipt.command_id !== record.commandId ||
+    receipt.owner_id !== data.binding.ownerId ||
+    receipt.actor.principal_id !== data.binding.principalId ||
+    receipt.server_generation !== data.binding.serverGeneration ||
+    receipt.operation !== "verify_reference" ||
+    (receipt.state === "committed" && receipt.effects.native_reference_id !== record.referenceId)
+  )
+    throw new WorkstreamActionError("unknown");
+}
+
+/** Settle durable intent by ID even when its thread or membership is no longer visible. */
+export async function reconcileNativeRenewalJournal(input: {
+  readonly snapshot: Pick<RenewalSnapshot, "data" | "context">;
+  readonly storage: RenewalStorage;
+  readonly observe: (id: string) => Promise<WorkstreamReceipt>;
+  readonly check: () => void;
+  readonly commandPending?: (id: string, pending: boolean) => void;
+}): Promise<boolean> {
+  const { data, context } = input.snapshot;
+  assertWorkstreamReadContext(data, context);
+  if (
+    context.state !== "ready" ||
+    context.principal_id !== data.binding.principalId ||
+    context.authorization_revision !== data.binding.authorizationRevision
+  )
+    throw new WorkstreamActionError("stale");
+  const authority = authorityKey(input.snapshot);
+  let settled = true;
+  for (const record of journal(input.storage)) {
+    if (record.authority !== authority || record.terminal) continue;
+    input.check();
+    input.commandPending?.(record.commandId, true);
+    try {
+      const receipt = await input.observe(record.commandId);
+      input.check();
+      validateReceipt(record, receipt, data);
+      if (receipt.state === "pending" || receipt.state === "unresolved") {
+        settled = false;
+        continue;
+      }
+      save(input.storage, { ...record, terminal: true });
+      input.commandPending?.(record.commandId, false);
+    } catch {
+      input.check();
+      settled = false;
+    }
+  }
+  return settled;
+}
 
 function validate(snapshot: RenewalSnapshot, authority: string): void {
   if (
@@ -246,10 +302,17 @@ export async function runNativeAttestationRenewal(
   const now = input.now ?? Date.now;
   const authority = authorityKey(input.initial);
   validate(input.initial, authority);
-  for (const record of journal(input.storage))
-    if (record.authority === authority && !record.terminal)
-      input.commandPending?.(record.commandId, true);
   const check = () => input.signal.throwIfAborted();
+  if (
+    !(await reconcileNativeRenewalJournal({
+      snapshot: input.initial,
+      storage: input.storage,
+      observe: input.observe,
+      check,
+      ...(input.commandPending ? { commandPending: input.commandPending } : {}),
+    }))
+  )
+    input.unavailable();
   const candidates = new Map<string, Candidate>();
   const identities = new Set(
     input.identities.map((item) =>
@@ -276,14 +339,12 @@ export async function runNativeAttestationRenewal(
   const memberships = async (
     snapshot: RenewalSnapshot,
     workstreamId: string,
-    budget?: { pages: number },
   ): Promise<readonly MembershipEpisode[]> => {
     let cursor: string | undefined;
     const items: MembershipEpisode[] = [];
     const cursors = new Set<string>();
     for (;;) {
       check();
-      if (budget && budget.pages-- === 0) throw new WorkstreamActionError("stale");
       const page = await input.memberships(workstreamId, cursor);
       check();
       assertWorkstreamReadContext(snapshot.data, page.context);
@@ -338,14 +399,9 @@ export async function runNativeAttestationRenewal(
       );
     });
     if (eligible.length) {
-      const budget = { pages: 10 };
       if (input.initial.data.items.length > MAX_WORKSTREAMS) input.unavailable();
       for (const workstream of input.initial.data.items.slice(0, MAX_WORKSTREAMS)) {
-        if (budget.pages === 0) {
-          input.unavailable();
-          break;
-        }
-        const open = await memberships(input.initial, workstream.workstreamId, budget);
+        const open = await memberships(input.initial, workstream.workstreamId);
         for (const member of open) {
           const reference = eligible.find(
             (entry) => entry.native_reference_id === member.native_reference_id,
@@ -377,7 +433,7 @@ export async function runNativeAttestationRenewal(
     check();
     const due = [...candidates.values()].sort((a, b) => a.expiresAt - b.expiresAt)[0]!;
     const record = findRecord(due);
-    if (record?.terminal && record.version >= due.version) {
+    if (record && (!record.terminal || record.version >= due.version)) {
       candidates.delete(due.referenceId);
       continue;
     }
@@ -466,6 +522,18 @@ export async function runNativeAttestationRenewal(
           });
         } catch (cause) {
           check();
+          if (isConflict(cause) && cause.message === "workstream_command_not_submitted") {
+            // Only this gateway pre-submit refusal proves that this POST had no CP effect.
+            const records = journal(input.storage).filter(
+              (entry) =>
+                entry.authority !== authority || entry.commandId !== commandRecord.commandId,
+            );
+            const encoded = JSON.stringify(records);
+            input.storage.setItem(JOURNAL_KEY, encoded);
+            if (input.storage.getItem(JOURNAL_KEY) !== encoded)
+              throw new WorkstreamActionError("unknown");
+            input.commandPending?.(commandRecord.commandId, false);
+          }
           if (isConflict(cause)) {
             const readback = await load();
             if (
@@ -474,25 +542,13 @@ export async function runNativeAttestationRenewal(
             )
               input.publish(readback.snapshot);
           }
-          // Even a conflict does not authorize a new command ID or replay.
+          // This invocation never resubmits, including after a proven pre-submit refusal.
           throw cause;
         }
       }
       for (let observation = 0; ; observation++) {
         check();
-        if (
-          receipt.command_id !== commandRecord.commandId ||
-          receipt.owner_id !== fresh.snapshot.data.binding.ownerId ||
-          receipt.actor.principal_id !== fresh.snapshot.data.binding.principalId ||
-          receipt.server_generation !== fresh.snapshot.data.binding.serverGeneration ||
-          receipt.operation !== "verify_reference"
-        )
-          throw new WorkstreamActionError("unknown");
-        if (
-          receipt.state === "committed" &&
-          receipt.effects.native_reference_id !== due.referenceId
-        )
-          throw new WorkstreamActionError("unknown");
+        validateReceipt(commandRecord, receipt, fresh.snapshot.data);
         if (receipt.state !== "pending" && receipt.state !== "unresolved") break;
         if (observation === 4) throw new WorkstreamActionError("unknown");
         await wait(

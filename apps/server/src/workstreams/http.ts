@@ -289,7 +289,23 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
         Effect.gen(function* () {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-          return yield* internal("submit", gateway.submit(args.payload.command));
+          return yield* gateway.submit(args.payload.command).pipe(
+            Effect.catch(
+              (
+                error,
+              ): Effect.Effect<never, EnvironmentHttpConflictError | EnvironmentInternalError> =>
+                error.reason === "command-precondition-rejected"
+                  ? Effect.fail(
+                      new EnvironmentHttpConflictError({
+                        message: "workstream_command_not_submitted",
+                      }),
+                    )
+                  : failEnvironmentInternal("internal_error", {
+                      operation: "submit",
+                      reason: error.reason,
+                    }),
+            ),
+          );
         }),
       );
   }),

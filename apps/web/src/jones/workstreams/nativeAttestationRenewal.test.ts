@@ -16,6 +16,7 @@ import {
 } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
 import {
   runNativeAttestationRenewal,
+  reconcileNativeRenewalJournal,
   type NativeAttestationRenewalInput,
   type RenewalSnapshot,
 } from "./nativeAttestationRenewal";
@@ -306,8 +307,118 @@ describe("native attestation renewal", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(f.ports.submit).toHaveBeenCalledOnce();
     expect(f.ports.observe).toHaveBeenCalledExactlyOnceWith("renew-1");
+    expect(f.snapshot().placements.items[0]?.attestation_version).toBe(3);
+    expect([...f.records.values()].join("")).toContain('"terminal":true');
+    expect(f.ports.publish).not.toHaveBeenCalled();
+  });
+  it.each(["inventory removed", "membership closed"])(
+    "reconciles a lost reply after %s and retains terminal settlement across reload",
+    async (change) => {
+      const f = fixture();
+      let committed: WorkstreamReceipt;
+      f.ports.submit.mockImplementation(async (command) => {
+        committed = f.commit(command);
+        throw new Error("lost response");
+      });
+      const first = f.start();
+      await vi.advanceTimersByTimeAsync(240_000);
+      await first.outcome;
+      f.ports.observe.mockImplementation(async () => committed);
+      f.ports.memberships.mockResolvedValue({
+        context: { ...placements.context, registry_version: 12 },
+        items: [],
+        next_cursor: null,
+      });
+      const initial = f.snapshot();
+      const overrides = {
+        initial: { ...initial, placements: { ...initial.placements, items: [] } },
+        ...(change === "inventory removed" ? { identities: [] } : {}),
+      };
+      await f.start(overrides).outcome;
+      expect(f.ports.observe).toHaveBeenCalledExactlyOnceWith("renew-1");
+      expect([...f.records.values()].join("")).toContain('"terminal":true');
+      await f.start(overrides).outcome;
+      expect(f.ports.observe).toHaveBeenCalledOnce();
+      expect(f.ports.submit).toHaveBeenCalledOnce();
+      expect(f.ports.publish).not.toHaveBeenCalled();
+    },
+  );
+  it("clears only a proven pre-submit rejection durably without replaying its command", async () => {
+    const f = fixture();
+    const pending = vi.fn();
+    f.ports.submit.mockRejectedValueOnce(
+      new EnvironmentHttpConflictError({ message: "workstream_command_not_submitted" }),
+    );
+    const first = f.start({ commandPending: pending });
+    await vi.advanceTimersByTimeAsync(240_000);
+    await first.outcome;
+    expect(pending).toHaveBeenLastCalledWith("renew-1", false);
+    expect([...f.records.values()].join("")).not.toContain("renew-1");
+    f.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.ports.submit).toHaveBeenCalledTimes(2);
+    expect(f.ports.submit.mock.calls.map(([command]) => command.command_id)).toEqual([
+      "renew-1",
+      "renew-2",
+    ]);
+    expect(f.ports.observe).not.toHaveBeenCalled();
     expect(f.ports.publish).toHaveBeenCalledOnce();
   });
+  it("shares durable terminal reconciliation with Retry without trusting a receipt as proof", async () => {
+    const f = fixture();
+    let committed: WorkstreamReceipt;
+    f.ports.submit.mockImplementation(async (command) => {
+      committed = f.commit(command);
+      throw new Error("lost response");
+    });
+    const first = f.start();
+    await vi.advanceTimersByTimeAsync(240_000);
+    await first.outcome;
+    const pending = vi.fn();
+    f.ports.observe.mockImplementation(async () => committed);
+    expect(
+      await reconcileNativeRenewalJournal({
+        snapshot: f.snapshot(),
+        storage: f.ports.storage,
+        observe: f.ports.observe,
+        check: () => {},
+        commandPending: pending,
+      }),
+    ).toBe(true);
+    expect(pending).toHaveBeenLastCalledWith("renew-1", false);
+    await f.start({ identities: [] }).outcome;
+    expect(f.ports.observe).toHaveBeenCalledExactlyOnceWith("renew-1");
+    expect(f.ports.submit).toHaveBeenCalledOnce();
+    expect(f.ports.publish).not.toHaveBeenCalled();
+  });
+  it.each(["wrong receipt", "failed GET"])(
+    "retains durable intent after %s during independent reconciliation",
+    async (failure) => {
+      const f = fixture();
+      let committed: WorkstreamReceipt;
+      f.ports.submit.mockImplementation(async (command) => {
+        committed = f.commit(command);
+        throw new Error("lost response");
+      });
+      const first = f.start();
+      await vi.advanceTimersByTimeAsync(240_000);
+      await first.outcome;
+      f.ports.observe.mockImplementation(async () => {
+        if (failure === "failed GET") throw new Error("unavailable");
+        return { ...committed, command_id: "someone-else" };
+      });
+      expect(
+        await reconcileNativeRenewalJournal({
+          snapshot: f.snapshot(),
+          storage: f.ports.storage,
+          observe: f.ports.observe,
+          check: () => {},
+        }),
+      ).toBe(false);
+      expect([...f.records.values()].join("")).toContain('"terminal":false');
+      expect(f.ports.submit).toHaveBeenCalledOnce();
+    },
+  );
   it("leaves unresolved GET receipts pending across reconnect without POST", async () => {
     const f = fixture();
     f.ports.submit.mockRejectedValue(new Error("unknown"));
