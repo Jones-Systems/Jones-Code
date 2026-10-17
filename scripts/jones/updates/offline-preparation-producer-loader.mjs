@@ -213,7 +213,7 @@ function uncertainCustody(cause, seen = new Set()) {
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "1af15bf7cafcec1899ae09a7ee1a299640e8db17aeedb5a13f372bb98afb9c47",
+  sha256: "7ec50e5b3e68f78b378525f8bbbd8dbf8a7fc389056a31c8d5c5706c6e2cd4f8",
   size: 851654,
 };
 const reviewedRawSources = {
@@ -252,7 +252,7 @@ const reviewedRawSources = {
   "pnpm-lock.yaml": "6017f11e0032db8fbbc84086cd4cc0ae6f312f4ae99384e91d733f7b3c7f43aa",
   "pnpm-workspace.yaml": "3a93aa85c1edb088a14afba8659404a2a321817ce6590589bb055fa0ecf8d103",
   "scripts/jones/updates/functional-policy.ts":
-    "9684a2198f0e6772f96734b754d56836a095c245664599a15621199c4433d513",
+    "e05e6c05df8425dd155d82187639b1ecdd22b8520d9cd13c93a3cc646ce9fcbf",
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
@@ -268,7 +268,7 @@ const reviewedRawSources = {
   "scripts/jones/updates/offline-preparation-producer-entry.ts":
     "779e2bb0d298a04b17debed2de6088fec1aefcb52b57e47e0664e027b5bbd247",
   "scripts/package.json": "021407078841ca3f0fdb4d6347ba8989c826b80127268844ff2fd257647ba504",
-  "vite.config.ts": "c86e359d60e69e65f2415af82e3b22917306802dd2beba2bbb333ac2a3ca5992",
+  "vite.config.ts": "bb568554a5e566f8482ebd337cffbd1a76cab91f98f9d0796bb18a183eed0215",
 };
 const reviewedImports = [
   {
