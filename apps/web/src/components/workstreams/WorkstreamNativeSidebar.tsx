@@ -116,13 +116,17 @@ export function WorkstreamNativeSidebar(props: {
       inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
     );
   };
+  // Another environment's thread is registered through its own server, which checks its source.
+  const sourceAvailable = (thread: EnvironmentThreadShell) =>
+    nativeThreadSourceAvailable(controller.registrationContext, thread) ||
+    controller.assignsThroughOwnEnvironment?.(thread.environmentId) === true;
   // Stale snapshots are read-only; conflicting primaries or a known identity mismatch block
   // changes until re-verification.
   const canMove = (thread: EnvironmentThreadShell) =>
     canWrite &&
     controller.stale !== true &&
     controller.assignNativeThread !== undefined &&
-    nativeThreadSourceAvailable(controller.registrationContext, thread) &&
+    sourceAvailable(thread) &&
     !conflicted(thread);
   const hasUnchecked = grouping.ungrouped.some((thread) => !assignmentChecked(thread));
   const hasConflict = grouping.conflictingKeys.size > 0;
@@ -315,13 +319,11 @@ export function WorkstreamNativeSidebar(props: {
         : undefined) ?? [];
     return {
       items: [
-        ...(!nativeThreadSourceAvailable(controller.registrationContext, thread) ||
-        conflicted(thread) ||
-        !checked
+        ...(!sourceAvailable(thread) || conflicted(thread) || !checked
           ? [
               {
                 id: "assign-workstream:status" as const,
-                label: !nativeThreadSourceAvailable(controller.registrationContext, thread)
+                label: !sourceAvailable(thread)
                   ? "Assignment unavailable for this environment"
                   : conflicted(thread)
                     ? "Conflicting assignments; changes blocked"

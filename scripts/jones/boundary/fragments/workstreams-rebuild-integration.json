@@ -135,7 +135,10 @@
     "apps/web/src/jones/workstreams/connectedWorkstreamTrust.ts",
     "apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx",
     "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.ts",
-    "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx"
+    "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
+    "apps/web/src/jones/workstreams/environmentWorkstreamsRequest.ts",
+    "apps/web/src/jones/workstreams/remoteThreadAssignment.ts",
+    "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
